@@ -1,11 +1,11 @@
-# DynaStore
+# GeoID
 
-DynaStore Geospatial Framework
+GeoID Geospatial Framework
 
-DynaStore is a high-performance, scalable, and modular geospatial data serving framework built with FastAPI. It provides a unified backend for storing, managing, and serving geospatial data through a variety of OGC and community standards.
+GeoID is a high-performance, scalable, and modular geospatial data serving framework built with FastAPI. It provides a unified backend for storing, managing, and serving geospatial data through a variety of OGC and community standards.
 
 Big Picture: Architecture and Data Model
-The core of DynaStore's architecture is the clear and consistent mapping between its business logic (APIs and services) and the underlying PostgreSQL/PostGIS database storage. This design ensures that data is managed logically and that services can interact with it in a standardized way.
+The core of GeoID's architecture is the clear and consistent mapping between its business logic (APIs and services) and the underlying PostgreSQL/PostGIS database storage. This design ensures that data is managed logically and that services can interact with it in a standardized way.
 
 Storage-to-Business-Model Mapping
 The framework's data hierarchy is designed to be intuitive and directly reflects the structure of the database:
@@ -21,22 +21,12 @@ Feature (/{dataset}/collections/{collectionId}/items/{featureId}): A Feature is 
 This hierarchical model ensures a clean separation of concerns and allows different services to operate on the same underlying data structure in a consistent and predictable manner.
 
 Implemented Extensions
-DynaStore is built as a collection of modular extensions, each providing a specific API standard.
+GeoID is built as a collection of modular extensions, each providing a specific API standard.
 
 Core Data Access & Management
 OGC API - Features: The foundational service for CRUD (Create, Read, Update, Delete) operations on geospatial features. It serves as the primary interface for managing the data stored in the database.
 
 STAC (SpatioTemporal Asset Catalog): Provides a standardized way to discover and catalog geospatial assets. It works in tandem with the Features API, offering a metadata-rich view of the same underlying data.
-
-Interoperability
-OGC API - WFS: A complete implementation of the legacy OGC Web Feature Service (WFS) 2.0 standard. It serves as a critical bridge for backward compatibility, allowing traditional desktop GIS clients (e.g., QGIS, ArcGIS) to interact with the data stored in DynaStore.
-
-Visualization & Styling
-OGC API - Styles: A dedicated service for managing cartographic styles (e.g., SLD, Mapbox GL). It maintains referential integrity with the data, ensuring that styles are linked to existing datasets (schemas) and are automatically cleaned up if a dataset is deleted.
-
-OGC API - Maps: A rendering service, similar to a traditional WMS, that generates map images (e.g., PNG) from the stored vector data. It leverages the Styles API to apply custom cartography and supports multi-layer rendering and advanced filtering.
-
-OGC API - Tiles: A service that generates and serves vector tiles (e.g., MVT) for use in modern web mapping clients. It is designed for high performance and supports multi-layer tiles and dynamic filtering based on spatial, temporal, and custom attribute dimensions.
 
 This modular architecture allows clients to interact with the same underlying data through the most appropriate standard for their needs, whether it's raw data access, metadata discovery, or visualization.
 
@@ -46,7 +36,6 @@ This modular architecture allows clients to interact with the same underlying da
 - **STAC API:** Data discovery and cataloging using the SpatioTemporal Asset Catalog standard.
 - **OGC API:** Data management and access using OGC API - Features.
 - **Database Integrations:** Support for PostgreSQL/PostGIS, BigQuery, and more.
-- **Cloud Ready:** Docker and Docker Compose support for scalable deployments.
 - **Async & Fast:** Built on FastAPI for high performance and async operations.
 
 ## Getting Started
@@ -57,7 +46,7 @@ This modular architecture allows clients to interact with the same underlying da
 - Docker & Docker Compose (for containerized deployment)
 
 ### Installation (Development)
-DynaStore offers two main installation methods for development, depending on your needs.
+GeoID offers two main installation methods for development, depending on your needs.
 
 #### Method 1: Complete Installation (Recommended for Testing)
 This method installs the core framework, all tools, and dependencies for **all** available modules and extensions automatically. It is the simplest way to get a full development environment running.
@@ -65,7 +54,7 @@ This method installs the core framework, all tools, and dependencies for **all**
 1.  **Clone and activate the virtual environment:**
     ```bash
     git clone https://github.com/un-fao/GeoID.git
-    cd dynastore
+    cd GeoID
     python -m venv .venv
     source .venv/bin/activate
     ```
@@ -80,22 +69,20 @@ This method is for advanced use cases where you only want to install a specific 
 
 1.  **Set environment variables** to specify which components to enable:
     ```bash
-    export DYNASTORE_MODULES="catalog,db"
-    export DYNASTORE_EXTENSION_MODULES="api,features"
+    export GeoID_MODULES="catalog,db"
+    export GeoID_EXTENSION_MODULES="api,features"
     ```
 
 2.  **Install the selected dependencies** along with testing tools:
     ```bash
-    pip install -e '.[test, dynastore-enabled-modules]'
+    pip install -e '.[test, GeoID-enabled-modules]'
     ```
 
 ### Running with Docker Compose
 
-DynaStore uses a layered Docker Compose configuration to support different environments:
+GeoID uses a layered Docker Compose configuration to support different environments:
 - **Production**: `docker compose up -d --build` (uses `docker-compose.yml`)
 - **Development**: `./manage.sh dev` (merges `docker-compose.yml` and `docker-compose.dev.yml` with hot-reload and debugging)
-- **Testing**: `docker compose -f docker/docker-compose.test.yml up --exit-code-from test-runner`
-
 The core services are:
 - **api**: High-performance REST API serving geospatial data.
 - **worker**: Background task processor (e.g., for ingestion and pre-seeding).
@@ -111,7 +98,7 @@ The core services are:
 Configuration is managed via environment variables and a unified **Hierarchical Configuration API**.
 
 ### Unified Configuration API
-DynaStore provides a central REST API for managing plugin configurations at three levels:
+GeoID provides a central REST API for managing plugin configurations at three levels:
 1.  **Platform**: Global defaults for all catalogs and collections.
 2.  **Catalog**: Overrides for a specific database schema.
 3.  **Collection**: Overrides for a specific table.
@@ -129,11 +116,11 @@ Management Endpoints:
 - `GET/PUT/DELETE /configs/catalogs/{catalog_id}/collections/{collection_id}/plugins/{plugin_id}`: Manage collection-level config.
 
 ### Immutability Framework
-To ensure data integrity, DynaStore enforces immutability for configuration fields that affect the physical storage structure (e.g., partitioning, geometry type, indexed columns).
+To ensure data integrity, GeoID enforces immutability for configuration fields that affect the physical storage structure (e.g., partitioning, geometry type, indexed columns).
 
 **Usage in Pydantic Models:**
 ```python
-from dynastore.modules.db_config.platform_config_manager import Immutable
+from GeoID.modules.db_config.platform_config_manager import Immutable
 
 class MyPluginConfig(PluginConfig):
     # This field cannot be changed once established in the DB
@@ -163,7 +150,7 @@ Usage
 Sync Event Listeners (In-Transaction)
 Use when you need transactional guarantees or must complete before the transaction commits.
 
-from dynastore.modules.catalog.event_manager import (
+from GeoID.modules.catalog.event_manager import (
     sync_event_listener,
     CatalogEventType
 )
@@ -181,7 +168,7 @@ async def on_collection_created_sync(catalog_id: str, collection_id: str, **kwar
 Async Event Listeners (Background)
 Use for slow operations that don't need transactional guarantees (external APIs, notifications, etc.).
 
-from dynastore.modules.catalog.event_manager import (
+from GeoID.modules.catalog.event_manager import (
     async_event_listener,
     CatalogEventType
 )
@@ -277,7 +264,7 @@ Use Case	CREATE/DROP tables/buckets	Validation, notifications, indexing
 
 ## Testing
 
-DynaStore uses `pytest` for testing. We distinguish between **unit tests** (for libraries and tools) and **integration tests** (for APIs and cross-module flows).
+GeoID uses `pytest` for testing. We distinguish between **unit tests** (for libraries and tools) and **integration tests** (for APIs and cross-module flows).
 
 ### 1. Install Test Dependencies
 To run the full test suite, you must install all dependencies. The recommended way is using the **Complete Installation** method described above:
@@ -289,7 +276,7 @@ pip install -e '.[all]'
 ### 2. Local Unit Tests
 You can run unit tests locally without spinning up the entire infrastructure if they don't depend on external services:
 ```sh
-pytest tests/dynastore/modules/catalog/unit
+pytest tests/GeoID/modules/catalog/unit
 ```
 
 ### 3. Integration Tests (against Docker)
@@ -300,7 +287,7 @@ To run integration tests that require the API and Database:
    ```
 2. Run the integration tests:
    ```sh
-   pytest tests/dynastore/modules/catalog/integration
+   pytest tests/GeoID/modules/catalog/integration
    ```
 
 ### 4. VS Code Integration
