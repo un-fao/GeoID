@@ -1,0 +1,3 @@
+# STAC also depends on the ingestion module.
+-r ${APP_DIR}/src/dynastore/extensions/stac/requirements.txt
+

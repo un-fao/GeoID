@@ -1,0 +1,72 @@
+#    Copyright 2025 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+# -----------------------------------------------------------------------------
+# PRODUCTION / BASE CONFIGURATION
+# -----------------------------------------------------------------------------
+
+services:
+  db:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.db
+    container_name: postgresql_db
+    restart: always
+    # CHANGED: Now looks for .env in the same folder (docker/)
+    env_file: .env
+    command: postgres -c max_locks_per_transaction=256 -c shared_preload_libraries='pg_cron' -c cron.database_name='${POSTGRES_DB:-gis_dev}'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - dynastore_net
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        DYNASTORE_MODULES: ${API_MODULES:-db_config,db,catalog,stac}
+        DYNASTORE_EXTENSION_MODULES: ${API_EXTENSION_MODULES:-}
+        DYNASTORE_TASK_MODULES: ${API_TASK_MODULES:-}
+    container_name: dynastore_api
+    restart: always
+    env_file: .env
+    environment:
+      TCP_PORT: 80
+      UVICORN_WORKERS: 4
+      DYNASTORE_TASK_MODULES: ${API_TASK_MODULES:-}
+      DYNASTORE_MODULES: ${API_MODULES:-db_config,db,catalog,stac}
+      DYNASTORE_EXTENSION_MODULES: ${API_EXTENSION_MODULES:-}
+      ACCESS_LOG: /dynastore/logs/access.log
+      ERROR_LOG: /dynastore/logs/error.log
+    ports:
+      - "${HOST_PORT_API:-80}:80"
+    volumes:
+      - ../logs/api:/dynastore/logs
+    depends_on:
+      - db
+    networks:
+      - dynastore_net
+
+
+volumes:
+  postgres_data:
+
+
+networks:
+  dynastore_net:
+    driver: bridge

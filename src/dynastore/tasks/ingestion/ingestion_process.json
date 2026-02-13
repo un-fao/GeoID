@@ -1,0 +1,38 @@
+{
+  "inputs": {
+    "catalog_id": "{catalog_id}",
+    "collection_id": "{collection_id}",
+    "ingestion_request": {
+      "database_batch_size": 1000,
+      "asset": {
+        "asset_code": ""
+      },
+      "reporting": {
+        "gcs_detailed": {
+          "enabled": true,
+          "report_file_path": "gs://fao-aip-geospatial-review-ingestion/ingestion_reports/report_{ingestion_id}_{timestamp_utc}.json"
+        }
+      },
+      "column_mapping": {
+        "external_id": "CODE",
+        "attributes_source_type": "explicit_list",
+        "attribute_mapping": [
+          {
+            "map_to": "adm0",
+            "source": "adm0_name"
+          },
+          {
+            "map_to": "id",
+            "source": "id"
+          },
+          {
+            "map_to": "name",
+            "source": "name"
+          }
+        ]
+      }
+    }
+  },
+  "outputs": {},
+  "response": "document"
+}

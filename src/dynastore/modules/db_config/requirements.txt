@@ -1,0 +1,11 @@
+# db
+async_lru
+psycopg2-binary>=2.9.7
+sqlalchemy
+geoalchemy2
+# tools
+#shapely>=2.1.1
+#h3>=4.1.2
+h3>=4.3.1
+s2sphere>=0.2.5
+python-dateutil

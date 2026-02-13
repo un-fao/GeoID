@@ -1,0 +1,15 @@
+# Use a specific version to ensure package compatibility
+FROM postgis/postgis:17-3.4
+
+LABEL maintainer="carlo.cancellieri@gmail.com" \
+      description="Dynastore - Postgresql + postgis + pg_cron"
+
+# Install pg_cron matching the Postgres version (16)
+RUN apt-get update && \
+    apt-get install -y postgresql-17-cron && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Add a custom init script to enable the extension automatically
+# This runs only on the first volume creation
+RUN echo "CREATE EXTENSION IF NOT EXISTS pg_cron;" > /docker-entrypoint-initdb.d/002_cron.sql

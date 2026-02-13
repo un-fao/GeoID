@@ -1,0 +1,2 @@
+-r ${APP_DIR}/src/dynastore/modules/db_config/requirements.txt
+psycopg2-binary>=2.9.7

@@ -1,0 +1,3 @@
+# STAC also depends on the ingestion module.
+-r ${APP_DIR}/src/dynastore/tasks/ingestion/requirements.txt
+pystac[validation]>=1.13.0

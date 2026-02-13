@@ -1,0 +1,5 @@
+# ASYNC Database
+# Use psycopg2 as the driver for asyncpg
+-r ${APP_DIR}/src/dynastore/modules/db_config/requirements.txt
+sqlalchemy[asyncio]
+asyncpg

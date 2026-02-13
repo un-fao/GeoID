@@ -1,0 +1,161 @@
+Byte-compiled / optimized / DLL files
+__pycache__/
+pycache/
+*.py[cod]
+*$py.class
+
+C extensions
+*.so
+
+Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+PyInstaller
+Usually these files are written by a python script from a template
+before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
+
+Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+.vscode/**
+
+mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+Pyre type checker
+.pyre/
+
+pytype
+.pytype/
+
+
+# AI / Editor Tools
+.continue/
+.gemini/
+.vscode/
+
+# Logs and Debug Output
+logs/
+*.log
+test_output*
+test_out.txt
+logs.txt
+FullLogs*.txt
+
+# Test Artifacts
+test-results.xml
+test_run.log
+
+# Temporary / Reproduction Scripts
+debug_*.py
+repro_*.py
+reproduce_*.py
+reproduce_*.sql
+check_tables.py
+fix_stats_db.py
+
+# Local Data
+data/
+
+# Secrets and Credentials
+*.env
+src/dynastore/modules/gcp/*.json
+
+# Orphaned / Temporary Files
+package-lock.json
+web_service.py
+
+# Archives and Temporary docs
+*.bak
+*.tmp
+
+# Documentation Work In Progress
+*.md
+!README.md
+!README_detailed.md
+!src/dynastore/examples/README.database_manager.md
+!src/dynastore/extensions/apikey/readme.md
+!src/dynastore/extensions/apikey/usage_example.md
+!src/dynastore/extensions/assets/readme.md
+!src/dynastore/extensions/configs/readme.md
+!src/dynastore/extensions/features/readme.md
+!src/dynastore/extensions/gcp/readme.md
+!src/dynastore/extensions/stac/readme.md
+!src/dynastore/extensions/stats/readme.md
+!src/dynastore/extensions/tiles/README.md
+!src/dynastore/extensions/web/readme.md
+!src/dynastore/extensions/web/static/README_home.md
+!src/dynastore/extensions/wfs/README.md
+!src/dynastore/modules/apikey/readme.md
+!src/dynastore/modules/processes/README.md
+!src/dynastore/modules/stats/readme.md
+!src/dynastore/modules/tasks/README.md
+!src/dynastore/tasks/ingestion/readme.md
+!docs/*.md
+!docs/**/*.md
+
+# Project Specific
+.python-version
+deprecated/**
+
+# System Files
+.DS_Store
+
+# Text Files (Generic exclusion, re-include known ones)
+*.txt
+!requirements.txt
+!requirements-dev.txt
+!requirements-test.txt
+!src/dynastore/extensions/*/requirements.txt
+!src/dynastore/modules/*/requirements.txt
+!src/dynastore/tasks/*/requirements.txt
+!src/dynastore/modules/proxy/readme.txt
+
+# Old / Backup Files
+*old.md
+*backup*
+

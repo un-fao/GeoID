@@ -1,0 +1,62 @@
+services:
+  db:
+    extends:
+      file: docker-compose.yml
+      service: db
+    ports:
+      - "54320:5432" # Expose DB locally for dev tools
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-gis_dev}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  
+  api:
+    extends:
+      file: docker-compose.yml
+      service: api
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: tester
+      args:
+        DYNASTORE_MODULES: ${API_MODULES:-*}
+        DYNASTORE_EXTENSION_MODULES: ${API_EXTENSION_MODULES:-*}
+        DYNASTORE_TASK_MODULES: ${API_TASK_MODULES:-*}
+    volumes:
+      - ../src:/dynastore/src # Hot reload mount
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      UVICORN_WORKERS: 1
+      LOG_LEVEL: DEBUG
+      ACCESS_LOG: "-"
+      ERROR_LOG: "-"
+    ports:
+      - "5678:5678" # Debug port
+    command: python -m debugpy --listen 0.0.0.0:5678 -m uvicorn dynastore.main:app --host 0.0.0.0 --port 80 --reload --reload-dir src
+
+  setup:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: tester
+    volumes:
+      - ../src:/dynastore/src
+      - ../scripts:/dynastore/scripts
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:gis_dev@db:5432/gis_dev}
+    command: /dynastore/scripts/populate.sh
+
+volumes:
+  postgres_data:
+
+networks:
+  dynastore_net:
+    driver: bridge
