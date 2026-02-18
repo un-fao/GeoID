@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="DynaStore - Enterprise-grade, cloud-native geospatial data platform built on OGC standards.">
+    <title>Dynastore | The Hyperscale Geospatial Platform</title>
+    <link rel="icon" type="image/png" href="/web/static/dynastore.png">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="/web/static/styles.css" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        dyna: {
+                            dark: '#0f172a',
+                            darker: '#020617',
+                            primary: '#3b82f6',
+                            secondary: '#64748b',
+                            accent: '#0ea5e9',
+                            success: '#10b981',
+                            warning: '#f59e0b',
+                            purple: '#8b5cf6',
+                            danger: '#ef4444'
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['Fira Code', 'monospace'],
+                    },
+                    backgroundImage: {
+                        'grid-pattern': "linear-gradient(to right, #1e293b 1px, transparent 1px), linear-gradient(to bottom, #1e293b 1px, transparent 1px)",
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-dyna-darker text-slate-200 min-h-screen flex flex-col">
+
+    <!-- Navigation -->
+    <nav class="fixed top-0 w-full z-50 glass-panel border-b border-white/5">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-20">
+                <div class="flex items-center gap-3 cursor-pointer group" onclick="switchTab('home')">
+                    <img src="/web/static/dynastore.png" alt="DynaStore" class="w-10 h-10 rounded-lg shadow-lg shadow-blue-500/20 group-hover:scale-110 transition-transform"> 
+                    <div>
+                        <span class="font-bold text-xl tracking-tight text-white block leading-none">DYNASTORE</span>
+                        <span class="text-[10px] text-slate-400 uppercase tracking-widest group-hover:text-blue-400 transition-colors">Geospatial Engine</span>
+                    </div>
+                </div>
+                <div class="hidden md:block">
+                    <div class="ml-10 flex items-baseline space-x-8">
+                        <button onclick="switchTab('platform')" id="nav-platform" class="nav-btn text-slate-400 hover:text-white px-3 py-4 text-sm font-medium transition-colors">Platform & Customers</button>
+                        <button onclick="switchTab('architecture')" id="nav-architecture" class="nav-btn text-slate-400 hover:text-white px-3 py-4 text-sm font-medium transition-colors">Architecture & Extensions</button>
+                        <button onclick="switchTab('business')" id="nav-business" class="nav-btn text-slate-400 hover:text-white px-3 py-4 text-sm font-medium transition-colors">Business & Investors</button>
+                        <button onclick="switchTab('docs')" id="nav-docs" class="nav-btn text-slate-400 hover:text-white px-3 py-4 text-sm font-medium transition-colors flex items-center gap-2">
+                            <i class="fa-solid fa-book"></i> Documentation
+                        </button>
+                    </div>
+                </div>
+                <div>
+                    <a href="https://github.com/un-fao/dynastore" target="_blank" class="text-slate-400 hover:text-white transition-colors"><i class="fa-brands fa-github text-xl"></i></a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main class="flex-grow pt-20">
+        
+        <!-- SECTION: HOME / HERO -->
+        <div id="section-home" class="fade-in">
+            <header class="relative pt-32 pb-40 overflow-hidden">
+                <div class="absolute inset-0 z-0 opacity-10 bg-grid-pattern bg-grid mask-image-gradient"></div>
+                <div class="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[500px] bg-dyna-primary/20 rounded-full blur-[120px] pointer-events-none"></div>
+                
+                <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10 text-center">
+                    <div class="inline-block px-4 py-1.5 rounded-full border border-blue-500/30 bg-blue-500/10 text-blue-300 text-sm font-medium mb-8">
+                        v6.0 Enterprise Release
+                    </div>
+                    <h1 class="text-5xl md:text-7xl font-bold text-white mb-8 tracking-tight leading-tight">
+                        The Cloud-Native<br>
+                        <span class="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400">Geospatial Infrastructure</span>
+                    </h1>
+                    <p class="mt-4 max-w-3xl mx-auto text-xl md:text-2xl text-slate-400 leading-relaxed">
+                        A modular, high-performance platform engineered for OGC compliance and infinite horizontal scalability. Deploy anywhere—on-premise or cloud.
+                    </p>
+                    <div class="mt-12 flex flex-col sm:flex-row justify-center gap-4">
+                        <button onclick="switchTab('architecture')" class="px-8 py-4 rounded-xl bg-dyna-primary hover:bg-blue-600 text-white font-semibold shadow-xl shadow-blue-500/20 transition-all transform hover:-translate-y-1">
+                            Architecture & APIs
+                        </button>
+                        <button onclick="switchTab('platform')" class="px-8 py-4 rounded-xl glass-panel hover:bg-white/5 text-white font-semibold transition-all border border-white/10">
+                            Enterprise Capabilities
+                        </button>
+                    </div>
+                </div>
+            </header>
+            <!-- Core Principles Grid -->
+            <section class="py-20 bg-slate-900/50 border-t border-white/5">
+                <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                    <div class="text-center mb-16">
+                        <h2 class="text-3xl font-bold text-white">Core Principles</h2>
+                        <p class="mt-4 text-slate-400">Built on a foundation of strict standards and database-driven orchestration.</p>
+                    </div>
+                    <div class="grid md:grid-cols-3 gap-12">
+                        <div class="text-center group">
+                            <div class="w-16 h-16 mx-auto bg-blue-500/10 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-blue-500/20 transition-colors">
+                                <i class="fa-solid fa-server text-blue-400 text-2xl"></i>
+                            </div>
+                            <h3 class="text-xl font-bold text-white mb-3">Database as OS</h3>
+                            <p class="text-slate-400 text-sm leading-relaxed">We push orchestration into PostgreSQL. Triggers, Partitioning, and JSONB handle complexity, ensuring data integrity at the lowest level.</p>
+                        </div>
+                        <div class="text-center group">
+                            <div class="w-16 h-16 mx-auto bg-emerald-500/10 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-emerald-500/20 transition-colors">
+                                <i class="fa-solid fa-shield-halved text-emerald-400 text-2xl"></i>
+                            </div>
+                            <h3 class="text-xl font-bold text-white mb-3">Logical/Physical Split</h3>
+                            <p class="text-slate-400 text-sm leading-relaxed">User-facing <code>codes</code> are stable. Physical schemas (<code>s_a1b2...</code>) are immutable and collision-free. Rename anything, break nothing.</p>
+                        </div>
+                        <div class="text-center group">
+                            <div class="w-16 h-16 mx-auto bg-purple-500/10 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-purple-500/20 transition-colors">
+                                <i class="fa-solid fa-globe text-purple-400 text-2xl"></i>
+                            </div>
+                            <h3 class="text-xl font-bold text-white mb-3">OGC Native</h3>
+                            <p class="text-slate-400 text-sm leading-relaxed">Built for OGC API - Features, STAC, and Processes from day one. Interoperability is not an afterthought, it's the foundation.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <!-- SECTION: PLATFORM (Customers) -->
+        <div id="section-platform" class="hidden-section fade-in">
+            <div class="bg-dyna-dark py-20">
+                <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                    <div class="mb-16">
+                        <h2 class="text-4xl font-bold text-white mb-6">Enterprise Capabilities</h2>
+                        <p class="text-xl text-slate-400 max-w-3xl">
+                            Dynastore transforms how organizations manage geospatial data. It replaces brittle monoliths with a flexible, modular ecosystem that adapts to your needs.
+                        </p>
+                    </div>
+
+                    <!-- Feature Grid -->
+                    <div class="grid md:grid-cols-2 gap-8 mb-20">
+                        <div class="glass-card p-8 rounded-2xl">
+                            <h3 class="text-2xl font-bold text-white mb-4 flex items-center gap-3">
+                                <i class="fa-solid fa-users-viewfinder text-dyna-accent"></i> True Multi-Tenancy
+                            </h3>
+                            <p class="text-slate-400 mb-6">
+                                Create isolated environments for departments or clients instantly. Each <code>catalog_id</code> maps to a distinct, physically isolated database schema.
+                            </p>
+                            <ul class="space-y-2 text-sm text-slate-300">
+                                <li class="flex items-center gap-2"><i class="fa-solid fa-check text-dyna-success"></i> Data Isolation via Physical Schemas</li>
+                                <li class="flex items-center gap-2"><i class="fa-solid fa-check text-dyna-success"></i> Performance Isolation</li>
+                                <li class="flex items-center gap-2"><i class="fa-solid fa-check text-dyna-success"></i> Cloud & On-Premise Support</li>
+                            </ul>
+                        </div>
+
+                        <div class="glass-card p-8 rounded-2xl">
+                            <h3 class="text-2xl font-bold text-white mb-4 flex items-center gap-3">
+                                <i class="fa-solid fa-globe text-dyna-accent"></i> Comprehensive OGC Support
+                            </h3>
+                            <p class="text-slate-400 mb-6">
+                                Stop building custom APIs. Dynastore exposes your data through standardized, interoperable interfaces compatible with QGIS, ArcGIS, and web maps.
+                            </p>
+                            <ul class="space-y-2 text-sm text-slate-300">
+                                <li class="flex items-center gap-2"><i class="fa-solid fa-check text-dyna-success"></i> OGC API - Features (Part 1 & 2)</li>
+                                <li class="flex items-center gap-2"><i class="fa-solid fa-check text-dyna-success"></i> SpatioTemporal Asset Catalog (STAC)</li>
+                                <li class="flex items-center gap-2"><i class="fa-solid fa-check text-dyna-success"></i> OGC API - Tiles & Processes</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <!-- Deployment & Scalability -->
+                    <div class="bg-slate-900 rounded-2xl p-8 border border-white/10 mb-20">
+                        <h3 class="text-2xl font-bold text-white mb-6">Deployment Flexibility</h3>
+                        <div class="grid md:grid-cols-2 gap-12">
+                            <div>
+                                <h4 class="text-lg font-bold text-white mb-2 flex items-center gap-2">
+                                    <i class="fa-solid fa-cloud text-blue-400"></i> Cloud Native
+                                </h4>
+                                <p class="text-slate-400 text-sm">
+                                    Designed for Kubernetes and serverless environments. Leverages cloud object storage (S3, GCS) for raw assets while keeping structured data in high-performance PostgreSQL.
+                                </p>
+                            </div>
+                            <div>
+                                <h4 class="text-lg font-bold text-white mb-2 flex items-center gap-2">
+                                    <i class="fa-solid fa-server text-emerald-400"></i> On-Premise Ready
+                                </h4>
+                                <p class="text-slate-400 text-sm">
+                                    Fully containerized architecture allows for secure, air-gapped deployments in sensitive environments without sacrificing scalability.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SECTION: ARCHITECTURE (Developers) -->
+        <div id="section-architecture" class="hidden-section fade-in">
+            
+            <!-- Three Pillars Section -->
+            <section class="py-20 relative bg-dyna-darker border-b border-white/5">
+                <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+                    <div class="text-center mb-16">
+                        <h2 class="text-3xl font-bold text-white">The Three Pillars</h2>
+                        <p class="mt-4 text-slate-400">Strict separation of concerns prevents the "Big Ball of Mud".</p>
+                    </div>
+
+                    <div class="relative">
+                        <div class="step-line"></div>
+
+                        <!-- Module -->
+                        <div class="relative z-10 mb-16 md:flex items-center justify-between group">
+                            <div class="md:w-5/12 text-right pr-8">
+                                <h3 class="text-2xl font-bold text-blue-400 mb-2">Pillar I: Modules</h3>
+                                <p class="text-slate-400 text-sm">
+                                    Backend-agnostic libraries. The Single Source of Truth for data domains.
+                                    <br>Example: <code class="text-blue-300">catalog_module.py</code>
+                                </p>
+                            </div>
+                            <div class="w-12 h-12 rounded-full bg-blue-600 border-4 border-slate-900 flex items-center justify-center step-dot mx-auto md:mx-0 shadow-[0_0_20px_rgba(37,99,235,0.5)]">
+                                <span class="font-bold text-white">1</span>
+                            </div>
+                            <div class="md:w-5/12 pl-8 mt-4 md:mt-0">
+                                <div class="code-block p-4 rounded-lg text-xs">
+                                    <span class="text-purple-400">@dynastore_module</span><br>
+                                    <span class="text-blue-400">class</span> <span class="text-yellow-300">CatalogModule</span>:<br>
+                                    &nbsp;&nbsp;<span class="text-gray-500"># Owns table 'catalogs'</span><br>
+                                    &nbsp;&nbsp;<span class="text-blue-400">async def</span> <span class="text-green-300">create_catalog</span>(...):
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Extensions -->
+                        <div class="relative z-10 mb-16 md:flex items-center justify-between group">
+                            <div class="md:w-5/12 pl-8 mt-4 md:mt-0 order-3 md:order-1">
+                                <div class="code-block p-4 rounded-lg text-xs">
+                                    <span class="text-purple-400">@router.get</span>(<span class="text-green-300">"/collections/{code}"</span>)<br>
+                                    <span class="text-blue-400">async def</span> <span class="text-green-300">get_coll</span>(code):<br>
+                                    &nbsp;&nbsp;<span class="text-gray-500"># Calls Module</span><br>
+                                    &nbsp;&nbsp;<span class="text-blue-400">return</span> module.get_collection(code)
+                                </div>
+                            </div>
+                            <div class="w-12 h-12 rounded-full bg-emerald-600 border-4 border-slate-900 flex items-center justify-center step-dot mx-auto md:mx-0 shadow-[0_0_20px_rgba(16,185,129,0.5)] order-2 md:order-2">
+                                <span class="font-bold text-white">2</span>
+                            </div>
+                            <div class="md:w-5/12 text-left pl-8 order-1 md:order-3">
+                                <h3 class="text-2xl font-bold text-emerald-400 mb-2">Pillar II: Extensions</h3>
+                                <p class="text-slate-400 text-sm">
+                                    Stateless API adapters. Translate HTTP to Module calls.
+                                    <br>Example: <code class="text-emerald-300">stac_service.py</code>
+                                </p>
+                            </div>
+                        </div>
+
+                        <!-- Tasks -->
+                        <div class="relative z-10 md:flex items-center justify-between group">
+                            <div class="md:w-5/12 text-right pr-8">
+                                <h3 class="text-2xl font-bold text-purple-400 mb-2">Pillar III: Tasks</h3>
+                                <p class="text-slate-400 text-sm">
+                                    Isolated background workers via OGC API Processes.
+                                    <br>Example: <code class="text-purple-300">ingestion_task</code>
+                                </p>
+                            </div>
+                            <div class="w-12 h-12 rounded-full bg-purple-600 border-4 border-slate-900 flex items-center justify-center step-dot mx-auto md:mx-0 shadow-[0_0_20px_rgba(147,51,234,0.5)]">
+                                <span class="font-bold text-white">3</span>
+                            </div>
+                            <div class="md:w-5/12 pl-8 mt-4 md:mt-0">
+                                <div class="code-block p-4 rounded-lg text-xs">
+                                    <span class="text-gray-500"># Separate Container</span><br>
+                                    <span class="text-blue-400">def</span> <span class="text-green-300">run_job</span>(payload):<br>
+                                    &nbsp;&nbsp;<span class="text-blue-400">with</span> sync_db_pool() <span class="text-blue-400">as</span> conn:<br>
+                                    &nbsp;&nbsp;&nbsp;&nbsp;process_file(payload)
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Extensions Detail Section -->
+            <section class="py-20 bg-slate-900">
+                <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                    <div class="mb-12">
+                        <h2 class="text-3xl font-bold text-white">Supported Extensions</h2>
+                        <p class="mt-4 text-slate-400">Modular capabilities that extend the core platform.</p>
+                    </div>
+
+                    <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        <!-- OGC Features -->
+                        <div class="glass-card p-6 rounded-xl">
+                            <div class="module-icon bg-blue-500/10 text-blue-400"><i class="fa-solid fa-vector-square"></i></div>
+                            <h3 class="text-lg font-bold text-white mb-2">OGC API - Features</h3>
+                            <p class="text-sm text-slate-400 mb-4">Core vector data service. Supports Part 1 (Core) and Part 2 (CRS). Provides filtering and GeoJSON output.</p>
+                            <a href="#" class="text-blue-400 text-xs font-mono hover:underline">View Spec -></a>
+                        </div>
+
+                        <!-- STAC -->
+                        <div class="glass-card p-6 rounded-xl">
+                            <div class="module-icon bg-emerald-500/10 text-emerald-400"><i class="fa-solid fa-layer-group"></i></div>
+                            <h3 class="text-lg font-bold text-white mb-2">STAC API</h3>
+                            <p class="text-sm text-slate-400 mb-4">SpatioTemporal Asset Catalog. Enables discovery of geospatial assets (images, point clouds) linked to features.</p>
+                            <a href="#" class="text-emerald-400 text-xs font-mono hover:underline">View Spec -></a>
+                        </div>
+
+                        <!-- OGC Tiles -->
+                        <div class="glass-card p-6 rounded-xl">
+                            <div class="module-icon bg-purple-500/10 text-purple-400"><i class="fa-solid fa-map"></i></div>
+                            <h3 class="text-lg font-bold text-white mb-2">OGC API - Tiles</h3>
+                            <p class="text-sm text-slate-400 mb-4">High-performance vector (MVT) and raster tiles generated on-the-fly from the database.</p>
+                            <a href="#" class="text-purple-400 text-xs font-mono hover:underline">View Spec -></a>
+                        </div>
+
+                        <!-- OGC Processes -->
+                        <div class="glass-card p-6 rounded-xl">
+                            <div class="module-icon bg-orange-500/10 text-orange-400"><i class="fa-solid fa-gears"></i></div>
+                            <h3 class="text-lg font-bold text-white mb-2">OGC API - Processes</h3>
+                            <p class="text-sm text-slate-400 mb-4">Standardized interface for asynchronous tasks (e.g., ingestion, analysis). Includes job status tracking.</p>
+                            <a href="#" class="text-orange-400 text-xs font-mono hover:underline">View Spec -></a>
+                        </div>
+
+                        <!-- WFS -->
+                        <div class="glass-card p-6 rounded-xl">
+                            <div class="module-icon bg-red-500/10 text-red-400"><i class="fa-solid fa-database"></i></div>
+                            <h3 class="text-lg font-bold text-white mb-2">WFS 2.0</h3>
+                            <p class="text-sm text-slate-400 mb-4">Legacy support for Web Feature Service to ensure compatibility with older GIS clients (ArcMap, QGIS).</p>
+                            <a href="#" class="text-red-400 text-xs font-mono hover:underline">View Spec -></a>
+                        </div>
+
+                        <!-- Maps -->
+                        <div class="glass-card p-6 rounded-xl">
+                            <div class="module-icon bg-cyan-500/10 text-cyan-400"><i class="fa-solid fa-image"></i></div>
+                            <h3 class="text-lg font-bold text-white mb-2">OGC API - Maps</h3>
+                            <p class="text-sm text-slate-400 mb-4">Server-side rendering of map images (PNG/JPEG) using SLD/Mapbox styles.</p>
+                            <a href="#" class="text-cyan-400 text-xs font-mono hover:underline">View Spec -></a>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Abstraction Infographic (SVG) -->
+            <section class="py-20 bg-slate-900 border-t border-white/5">
+                <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                    <div class="mb-12">
+                        <span class="text-dyna-purple font-mono text-sm font-semibold tracking-wider uppercase">Deep Dive</span>
+                        <h2 class="text-3xl font-bold text-white mt-2">Storage Abstraction Layer</h2>
+                        <p class="mt-4 text-slate-400 max-w-3xl">
+                            How <code class="text-blue-400 bg-blue-400/10 px-1 rounded">catalog</code> maps logical <strong>Codes</strong> to physical <strong>Schemas</strong>, enabling renaming without data movement.
+                        </p>
+                    </div>
+
+                    <div class="glass-panel rounded-2xl p-6 overflow-hidden border border-white/10 shadow-2xl relative">
+                        <!-- SVG Infographic -->
+                        <svg viewBox="0 0 1000 650" class="w-full h-auto font-sans">
+                            <defs>
+                                <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                                    <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" />
+                                </marker>
+                                <linearGradient id="dbGrad" x1="0" x2="0" y1="0" y2="1">
+                                    <stop offset="0%" stop-color="#334155" />
+                                    <stop offset="100%" stop-color="#1e293b" />
+                                </linearGradient>
+                            </defs>
+
+                            <!-- Zones -->
+                            <rect x="50" y="50" width="900" height="150" rx="10" fill="rgba(59, 130, 246, 0.03)" stroke="#3b82f6" stroke-width="1" stroke-dasharray="5,5" />
+                            <text x="70" y="80" fill="#3b82f6" font-weight="bold" font-size="14">LOGICAL LAYER (API / Catalog Module)</text>
+
+                            <rect x="50" y="230" width="900" height="150" rx="10" fill="rgba(168, 85, 247, 0.03)" stroke="#a855f7" stroke-width="1" stroke-dasharray="5,5" />
+                            <text x="70" y="260" fill="#a855f7" font-weight="bold" font-size="14">CONFIGURATION LAYER (Config Manager)</text>
+
+                            <rect x="50" y="410" width="900" height="200" rx="10" fill="rgba(16, 185, 129, 0.03)" stroke="#10b981" stroke-width="1" stroke-dasharray="5,5" />
+                            <text x="70" y="440" fill="#10b981" font-weight="bold" font-size="14">PHYSICAL LAYER (PostgreSQL / Schemas / Partitions)</text>
+
+                            <!-- Nodes -->
+                            <g transform="translate(200, 100)">
+                                <rect x="0" y="0" width="160" height="60" rx="5" fill="#1e293b" stroke="#3b82f6" stroke-width="2" />
+                                <text x="80" y="25" text-anchor="middle" fill="white" font-weight="bold" font-size="14">Catalog</text>
+                                <text x="80" y="45" text-anchor="middle" fill="#94a3b8" font-size="10">Code: "agriculture"</text>
+                            </g>
+
+                            <g transform="translate(600, 100)">
+                                <rect x="0" y="0" width="160" height="60" rx="5" fill="#1e293b" stroke="#3b82f6" stroke-width="2" />
+                                <text x="80" y="25" text-anchor="middle" fill="white" font-weight="bold" font-size="14">Collection</text>
+                                <text x="80" y="45" text-anchor="middle" fill="#94a3b8" font-size="10">Code: "fields_v1"</text>
+                            </g>
+
+                            <g transform="translate(400, 280)">
+                                <rect x="0" y="0" width="200" height="70" rx="5" fill="#1e293b" stroke="#a855f7" stroke-width="2" />
+                                <text x="100" y="25" text-anchor="middle" fill="white" font-weight="bold" font-size="14">LayerConfig</text>
+                                <text x="100" y="45" text-anchor="middle" fill="#d8b4fe" font-size="10">Partitioning: BY_HASH</text>
+                                <text x="100" y="58" text-anchor="middle" fill="#d8b4fe" font-size="10">SRID: 4326</text>
+                            </g>
+
+                            <!-- DB Physical -->
+                            <g transform="translate(150, 480)">
+                                <path d="M0 0 L100 0 L100 40 L0 40 Z" fill="#334155" stroke="none" />
+                                <text x="10" y="25" fill="#94a3b8" font-size="12" font-weight="bold">SCHEMA</text>
+                                <text x="120" y="25" fill="#fff" font-family="monospace" font-size="14">s_a1b2c3</text>
+                                <line x1="110" y1="20" x2="300" y2="20" stroke="#475569" stroke-width="2" />
+                            </g>
+
+                            <g transform="translate(400, 460)">
+                                <rect x="0" y="0" width="200" height="40" rx="2" fill="url(#dbGrad)" stroke="#10b981" stroke-width="2" />
+                                <text x="100" y="25" text-anchor="middle" fill="white" font-size="12" font-family="monospace">Table: t_x9y8z7</text>
+                            </g>
+
+                            <g transform="translate(250, 530)">
+                                <rect x="0" y="0" width="140" height="40" rx="2" fill="#0f172a" stroke="#10b981" stroke-width="1" stroke-dasharray="2,2" />
+                                <text x="70" y="25" text-anchor="middle" fill="#64748b" font-size="10">Partition 1</text>
+                            </g>
+                            <g transform="translate(420, 530)">
+                                <rect x="0" y="0" width="140" height="40" rx="2" fill="#0f172a" stroke="#10b981" stroke-width="1" stroke-dasharray="2,2" />
+                                <text x="70" y="25" text-anchor="middle" fill="#64748b" font-size="10">Partition 2</text>
+                            </g>
+                            <g transform="translate(590, 530)">
+                                <rect x="0" y="0" width="140" height="40" rx="2" fill="#0f172a" stroke="#10b981" stroke-width="1" stroke-dasharray="2,2" />
+                                <text x="70" y="25" text-anchor="middle" fill="#64748b" font-size="10">Partition 3</text>
+                            </g>
+
+                            <!-- Connections -->
+                            <path d="M280 160 L280 430 L200 480" fill="none" stroke="#3b82f6" stroke-width="2" marker-end="url(#arrowhead)" class="flow-line" style="animation-duration: 5s" />
+                            <path d="M360 130 L600 130" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrowhead)" />
+                            <path d="M680 160 L680 200 L500 280" fill="none" stroke="#a855f7" stroke-width="2" marker-end="url(#arrowhead)" class="flow-line" style="animation-duration: 4s"/>
+                            <path d="M500 350 L500 460" fill="none" stroke="#10b981" stroke-width="2" marker-end="url(#arrowhead)" class="flow-line" />
+                            <path d="M500 500 L500 530 L320 530" fill="none" stroke="#10b981" stroke-width="1" />
+                            <path d="M500 500 L500 530" fill="none" stroke="#10b981" stroke-width="1" />
+                            <path d="M500 500 L500 530 L660 530" fill="none" stroke="#10b981" stroke-width="1" />
+                        </svg>
+                    </div>
+                </div>
+            </section>
+
+            <!-- New Section: Database Structure & Maintenance -->
+            <section class="py-20 bg-dyna-dark">
+                <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                    <div class="mb-12">
+                        <h2 class="text-3xl font-bold text-white">Database Topology</h2>
+                        <p class="mt-4 text-slate-400">
+                            Understanding how Dynastore maps logical concepts to physical storage structures.
+                        </p>
+                    </div>
+
+                    <div class="grid md:grid-cols-2 gap-12">
+                        <!-- Left: Topology Explained -->
+                        <div class="space-y-8">
+                            <div class="glass-card p-6 rounded-xl border-l-4 border-blue-500">
+                                <h3 class="text-lg font-bold text-white mb-2">1. The Catalog Schema</h3>
+                                <p class="text-sm text-slate-400 mb-2">
+                                    Every <code>Catalog</code> has a **Physical Schema** resolved via its <code>code</code>.
+                                    The logical code (e.g., `agriculture`) maps to a generated schema (e.g., `s_a1b2c3`).
+                                    This ensures zero data leakage and allows `code` renaming.
+                                </p>
+                                <code class="block text-xs bg-black/30 p-2 rounded text-blue-300">CREATE SCHEMA IF NOT EXISTS "s_a1b2c3";</code>
+                            </div>
+
+                            <div class="glass-card p-6 rounded-xl border-l-4 border-purple-500">
+                                <h3 class="text-lg font-bold text-white mb-2">2. The Collection Table</h3>
+                                <p class="text-sm text-slate-400 mb-2">
+                                    A <code>Collection</code> becomes a <strong>Partitioned Table</strong> inside that schema.
+                                    The logical code (e.g., `fields_v1`) maps to a generated table name (e.g., `t_x9y8z7`).
+                                    Configuration for this table is stored in the same physical schema.
+                                </p>
+                                <code class="block text-xs bg-black/30 p-2 rounded text-purple-300">CREATE TABLE "s_a1b2c3"."t_x9y8z7" (...) PARTITION BY LIST (partition_key);</code>
+                            </div>
+
+                            <div class="glass-card p-6 rounded-xl border-l-4 border-emerald-500">
+                                <h3 class="text-lg font-bold text-white mb-2">3. "Lazy" Partitions</h3>
+                                <p class="text-sm text-slate-400 mb-2">
+                                    Dynastore creates partitions <strong>Just-In-Time</strong> (JIT) using Database Triggers.
+                                    When a row is inserted, the DB checks if a partition exists. If not, it creates it instantly.
+                                </p>
+                                <div class="mt-2 bg-black/50 p-3 rounded text-xs font-mono text-emerald-300">
+                                    TRIGGER BEFORE INSERT -> create_partition_if_not_exists()
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Right: Visual Code Flow -->
+                        <div class="relative">
+                            <div class="absolute -inset-1 bg-gradient-to-r from-blue-600 to-purple-600 rounded-2xl blur opacity-20"></div>
+                            <div class="relative bg-slate-900 rounded-2xl p-6 border border-white/10 h-full flex flex-col">
+                                <h4 class="text-slate-300 font-mono text-sm mb-4 uppercase tracking-widest">Partitioning Logic Visualization</h4>
+                                
+                                <div class="space-y-4 flex-grow">
+                                    <!-- Step 1 -->
+                                    <div class="flex items-start gap-4">
+                                        <div class="w-8 h-8 rounded bg-slate-800 flex items-center justify-center text-xs font-bold border border-white/10">1</div>
+                                        <div>
+                                            <p class="text-white text-sm font-semibold">API Request</p>
+                                            <p class="text-xs text-slate-500">POST Feature to <code>/collections/fields_v1</code></p>
+                                        </div>
+                                    </div>
+                                    <div class="h-6 w-0.5 bg-slate-700 ml-4"></div>
+
+                                    <!-- Step 2 -->
+                                    <div class="flex items-start gap-4">
+                                        <div class="w-8 h-8 rounded bg-slate-800 flex items-center justify-center text-xs font-bold border border-white/10">2</div>
+                                        <div>
+                                            <p class="text-white text-sm font-semibold">Resolution</p>
+                                            <p class="text-xs text-slate-500">Catalog Module resolves <code>fields_v1</code> -> <code>t_x9y8z7</code></p>
+                                        </div>
+                                    </div>
+                                    <div class="h-6 w-0.5 bg-slate-700 ml-4"></div>
+
+                                    <!-- Step 3 -->
+                                    <div class="flex items-start gap-4">
+                                        <div class="w-8 h-8 rounded bg-emerald-900/50 text-emerald-400 flex items-center justify-center text-xs font-bold border border-emerald-500/50">3</div>
+                                        <div>
+                                            <p class="text-emerald-400 text-sm font-semibold">Trigger Fires</p>
+                                            <p class="text-xs text-slate-500"><code>create_partition_if_not_exists()</code> creates <code>t_x9y8z7_p_h123</code></p>
+                                        </div>
+                                    </div>
+                                    <div class="h-6 w-0.5 bg-slate-700 ml-4"></div>
+
+                                    <!-- Step 4 -->
+                                    <div class="flex items-start gap-4">
+                                        <div class="w-8 h-8 rounded bg-slate-800 flex items-center justify-center text-xs font-bold border border-white/10">4</div>
+                                        <div>
+                                            <p class="text-white text-sm font-semibold">Data Stored</p>
+                                            <p class="text-xs text-slate-500">Row persists in new physical partition.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <!-- SECTION: BUSINESS (Investors) -->
+        <div id="section-business" class="hidden-section fade-in">
+            <div class="bg-gradient-to-b from-dyna-dark to-slate-900 py-20">
+                <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                    <div class="text-center mb-16">
+                        <span class="text-dyna-warning font-mono text-sm font-semibold tracking-wider uppercase">Strategic Value</span>
+                        <h2 class="text-4xl font-bold text-white mt-2">Why Dynastore?</h2>
+                        <p class="mt-4 text-xl text-slate-400 max-w-2xl mx-auto">
+                            Dynastore is not just code; it's a strategic asset designed to lower TCO, mitigate risk, and capture the explosive growth of the geospatial market.
+                        </p>
+                    </div>
+
+                    <div class="grid md:grid-cols-2 gap-12">
+                        <!-- Strategy Card 1 -->
+                        <div class="glass-card p-8 rounded-2xl border-l-4 border-dyna-warning">
+                            <h3 class="text-2xl font-bold text-white mb-4">Total Cost of Ownership (TCO)</h3>
+                            <p class="text-slate-400 mb-6 leading-relaxed">
+                                Traditional GIS systems are monolithic license-heavy beasts. Dynastore's modularity means you deploy <em>only</em> what you need. 
+                                By leveraging <strong>PostgreSQL</strong> capabilities (Partitioning, JSONB) instead of expensive external orchestrators, infrastructure costs are slashed by up to 60%.
+                            </p>
+                        </div>
+
+                        <!-- Strategy Card 2 -->
+                        <div class="glass-card p-8 rounded-2xl border-l-4 border-dyna-success">
+                            <h3 class="text-2xl font-bold text-white mb-4">Risk Mitigation</h3>
+                            <p class="text-slate-400 mb-6 leading-relaxed">
+                                Monoliths are brittle; one bug brings down the system. Our <strong>"Three Pillars"</strong> isolation ensures that a failure in data processing never impacts customer-facing APIs. 
+                                This structural resilience protects SLAs and brand reputation.
+                            </p>
+                        </div>
+
+                        <!-- Strategy Card 3 -->
+                        <div class="glass-card p-8 rounded-2xl border-l-4 border-dyna-primary">
+                            <h3 class="text-2xl font-bold text-white mb-4">Market Agility</h3>
+                            <p class="text-slate-400 mb-6 leading-relaxed">
+                                The geospatial market moves fast. New standards (like OGC API) emerge yearly. 
+                                Dynastore's API-agnostic core allows us to adopt new standards via plug-and-play <strong>Extensions</strong> without refactoring the engine. 
+                                We are future-proof by design.
+                            </p>
+                        </div>
+
+                        <!-- Strategy Card 4 -->
+                        <div class="glass-card p-8 rounded-2xl border-l-4 border-dyna-purple">
+                            <h3 class="text-2xl font-bold text-white mb-4">The Trillion-Row Scale</h3>
+                            <p class="text-slate-400 mb-6 leading-relaxed">
+                                With the new <strong>Physical vs. Logical</strong> abstraction layer, Dynastore handles data at a scale competitors crumble under. 
+                                "Lazy" partitioning and base62-encoded physical schemas allow for infinite horizontal scaling of tenant data.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SECTION: DOCUMENTATION -->
+        <div id="section-docs" class="hidden-section fade-in">
+            <div class="bg-dyna-darker min-h-screen">
+                <div class="flex max-w-7xl mx-auto pt-8">
+                    <!-- Docs Sidebar -->
+                    <aside id="docs-sidebar" class="w-72 flex-shrink-0 hidden md:flex flex-col h-[calc(100vh-7rem)] sticky top-28">
+                        <div class="text-white font-bold mb-6 text-lg">Documentation</div>
+                        <div id="docs-sidebar-content" class="flex-grow space-y-8 pb-20 pr-4 overflow-y-auto">
+                            <!-- Skeleton Loader -->
+                            <div class="animate-pulse space-y-6">
+                                <div class="space-y-3">
+                                    <div class="h-3 bg-slate-800 rounded w-1/2"></div>
+                                    <div class="h-3 bg-slate-800 rounded w-3/4"></div>
+                                    <div class="h-3 bg-slate-800 rounded w-5/6"></div>
+                                </div>
+                                <div class="space-y-3">
+                                    <div class="h-3 bg-slate-800 rounded w-1/2"></div>
+                                    <div class="h-3 bg-slate-800 rounded w-3/4"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </aside>
+
+                    <!-- Resizer -->
+                    <div id="docs-resizer" class="w-1.5 cursor-col-resize flex-shrink-0 bg-slate-800 hover:bg-dyna-primary transition-colors duration-200"></div>
+
+                    <!-- Docs Content -->
+                    <article class="flex-grow min-w-0 pb-20 px-4 md:px-8">
+                        <div id="docs-content" class="prose prose-invert max-w-none">
+                            <div class="flex flex-col items-center justify-center py-20 text-slate-500">
+                                <i class="fa-solid fa-circle-notch fa-spin text-3xl mb-4 text-dyna-primary"></i>
+                                <p>Loading Documentation Portal...</p>
+                            </div>
+                        </div>
+                    </article>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-black/50 py-12 border-t border-white/5 mt-auto">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row justify-between items-center">
+            <div class="mb-4 md:mb-0">
+                <span class="font-bold text-xl text-white">DYNASTORE</span>
+                <p class="text-slate-500 text-sm mt-1">Architecting the future of geospatial data.</p>
+            </div>
+            <div class="flex gap-6 text-slate-400">
+                <a href="#" onclick="switchTab('home')" class="hover:text-white transition-colors">Home</a>
+                <a href="#" onclick="switchTab('platform')" class="hover:text-white transition-colors">Platform</a>
+                <a href="#" onclick="switchTab('architecture')" class="hover:text-white transition-colors">Documentation</a>
+                <a href="#" class="hover:text-white transition-colors">Contact</a>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Interactive Script -->
+    <script>
+        let docsInitialized = false;
+
+        function switchTab(tabId, pushState = true) {
+            // Hide all sections
+            document.querySelectorAll('[id^="section-"]').forEach(el => {
+                el.classList.add('hidden-section');
+            });
+            
+            // Show selected section
+            const target = document.getElementById(`section-${tabId}`);
+            if(target) {
+                target.classList.remove('hidden-section');
+                // Re-trigger animation
+                target.classList.remove('fade-in');
+                void target.offsetWidth; // trigger reflow
+                target.classList.add('fade-in');
+            }
+
+            // Update Nav State
+            document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active-tab'));
+            const navBtn = document.getElementById(`nav-${tabId}`);
+            if (navBtn) navBtn.classList.add('active-tab');
+            
+            // Scroll to top
+            if (tabId !== 'docs') { // Don't scroll for docs to allow anchor links
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+
+            if (pushState) {
+                history.pushState({tab: tabId}, '', `#${tabId}`);
+            }
+
+            if (tabId === 'docs') {
+                initDocs();
+            }
+        }
+
+        async function initDocs() {
+            if (docsInitialized) return;
+            docsInitialized = true;
+
+            const sidebar = document.getElementById('docs-sidebar-content');
+            const content = document.getElementById('docs-content');
+            
+            try {
+                // This endpoint needs to be provided by the backend `web` extension
+                const response = await fetch('/web/docs-manifest');
+                if (!response.ok) throw new Error('Failed to load docs manifest');
+                const manifest = await response.json();
+
+                sidebar.innerHTML = ''; // Clear loading skeleton
+
+                for (const category in manifest) {
+                    const categoryEl = document.createElement('div');
+                    categoryEl.innerHTML = `<h3 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">${category}</h3>`;
+                    
+                    const listEl = document.createElement('ul');
+                    listEl.className = 'space-y-2 border-l border-slate-800';
+
+                    manifest[category].forEach(doc => {
+                        const docInfo = (typeof doc === 'object' && doc !== null)
+                            ? { id: doc.id, title: doc.title || doc.id }
+                            : { id: doc, title: doc };
+                        
+                        // Simple formatter for better display of string IDs
+                        const docTitle = String(docInfo.title).replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                        const docId = docInfo.id;
+
+                        const itemEl = document.createElement('li');
+                        const linkEl = document.createElement('a');
+                        linkEl.href = `#docs:${docId}`;
+                        linkEl.id = `docs-link-${docId}`;
+                        linkEl.className = 'doc-sidebar-link -ml-px pl-4 border-l-2 border-transparent hover:border-slate-500 text-slate-400 hover:text-white block transition-colors';
+                        linkEl.textContent = docTitle;
+                        linkEl.addEventListener('click', (e) => {
+                            e.preventDefault();
+                            loadDocContent(docId);
+                        });
+                        itemEl.appendChild(linkEl);
+                        listEl.appendChild(itemEl);
+                    });
+                    categoryEl.appendChild(listEl);
+                    sidebar.appendChild(categoryEl);
+                }
+                
+                // The initial deep link is handled by the DOMContentLoaded event listener.
+                // Calling it here again is redundant and can cause issues.
+
+            } catch (error) {
+                console.error("Error loading documentation:", error);
+                sidebar.innerHTML = '<p class="text-red-400">Failed to load documentation index.</p>';
+                content.innerHTML = '<div class="text-center"><p class="text-red-400">Could not load documentation manifest.</p><p class="text-slate-400 mt-2">Please ensure the backend service is running and the `/web/docs-manifest` endpoint is available.</p></div>';
+            }
+        }
+
+        async function loadDocContent(docId) {
+            const content = document.getElementById('docs-content');
+            content.innerHTML = `<div class="flex flex-col items-center justify-center py-20 text-slate-500"><i class="fa-solid fa-circle-notch fa-spin text-3xl mb-4 text-dyna-primary"></i><p>Loading ${docId}...</p></div>`;
+
+            try {
+                // This endpoint needs to be provided by the backend `web` extension
+                const url = `/web/docs-content/${docId}`;
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`Failed to load content for ${docId}`);
+                const htmlContent = await response.text();
+
+                // Check if the content is a full HTML page or a fragment
+                if (htmlContent.trim().toLowerCase().startsWith('<!doctype html')) {
+                    // It's a full page, embed it in an iframe to isolate styles and scripts
+                    content.innerHTML = `<iframe src="${url}" style="width: 100%; height: calc(100vh - 9rem); border: none; border-radius: 8px;"></iframe>`;
+                } else {
+                    // It's a markdown fragment, inject it directly
+                    content.innerHTML = htmlContent;
+                }
+
+                document.querySelectorAll('.doc-sidebar-link').forEach(link => link.classList.remove('active'));
+                const activeLink = document.getElementById(`docs-link-${docId}`);
+                if (activeLink) activeLink.classList.add('active');
+                
+                history.pushState({tab: 'docs', doc: docId}, '', `#docs:${docId}`);
+                // content.scrollTo({ top: 0, behavior: 'smooth' }); // Avoid scrolling for iframes
+
+            } catch (error) {
+                console.error("Error loading doc content:", error);
+                content.innerHTML = `<p class="text-red-400 text-center">Failed to load content for "${docId}".</p>`;
+            }
+        }
+
+        function handleDeepLink() {
+            const hash = window.location.hash.substring(1);
+            const [tabId, docId] = hash.split(':');
+
+            if (document.getElementById(`section-${tabId}`)) {
+                switchTab(tabId, false);
+                if (tabId === 'docs' && docId) {
+                    setTimeout(() => loadDocContent(docId), 100);
+                }
+            } else {
+                switchTab('home', false);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            handleDeepLink();
+            window.addEventListener('popstate', handleDeepLink);
+
+            // Resizer logic for documentation sidebar
+            const resizer = document.getElementById('docs-resizer');
+            const sidebar = document.getElementById('docs-sidebar');
+
+            if (resizer && sidebar) {
+                const minWidth = 240; // min width in pixels
+                const maxWidth = 800; // max width in pixels
+
+                resizer.addEventListener('mousedown', (e) => {
+                    e.preventDefault();
+                    document.body.style.cursor = 'col-resize';
+                    document.body.style.userSelect = 'none';
+
+                    const mouseMoveHandler = (e) => {
+                        const sidebarRect = sidebar.parentElement.getBoundingClientRect();
+                        let newWidth = e.clientX - sidebarRect.left;
+                        if (newWidth < minWidth) newWidth = minWidth;
+                        if (newWidth > maxWidth) newWidth = maxWidth;
+                        sidebar.style.width = `${newWidth}px`;
+                    };
+
+                    const mouseUpHandler = () => {
+                        document.body.style.cursor = '';
+                        document.body.style.userSelect = '';
+                        document.removeEventListener('mousemove', mouseMoveHandler);
+                        document.removeEventListener('mouseup', mouseUpHandler);
+                    };
+
+                    document.addEventListener('mousemove', mouseMoveHandler);
+                    document.addEventListener('mouseup', mouseUpHandler);
+                });
+            }
+        });
+    </script>
+</body>
+</html>

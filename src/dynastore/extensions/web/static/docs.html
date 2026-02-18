@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="DynaStore - Complete technical documentation for enterprise geospatial platform.">
+    <title>DynaStore Documentation | Technical Reference</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="/web/static/styles.css" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        dyna: {
+                            dark: '#0f172a',
+                            darker: '#020617',
+                            primary: '#3b82f6',
+                            secondary: '#64748b',
+                            accent: '#0ea5e9',
+                            success: '#10b981',
+                            warning: '#f59e0b',
+                            purple: '#8b5cf6',
+                            danger: '#ef4444'
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['Fira Code', 'monospace'],
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-dyna-darker text-slate-200 min-h-screen flex flex-col">
+
+    <!-- Navigation (Doc-Specific) -->
+    <nav class="fixed top-0 w-full z-50 glass-panel border-b border-white/5">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <div class="flex items-center gap-3 cursor-pointer" onclick="window.location.href='/web/'">
+                    <div class="w-8 h-8 rounded bg-gradient-to-br from-dyna-primary to-dyna-accent flex items-center justify-center shadow-lg">
+                        <span class="text-white font-bold text-sm">⚡</span>
+                    </div>
+                    <span class="font-bold tracking-tight text-white">DYNASTORE Docs</span>
+                </div>
+                <div class="flex items-center gap-6">
+                    <a href="/web/" class="text-sm text-slate-400 hover:text-white transition-colors">Back to Home</a>
+                    <a href="http://localhost:8000/docs" target="_blank" class="text-sm text-slate-400 hover:text-blue-400 transition-colors">API Docs</a>
+                    <a href="https://github.com/un-fao/dynastore" target="_blank" class="text-slate-400 hover:text-white transition-colors"><i class="fa-brands fa-github text-xl"></i></a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="flex-grow pt-16">
+        <div class="flex max-w-7xl mx-auto">
+            <!-- Sidebar -->
+            <aside class="w-64 flex-shrink-0 hidden md:block border-r border-slate-800 pr-6 mr-8 h-[calc(100vh-4rem)] sticky top-16 overflow-y-auto pt-8">
+                <div id="docs-sidebar-content" class="space-y-6 pb-20">
+                    <!-- Loaded via custom.js -->
+                    <div class="animate-pulse space-y-4">
+                        <div class="h-4 bg-slate-800 rounded w-3/4"></div>
+                        <div class="h-4 bg-slate-800 rounded w-1/2"></div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Main Documentation -->
+            <article class="flex-grow min-w-0 pb-20 px-4 md:px-0 pt-8">
+                <div id="docs-content" class="prose prose-invert max-w-none">
+                    <div class="flex flex-col items-center justify-center py-20 text-slate-500">
+                        <i class="fa-solid fa-circle-notch fa-spin text-3xl mb-4 text-dyna-primary"></i>
+                        <p>Loading Documentation Portal...</p>
+                    </div>
+                </div>
+            </article>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-black/50 py-8 border-t border-white/5 mt-auto">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center text-slate-500 text-sm">
+            &copy; 2025 DynaStore Project. Licensed under Apache 2.0.<br>
+            <span class="mt-2 block">For more information visit <a href="https://github.com/un-fao/dynastore" class="text-blue-400 hover:text-blue-300">GitHub</a></span>
+        </div>
+    </footer>
+
+    <script src="/web/static/custom.js"></script>
+</body>
+</html>

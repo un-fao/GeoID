@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DynaStore | SysAdmin Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="app.js" defer></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="logo">Dyna<span>Store</span> <small>ADMIN</small></div>
+            <nav class="side-nav">
+                <a href="#" class="nav-item active" data-tab="overview">
+                    <span class="icon">📊</span> Overview
+                </a>
+                <a href="#" class="nav-item" data-tab="logs">
+                    <span class="icon">📝</span> Logs Explorer
+                </a>
+                <a href="#" class="nav-item" data-tab="tasks">
+                    <span class="icon">🔄</span> Task Monitor
+                </a>
+                <a href="#" class="nav-item" data-tab="resources">
+                    <span class="icon">🗄️</span> Resources
+                </a>
+            </nav>
+            <div class="user-info">
+                <div class="avatar">SA</div>
+                <div class="details">
+                    <span class="name">SysAdmin</span>
+                    <span class="role">Root</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="top-bar">
+                <h2 id="page-title">System Overview</h2>
+                <div class="actions">
+                    <span id="last-updated">Updated: Just now</span>
+                    <button class="refresh-btn" onclick="app.refreshAll()">↻ Refresh</button>
+                    <a href="/web/" class="exit-btn">Exit to Site</a>
+                </div>
+            </header>
+
+            <!-- Views Container -->
+            <div id="views">
+                <!-- 1. Overview Tab -->
+                <div id="view-overview" class="view active">
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <h3>System Health</h3>
+                            <div class="value status-ok">HEALTHY</div>
+                            <div class="subtext">All services operational</div>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Total Catalogs</h3>
+                            <div class="value" id="stat-catalogs">-</div>
+                            <div class="subtext">Active Tenants</div>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Total Assets</h3>
+                            <div class="value" id="stat-assets">-</div>
+                            <div class="subtext">Indexed Items</div>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Throughput</h3>
+                            <div class="value" id="stat-req">-</div>
+                            <div class="subtext">Req/Sec (Avg 1m)</div>
+                        </div>
+                    </div>
+
+                    <div class="charts-row">
+                        <div class="chart-container">
+                            <h4>Request Traffic (24h)</h4>
+                            <canvas id="trafficChart"></canvas>
+                        </div>
+                        <div class="chart-container">
+                            <h4>Task Distribution</h4>
+                            <canvas id="tasksChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 2. Logs Tab -->
+                <div id="view-logs" class="view">
+                    <div class="toolbar">
+                        <input type="text" placeholder="Search logs..." class="search-box">
+                        <select class="filter-select">
+                            <option value="ALL">All Levels</option>
+                            <option value="ERROR">ERROR</option>
+                            <option value="WARNING">WARNING</option>
+                            <option value="INFO">INFO</option>
+                        </select>
+                        <button class="btn-primary">Filter</button>
+                    </div>
+                    <div class="logs-table-container">
+                        <table class="data-table" id="logs-table">
+                            <thead>
+                                <tr>
+                                    <th width="150">Timestamp</th>
+                                    <th width="80">Level</th>
+                                    <th width="150">Service</th>
+                                    <th>Message</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- Populated via JS -->
+                                <tr><td colspan="4" class="loading-row">Loading logs...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- 3. Tasks Tab -->
+                <div id="view-tasks" class="view">
+                    <div class="toolbar">
+                        <div class="tabs-pills">
+                            <button class="pill active">Active</button>
+                            <button class="pill">Pending</button>
+                            <button class="pill">Failed</button>
+                            <button class="pill">Completed</button>
+                        </div>
+                    </div>
+                    <div class="tasks-grid" id="tasks-grid">
+                        <!-- Task Cards injected here -->
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</body>
+</html>

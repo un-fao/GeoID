@@ -47,6 +47,7 @@ from dynastore.models.protocols.proxy import ProxyProtocol
 from dynastore.models.protocols.database import DatabaseProtocol
 from dynastore.models.protocols.properties import PropertiesProtocol
 from dynastore.models.protocols.localization import LocalizationProtocol
+from dynastore.models.protocols.web import WebModuleProtocol
 
 # Export auth_models for convenience
 from dynastore.models.auth_models import (
@@ -82,6 +83,7 @@ __all__ = [
     "DatabaseProtocol",
     "PropertiesProtocol",
     "LocalizationProtocol",
+    "WebModuleProtocol",
     # Auth models
     "SYSTEM_USER_ID",
     "ApiKeyPolicy",
