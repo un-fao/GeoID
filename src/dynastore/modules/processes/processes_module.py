@@ -82,68 +82,52 @@ async def execute_process(
                 # Re-raise unexpected exceptions
                 raise e
 
+    # 3. Determine execution mode based on preference and availability.
     candidate_modes = []
-
-    # 3. Determine the execution mode.
-    chosen_mode = None
-    # Honor client preference if it's supported by the process.
     if preferred_mode and preferred_mode in process.jobControlOptions:
         candidate_modes.append(preferred_mode)
     
-    # Add the process's default supported options as fallback.
     for option in process.jobControlOptions:
-        if option not in candidate_modes and option in [models.JobControlOptions.ASYNC_EXECUTE, models.JobControlOptions.SYNC_EXECUTE]:
+        if option not in candidate_modes:
             candidate_modes.append(option)
-            
-    # Iterate through candidates and pick the first one with available runners.
+
+    chosen_mode = None
+    execution_mode = None
+    available_runners = []
+
     for mode in candidate_modes:
-        execution_mode_check = None
         if mode == models.JobControlOptions.ASYNC_EXECUTE:
-            execution_mode_check = TaskExecutionMode.ASYNCHRONOUS
+            check_mode = TaskExecutionMode.ASYNCHRONOUS
         elif mode == models.JobControlOptions.SYNC_EXECUTE:
-            execution_mode_check = TaskExecutionMode.SYNCHRONOUS
-        
-        if execution_mode_check and runners.get_runners(execution_mode_check):
-            chosen_mode = mode
-            logger.info(f"Selected execution mode '{mode}' for process '{process_id}' (runners available).")
-            break
+            check_mode = TaskExecutionMode.SYNCHRONOUS
         else:
-            logger.debug(f"Skipping execution mode '{mode}' for process '{process_id}': No runners available.")
+            continue
+            
+        runners_list = runners.get_runners(check_mode)
+        if runners_list:
+            chosen_mode = mode
+            execution_mode = check_mode
+            available_runners = runners_list
+            break
 
     if not chosen_mode:
-        raise NotImplementedError(f"No available execution mode for process '{process_id}'. Supported modes: {process.jobControlOptions}, but no runners are registered for them.")
-
-    # Map OGC JobControlOptions to the internal TaskExecutionMode
-    if chosen_mode == models.JobControlOptions.ASYNC_EXECUTE:
-        execution_mode = TaskExecutionMode.ASYNCHRONOUS
-    elif chosen_mode == models.JobControlOptions.SYNC_EXECUTE:
-        execution_mode = TaskExecutionMode.SYNCHRONOUS
-    else:
-        raise NotImplementedError(f"Execution mode '{chosen_mode}' is not supported by any runner.")
-
-    # 4. Get the prioritized list of runners for the chosen mode.
-    available_runners = runners.get_runners(execution_mode)
-    if not available_runners:
-        raise NotImplementedError(f"No runners registered for execution mode '{execution_mode.value}'.")
-
-    # 3. Determine execution mode (sync vs async).
-    execution_mode = TaskExecutionMode.ASYNCHRONOUS if preferred_mode == models.JobControlOptions.ASYNC_EXECUTE else TaskExecutionMode.SYNCHRONOUS
+        raise NotImplementedError(f"No available execution mode for process '{process_id}'.")
     
     # 5. Authorization check (if AuthorizationProtocol is available)
     auth_protocol = get_protocol(AuthorizationProtocol)
     if auth_protocol:
         # Create a principal for the caller
-        principal = Principal(user_id=caller_id)
+        principal = Principal(id=caller_id, subject_id=caller_id)
         
         # Check if the caller has permission to execute processes in this catalog
         resource_id = f"catalog:{catalog_id}" if catalog_id else "system"
         if collection_id:
             resource_id = f"{resource_id}:collection:{collection_id}"
         
-        is_authorized = await auth_protocol.is_authorized(
+        is_authorized = await auth_protocol.check_permission(
             principal=principal,
             action=Action.EXECUTE,
-            resource_id=resource_id
+            resource=resource_id
         )
         if not is_authorized:
             from fastapi import HTTPException

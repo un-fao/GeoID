@@ -42,13 +42,17 @@ from dynastore.models.protocols.job_execution import JobExecutionProtocol
 from dynastore.models.protocols.cloud_storage_client import CloudStorageClientProtocol
 from dynastore.models.protocols.cloud_identity import CloudIdentityProtocol
 from dynastore.models.protocols.eventing import EventingProtocol
+from dynastore.models.protocols.events import EventsProtocol
 from dynastore.models.protocols.apikey import ApiKeyProtocol
 from dynastore.models.protocols.proxy import ProxyProtocol
 from dynastore.models.protocols.database import DatabaseProtocol
 from dynastore.models.protocols.properties import PropertiesProtocol
 from dynastore.models.protocols.localization import LocalizationProtocol
 from dynastore.models.protocols.web import WebModuleProtocol
-
+from dynastore.models.protocols.query_transform import QueryTransformProtocol
+from dynastore.models.protocols.crs import CRSProtocol
+from dynastore.models.protocols.httpx import HttpxProtocol
+from dynastore.models.protocols.styles import StylesProtocol
 # Export auth_models for convenience
 from dynastore.models.auth_models import (
     SYSTEM_USER_ID,
@@ -78,12 +82,17 @@ __all__ = [
     "CloudStorageClientProtocol",
     "CloudIdentityProtocol",
     "EventingProtocol",
+    "EventsProtocol",
     "ApiKeyProtocol",
     "ProxyProtocol",
     "DatabaseProtocol",
     "PropertiesProtocol",
     "LocalizationProtocol",
     "WebModuleProtocol",
+    "QueryTransformProtocol",
+    "CRSProtocol",
+    "HttpxProtocol",
+    "StylesProtocol",
     # Auth models
     "SYSTEM_USER_ID",
     "ApiKeyPolicy",

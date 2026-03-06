@@ -1,0 +1,896 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynastore | OGC API Executor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: { extend: { colors: { dyna: { dark: '#0f172a', darker: '#020617', primary: '#3b82f6', secondary: '#64748b', accent: '#0ea5e9', success: '#10b981', warning: '#f59e0b', purple: '#8b5cf6', danger: '#ef4444' } } } }
+        }
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+        }
+
+        .form-input {
+            background: #1e293b;
+            border: 1px solid #334155;
+            color: #f1f5f9;
+            padding: 0.6rem 0.8rem;
+            border-radius: 0.4rem;
+            width: 100%;
+            transition: border 0.2s;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: #3b82f6;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-bottom: 0.4rem;
+            color: #94a3b8;
+        }
+
+        .btn {
+            padding: 0.6rem 1.2rem;
+            border-radius: 0.4rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.6rem;
+        }
+
+        .btn-primary {
+            background: #3b82f6;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #2563eb;
+        }
+
+        .btn-secondary {
+            background: #334155;
+            color: #e2e8f0;
+        }
+
+        .btn-secondary:hover {
+            background: #475569;
+        }
+
+        .card {
+            background: #1e293b;
+            border-radius: 0.6rem;
+            border: 1px solid #334155;
+        }
+
+        .nested-1 {
+            border-left: 3px solid #3b82f6;
+            padding-left: 1rem;
+            margin: 1rem 0;
+        }
+
+        .nested-2 {
+            border-left: 2px solid #10b981;
+            padding-left: 1rem;
+            margin: 0.75rem 0;
+        }
+
+        .nested-3 {
+            border-left: 2px solid #f59e0b;
+            padding-left: 1rem;
+            margin: 0.5rem 0;
+        }
+
+        .nested-4 {
+            border-left: 2px solid #8b5cf6;
+            padding-left: 1rem;
+            margin: 0.5rem 0;
+        }
+
+        .endpoint-btn {
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }
+
+        .endpoint-btn:hover {
+            background: #1e3a5f;
+        }
+
+        .endpoint-btn.active {
+            background: #1e40af;
+            border-color: #3b82f6;
+            color: white;
+        }
+
+        .help-text {
+            font-size: 0.75rem;
+            color: #64748b;
+            margin-top: 0.25rem;
+        }
+    </style>
+</head>
+
+<body class="min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-7xl">
+        <header class="mb-8 flex justify-between items-center">
+            <div>
+                <h1 class="text-3xl font-bold text-white flex items-center gap-3">
+                    <i class="fas fa-network-wired text-dyna-primary"></i>
+                    OGC API Executor
+                </h1>
+                <p class="text-gray-400 mt-2">Dynamic forms based on OpenAPI spec</p>
+            </div>
+            <a href="/web/dashboard/" class="btn btn-secondary">
+                <i class="fas fa-arrow-left"></i> Dashboard
+            </a>
+        </header>
+
+        <div class="card p-5 mb-8 flex gap-4 items-end">
+            <div class="flex-1">
+                <label class="form-label">API Base URL</label>
+                <input type="text" id="api-url" class="form-input"
+                    value="https://data.apps.fao.org/geospatial/v2/api/catalog">
+            </div>
+            <button onclick="loadOpenAPI()" class="btn btn-primary h-[45px]">
+                <i class="fas fa-sync"></i> Load API
+            </button>
+        </div>
+
+        <div id="error" class="hidden bg-red-900/50 border border-red-500 text-red-200 p-4 rounded-lg mb-8"></div>
+
+        <div id="main-ui" class="hidden grid grid-cols-1 lg:grid-cols-4 gap-8">
+            <div class="lg:col-span-1">
+                <div class="card p-4 sticky top-6">
+                    <h3 class="font-bold text-white mb-4 flex items-center gap-2">
+                        <i class="fas fa-list text-dyna-accent"></i> API Endpoints
+                    </h3>
+                    <div id="endpoint-list" class="space-y-2 max-h-[75vh] overflow-y-auto pr-2"></div>
+                </div>
+            </div>
+
+            <div class="lg:col-span-3">
+                <div id="welcome" class="card p-20 text-center text-gray-500">
+                    <i class="fas fa-hand-pointer text-5xl mb-6 opacity-20"></i>
+                    <p class="text-xl">Select an endpoint to fill the form</p>
+                </div>
+
+                <div id="endpoint-editor" class="hidden">
+                    <div class="card p-6 mb-6">
+                        <div class="flex items-center gap-3 mb-2">
+                            <span id="method-tag" class="px-3 py-1 rounded text-xs font-bold uppercase"></span>
+                            <code id="endpoint-path" class="text-xl text-dyna-accent font-mono"></code>
+                        </div>
+                        <p id="endpoint-desc" class="text-gray-400"></p>
+                    </div>
+
+                    <div class="card p-8">
+                        <div class="flex justify-between items-center mb-6">
+                            <h3 class="text-xl font-bold text-white">Request Parameters</h3>
+                            <button onclick="toggleView()" id="json-toggle" class="btn btn-secondary text-sm">View
+                                JSON</button>
+                        </div>
+
+                        <div id="form-view">
+                            <form id="dynamic-form" class="space-y-6"></form>
+                        </div>
+
+                        <div id="json-view" class="hidden">
+                            <textarea id="json-body" class="form-input font-mono text-sm h-[400px]"
+                                spellcheck="false"></textarea>
+                        </div>
+
+                        <div class="mt-10 pt-6 border-t border-gray-700 flex gap-4">
+                            <button onclick="sendRequest()" id="send-btn" class="btn btn-primary px-10">
+                                <i class="fas fa-paper-plane"></i> Send Request
+                            </button>
+                        </div>
+
+                        <div id="response-area" class="hidden mt-8">
+                            <div class="flex justify-between items-center mb-4">
+                                <h4 class="font-bold text-white uppercase text-sm tracking-widest">Response</h4>
+                                <span id="res-status" class="px-2 py-1 rounded text-xs font-bold"></span>
+                            </div>
+                            <pre id="res-body"
+                                class="bg-dyna-darker p-5 rounded-lg border border-gray-700 overflow-x-auto text-xs font-mono"></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let API_ROOT = '';
+        let OPENAPI = null;
+        let CURRENT_EP = null;
+        let IS_JSON_MODE = false;
+        let PROCESS_DEFS = {};
+        let CURRENT_PROCESS = null; // Store process description
+
+        function showError(m) { const e = document.getElementById('error'); e.textContent = m; e.classList.remove('hidden'); }
+        function hideError() { document.getElementById('error').classList.add('hidden'); }
+
+        async function loadOpenAPI() {
+            API_ROOT = document.getElementById('api-url').value.trim().replace(/\/$/, '');
+            hideError();
+            const paths = ['/openapi.json', '/geospatial/v2/api/catalog/openapi.json', '/docs/openapi.json'];
+            let spec = null;
+            for (const p of paths) {
+                try {
+                    const res = await fetch(API_ROOT + p);
+                    if (res.ok) { spec = await res.json(); break; }
+                } catch (e) { }
+            }
+            if (!spec) { showError('Could not load OpenAPI spec'); return; }
+            OPENAPI = spec;
+            renderEndpoints();
+            document.getElementById('main-ui').classList.remove('hidden');
+        }
+
+        function renderEndpoints() {
+            const list = document.getElementById('endpoint-list');
+            if (!OPENAPI.paths) return;
+            const targetPaths = Object.keys(OPENAPI.paths).filter(p =>
+                p.includes('/processes') || p.includes('/jobs')
+            );
+
+            list.innerHTML = targetPaths.map(path => {
+                const methods = OPENAPI.paths[path];
+                return Object.entries(methods).map(([method, details]) => {
+                    const color = { get: 'bg-blue-600', post: 'bg-green-600', put: 'bg-amber-600', delete: 'bg-red-600' }[method] || 'bg-gray-600';
+                    return `
+                        <button onclick="selectEndpoint('${path}', '${method}')" 
+                            data-path="${path}" data-method="${method}"
+                            class="endpoint-btn w-full text-left p-3 rounded-lg text-sm font-medium text-gray-300 hover:text-white mb-2">
+                            <span class="${color} px-2 py-0.5 rounded text-[10px] font-black uppercase text-white mr-2">${method}</span>
+                            ${details.summary || details.operationId || path}
+                        </button>
+                    `;
+                }).join('');
+            }).join('');
+        }
+
+
+        async function selectEndpoint(path, method) {
+            document.querySelectorAll('.endpoint-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.path === path && b.dataset.method === method);
+            });
+            CURRENT_EP = { path, method, spec: OPENAPI.paths[path][method] };
+
+            // Reset state
+            PROCESS_DEFS = {};
+            CURRENT_PROCESS = null;
+
+            IS_JSON_MODE = false;
+            document.getElementById('json-toggle').innerText = 'View JSON';
+            document.getElementById('json-view').classList.add('hidden');
+            document.getElementById('form-view').classList.remove('hidden');
+            document.getElementById('welcome').classList.add('hidden');
+            document.getElementById('endpoint-editor').classList.remove('hidden');
+            document.getElementById('response-area').classList.add('hidden');
+
+            const color = { get: 'bg-blue-600', post: 'bg-green-600', put: 'bg-amber-600', delete: 'bg-red-600' }[method] || 'bg-gray-600';
+            document.getElementById('method-tag').className = `${color} px-3 py-1 rounded text-xs font-bold uppercase text-white`;
+            document.getElementById('method-tag').innerText = method;
+            document.getElementById('endpoint-path').innerText = path;
+            document.getElementById('endpoint-desc').innerText = CURRENT_EP.spec.description || '';
+
+            // If it's an execution endpoint, try to fetch process details for better schema
+            if (path.includes('/execution') && method === 'post') {
+                // Find processId in path. It's usually after the LAST 'processes' segment
+                const parts = path.split('/');
+                const lastProcIdx = parts.lastIndexOf('processes');
+                if (lastProcIdx !== -1 && parts[lastProcIdx + 1]) {
+                    const possibleId = parts[lastProcIdx + 1];
+                    // Skip placeholders like {process_id} and reserved words
+                    if (!possibleId.includes('{') && !['processes', 'catalogs', 'executions', 'jobs'].includes(possibleId)) {
+                        await loadProcessSpecificSchema(possibleId);
+                        return; // buildForm is called inside loadProcessSpecificSchema when using predefined schema
+                    }
+                }
+            }
+
+            buildForm();
+        }
+
+        const INGESTION_SCHEMA = {
+            catalog_id: { type: 'string', description: 'The identifier of the target catalog.' },
+            collection_id: { type: 'string', description: 'The identifier of the target collection within the catalog.' },
+            ingestion_request: {
+                type: 'object',
+                description: 'The detailed configuration for the ingestion task.',
+                collapsible: true,
+                properties: {
+                    asset: {
+                        type: 'object',
+                        collapsible: true,
+                        title: 'Asset Configuration',
+                        description: 'The source asset for the ingestion task',
+                        properties: {
+                            asset_id: { type: 'string', description: 'The asset_id of an existing asset to ingest from.' },
+                            uri: { type: 'string', description: 'The URI of a file to ingest. If the asset doesn\'t exist, it will be created.' },
+                            metadata: { type: 'object', collapsible: true, title: 'Metadata', description: 'Metadata to be attached to the asset upon creation or update.' }
+                        }
+                    },
+                    encoding: { type: 'string', default: 'utf-8', description: 'The character encoding of the source file (e.g., utf-8, latin-1, cp1252).' },
+                    source_srid: { type: 'integer', description: 'Default source srid (e.g., 4326 for WGS84).' },
+                    lang: { type: 'string', default: 'en', description: 'Target language for the ingested metadata. Use * for multi-language input.' },
+                    column_mapping: {
+                        type: 'object',
+                        collapsible: true,
+                        title: 'Column Mapping',
+                        description: 'Defines how source file columns map to database fields.',
+                        properties: {
+                            external_id: { type: 'string', description: 'The source column that serves as a unique identifier for each feature.' },
+                            geometry_wkb: { type: 'string', description: 'For Parquet files, the column containing geometry in WKB format.' },
+                            csv_wkt_column: { type: 'string', description: 'For CSV files, the column containing geometry in WKT format.' },
+                            csv_lat_column: { type: 'string', description: 'For CSV files, the column containing latitude.' },
+                            csv_lon_column: { type: 'string', description: 'For CSV files, the column containing longitude.' },
+                            csv_elevation_column: { type: 'string', description: 'For CSV files, the column containing elevation.' },
+                            csv_elevation_unit: { type: 'string', description: 'For CSV files, the unit of elevation (e.g., meters, feet).' },
+                            attributes_source_type: { type: 'string', enum: ['explicit_list', 'all'], default: 'all', description: 'Determines how attributes are sourced.' },
+                            attribute_mapping: { 
+                                type: 'array', 
+                                arrayType: 'dynamic',
+                                itemTitle: 'Attribute Mapping',
+                                description: 'If attributes_source_type is explicit_list, defines source and map_to for attributes.',
+                                items: {
+                                    properties: {
+                                        source: { type: 'string', description: 'Source column name' },
+                                        constant: { type: 'string', description: 'Constant value (use instead of source)' },
+                                        map_to: { type: 'string', description: 'Target field name', required: true }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    time_validity_start_column: { type: 'string', description: 'Column containing time validity start.' },
+                    time_validity_end_column: { type: 'string', description: 'Column containing time validity end.' },
+                    reporting: { type: 'object', collapsible: true, title: 'Reporting Config', description: 'Configuration for generating detailed ingestion reports.' },
+                    pre_operations: { type: 'object', collapsible: true, title: 'Pre-Operations', description: 'Configuration for pre-ingestion operations.' },
+                    post_operations: { type: 'object', collapsible: true, title: 'Post-Operations', description: 'Configuration for post-ingestion operations.' },
+                    database_batch_size: { type: 'integer', description: 'Number of records to insert into the database in a single transaction.' },
+                    max_batch_memory_mb: { type: 'integer', default: 100, description: 'Maximum memory (in MB) to accumulate in a batch before flushing to database.' },
+                    offset: { type: 'integer', default: 0, description: 'Number of records to skip from the beginning of the source file.' },
+                    limit: { type: 'integer', description: 'Maximum number of records to process from the source file.' },
+                    read_batch_size: { type: 'integer', default: 1000, description: 'Number of records to read from the source file.' }
+                }
+            }
+        };
+
+        const TILES_PRESEED_SCHEMA = {
+            catalog_id: { type: 'string', description: 'The catalog identifier to process.' },
+            collection_id: { type: 'string', description: 'Optional collection identifier. If omitted, applies to all pre-seed enabled collections in the catalog.' },
+            tms_ids: { type: 'array', description: 'List of TMS IDs to process. Overrides configuration if provided.' },
+            formats: { type: 'array', description: 'List of formats to generate. Overrides configuration if provided.' },
+            update_bbox: { type: 'array', description: 'Optional list of bounding boxes to limit the pre-seeding process. Coordinates should be in WGS84 (EPSG:4326). Format: [[minx, miny, maxx, maxy], ...]' }
+        };
+
+        async function loadProcessSpecificSchema(processId) {
+            if (!processId || processId.includes('{')) return;
+            
+            // Use predefined schema for ingestion process
+            if (processId === 'ingestion') {
+                CURRENT_PROCESS = { inputs: INGESTION_SCHEMA };
+                buildForm();
+                return;
+            }
+            
+            // Use predefined schema for tiles_preseed process
+            if (processId === 'tiles_preseed') {
+                CURRENT_PROCESS = { inputs: TILES_PRESEED_SCHEMA };
+                buildForm();
+                return;
+            }
+            
+            try {
+                const procRes = await fetch(`${API_ROOT}/processes/${processId}`);
+                if (procRes.ok) {
+                    CURRENT_PROCESS = await procRes.json();
+                    // Store $defs from process description
+                    if (CURRENT_PROCESS.inputs) {
+                        Object.values(CURRENT_PROCESS.inputs).forEach(input => {
+                            if (input.schema && input.schema.$defs) {
+                                Object.assign(PROCESS_DEFS, input.schema.$defs);
+                            }
+                        });
+                    }
+                    // Rebuild the form with the new schema info
+                    buildForm();
+                }
+            } catch (e) {
+                console.log('Could not fetch process details', e);
+            }
+        }
+
+
+        function createCollapsibleSection(key, schema, prefix, depth) {
+            const container = document.createElement('div');
+            container.className = 'collapsible-section mb-4 border border-gray-600 rounded-lg overflow-hidden';
+            
+            const header = document.createElement('div');
+            header.className = 'bg-gray-700 px-4 py-2 cursor-pointer flex justify-between items-center';
+            header.innerHTML = `<span class="text-xs font-bold text-white uppercase">${schema.title || key.replace(/_/g, ' ')}</span><i class="fas fa-chevron-down text-gray-400 toggle-icon"></i>`;
+            header.onclick = function() {
+                const content = this.nextElementSibling;
+                const icon = this.querySelector('.toggle-icon');
+                content.classList.toggle('hidden');
+                icon.classList.toggle('fa-chevron-down');
+                icon.classList.toggle('fa-chevron-up');
+            };
+            container.appendChild(header);
+            
+            const content = document.createElement('div');
+            content.className = 'p-4 bg-gray-800';
+            
+            Object.entries(schema.properties).forEach(([propKey, propDef]) => {
+                const propHelp = propDef.description || '';
+                if (propDef.properties) {
+                    content.appendChild(createCollapsibleSection(propKey, propDef, prefix + '.' + key, depth + 1));
+                } else if (propDef.arrayType === 'dynamic') {
+                    content.appendChild(createDynamicArrayField(propKey, propDef, prefix + '.' + key, propHelp, depth + 1));
+                } else {
+                    content.appendChild(createField(propKey, propDef, false, prefix + '.' + key, propHelp, depth + 1));
+                }
+            });
+            container.appendChild(content);
+            
+            return container;
+        }
+
+        function createDynamicArrayField(key, schema, prefix, description, depth) {
+            const container = document.createElement('div');
+            container.className = 'mb-6';
+            
+            const label = document.createElement('label');
+            label.className = 'form-label';
+            label.style.fontSize = '1rem';
+            label.style.fontWeight = '700';
+            label.innerHTML = `${key.replace(/_/g, ' ')} <span class="text-gray-500 text-xs">(Click + to add)</span>`;
+            container.appendChild(label);
+            
+            if (description) {
+                const help = document.createElement('div');
+                help.className = 'help-text';
+                help.innerText = description;
+                container.appendChild(help);
+            }
+            
+            const arrayContainer = document.createElement('div');
+            arrayContainer.className = 'array-items space-y-3 mb-3';
+            arrayContainer.dataset.path = `${prefix}.${key}`;
+            container.appendChild(arrayContainer);
+            
+            const addBtn = document.createElement('button');
+            addBtn.type = 'button';
+            addBtn.className = 'btn btn-secondary text-sm';
+            addBtn.innerHTML = '<i class="fas fa-plus"></i> Add Item';
+            addBtn.onclick = function() {
+                addArrayItem(arrayContainer, key, schema, prefix);
+            };
+            container.appendChild(addBtn);
+            
+            return container;
+        }
+
+        function addArrayItem(arrayContainer, key, schema, prefix) {
+            const itemIndex = arrayContainer.children.length;
+            const itemDiv = document.createElement('div');
+            itemDiv.className = 'nested-2 p-3 bg-gray-700 rounded-lg relative';
+            
+            const removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.className = 'absolute top-2 right-2 text-red-400 hover:text-red-300';
+            removeBtn.innerHTML = '<i class="fas fa-times"></i>';
+            removeBtn.onclick = function() {
+                itemDiv.remove();
+                updateJsonBody();
+            };
+            itemDiv.appendChild(removeBtn);
+            
+            const itemSchema = schema.items || { properties: {} };
+            Object.entries(itemSchema.properties || {}).forEach(([propKey, propDef]) => {
+                const propHelp = propDef.description || '';
+                const propPrefix = `${arrayContainer.dataset.path}[${itemIndex}]`;
+                itemDiv.appendChild(createField(propKey, propDef, propDef.required || false, propPrefix, propHelp, 3));
+            });
+            
+            arrayContainer.appendChild(itemDiv);
+            updateJsonBody();
+        }
+
+        function buildForm() {
+            const form = document.getElementById('dynamic-form');
+            form.innerHTML = '';
+            const spec = CURRENT_EP.spec;
+
+            // Path parameters
+            if (spec.parameters) {
+                const section = document.createElement('div');
+                section.className = 'pt-4 mt-4 border-t border-gray-700';
+                section.innerHTML = '<h4 class="text-sm font-bold text-dyna-accent uppercase mb-4">Path Parameters</h4>';
+                spec.parameters.forEach(p => {
+                    section.appendChild(createField(p.name, p.schema || {}, p.required, 'path', p.description, 0));
+                });
+                form.appendChild(section);
+            }
+
+            // Request body
+            if (spec.requestBody) {
+                const content = spec.requestBody.content?.['application/json'];
+                if (content) {
+                    const section = document.createElement('div');
+                    section.className = 'pt-4 mt-4 border-t border-gray-700';
+                    section.innerHTML = '<h4 class="text-sm font-bold text-dyna-accent uppercase mb-4">Request Body</h4>';
+
+                    const schema = content.schema || {};
+                    const resolved = resolveRef(schema);
+                    if (resolved.type === 'object' || resolved.properties) {
+                        Object.entries(resolved.properties || {}).forEach(([key, propSchema]) => {
+                            // SPECIAL HANDLING FOR OGC PROCESSES "inputs"
+                            if (key === 'inputs' && CURRENT_PROCESS && CURRENT_PROCESS.inputs) {
+                                const group = document.createElement('div');
+                                group.className = `nested-1 mb-8`;
+                                group.innerHTML = '<h5 class="text-xs font-bold text-dyna-primary uppercase mb-4 tracking-widest"><i class="fas fa-sign-in-alt"></i> Process Inputs (from description)</h5>';
+
+                                Object.entries(CURRENT_PROCESS.inputs).forEach(([inputId, inputDef]) => {
+                                    const help = inputDef.description || inputDef.title || '';
+                                    
+                                    // Check if this is an object with nested properties (collapsible)
+                                    if (inputDef.properties) {
+                                        const isCollapsible = inputDef.collapsible;
+                                        const objGroup = document.createElement('div');
+                                        
+                                        if (isCollapsible) {
+                                            // Create collapsible section
+                                            objGroup.className = 'collapsible-section mb-4 border border-gray-600 rounded-lg overflow-hidden';
+                                            const header = document.createElement('div');
+                                            header.className = 'bg-gray-700 px-4 py-2 cursor-pointer flex justify-between items-center';
+                                            header.innerHTML = `<span class="text-xs font-bold text-white uppercase">${inputDef.title || inputId.replace(/_/g, ' ')}</span><i class="fas fa-chevron-down text-gray-400 toggle-icon"></i>`;
+                                            header.onclick = function() {
+                                                const content = this.nextElementSibling;
+                                                const icon = this.querySelector('.toggle-icon');
+                                                content.classList.toggle('hidden');
+                                                icon.classList.toggle('fa-chevron-down');
+                                                icon.classList.toggle('fa-chevron-up');
+                                            };
+                                            objGroup.appendChild(header);
+                                            
+                                            const content = document.createElement('div');
+                                            content.className = 'p-4 bg-gray-800';
+                                            
+                                            // Add fields inside collapsible
+                                            Object.entries(inputDef.properties).forEach(([propKey, propDef]) => {
+                                                const propHelp = propDef.description || '';
+                                                if (propDef.properties) {
+                                                    // Nested collapsible
+                                                    const nestedSection = createCollapsibleSection(propKey, propDef, 'body.inputs.' + inputId, 3);
+                                                    content.appendChild(nestedSection);
+                                                } else if (propDef.arrayType === 'dynamic') {
+                                                    // Dynamic array with add/remove
+                                                    content.appendChild(createDynamicArrayField(propKey, propDef, 'body.inputs.' + inputId, propHelp, 3));
+                                                } else {
+                                                    content.appendChild(createField(propKey, propDef, false, 'body.inputs.' + inputId, propHelp, 3));
+                                                }
+                                            });
+                                            objGroup.appendChild(content);
+                                        } else {
+                                            objGroup.className = 'nested-2 mb-6';
+                                            objGroup.innerHTML = `<h6 class="text-xs font-bold text-dyna-success uppercase mb-3"><i class="fas fa-database"></i> ${inputDef.title || inputId.replace(/_/g, ' ')}</h6>`;
+                                            Object.entries(inputDef.properties).forEach(([propKey, propDef]) => {
+                                                const propHelp = propDef.description || '';
+                                                if (propDef.properties) {
+                                                    const nestedSection = createCollapsibleSection(propKey, propDef, 'body.inputs.' + inputId, 3);
+                                                    objGroup.appendChild(nestedSection);
+                                                } else if (propDef.arrayType === 'dynamic') {
+                                                    objGroup.appendChild(createDynamicArrayField(propKey, propDef, 'body.inputs.' + inputId, propHelp, 3));
+                                                } else {
+                                                    objGroup.appendChild(createField(propKey, propDef, false, 'body.inputs.' + inputId, propHelp, 3));
+                                                }
+                                            });
+                                        }
+                                        group.appendChild(objGroup);
+                                    } else {
+                                        const isRequired = typeof inputDef === 'object' && (inputDef.required === true || (Array.isArray(inputDef.required) && inputDef.required.includes(inputId)));
+                                        group.appendChild(createField(inputId, inputDef.schema || inputDef, isRequired, 'body.inputs', help, 2));
+                                    }
+                                });
+                                section.appendChild(group);
+                            } else {
+                                section.appendChild(createField(key, propSchema, (resolved.required || []).includes(key), 'body', propSchema.description, 1));
+                            }
+                        });
+                    }
+                    form.appendChild(section);
+                }
+            }
+
+            updateJsonBody();
+        }
+
+        function resolveRef(schema) {
+            if (!schema || typeof schema !== 'object') return schema;
+
+            // Handle anyOf (often for nullable or multi-type)
+            if (schema.anyOf) {
+                // Find first branch that isn't null
+                const valid = schema.anyOf.find(s => s.type !== 'null');
+                if (valid) return resolveRef(valid);
+            }
+
+            if (schema.$ref) {
+                const refName = schema.$ref.split('/').pop();
+                // First check process defs, then OpenAPI
+                let def = (PROCESS_DEFS && PROCESS_DEFS[refName]) ? PROCESS_DEFS[refName] : null;
+                if (!def && OPENAPI.components?.schemas) {
+                    def = OPENAPI.components.schemas[refName];
+                }
+                if (!def && OPENAPI.defs) {
+                    def = OPENAPI.defs[refName];
+                }
+                if (def && def !== schema) return resolveRef(def); // Avoid infinite recursion
+            }
+            return schema;
+        }
+
+        function buildFormFromExample(container, example, prefix, depth) {
+            if (!example || typeof example !== 'object') return;
+
+            Object.entries(example).forEach(([key, value]) => {
+                if (key === 'response' || key === 'outputs') return; // Skip these
+
+                const wrapper = document.createElement('div');
+                wrapper.className = 'mb-6';
+
+                const label = document.createElement('label');
+                label.className = 'form-label';
+                label.style.fontSize = depth === 1 ? '1rem' : '0.85rem';
+                label.style.fontWeight = depth === 1 ? '700' : '600';
+                label.innerText = key.replace(/_/g, ' ');
+                wrapper.appendChild(label);
+
+                const dataPath = `${prefix}.${key}`;
+
+                if (value && typeof value === 'object' && !Array.isArray(value)) {
+                    const group = document.createElement('div');
+                    group.className = `nested-${Math.min(depth, 4)}`;
+                    buildFormFromExample(group, value, dataPath, depth + 1);
+                    wrapper.appendChild(group);
+                } else {
+                    const input = document.createElement('input');
+                    input.className = 'form-input';
+                    input.dataset.path = dataPath;
+                    input.value = value !== null ? value : '';
+                    input.placeholder = 'value';
+                    input.onchange = updateJsonBody;
+                    wrapper.appendChild(input);
+                }
+
+                container.appendChild(wrapper);
+            });
+        }
+
+        function createField(name, schema, required, prefix, description, depth) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'mb-6';
+
+            const label = document.createElement('label');
+            label.className = 'form-label';
+            label.style.fontSize = depth <= 1 ? '1rem' : '0.85rem';
+            label.style.fontWeight = depth <= 1 ? '700' : '600';
+            label.innerHTML = `${name.replace(/_/g, ' ')}${required ? ' <span class="text-red-500">*</span>' : ''}`;
+            wrapper.appendChild(label);
+
+            const dataPath = `${prefix}.${name}`;
+            
+            // Handle schema that is already a resolved object (with properties but type might not be set)
+            let resolved = schema;
+            if (schema && typeof schema === 'object' && !schema.$ref && !schema.type && schema.properties) {
+                resolved = { type: 'object', ...schema };
+            } else {
+                resolved = resolveRef(schema);
+            }
+
+            // Handle $defs in schema
+            if (resolved.$defs) {
+                Object.assign(PROCESS_DEFS, resolved.$defs);
+            }
+
+            if (resolved.type === 'object' || resolved.properties) {
+                const group = document.createElement('div');
+                group.className = `nested-${Math.min(depth + 1, 4)}`;
+                const props = resolved.properties || {};
+                const req = resolved.required || [];
+                Object.entries(props).forEach(([key, propSchema]) => {
+                    group.appendChild(createField(key, propSchema, req.includes(key), dataPath, propSchema.description, depth + 1));
+                });
+                wrapper.appendChild(group);
+            } else if (resolved.enum) {
+                const select = document.createElement('select');
+                select.className = 'form-input';
+                select.dataset.path = dataPath;
+                resolved.enum.forEach(opt => {
+                    const o = document.createElement('option');
+                    o.value = opt; o.innerText = opt;
+                    select.appendChild(o);
+                });
+                if (resolved.default) select.value = resolved.default;
+                select.onchange = updateJsonBody;
+                wrapper.appendChild(select);
+            } else if (resolved.type === 'array') {
+                const textarea = document.createElement('textarea');
+                textarea.className = 'form-input font-mono text-xs h-24';
+                textarea.dataset.path = dataPath;
+                textarea.placeholder = resolved.example ? JSON.stringify(resolved.example) : '[ ] (JSON array)';
+                textarea.onchange = updateJsonBody;
+                wrapper.appendChild(textarea);
+            } else {
+                const input = document.createElement('input');
+                input.className = 'form-input';
+                input.dataset.path = dataPath;
+
+                if (resolved.type === 'boolean') {
+                    input.type = 'checkbox';
+                    input.className = 'w-5 h-5 accent-dyna-primary cursor-pointer';
+                    if (resolved.default) input.checked = resolved.default;
+                } else if (resolved.type === 'integer' || resolved.type === 'number') {
+                    input.type = 'number';
+                    input.placeholder = resolved.default || '0';
+                    if (resolved.default !== undefined) input.value = resolved.default;
+                } else {
+                    input.type = 'text';
+                    input.placeholder = resolved.example || resolved.default || '';
+                    if (resolved.default !== undefined && resolved.type !== 'boolean') input.value = resolved.default;
+                }
+
+                input.onchange = () => {
+                    updateJsonBody();
+                    // If this is a process_id placeholder being filled, fetch its schema!
+                    if (prefix === 'path' && name === 'process_id' && input.value) {
+                        loadProcessSpecificSchema(input.value);
+                    }
+                };
+                wrapper.appendChild(input);
+            }
+
+            if (description) {
+                const help = document.createElement('div');
+                help.className = 'help-text';
+                help.innerText = description;
+                wrapper.appendChild(help);
+            }
+
+            return wrapper;
+        }
+
+        function collectFormData() {
+            const data = {};
+            const inputs = document.querySelectorAll('#dynamic-form [data-path]');
+            inputs.forEach(el => {
+                // Handle both dot notation and array notation (e.g., "path.to.array[0].field")
+                const pathParts = el.dataset.path.split(/\.|\[|\]/).filter(p => p !== '');
+                let current = data;
+                for (let i = 0; i < pathParts.length; i++) {
+                    const key = pathParts[i];
+                    const isLast = i === pathParts.length - 1;
+                    const isArrayIndex = !isLast && pathParts[i + 1] && /^\d+$/.test(pathParts[i + 1]);
+                    
+                    if (isLast) {
+                        let val = el.type === 'checkbox' ? el.checked : el.value;
+                        if (el.type === 'number' && val !== '') val = Number(val);
+
+                        // Try to parse JSON for textareas or strings that look like objects/arrays
+                        if (typeof val === 'string' && (val.trim().startsWith('{') || val.trim().startsWith('['))) {
+                            try { val = JSON.parse(val); } catch (e) { }
+                        }
+
+                        if (val !== '' && val !== null) current[key] = val;
+                    } else {
+                        // Check if next key is an array index
+                        if (/^\d+$/.test(key)) {
+                            // This is an array index, convert to number
+                            const idx = parseInt(key);
+                            current[idx] = current[idx] || [];
+                            current = current[idx];
+                        } else if (isArrayIndex) {
+                            current[key] = current[key] || [];
+                            current = current[key];
+                        } else {
+                            current[key] = current[key] || {};
+                            current = current[key];
+                        }
+                    }
+                }
+            });
+            // Clean up empty arrays/objects
+            return cleanEmpty(data);
+        }
+
+        function cleanEmpty(obj) {
+            if (Array.isArray(obj)) {
+                return obj.map(item => cleanEmpty(item)).filter(item => item !== null && item !== undefined && item !== '');
+            } else if (obj && typeof obj === 'object') {
+                const result = {};
+                for (const key of Object.keys(obj)) {
+                    const val = cleanEmpty(obj[key]);
+                    if (val !== null && val !== undefined && val !== '') {
+                        result[key] = val;
+                    }
+                }
+                return Object.keys(result).length > 0 ? result : undefined;
+            }
+            return obj;
+        }
+
+        function updateJsonBody() {
+            const data = collectFormData();
+            document.getElementById('json-body').value = JSON.stringify(data, null, 2);
+        }
+
+        function toggleView() {
+            IS_JSON_MODE = !IS_JSON_MODE;
+            document.getElementById('form-view').classList.toggle('hidden', IS_JSON_MODE);
+            document.getElementById('json-view').classList.toggle('hidden', !IS_JSON_MODE);
+            document.getElementById('json-toggle').innerText = IS_JSON_MODE ? 'View Form' : 'View JSON';
+            if (!IS_JSON_MODE) updateJsonBody();
+        }
+
+        async function sendRequest() {
+            const btn = document.getElementById('send-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
+            hideError();
+
+            let path = CURRENT_EP.path;
+            const formData = collectFormData();
+
+            // Replace path params
+            const pathParams = CURRENT_EP.spec.parameters?.filter(p => p.in === 'path') || [];
+            pathParams.forEach(p => {
+                if (formData.path && formData.path[p.name]) {
+                    path = path.replace(`{${p.name}}`, formData.path[p.name]);
+                }
+            });
+
+            const url = API_ROOT + path;
+            const options = { method: CURRENT_EP.method.toUpperCase(), headers: {} };
+
+            if (['POST', 'PUT', 'PATCH'].includes(options.method)) {
+                options.headers['Content-Type'] = 'application/json';
+                const body = IS_JSON_MODE ? JSON.parse(document.getElementById('json-body').value) : formData.body;
+                options.body = JSON.stringify(body || {});
+            }
+
+            try {
+                const res = await fetch(url, options);
+                const data = await res.json();
+                document.getElementById('response-area').classList.remove('hidden');
+                document.getElementById('res-body').innerText = JSON.stringify(data, null, 2);
+                document.getElementById('res-status').innerText = `HTTP ${res.status}`;
+                document.getElementById('res-status').className = `px-2 py-1 rounded text-xs font-bold ${res.status < 300 ? 'bg-green-600' : 'bg-red-600'}`;
+            } catch (e) {
+                showError(e.message);
+            }
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-paper-plane"></i> Send Request';
+        }
+
+        window.onload = loadOpenAPI;
+    </script>
+</body>
+
+</html>

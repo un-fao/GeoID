@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DynaStore Register</title>
+    <link rel="icon" type="image/png" href="/web/static/dynastore.png">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #0f172a; color: #e2e8f0; font-family: 'Inter', sans-serif; }
+        .glass-panel { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center relative overflow-hidden">
+    <div class="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[600px] bg-purple-600/20 rounded-full blur-[100px] -z-10"></div>
+    
+    <div class="glass-panel w-full max-w-md p-8 rounded-2xl shadow-2xl relative z-10">
+        <div class="text-center mb-8">
+            <img src="/web/static/dynastore.png" alt="DynaStore" class="w-16 h-16 mx-auto mb-4 rounded-xl shadow-lg shadow-purple-500/20">
+            <h2 class="text-2xl font-bold text-white tracking-tight">Create Account</h2>
+            <p class="text-slate-400 text-sm mt-2">Join the DynaStore platform</p>
+        </div>
+
+        <form method="post" action="/auth/register" class="space-y-4">
+            <input type="hidden" name="redirect_uri" id="redirect_uri">
+            <input type="hidden" name="state" id="state">
+            
+            <div>
+                <label for="username" class="block text-sm font-medium text-slate-300 mb-1">Username</label>
+                <input type="text" id="username" name="username" required 
+                    class="w-full px-4 py-2 bg-slate-800/50 border border-slate-700 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none text-white">
+            </div>
+            
+            <div>
+                <label for="email" class="block text-sm font-medium text-slate-300 mb-1">Email</label>
+                <input type="email" id="email" name="email" required 
+                    class="w-full px-4 py-2 bg-slate-800/50 border border-slate-700 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none text-white">
+            </div>
+            
+            <div>
+                <label for="password" class="block text-sm font-medium text-slate-300 mb-1">Password</label>
+                <input type="password" id="password" name="password" required 
+                    class="w-full px-4 py-2 bg-slate-800/50 border border-slate-700 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none text-white">
+            </div>
+
+                <div>
+                <label for="confirm_password" class="block text-sm font-medium text-slate-300 mb-1">Confirm Password</label>
+                <input type="password" id="confirm_password" name="confirm_password" required 
+                    class="w-full px-4 py-2 bg-slate-800/50 border border-slate-700 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none text-white">
+            </div>
+            
+            <button type="submit" 
+                class="w-full py-3 px-4 bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-lg shadow-lg shadow-purple-500/30 transition-all mt-4">
+                Register
+            </button>
+        </form>
+            <div class="mt-6 text-center">
+            <a href="/auth/login" class="text-sm text-purple-400 hover:text-white transition-colors">Already have an account? Sign in</a>
+        </div>
+    </div>
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        document.getElementById('redirect_uri').value = urlParams.get('redirect_uri') || '/auth/debug';
+        document.getElementById('state').value = urlParams.get('state') || 'init';
+    </script>
+</body>
+</html>

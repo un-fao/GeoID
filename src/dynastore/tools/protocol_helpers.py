@@ -58,19 +58,13 @@ def resolve(protocol_type: Type[T]) -> T:
 
 
 def get_engine(app_state: Optional[Any] = None) -> Any:
-    """
-    Standardized database engine access.
-    
-    This replaces the legacy get_any_engine() pattern. It transparently
-    resolves the highest priority DatabaseProtocol and returns its engine.
-    
-    Args:
-        app_state: Optional app_state for backward compatibility (ignored)
-    
-    Returns:
-        Database engine instance
-    """
-    db = get_protocol(DatabaseProtocol)
-    if not db:
-        raise RuntimeError("DatabaseProtocol is not available. Check database module initialization.")
-    return db.engine
+    from dynastore.tools.discovery import get_protocols
+    providers = get_protocols(DatabaseProtocol)
+    for db in providers:
+        try:
+            engine = db.engine
+            if engine is not None:
+                return engine
+        except Exception:
+            continue
+    return None

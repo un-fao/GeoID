@@ -28,7 +28,7 @@ from dynastore.models.protocols import CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
 
 from dynastore.modules.catalog.validation import get_valid_properties
-from dynastore.models.query_builder import QueryRequest, FieldSelection, SortOrder
+from dynastore.models.query_builder import QueryRequest, FieldSelection, SortOrder, FilterCondition, FilterOperator
 
 logger = logging.getLogger(__name__)
 
@@ -80,10 +80,14 @@ async def get_items_filtered(
     # --- 1. BBOX Filter ---
     if bbox:
         input_srid = bbox_crs_srid or 4326
-        request.raw_params.update(xmin=bbox[0], ymin=bbox[1], xmax=bbox[2], ymax=bbox[3], input_srid=input_srid)
-        # We use a raw where part for complex spatial operations, using the deterministic sidecar alias
-        # sc_geometry is the id of the GeometrySidecar
-        raw_where_parts.append(f"sc_geometry.geom && ST_Transform(ST_MakeEnvelope(:xmin, :ymin, :xmax, :ymax, :input_srid), ST_SRID(sc_geometry.geom))")
+        # Represent BBOX as EWKT for the structured filter
+        ewkt = f"SRID={input_srid};POLYGON(({bbox[0]} {bbox[1]}, {bbox[0]} {bbox[3]}, {bbox[2]} {bbox[3]}, {bbox[2]} {bbox[1]}, {bbox[0]} {bbox[1]}))"
+        request.filters.append(FilterCondition(
+            field="geom",
+            operator=FilterOperator.BBOX,
+            value=ewkt,
+            spatial_op=True
+        ))
 
     # --- 2. Datetime Filter ---
     if datetime_str:
@@ -92,38 +96,52 @@ async def get_items_filtered(
             start_dt, end_dt = (start_str if start_str != '..' else None), (end_str if end_str != '..' else None)
             
             if start_dt and end_dt:
-                raw_where_parts.append("h.validity && tstzrange(:start_dt, :end_dt, '[]')")
-                request.raw_params.update(start_dt=start_dt, end_dt=end_dt)
+                request.filters.append(FilterCondition(
+                    field="validity",
+                    operator=FilterOperator.RANGE_OVERLAPS,  # &&: ranges overlap
+                    value=f"[{start_dt}, {end_dt}]"
+                ))
             elif start_dt:
-                raw_where_parts.append("lower(h.validity) >= :start_dt")
-                request.raw_params['start_dt'] = start_dt
+                request.filters.append(FilterCondition(
+                    field="validity", 
+                    operator=FilterOperator.GTE, 
+                    value=start_dt
+                ))
             elif end_dt:
-                raw_where_parts.append("upper(h.validity) <= :end_dt")
-                request.raw_params['end_dt'] = end_dt
+                request.filters.append(FilterCondition(
+                    field="validity", 
+                    operator=FilterOperator.LTE, 
+                    value=end_dt
+                ))
         else:
-            raw_where_parts.append("h.validity @> :dt::timestamptz")
-            request.raw_params['dt'] = datetime_str
+            request.filters.append(FilterCondition(
+                field="validity",
+                operator=FilterOperator.RANGE_CONTAINS,  # @>: range contains point
+                value=datetime_str
+            ))
 
     # --- 3. CQL Filter ---
     if cql_filter:
         try:
             from sqlalchemy import text
-            from sqlalchemy.sql import column as sql_column
- 
-            valid_props = await get_valid_properties(conn, catalog_id, collection_id)
-            column_names = await catalogs.get_collection_column_names(catalog_id, collection_id, db_resource=conn)
+            from dynastore.models.protocols import ItemsProtocol
+            
+            items_svc = get_protocol(ItemsProtocol)
+            
+            # Fetch full field definitions including sidecars
+            # We don't need physical schema/table here as we pass logical IDs
+            field_defs = await items_svc.get_collection_fields(
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                db_resource=conn
+            )
 
-            # Map fields safely using logical names; QueryOptimizer handles physical resolution
+            valid_props = set(field_defs.keys())
             field_mapping = {}
-            for field_name in valid_props:
-                if field_name in ["geoid", "validity", "deleted_at", "transaction_time", "content_hash"]:
-                    field_mapping[field_name] = sql_column(f"h.{field_name}")
-                elif field_name in ["geom", "bbox_geom"]:
-                    field_mapping[field_name] = sql_column(f"sc_geometry.{field_name}")
-                elif field_name in column_names:
-                    field_mapping[field_name] = sql_column(f"sc_attributes.{field_name}") 
-                else:
-                    field_mapping[field_name] = text(f"sc_attributes.attributes->>'{field_name}'") 
+            
+            for name, defn in field_defs.items():
+                # Map to SQL expression defined by sidecar (e.g. "a.asset_id", "h.geoid")
+                field_mapping[name] = text(defn.sql_expression)
 
             cql_where, cql_params = parse_cql_filter(
                 cql_filter, 
@@ -180,10 +198,10 @@ async def get_items_filtered(
     rows = []
     total_count = 0
     if rows_proxy:
-        total_count = rows_proxy[0].get("_total_count", 0)
+        total_count = rows_proxy[0].properties.get("_total_count", 0)
         for row in rows_proxy:
-            r = dict(row)
-            r.pop("_total_count", None)
+            r = row.model_dump()
+            r["properties"].pop("_total_count", None)
             rows.append(r)
 
     return total_count, rows

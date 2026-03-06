@@ -1,0 +1,3 @@
+# identify_middleware @ git+https://github.com/un-fao/identify-middleware.git@ref#egg=identify_middleware[google,fastapi]
+identify_middleware[google,fastapi] @ git+https://github.com/un-fao/identify-middleware.git@ref
+python-multipart>=0.0.9

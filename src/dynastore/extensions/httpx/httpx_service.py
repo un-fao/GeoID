@@ -19,7 +19,7 @@
 import logging
 import httpx
 from contextlib import asynccontextmanager
-from dynastore.extensions import ExtensionProtocol, dynastore_extension, get_extension_instance_by_class
+from dynastore.extensions import ExtensionProtocol
 from fastapi import Request, FastAPI
 from typing import Optional
 
@@ -35,8 +35,10 @@ from dynastore.modules.httpx.httpx_module import (
     create_proxy_httpx_client as _create_proxy_httpx_client
 )
 
-@dynastore_extension
-class HttpxExtension(ExtensionProtocol):
+from dynastore.models.protocols import HttpxProtocol
+
+class HttpxExtension(ExtensionProtocol, HttpxProtocol):
+    priority: int = 100
     """
     A foundational extension to manage the lifecycle of a shared httpx.AsyncClient.
     This shared, singleton client is attached to the app_state and is used
@@ -87,8 +89,10 @@ class HttpxExtension(ExtensionProtocol):
             self.app.state.proxy_httpx_client = self.proxy_client
         return self.proxy_client
 
+from dynastore.tools.discovery import get_protocol
+
 def get_client() -> Optional[httpx.AsyncClient]:
-    extension = get_extension_instance_by_class(HttpxExtension)
+    extension = get_protocol(HttpxProtocol)
     if extension:
         return extension.get_httpx_client()
 

@@ -52,14 +52,12 @@ def apply_app_configurations(app: FastAPI):
 
     # 2. Apply extension-specific configurations
     for config in configs:
-        if config.instance:
-            configure_hook = getattr(config.instance, "configure_app", None)
-            if callable(configure_hook):
-                try:
-                    configure_hook(app)
-                    logger.info(f"Applied app configuration from '{config.cls.__name__}'.")
-                except Exception:
-                    logger.error(f"Failed during configure_app of '{config.cls.__name__}'.", exc_info=True)
+        if isinstance(config.instance, ExtensionProtocol):
+            try:
+                config.instance.configure_app(app)
+                logger.info(f"Applied app configuration from '{config.cls.__name__}'.")
+            except Exception:
+                logger.error(f"Failed during configure_app of '{config.cls.__name__}'.", exc_info=True)
 
 
 @asynccontextmanager
@@ -85,11 +83,9 @@ async def lifespan(app: FastAPI):
         # --- PHASE 2: Lifespans ---
         logger.info("--- Phase 2: Executing all extension lifespans ---")
         for config in configs:
-            if config.instance is None: continue
-            lifespan_cm = getattr(config.instance, "lifespan", None)
-            if callable(lifespan_cm):
+            if isinstance(config.instance, ExtensionProtocol):
                 try:
-                    await stack.enter_async_context(lifespan_cm(app))
+                    await stack.enter_async_context(config.instance.lifespan(app))
                     logger.info(f"Lifespan for '{config.cls.__name__}' entered successfully.")
                 except Exception:
                     logger.error(f"CRITICAL: Lifespan for '{config.cls.__name__}' failed on startup.", exc_info=True)

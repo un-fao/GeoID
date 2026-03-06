@@ -43,30 +43,32 @@ class ModuleConfig:
     cls: Type[ModuleProtocol]
     instance: ModuleProtocol | None = None
 
-def dynastore_module(cls: Type[T_Module]) -> Type[T_Module]:
-    """A decorator to register a class as a DynaStore Module."""
-    try:
-        # Robustly determine the module name by finding the segment after 'modules'
-        parts = cls.__module__.split('.')
-        idx = parts.index('modules')
-        registration_name = parts[idx + 1]
-    except (ValueError, IndexError):
-        logger.error(f"Could not determine module folder name for module '{cls.__name__}' from '{cls.__module__}'. Falling back to class name.")
-        registration_name = cls.__name__
-
+def _register_module(cls: Type[T_Module], registration_name: Optional[str] = None) -> Type[T_Module]:
+    """
+    Internal helper to register a module class.
+    """
+    if registration_name is None:
+        try:
+            parts = cls.__module__.split('.')
+            idx = parts.index('modules')
+            registration_name = parts[idx + 1]
+        except (ValueError, IndexError):
+            registration_name = cls.__name__
 
     if registration_name in _DYNASTORE_MODULES:
-        logger.warning(f"Module '{registration_name}' is already registered. Overwriting.")
+        # Avoid redundant registration if same class
+        if _DYNASTORE_MODULES[registration_name].cls == cls:
+            return cls
+        logger.warning(f"Module '{registration_name}' is already registered with a different class. Overwriting.")
     
-    # The registration logic remains the same.
     _DYNASTORE_MODULES[registration_name] = ModuleConfig(cls=cls)
-    
-    # Set the registered name on the class itself.
     cls._registered_name = registration_name
-    logger.info(f"Discovered module: {cls.__name__} (registered as '{registration_name}')")
-
-    # Return the original class, preserving its type.
+    logger.info(f"Registered module: {cls.__name__} (as '{registration_name}')")
     return cls
+
+def dynastore_module(cls: Type[T_Module]) -> Type[T_Module]:
+    """A decorator to register a class as a DynaStore Module."""
+    return _register_module(cls)
 
 def get_module_instance(name: str) -> ModuleProtocol | None:
     """Retrieves the singleton instance of a registered module by name."""
@@ -165,9 +167,14 @@ def discover_modules(enabled_modules: Optional[List[str]] = None):
             for _, sub_module_name, _ in pkgutil.iter_modules([module_path]):
                 full_module_path = f"{sub_package_name}.{sub_module_name}"
                 try:
-                    importlib.import_module(full_module_path)
+                    target_module = importlib.import_module(full_module_path)
+                    for name, obj in inspect.getmembers(target_module, inspect.isclass):
+                        # Use a robust check: must be a ModuleProtocol subclass with a lifespan
+                        if hasattr(obj, 'lifespan') and obj.__module__ == full_module_path:
+                            if issubclass(obj, ModuleProtocol) and getattr(obj, "__name__", "") != "ModuleProtocol":
+                                _register_module(obj, registration_name=module_name)
                 except Exception:
-                     logger.error(f"Failed to import submodule '{full_module_path}'", exc_info=True)
+                     logger.error(f"Failed to import/scan submodule '{full_module_path}'", exc_info=True)
         except Exception:
             logger.error(f"Failed to load module '{module_name}'", exc_info=True)
 
@@ -248,27 +255,13 @@ async def lifespan(app_state: object, enabled_modules: Optional[List[str]] = Non
                 logger.warning(f"Skipping lifespan for module '{config.cls.__name__}' as it was not instantiated correctly.")
                 continue
 
-            # Automatic Provider Initialization
-            # This discovers and initializes any Provider descriptors on the module instance.
-            try:
-                from dynastore.tools.discovery import initialize_providers
-                from dynastore.models.protocols import DatabaseProtocol
-                
-                # Resolve DB engine if available (best effort)
-                db = get_protocol(DatabaseProtocol)
-                engine = db.engine if db else None
-                await initialize_providers(config.instance, app_state, db_resource=engine, stack=stack)
-                logger.debug(f"Providers initialized for module '{config.cls.__name__}'")
-            except Exception:
-                 logger.error(f"Failed to initialize providers for module '{config.cls.__name__}'", exc_info=True)
-                 # We continue, as the module might not have providers or might handle it manually (though legacy)
-
-            if hasattr(config.instance, "lifespan"):
+            logger.warning(f"DEBUG: Entering lifespan for module: {config.cls.__name__}")
+            if isinstance(config.instance, ModuleProtocol):
                 # The lifespan context manager will handle async initializations.
                 try:
                     lifespan_manager = config.instance.lifespan(app_state)
                     await stack.enter_async_context(lifespan_manager)
-                    logger.info(f"Lifespan for module '{config.cls.__name__}' entered successfully.")
+                    logger.warning(f"DEBUG: Lifespan for module '{config.cls.__name__}' entered successfully.")
                 except Exception as e:
                     logger.error(f"Failed to enter lifespan for module '{config.cls.__name__}'", exc_info=True)
                     # Foundational modules MUST succeed, or we abort early to prevent cascading noise

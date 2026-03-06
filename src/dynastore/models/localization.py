@@ -17,8 +17,24 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple, TypeVar, Generic, Union, Set
+from datetime import datetime, timezone
+from typing import (
+    Any,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    TypeVar,
+    Generic,
+    Union,
+    Set,
+    TYPE_CHECKING,
+    Protocol,
+    runtime_checkable,
+)
 from pydantic import BaseModel, Field, HttpUrl, ConfigDict
+from typing_extensions import Self
+
 
 # STAC Language Extension Schema URI
 STAC_LANGUAGE_EXTENSION_URI = "https://stac-extensions.github.io/language/v1.0.0/schema.json"
@@ -364,3 +380,177 @@ def validate_language_consistency(data: Dict[str, Any], lang: str) -> None:
                 f"was specified. Use lang='*' when providing multilanguage input, "
                 f"or provide single-language content with a specific lang code."
             )
+
+
+# =============================================================================
+# Protocols
+# =============================================================================
+
+
+@runtime_checkable
+class InternalColumnProtocol(Protocol):
+    """Protocol for objects that can declare their internal columns."""
+
+    def get_internal_columns(self) -> Set[str]:
+        """Returns a set of internal column names to be excluded from public output."""
+        ...
+
+
+# =============================================================================
+# LocalizableModelMixin — base mixin for all localizable Pydantic models.
+# Defined here (in localization.py) so it can be imported before any of the
+# models in shared_models.py that use it (Link, Provider, …).
+# =============================================================================
+
+
+class LocalizableModelMixin:
+    """A mixin to provide localization and merge methods to Pydantic models."""
+
+    def localize(
+        self, lang: str, include_language_keys: bool = False
+    ) -> Tuple[Dict[str, Any], Set[str]]:
+        """
+        Converts this Pydantic model to a dict with localized fields resolved,
+        recursively localising fields that are localization-aware.
+        """
+        if not self:
+            return {}, set()
+
+        data = self.model_dump(by_alias=True, exclude_none=True)
+        
+        # Manually exclude internal columns if the model defines them
+        # (This is a safety measure because AppJSONResponse/json.dumps ignores Field(exclude=True))
+        if isinstance(self, InternalColumnProtocol):
+            internal_cols = self.get_internal_columns()
+            for col in internal_cols:
+                if col in data:
+                    del data[col]
+        
+        available_languages: Set[str] = set()
+
+        for field_name, field_info in self.__class__.model_fields.items():
+            original_value = getattr(self, field_name, None)
+            if original_value is None:
+                continue
+
+            serialization_alias = field_info.serialization_alias or field_name
+
+            if isinstance(original_value, LocalizedDTO):
+                available_languages.update(original_value.get_available_languages())
+                resolved = original_value.resolve(lang, include_language_keys=include_language_keys)
+                if resolved is not None:
+                    data[serialization_alias] = resolved
+                elif serialization_alias in data:
+                    del data[serialization_alias]
+
+            elif hasattr(original_value, "localize") and callable(getattr(original_value, "localize")):
+                localized_data, sub_langs = original_value.localize(lang, include_language_keys=include_language_keys)
+                data[serialization_alias] = localized_data
+                available_languages.update(sub_langs)
+
+            elif isinstance(original_value, list) and original_value:
+                if hasattr(original_value[0], "localize") and callable(getattr(original_value[0], "localize")):
+                    localized_list = []
+                    for item in original_value:
+                        item_data, item_langs = item.localize(lang, include_language_keys=include_language_keys)
+                        localized_list.append(item_data)
+                        available_languages.update(item_langs)
+                    data[serialization_alias] = localized_list
+
+        return data, available_languages
+
+    def get_available_languages(self, field_name: str) -> List[str]:
+        """Returns a list of available language codes for a given localized field."""
+        field_value = getattr(self, field_name, None)
+        if isinstance(field_value, LocalizedDTO):
+            return list(field_value.get_available_languages())
+        return []
+
+    def merge_localized_updates(
+        self, updates: Union[Dict[str, Any], "BaseModel"], lang: str
+    ) -> "Self":
+        """
+        Merges updates into this model, delegating to localized fields.
+        Returns a new updated model instance.
+        """
+        if isinstance(updates, BaseModel):
+            updates = updates.model_dump(by_alias=True, exclude_none=True)
+            lang = "*"
+
+        updated_data = self.model_dump(by_alias=True)
+
+        for field_name, new_value in updates.items():
+            if new_value is None:
+                updated_data[field_name] = None
+                continue
+
+            current_field_value = getattr(self, field_name, None)
+
+            if hasattr(current_field_value, "merge_updates"):
+                updated_field_obj = current_field_value.merge_updates(new_value, lang)
+                if isinstance(updated_field_obj, BaseModel):
+                    updated_data[field_name] = updated_field_obj.model_dump(by_alias=True, exclude_none=True)
+                else:
+                    updated_data[field_name] = updated_field_obj
+            elif current_field_value is None:
+                field_info = type(self).model_fields.get(field_name)
+                if field_info:
+                    from typing import get_args, Union as TypingUnion
+                    field_type = field_info.annotation
+                    if hasattr(field_type, "__origin__") and field_type.__origin__ is TypingUnion:
+                        for arg in get_args(field_type):
+                            if arg is not type(None):
+                                field_type = arg
+                                break
+
+                    if isinstance(field_type, type) and hasattr(field_type, "merge_updates"):
+                        try:
+                            empty_instance = field_type()
+                        except Exception:
+                            updated_data[field_name] = new_value
+                            continue
+                        updated_field_obj = empty_instance.merge_updates(new_value, lang)
+                        if isinstance(updated_field_obj, BaseModel):
+                            updated_data[field_name] = updated_field_obj.model_dump(by_alias=True, exclude_none=True)
+                        else:
+                            updated_data[field_name] = updated_field_obj
+                    else:
+                        updated_data[field_name] = new_value
+                else:
+                    updated_data[field_name] = new_value
+            else:
+                updated_data[field_name] = new_value
+
+        return self.__class__.model_validate(updated_data)
+
+    @classmethod
+    def create_from_localized_input(cls, data: Dict[str, Any], lang: str) -> "Self":
+        """
+        Factory method to create a model from a dict that may contain
+        single-language values for its localized fields.
+        """
+        if lang == "*" or not data:
+            return cls.model_validate(data)
+
+        from typing import get_args, Union as TypingUnion
+        processed_data = dict(data)
+
+        for field_name, field_info in cls.model_fields.items():
+            if field_name not in processed_data or processed_data[field_name] is None:
+                continue
+
+            value = processed_data[field_name]
+            field_type = field_info.annotation
+            if hasattr(field_type, "__origin__") and field_type.__origin__ is TypingUnion:
+                field_type = next(
+                    (arg for arg in get_args(field_type) if arg is not type(None)), None
+                )
+
+            if (
+                field_type
+                and hasattr(field_type, "delocalize_input")
+                and callable(getattr(field_type, "delocalize_input"))
+            ):
+                processed_data[field_name] = field_type.delocalize_input(value, lang)
+
+        return cls.model_validate(processed_data)

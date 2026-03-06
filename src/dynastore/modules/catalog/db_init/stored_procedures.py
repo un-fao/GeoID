@@ -1,12 +1,18 @@
 import logging
 import asyncio
-from dynastore.modules.db_config.query_executor import DbResource, DQLQuery, ResultHandler
-from dynastore.modules.db_config.locking_tools import acquire_lock_if_needed
+from dynastore.modules.db_config.query_executor import (
+    DbResource,
+    DDLQuery,
+)
+from dynastore.modules.db_config.locking_tools import (
+    acquire_lock_if_needed,
+    check_function_exists,
+)
 
 logger = logging.getLogger(__name__)
 
 UPDATE_COLLECTION_EXTENTS_SQL = """
-CREATE OR REPLACE FUNCTION update_collection_extents()
+CREATE OR REPLACE FUNCTION public.update_collection_extents()
 RETURNS TRIGGER AS $$
 DECLARE
     master_table_name TEXT := TG_ARGV[0];
@@ -51,7 +57,7 @@ $$ LANGUAGE plpgsql;
 """
 
 ASSET_CLEANUP_SQL = """
-CREATE OR REPLACE FUNCTION asset_cleanup() RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION public.asset_cleanup() RETURNS TRIGGER AS $$
 DECLARE
     hub_physical_table TEXT := TG_ARGV[0];
     asset_id_val TEXT;
@@ -100,16 +106,20 @@ END;
 $$ LANGUAGE plpgsql;
 """
 
+
 async def ensure_stored_procedures(conn: DbResource) -> None:
-    """Ensures all required stored procedures exist in the tenant schema."""
-    async with acquire_lock_if_needed(conn, "ensure_stored_procedures", lambda: asyncio.sleep(0, result=False)):
-        # We use acquire_lock_if_needed to ensure DDL safety.
-        # Note: TG_TABLE_SCHEMA will resolve to the current schema at runtime in the trigger.
-        
-        # 1. Update Collection Extents
-        await DQLQuery(UPDATE_COLLECTION_EXTENTS_SQL, result_handler=ResultHandler.ROWCOUNT).execute(conn)
-        
-        # 2. Asset Cleanup
-        await DQLQuery(ASSET_CLEANUP_SQL, result_handler=ResultHandler.ROWCOUNT).execute(conn)
-        
+    """Ensures all required stored procedures exist in the public schema."""
+
+    async def check_all(active_conn=None, params=None):
+        target_conn = active_conn or conn
+        return await check_function_exists(target_conn, "update_collection_extents", "public") and \
+               await check_function_exists(target_conn, "asset_cleanup", "public")
+
+    # Use a single DDLQuery for all procedures. DDLQuery handles splitting and atomic locking.
+    await DDLQuery(
+        UPDATE_COLLECTION_EXTENTS_SQL + ASSET_CLEANUP_SQL,
+        check_query=check_all,
+        lock_key="ensure_stored_procedures"
+    ).execute(conn)
+
     logger.info("Catalog stored procedures ensured.")

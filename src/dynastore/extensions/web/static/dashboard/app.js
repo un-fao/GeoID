@@ -7,18 +7,57 @@ const app = {
     // --- Initialization ---
     init() {
         this.bindEvents();
+        this.loadCatalogs();
         this.refreshAll();
         // Auto-refresh every 30s
         setInterval(() => this.refreshAll(), 30000);
+    },
+
+    async loadCatalogs() {
+        try {
+            const res = await fetch('/web/dashboard/catalogs');
+            const catalogs = await res.json();
+            const select = document.getElementById('catalog-select');
+            catalogs.forEach(c => {
+                const opt = document.createElement('option');
+                opt.value = c.id || c.code;
+                opt.textContent = `${c.title || c.id || c.code}`;
+                select.appendChild(opt);
+            });
+        } catch(e) { console.error("Failed to load catalogs", e); }
+    },
+
+    async onCatalogChange() {
+        const catalogId = document.getElementById('catalog-select').value;
+        const colSelect = document.getElementById('collection-select');
+        colSelect.innerHTML = '<option value="">All Collections</option>';
+        colSelect.disabled = catalogId === '_system_';
+
+        if (catalogId !== '_system_') {
+            try {
+                const res = await fetch(`/web/dashboard/catalogs/${catalogId}/collections`);
+                const cols = await res.json();
+                cols.forEach(c => {
+                    const opt = document.createElement('option');
+                    opt.value = c.id || c.code;
+                    opt.textContent = c.title || c.id || c.code;
+                    colSelect.appendChild(opt);
+                });
+            } catch(e) { console.error("Failed to load collections", e); }
+        }
+        this.refreshAll();
     },
 
     bindEvents() {
         // Tab Switching
         document.querySelectorAll('.nav-item').forEach(el => {
             el.addEventListener('click', (e) => {
-                e.preventDefault();
                 const target = e.currentTarget.dataset.tab;
-                this.switchTab(target);
+                if (target) {
+                    e.preventDefault();
+                    this.switchTab(target);
+                }
+                // If no data-tab, let the default link behavior happen (e.g. navigation)
             });
         });
     },
@@ -55,7 +94,8 @@ const app = {
 
     async loadOverview() {
         try {
-            const res = await fetch('/web/dashboard/stats');
+            const catalogId = document.getElementById('catalog-select').value;
+            const res = await fetch(`/web/dashboard/stats?catalog_id=${catalogId}`);
             const data = await res.json();
             
             // Populate Cards
@@ -72,7 +112,15 @@ const app = {
 
     async loadLogs() {
         try {
-            const res = await fetch('/web/dashboard/logs?limit=20');
+            const catalogId = document.getElementById('catalog-select').value;
+            const collectionId = document.getElementById('collection-select').value;
+            
+            let url = `/web/dashboard/logs?limit=20&catalog_id=${catalogId}`;
+            if (collectionId) url += `&collection_id=${collectionId}`;
+            
+            const levelFilter = document.querySelector('.filter-select').value; // Assuming the first .filter-select is level (if they have unique ids it's better)
+            
+            const res = await fetch(url);
             const logs = await res.json();
             
             const tbody = document.querySelector('#logs-table tbody');

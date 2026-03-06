@@ -1,0 +1,44 @@
+#    Copyright 2025 FAO — Apache 2.0 License
+# -----------------------------------------------------------------------------
+#  LOCAL / ON-PREMISE OVERRIDE
+#  Usage: docker compose -f docker-compose.yml -f docker-compose.local.yml up
+#
+#  Overrides:
+#    - Removes GCP-specific modules from the worker / api services
+#    - Sets NAME so the migration runner can fast-path by app_key
+#    - Provides DEFAULT_MAX_RETRIES used by the dispatcher
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+services:
+  db:
+    ports:
+      - "54320:5432" # Expose DB locally for dev tools
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-gis_dev}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NAME: "dynastore-api-local"
+      DYNASTORE_MODULES: "db_config,db,datastore,catalog,stac,tiles,gcp,processes,tasks,crs,httpx,proxy,auth,apikey,stats,gdal,spanner"
+      DYNASTORE_EXTENSION_MODULES: "web,logs,stats,events,assets,configs,stac,features,processes,tasks,gcp,httpx,proxy,gdal,tiles,maps,wfs,styles,crs,dwh,apikey,auth,template,datamind,permissions"
+      DYNASTORE_TASK_MODULES: ""
+      DEFAULT_MAX_RETRIES: "3"
+
+  worker:
+    environment:
+      NAME: "dynastore-worker-local"
+      DYNASTORE_MODULES: "db_config,db,datastore,catalog,stac,tiles,gcp,processes,tasks,crs,gdal,httpx"
+      DYNASTORE_EXTENSION_MODULES: "web,gcp,processes,tasks,httpx,logs,events,stats,tiles"
+      DYNASTORE_TASK_MODULES: "ingestion,export_features,dwh_join,tiles_preseed,gdal,gcp_cloud_runner"
+      RUNNER_ID: "local-worker"
+      DEFAULT_MAX_RETRIES: "3"
+    depends_on:
+      db:
+        condition: service_healthy

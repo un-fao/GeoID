@@ -17,6 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 # dynastore/extensions/stac/stac_generator.py
+from dynastore.tools.utils import safe_get
 import asyncio
 import json
 import logging
@@ -24,41 +25,58 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Type, cast
 from uuid import UUID
+from dynastore.models.shared_models import Feature
 
 import pystac
 from fastapi import HTTPException, Request, status
 from shapely import wkb
 from shapely.geometry import mapping, shape
 from sqlalchemy.ext.asyncio import AsyncConnection
-from dynastore.modules.db_config.tools import get_any_engine
 from dynastore.modules.db_config.query_executor import managed_transaction
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
 import dynastore.modules.db_config.shared_queries as shared_queries
 from dynastore.extensions.tools.url import (
-    get_base_url, get_parent_url, get_root_url, get_url)
-from dynastore.tools.geospatial import (GeometryProcessingError,
-                                        calculate_spatial_indices,
-                                        process_geometry)
-from dynastore.modules.catalog.catalog_config import (CollectionPluginConfig,
-                                                      GeometryStorageConfig)
-from dynastore.modules.stac.stac_config import (STAC_PLUGIN_CONFIG_ID,
-                                                   StacPluginConfig, HierarchyStrategy)
-from dynastore.extensions.tools.conformance import (Conformance,
-                                                    get_active_conformance)
-from dynastore.modules.catalog.tools import prepare_item_for_db
-from dynastore.models.localization import STAC_LANGUAGE_EXTENSION_URI, get_language_object, localize_dict
+    get_base_url,
+    get_parent_url,
+    get_root_url,
+    get_url,
+)
+from dynastore.tools.geospatial import (
+    GeometryProcessingError,
+    calculate_spatial_indices,
+    process_geometry,
+)
+from dynastore.modules.catalog.catalog_config import (
+    CollectionPluginConfig,
+    GeometryStorageConfig,
+)
+from dynastore.modules.catalog.sidecars.geometries_config import GeometriesSidecarConfig
+from dynastore.modules.stac.stac_config import (
+    STAC_PLUGIN_CONFIG_ID,
+    StacPluginConfig,
+    HierarchyStrategy,
+)
+from dynastore.extensions.tools.conformance import Conformance, get_active_conformance
+from dynastore.models.localization import (
+    STAC_LANGUAGE_EXTENSION_URI,
+    get_language_object,
+    localize_dict,
+)
 from .stac_models import stac_localize
-from dynastore.models.protocols import ConfigsProtocol
-from dynastore.tools.discovery import get_protocol
+from dynastore.tools.discovery import get_protocol, get_protocols
+from .stac_extension_protocol import StacExtensionProtocol, StacExtensionContext
+from .metadata_helpers import merge_stac_metadata
 
 logger = logging.getLogger(__name__)
 
 from . import stac_db, asset_factory
+
 SUPPORTED_STAC_EXTENSIONS = [
     "https://stac-extensions.github.io/datacube/v2.3.0/schema.json",
     "https://stac-extensions.github.io/projection/v1.1.0/schema.json",
-    STAC_LANGUAGE_EXTENSION_URI
+    STAC_LANGUAGE_EXTENSION_URI,
 ]
+
 
 async def create_root_catalog(request: Request, lang: str = "en") -> Dict[str, Any]:
     """Generates the root STAC Catalog."""
@@ -77,7 +95,10 @@ async def create_root_catalog(request: Request, lang: str = "en") -> Dict[str, A
     # In a full implementation, this could be localized if stored in DB.
     # For now, we manually inject the language block for consistency if requested.
     from dynastore.models.localization import get_language_object
-    root_catalog.extra_fields["language"] = get_language_object(lang).model_dump(exclude_none=True)
+
+    root_catalog.extra_fields["language"] = get_language_object(lang).model_dump(
+        exclude_none=True
+    )
 
     root_catalog.set_self_href(base_url)
     root_catalog.add_link(
@@ -98,7 +119,8 @@ async def create_root_catalog(request: Request, lang: str = "en") -> Dict[str, A
     )
 
     catalogs_svc = get_protocol(CatalogsProtocol)
-    if not catalogs_svc: raise RuntimeError("CatalogsProtocol not available")
+    if not catalogs_svc:
+        raise RuntimeError("CatalogsProtocol not available")
     all_catalogs = await catalogs_svc.list_catalogs(lang=lang, limit=1000)
     for cat in all_catalogs:
         # Localize catalog summary for the link title
@@ -117,11 +139,80 @@ async def create_root_catalog(request: Request, lang: str = "en") -> Dict[str, A
     return root_catalog.to_dict()
 
 
-async def create_catalog(request: Request, catalog_id: str, lang: str = "en") -> Dict[str, Any]:
+def create_catalog_summary(
+    request: Request, catalog_model: Any, lang: str = "en"
+) -> Dict[str, Any]:
+    """Generates a lightweight STAC Catalog summary (no child links)."""
+    base_url = get_url(request)
+
+    # Localize metadata
+    meta_dict, available_langs = stac_localize(catalog_model, lang)
+
+    catalog = pystac.Catalog(
+        id=catalog_model.id,
+        description=meta_dict.get("description")
+        or f"STAC Catalog for the '{catalog_model.id}' database schema.",
+        title=meta_dict.get("title") or f"Catalog: {catalog_model.id}",
+    )
+
+    # Inject language metadata
+    if (
+        "language" in meta_dict
+        and STAC_LANGUAGE_EXTENSION_URI not in catalog.stac_extensions
+    ):
+        catalog.stac_extensions.append(STAC_LANGUAGE_EXTENSION_URI)
+    if "language" in meta_dict:
+        catalog.extra_fields["language"] = meta_dict["language"]
+    if "languages" in meta_dict:
+        catalog.extra_fields["languages"] = meta_dict["languages"]
+
+    # Merge localized extra metadata into catalog extra fields
+    # Use explicit variable to assist debugging if needed
+    extra_meta = meta_dict.get("extra_metadata")
+    if extra_meta and isinstance(extra_meta, dict):
+        catalog.extra_fields.update(extra_meta)
+
+    # Use dynamic exclusion from model and add STAC-specific top-level exclusions
+    stac_top_level = {"stac_version", "stac_extensions", "links", "conformsTo", "id", "title", "description"}
+    internal_cols = catalog_model.get_internal_columns() | stac_top_level
+    for internal in internal_cols:
+        catalog.extra_fields.pop(internal, None)
+
+    # Set Links
+    # Self link needs to point to the specific catalog endpoint
+    self_href = f"{get_root_url(request)}/stac/catalogs/{catalog_model.id}"
+    catalog.add_link(
+        pystac.Link(rel="self", target=self_href, media_type="application/json")
+    )
+
+    # Root link
+    catalog.add_link(
+        pystac.Link(
+            rel="root", target=f"{get_root_url(request)}/stac", title="Root Catalog"
+        )
+    )
+
+    # Collections link (convenience)
+    catalog.add_link(
+        pystac.Link(
+            rel="data",
+            target=f"{self_href}/collections",
+            media_type="application/json",
+            title="Collections",
+        )
+    )
+
+    return catalog.to_dict()
+
+
+async def create_catalog(
+    request: Request, catalog_id: str, lang: str = "en"
+) -> Dict[str, Any]:
     """Generates a STAC Catalog for a specific catalog ID."""
     base_url = get_url(request)
     catalogs_svc = get_protocol(CatalogsProtocol)
-    if not catalogs_svc: raise RuntimeError("CatalogsProtocol not available")
+    if not catalogs_svc:
+        raise RuntimeError("CatalogsProtocol not available")
     catalog_metadata_model = await catalogs_svc.get_catalog_model(catalog_id)
     if not catalog_metadata_model:
         return {}
@@ -135,9 +226,12 @@ async def create_catalog(request: Request, catalog_id: str, lang: str = "en") ->
         or f"STAC Catalog for the '{catalog_id}' database schema.",
         title=meta_dict.get("title") or f"Catalog: {catalog_id}",
     )
-    
+
     # Inject language metadata
-    if "language" in meta_dict and STAC_LANGUAGE_EXTENSION_URI not in catalog.stac_extensions:
+    if (
+        "language" in meta_dict
+        and STAC_LANGUAGE_EXTENSION_URI not in catalog.stac_extensions
+    ):
         catalog.stac_extensions.append(STAC_LANGUAGE_EXTENSION_URI)
     if "language" in meta_dict:
         catalog.extra_fields["language"] = meta_dict["language"]
@@ -146,16 +240,29 @@ async def create_catalog(request: Request, catalog_id: str, lang: str = "en") ->
 
     # Merge localized extra metadata into catalog extra fields
     if "extra_metadata" in meta_dict and isinstance(meta_dict["extra_metadata"], dict):
-        catalog.extra_fields.update(meta_dict["extra_metadata"])
+        extra = meta_dict["extra_metadata"]
+        for k, v in extra.items():
+            if k not in ["language", "languages"]:
+                catalog.extra_fields[k] = v
+
+    # Use dynamic exclusion based on the model's protocol + STAC top level
+    stac_top_level = {"stac_version", "stac_extensions", "links", "conformsTo", "id", "title", "description"}
+    internal_cols = catalog_metadata_model.get_internal_columns() | stac_top_level
+    for internal in internal_cols:
+        catalog.extra_fields.pop(internal, None)
 
     catalog.set_self_href(base_url)
-    if lang != '*':
+    if lang != "*":
         catalog.get_links("self")[0].extra_fields["hreflang"] = lang
 
-    root_link = pystac.Link(rel="root", target=get_parent_url(request, 2), title="Root Catalog")
-    parent_link = pystac.Link(rel="parent", target=get_parent_url(request, 1), title="Parent Catalog")
-    
-    if lang != '*':
+    root_link = pystac.Link(
+        rel="root", target=get_parent_url(request, 2), title="Root Catalog"
+    )
+    parent_link = pystac.Link(
+        rel="parent", target=get_parent_url(request, 1), title="Parent Catalog"
+    )
+
+    if lang != "*":
         root_link.extra_fields["hreflang"] = lang
         parent_link.extra_fields["hreflang"] = lang
 
@@ -163,20 +270,23 @@ async def create_catalog(request: Request, catalog_id: str, lang: str = "en") ->
     catalog.add_link(parent_link)
 
     # Add alternate links for other languages
-    if lang != '*' and available_langs:
+    if lang != "*" and available_langs:
         for other_lang in sorted(available_langs - {lang}):
-             alt_url = str(request.url.replace_query_params(lang=other_lang))
-             lang_meta = get_language_object(other_lang)
-             catalog.add_link(pystac.Link(
-                 rel="alternate",
-                 target=alt_url,
-                 media_type="application/json",
-                 title=lang_meta.name,
-                 extra_fields={"hreflang": other_lang}
-             ))
+            alt_url = str(request.url.replace_query_params(lang=other_lang))
+            lang_meta = get_language_object(other_lang)
+            catalog.add_link(
+                pystac.Link(
+                    rel="alternate",
+                    target=alt_url,
+                    media_type="application/json",
+                    title=lang_meta.name,
+                    extra_fields={"hreflang": other_lang},
+                )
+            )
 
     catalogs_svc = get_protocol(CatalogsProtocol)
-    if not catalogs_svc: raise RuntimeError("CatalogsProtocol not available")
+    if not catalogs_svc:
+        raise RuntimeError("CatalogsProtocol not available")
     collections = await catalogs_svc.list_collections(catalog_id, lang=lang, limit=1000)
     for coll in collections:
         # Localize collection summary for the link title
@@ -194,29 +304,37 @@ async def create_catalog(request: Request, catalog_id: str, lang: str = "en") ->
     return catalog.to_dict()
 
 
-async def create_collections_catalog(request: Request, catalog_id: str, lang: str = "en") -> Dict[str, Any]:
+async def create_collections_catalog(
+    request: Request, catalog_id: str, lang: str = "en"
+) -> Dict[str, Any]:
     """Generates the collections list for a specific catalog."""
     catalogs_svc = get_protocol(CatalogsProtocol)
-    if not catalogs_svc: raise RuntimeError("CatalogsProtocol not available")
+    if not catalogs_svc:
+        raise RuntimeError("CatalogsProtocol not available")
     collections = await catalogs_svc.list_collections(catalog_id, lang=lang, limit=1000)
-    
+
     stac_collections = []
     for coll in collections:
         stac_coll = await create_collection(request, catalog_id, coll.id, lang=lang)
         if stac_coll:
             stac_collections.append(stac_coll.to_dict())
-        
+
     root_url = get_root_url(request)
     links = [
-        {"rel": "self", "type": "application/json", "href": f"{root_url}/stac/catalogs/{catalog_id}/collections"},
-        {"rel": "parent", "type": "application/json", "href": f"{root_url}/stac/catalogs/{catalog_id}"},
-        {"rel": "root", "type": "application/json", "href": f"{root_url}/stac"}
+        {
+            "rel": "self",
+            "type": "application/json",
+            "href": f"{root_url}/stac/catalogs/{catalog_id}/collections",
+        },
+        {
+            "rel": "parent",
+            "type": "application/json",
+            "href": f"{root_url}/stac/catalogs/{catalog_id}",
+        },
+        {"rel": "root", "type": "application/json", "href": f"{root_url}/stac"},
     ]
-    
-    return {
-        "collections": stac_collections,
-        "links": links
-    }
+
+    return {"collections": stac_collections, "links": links}
 
 
 async def create_collection(
@@ -224,7 +342,8 @@ async def create_collection(
 ) -> Optional[pystac.Collection]:
     """Generates a full STAC Collection for a specific database table."""
     catalogs_svc = get_protocol(CatalogsProtocol)
-    if not catalogs_svc: raise RuntimeError("CatalogsProtocol not available")
+    if not catalogs_svc:
+        raise RuntimeError("CatalogsProtocol not available")
     metadata_model, layer_config = await asyncio.gather(
         catalogs_svc.get_collection_model(catalog_id, collection_id),
         catalogs_svc.get_collection_config(catalog_id, collection_id),
@@ -237,23 +356,39 @@ async def create_collection(
 
     # Fetch STAC-specific config to inject extensions like datacube
     config_manager = get_protocol(ConfigsProtocol)
-    if not config_manager: raise RuntimeError("ConfigsProtocol not available")
-    stac_config: StacPluginConfig = cast(StacPluginConfig, await config_manager.get_config(STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id))
+    if not config_manager:
+        raise RuntimeError("ConfigsProtocol not available")
+    stac_config: StacPluginConfig = cast(
+        StacPluginConfig,
+        await config_manager.get_config(
+            STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id
+        ),
+    )
 
     # Correctly handle the Extent object and its attributes
     spatial_bbox = [0, 0, 0, 0]
-    if metadata_model.extent and metadata_model.extent.spatial and metadata_model.extent.spatial.bbox:
+    if (
+        metadata_model.extent
+        and metadata_model.extent.spatial
+        and metadata_model.extent.spatial.bbox
+    ):
         # The model stores bbox as a list of tuples, get the first one.
         spatial_bbox = metadata_model.extent.spatial.bbox[0]
 
     spatial_extent = pystac.SpatialExtent([list(spatial_bbox)])
 
     temporal_interval_dates = [None, None]
-    if metadata_model.extent and metadata_model.extent.temporal and metadata_model.extent.temporal.interval:
+    if (
+        metadata_model.extent
+        and metadata_model.extent.temporal
+        and metadata_model.extent.temporal.interval
+    ):
         # The model stores interval as a list of tuples, get the first one.
         start_dt, end_dt = metadata_model.extent.temporal.interval[0]
         if start_dt and end_dt:
-            temporal_interval_dates = [dt.replace(tzinfo=timezone.utc) for dt in (start_dt, end_dt)]
+            temporal_interval_dates = [
+                dt.replace(tzinfo=timezone.utc) for dt in (start_dt, end_dt)
+            ]
 
     temporal_extent = pystac.TemporalExtent(intervals=[temporal_interval_dates])
     extent = pystac.Extent(spatial=spatial_extent, temporal=temporal_extent)
@@ -262,17 +397,27 @@ async def create_collection(
     # Add extensions based on config
     if stac_config.cube_dimensions or stac_config.cube_variables:
         stac_extensions_to_add.append(SUPPORTED_STAC_EXTENSIONS[0])
-    
+
     # Cast layer_config components to expected types to handle Immutable wrappers
     storage_config = None
     if layer_config:
-        storage_config = cast(GeometryStorageConfig, layer_config.geometry_storage)
-        if storage_config.target_srid != 4326:
-            stac_extensions_to_add.append(SUPPORTED_STAC_EXTENSIONS[1])
+        geom_sidecar = next(
+            (
+                sc
+                for sc in layer_config.sidecars
+                if getattr(sc, "sidecar_type", None) == "geometries"
+            ),
+            None,
+        )
+        if geom_sidecar:
+            storage_config = cast(GeometriesSidecarConfig, geom_sidecar)
+            if storage_config.target_srid != 4326:
+                stac_extensions_to_add.append(SUPPORTED_STAC_EXTENSIONS[1])
 
     collection = pystac.Collection(
         id=collection_id,
-        description=meta_dict.get("description") or f"Data from '{catalog_id}:{collection_id}'",
+        description=meta_dict.get("description")
+        or f"Data from '{catalog_id}:{collection_id}'",
         extent=extent,
         title=meta_dict.get("title") or collection_id,
         stac_extensions=stac_extensions_to_add,
@@ -288,37 +433,68 @@ async def create_collection(
 
     # Merge localized extra metadata into collection extra fields
     if "extra_metadata" in meta_dict and isinstance(meta_dict["extra_metadata"], dict):
-        collection.extra_fields.update(meta_dict["extra_metadata"])
+        extra = meta_dict["extra_metadata"]
+        for k, v in extra.items():
+            if k not in ["language", "languages"]:
+                 collection.extra_fields[k] = v
 
     # Add datacube dimensions and variables from config
     if stac_config.cube_dimensions:
-        collection.extra_fields["cube:dimensions"] = {k: v.model_dump(exclude_none=True) for k, v in stac_config.cube_dimensions.items()}
-    
+        collection.extra_fields["cube:dimensions"] = {
+            k: v.model_dump(exclude_none=True)
+            for k, v in stac_config.cube_dimensions.items()
+        }
+
     if stac_config.cube_variables:
-        collection.extra_fields["cube:variables"] = {k: v.model_dump(exclude_none=True) for k, v in stac_config.cube_variables.items()}
+        collection.extra_fields["cube:variables"] = {
+            k: v.model_dump(exclude_none=True)
+            for k, v in stac_config.cube_variables.items()
+        }
 
     if SUPPORTED_STAC_EXTENSIONS[1] in stac_extensions_to_add and storage_config:
         collection.extra_fields["proj:epsg"] = storage_config.target_srid
         collection.extra_fields["proj:wkt2"] = None
 
+    # Use dynamic exclusion based on the model's protocol + STAC top level
+    stac_top_level = {"stac_version", "stac_extensions", "links", "conformsTo", "id", "title", "description", "extent", "keywords", "license", "providers", "summaries"}
+    internal_cols = metadata_model.get_internal_columns() | stac_top_level
+    for internal in internal_cols:
+        collection.extra_fields.pop(internal, None)
+
     # Set the root catalog to avoid pystac trying to resolve it via network
     root_catalog = pystac.Catalog(
-        id="root",
-        description="Root Catalog",
-        href=get_root_url(request)
+        id="root", description="Root Catalog", href=get_root_url(request)
     )
     collection.set_root(root_catalog)
 
     base_url = get_url(request)
-    collection.set_self_href(base_url)
-    if lang != '*':
+    root_url = get_root_url(request)
+
+    # Ensure correct Self and Items URLs regardless of calling endpoint
+    collection_self_href = (
+        f"{root_url}/stac/catalogs/{catalog_id}/collections/{collection_id}"
+    )
+    collection.set_self_href(collection_self_href)
+
+    if lang != "*":
         collection.get_links("self")[0].extra_fields["hreflang"] = lang
 
-    root_link = pystac.Link(rel="root", target=get_root_url(request), title="Root Catalog")
-    parent_link = pystac.Link(rel="parent", target=get_parent_url(request, 1), title="Parent Catalog")
-    items_link = pystac.Link(rel="items", target=f"{base_url}/items", media_type="application/geo+json", title="Items in this Collection")
+    root_link = pystac.Link(rel="root", target=f"{root_url}/stac", title="Root Catalog")
+    parent_link = pystac.Link(
+        rel="parent",
+        target=f"{root_url}/stac/catalogs/{catalog_id}",
+        title="Parent Catalog",
+    )
 
-    if lang != '*':
+    items_href = f"{collection_self_href}/items"
+    items_link = pystac.Link(
+        rel="items",
+        target=items_href,
+        media_type="application/geo+json",
+        title="Items in this Collection",
+    )
+
+    if lang != "*":
         root_link.extra_fields["hreflang"] = lang
         parent_link.extra_fields["hreflang"] = lang
         items_link.extra_fields["hreflang"] = lang
@@ -326,105 +502,22 @@ async def create_collection(
     collection.add_links([root_link, parent_link, items_link])
 
     # Add alternate links for other languages
-    if lang != '*' and available_langs:
+    if lang != "*" and available_langs:
         for other_lang in sorted(available_langs - {lang}):
-             alt_url = str(request.url.replace_query_params(lang=other_lang))
-             lang_meta = get_language_object(other_lang)
-             collection.add_link(pystac.Link(
-                 rel="alternate",
-                 target=alt_url,
-                 media_type="application/json",
-                 title=lang_meta.name,
-                 extra_fields={"hreflang": other_lang}
-             ))
+            alt_url = str(request.url.replace_query_params(lang=other_lang))
+            lang_meta = get_language_object(other_lang)
+            collection.add_link(
+                pystac.Link(
+                    rel="alternate",
+                    target=alt_url,
+                    media_type="application/json",
+                    title=lang_meta.name,
+                    extra_fields={"hreflang": other_lang},
+                )
+            )
 
     return collection
 
-
-def _evaluate_condition(condition: str, properties: Dict[str, Any]) -> bool:
-    """
-    Evaluates a CQL2-TEXT condition string against feature properties.
-    Uses the pygeofilter-based CQL parser for robust and standards-compliant evaluation.
-    
-    Args:
-        condition: A CQL2-TEXT filter expression (e.g., "prop='value'", "prop IS NULL", "prop > 10")
-        properties: Dictionary of feature properties to evaluate against
-    
-    Returns:
-        True if the condition matches, False otherwise
-    """
-    if not condition:
-        return True
-    
-    try:
-        from dynastore.modules.tools.cql import parse_cql_filter, PYGEOFILTER_AVAILABLE
-        from sqlalchemy import text
-        from sqlalchemy.sql import column as sql_column
-        
-        if not PYGEOFILTER_AVAILABLE:
-            # Fallback to simple equality check if pygeofilter is not available
-            logger.warning("pygeofilter not available, using simple equality check")
-            if "=" in condition:
-                key, val = condition.split("=", 1)
-                key = key.strip().lower()
-                val = val.strip().replace("'", "").replace('"', "")
-                return str(properties.get(key)) == val
-            return False
-        
-        # Build field mapping for CQL parser - map property names to mock column accessors
-        field_mapping = {}
-        for prop_name in properties.keys():
-            field_mapping[prop_name] = sql_column(prop_name)
-        
-        # Parse the CQL condition
-        sql_where, params = parse_cql_filter(
-            condition,
-            field_mapping=field_mapping,
-            valid_props=set(properties.keys()),
-            parser_type='cql2'
-        )
-        
-        if not sql_where:
-            return True  # Empty filter means match all
-        
-        # Evaluate the condition in-memory by substituting values
-        # This is a simple evaluator for basic conditions
-        # For complex spatial predicates, this would need enhancement
-        eval_expr = sql_where
-        for param_name, param_value in params.items():
-            # Replace bind parameters with actual values
-            if isinstance(param_value, str):
-                eval_expr = eval_expr.replace(f":{param_name}", f"'{param_value}'")
-            else:
-                eval_expr = eval_expr.replace(f":{param_name}", str(param_value))
-        
-        # Replace column references with property values
-        for prop_name, prop_value in properties.items():
-            # Handle NULL values
-            if prop_value is None:
-                eval_expr = eval_expr.replace(prop_name, "NULL")
-            elif isinstance(prop_value, str):
-                eval_expr = eval_expr.replace(prop_name, f"'{prop_value}'")
-            else:
-                eval_expr = eval_expr.replace(prop_name, str(prop_value))
-        
-        # Simple evaluation using Python's eval (safe for our controlled expressions)
-        # Convert SQL operators to Python
-        eval_expr = eval_expr.replace(" = ", " == ")
-        eval_expr = eval_expr.replace(" AND ", " and ")
-        eval_expr = eval_expr.replace(" OR ", " or ")
-        eval_expr = eval_expr.replace(" NOT ", " not ")
-        eval_expr = eval_expr.replace(" IS NULL", " is None")
-        eval_expr = eval_expr.replace(" IS NOT NULL", " is not None")
-        eval_expr = eval_expr.replace("NULL", "None")
-        
-        # Evaluate the expression
-        result = eval(eval_expr)
-        return bool(result)
-        
-    except Exception as e:
-        logger.warning(f"Failed to evaluate hierarchy condition '{condition}': {e}")
-        return False
 
 def apply_hierarchy_links(
     item: pystac.Item,
@@ -435,7 +528,7 @@ def apply_hierarchy_links(
     collection_id: str,
     collection_url: str,
     source_collection_url: str,
-    view_mode: str = "standard"
+    view_mode: str = "standard",
 ) -> pystac.Item:
     """
     Dynamically applies parent, child, and source links to a STAC Item based on configuration and View Mode.
@@ -454,87 +547,122 @@ def apply_hierarchy_links(
     """
     # 1. Virtual View Check
     if view_mode.startswith("virtual"):
-        # The virtual URL structure: 
+        # The virtual URL structure:
         # /stac/virtual/assets/{asset_id}/catalogs/{id}/collections/{coll_id}
         # /stac/virtual/hierarchy/{hierarchy_id}/catalogs/{id}/collections/{coll_id}
 
         # Extract root URL from the item's root catalog or derive from collection_url
         root_catalog = item.get_root()
-        if root_catalog and hasattr(root_catalog, 'get_self_href'):
+        if root_catalog and hasattr(root_catalog, "get_self_href"):
             root_href = root_catalog.get_self_href()
             if root_href:
                 root_url = root_href
             else:
                 # Fallback: derive from collection_url
-                root_url = collection_url.rsplit('/catalogs/', 1)[0] if '/catalogs/' in collection_url else collection_url
+                root_url = (
+                    collection_url.rsplit("/catalogs/", 1)[0]
+                    if "/catalogs/" in collection_url
+                    else collection_url
+                )
         else:
             # Fallback: derive from collection_url
-            root_url = collection_url.rsplit('/catalogs/', 1)[0] if '/catalogs/' in collection_url else collection_url
-        
+            root_url = (
+                collection_url.rsplit("/catalogs/", 1)[0]
+                if "/catalogs/" in collection_url
+                else collection_url
+            )
+
         if view_mode == "virtual-asset" and asset_id:
             virtual_coll_url = f"{root_url}/stac/virtual/assets/{asset_id}/catalogs/{catalog_id}/collections/{collection_id}"
             item.add_link(
-                pystac.Link(rel="parent", target=virtual_coll_url, title=f"Source Asset: {asset_id}")
+                pystac.Link(
+                    rel="parent",
+                    target=virtual_coll_url,
+                    media_type="application/json",
+                    title=f"Source Asset: {asset_id}",
+                )
             )
             item.add_link(
-                 pystac.Link(rel="collection", target=virtual_coll_url, title=f"Source Asset: {asset_id}")
+                pystac.Link(
+                    rel="collection",
+                    target=virtual_coll_url,
+                    media_type="application/json",
+                    title=f"Source Asset: {asset_id}",
+                )
             )
             return item
 
         if view_mode == "virtual-hierarchy":
             # For hierarchy, we need to know WHICH hierarchy_id we are in.
             # We can try to find the matching rule.
+            from dynastore.tools.expression import evaluate_sql_condition
             for rule in config.hierarchy.rules.values():
-                if _evaluate_condition(rule.condition, feature_properties):
+                if evaluate_sql_condition(rule.condition, feature_properties):
                     # Link to the virtual collection for this hierarchy level
                     hier_coll_url = f"{root_url}/stac/virtual/hierarchy/{rule.hierarchy_id}/catalogs/{catalog_id}/collections/{collection_id}"
-                    
+
                     # If this is a child level, we can scope it to the parent value
                     if rule.parent_code_property:
                         parent_val = feature_properties.get(rule.parent_code_property)
                         if parent_val:
                             hier_coll_url += f"?parent_value={parent_val}"
-                    
+
                     item.add_link(
-                        pystac.Link(rel="parent", target=hier_coll_url, title=f"Level: {rule.level_name or rule.hierarchy_id}")
+                        pystac.Link(
+                            rel="parent",
+                            target=hier_coll_url,
+                            title=f"Level: {rule.level_name or rule.hierarchy_id}",
+                        )
                     )
                     item.add_link(
-                        pystac.Link(rel="collection", target=hier_coll_url, title=f"Level: {rule.level_name or rule.hierarchy_id}")
+                        pystac.Link(
+                            rel="collection",
+                            target=hier_coll_url,
+                            title=f"Level: {rule.level_name or rule.hierarchy_id}",
+                        )
                     )
                     break
             return item
 
-
     # Note: Asset lineage linking is now handled dynamically in asset_factory.
 
     # 3. Standard View: Dynamic Hierarchy Rules
-    if config.hierarchy and config.hierarchy.enabled:
-        for rule in config.hierarchy.rules:
+    if config.hierarchy and config.hierarchy.enabled and config.hierarchy.rules:
+        for rule in config.hierarchy.rules.values():
             # Recursive Strategy
             if rule.strategy == HierarchyStrategy.RECURSIVE:
-                 # Check if this item is a root in the recursive graph
-                 is_root = False
-                 if rule.root_condition:
-                     is_root = _evaluate_condition(rule.root_condition, feature_properties)
-                 elif rule.parent_code_field:
-                     # Implicit root if parent field is null
-                     parent_val = feature_properties.get(rule.parent_code_property)
-                     is_root = parent_val is None
-                
-                 if is_root:
-                     # It's a root item, so it links to the Collection (already handled by default)
-                     # Or we can explicitly tag it.
-                     pass 
-                 else:
-                     # It's a child node. Parent is the item with ID specified in parent_code_field
-                     if rule.parent_code_field:
-                         parent_code = feature_properties.get(rule.parent_code_property)
-                         if parent_code:
-                             parent_item_url = f"{collection_url}/items/{parent_code}"
-                             item.add_link(pystac.Link(rel="parent", target=parent_item_url, media_type="application/geo+json"))
+                # Check if this item is a root in the recursive graph
+                is_root = False
+                if rule.root_condition:
+                    from dynastore.tools.expression import evaluate_sql_condition
+                    is_root = evaluate_sql_condition(
+                        rule.root_condition, feature_properties
+                    )
+                elif rule.parent_code_field:
+                    # Implicit root if parent field is null
+                    parent_val = feature_properties.get(rule.parent_code_property)
+                    is_root = parent_val is None
+
+                if is_root:
+                    # It's a root item, so it links to the Collection (already handled by default)
+                    # Or we can explicitly tag it.
+                    pass
+                else:
+                    # It's a child node. Parent is the item with ID specified in parent_code_field
+                    if rule.parent_code_field:
+                        parent_code = feature_properties.get(rule.parent_code_property)
+                        if parent_code:
+                            parent_item_url = f"{collection_url}/items/{parent_code}"
+                            item.add_link(
+                                pystac.Link(
+                                    rel="parent",
+                                    target=parent_item_url,
+                                    media_type="application/geo+json",
+                                )
+                            )
 
             # Fixed Strategy (Default)
-            else: 
+            else:
                 # Evaluate condition to see if this rule applies to the current item
                 if _evaluate_condition(rule.condition, feature_properties):
                     # Rule Matches: This item belongs to this level.
@@ -543,142 +671,248 @@ def apply_hierarchy_links(
                         parent_code = feature_properties.get(rule.parent_code_property)
                         if parent_code:
                             parent_item_url = f"{collection_url}/items/{parent_code}"
-                            item.add_link(pystac.Link(rel="parent", target=parent_item_url, media_type="application/geo+json"))
+                            item.add_link(
+                                pystac.Link(
+                                    rel="parent",
+                                    target=parent_item_url,
+                                    media_type="application/geo+json",
+                                )
+                            )
                     break  # Stop after the first matching rule for Fixed strategy
 
     return item
 
 
-async def create_item_from_row(
-    request: Request, catalog_id: str, collection_id: str, row: Dict, stac_config: StacPluginConfig, view_mode: str = "standard", lang: str = "en"
+
+async def create_item_from_feature(
+    request: Request,
+    catalog_id: str,
+    collection_id: str,
+    feature: Feature,
+    stac_config: Optional[StacPluginConfig] = None,
+    view_mode: str = "standard",
+    lang: str = "en",
+    collection_url_override: Optional[str] = None,
 ) -> Optional[pystac.Item]:
-    """Generates a STAC Item from a single database row."""
-    if not row:
+    """Generates a STAC Item from a mapped Feature."""
+    from dynastore.models.protocols.configs import ConfigsProtocol
+    from typing import cast # Added for cast
+
+    # 1. Resolve Configs
+    if not stac_config:
+        config_manager = get_protocol(ConfigsProtocol)
+        stac_config = cast(
+            StacPluginConfig,
+            await config_manager.get_config(
+                STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id
+            ),
+        )
+
+    if feature is None:
         return None
 
-    # Handle both SQLAlchemy Row objects (which have _mapping) and standard dicts.
-    if hasattr(row, '_mapping'):
-        row_dict = dict(row._mapping)
-    else:
-        row_dict = dict(row)
+    # 3. Detect available languages
+    available_langs = set()
     
-    # --- Localization of properties ---
-    properties = row_dict.get("attributes", {})
-    # Apply localization to properties dictionary
-    localized_props, available_langs = localize_dict(properties, lang)
-    properties = localized_props
+    # Check context metadata first (e.g. from StacItemsSidecar)
+    # Sidecars publish to context.metadata, which the ItemMapper attaches to feature.model_extra
+    if hasattr(feature, "model_extra") and feature.model_extra:
+        ctx_langs = feature.model_extra.get("stac_available_langs")
+        if ctx_langs:
+            available_langs.update(ctx_langs)
     
-    geom_dict = mapping(wkb.loads(row_dict["geom"])) if row_dict.get("geom") and isinstance(row_dict["geom"], bytes) else None
-    bbox = [row_dict["bbox_xmin"], row_dict["bbox_ymin"], row_dict["bbox_xmax"], row_dict["bbox_ymax"]] if row_dict.get("bbox_xmax") is not None else None
+    # helper for manual extraction if context is missing or incomplete
+    def _extract_langs_from_dict(source: dict):
+        if not isinstance(source, dict):
+            return
+        for val in source.values():
+            if isinstance(val, dict):
+                for k in val.keys():
+                    if isinstance(k, str) and (len(k) == 2 or (len(k) == 5 and k[2] == "-")):
+                        available_langs.add(k)
 
-    # Determine the primary datetime for the item
-    item_dt = row_dict.get("valid_from") or row_dict.get("transaction_time")
-    properties["start_datetime"] = item_dt.isoformat() if item_dt else None
-    valid_to = row_dict.get("valid_to")
-    properties["end_datetime"] = valid_to.isoformat() if valid_to and valid_to.year < 9999 else None
+    # 4. Extract from feature itself if no context langs (best effort)
+    if not available_langs:
+        if hasattr(feature, "properties") and feature.properties:
+            _extract_langs_from_dict(feature.properties)
+            _extract_langs_from_dict(feature.properties.get("stac_extra_fields", {}))
+            
+        if hasattr(feature, "model_extra") and feature.model_extra:
+            _extract_langs_from_dict(feature.model_extra)
+            _extract_langs_from_dict(feature.model_extra.get("stac_extra_fields", {}))
 
-    if item_dt and item_dt.tzinfo is None:
-        item_dt = item_dt.replace(tzinfo=timezone.utc)
+    # 5. Geometry and BBox
+    geometry = feature.geometry.model_dump() if feature.geometry else None
+    
+    # 6. Datetimes handling
+    properties = feature.properties or {}
+    item_dt = None
 
-    # Copy over non-attribute fields from the row to the properties dict
-    # We exclude internal columns that are not part of the STAC Item representation.
-    exclude_from_props = {
-        "id", "geoid", "geom", "bbox_xmin", "bbox_ymin", "bbox_xmax", "bbox_ymax", "attributes", 
-        "valid_from", "valid_to", "catalog_id", "collection_id",
-        "validity", "transaction_period", "was_geom_fixed", "processed_at", "recalculated_geom"
-    }
-    for key, value in row_dict.items():
-        if key not in exclude_from_props:
-            if isinstance(value, datetime): 
-                value = value.isoformat()
-            elif isinstance(value, UUID): 
-                value = str(value)
-            elif isinstance(value, bytes):
-                # Should not happen for core columns after exclusions, but handles user binary data
-                import base64
-                value = base64.b64encode(value).decode('utf-8')
-            elif hasattr(value, 'lower') and hasattr(value, 'upper') and not callable(value.lower):
-                # Handle asyncpg.Range (e.g. transaction_period, though excluded above)
-                lower = value.lower.isoformat() if isinstance(value.lower, datetime) else value.lower
-                upper = value.upper.isoformat() if isinstance(value.upper, datetime) else value.upper
-                value = [lower, upper]
-            properties[key] = value
+    # Resolve primary datetime: prefer 'datetime', then 'start_datetime', then 'valid_from', then 'created'
+    for dt_field in ["datetime", "start_datetime", "valid_from", "created"]:
+        val = properties.get(dt_field)
+        if val:
+            try:
+                if isinstance(val, datetime):
+                    item_dt = val
+                else:
+                    item_dt = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+                # Ensure it's timezone aware for pystac
+                if item_dt.tzinfo is None:
+                    item_dt = item_dt.replace(tzinfo=timezone.utc)
+                break
+            except (ValueError, TypeError):
+                continue
 
-    logger.debug(f"STAC Item properties for {row_dict.get('geoid')}: {list(properties.keys())}")
-
-    logger.debug(f"Creating STAC Item for row: geoid={row_dict.get('geoid')}, external_id={row_dict.get('external_id')}")
+    # PySTAC Requirement: If datetime is None, both start_datetime and end_datetime should be present if possible.
+    # 7. Create PySTAC Item
     item = pystac.Item(
-        id=str(row_dict.get("external_id") or row_dict["geoid"]),
-        geometry=geom_dict,
-        bbox=bbox,
+        id=feature.id,
+        geometry=geometry,
+        bbox=feature.bbox,
         datetime=item_dt,
         properties=properties,
-        collection=collection_id
+        collection=collection_id,
+        stac_extensions=getattr(feature, "stac_extensions", []),
+        extra_fields=getattr(feature, "extra_fields", {}),
     )
-    
-    # Add Language Extension URI and metadata to the item
+
     if available_langs:
         from .stac_models import inject_stac_language_fields
+
         item_dict = item.to_dict()
         inject_stac_language_fields(item_dict, available_langs, lang)
-        item.stac_extensions = item_dict.get('stac_extensions', item.stac_extensions)
-        item.extra_fields.update({k: v for k, v in item_dict.items() if k in ['language', 'languages']})
-        
+        item.stac_extensions = item_dict.get("stac_extensions", item.stac_extensions)
+        item.extra_fields.update(
+            {k: v for k, v in item_dict.items() if k in ["language", "languages"]}
+        )
+        logger.debug(
+            f"Injected language extension. available_langs={available_langs}. extensions={item.stac_extensions}"
+        )
+
     # Add hreflang to standard links
-    if lang != '*':
+    if lang != "*":
         for link in item.links:
-            if link.rel in ['self', 'root', 'parent', 'collection', 'items']:
+            if link.rel in ["self", "root", "parent", "collection", "items"]:
                 link.extra_fields["hreflang"] = lang
 
     # Add alternate links for other languages
-    if lang != '*' and available_langs:
+    if lang != "*" and available_langs:
         for other_lang in sorted(available_langs - {lang}):
-             alt_url = str(request.url.replace_query_params(lang=other_lang))
-             lang_meta = get_language_object(other_lang)
-             item.add_link(pystac.Link(
-                 rel="alternate",
-                 target=alt_url,
-                 media_type="application/geo+json",
-                 title=lang_meta.name,
-                 extra_fields={"hreflang": other_lang}
-             ))
+            alt_url = str(request.url.replace_query_params(lang=other_lang))
+            lang_meta = get_language_object(other_lang)
+            item.add_link(
+                pystac.Link(
+                    rel="alternate",
+                    target=alt_url,
+                    media_type="application/geo+json",
+                    title=lang_meta.name,
+                    extra_fields={"hreflang": other_lang},
+                )
+            )
+
+    # 4. Finalize Item Links (STAC Compliance)
+    # Use manual links to avoid pystac graph resolution issues in single-item output
+    root_url = get_root_url(request)
+    collection_url = (
+        collection_url_override
+        or f"{root_url}/stac/catalogs/{catalog_id}/collections/{collection_id}"
+    )
     
-    # Set the root catalog to avoid pystac trying to resolve it via network during serialization
+    item.set_self_href(f"{collection_url}/items/{item.id}")
+    
+    # Set root and collection for hierarchical context (prevents network resolution)
     root_catalog = pystac.Catalog(
-        id="root",
-        description="Root Catalog",
-        href=get_root_url(request)
+        id="root", description="Root Catalog", href=f"{root_url}/stac"
     )
     item.set_root(root_catalog)
 
-    root_url = get_root_url(request)
-    collection_url = f"{root_url}/stac/catalogs/{catalog_id}/collections/{collection_id}"
-    item.set_self_href(f"{collection_url}/items/{item.id}")
-    item.add_link(pystac.Link(rel="root", target=f"{root_url}/stac", title="Root Catalog"))
+    # Use a dummy Collection object to satisfy PySTAC's link management
+    collection_obj = pystac.Collection(
+        id=collection_id,
+        description="Collection",
+        extent=pystac.Extent(
+            pystac.SpatialExtent([[-180, -90, 180, 90]]),
+            pystac.TemporalExtent([[None, None]]),
+        ),
+        href=collection_url,
+    )
+    item.set_collection(collection_obj)
     
-    # Hierarchy and source links apply to all feature items.
-    apply_hierarchy_links(
-        item=item,
-        feature_properties=item.properties,
-        asset_id=row_dict.get("asset_id"),
-        config=stac_config,
+    # Manually inject parent link if missing (PySTAC often drops it if duplicate of collection)
+    if not item.get_links("parent"):
+        item.add_link(
+            pystac.Link(
+                rel="parent",
+                target=collection_url,
+                media_type="application/json",
+                title="Collection",
+            )
+        )
+
+    # Add dynamic assets and merge external metadata
+    # Extract asset_id securely from feature model_extra
+    if hasattr(feature, "model_extra") and feature.model_extra and "asset_id" in feature.model_extra:
+        feat_asset_id = feature.model_extra["asset_id"]
+    else:
+        feat_asset_id = properties.get("asset_id")
+
+    # Extract geoid similarly
+    feat_geoid = feature.id if hasattr(feature, "id") else properties.get("geoid")
+
+    # 4. Extract external_metadata from sidecar columns
+    # StacItemsSidecar.map_row_to_feature already handles merging title,
+    # description, etc into `feature.properties` but for extensions and assets
+    # `merge_stac_metadata` still expects them in `external_metadata`.
+    external_metadata = {}
+    if hasattr(feature, "assets") and feature.assets:
+        external_metadata["external_assets"] = feature.assets
+    elif "assets" in properties:
+        external_metadata["external_assets"] = properties["assets"]
+
+    if hasattr(feature, "stac_extensions") and feature.stac_extensions:
+        external_metadata["external_extensions"] = feature.stac_extensions
+    elif "stac_extensions" in properties:
+        external_metadata["external_extensions"] = properties["stac_extensions"]
+
+    extension_context = StacExtensionContext(
+        base_url=root_url,
         catalog_id=catalog_id,
         collection_id=collection_id,
-        collection_url=collection_url,
-        source_collection_url="", # Deprecated
-        view_mode=view_mode
+        item_id=item.id,
+        geoid=feat_geoid,
+        lang=lang,
     )
 
-    # Add dynamic assets (e.g., OGC Features, Maps, Tiles, and Source File)
+    # 3. Get all STAC extension providers
+    providers = get_protocols(StacExtensionProtocol)
+
+    # 4. Merge external + managed metadata
+    await merge_stac_metadata(item, external_metadata, providers, extension_context)
+
+    # 5. Legacy dynamic assets (temporary until all providers migrate to Protocol)
     asset_context = asset_factory.AssetContext(
         base_url=root_url,
         catalog_id=catalog_id,
         collection_id=collection_id,
         request=request,
         stac_config=stac_config,
-        asset_id=row_dict.get("asset_id")
+        asset_id=feat_asset_id,
     )
     asset_factory.add_dynamic_assets(item, asset_context)
+
+    # Hierarchy and source links apply to all feature items.
+    apply_hierarchy_links(
+        item=item,
+        feature_properties=properties,
+        asset_id=feat_asset_id,
+        config=stac_config,
+        catalog_id=catalog_id,
+        collection_id=collection_id,
+        collection_url=collection_url,
+        source_collection_url="",  # Deprecated
+        view_mode=view_mode,
+    )
 
     return item
 
@@ -694,7 +928,7 @@ async def create_item_collection(
     view_mode: str = "standard",
     catalog_id: str = None,
     collection_id: str = None,
-    lang: str = "en"
+    lang: str = "en",
 ) -> Dict[str, Any]:
     """Generates a STAC ItemCollection for a single collection."""
     # Ensure logical IDs are available for row-to-feature conversion
@@ -706,7 +940,16 @@ async def create_item_collection(
     )
 
     stac_items_tasks = [
-        create_item_from_row(request, catalog_id, collection_id, row, stac_config, view_mode=view_mode, lang=lang) for row in items_rows
+        create_item_from_feature(
+            request,
+            catalog_id,
+            collection_id,
+            feature,
+            stac_config,
+            view_mode=view_mode,
+            lang=lang,
+        )
+        for feature in items_rows
     ]
     stac_items = await asyncio.gather(*stac_items_tasks)
 
@@ -750,38 +993,51 @@ async def create_item_collection(
     return collection_dict
 
 
-def create_empty_item_collection(request: Request, limit: int, offset: int) -> Dict[str, Any]:
+def create_empty_item_collection(
+    request: Request, limit: int, offset: int
+) -> Dict[str, Any]:
     """Generates a valid but empty STAC ItemCollection."""
     item_collection = pystac.ItemCollection(items=[])
     collection_dict = item_collection.to_dict()
-    
+
     self_href = get_url(request, remove_qp=True)
-    collection_dict["links"] = [{
-        "rel": "self",
-        "href": f"{self_href}?limit={limit}&offset={offset}",
-        "type": "application/geo+json",
-        "title": "Self"
-    }]
+    collection_dict["links"] = [
+        {
+            "rel": "self",
+            "href": f"{self_href}?limit={limit}&offset={offset}",
+            "type": "application/geo+json",
+            "title": "Self",
+        }
+    ]
     collection_dict["numberMatched"] = 0
     collection_dict["numberReturned"] = 0
     return collection_dict
 
 
 async def create_search_results_collection(
-    request: Request, rows: List[Dict], total_count: int, limit: int, offset: int, stac_config: StacPluginConfig, lang: str = "en"
+    request: Request,
+    features: List[Feature],
+    total_count: int,
+    limit: int,
+    offset: int,
+    stac_config: StacPluginConfig,
+    lang: str = "en",
 ) -> Dict[str, Any]:
     """
     Generates a STAC ItemCollection from a cross-collection search result.
     This function is now a thin presentation layer over the generic search module.
     """
 
+    stac_items_tasks = []
+    for feature in features:
+        # Cross-collection tracking injected by search.py
+        cid = feature.properties.get("_catalog_id")
+        tid = feature.properties.get("_collection_id")
 
-    # The core logic is to map each generic row from the search result to a STAC Item.
-    # The `create_item_from_row` function is perfect for this task.
-    stac_items_tasks = [
-        create_item_from_row(request, row["catalog_id"], row["collection_id"], row, stac_config, lang=lang) # type: ignore
-        for row in rows
-    ]
+        stac_items_tasks.append(
+            create_item_from_feature(request, cid, tid, feature=feature, stac_config=stac_config, lang=lang)
+        )
+
     stac_items = await asyncio.gather(*stac_items_tasks)
 
     item_collection = pystac.ItemCollection(items=[item for item in stac_items if item])
@@ -821,19 +1077,8 @@ async def _process_stac_item_for_db(
         # Pydantic/PySTAC Item.geometry is already a dict
         geom_dict = item.geometry
 
-        # Ensure properties has explicit datetime fields derived from the Item
-        props = item.properties.copy()
-        if item.datetime:
-            props['datetime'] = item.datetime.isoformat()
-
-        # Call shared tool
-        record = prepare_item_for_db(
-            feature_geometry=geom_dict,
-            feature_properties=props,
-            layer_config=layer_config,
-            external_id=item.id
-        )
-        return record
+        # Return the item as a GeoJSON dictionary
+        return item.to_dict()
 
     except ValueError as e:
         raise HTTPException(

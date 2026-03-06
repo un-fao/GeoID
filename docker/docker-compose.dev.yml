@@ -38,6 +38,33 @@ services:
       - "5678:5678" # Debug port
     command: python -m debugpy --listen 0.0.0.0:5678 -m uvicorn dynastore.main:app --host 0.0.0.0 --port 80 --reload --reload-dir src
 
+  worker:
+    extends:
+      file: docker-compose.yml
+      service: worker
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: tester
+      args:
+        DYNASTORE_MODULES: ${WORKER_MODULES:-*}
+        DYNASTORE_EXTENSION_MODULES: ${WORKER_EXTENSION_MODULES:-*}
+        DYNASTORE_TASK_MODULES: ${WORKER_TASK_MODULES:-*}
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ../src:/dynastore/src
+    environment:
+      UVICORN_WORKERS: 1
+      LOG_LEVEL: DEBUG
+      ACCESS_LOG: "-"
+      ERROR_LOG: "-"
+    ports:
+      - "5679:5679" # Debug port for worker
+    command: python -m debugpy --listen 0.0.0.0:5679 -m uvicorn dynastore.main:app --host 0.0.0.0 --port 81 --reload --reload-dir src
+
   setup:
     build:
       context: ..
@@ -54,8 +81,24 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:gis_dev@db:5432/gis_dev}
     command: /dynastore/scripts/populate.sh
 
+  elasticsearch:
+    extends:
+      file: docker-compose.yml
+      service: elasticsearch
+    ports:
+      - "9200:9200"
+
+  kibana:
+    extends:
+      file: docker-compose.yml
+      service: kibana
+    ports:
+      - "5601:5601"
+
 volumes:
   postgres_data:
+  elasticsearch_data:
+
 
 networks:
   dynastore_net:

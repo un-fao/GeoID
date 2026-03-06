@@ -23,26 +23,46 @@ Provides enhanced configuration for attribute storage, including storage modes
 (Relational vs JSONB), per-attribute indexing, and partitioning control.
 """
 
+from typing import List, Optional, Dict, Any, Union, Literal
 from enum import Enum
-from typing import Optional, Dict, List, Literal
-from pydantic import BaseModel, Field
-from dynastore.modules.catalog.sidecars.base import SidecarConfig
+from pydantic import BaseModel, Field, model_validator
+from dynastore.modules.catalog.sidecars.base import SidecarConfig, SidecarConfigRegistry
+
+
+class VersioningBehaviorEnum(str, Enum):
+    UPDATE_EXISTING_VERSION = "UPDATE_EXISTING_VERSION"
+    REJECT_NEW_VERSION = "REJECT_NEW_VERSION"
+    CREATE_NEW_VERSION = "CREATE_NEW_VERSION"
+    ARCHIVE_AND_NEW_VERSION = "ARCHIVE_AND_NEW_VERSION"
+    REFUSE_ON_ASSET_ID_COLLISION = "REFUSE_ON_ASSET_ID_COLLISION"
+    ALWAYS_ADD_NEW = "CREATE_NEW_VERSION"  # Alias for compatibility
+
+
+class AttributePartitionStrategyPreset(str, Enum):
+    """Partition strategies supported by the Attribute Sidecar."""
+
+    BY_ASSET_ID = "BY_ASSET_ID"
+    BY_ATTRIBUTE_VALUE = "BY_ATTRIBUTE_VALUE"
+    BY_TIME = "BY_TIME"
 
 
 class AttributeStorageMode(str, Enum):
     """Storage mode for feature attributes."""
-    COLUMNAR = "columnar"      # Mode A: Physical columns
-    JSONB = "jsonb"            # Mode B: JSONB column
-    AUTOMATIC = "automatic"    # Automatic selection based on attribute schema (fallback to JSONB if schema is not specified)
+
+    COLUMNAR = "columnar"  # Mode A: Physical columns
+    JSONB = "jsonb"  # Mode B: JSONB column
+    AUTOMATIC = "automatic"  # Automatic selection based on attribute schema (fallback to JSONB if schema is not specified)
 
 
 class PostgresType(str, Enum):
     """Common PostgreSQL types for attributes."""
+
     TEXT = "TEXT"
     VARCHAR_255 = "VARCHAR(255)"
     INTEGER = "INTEGER"
     BIGINT = "BIGINT"
     NUMERIC = "NUMERIC"
+    FLOAT = "FLOAT"  # Added FLOAT
     BOOLEAN = "BOOLEAN"
     TIMESTAMPTZ = "TIMESTAMPTZ"
     DATE = "DATE"
@@ -52,109 +72,256 @@ class PostgresType(str, Enum):
 
 class AttributeIndexType(str, Enum):
     """Index types for attributes."""
+
     NONE = "none"
     BTREE = "btree"
-    GIN = "gin"      # For JSONB/array columns
-    GIST = "gist"    # For range types
-    HASH = "hash"    # For equality only
+    GIN = "gin"  # For JSONB/array columns
+    GIST = "gist"  # For range types
+    HASH = "hash"  # For equality only
 
 
 class AttributeSchemaEntry(BaseModel):
     """Enhanced schema definition for a single attribute."""
+
     name: str = Field(..., description="Attribute name (column name or JSON key)")
     type: PostgresType = Field(PostgresType.TEXT, description="PostgreSQL data type")
-    
+
     # Indexing control (B-Tree recommended for numeric/text at scale)
     index: AttributeIndexType = Field(
-        AttributeIndexType.NONE,
-        description="Index strategy for this attribute"
+        AttributeIndexType.NONE, description="Index strategy for this attribute"
     )
-    
+
     # Partitioning control
     can_partition: bool = Field(
-        False,
-        description="Whether this attribute can be used in a partition key"
+        False, description="Whether this attribute can be used in a partition key"
     )
-    
+
     # Constraints
     nullable: bool = Field(True, description="Allow NULL values")
-    unique: bool = Field(False, description="Enforce uniqueness (at table/partition level)")
     
+    # TODO add default value validation and SQL code to ddl
+    # TODO add check constraint for valid values
+    default: Optional[Any] = Field(None, description="Default value for the attribute")
+
+    unique: bool = Field(
+        False, description="Enforce uniqueness (at table/partition level)"
+    )
+
     # Metadata
     description: Optional[str] = Field(None, description="Human-readable description")
+
+    @model_validator(mode="after")
+    def validate_default_type(self) -> "AttributeSchemaEntry":
+        """Check if the default value matches the defined type."""
+        if self.default is None:
+            return self
+
+        # Basic type checking
+        if self.type in [PostgresType.INTEGER, PostgresType.BIGINT]:
+            if not isinstance(self.default, int):
+                raise ValueError(f"Default value for {self.name} must be an integer, got {type(self.default)}")
+        elif self.type in [PostgresType.FLOAT, PostgresType.NUMERIC]:
+            if not isinstance(self.default, (int, float)):
+                raise ValueError(f"Default value for {self.name} must be a number, got {type(self.default)}")
+        elif self.type == PostgresType.BOOLEAN:
+            if not isinstance(self.default, bool):
+                raise ValueError(f"Default value for {self.name} must be a boolean, got {type(self.default)}")
+        elif self.type in [PostgresType.TEXT, PostgresType.VARCHAR_255, PostgresType.UUID]:
+            if not isinstance(self.default, str):
+                raise ValueError(f"Default value for {self.name} must be a string, got {type(self.default)}")
+        
+        return self
+
+    def get_sql_default(self) -> Optional[str]:
+        """Format the default value for SQL DDL."""
+        if self.default is None:
+            return None
+            
+        if isinstance(self.default, str):
+            # Safe quoting for strings (simple for now)
+            # Use dollar quoting or double single quotes if needed, 
+            # but for simple defaults single quotes are enough.
+            escaped = self.default.replace("'", "''")
+            return f"'{escaped}'"
+        elif isinstance(self.default, bool):
+            return "TRUE" if self.default else "FALSE"
+        else:
+            return str(self.default)
 
 
 class FeatureAttributeSidecarConfig(SidecarConfig):
     """
-    Enhanced configuration for FeatureAttributeSidecar.
-    
-    Provides granular control over how attributes are stored, indexed, and
-    used for partitioning.
+    Configuration for the Feature Attribute Sidecar.
+
+    Supports:
+    - Relational (columnar) or JSONB storage
+    - Per-attribute indexing and partitioning
+    - Identity columns (external_id, asset_id)
+    - Default values for attributes
+    - Storage-only fields (queryable but not in Feature output)
+    - Feature type schema override
     """
+
     sidecar_type: Literal["attributes"] = "attributes"
-    
-    # Storage Configuration
+
+    # --- Storage Mode ---
     storage_mode: AttributeStorageMode = Field(
-        AttributeStorageMode.AUTOMATIC, 
-        description="Storage mode: 'automatic', 'columnar' physical columns or 'jsonb' document"
+        AttributeStorageMode.AUTOMATIC,
+        description="Storage mode: columnar, jsonb, or automatic (based on schema presence)",
     )
-    
+
+
+    # --- Default Values (Legacy/Bulk) ---
+    attribute_defaults: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Default values for attributes when not provided in input Feature. "
+                    "Note: AttributeSchemaEntry defaults take precedence for columnar fields.",
+    )
+
+    # --- Protocol-Driven Architecture ---
+    storage_only_fields: List[str] = Field(
+        default_factory=list,
+        description="Fields that are stored and queryable but NOT included in Feature output. "
+                    "These fields have expose=False in get_queryable_fields().",
+    )
+
+    feature_type_schema: Optional[Dict[str, Any]] = Field(
+        None,
+        description="JSON Schema override for Feature properties. "
+                    "If None, defaults to all attributes except storage_only_fields. "
+                    "Can explicitly include asset_id or other fields in output.",
+    )
+
+
     # Identity Columns Configuration
     enable_external_id: bool = Field(True, description="Store external_id column")
-    external_id_field: str = Field("id", description="Input field to map to external_id (e.g. 'id', 'properties.code')")
-    index_external_id: bool = Field(True, description="Create unique index on external_id")
-    
+    external_id_field: str = Field(
+        "id",
+        description="Input field to map to external_id (e.g. 'id', 'properties.code')",
+    )
+    index_external_id: bool = Field(
+        True, description="Create unique index on external_id"
+    )
+    require_external_id: bool = Field(
+        False, description="Refuse row if external_id missing during ingestion"
+    )
+    external_id_as_feature_id: bool = Field(
+        True, description="Map external_id to feature id (geoid used by default)"
+    )
+    expose_geoid: bool = Field(
+        False,
+        description="Add geoid to feature properties if external_id is not unique",
+    )
+
     enable_asset_id: bool = Field(True, description="Store asset_id column")
-    asset_id_field: str = Field("asset_id", description="Input field to map to asset_id")
+    asset_id_field: str = Field(
+        "asset_id", description="Input field to map to asset_id"
+    )
     index_asset_id: bool = Field(True, description="Create index on asset_id")
-    
+
+    # Ingestion & Versioning Policy
+    versioning_behavior: VersioningBehaviorEnum = Field(
+        VersioningBehaviorEnum.UPDATE_EXISTING_VERSION,
+        description="Behavior when an item with the same external_id/validity exists",
+    )
+
     # Validity Configuration
-    enable_validity: bool = Field(True, description="Extract and store validity (valid_from/valid_to)")
-    
+    enable_validity: bool = Field(
+        True, description="Extract and store validity (valid_from/valid_to)"
+    )
+
     # Mode A: Relational schema
     attribute_schema: Optional[List[AttributeSchemaEntry]] = Field(
-        None, 
-        description="List of attribute definitions for relational mode"
+        None, description="List of attribute definitions for relational mode"
     )
-    
+
     # Mode B: JSONB settings
     jsonb_column_name: str = Field("attributes", description="Name of JSONB column")
-    use_hot_updates: bool = Field(True, description="Enable HOT updates with FILLFACTOR=80")
-    
+    use_hot_updates: bool = Field(
+        True, description="Enable HOT updates with FILLFACTOR=80"
+    )
+
     # JSONB functional indexes (Strategic B-Tree indexes on specific JSON paths)
     # Map of JSON path -> Cast Type (e.g., {"population": "bigint", "area": "numeric"})
     jsonb_indexed_paths: Dict[str, PostgresType] = Field(
         default_factory=dict,
-        description="Functional B-Tree indexes on specific JSONB paths for performance at scale"
+        description="Functional B-Tree indexes on specific JSONB paths for performance at scale",
     )
 
     # Partitioning
+    partition_strategy: Optional[AttributePartitionStrategyPreset] = Field(
+        None,
+        description="Strategy to use for contributing to the global partition key.",
+    )
     partition_attribute: Optional[str] = Field(
-        None, 
-        description="Attribute name to partition by (must be in identity or have can_partition=True)."
+        None,
+        description="Attribute name to partition by (must be in identity or have can_partition=True). Required if strategy is BY_ATTRIBUTE_VALUE.",
     )
 
     @property
-    def partition_key_contributions(self) -> Dict[str, str]:
-        """Determine partition key contribution based on the requested partition_attribute."""
-        if not self.partition_attribute:
-            return {}
-        
-        # Check Identity Columns
-        if self.partition_attribute == "asset_id" and self.enable_asset_id:
-            return {"asset_id": "VARCHAR(255)"}
-        
-        if self.partition_attribute == "external_id" and self.enable_external_id:
-            return {"external_id": "VARCHAR(255)"}
+    def has_validity(self) -> bool:
+        """Whether this sidecar is configured to manage validity."""
+        return self.enable_validity
 
-        # Check Schema Attributes
-        if self.attribute_schema:
-            for attr in self.attribute_schema:
-                if attr.name == self.partition_attribute:
-                    if not attr.can_partition:
-                        raise ValueError(f"Attribute '{attr.name}' is not marked as can_partition=True")
-                    return {attr.name: attr.type.value}
-            
-        raise ValueError(f"Partition attribute '{self.partition_attribute}' not found in configuration.")
+    @property
+    def partition_key_contributions(self) -> Dict[str, str]:
+        """Determine partition key contribution based on the requested partition_strategy."""
+        if not self.partition_strategy:
+            return {}
+
+        # 1. BY_TIME -> validity
+        if self.partition_strategy == AttributePartitionStrategyPreset.BY_TIME:
+            if not self.enable_validity:
+                raise ValueError("BY_TIME partitioning requires enable_validity=True")
+            return {"validity": "TSTZRANGE"}
+
+        # 2. BY_ASSET_ID -> asset_id
+        if self.partition_strategy == AttributePartitionStrategyPreset.BY_ASSET_ID:
+            if not self.enable_asset_id:
+                raise ValueError(
+                    "BY_ASSET_ID partitioning requires enable_asset_id=True"
+                )
+            return {"asset_id": "VARCHAR(255)"}
+
+        # 3. BY_ATTRIBUTE_VALUE -> custom attribute
+        if (
+            self.partition_strategy
+            == AttributePartitionStrategyPreset.BY_ATTRIBUTE_VALUE
+        ):
+            if not self.partition_attribute:
+                raise ValueError(
+                    "partition_attribute must be specified for BY_ATTRIBUTE_VALUE strategy"
+                )
+
+            # Check Schema Attributes
+            if self.attribute_schema:
+                for attr in self.attribute_schema:
+                    if attr.name == self.partition_attribute:
+                        if not attr.can_partition:
+                            raise ValueError(
+                                f"Attribute '{attr.name}' is not marked as can_partition=True"
+                            )
+                        return {attr.name: attr.type.value}
+
+            raise ValueError(
+                f"Partition attribute '{self.partition_attribute}' not found in configuration or not columnar."
+            )
+
+        return {}
+
+    @property
+    def provides_feature_id(self) -> bool:
+        """Whether this sidecar provides the feature ID for the collection."""
+        return self.external_id_as_feature_id
+
+    @property
+    def feature_id_field_name(self) -> Optional[str]:
+        """The field name used for feature ID in this sidecar's table."""
+        # Return external_id if enabled, regardless of provides_feature_id
+        # This allows ID resolution to work even when external_id is not the "official" feature ID
+        return "external_id" if self.enable_external_id else None
 
     model_config = {"extra": "allow"}
+
+# Register for polymorphic resolution
+SidecarConfigRegistry.register("attributes", FeatureAttributeSidecarConfig)

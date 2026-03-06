@@ -29,24 +29,28 @@ class StorageProtocol(Protocol):
     access to buckets and files.
     """
     
-    async def get_bucket_name_for_catalog(self, catalog_id: str) -> Optional[str]:
-        """Returns the bucket name associated with a catalog."""
+    async def get_storage_identifier(self, catalog_id: str) -> Optional[str]:
+        """Returns the storage identifier (e.g., bucket name) associated with a catalog."""
         ...
 
-    async def get_or_create_bucket_for_catalog(self, catalog_id: str, conn: Optional[Any] = None) -> Optional[str]:
-        """Retrieves the bucket name for a catalog, creating it if it doesn't exist."""
+    async def ensure_storage_for_catalog(self, catalog_id: str, conn: Optional[Any] = None) -> Optional[str]:
+        """Ensures that storage (e.g., a bucket) exists for a catalog, creating it if it doesn't."""
         ...
 
     async def get_catalog_storage_path(self, catalog_id: str) -> Optional[str]:
         """Returns the storage path (e.g., gs://...) for a catalog."""
         ...
 
+    async def delete_storage_for_catalog(self, catalog_id: str, conn: Optional[Any] = None) -> bool:
+        """Deletes all storage resources associated with a catalog."""
+        ...
+
     async def get_collection_storage_path(self, catalog_id: str, collection_id: str) -> Optional[str]:
         """Returns the storage path (e.g., gs://...) for a collection."""
         ...
 
-    async def wait_for_bucket_ready(self, bucket_name: str, timeout_seconds: int = 30, interval_seconds: float = 1.0) -> bool:
-        """Actively waits until the given bucket reports as existing."""
+    async def wait_for_storage_ready(self, storage_id: str, timeout_seconds: int = 30, interval_seconds: float = 1.0) -> bool:
+        """Actively waits until the given storage reports as existing."""
         ...
 
     async def prepare_upload_target(self, catalog_id: str, collection_id: Optional[str] = None) -> None:

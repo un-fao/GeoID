@@ -28,8 +28,7 @@ from dotenv import load_dotenv
 from typing import Dict, Any, Type, List, Generic, Optional
 from typing import TypeVar
 
-from .protocols import TaskProtocol, ProcessTaskProtocol
-from dynastore.modules.processes.models import Process
+from .protocols import TaskProtocol
 from dynastore import modules
 
 logger = logging.getLogger(__name__)
@@ -43,24 +42,20 @@ class TaskConfig(Generic[DefinitionType, PayloadType, ReturnType]):
     cls: Type[TaskProtocol[DefinitionType, PayloadType, ReturnType]]
     module_name: str
     name: str
-    process_definition: DefinitionType | None = None
+    type: str = "task"
+    definition: Any | None = None
     instance: TaskProtocol[DefinitionType, PayloadType, ReturnType] | None = None
 
 _DYNASTORE_TASKS: Dict[str, TaskConfig] = {}
 
-def dynastore_task(cls: Optional[Type[TaskProtocol]] = None, *, registration_name: Optional[str] = None):
-    """
-    A decorator to register a class as a DynaStore Background Task.
-    It robustly determines the task's parent module for correct ordering.
-    Can be used as @dynastore_task or @dynastore_task(registration_name='foo').
-    """
-    def _register(target_cls):
-        # If a registration name is provided, always use it.
-        # Otherwise, derive it from the class's module.
-        reg_name = registration_name
-        
-        if reg_name is None:
-            # Robustly determine the module name by finding the segment after 'tasks'
+def _register_task(target_cls: Type[TaskProtocol], registration_name: Optional[str] = None, type: str = "task"):
+    """Internal helper to register a task class."""
+    reg_name = registration_name
+    
+    if reg_name is None:
+        if hasattr(target_cls, 'task_type'):
+            reg_name = getattr(target_cls, 'task_type')
+        else:
             parts = target_cls.__module__.split('.')
             try:
                 idx = parts.index('tasks')
@@ -69,49 +64,52 @@ def dynastore_task(cls: Optional[Type[TaskProtocol]] = None, *, registration_nam
                 logger.warning(f"Could not determine task module from '{target_cls.__module__}'. Falling back to class name.")
                 reg_name = str(target_cls.__name__)
 
+    try:
+         parts = target_cls.__module__.split('.')
+         idx = parts.index('tasks')
+         derived_module_name = parts[idx + 1]
+    except (ValueError, IndexError):
+         derived_module_name = reg_name
+         
+    module_name = derived_module_name
+    
+    task_def = None
+    if hasattr(target_cls, 'get_definition'):
         try:
-             # Always try to derive the actual module folder name for TaskConfig
-             parts = target_cls.__module__.split('.')
-             idx = parts.index('tasks')
-             derived_module_name = parts[idx + 1]
-        except (ValueError, IndexError):
-             derived_module_name = reg_name
-             
-        module_name = derived_module_name
-        
-        # Check if the task exposes an OGC Process definition and cache it.
-        process_def = None
-        if hasattr(target_cls, 'get_process_definition'):
-            process_def = target_cls.get_process_definition()
-            logger.info(f"Task '{reg_name}' exposes an OGC Process definition.")
+            task_def = target_cls.get_definition()
+        except Exception as e:
+            logger.debug(f"Could not extract task definition from {target_cls.__name__}: {e}")
 
-        # Check for existing placeholder and upgrade if necessary
-        existing_config = _DYNASTORE_TASKS.get(reg_name)
-        if existing_config:
-            if getattr(existing_config.cls, 'is_placeholder', False):
-                 logger.info(f"Upgrading placeholder task '{reg_name}' to full implementation.")
-                 existing_config.cls = target_cls
-                 existing_config.process_definition = process_def or existing_config.process_definition
-                 existing_config.module_name = module_name # Update module name in case placeholder guess was wrong
-                 _DYNASTORE_TASKS[reg_name] = existing_config
-            elif getattr(target_cls, 'is_placeholder', False):
-                 logger.info(f"Skipping registration of placeholder task '{reg_name}' because a full implementation already exists.")
-                 return target_cls
-            else:
-                 logger.warning(f"Task '{reg_name}' is already registered as full implementation. Overwriting.")
-                 _DYNASTORE_TASKS[reg_name] = TaskConfig(cls=target_cls, module_name=module_name, name=reg_name, process_definition=process_def)
-        else:
-            _DYNASTORE_TASKS[reg_name] = TaskConfig(cls=target_cls, module_name=module_name, name=reg_name, process_definition=process_def)
+    existing_config = _DYNASTORE_TASKS.get(reg_name)
+    if existing_config:
+        if existing_config.cls == target_cls:
+            # Idempotent: already registered with this exact implementation
+            return target_cls
             
-        logger.info(f"Discovered task class: {target_cls.__name__} (registered as '{reg_name}' in module '{module_name}')")
-        
-        target_cls._registered_name = reg_name
-        return target_cls
-
-    if cls is None:
-        return _register
+        if getattr(existing_config.cls, 'is_placeholder', False):
+             logger.info(f"Upgrading placeholder task '{reg_name}' to full implementation.")
+             existing_config.cls = target_cls
+             existing_config.definition = task_def or existing_config.definition
+             existing_config.module_name = module_name
+             _DYNASTORE_TASKS[reg_name] = existing_config
+        elif getattr(target_cls, 'is_placeholder', False):
+             return target_cls
+        else:
+             # Real implementation overwrite
+             logger.info(f"Overwriting task '{reg_name}' with new implementation.")
+             _DYNASTORE_TASKS[reg_name] = TaskConfig(cls=target_cls, module_name=module_name, name=reg_name, definition=task_def)
     else:
-        return _register(cls)
+        _DYNASTORE_TASKS[reg_name] = TaskConfig(
+            cls=target_cls,
+            module_name=module_name,
+            name=reg_name,
+            type=type,
+            definition=task_def,
+            instance=None
+        )
+    logger.info(f"Discovered task class: {target_cls.__name__} (registered as '{reg_name}' in module '{module_name}')")
+    target_cls._registered_name = reg_name
+    return target_cls
 
 
 def get_task_instance(name: str) -> TaskProtocol | None:
@@ -122,6 +120,48 @@ def get_all_task_configs() -> Dict[str, TaskConfig]:
     """Returns the complete registry of discovered task configurations."""
     return _DYNASTORE_TASKS
 
+def get_loaded_task_types() -> set:
+    """Returns the set of task_type strings registered on this instance.
+    
+    Used by the dispatcher and wait_for_all_tasks to scope their behavior
+    to only the task types this service instance can execute.
+    In a distributed deployment (Cloud Run, Docker Compose), each service
+    loads a different subset via DYNASTORE_TASK_MODULES.
+    """
+    return set(_DYNASTORE_TASKS.keys())
+
+def hydrate_task_payload(task_instance: TaskProtocol, raw_payload_dict: Dict[str, Any]) -> Any:
+    """
+    Introspects a task's `run` method and hydrates a raw dictionary into
+     the expected TaskPayload[T] model.
+    """
+    from dynastore.modules.tasks.models import TaskPayload
+    from pydantic import BaseModel
+
+    run_method = getattr(task_instance, 'run', None)
+    if not run_method:
+        return TaskPayload.model_validate(raw_payload_dict)
+
+    # Find the 'payload' annotation
+    import inspect
+    sig = inspect.signature(run_method)
+    payload_param = sig.parameters.get('payload')
+    
+    if not payload_param or payload_param.annotation is inspect.Parameter.empty:
+        return TaskPayload.model_validate(raw_payload_dict)
+
+    payload_model = payload_param.annotation
+    
+    # If it's a TaskPayload[SomeModel], Pydantic v2 can validate the whole thing.
+    try:
+        if hasattr(payload_model, "model_validate"):
+            return payload_model.model_validate(raw_payload_dict)
+    except Exception as e:
+        logger.warning(f"Failed to hydrate payload for {task_instance.__class__.__name__}: {e}")
+    
+    # Fallback to generic TaskPayload
+    return TaskPayload.model_validate(raw_payload_dict)
+
 T = TypeVar('T')
 
 def get_definitions_by_type(def_type: Type[T]) -> List[T]:
@@ -131,20 +171,17 @@ def get_definitions_by_type(def_type: Type[T]) -> List[T]:
     """
     definitions: List[T] = []
     for config in _DYNASTORE_TASKS.values():
-        if config.process_definition is not None and isinstance(config.process_definition, def_type):
-            definitions.append(config.process_definition)
+        if config.definition is not None and isinstance(config.definition, def_type):
+            definitions.append(config.definition)
     return definitions
 
 def discover_tasks(enabled_tasks: List[str] | None = None, enabled_modules: List[str] | None = None):
     """
-    Discovers tasks by selectively importing sub-packages with a two-stage approach:
-    1. Definition (Lightweight): Look for `definition.py` and register a placeholder logic.
-    2. Implementation (Heavy): Look for the main task definition using pkgutil.
+    Discovers tasks by selectively importing sub-packages based on DYNASTORE_TASK_MODULES.
+    Only enabled modules are inspected or imported to avoid dependency issues.
     
-    This allows OGC Process definitions to be discovered even if heavy dependencies are missing.
-
     Args:
-        enabled_tasks: List of tasks to enable.
+        enabled_tasks: List of tasks to enable. Overrides DYNASTORE_TASK_MODULES.
         enabled_modules: List of foundational modules to enable (dependencies).
     """
     # Ensure foundational modules are discovered/loaded first
@@ -153,33 +190,33 @@ def discover_tasks(enabled_tasks: List[str] | None = None, enabled_modules: List
     package_path = os.path.dirname(__file__)
     package_name = __name__
     
-    ordered_task_modules = []
+    # 1. Determine enabled modules
+    enabled_task_modules = []
     if enabled_tasks is not None:
-        ordered_task_modules = [m.strip() for m in enabled_tasks if m.strip()]
-        logger.info(f"Discovering specific tasks from provided list mapping: {ordered_task_modules}")
+        enabled_task_modules = [m.strip() for m in enabled_tasks if m.strip()]
     else:
         enabled_modules_str = os.getenv("DYNASTORE_TASK_MODULES", "")
         if enabled_modules_str.strip() == "*":
             # Sort for predictable discovery if wildcard
-            modules_found = sorted([
+            enabled_task_modules = sorted([
                 item for item in os.listdir(package_path)
                 if os.path.isdir(os.path.join(package_path, item)) and not item.startswith('__')
             ])
-            ordered_task_modules = modules_found
-            logger.info(f"Wildcard '*' detected for DYNASTORE_TASK_MODULES. Discovered (alphabetical): {ordered_task_modules}")
+            logger.info(f"Wildcard '*' detected for DYNASTORE_TASK_MODULES. Discovered: {enabled_task_modules}")
         else:
-            ordered_task_modules = [m.strip() for m in enabled_modules_str.split(',') if m.strip()]
-            logger.info(f"Discovering tasks from DYNASTORE_TASK_MODULES (in order): {ordered_task_modules}")
+            enabled_task_modules = [m.strip() for m in enabled_modules_str.split(',') if m.strip()]
 
-    if not ordered_task_modules:
-        logger.warning("No task modules specified for discovery.")
+    if not enabled_task_modules:
+        logger.warning("No task modules specified in DYNASTORE_TASK_MODULES. No tasks will be discovered.")
         return
+
+    logger.info(f"Discovering tasks for enabled modules: {enabled_task_modules}")
 
     base_dotenv_path = os.path.join(package_path, '.env')
     if os.path.exists(base_dotenv_path):
         load_dotenv(dotenv_path=base_dotenv_path, override=True)
         
-    for module_name in ordered_task_modules:
+    for module_name in enabled_task_modules:
         module_path = os.path.join(package_path, module_name)
         if not os.path.isdir(module_path):
             logger.warning(f"Enabled module '{module_name}' not found at path '{module_path}'. Skipping.")
@@ -188,46 +225,39 @@ def discover_tasks(enabled_tasks: List[str] | None = None, enabled_modules: List
         full_package_name = f"{package_name}.{module_name}"
 
         # --- STAGE 1: LIGHTWEIGHT DEFINITION DISCOVERY ---
-        try:
-            definition_module_path = f"{full_package_name}.definition"
-            # Try to import just the definition module
-            def_mod = importlib.import_module(definition_module_path)
-            
-            # Look for a Process object (by convention often *_PROCESS_DEFINITION or similar)
-            found_definition = None
-            for attr_name in dir(def_mod):
-                attr = getattr(def_mod, attr_name)
-                # We assume if it's an instance of Process, it's THE definition (or one of them)
-                # This logic could be refined to look for specific variable names if needed.
-                if isinstance(attr, Process):
-                    found_definition = attr
-                    break
-            
-            if found_definition:
-                # Register Placeholder
-                class DefinitionPlaceholderTask(ProcessTaskProtocol):
-                    is_placeholder = True
-                    @staticmethod
-                    def get_process_definition():
-                        return found_definition
+        definition_module_name = "definition"
+        definition_file = os.path.join(module_path, f"{definition_module_name}.py")
+        if os.path.exists(definition_file):
+            try:
+                # Import the definition module
+                def_mod = importlib.import_module(f"{full_package_name}.{definition_module_name}")
                 
-                # Register immediately. If implementation loads later, it will upgrade this.
-                if module_name not in _DYNASTORE_TASKS:
+                # Look for a task definition constant
+                task_def = None
+                for attr_name in dir(def_mod):
+                    if attr_name.endswith("_PROCESS_DEFINITION"):
+                        task_def = getattr(def_mod, attr_name)
+                        break
+                
+                if task_def and module_name not in _DYNASTORE_TASKS:
+                    # Register a placeholder
+                    class PlaceholderTask:
+                        is_placeholder = True
+                        @staticmethod
+                        def get_definition():
+                            return task_def
+                    
+                    PlaceholderTask.__name__ = f"{module_name.capitalize()}Placeholder"
+                    
                     _DYNASTORE_TASKS[module_name] = TaskConfig(
-                         cls=DefinitionPlaceholderTask,
-                         module_name=module_name,
-                         name=module_name,
-                         process_definition=found_definition
+                        cls=PlaceholderTask,
+                        module_name=module_name,
+                        name=module_name,
+                        definition=task_def
                     )
-                    logger.info(f"Stage 1: Registered definition placeholder for '{module_name}'.")
-
-        except ImportError as e:
-            # It's fine if definition.py doesn't exist. Not all tasks are OGC Processes.
-            logger.debug(f"Stage 1: Could not definition for '{module_name}' (ImportError): {e}")
-            pass
-        except Exception as e:
-            logger.warning(f"Stage 1: Failed to load definition for '{module_name}': {e}", exc_info=True)
-
+                    logger.info(f"Stage 1: Registered placeholder for '{module_name}'")
+            except Exception as e:
+                logger.warning(f"Stage 1: Failed to import definition for '{module_name}': {e}")
 
         # --- STAGE 2: HEAVY IMPLEMENTATION DISCOVERY ---
         try:
@@ -238,27 +268,34 @@ def discover_tasks(enabled_tasks: List[str] | None = None, enabled_modules: List
             except Exception as e:
                 logger.debug(f"Stage 2: Task package '{full_package_name}' could not be imported directly: {e}")
 
-            # Standard pkgutil walk to find the implementation which should have @dynastore_task
+            # Standard pkgutil walk to find submodules which might have task implementations
             found_submodules = []
-            logger.info(f"Stage 2: Scanning module path '{module_path}' for submodules...")
-            
-            # Fallback check: if directory exists and iteration yields nothing, log it.
-            submodules_iter = list(pkgutil.iter_modules([module_path]))
-            if not submodules_iter:
-                logger.info(f"Stage 2: No implementation submodules found via pkgutil in '{module_path}'. Files: {os.listdir(module_path)}")
-                
-            for _, sub_module_name, _ in submodules_iter:
+            import inspect
+            for _, sub_module_name, _ in pkgutil.iter_modules([module_path]):
                 if sub_module_name == 'definition':
                     continue
                 full_module_path = f"{full_package_name}.{sub_module_name}"
                 logger.info(f"Stage 2: Importing implementation submodule '{full_module_path}'")
-                importlib.import_module(full_module_path)
-                found_submodules.append(sub_module_name)
+                try:
+                    target_module = importlib.import_module(full_module_path)
+                    found_submodules.append(sub_module_name)
+                    
+                    # Auto-discovery: scan for classes with 'run' method
+                    for name, obj in inspect.getmembers(target_module, inspect.isclass):
+                        if hasattr(obj, 'run') and obj.__module__ == full_module_path:
+                            # If the class has an explicit task_type, use it. 
+                            # Otherwise fall back to the module name if it's a single-task module.
+                            if hasattr(obj, 'task_type'):
+                                _register_task(obj)
+                            else:
+                                _register_task(obj, registration_name=module_name)
+                except ModuleNotFoundError as e:
+                     logger.warning(f"Skipping task submodule '{full_module_path}' due to missing dependency: {e}")
+                except Exception:
+                     logger.error(f"Failed to import/scan task submodule '{full_module_path}'", exc_info=True)
             
             if found_submodules:
                 logger.info(f"Stage 2: Discovered submodules for '{module_name}': {found_submodules}")
-            else:
-                logger.debug(f"Stage 2: No implementation submodules discovered via pkgutil for '{module_name}' at '{module_path}'.")
         except Exception as e:
             # If implementation fails, we check if we at least got the definition
             if module_name in _DYNASTORE_TASKS and getattr(_DYNASTORE_TASKS[module_name].cls, 'is_placeholder', False):
@@ -270,116 +307,109 @@ def discover_tasks(enabled_tasks: List[str] | None = None, enabled_modules: List
 
 @asynccontextmanager
 async def manage_tasks(app_state: object, enabled_tasks: Optional[List[str]] = None):
-    if enabled_tasks is None:
-        enabled_modules_str = os.getenv("DYNASTORE_TASK_MODULES", "")
-        if enabled_modules_str.strip() == "*":
-            ordered_modules = list(set(config.module_name for config in _DYNASTORE_TASKS.values()))
+    from contextlib import AsyncExitStack
+    from dynastore.modules.tasks.runners import register_default_runners, get_all_runners_with_setup
+    
+    # Ensure default runners are ALWAYS registered, even after test resets.
+    register_default_runners()
+
+    async with AsyncExitStack() as stack:
+        # --- PHASE 0: SETUP ALL RUNNERS ---
+        logger.info("--- Phase 0: Setting up all registered task runners ---")
+        all_runners_to_setup = get_all_runners_with_setup()
+        logger.info(f"Found {len(all_runners_to_setup)} runners with setup hooks.")
+        # Runners are sorted by priority (lowest first) by get_all_runners_with_setup/discovery system
+        for priority, runner_instance in all_runners_to_setup:
+            try:
+                from dynastore.tools.plugin import ProtocolPlugin
+                # Runners are ProtocolPlugins too, we manage their lifespan here as well
+                await stack.enter_async_context(runner_instance.lifespan(app_state))
+                # Legacy setup hook if still present
+                if hasattr(runner_instance, "setup") and getattr(runner_instance.setup, "__func__", runner_instance.setup) is not ProtocolPlugin.lifespan:
+                    await runner_instance.setup(app_state)
+                logger.info(f"Runner '{runner_instance.__class__.__name__}' (priority {priority}) activated.")
+            except Exception:
+                logger.error(f"CRITICAL: Failed during activation of runner '{runner_instance.__class__.__name__}'.", exc_info=True)
+
+        if enabled_tasks is None:
+            enabled_modules_str = os.getenv("DYNASTORE_TASK_MODULES", "")
+            if enabled_modules_str.strip() == "*":
+                ordered_modules = list(set(config.module_name for config in _DYNASTORE_TASKS.values()))
+            else:
+                ordered_modules = [m.strip() for m in enabled_modules_str.split(',') if m.strip()]
         else:
-            ordered_modules = [m.strip() for m in enabled_modules_str.split(',') if m.strip()]
-    else:
-        ordered_modules = enabled_tasks
-    if not ordered_modules:
-        logger.warning("No task modules enabled.")
-        yield
-        return
+            ordered_modules = enabled_tasks
 
-    module_map: Dict[str, List[TaskConfig]] = {}
-    for config in _DYNASTORE_TASKS.values():
-        module_map.setdefault(config.module_name, []).append(config)
-    
-    found_modules = set(module_map.keys())
-    requested_modules = set(ordered_modules)
-    missing_modules = requested_modules - found_modules
-    if missing_modules:
-        # Check if we should warn? Some requested modules might only be placeholders
-        # which are in module_map. If they are missing from module_map entirely, that's a problem.
-        logger.warning(f"Requested task modules not found or empty: {', '.join(missing_modules)}")
-
-    configs: List[TaskConfig] = []
-    for module_name in ordered_modules:
-        if module_name in module_map:
-            configs.extend(module_map[module_name])
-
-    # --- PHASE 0: SETUP ALL RUNNERS ---
-    logger.info("--- Phase 0: Setting up all registered task runners ---")
-    from dynastore.modules.tasks.runners import get_all_runners_with_setup
-    all_runners_to_setup = get_all_runners_with_setup()
-    logger.info(f"Found {len(all_runners_to_setup)} runners with setup hooks.")
-    for priority, runner_instance in all_runners_to_setup:
-        try:
-            await runner_instance.setup(app_state)
-            logger.info(f"Runner '{runner_instance.__class__.__name__}' (priority {priority}) setup complete.")
-        except Exception:
-            logger.error(f"CRITICAL: Failed during setup of runner '{runner_instance.__class__.__name__}'.", exc_info=True)
-    
-    # RE-POPULATE: After Phase 0, we might have new dynamically registered tasks.
-    # We MUST refresh our local copy of 'configs' to include them.
-    # Rebuild module_map to include dynamically registered tasks
-    module_map = {}
-    for config in _DYNASTORE_TASKS.values():
-        module_map.setdefault(config.module_name, []).append(config)
-    
-    configs = [] 
-    for module_name in ordered_modules:
-        if module_name in module_map:
-            configs.extend(module_map[module_name])
-
-    logger.info(f"Activating {len(configs)} tasks in order: {ordered_modules}")
-
-    # --- PHASE 1: INSTANTIATE ALL SINGLETONS ---
-    logger.info("--- Phase 1: Creating all task singletons ---")
-    for config in configs:
-        name, cls = config.cls.__name__, config.cls
+        if not ordered_modules:
+            logger.warning("No task modules enabled.")
+            yield
+            return
         
-        if getattr(cls, 'is_placeholder', False):
-             logger.info(f"Skipping instantiation of placeholder task '{name}'. It provides definition only.")
-             config.instance = None
-             continue
+        module_map: Dict[str, List[TaskConfig]] = {}
+        for config in _DYNASTORE_TASKS.values():
+            module_map.setdefault(config.module_name, []).append(config)
+        
+        configs: List[TaskConfig] = []
+        for module_name in ordered_modules:
+            if module_name in module_map:
+                configs.extend(module_map[module_name])
 
-        try:
-            # Check if __init__ takes arguments (like app_state)
-            if cls.__init__ is not object.__init__:
-                import inspect
-                sig = inspect.signature(cls.__init__)
-                if 'app_state' in sig.parameters:
-                    config.instance = cls(app_state=app_state)
+        # RE-POPULATE: After Phase 0, we might have new dynamically registered tasks.
+        module_map = {}
+        for config in _DYNASTORE_TASKS.values():
+            module_map.setdefault(config.module_name, []).append(config)
+        
+        configs = [] 
+        for module_name in ordered_modules:
+            if module_name in module_map:
+                configs.extend(module_map[module_name])
+
+        # --- PHASE 1: INSTANTIATE ALL SINGLETONS ---
+        logger.warning(f"DEBUG: --- Phase 1: Creating all task singletons for modules: {ordered_modules} ---")
+        for config in configs:
+            name, cls = config.cls.__name__, config.cls
+            logger.warning(f"DEBUG: Considering task class '{name}' (registered as '{config.name}')")
+            if getattr(cls, 'is_placeholder', False):
+                 logger.warning(f"DEBUG: Task '{name}' is a placeholder. Skipping instantiation.")
+                 continue
+
+            try:
+                # Instantiate
+                if cls.__init__ is not object.__init__:
+                    import inspect
+                    sig = inspect.signature(cls.__init__)
+                    if 'app_state' in sig.parameters:
+                        config.instance = cls(app_state=app_state)
+                    else:
+                        config.instance = cls()
                 else:
                     config.instance = cls()
-            else:
-                config.instance = cls() # ALWAYS create an instance
-            logger.info(f"Singleton for task '{name}' created successfully.")
-        except Exception:
-            logger.error(f"CRITICAL: Failed during __init__ of task '{name}'. It will be unavailable.", exc_info=True)
-            config.instance = None
-    
-    # --- PHASE 2: EXECUTE ALL STARTUP HOOKS ---
-    logger.info("--- Phase 2: Executing all task startup hooks ---")
-    for config in configs:
-        if config.instance is None:
-            # Quietly skip if placeholder, else warn
-            if not getattr(config.cls, 'is_placeholder', False):
-                logger.warning(f"Skipping startup for '{config.cls.__name__}' because its instance is None.")
-            continue
-        
-        name = config.cls.__name__
-        if hasattr(config.instance, "startup"):
-            try:
-                await config.instance.startup()
-                logger.info(f"Startup for task '{name}' completed successfully.")
-            except Exception:
-                logger.error(f"CRITICAL: Startup for task '{name}' failed.", exc_info=True)
+                logger.warning(f"DEBUG: Singleton for task '{name}' (registered as '{config.name}') created successfully.")
+            except Exception as e:
+                logger.error(f"CRITICAL: Failed during __init__ of task '{name}': {e}", exc_info=True)
+                config.instance = None
 
-    try:
-        yield
-    except Exception:
-        logger.error("Error during tasks lifecycle management.", exc_info=True)
-    finally:
-        logger.info("Shutting down tasks...")
-        for config in reversed(configs):
-            if config.instance and hasattr(config.instance, "shutdown"):
-                name = config.cls.__name__
-                try:
-                    await config.instance.shutdown()
-                    logger.info(f"Task '{name}' shut down successfully.")
-                except Exception:
-                    logger.error(f"Task '{name}' failed during shutdown.", exc_info=True)
+        # --- PHASE 2: SORT AND ENTER LIFESPANS ---
+        # Sort by priority (lowest number first)
+        configs.sort(key=lambda c: getattr(c.instance, "priority", getattr(c.cls, "priority", 100)))
+        
+        logger.info(f"Activating {len([c for c in configs if c.instance])} tasks...")
+        for config in configs:
+            if config.instance is None:
+                continue
+            
+            name = config.cls.__name__
+            try:
+                if hasattr(config.instance, "lifespan"):
+                    await stack.enter_async_context(config.instance.lifespan(app_state))
+                logger.info(f"Task '{name}' (priority {getattr(config.instance, 'priority', 100)}) activated.")
+            except Exception:
+                logger.error(f"CRITICAL: Failed to enter lifespan for task '{name}'.", exc_info=True)
+
+        try:
+            yield
+        except Exception:
+            logger.error("Error during tasks lifecycle management.", exc_info=True)
+            raise
+        finally:
+            logger.info("Shutting down tasks and runners via AsyncExitStack...")

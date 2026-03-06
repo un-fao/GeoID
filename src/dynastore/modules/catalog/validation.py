@@ -25,16 +25,31 @@ async def get_valid_properties(conn: DbResource, catalog_id: str, collection_id:
     # 2. Get attribute schema from config
     configs = get_protocol(ConfigsProtocol)
     if not configs:
-        print("CRITICAL: ConfigsProtocol not found in validation.py!")
-        # Debugging: print available protocols
-        from dynastore.tools.discovery import _registry
-        print(f"Available protocols: {_registry.keys()}")
-    
-    config = await configs.get_config(COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn)
+        logger.error("ConfigsProtocol not found in validation.py!")
+        # Fallback empty config if protocol missing
+        config = None
+    else:
+        config = await configs.get_config(COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn)
     
     schema_properties = set()
-    if config and config.attribute_schema:
-        schema_properties = {entry.name for entry in config.attribute_schema}
+    if config:
+        # 2a. Legacy Attribute Schema
+        if config.attribute_schema:
+            schema_properties.update({entry.name for entry in config.attribute_schema})
+
+        # 2b. Sidecar Fields (New)
+        if hasattr(config, "sidecars") and config.sidecars:
+            from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+            for sc_config in config.sidecars:
+                if not sc_config.enabled:
+                    continue
+                try:
+                    # Instantiate sidecar to access dynamic field definitions
+                    sidecar = SidecarRegistry.get_sidecar(sc_config)
+                    field_defs = sidecar.get_field_definitions()
+                    schema_properties.update(field_defs.keys())
+                except Exception as e:
+                    logger.warning(f"Failed to get field definitions from sidecar {type(sc_config).__name__}: {e}")
         
     # Combine them
     return physical_columns.union(schema_properties)

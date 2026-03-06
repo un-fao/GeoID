@@ -34,10 +34,9 @@ COPY src ./src
 COPY tests ./tests
 
 # Copy startup scripts early so they are available in all stages
-COPY .github/scripts/start.sh /usr/local/bin/start.sh
-COPY .github/scripts/start-task.sh /usr/local/bin/start-task.sh
-COPY .github/scripts/start-worker.sh /usr/local/bin/start-worker.sh
-RUN chmod +x /usr/local/bin/start.sh /usr/local/bin/start-task.sh /usr/local/bin/start-worker.sh
+COPY docker/scripts/start.sh /usr/local/bin/start.sh
+COPY docker/scripts/start-task.sh /usr/local/bin/start-task.sh
+RUN chmod +x /usr/local/bin/start.sh /usr/local/bin/start-task.sh
 
 # Use buildkit cache for pip
 # These ARGs are used by setup.py wildcard discovery
@@ -55,7 +54,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 EXPOSE 80
 
+# Default: start as API service. Override CMD to "worker" for worker services.
 ENTRYPOINT ["/usr/local/bin/start.sh"]
+CMD ["api"]
 
 # STAGE 2: Tester (Inherit from builder and add test/dev deps)
 FROM builder AS tester
@@ -98,15 +99,17 @@ WORKDIR ${APP_DIR}
 # Copy venv and source from builder (PROD ONLY)
 COPY --from=builder ${VENV_PATH} ${VENV_PATH}
 COPY --from=builder ${APP_DIR} ${APP_DIR}
-# Scripts are already in /usr/local/bin from builder stage if we inherit, 
+# Scripts are already in /usr/local/bin from builder stage if we inherit,
 # but runtime inherits from gdal, so we still need to copy them from builder.
 COPY --from=builder /usr/local/bin/start.sh /usr/local/bin/start.sh
 COPY --from=builder /usr/local/bin/start-task.sh /usr/local/bin/start-task.sh
-COPY --from=builder /usr/local/bin/start-worker.sh /usr/local/bin/start-worker.sh
 
 # Ownership
 RUN chown -R $APP_USER:$APP_USER ${APP_DIR} ${VENV_PATH}
 
 USER $APP_USER
 
+# Default: start as API service. Override CMD to "worker" for worker services.
+# For Cloud Run Jobs, use start-task.sh as the entrypoint in the job spec.
 ENTRYPOINT ["/usr/local/bin/start.sh"]
+CMD ["api"]

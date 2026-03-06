@@ -20,7 +20,17 @@
 Collection-related protocol definitions.
 """
 
-from typing import Protocol, Optional, Any, List, Dict, Set, Union, runtime_checkable, TYPE_CHECKING
+from typing import (
+    Protocol,
+    Optional,
+    Any,
+    List,
+    Dict,
+    Set,
+    Union,
+    runtime_checkable,
+    TYPE_CHECKING,
+)
 
 if TYPE_CHECKING:
     from dynastore.models.shared_models import Collection, CollectionUpdate
@@ -38,7 +48,7 @@ class CollectionsProtocol(Protocol):
         catalog_id: str,
         collection_id: str,
         lang: str = "en",
-        db_resource: Optional[Any] = None
+        db_resource: Optional[Any] = None,
     ) -> Optional["Collection"]:
         """
         Retrieves a collection by ID.
@@ -51,7 +61,7 @@ class CollectionsProtocol(Protocol):
         collection_data: Union[Dict[str, Any], "Collection"],
         lang: str = "en",
         db_resource: Optional[Any] = None,
-        **kwargs
+        **kwargs,
     ) -> "Collection":
         """
         Creates a new collection.
@@ -64,7 +74,7 @@ class CollectionsProtocol(Protocol):
         collection_id: str,
         updates: Union[Dict[str, Any], "CollectionUpdate"],
         lang: str = "en",
-        db_resource: Optional[Any] = None
+        db_resource: Optional[Any] = None,
     ) -> Optional["Collection"]:
         """
         Updates an existing collection.
@@ -76,7 +86,7 @@ class CollectionsProtocol(Protocol):
         catalog_id: str,
         collection_id: str,
         force: bool = False,
-        db_resource: Optional[Any] = None
+        db_resource: Optional[Any] = None,
     ) -> bool:
         """
         Deletes a collection.
@@ -88,7 +98,7 @@ class CollectionsProtocol(Protocol):
         catalog_id: str,
         collection_id: str,
         lang: str,
-        db_resource: Optional[Any] = None
+        db_resource: Optional[Any] = None,
     ) -> bool:
         """
         Deletes a specific language translation for a collection.
@@ -101,68 +111,17 @@ class CollectionsProtocol(Protocol):
         limit: int = 10,
         offset: int = 0,
         lang: str = "en",
-        db_resource: Optional[Any] = None
+        db_resource: Optional[Any] = None,
     ) -> List[Any]:
         """
         Lists all collections in a catalog.
         """
         ...
 
-    # === Collection Localized Helpers ===
-
-    async def create_collection_localized(
-        self,
-        catalog_id: str,
-        collection_data: Union[Dict[str, Any], "Collection"],
-        lang: str,
-        db_resource: Optional[Any] = None
-    ) -> "Collection":
-        """
-        Creates a collection with single-language content.
-        """
-        ...
-
-    async def create_collection_multilanguage(
-        self,
-        catalog_id: str,
-        collection_data: Union[Dict[str, Any], "Collection"],
-        db_resource: Optional[Any] = None
-    ) -> "Collection":
-        """
-        Creates a collection with multilanguage content.
-        """
-        ...
-
-    async def get_collection_localized(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        lang: str,
-        db_resource: Optional[Any] = None
-    ) -> "Collection":
-        """
-        Retrieves a collection with content resolved to a specific language.
-        """
-        ...
-
-    async def get_collection_multilanguage(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        db_resource: Optional[Any] = None
-    ) -> "Collection":
-        """
-        Retrieves a collection with all available language translations.
-        """
-        ...
-
     # === Metadata and Physical Resolution ===
 
     async def resolve_physical_table(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        db_resource: Optional[Any] = None
+        self, catalog_id: str, collection_id: str, db_resource: Optional[Any] = None
     ) -> Optional[str]:
         """
         Resolves the physical table name for a collection.
@@ -174,7 +133,7 @@ class CollectionsProtocol(Protocol):
         catalog_id: str,
         collection_id: str,
         physical_table: str,
-        db_resource: Optional[Any] = None
+        db_resource: Optional[Any] = None,
     ) -> None:
         """
         Sets the physical table name for a collection.
@@ -182,19 +141,13 @@ class CollectionsProtocol(Protocol):
         ...
 
     async def get_collection_config(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        db_resource: Optional[Any] = None
+        self, catalog_id: str, collection_id: str, db_resource: Optional[Any] = None
     ) -> "CollectionPluginConfig":
         """Retrieves the configuration for a collection."""
         ...
 
     async def get_collection_column_names(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        db_resource: Optional[Any] = None
+        self, catalog_id: str, collection_id: str, db_resource: Optional[Any] = None
     ) -> Set[str]:
         """Retrieves the physical column names for a collection."""
         ...

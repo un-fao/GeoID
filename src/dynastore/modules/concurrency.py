@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 ConcurrencyBackend = Callable[..., Awaitable[Any]]
 
 # Default to standard asyncio.to_thread (Python 3.9+)
-# This ensures tiles_module works standalone without FastAPI
 _concurrency_backend: ConcurrencyBackend = asyncio.to_thread
 
 def set_concurrency_backend(backend: ConcurrencyBackend):

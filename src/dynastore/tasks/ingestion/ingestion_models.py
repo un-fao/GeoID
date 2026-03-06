@@ -28,8 +28,17 @@ IngestionReportingConfig = Dict[str, Dict[str, Any]]
 """A type alias for the reporting configuration dictionary, where keys are reporter class names and values are their configurations."""
 
 class AttributeMappingItem(BaseModel):
-    source: str
+    source: Optional[str] = None
+    constant: Optional[str] = None
     map_to: str
+
+    @model_validator(mode='after')
+    def check_source_or_constant(self) -> 'AttributeMappingItem':
+        if not self.source and not self.constant:
+            raise ValueError("Either 'source' or 'constant' must be provided.")
+        if self.source and self.constant:
+            raise ValueError("Only one of 'source' or 'constant' can be provided, not both.")
+        return self
 
 class ColumnMappingConfig(BaseModel):
     """Defines how source file columns map to database fields."""
@@ -98,6 +107,8 @@ class TaskIngestionRequest(BaseModel):
     )
     column_mapping: ColumnMappingConfig = Field(..., description="Defines how source file columns map to database fields.")
     source_srid: Optional[int] = Field(None, description="Default source srid")
+    lang: str = Field(default="en", description="Target language for the ingested metadata. Use '*' for multi-language input.")
+
 
     time_validity_start_column: Optional[str] = None
     time_validity_end_column: Optional[str] = None
@@ -119,6 +130,7 @@ class TaskIngestionRequest(BaseModel):
         if not self.asset or (not self.asset.asset_id and not self.asset.uri):
              raise ValueError("A valid asset definition (asset_id or uri) is required.")
         return self
+
 class IngestionProcessRequest(BaseModel):
     """
     Represents the input structure for the OGC Process 'ingestion'.

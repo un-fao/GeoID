@@ -67,7 +67,7 @@ class AsyncBufferAggregator:
         self._lock = asyncio.Lock()
         self._flush_task: Optional[asyncio.Task] = None
         self._flush_event = asyncio.Event()
-        self._last_flush = asyncio.get_event_loop().time()
+        self._last_flush = 0.0  # Lazy initialization on first flush
 
     async def add(self, item: Any):
         """Adds an item to the buffer and triggers flush if threshold reached."""
@@ -83,7 +83,7 @@ class AsyncBufferAggregator:
 
         to_flush = self._buffer[:]
         self._buffer.clear()
-        self._last_flush = asyncio.get_event_loop().time()
+        self._last_flush = asyncio.get_running_loop().time()
         
         # We wrap the callback in another lock check if we want to serialize flushes.
         # But wait, run_in_background is decoupled.
@@ -176,3 +176,86 @@ class KeyValueAggregator(AsyncBufferAggregator):
         if wait:
              await task
         return task
+
+
+class WaitableSignal:
+    """
+    A simple wrapper around asyncio.Event that allows multiple waiters
+    to wait for a specific signal identified by a name and an optional identifier.
+    """
+
+    def __init__(self):
+        self._event = asyncio.Event()
+
+    async def wait(self, timeout: Optional[float] = None) -> bool:
+        """
+        Waits for the signal to be emitted.
+        Returns True if the signal was received, False if it timed out.
+        Clears the event upon successful wakeup to allow subsequent waits.
+        """
+        try:
+            if timeout is not None:
+                await asyncio.wait_for(self._event.wait(), timeout=timeout)
+            else:
+                await self._event.wait()
+            # Clear the event so future wait() calls will actually block
+            self._event.clear()
+            return True
+        except asyncio.TimeoutError:
+            self._event.clear() # Ensure clean state on timeout
+            return False
+
+    def emit(self):
+        """Emits the signal, waking up all waiters."""
+        self._event.set()
+
+
+class SignalBus:
+    """
+    Registry for WaitableSignals, allowing tasks to synchronize across different
+    parts of the application without direct references.
+    """
+
+    def __init__(self):
+        self._signals: Dict[Tuple[str, Optional[str]], WaitableSignal] = {}
+        self._lock = asyncio.Lock()
+
+    async def get_signal(
+        self, name: str, identifier: Optional[str] = None
+    ) -> WaitableSignal:
+        """Retrieves or creates a signal for the given name and identifier."""
+        key = (name, identifier)
+        async with self._lock:
+            if key not in self._signals:
+                self._signals[key] = WaitableSignal()
+            return self._signals[key]
+
+    async def emit(self, name: str, identifier: Optional[str] = None):
+        """Emits a signal, creating it if it doesn't exist."""
+        signal = await self.get_signal(name, identifier)
+        signal.emit()
+
+    async def wait_for(
+        self,
+        name: str,
+        identifier: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> bool:
+        """Waits for a signal to be emitted. Returns True if received, False if timed out."""
+        signal = await self.get_signal(name, identifier)
+        return await signal.wait(timeout=timeout)
+
+    async def clear(self, name: Optional[str] = None, identifier: Optional[str] = None):
+        """Removes a signal from the registry. If name is None, clears ALL signals."""
+        async with self._lock:
+            if name is None:
+                self._signals.clear()
+                logger.debug("Cleared all signals from SignalBus.")
+            else:
+                key = (name, identifier)
+                self._signals.pop(key, None)
+                logger.debug(f"Cleared signal '{name}' (id={identifier}) from SignalBus.")
+
+
+# Global SignalBus instance
+signal_bus = SignalBus()

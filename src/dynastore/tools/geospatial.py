@@ -42,47 +42,39 @@ except ImportError:
 
 from geoalchemy2.elements import WKBElement
 from geoalchemy2.shape import to_shape
+from .geospatial_exceptions import (
+    GeometryProcessingError,
+    InvalidWKBError,
+    InvalidGeometryError,
+    UnfixableGeometryError,
+    DisallowedGeometryTypeError,
+    SridMismatchError,
+)
 
-from dynastore.modules.catalog.sidecars.geometry_config import (
-    GeometrySidecarConfig,
+logger = logging.getLogger(__name__)
+
+from dynastore.modules.catalog.sidecars.geometries_config import (
+    GeometriesSidecarConfig,
     TargetDimension,
     SridMismatchPolicy,
-    InvalidGeometryPolicy, 
-    SimplificationAlgorithm
+    InvalidGeometryPolicy,
+    SimplificationAlgorithm,
 )
 
 # Alias for backward compatibility if needed, though type hints should use the new config
-GeometryStorageConfig = GeometrySidecarConfig
-logger = logging.getLogger(__name__)
+GeometryStorageConfig = GeometriesSidecarConfig
 
-class GeometryProcessingError(Exception):
-    """Custom exception for geometry processing failures."""
-    pass
-class InvalidWKBError(GeometryProcessingError):
-    """Raised when a WKB string cannot be parsed."""
-    pass
-
-class InvalidGeometryError(GeometryProcessingError):
-    """Raised when a geometry fails OGC validation rules."""
-    pass
-
-class UnfixableGeometryError(GeometryProcessingError):
-    """Raised when a geometry is still invalid after a fix attempt."""
-    pass
-
-class DisallowedGeometryTypeError(GeometryProcessingError):
-    """Raised when a geometry's type is not in the allowed list."""
-    pass
-
-class SridMismatchError(GeometryProcessingError):
-    """Raised when a geometry's SRID does not match the expected SRID."""
-    pass
 
 def _calculate_geometry_hash(geom: BaseGeometry) -> str:
     """Calculates a SHA256 hash of the geometry's WKB representation."""
     return hashlib.sha256(geom.wkb).hexdigest()
 
-def process_geometry(geom_wkb_hex: str, storage_config: GeometryStorageConfig, source_srid: Optional[int] = None) -> Dict[str, Any]:
+
+def process_geometry(
+    geom_wkb_hex: str,
+    storage_config: GeometryStorageConfig,
+    source_srid: Optional[int] = None,
+) -> Dict[str, Any]:
     """
     Processes a geometry according to the storage configuration, ensuring it's
     ready for database insertion and returning its properties including a 4326 bbox.
@@ -103,8 +95,10 @@ def process_geometry(geom_wkb_hex: str, storage_config: GeometryStorageConfig, s
             source_srid = wkb_element.srid
             logger.debug(f"Inferred source SRID {source_srid} from EWKB geometry.")
         else:
-            source_srid = 4326 # Fallback to default
-            logger.warning(f"Source SRID not specified and not found in geometry. Assuming EPSG:{source_srid}.")
+            source_srid = 4326  # Fallback to default
+            logger.warning(
+                f"Source SRID not specified and not found in geometry. Assuming EPSG:{source_srid}."
+            )
 
     processed_geom = shapely_geom
     was_geom_fixed = False
@@ -112,18 +106,24 @@ def process_geometry(geom_wkb_hex: str, storage_config: GeometryStorageConfig, s
     # 1. Handle SRID Mismatch and Transformation
     if source_srid != storage_config.target_srid:
         if storage_config.srid_mismatch_policy == SridMismatchPolicy.REJECT:
-            raise SridMismatchError(f"SRID mismatch: Incoming SRID {source_srid} != target SRID {storage_config.target_srid}. Policy is REJECT.")
+            raise SridMismatchError(
+                f"SRID mismatch: Incoming SRID {source_srid} != target SRID {storage_config.target_srid}. Policy is REJECT."
+            )
         elif storage_config.srid_mismatch_policy == SridMismatchPolicy.TRANSFORM:
             try:
                 transformer = Transformer.from_crs(
                     CRS(f"EPSG:{source_srid}"),
                     CRS(f"EPSG:{storage_config.target_srid}"),
-                    always_xy=True
+                    always_xy=True,
                 )
                 processed_geom = transform(transformer.transform, processed_geom)
-                logger.debug(f"Geometry transformed from EPSG:{source_srid} to EPSG:{storage_config.target_srid}.")
+                logger.debug(
+                    f"Geometry transformed from EPSG:{source_srid} to EPSG:{storage_config.target_srid}."
+                )
             except Exception as e:
-                raise GeometryProcessingError(f"Failed to transform geometry from EPSG:{source_srid} to EPSG:{storage_config.target_srid}: {e}") from e
+                raise GeometryProcessingError(
+                    f"Failed to transform geometry from EPSG:{source_srid} to EPSG:{storage_config.target_srid}: {e}"
+                ) from e
 
     # 2. Handle Invalid Geometries
     if not processed_geom.is_valid:
@@ -134,7 +134,9 @@ def process_geometry(geom_wkb_hex: str, storage_config: GeometryStorageConfig, s
             # but it's the best we can do in Python without PostGIS.
             processed_geom = make_valid(processed_geom)
             if not processed_geom.is_valid:
-                raise UnfixableGeometryError("Geometry remains invalid after attempt to fix.")
+                raise UnfixableGeometryError(
+                    "Geometry remains invalid after attempt to fix."
+                )
             was_geom_fixed = True
 
     # 3. Force Dimension
@@ -144,19 +146,37 @@ def process_geometry(geom_wkb_hex: str, storage_config: GeometryStorageConfig, s
         processed_geom = shapely.force_3d(processed_geom)
 
     # 4. Simplification (if configured)
-    if storage_config.simplification_algorithm and storage_config.simplification_tolerance:
-        if storage_config.simplification_algorithm == SimplificationAlgorithm.DOUGLAS_PEUCKER:
-            processed_geom = processed_geom.simplify(storage_config.simplification_tolerance, preserve_topology=False)
-        elif storage_config.simplification_algorithm == SimplificationAlgorithm.TOPOLOGY_PRESERVING:
-            processed_geom = processed_geom.simplify(storage_config.simplification_tolerance, preserve_topology=True)
+    if (
+        storage_config.simplification_algorithm
+        and storage_config.simplification_tolerance
+    ):
+        if (
+            storage_config.simplification_algorithm
+            == SimplificationAlgorithm.DOUGLAS_PEUCKER
+        ):
+            processed_geom = processed_geom.simplify(
+                storage_config.simplification_tolerance, preserve_topology=False
+            )
+        elif (
+            storage_config.simplification_algorithm
+            == SimplificationAlgorithm.TOPOLOGY_PRESERVING
+        ):
+            processed_geom = processed_geom.simplify(
+                storage_config.simplification_tolerance, preserve_topology=True
+            )
 
     # 5. Remove redundant vertices (normalize also handles winding order)
     if storage_config.remove_redundant_vertices:
         processed_geom = processed_geom.normalize()
 
     # 6. Validate allowed geometry types
-    if storage_config.allowed_geometry_types and processed_geom.geom_type not in storage_config.allowed_geometry_types:
-        raise DisallowedGeometryTypeError(f"Geometry type '{processed_geom.geom_type}' not allowed. Allowed types: {storage_config.allowed_geometry_types}")
+    if (
+        storage_config.allowed_geometry_types
+        and processed_geom.geom_type not in storage_config.allowed_geometry_types
+    ):
+        raise DisallowedGeometryTypeError(
+            f"Geometry type '{processed_geom.geom_type}' not allowed. Allowed types: {storage_config.allowed_geometry_types}"
+        )
 
     # Calculate content hash based on the final processed geometry
     content_hash = _calculate_geometry_hash(processed_geom)
@@ -173,43 +193,53 @@ def process_geometry(geom_wkb_hex: str, storage_config: GeometryStorageConfig, s
                 transformer_to_4326 = Transformer.from_crs(
                     CRS(f"EPSG:{current_srid_for_bbox}"),
                     CRS("EPSG:4326"),
-                    always_xy=True
+                    always_xy=True,
                 )
                 bbox_geom = transform(transformer_to_4326.transform, processed_geom)
                 logger.debug(f"Calculated bbox in EPSG:4326 for validation.")
             except Exception as e:
-                logger.warning(f"Could not transform geometry to EPSG:4326 for bbox calculation: {e}. Bbox might be in original SRID and cause validation errors.")
+                logger.warning(
+                    f"Could not transform geometry to EPSG:4326 for bbox calculation: {e}. Bbox might be in original SRID and cause validation errors."
+                )
                 bbox_coords = list(bbox_geom.bounds)
-        
-        if bbox_coords is None: # If transformation was successful or already in 4326
+
+        if bbox_coords is None:  # If transformation was successful or already in 4326
             bbox_coords = list(bbox_geom.bounds)
 
+    # Determine WKB output dimension
+    dump_args = {"hex": True}
+    # For shapely < 2.0 output_dimension might be ignored or handled differently, but for 2.0+ it enforces coordinate dimension
+    if storage_config.target_dimension == TargetDimension.FORCE_3D:
+        dump_args["output_dimension"] = 3
+    elif storage_config.target_dimension == TargetDimension.FORCE_2D:
+        dump_args["output_dimension"] = 2
+
     return {
-        'geom_type': processed_geom.geom_type,
-        'wkb_hex_processed': wkb.dumps(processed_geom, hex=True),
-        'content_hash': content_hash,
-        'bbox_coords': bbox_coords,
-        'centroid': (processed_geom.centroid.x, processed_geom.centroid.y),
-        'was_geom_fixed': was_geom_fixed,
-        'shapely_geom': processed_geom
+        "geom_type": processed_geom.geom_type,
+        "wkb_hex_processed": wkb.dumps(processed_geom, **dump_args),
+        "content_hash": content_hash,
+        "bbox_coords": bbox_coords,
+        "centroid": (processed_geom.centroid.x, processed_geom.centroid.y),
+        "was_geom_fixed": was_geom_fixed,
+        "shapely_geom": processed_geom,
     }
 
 
 def calculate_spatial_indices_from_centroid(
     centroid_lon: float,
-    centroid_lat: float, 
-    h3_resolutions: List[int], 
-    s2_resolutions: List[int]
+    centroid_lat: float,
+    h3_resolutions: List[int],
+    s2_resolutions: List[int],
 ) -> Dict[str, Any]:
     """
     Calculates H3 and S2 spatial indices from centroid coordinates.
     Assumes coordinates are in EPSG:4326 (lon, lat).
-    
+
     This is a memory-efficient alternative to calculate_spatial_indices
     that doesn't require keeping the full Shapely geometry in memory.
     """
     indices = {}
-    
+
     # H3 indices
     if h3_resolutions and h3:
         try:
@@ -217,7 +247,7 @@ def calculate_spatial_indices_from_centroid(
                 h3_index = h3.latlng_to_cell(centroid_lat, centroid_lon, res)
                 if isinstance(h3_index, str):
                     h3_index = int(h3_index, 16)
-                indices[f'h3_res{res}'] = h3_index
+                indices[f"h3_res{res}"] = h3_index
         except AttributeError:
             # Fallback for H3 v3.x
             try:
@@ -225,29 +255,32 @@ def calculate_spatial_indices_from_centroid(
                     h3_index = h3.geo_to_h3(centroid_lat, centroid_lon, res)
                     if isinstance(h3_index, str):
                         h3_index = int(h3_index, 16)
-                    indices[f'h3_res{res}'] = h3_index
+                    indices[f"h3_res{res}"] = h3_index
             except Exception as e:
                 logger.warning(f"H3 index calculation failed (v3 fallback): {e}")
         except Exception as e:
             logger.warning(f"H3 index calculation failed: {e}")
     elif h3_resolutions and not h3:
         logger.warning("H3 library not installed. Skipping H3 indices.")
-    
+
     # S2 indices
     if s2_resolutions and s2sphere:
         try:
             for res in s2_resolutions:
                 latlng = s2sphere.LatLng.from_degrees(centroid_lat, centroid_lon)
                 cell_id = s2sphere.CellId.from_lat_lng(latlng).parent(res)
-                indices[f's2_res{res}'] = cell_id.id()
+                indices[f"s2_res{res}"] = cell_id.id()
         except Exception as e:
             logger.warning(f"S2 index calculation failed: {e}")
     elif s2_resolutions and not s2sphere:
         logger.warning("s2sphere library not installed. Skipping S2 indices.")
-    
+
     return indices
 
-def calculate_spatial_indices(geom: BaseGeometry, h3_resolutions: List[int], s2_resolutions: List[int]) -> Dict[str, Any]:
+
+def calculate_spatial_indices(
+    geom: BaseGeometry, h3_resolutions: List[int], s2_resolutions: List[int]
+) -> Dict[str, Any]:
     """
     Calculates H3 and S2 spatial indices for a given Shapely geometry.
     The geometry is expected to be in EPSG:4326 for accurate index calculation.
@@ -256,8 +289,8 @@ def calculate_spatial_indices(geom: BaseGeometry, h3_resolutions: List[int], s2_
     if not geom.is_empty:
         # The SRID of the geometry is now managed by the caller, but for H3/S2, we must work in 4326.
         # We assume the caller provides a geometry whose CRS is known.
-        geom_srid = 4326 # Assume 4326 for now, this should be passed in or handled by caller logic
-        
+        geom_srid = 4326  # Assume 4326 for now, this should be passed in or handled by caller logic
+
         # Ensure geometry is in 4326 for H3/S2 if possible
         if geom_srid != 4326:
             try:
@@ -266,7 +299,9 @@ def calculate_spatial_indices(geom: BaseGeometry, h3_resolutions: List[int], s2_
                 )
                 geom_4326 = transform(transformer_to_4326.transform, geom)
             except Exception as e:
-                logger.warning(f"Could not transform geometry to EPSG:4326 for spatial index calculation: {e}. Skipping H3/S2 indices.")
+                logger.warning(
+                    f"Could not transform geometry to EPSG:4326 for spatial index calculation: {e}. Skipping H3/S2 indices."
+                )
                 return indices
         else:
             geom_4326 = geom
@@ -278,37 +313,48 @@ def calculate_spatial_indices(geom: BaseGeometry, h3_resolutions: List[int], s2_
             if h3_resolutions and h3:
                 try:
                     for res in h3_resolutions:
-                        h3_index = h3.latlng_to_cell(centroid.y, centroid.x, res) # v4 returns int
-                        if isinstance(h3_index, str): # Safety for unexpected string output
+                        h3_index = h3.latlng_to_cell(
+                            centroid.y, centroid.x, res
+                        )  # v4 returns int
+                        if isinstance(
+                            h3_index, str
+                        ):  # Safety for unexpected string output
                             h3_index = int(h3_index, 16)
-                        indices[f'h3_res{res}'] = h3_index
+                        indices[f"h3_res{res}"] = h3_index
                 except AttributeError:
-                     # Fallback for H3 v3.x if v4 is not present but h3 is
-                     try:
+                    # Fallback for H3 v3.x if v4 is not present but h3 is
+                    try:
                         for res in h3_resolutions:
-                             h3_index = h3.geo_to_h3(centroid.y, centroid.x, res) # v3 returns int
-                             if isinstance(h3_index, str): # Safety for unexpected string output
-                                 h3_index = int(h3_index, 16)
-                             indices[f'h3_res{res}'] = h3_index
-                     except Exception as e:
-                         logger.warning(f"H3 index calculation failed (v3 fallback): {e}")
+                            h3_index = h3.geo_to_h3(
+                                centroid.y, centroid.x, res
+                            )  # v3 returns int
+                            if isinstance(
+                                h3_index, str
+                            ):  # Safety for unexpected string output
+                                h3_index = int(h3_index, 16)
+                            indices[f"h3_res{res}"] = h3_index
+                    except Exception as e:
+                        logger.warning(
+                            f"H3 index calculation failed (v3 fallback): {e}"
+                        )
                 except Exception as e:
                     logger.warning(f"H3 index calculation failed: {e}")
             elif h3_resolutions and not h3:
-                 logger.warning("H3 library not installed. Skipping H3 indices.")
-            
+                logger.warning("H3 library not installed. Skipping H3 indices.")
+
             # S2 indices
             if s2_resolutions and s2sphere:
                 try:
                     for res in s2_resolutions:
                         latlng = s2sphere.LatLng.from_degrees(centroid.y, centroid.x)
                         cell_id = s2sphere.CellId.from_lat_lng(latlng).parent(res)
-                        indices[f's2_res{res}'] = cell_id.id()
+                        indices[f"s2_res{res}"] = cell_id.id()
                 except Exception as e:
                     logger.warning(f"S2 index calculation failed: {e}")
             elif s2_resolutions and not s2sphere:
                 logger.warning("s2sphere library not installed. Skipping S2 indices.")
     return indices
+
 
 def get_spatial_indices_for_bbox(
     bbox_coords: Tuple[float, float, float, float], h3_res: List[int], s2_res: List[int]
@@ -318,7 +364,7 @@ def get_spatial_indices_for_bbox(
     (BBOX is in Xmin, Ymin, Xmax, Ymax order)
     """
     xmin, ymin, xmax, ymax = bbox_coords
-    
+
     indices = {"h3_cells": [], "s2_cells": []}
 
     # H3 Optimization
@@ -329,25 +375,31 @@ def get_spatial_indices_for_bbox(
             # Must be a closed loop: start coordinate == end coordinate
             geojson_poly = {
                 "type": "Polygon",
-                "coordinates": [[
-                    [xmin, ymin],
-                    [xmin, ymax],
-                    [xmax, ymax],
-                    [xmax, ymin],
-                    [xmin, ymin]
-                ]]
+                "coordinates": [
+                    [
+                        [xmin, ymin],
+                        [xmin, ymax],
+                        [xmax, ymax],
+                        [xmax, ymin],
+                        [xmin, ymin],
+                    ]
+                ],
             }
-            
+
             # Use 'polygon_to_cells' (v4) or fallback to 'polyfill' (v3)
-            if hasattr(h3, 'polygon_to_cells'):
-                 indices["h3_cells"] = list(h3.polygon_to_cells(geojson_poly, res=target_h3_res))
-            elif hasattr(h3, 'polyfill'):
-                 indices["h3_cells"] = list(h3.polyfill(geojson_poly, target_h3_res, geo_json_conformant=True))
-                 
+            if hasattr(h3, "polygon_to_cells"):
+                indices["h3_cells"] = list(
+                    h3.polygon_to_cells(geojson_poly, res=target_h3_res)
+                )
+            elif hasattr(h3, "polyfill"):
+                indices["h3_cells"] = list(
+                    h3.polyfill(geojson_poly, target_h3_res, geo_json_conformant=True)
+                )
+
         except Exception as e:
             logger.error(f"H3 optimization failed: {e}")
 
-    # S2 Optimization 
+    # S2 Optimization
     if s2_res and s2sphere:
         target_s2_res = max(s2_res)
         try:
@@ -355,17 +407,17 @@ def get_spatial_indices_for_bbox(
             p1 = s2sphere.LatLng.from_degrees(ymin, xmin)
             p2 = s2sphere.LatLng.from_degrees(ymax, xmax)
             s2_rect = s2sphere.LatLngRect.from_point_pair(p1, p2)
-            
+
             rc = s2sphere.RegionCoverer()
-            
+
             # Configure coverer to be safe
             rc.min_level = 0
             rc.max_level = target_s2_res
-            rc.max_cells = 1000 # Prevent exploding cell counts on large bboxes
-            
+            rc.max_cells = 1000  # Prevent exploding cell counts on large bboxes
+
             # Get covering
             cell_union = rc.get_covering(s2_rect)
-            
+
             indices["s2_cells"] = [cell_id.to_token() for cell_id in cell_union]
 
         except Exception as e:

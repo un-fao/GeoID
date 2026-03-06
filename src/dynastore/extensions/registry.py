@@ -42,33 +42,44 @@ class ExtensionConfig:
     cls: Type[ExtensionProtocol]
     instance: ExtensionProtocol | None = None
 
-def dynastore_extension(cls: Type[T_Extension]) -> Type[T_Extension]:
+def _register_extension(cls: Type[T_Extension], registration_name: Optional[str] = None) -> Type[T_Extension]:
     """
-    A decorator to register a class as a DynaStore Web Extension.
+    Internal helper to register an extension class.
     """
-    try:
-        # Robustly determine the module name by finding the segment after 'extensions'
-        parts = cls.__module__.split('.')
-        idx = parts.index('extensions')
-        registration_name = parts[idx + 1]
-    except (ValueError, IndexError):
-        logger.error(f"Could not determine module folder name for extension '{cls.__name__}' from '{cls.__module__}'. Falling back to class name.")
-        registration_name = cls.__name__
+    if registration_name is None:
+        try:
+            # Robustly determine the module name by finding the segment after 'extensions'
+            parts = cls.__module__.split('.')
+            idx = parts.index('extensions')
+            registration_name = parts[idx + 1]
+        except (ValueError, IndexError):
+            registration_name = cls.__name__
 
     if registration_name in _DYNASTORE_EXTENSIONS:
-        logger.warning(f"Web extension '{registration_name}' is already registered. Overwriting.")
+        # Avoid redundant registration if same class
+        if _DYNASTORE_EXTENSIONS[registration_name].cls == cls:
+            return cls
+        logger.warning(f"Web extension '{registration_name}' is already registered with a different class. Overwriting.")
     
     _DYNASTORE_EXTENSIONS[registration_name] = ExtensionConfig(cls=cls)
-    
     cls._registered_name = registration_name
-    logger.info(f"Discovered web extension class: {cls.__name__} (registered as '{registration_name}')")
+    logger.info(f"Registered web extension: {cls.__name__} (as '{registration_name}')")
     return cls
+
+def dynastore_extension(cls: Type[T_Extension]) -> Type[T_Extension]:
+    """A decorator to register a class as a DynaStore Extension."""
+    return _register_extension(cls)
+
 
 def get_extension_instance(name: str) -> ExtensionProtocol | None:
     config = _DYNASTORE_EXTENSIONS.get(name)
     return config.instance if config else None
 
 def get_extension_instance_by_class(cls: Type[T_Extension]) -> T_Extension | None:
+    logger.warning(
+        f"get_extension_instance_by_class({cls.__name__}) is deprecated. Use get_protocol(...) instead for better decoupling.",
+        stack_info=True
+    )
     for config in _DYNASTORE_EXTENSIONS.values():
         if config.instance and isinstance(config.instance, cls):
             return cast(T_Extension, config.instance)
@@ -135,12 +146,20 @@ def discover_extensions(enabled_extensions: Optional[List[str]] = None, enabled_
                 full_module_path = f"{sub_package_name}.{sub_module_name}"
                 try:
                     try:
-                        importlib.import_module(full_module_path)
+                        target_module = importlib.import_module(full_module_path)
                     except ImportError:
                         # Fallback for when package_name calculation is tricky based on invocation
-                        importlib.import_module(f"dynastore.extensions.{module_name}.{sub_module_name}")
+                        fallback_path = f"dynastore.extensions.{module_name}.{sub_module_name}"
+                        target_module = importlib.import_module(fallback_path)
+                    
+                    for name, obj in inspect.getmembers(target_module, inspect.isclass):
+                        # Use a robust check for extensions: must be an ExtensionProtocol subclass
+                        # and belong directly to the scanned module (not an import)
+                        if issubclass(obj, ExtensionProtocol) and obj.__module__ == target_module.__name__:
+                            if obj.__name__ != "ExtensionProtocol":
+                                _register_extension(obj, registration_name=module_name)
                 except Exception:
-                     logger.error(f"Failed to import extension submodule '{sub_module_name}' from '{module_name}'", exc_info=True)
+                     logger.error(f"Failed to import/scan extension submodule '{sub_module_name}' from '{module_name}'", exc_info=True)
 
         except Exception:
             logger.error(f"Failed to load extension module '{module_name}'", exc_info=True)
@@ -196,4 +215,3 @@ def instantiate_extensions(app: FastAPI, enabled_extensions: Optional[List[str]]
             logger.info(f"Singleton for extension '{name}' created successfully.")
         except Exception as e:
             logger.error(f"CRITICAL: Failed during __init__ of extension '{name}': {str(e)}. It will be unavailable.", exc_info=True)
-            config.instance = None

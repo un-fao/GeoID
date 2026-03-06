@@ -39,8 +39,8 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        DYNASTORE_MODULES: ${API_MODULES:-db_config,db,catalog,stac}
-        DYNASTORE_EXTENSION_MODULES: ${API_EXTENSION_MODULES:-}
+        DYNASTORE_MODULES: ${API_MODULES:-db_config,db,datastore,catalog,stac,tiles,gcp,processes,tasks,crs,httpx,proxy,auth,apikey,stats,gdal,spanner}
+        DYNASTORE_EXTENSION_MODULES: ${API_EXTENSION_MODULES:-web,logs,stats,events,assets,configs,stac,features,processes,tasks,gcp,httpx,proxy,gdal,tiles,maps,wfs,styles,crs,dwh,apikey,auth,template,datamind,permissions}
         DYNASTORE_TASK_MODULES: ${API_TASK_MODULES:-}
     container_name: dynastore_api
     restart: always
@@ -48,10 +48,9 @@ services:
     environment:
       TCP_PORT: 80
       UVICORN_WORKERS: 4
+      DYNASTORE_MODULES: ${API_MODULES:-db_config,db,datastore,catalog,stac,tiles,gcp,processes,tasks,crs,httpx,proxy,auth,apikey,stats,gdal,spanner}
+      DYNASTORE_EXTENSION_MODULES: ${API_EXTENSION_MODULES:-web,logs,stats,events,assets,configs,stac,features,processes,tasks,gcp,httpx,proxy,gdal,tiles,maps,wfs,styles,crs,dwh,apikey,auth,template,datamind,permissions}
       DYNASTORE_TASK_MODULES: ${API_TASK_MODULES:-}
-      DYNASTORE_MODULES: ${API_MODULES:-db_config,db,catalog,stac}
-      DYNASTORE_EXTENSION_MODULES: ${API_EXTENSION_MODULES:-}
-      ACCESS_LOG: /dynastore/logs/access.log
       ERROR_LOG: /dynastore/logs/error.log
     ports:
       - "${HOST_PORT_API:-80}:80"
@@ -62,9 +61,66 @@ services:
     networks:
       - dynastore_net
 
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        DYNASTORE_MODULES: ${WORKER_MODULES:-db_config,db,datastore,catalog,stac,tiles,gcp,processes,tasks,crs,gdal,httpx}
+        DYNASTORE_EXTENSION_MODULES: ${WORKER_EXTENSION_MODULES:-web,gcp,processes,tasks,httpx,logs,events,stats,tiles}
+        DYNASTORE_TASK_MODULES: ${WORKER_TASK_MODULES:-ingestion,export_features,dwh_join,tiles_preseed,gdal,gcp_cloud_runner}
+    container_name: dynastore_worker
+    restart: always
+    env_file: .env
+    # Run in worker mode (same image as API, different modules + CMD)
+    command: ["worker"]
+    environment:
+      TCP_PORT: 81
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      DYNASTORE_TASK_MODULES: ${WORKER_TASK_MODULES:-ingestion,export_features,dwh_join,tiles_preseed,gdal,gcp_cloud_runner}
+      DYNASTORE_MODULES: ${WORKER_MODULES:-db_config,db,datastore,catalog,stac,tiles,gcp,processes,tasks,crs,gdal,httpx}
+      DYNASTORE_EXTENSION_MODULES: ${WORKER_EXTENSION_MODULES:-web,gcp,processes,tasks,httpx,logs,events,stats,tiles}
+      ACCESS_LOG: /dynastore/logs/access.log
+      ERROR_LOG: /dynastore/logs/error.log
+    ports:
+      - "${HOST_PORT_WORKER:-81}:81"
+    volumes:
+      - ../logs/worker:/dynastore/logs
+    depends_on:
+      - db
+    networks:
+      - dynastore_net
 
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    container_name: dynastore_elasticsearch
+    restart: always
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - dynastore_net
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.15.0
+    container_name: dynastore_kibana
+    restart: always
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    networks:
+      - dynastore_net
 volumes:
   postgres_data:
+  elasticsearch_data:
 
 
 networks:

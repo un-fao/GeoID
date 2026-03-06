@@ -17,7 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from typing import Any, Callable, Coroutine, List, Union, Dict, Tuple, Type, Protocol
+from typing import Any, Callable, Coroutine, List, Union, Dict, Tuple, Type, Protocol, runtime_checkable
 
 from dynastore.modules.tasks import tasks_module
 from dynastore.modules.tasks.models import (Task, TaskCreate, TaskExecutionMode,
@@ -25,10 +25,71 @@ from dynastore.modules.tasks.models import (Task, TaskCreate, TaskExecutionMode,
                                             TaskUpdate, RunnerContext)
 from dynastore.tasks import get_task_instance
 import asyncio
+from dynastore.tools.plugin import ProtocolPlugin
+from dynastore.tools.discovery import register_plugin
+
 logger = logging.getLogger(__name__)
 
+
+async def _emit_task_failure(
+    context: "RunnerContext",
+    job: Any,
+    error_message: str,
+    exc: Exception,
+) -> None:
+    """Shared helper: emits a generic platform 'task.failed' event after a task fails.
+
+    Severity is derived from the exception type:
+    - 'recoverable'   — transient errors (timeout, OSError, etc.)
+    - 'unrecoverable' — all other exceptions
+
+    The event carries the full input context so listeners can perform rollback
+    without any knowledge of the specific module that dispatched the task.
+    Also logs via tenant log_manager if catalog_id is resolvable.
+    """
+    # Determine severity from exception type
+    severity = "unrecoverable"
+    if isinstance(exc, (TimeoutError, OSError, asyncio.TimeoutError)):
+        severity = "recoverable"
+
+    catalog_id = (context.inputs or {}).get("catalog_id")
+    originating_event = (context.extra_context or {}).get("originating_event")
+
+    # Tenant-scoped structured log (best-effort, never blocks failure path)
+    if catalog_id:
+        try:
+            from dynastore.modules.catalog.log_manager import log_error
+            await log_error(
+                catalog_id,
+                event_type="task.failed",
+                message=f"Task '{context.task_type}' ({job.task_id}) failed [{severity}]: {error_message}",
+                details={"task_type": context.task_type, "severity": severity},
+            )
+        except Exception as log_exc:
+            logger.debug(f"log_manager unavailable for task failure logging: {log_exc}")
+
+    # Emit generic platform event — all rollback logic lives in module listeners
+    try:
+        from dynastore.modules.catalog.event_service import emit_event
+        await emit_event(
+            "task.failed",
+            task_id=str(job.task_id),
+            task_type=context.task_type,
+            error_message=error_message,
+            severity=severity,
+            inputs=context.inputs,
+            originating_event=originating_event,
+            catalog_id=catalog_id,
+        )
+    except Exception as emit_exc:
+        logger.error(f"Failed to emit task.failed event: {emit_exc}")
+
+@runtime_checkable
 class RunnerProtocol(Protocol):
     """Defines the contract for a class-based task runner."""
+
+    priority: int
+    mode: TaskExecutionMode
 
     async def setup(self, app_state: Any) -> None:
         """
@@ -37,74 +98,61 @@ class RunnerProtocol(Protocol):
         """
         pass  # Default implementation does nothing.
 
+    @property
+    def capabilities(self) -> Any:
+        """Returns the capabilities of this runner (e.g. max_concurrency, tags)."""
+        ...
+
     async def run(self, context: RunnerContext) -> Union[Task, Any]:
         """
         The core execution logic for the runner. This method is required.
         """
         ...
 
-# The registry now stores instantiated runner objects, sorted by priority.
-_RUNNERS: Dict[TaskExecutionMode, List[Tuple[int, RunnerProtocol]]] = {
-    TaskExecutionMode.ASYNCHRONOUS: [],
-    TaskExecutionMode.SYNCHRONOUS: [],
-}
-
-def register_runner(mode: TaskExecutionMode, priority: int = 100) -> Callable[[Type[RunnerProtocol]], Type[RunnerProtocol]]:
-    """
-    A class decorator to register a class as a runner for a specific TaskExecutionMode.
-    It instantiates the class and stores the instance in the registry.
-
-    Example:
-        @register_runner(TaskExecutionMode.ASYNCHRONOUS)
-        class MyRunner(RunnerProtocol):
-            async def setup(self, app_state):
-                print("Setting up!")
-            async def run(self, context: RunnerContext):
-                ...
-    """
-    def decorator(cls: Type[RunnerProtocol]) -> Type[RunnerProtocol]:
-        instance = cls()
-        _RUNNERS[mode].append((priority, instance))
-        _RUNNERS[mode].sort(key=lambda item: item[0]) # Sort by priority
-        logger.info(f"Registered runner class '{cls.__name__}' for '{mode.value}' with priority {priority}.")
-        return cls # Return the original class, not the instance
-    return decorator
-
 def get_runners(mode: TaskExecutionMode) -> List[RunnerProtocol]:
     """
     Retrieves a prioritized list of registered runner instances for a given mode.
     """
-    return [runner for priority, runner in _RUNNERS.get(mode, [])]
+    from dynastore.tools.discovery import get_protocols
+    return [r for r in get_protocols(RunnerProtocol) if getattr(r, "mode", None) == mode]
 
 def get_all_runners_with_setup() -> List[Tuple[int, RunnerProtocol]]:
     """
-    Returns a flattened, prioritized list of all runners that have implemented
+    Returns a prioritized list of all runners that have implemented
     a custom setup method.
     """
+    from dynastore.tools.discovery import get_protocols
     all_runners = []
-    for mode in _RUNNERS:
-        for priority, runner_func in _RUNNERS[mode]:
-            # Correctly check if the instance's setup method is not the default one from the protocol.
-            if runner_func.setup.__func__ is not RunnerProtocol.setup:
-                all_runners.append((priority, runner_func))
-    all_runners.sort(key=lambda item: item[0]) # Sort globally by priority
+    # get_protocols already sorts by priority desc
+    for runner in get_protocols(RunnerProtocol):
+        # Check if the instance's setup method is not the default one from the base class
+        if getattr(runner.setup, "__func__", runner.setup) is not RunnerProtocol.setup:
+            all_runners.append((getattr(runner, "priority", 0), runner))
     return all_runners
 
 # --- Default Runner Implementations ---
 
-@register_runner(TaskExecutionMode.SYNCHRONOUS)
-class SyncRunner(RunnerProtocol):
+class SyncRunner(RunnerProtocol, ProtocolPlugin[Any]):
+    mode = TaskExecutionMode.SYNCHRONOUS
+    priority = 100
     """
-    Runs a task synchronously within the request-response cycle.
-    It creates a task record for auditing, executes the task's run method,
-    updates the task status, and returns the final result directly.
+    An in-process, synchronous runner that executes the job immediately.
     """
+
+    async def setup(self, app_state: Any) -> None:
+        pass
+
+    @property
+    def capabilities(self) -> Any:
+        from dynastore.modules.tasks.models import RunnerCapabilities
+        return RunnerCapabilities(max_concurrency=100)
+
     async def run(self, context: RunnerContext) -> Any:
         # This is an in-process runner, so it's responsible for getting the task instance.
         task_instance = get_task_instance(context.task_type)
+        logger.warning(f"DEBUG: SyncRunner lookup for '{context.task_type}' -> {task_instance}")
         if not task_instance:
-            # Raise a recoverable error to allow fallback to other runners.
-            raise RuntimeError(f"SyncRunner: No task instance found for '{context.task_type}'.")
+            return None
 
         # Create a task record to track this synchronous execution for auditing.
         task_create_request = TaskCreate(
@@ -192,19 +240,22 @@ class SyncRunner(RunnerProtocol):
         
         # However, I should probably just leave this Runner alone and fix IngestionTask.
         
-        payload = TaskPayload(
-            task_id=job.task_id, 
-            caller_id=context.caller_id, 
-            inputs=context.inputs,
-            asset=context.asset
-        )
+        from dynastore.tasks import hydrate_task_payload
+
+        raw_payload = {
+            "task_id": job.task_id, 
+            "caller_id": context.caller_id, 
+            "inputs": context.inputs,
+            "asset": context.asset
+        }
 
         try:
             logger.info(f"Executing sync task '{job.task_id}'...")
             await tasks_module.update_task(context.engine, job.task_id, TaskUpdate(status=TaskStatusEnum.RUNNING), schema=context.db_schema)
 
-            # The task's `run` method is now async, so we can await it directly.
-            result = await task_instance.run(payload)
+            # Hydrate and execute
+            hydrated_payload = hydrate_task_payload(task_instance, raw_payload)
+            result = await task_instance.run(hydrated_payload)
 
             # OGC sync processes return the result directly; it's not stored in 'outputs'.
             update_data = TaskUpdate(status=TaskStatusEnum.COMPLETED, progress=100)
@@ -213,25 +264,35 @@ class SyncRunner(RunnerProtocol):
             return result
 
         except Exception as e:
-            logger.error(f"Sync task '{job.task_id}' failed: {e}", exc_info=True) # exc_info=True is important
+            logger.error(f"Sync task '{job.task_id}' failed: {e}", exc_info=True)
             error_message = f"Synchronous execution failed: {str(e)}"
             update_data = TaskUpdate(status=TaskStatusEnum.FAILED, error_message=error_message)
             await tasks_module.update_task(context.engine, job.task_id, update_data, schema=context.db_schema)
+            await _emit_task_failure(context, job, error_message, e)
             # Re-raise to allow the service layer to return a 500 error.
             raise
 
-@register_runner(TaskExecutionMode.ASYNCHRONOUS)
-class BackgroundRunner(RunnerProtocol):
+class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
+    mode = TaskExecutionMode.ASYNCHRONOUS
+    priority = 100
     """
     Runs a task asynchronously in the background.
     Uses Starlette/FastAPI BackgroundTasks if available in context, otherwise asyncio.create_task.
     Returns a StatusInfo object immediately (201 Created pattern).
     """
+    @property
+    def capabilities(self) -> Any:
+        from dynastore.modules.tasks.models import RunnerCapabilities
+        return RunnerCapabilities(max_concurrency=20)
+
     async def run(self, context: RunnerContext) -> Any:
         # This is an in-process runner
+        logger.debug(f"BackgroundRunner.run called for task_type: {context.task_type}, mode: {self.mode}")
         task_instance = get_task_instance(context.task_type)
         if not task_instance:
-            raise RuntimeError(f"BackgroundRunner: No task instance found for '{context.task_type}'.")
+            logger.error(f"Failed to find task instance for type: {context.task_type}")
+            return None
+        logger.debug(f"Found task instance: {task_instance.__class__.__name__} for task_type: {context.task_type}")
 
         # Create a task record (PENDING)
         task_create_request = TaskCreate(
@@ -242,12 +303,14 @@ class BackgroundRunner(RunnerProtocol):
         job = await tasks_module.create_task(context.engine, task_create_request, schema=context.db_schema)
         logger.info(f"Created audit task '{job.task_id}' for async process '{context.task_type}'.")
 
-        payload = TaskPayload(
-            task_id=job.task_id, 
-            caller_id=context.caller_id, 
-            inputs=context.inputs,
-            asset=context.asset
-        )
+        from dynastore.tasks import hydrate_task_payload
+        
+        raw_payload = {
+            "task_id": job.task_id, 
+            "caller_id": context.caller_id, 
+            "inputs": context.inputs,
+            "asset": context.asset
+        }
 
         background_tasks = context.extra_context.get("background_tasks")
         
@@ -260,14 +323,23 @@ class BackgroundRunner(RunnerProtocol):
                 
                 await tasks_module.update_task(context.engine, job.task_id, TaskUpdate(status=TaskStatusEnum.RUNNING), schema=context.db_schema)
                 
-                # Execute the task logic
-                await task_instance.run(payload)
+                # Hydrate and execute
+                hydrated_payload = hydrate_task_payload(task_instance, raw_payload)
+                result = await task_instance.run(hydrated_payload)
                 
-                # Update to COMPLETED
-                update_data = TaskUpdate(status=TaskStatusEnum.COMPLETED, progress=100)
+                # Update to COMPLETED with outputs
+                update_data = TaskUpdate(status=TaskStatusEnum.COMPLETED, progress=100, outputs=result)
                 await tasks_module.update_task(context.engine, job.task_id, update_data, schema=context.db_schema)
                 logger.info(f"Async task '{job.task_id}' completed successfully.")
                 
+            except asyncio.CancelledError:
+                logger.warning(f"Async task '{job.task_id}' was cancelled (SIGTERM?). Resetting to PENDING.")
+                try:
+                    # Reset to PENDING so another worker can pick it up
+                    await tasks_module.update_task(context.engine, job.task_id, TaskUpdate(status=TaskStatusEnum.PENDING), schema=context.db_schema)
+                except Exception as e:
+                    logger.error(f"Failed to reset cancelled task '{job.task_id}': {e}")
+                raise
             except Exception as e:
                 logger.error(f"Async task '{job.task_id}' failed: {e}", exc_info=True)
                 error_message = f"Asynchronous execution failed: {str(e)}"
@@ -275,7 +347,8 @@ class BackgroundRunner(RunnerProtocol):
                     update_data = TaskUpdate(status=TaskStatusEnum.FAILED, error_message=error_message)
                     await tasks_module.update_task(context.engine, job.task_id, update_data, schema=context.db_schema)
                 except Exception as update_error:
-                     logger.critical(f"Failed to update task '{job.task_id}' status to FAILED: {update_error}")
+                    logger.critical(f"Failed to update task '{job.task_id}' status to FAILED: {update_error}")
+                await _emit_task_failure(context, job, error_message, e)
 
         # Submit to background
         if background_tasks:
@@ -302,8 +375,18 @@ class BackgroundRunner(RunnerProtocol):
         from dynastore.modules.processes.models import StatusInfo
         return StatusInfo(
             jobID=str(job.task_id),
-            status="ACCEPTED",
+            status="accepted",
             message="Task accepted for asynchronous execution.",
             progress=0,
             links=[] 
         )
+
+def register_default_runners() -> None:
+    """Ensures that default runners are registered in the global plugin registry.
+    Safe to call multiple times.
+    """
+    register_plugin(SyncRunner())
+    register_plugin(BackgroundRunner())
+
+# Register default runners on module load
+register_default_runners()

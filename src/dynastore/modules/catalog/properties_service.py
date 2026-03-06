@@ -59,18 +59,6 @@ class PropertiesService(PropertiesProtocol):
         # Instance-bound cache
         self._get_property_cached = alru_cache(maxsize=64)(self._get_property_db)
 
-    async def initialize(self, app_state: Any, db_resource: Optional[DbResource] = None):
-        """Initializes the service with database connection."""
-        if not self.engine:
-            from dynastore.modules.db_config.tools import get_any_engine
-            self.engine = db_resource or get_any_engine(app_state)
-            
-        if not self.engine:
-            logger.warning("PropertiesService: No database engine available during initialization.")
-            return
-            
-        logger.info("PropertiesService initialized.")
-
     def is_available(self) -> bool:
         return self.engine is not None
 

@@ -1,0 +1,42 @@
+http://localhost:8000/api.html#/Template%20serverless%20support/interpolate_template_get_template_interpolate_get
+
+{% set i = 0 %}
+{% set col1 = 0 %}
+{% set col2 = 1 %}
+{% set attrs = m_urls.meta.tilestats.layers[0].attributes %}
+{% for attr in attrs %}
+    {% if attr.attribute == m.col1 %}
+        {% set col1 = i %}
+    {% elif attr.attribute == m.col2 %}
+        {% set col2 = i %}
+    {% endif %}
+    {% set i = i+1 %}
+{% endfor %}
+{{m.col1}},{{m.col2}};
+{% for value1 in attrs[col1].get('values',[]) %}
+{{ value1 }},{{ attrs[col2].get('values',[])[loop.index0]}};
+{% endfor %}
+
+t:
+{% set i = 0 %}{% set col1 = 0 %}{% set col2 = 1 %}{% set attrs = m_urls.meta.tilestats.layers[0].attributes %}{% for attr in attrs %}{% if attr.attribute == m.col1 %}{% set col1 = i %}{% elif attr.attribute == m.col2 %}{% set col2 = i %}{% endif %}{% set i = i + 1 %}{% endfor %}{{ m.col1 }},{{ m.col2 }}{{ '\n' }}{% for value1 in attrs[col1].get('values', []) %}{{ value1 }},{{ attrs[col2].get('values', [])[loop.index0] }}{{ '\n' }}{% endfor %}
+
+{% set i = 0 %}{% set col1 = 0 %}{% set col2 = 1 %}{% set attrs = m_urls.meta.tilestats.layers[0].attributes %}{% for attr in attrs %}{% if attr.attribute == m.col1 %}{% set col1 = i %}{% elif attr.attribute == m.col2 %}{% set col2 = i %}{% endif %}{% set i = i+1 %}{% endfor %}{{m.col1}},{{m.col2}};
+{% for value1 in attrs[col1].get('values',[]) %}{{ value1 }},{{ attrs[col2].get('values',[])[loop.index0]}};
+{% endfor %}
+
+m:
+{"col1":"fid", "col2":"GID_0"}
+
+m_url:
+{"meta":"https://data.review.fao.org/geospatial/api/mvt/pmtile/metadata.json?url=gs://fao-maps-review-pmtiles/pmtiles/bb1dceb2-6b4e-4d40-8d26-db1c26b422d0_46a542d9-5caf-4028-adbb-5629defcf80f.pmtiles"}
+
+r_mt:
+text/csv
+
+Example
+{"m_url":{
+    "meta":{
+        ...
+        }
+ "m": {"col1":"fid", "col2":"GID_0"}
+}

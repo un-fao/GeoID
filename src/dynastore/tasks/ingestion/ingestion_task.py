@@ -18,12 +18,12 @@
 
 import logging
 from typing import Any, Optional
-from dynastore.tasks import dynastore_task, TaskProtocol
-from dynastore.tasks.protocols import ProcessTaskProtocol
+from dynastore.tasks.protocols import TaskProtocol
+from dynastore.modules.processes.protocols import ProcessTaskProtocol
 from dynastore.modules.tasks.models import TaskPayload
 from dynastore.tasks.ingestion.main_ingestion import run_ingestion_task
 from dynastore.tasks.ingestion.ingestion_models import TaskIngestionRequest
-from dynastore.modules.db_config.tools import get_any_engine
+from dynastore.tools.protocol_helpers import get_engine
 from .definition import INGESTION_PROCESS_DEFINITION
 from dynastore.modules.processes.models import Process, ExecuteRequest, StatusInfo
 
@@ -33,15 +33,16 @@ from dynastore.modules.catalog.asset_manager import Asset, AssetTypeEnum
 
 logger = logging.getLogger(__name__)
 
-@dynastore_task
+
 class IngestionTask(ProcessTaskProtocol[Process, TaskPayload[ExecuteRequest], Optional[StatusInfo]], AssetTasksSPI):
+    priority: int = 100
     """
     A formal, stateful task responsible for running the data ingestion process.
     It is discovered and executed by the main_task.py entrypoint.
     It also implements AssetTasksSPI to allow context injection when triggered via Asset Service.
     """
     @staticmethod
-    def get_process_definition() -> Process:
+    def get_definition() -> Process:
         """Exposes the OGC Process definition for this task."""
         return INGESTION_PROCESS_DEFINITION
 
@@ -98,10 +99,7 @@ class IngestionTask(ProcessTaskProtocol[Process, TaskPayload[ExecuteRequest], Op
         """The core execution logic. It parses the payload and calls the main ingestion function."""
         task_id: str = str(payload.task_id)
         # A background task MUST use a synchronous engine to avoid event loop conflicts.
-        from dynastore.modules import get_protocol
-        from dynastore.models.protocols import DatabaseProtocol
-        db = get_protocol(DatabaseProtocol)
-        sync_engine = db.engine if db else get_any_engine(self.app_state)
+        sync_engine = get_engine()
         if not sync_engine:
             raise RuntimeError("IngestionTask requires a database engine.")
         try:
@@ -136,7 +134,7 @@ class IngestionTask(ProcessTaskProtocol[Process, TaskPayload[ExecuteRequest], Op
                 caller_id=caller_id
             )
             logger.info(f"Ingestion task '{task_id}' complete.")
-            return StatusInfo(jobID=task_id, status="COMPLETED", message="Ingestion task completed successfully.", progress=100, links=[])
+            return StatusInfo(jobID=task_id, status="successful", message="Ingestion task completed successfully.", progress=100, links=[])
         except Exception as e:
             logger.error(f"Ingestion task '{task_id}' failed catastrophically: {e}", exc_info=True)
             # The DatabaseStatusReporter will catch this exception and mark the task as FAILED.

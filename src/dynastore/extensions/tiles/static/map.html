@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MVT Tile Debugger</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
+    <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+        #map { flex-grow: 1; height: 100%; position: relative; }
+        .sidebar { width: 400px; height: 100vh; overflow-y: auto; display: flex; flex-direction: column; border-right: 1px solid #e5e7eb; }
+        .log-container { flex-grow: 1; background: #1a1a1a; color: #4ade80; font-family: monospace; font-size: 11px; padding: 10px; overflow-y: auto; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 10px; }
+        .layer-pill { transition: all 0.2s; cursor: pointer; }
+        .layer-pill:hover { transform: translateY(-1px); box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .layer-pill.active { background-color: #2563eb !important; color: white !important; border-color: #1e40af !important; }
+    </style>
+</head>
+<body class="flex bg-white text-gray-900">
+
+    <!-- Sidebar / Control Panel -->
+    <div class="sidebar bg-gray-50 z-20 shadow-xl">
+        <div class="p-6 border-bottom">
+            <h1 class="text-xl font-bold flex items-center gap-2 text-blue-700">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 7 4.41-4.41A2 2 0 0 1 7.83 2h8.34a2 2 0 0 1 1.42.59L22 7"/><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><path d="M15 22v-4a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v4"/></svg>
+                MVT Debugger
+            </h1>
+            <p class="text-xs text-gray-500 mt-1 italic">Detecting internal source-layers in real-time.</p>
+        </div>
+
+        <div class="px-6 space-y-4">
+            <!-- URL Input -->
+            <div>
+                <label class="block text-xs font-bold uppercase tracking-wider text-gray-700 mb-1">MVT Service URL</label>
+                <textarea id="url-input" class="w-full p-3 text-[12px] border rounded-md font-mono bg-white shadow-inner focus:ring-2 focus:ring-blue-500 outline-none h-24 leading-tight" placeholder="https://example.com/tiles/{z}/{x}/{y}.mvt"></textarea>
+            </div>
+
+            <button id="load-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-4 rounded-lg transition-all shadow-md active:scale-[0.98]">
+                Reload Service
+            </button>
+
+            <!-- Layers Found -->
+            <div id="layer-section" class="hidden">
+                <label class="block text-xs font-bold uppercase tracking-wider text-gray-700 mb-1">Tiles contain these layers:</label>
+                <div id="detected-layers" class="flex flex-wrap gap-2 py-2">
+                    <!-- Layer pills generated here -->
+                </div>
+                <p class="text-[10px] text-gray-400">Click a layer to render its geometry.</p>
+            </div>
+
+            <!-- Stats -->
+            <div class="grid grid-cols-2 gap-3 text-center">
+                <div class="bg-white p-3 border border-gray-200 rounded-lg shadow-sm">
+                    <div class="text-[10px] text-gray-400 font-bold uppercase">Features Found</div>
+                    <div id="stat-features" class="font-mono font-bold text-xl text-blue-600">0</div>
+                </div>
+                <div class="bg-white p-3 border border-gray-200 rounded-lg shadow-sm">
+                    <div class="text-[10px] text-gray-400 font-bold uppercase">Status</div>
+                    <div id="stat-loading" class="font-bold text-sm text-gray-600">Idle</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Network Log -->
+        <div class="mt-6 flex flex-col flex-grow border-t border-gray-200">
+            <div class="px-6 py-2 bg-gray-100 text-[10px] font-bold uppercase tracking-widest text-gray-500 flex justify-between items-center">
+                Console Output
+                <button id="clear-log" class="text-blue-500 hover:text-red-500 transition-colors uppercase">Clear</button>
+            </div>
+            <div id="log" class="log-container custom-scrollbar border-t border-gray-800"></div>
+        </div>
+    </div>
+
+    <!-- Map View -->
+    <div id="map"></div>
+
+    <script>
+        const logEl = document.getElementById('log');
+        const urlInput = document.getElementById('url-input');
+        const loadBtn = document.getElementById('load-btn');
+        const detectedLayersEl = document.getElementById('detected-layers');
+        const layerSection = document.getElementById('layer-section');
+        const statFeatures = document.getElementById('stat-features');
+        const statLoading = document.getElementById('stat-loading');
+
+        // Dynamically init from URL params
+        const urlParams = new URLSearchParams(window.location.search);
+        const dataset = urlParams.get('dataset') || urlParams.get('catalog');
+        const collections = urlParams.get('collections');
+        
+        let initialUrl = '';
+        if (dataset && collections) {
+            // Reconstruct tile URL relative to origin
+            // /tiles/catalogs/{dataset}/tiles/WebMercatorQuad/{z}/{x}/{y}.mvt?collections={collections}
+            // Use window.location.origin + prefix if needed.
+            let appRoot = window.location.origin;
+            // Check for prefix in current path (e.g. /myprefix/web/pages/map_viewer)
+            const webIndex = window.location.pathname.indexOf('/web/');
+            if (webIndex !== -1) {
+                appRoot += window.location.pathname.substring(0, webIndex);
+            }
+            
+            initialUrl = `${appRoot}/tiles/catalogs/${dataset}/tiles/WebMercatorQuad/{z}/{x}/{y}.mvt?collections=${collections}`;
+        } else {
+             // Fallback example
+             initialUrl = window.location.origin + '/tiles/catalogs/asif_test/tiles/WebMercatorQuad/{z}/{x}/{y}.mvt?collections=col_test';
+             addLog('No dataset/collections params found. Using default example.', 'warn');
+        }
+
+        urlInput.value = initialUrl;
+
+        function addLog(msg, type = 'info') {
+            const time = new Date().toLocaleTimeString().split(' ')[0];
+            const div = document.createElement('div');
+            div.className = `mb-1 py-1 border-b border-gray-800 ${type === 'error' ? 'text-red-400' : type === 'network' ? 'text-blue-300' : type === 'success' ? 'text-yellow-400 font-bold' : ''}`;
+            div.innerHTML = `<span class="opacity-40">[${time}]</span> ${msg}`;
+            logEl.appendChild(div);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        document.getElementById('clear-log').onclick = () => logEl.innerHTML = '';
+
+        // Security bypass for Canvas
+        maplibregl.setWorkerUrl('https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl-csp-worker.js');
+
+        let map;
+        let activeLayerId = null;
+
+        async function initMap() {
+            addLog('Initializing Map environment...');
+            
+            try {
+                // Manually fetch style to ensure absolute URLs
+                const res = await fetch('https://demotiles.maplibre.org/style.json');
+                const style = await res.json();
+
+                map = new maplibregl.Map({
+                    container: 'map',
+                    style: style,
+                    center: [0, 0],
+                    zoom: 1,
+                    transformRequest: (url, resourceType) => {
+                        if (resourceType === 'Tile' || url.includes('.mvt')) {
+                            addLog(`FETCH TILE: ...${url.slice(-40)}`, 'network');
+                        }
+                        // Avoid origin sniffing errors
+                        if (!url.startsWith('http') && !url.startsWith('data:')) {
+                            return { url: new URL(url, 'https://demotiles.maplibre.org/').href };
+                        }
+                        return { url };
+                    }
+                });
+
+                map.on('dataloading', (e) => {
+                    if (e.sourceId === 'debug-source') statLoading.textContent = 'Loading...';
+                });
+
+                map.on('sourcedata', (e) => {
+                    if (e.sourceId === 'debug-source' && e.isSourceLoaded) {
+                        statLoading.textContent = 'Active';
+                        
+                        // SNIFFER LOGIC: Query current viewport to find what's actually in the tiles
+                        const features = map.querySourceFeatures('debug-source');
+                        statFeatures.textContent = features.length;
+
+                        if (features.length > 0) {
+                            const foundLayers = [...new Set(features.map(f => f.sourceLayer))];
+                            updateLayerPills(foundLayers);
+                        } else {
+                            addLog('Tiles downloaded, but no visible features found in current view. Zoom in/out?', 'info');
+                        }
+                    }
+                });
+
+                map.on('error', (e) => {
+                    if (e.error?.message?.includes('Location')) return;
+                    addLog(`ERROR: ${e.error?.message || 'Check browser network tab'}`, 'error');
+                });
+
+                map.on('load', () => {
+                    addLog('System Online. Base map ready.', 'success');
+                    // Automatically trigger first load
+                    loadSource();
+                });
+
+            } catch (err) {
+                addLog('CRITICAL INIT FAILURE: ' + err.message, 'error');
+            }
+        }
+
+        function updateLayerPills(layers) {
+            layerSection.classList.remove('hidden');
+            const currentPills = Array.from(detectedLayersEl.querySelectorAll('.layer-pill')).map(p => p.textContent);
+            
+            // Only update if layers changed
+            if (JSON.stringify(currentPills.sort()) === JSON.stringify(layers.sort())) return;
+
+            addLog(`LAYER SNIFFER FOUND: ${layers.join(', ')}`, 'success');
+            detectedLayersEl.innerHTML = '';
+            
+            layers.forEach((layer) => {
+                const btn = document.createElement('button');
+                btn.className = `layer-pill bg-blue-50 text-blue-700 px-3 py-1.5 rounded-full text-[11px] font-bold border border-blue-200 shadow-sm`;
+                btn.textContent = layer;
+                
+                if (activeLayerId === layer) btn.classList.add('active');
+
+                btn.onclick = () => {
+                    document.querySelectorAll('.layer-pill').forEach(p => p.classList.remove('active'));
+                    btn.classList.add('active');
+                    activeLayerId = layer;
+                    addLog(`Rendering geometries for: ${layer}`);
+                    renderGeometries(layer);
+                };
+                detectedLayersEl.appendChild(btn);
+            });
+            
+            // Auto-render the first layer found if nothing is active
+            if (layers.length > 0 && !activeLayerId) {
+                activeLayerId = layers[0];
+                const firstPill = detectedLayersEl.firstChild;
+                if (firstPill) firstPill.classList.add('active');
+                renderGeometries(layers[0]);
+            }
+        }
+
+        function renderGeometries(sourceLayer) {
+            if (!map) return;
+            
+            // Clean up old layers
+            ['debug-fill', 'debug-line', 'debug-points'].forEach(id => {
+                if (map.getLayer(id)) map.removeLayer(id);
+            });
+
+            // Polygons
+            map.addLayer({
+                id: 'debug-fill',
+                type: 'fill',
+                source: 'debug-source',
+                'source-layer': sourceLayer,
+                paint: { 'fill-color': '#3b82f6', 'fill-opacity': 0.2 },
+                filter: ['==', '$type', 'Polygon']
+            });
+
+            // Lines
+            map.addLayer({
+                id: 'debug-line',
+                type: 'line',
+                source: 'debug-source',
+                'source-layer': sourceLayer,
+                paint: { 'line-color': '#2563eb', 'line-width': 1.5 }
+            });
+
+            // Points
+            map.addLayer({
+                id: 'debug-points',
+                type: 'circle',
+                source: 'debug-source',
+                'source-layer': sourceLayer,
+                paint: {
+                    'circle-radius': 5,
+                    'circle-color': '#f59e0b',
+                    'circle-stroke-width': 2,
+                    'circle-stroke-color': '#fff'
+                },
+                filter: ['==', '$type', 'Point']
+            });
+        }
+
+        function loadSource() {
+            if (!map || !map.isStyleLoaded()) {
+                addLog('Waiting for map style to finish loading...', 'info');
+                return;
+            }
+
+            const url = urlInput.value.trim();
+            if (!url) {
+                addLog('Error: URL input is empty.', 'error');
+                return;
+            }
+
+            addLog(`Connecting to: ${url.split('?')[0]}`, 'info');
+            
+            // Cleanup existing layers and source
+            activeLayerId = null;
+            detectedLayersEl.innerHTML = '';
+            ['debug-fill', 'debug-line', 'debug-points'].forEach(id => {
+                if (map.getLayer(id)) map.removeLayer(id);
+            });
+            if (map.getSource('debug-source')) map.removeSource('debug-source');
+
+            try {
+                map.addSource('debug-source', {
+                    type: 'vector',
+                    tiles: [url],
+                    minzoom: 0,
+                    maxzoom: 22
+                });
+                addLog('MVT Source added to map.', 'success');
+            } catch (e) {
+                addLog('Failed to add source: ' + e.message, 'error');
+            }
+        }
+
+        // Attach event listener directly to button
+        loadBtn.addEventListener('click', () => {
+            addLog('Update button clicked');
+            loadSource();
+        });
+
+        // Initialize immediately if script reaches this point
+        if (document.readyState === 'complete' || document.readyState === 'interactive') {
+            initMap();
+        } else {
+            document.addEventListener('DOMContentLoaded', initMap);
+        }
+    </script>
+</body>
+</html>

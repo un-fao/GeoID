@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -8,6 +9,7 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="app.js" defer></script>
 </head>
+
 <body>
     <div class="app-container">
         <!-- Sidebar -->
@@ -26,6 +28,9 @@
                 <a href="#" class="nav-item" data-tab="resources">
                     <span class="icon">🗄️</span> Resources
                 </a>
+                <a href="/web/dashboard/processes/" class="nav-item">
+                    <span class="icon">⚙️</span> Process Executor
+                </a>
             </nav>
             <div class="user-info">
                 <div class="avatar">SA</div>
@@ -41,7 +46,13 @@
             <!-- Header -->
             <header class="top-bar">
                 <h2 id="page-title">System Overview</h2>
-                <div class="actions">
+                <div class="actions" style="display: flex; gap: 1rem; align-items: center;">
+                    <select id="catalog-select" class="filter-select" onchange="app.onCatalogChange()">
+                        <option value="_system_">System (Global)</option>
+                    </select>
+                    <select id="collection-select" class="filter-select" onchange="app.refreshAll()">
+                        <option value="">All Collections</option>
+                    </select>
                     <span id="last-updated">Updated: Just now</span>
                     <button class="refresh-btn" onclick="app.refreshAll()">↻ Refresh</button>
                     <a href="/web/" class="exit-btn">Exit to Site</a>
@@ -111,7 +122,9 @@
                             </thead>
                             <tbody>
                                 <!-- Populated via JS -->
-                                <tr><td colspan="4" class="loading-row">Loading logs...</td></tr>
+                                <tr>
+                                    <td colspan="4" class="loading-row">Loading logs...</td>
+                                </tr>
                             </tbody>
                         </table>
                     </div>
@@ -135,4 +148,5 @@
         </main>
     </div>
 </body>
+
 </html>

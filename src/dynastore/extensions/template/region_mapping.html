@@ -1,0 +1,456 @@
+<!--  -->
+<!--  -->
+<!-- https://github.com/protomaps/PMTiles/blob/main/js/examples/maplibre_advanced.html -->
+<!-- https://bitbucket.org/cioapps/terriajs/src/master/lib/Models/RegionMapping.js -->
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Vector Tiles with CSV Join</title>
+  <script src="https://unpkg.com/papaparse@5.3.1/papaparse.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chroma-js/2.4.2/chroma.min.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/pbf@latest/dist/pbf.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.vectorgrid@1.2.0"></script>
+  <script src="https://unpkg.com/@mapbox/vector-tile@1.3.1/vectortile.js"></script>
+
+  <style>
+    #map { height: 600px; }
+    .control-panel { margin: 10px; padding: 10px; background: white; border-radius: 5px; }
+    .leaflet-tooltip {
+      background: rgba(255, 255, 255, 0.9);
+      border: 2px solid #333;
+      border-radius: 5px;
+      padding: 5px;
+    }
+  </style>
+  <!-- Keep existing head content -->
+  <style>
+    /* Add highlight style for full geometry */
+    .leaflet-zoom-animated path.feature-highlight {
+      stroke: #ff0000 !important;
+      stroke-width: 3px !important;
+      filter: brightness(1.2);
+      transition: all 0.2s;
+    }
+    /* Add pointer events for fill interaction */
+    .leaflet-interactive {
+      pointer-events: visibleFill !important;
+    }
+    /* Enhanced highlight style */
+    .feature-highlight {
+      stroke: #ff0000 !important;
+      stroke-width: 3px !important;
+      filter: brightness(1.2);
+      transition: all 0.2s;
+    }
+  </style>
+</head>
+<body>
+  <div class="control-panel">
+    <label for="layer1Attr">CSV file selector:</label>
+    <input type="file" id="csvFile" accept=".csv">
+    <br></br>
+    <label for="layer1Attr">Vector Tile Join Attribute:</label>
+    <select id="layer1Attr"></select>
+    <br></br>
+    <label for="csvAttr">CSV Join Attribute:</label>
+    <select id="csvAttr"></select>
+    <br></br>
+    <label for="csvStyleAttr">CSV Style Attribute:</label>
+    <select id="csvStyleAttr"></select>
+    <br></br>
+    <label for="layer1Attr">URL (gs:// or https://):</label>
+    <input type="text" id="geom_url" style="width: 400px;" 
+          value="https://storage.googleapis.com/fao-maps-catalog-data/temp/gadm_level_0_complete.pmtiles">
+    <button id="loadLayerButton">Load Layer</button>
+    <p>Metadata: Zoom <span id="minZoom"></span>-<span id="maxZoom"></span>, Projection: <span id="projection"></span></p>
+    <br></br>
+    <div id="legend"></div>
+  </div>
+  <div id="map"></div>
+
+  <script>
+    // Add color scale manager
+    let colorScale = null;
+    let currentColorAttr = null;
+
+
+    function styleFunction(feature) {
+      const csvStyleAttr = document.getElementById('csvStyleAttr').value;
+      
+      if (!colorScale || currentColorAttr !== csvStyleAttr) {
+        updateColorScale(csvStyleAttr); // Update scale before styling
+      }
+
+      let fillColor;
+      
+      try {
+        fillColor = colorScale(feature.properties[csvStyleAttr]).hex();
+        
+        if (!fillColor || typeof fillColor !== 'string') throw new Error('Invalid fill color');
+        
+        const strokeColor = chroma(fillColor).darken(1).hex();
+        
+        return {
+          fill: true,
+          fillColor: fillColor,
+          fillOpacity: feature.properties.__featureId ? feature.properties.__featureId === 'highlight' ? .9 : .7 : .7,
+          stroke: true,
+          color: strokeColor,
+          weight: feature.properties.__featureId === 'highlight' ? feature.properties.__featureId === 'highlight' ? .5 : .5 : .5, 
+          className: `feature-${feature.properties.__featureId}`
+          
+        };
+      } catch (e) { 
+        console.error(e); 
+        return { fillOpacity:0 }; 
+      }
+    }
+
+    function generateRandomColors(arr) {
+        let colors=[];
+        for(let i=0;i<arr.length;i++){
+            let r=Math.floor(Math.random()*256),
+                g=Math.floor(Math.random()*256),
+                b=Math.floor(Math.random()*256);
+
+            while(((r+g+b)/3)<128||((r+g+b)/3)>192){/* Ensure sufficient contrast by adjusting brightness*/
+                r=Math.floor(Math.random()*256);
+                g=Math.floor(Math.random()*256);
+                b=Math.floor(Math.random()*256);}
+
+            colors.push(`#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`);
+        }
+
+        return function(value){
+          return this[Array.from(new Set(arr)).indexOf(value)%arr.length];
+        }.bind(colors); /* Bind so it returns from the generated array based on index */
+    }
+
+    function updateColorScale(attr) {
+      const values = csvData.map(d => d[attr]);
+
+      const legend = document.getElementById('legend');
+      legend.innerHTML = '<strong>Legend:</strong><br>';
+      
+      if (values.every(v => typeof v === 'number')) {
+        // Numerical scale
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+
+        colorScale = chroma.scale('RdYlBu').domain([min, max]);
+
+        legend.innerHTML += `
+          <div style="background: linear-gradient(to right, ${chroma.scale('RdYlBu')(0).hex()}, ${chroma.scale('RdYlBu')(1).hex()});
+            height: 20px; width: 200px; margin: 5px 0;"></div>
+          <div style="display: flex; justify-content: space-between;">
+            <span>${min}</span>
+            <span>${max}</span>
+          </div>
+        `;
+      } else {
+        // Categorical scale
+        const uniqueValues = Array.from(new Set(values));
+        
+        // Usage for categorical data:
+        colorScale = generateRandomColors(uniqueValues);
+
+        uniqueValues.forEach((value, i) => {
+          legend.innerHTML += `
+            <div style="display: flex; align-items: center; margin: 2px 0;">
+              <div style="width: 20px; height: 20px; background: ${chroma.scale('Set3')(i).hex()}; margin-right: 5px;"></div>
+              ${value}
+            </div>
+          `;
+        });
+
+        
+      }
+
+      if (vectorLayer) vectorLayer.redraw(); // Redraw layer after updating scale
+    }
+
+
+    // Custom VectorGrid implementation with fixes
+    // https://github.com/Leaflet/Leaflet.VectorGrid/blob/master/src/Leaflet.VectorGrid.Protobuf.js
+    L.VectorGrid.Joined = L.VectorGrid.extend({
+      initialize: function(url, options) {
+        L.VectorGrid.prototype.initialize.call(this, options);
+        this._joinData = new Map();
+        this._vectorKey = options.vectorKey;
+        this._csvKey = options.csvKey;
+        this._url = url;
+      },
+      setJoinData: function(data, vectorKey, csvKey) {
+        this._joinData.clear();
+        data.forEach(item => {
+          const key = item[csvKey]?.toString();
+          if (key) this._joinData.set(key, item);
+        });
+        this._vectorKey = vectorKey;
+        this._csvKey = csvKey;
+        this.redraw();
+      },
+
+      _getVectorTilePromise: function(coords) {
+        return new Promise((resolve, reject) => {
+          const url = this._url
+            .replace('{z}', coords.z)
+            .replace('{x}', coords.x)
+            .replace('{y}', coords.y);
+
+          fetch(url, headers={
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Methods': 'GET',
+              // "Access-Control-Max-Age": "86400",
+            })
+            .then(response => {
+              if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+              return response.arrayBuffer();
+            })
+            .then(buffer => {
+              const vectorTile = new VectorTile(new Pbf(buffer));
+              const layerName = Object.keys(vectorTile.layers)[0];
+              const layer = vectorTile.layers[layerName];
+              
+              if (!layer) {
+                return;
+              }
+
+              const joinedFeatures = [];
+              for (let i = 0; i < layer.length; i++) {
+                const feature = layer.feature(i);
+                const joinKey = feature.properties[this._vectorKey]?.toString();
+                
+                if (joinKey && this._joinData.has(joinKey)) {
+                  joinedFeatures.push({
+                    type: feature.type,
+                    geometry: feature.loadGeometry(),
+                    properties: {
+                      // __featureId: feature.id, // Add feature ID for tracking
+                      ...feature.properties,
+                      ...this._joinData.get(joinKey)
+                    }
+                  });
+                }
+              }
+
+              resolve({
+                layers: {
+                  [layerName]: {
+                    features: joinedFeatures,
+                    extent: layer.extent
+                  }
+                }
+              });
+            })
+            .catch(reject);
+        });
+      }
+    });
+
+    // Main Application
+    const map = L.map('map').setView([0, 0], 2);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+    let vectorLayer = null;
+    let csvData = [];
+    const tooltip = L.tooltip({ direction: 'right', permanent: false, sticky: true });
+
+
+    // Metadata handling with error checking
+    async function getMetadata(url) {
+      try {
+        const response = await fetch(
+          `https://{{netloc}}{{path}}mvt/pmtile/metadata.json?url=${encodeURIComponent(url)}`, headers={
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Methods': 'GET',
+              // "Access-Control-Max-Age": "86400",
+            }
+        );
+        if (!response.ok) throw new Error('Metadata request failed');
+        return await response.json();
+      } catch (error) {
+        console.error('Metadata error:', error);
+        return {};
+      }
+    }
+
+
+    // Modified SVG renderer to track feature IDs
+    // L.SVG.include({
+    //   _updatePath: function(layer, path) {
+    //     L.SVG.prototype._updatePath.call(this, layer, path);
+    //     if (layer.feature && layer.feature.properties.__featureId) {
+    //       path.setAttribute('data-feature-id', layer.feature.properties.__featureId);
+    //     }
+    //   }
+    // });
+    function getFillColor(feature) {
+      // Example logic using 'statisticValue' property.
+      // Adjust according to your data structure.
+      
+      if (!feature.properties || !feature.properties.statisticValue) return '#ccc'; // Default color
+      
+      var value = feature.properties.statisticValue;
+      
+      if (value > highThreshold) return '#FF0000'; // High value red
+      else if (value > mediumThreshold) return '#FFFF00'; // Medium value yellow
+      else return '#00FF00'; // Low value green
+      
+    }
+    // Unified load layer handler
+    document.getElementById('loadLayerButton').addEventListener('click', async () => {
+      
+      if (vectorLayer) map.removeLayer(vectorLayer);
+
+      try {
+
+        const url = document.getElementById('geom_url').value;
+        const metadata = await getMetadata(url);
+        layer = updateAttributes(metadata, 0);
+
+        vectorLayer = new L.VectorGrid.Joined(
+          `https://{{netloc}}{{path}}mvt/pmtile/{z}/{x}/{y}.pbf?url=${encodeURIComponent(url)}`,
+          {
+            vectorKey: document.getElementById('layer1Attr').value,
+            csvKey: document.getElementById('csvAttr').value,
+            rendererFactory: L.svg.tile,
+            vectorTileLayerStyles: {
+                [layer.id]: properties => styleFunction({properties})
+                //  { 
+                //     return {
+                //         fillColor: getFillColor({properties}), 
+                //         fillOpacity: properties.statisticValue ? (properties.statisticValue / highThreshold) : null,
+                //         fill: true,
+                //     };
+                // }
+            },
+            // rendererFactory: L.svg.custom_tile,
+            interactive: true,
+            getFeatureId: f => f.properties[document.getElementById('layer1Attr').value]
+          }
+        ).addTo(map);
+
+        // Add enhanced event handlers
+        vectorLayer
+        // .on('click', e => {
+        //   // Highlight all feature parts
+        //   const featureId = e.layer.properties.__featureId;
+        //   document.querySelectorAll(`[data-feature-id="${featureId}"]`)
+        //     .forEach(path => path.classList.add('feature-highlight'));
+          
+        //   L.popup()
+        //     .setLatLng(e.latlng)
+        //     .setContent(formatProperties(e.layer.properties))
+        //     .openOn(map);
+        // })
+        .on('mouseover', e => {
+          const featureId = e.layer.properties.__featureId;
+          document.querySelectorAll(`[data-feature-id="${featureId}"]`)
+            .forEach(path => path.classList.add('feature-highlight'));
+          
+          tooltip.setLatLng(e.latlng)
+            .setContent(formatProperties(e.layer.properties))
+            .openOn(map);
+        })
+        .on('mouseout', e => {
+          const featureId = e.layer.properties.__featureId;
+          document.querySelectorAll(`[data-feature-id="${featureId}"]`)
+            .forEach(path => path.classList.remove('feature-highlight'));
+          tooltip.close();
+        });
+
+        if (csvData.length) {
+          vectorLayer.setJoinData(
+            csvData,
+            document.getElementById('layer1Attr').value,
+            document.getElementById('csvAttr').value
+          );
+        }
+      } catch (error) {
+        console.error('Layer load error:', error);
+      }
+    });
+
+    // CSV handling with validation
+    document.getElementById('csvFile').addEventListener('change', async e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      header = true
+      csvData = await new Promise(resolve => {
+        Papa.parse(file, {
+          header: header,
+          dynamicTyping: true, // Enable dynamic typing (PapaParse will attempt to convert numeric strings)
+          complete: results => resolve(results.data.filter(d => Object.keys(d).length > 0))
+        });
+      });
+
+      if (header) {
+        csvData.pop()
+      }
+
+      const select = document.getElementById('csvAttr');
+      select.innerHTML = Object.keys(csvData[0] || {}).map(attr => 
+        `<option value="${attr}">${attr}</option>`
+      ).join('');
+
+      const selectStyle = document.getElementById('csvStyleAttr');
+      selectStyle.innerHTML = Object.keys(csvData[0] || {}).map(attr => 
+        `<option value="${attr}">${attr}</option>`
+      ).join('');
+      currentColorAttr = document.getElementById('csvStyleAttr').value;
+
+      if (vectorLayer) {
+        vectorLayer.setJoinData(
+          csvData,
+          document.getElementById('layer1Attr').value,
+          document.getElementById('csvAttr').value
+        );
+      }
+    });
+
+    // Update color scale and redraw when style attribute changes
+    document.getElementById('csvStyleAttr').addEventListener('change', () => {
+      if (vectorLayer) {
+        vectorLayer.redraw();
+      }
+      colorScale = null; // Force scale regeneration
+      currentColorAttr = document.getElementById('csvStyleAttr').value;
+    });
+    
+    // Helper functions
+    function formatProperties(props) {
+      return Object.entries(props)
+        .map(([k, v]) => `<strong>${k}:</strong> ${v}`)
+        .join('<br>');
+    }
+
+    function updateAttributes(metadata, idx=0) {
+      const layer = metadata.vector_layers?.[idx] || {};
+      document.getElementById('minZoom').textContent = layer.minzoom || 'N/A';
+      document.getElementById('maxZoom').textContent = layer.maxzoom || 'N/A';
+      document.getElementById('projection').textContent = metadata.scheme || 'N/A';
+      const select = document.getElementById('layer1Attr');
+      select.innerHTML = Object.keys(layer.fields || {}).map(attr => 
+        `<option value="${attr}">${attr}</option>`
+      ).join('');
+      return layer
+    }
+
+    // Attribute change handlers
+    [document.getElementById('layer1Attr'), document.getElementById('csvAttr')]
+      .forEach(select => {
+        select.addEventListener('change', () => {
+          if (vectorLayer && csvData.length) {
+            vectorLayer.setJoinData(
+              csvData,
+              document.getElementById('layer1Attr').value,
+              document.getElementById('csvAttr').value
+            );
+          }
+        });
+      });
+  </script>
+</body>
+</html>

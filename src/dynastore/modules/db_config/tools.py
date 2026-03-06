@@ -23,15 +23,28 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from sqlalchemy.sql import text
-from typing import Optional
+from typing import Optional, Any, Union, List, Dict, Tuple
 from dynastore.modules.db_config.db_config import DBConfig
-from dynastore.modules.db_config.query_executor import managed_transaction, DbResource, DbEngine, DbConnection, DDLQuery
+from dynastore.modules.db_config.query_executor import (
+    managed_transaction,
+    DbResource,
+    DbEngine,
+    DbConnection,
+    DDLQuery,
+    DQLQuery,
+    ResultHandler,
+)
 from dynastore.modules.db_config import maintenance_tools
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, JSON
+from sqlalchemy.dialects.postgresql import UUID, TSTZRANGE
+from geoalchemy2 import Geometry
+from async_lru import alru_cache
+
 
 def normalize_db_url(url: str, is_async: bool = False) -> str:
     """
     Normalizes a database URL for use with sync (psycopg2) or async (asyncpg) drivers.
-    
+
     It ensures the correct protocol prefix and converts driver-specific
     parameters (like ssl vs sslmode).
     """
@@ -57,8 +70,9 @@ def normalize_db_url(url: str, is_async: bool = False) -> str:
         # Convert ssl=... to sslmode=...
         if "ssl=" in url:
             url = url.replace("ssl=", "sslmode=")
-            
+
     return url
+
 
 async def ensure_init_db(resource: DbResource):
     """Initializes the database base extensions."""
@@ -66,45 +80,21 @@ async def ensure_init_db(resource: DbResource):
     # We pass the resource (Engine) directly to maintenance tools.
     # This allows their internal 'acquire_lock_if_needed' to manage its own connections
     # and retries, ensuring that if one connection fails/closes, a fresh one can be acquired.
-    
+
     await maintenance_tools.ensure_db_extension(resource, "postgis")
     await maintenance_tools.ensure_db_extension(resource, "postgis_topology")
     await maintenance_tools.ensure_db_extension(resource, "btree_gist")
     await maintenance_tools.ensure_db_extension(resource, "btree_gin")
 
-def get_any_engine(app_state: object) -> Optional[DbEngine]:
-    """
-    DEPRECATED: Use get_protocol(DatabaseProtocol).engine instead.
-    
-    Abstracts engine retrieval from the application state.
-
-    It intelligently finds and returns whichever database engine is available,
-    prioritizing the asynchronous 'engine' but gracefully falling back to the
-    synchronous 'sync_engine'.
-    
-    This function is deprecated and will be removed in a future release.
-    Use get_protocol(DatabaseProtocol).engine for standardized access.
-    """
-    warnings.warn(
-        "get_any_engine() is deprecated. Use get_protocol(DatabaseProtocol).engine "
-        "or the helper function get_engine() from dynastore.tools.protocol_helpers instead.",
-        DeprecationWarning,
-        stacklevel=2
+    # --- Initialize Platform Config Storage ---
+    # This ensures 'configs' schema and 'platform_configs' table exist.
+    # Must be done early to support hierarchical configurations.
+    from dynastore.modules.db_config.platform_config_manager import (
+        PlatformConfigManager,
     )
 
-    # 1. Try to resolve via Protocol (Dynamic Discovery)
-    try:
-        from dynastore.modules import get_protocol
-        from dynastore.models.protocols import DatabaseProtocol
-        db = get_protocol(DatabaseProtocol)
-        if db and db.engine:
-            return db.engine
-    except (ImportError, RuntimeError):
-        pass
+    await PlatformConfigManager.initialize_storage(resource)
 
-    # 2. Fallback for very early initialization or test contexts
-    # Prioritize the async engine, but fall back to the sync one.
-    return getattr(app_state, 'engine', None) or getattr(app_state, 'sync_engine', None)
 
 def get_config(app_state) -> DBConfig:
     """Returns the current database configuration."""
@@ -146,3 +136,95 @@ async def isolated_transaction(
         raise  # Re-raise the exception for the caller to handle
     if not rolled_back:
         await DDLQuery(f"RELEASE SAVEPOINT {savepoint_name}").execute(conn)
+
+
+# --- Reflection Tools ---
+
+_get_table_columns_query = DQLQuery(
+    "SELECT column_name, data_type, udt_name FROM information_schema.columns WHERE table_schema = :schema AND table_name = :table;",
+    result_handler=ResultHandler.ALL,
+)
+
+
+def map_pg_type_to_sqlalchemy_type(
+    pg_type: Union[str, Any], udt_name: Optional[str] = None
+) -> Optional[Any]:
+    """Maps PostgreSQL data_type strings to SQLAlchemy types."""
+    if not isinstance(pg_type, str):
+        # Handle PostgresType enum or similar
+        pg_type = str(getattr(pg_type, "value", pg_type))
+
+    pg_type = pg_type.lower()
+    if pg_type == "user-defined" and udt_name == "geometry":
+        return Geometry
+    if pg_type in ("character varying", "text", "character"):
+        return String
+    if pg_type in ("integer", "smallint", "bigint"):
+        return Integer
+    if pg_type in ("double precision", "numeric", "real"):
+        return Float
+    if pg_type == "boolean":
+        return Boolean
+    if pg_type.startswith("timestamp"):
+        return DateTime
+    if pg_type == "uuid":
+        return UUID
+    if pg_type == "date":
+        return DateTime  # Or Date if you want to be more specific
+    if pg_type == "jsonb":
+        return JSON
+    if pg_type == "tstzrange":
+        return TSTZRANGE
+    # Return None for types we don't want to map (e.g., geometry, jsonb)
+    # jsonb will be handled by the layer_config logic
+    return None
+
+
+def map_pg_to_json_type(pg_type: Union[str, Any]) -> str:
+    """
+    Map PostgreSQL type (string or Enum) to JSON Schema type.
+    Centralized utility used by OGC Features, WFS, and Sidecars.
+    """
+    if not isinstance(pg_type, str):
+        pg_type = str(getattr(pg_type, "value", pg_type))
+
+    pg_type = pg_type.lower()
+
+    if any(t in pg_type for t in ["int", "serial", "bigint"]):
+        return "integer"
+    if any(t in pg_type for t in ["float", "numeric", "double", "real", "decimal"]):
+        return "number"
+    if "bool" in pg_type:
+        return "boolean"
+    if "json" in pg_type:
+        return "object"
+    # Dates, UUIDs, Text are typically 'string' in JSON Schema
+    return "string"
+
+
+@alru_cache(maxsize=128)
+async def get_dynamic_field_mapping(
+    conn: DbResource, schema: str, table: str
+) -> Dict[str, Column]:
+    """
+    Retrieves all 'flat' columns as a dictionary of SQLAlchemy Column objects.
+    """
+    try:
+        result = await _get_table_columns_query.execute(
+            conn, schema=schema, table=table
+        )
+        field_mapping = {}
+        for row in result:
+            col_name, pg_type, udt_name = row[0], row[1], row[2]
+            sa_type = map_pg_type_to_sqlalchemy_type(pg_type, udt_name)
+            if sa_type:
+                # Create a SQLAlchemy Column object for this field
+                field_mapping[col_name] = Column(col_name, sa_type)
+
+        return field_mapping
+    except Exception as e:
+        logging.getLogger(__name__).error(
+            f"Failed to dynamically get field mapping for {schema}.{table}: {e}",
+            exc_info=True,
+        )
+        return {}

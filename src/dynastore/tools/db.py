@@ -73,12 +73,12 @@ def validate_sql_identifier(identifier: str) -> str:
     if identifier_lower in POSTGRES_RESERVED_WORDS:
         raise InvalidIdentifierError(f"Identifier '{identifier_lower}' is a reserved keyword.")
         
-    # 3. Check character constraints (starts with letter/underscore,
-    #    followed by letter/number/underscore).
-    if not re.match(r"^[a-z_][a-z0-9_]*$", identifier_lower):
+    # 3. Check character constraints
+    #    Authorized chars: a-z, 0-9, _, ., -, > (for JSON paths like 'data->key' or 'schema.table')
+    if not re.match(r"^[a-z_][a-z0-9_\.\->]*$", identifier_lower):
         raise InvalidIdentifierError(
             "Identifier must start with a letter or underscore, and contain only "
-            "lowercase letters, numbers, and underscores."
+            "lowercase letters, numbers, underscores, dots, or JSON operators (->)."
         )
         
     return identifier_lower

@@ -42,7 +42,8 @@ class ConfigsProtocol(Protocol):
         plugin_id: str,
         catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
-        db_resource: Optional[Any] = None
+        db_resource: Optional[Any] = None,
+        config_snapshot: Optional[Dict[str, Any]] = None,
     ) -> "PluginConfig":
         """
         Retrieves configuration with 4-tier waterfall:
@@ -56,6 +57,7 @@ class ConfigsProtocol(Protocol):
             catalog_id: Optional catalog ID for catalog-level config
             collection_id: Optional collection ID for collection-level config
             db_resource: Optional database resource for transaction-aware queries
+            config_snapshot: Optional snapshot to satisfy lookups without DB hits
             
         Returns:
             PluginConfig instance
@@ -110,6 +112,15 @@ class ConfigsProtocol(Protocol):
             
         Returns:
             Dictionary containing 'total' and 'results' (list of configuration dictionaries)
+        """
+        ...
+
+    async def list_catalog_configs(
+        self, catalog_id: str, db_resource: Optional[Any] = None
+    ) -> Dict[str, Any]:
+        """
+        Returns all configurations for a catalog as a simple dictionary (mapping: plugin_id -> data).
+        This is typically used to generate a config_snapshot for lifecycle hooks.
         """
         ...
     

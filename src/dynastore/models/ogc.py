@@ -16,26 +16,24 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from typing import List, Optional, Dict, Any, Literal, Union
-from pydantic import BaseModel
+from typing import List, Optional, Dict, Any, Union
+from pydantic import ConfigDict
+from geojson_pydantic import Feature as _Feature, FeatureCollection as _FeatureCollection
+from geojson_pydantic.geometries import Geometry as GeoJSONGeometry
 from dynastore.models.shared_models import Link
 
-class GeoJSONGeometry(BaseModel):
-    """Simple GeoJSON geometry model for validation and serialization."""
-    type: str
-    coordinates: Any
-
-class Feature(BaseModel):
-    type: Literal["Feature"] = "Feature"
-    id: Union[str, int, None] = None
-    geometry: Optional[GeoJSONGeometry] = None
-    properties: Dict[str, Any]
+class Feature(_Feature):
+    # Allow extra fields for extension data (like geom_gml, etc.)
+    # and custom links mapping
     links: Optional[List[Link]] = None
+    
+    model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
 
-class FeatureCollection(BaseModel):
-    type: Literal["FeatureCollection"] = "FeatureCollection"
+class FeatureCollection(_FeatureCollection):
     features: List[Feature]
     links: Optional[List[Link]] = None
     timeStamp: Optional[str] = None
     numberMatched: Optional[int] = None
     numberReturned: Optional[int] = None
+    
+    model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)

@@ -24,60 +24,345 @@ including methods for DDL generation, data transformation, and operation validat
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List, Set, Union, Tuple, Protocol, runtime_checkable
+from datetime import datetime
+from typing import (
+    Dict,
+    Any,
+    Optional,
+    List,
+    Set,
+    Union,
+    Tuple,
+    Type,
+    Protocol,
+    runtime_checkable,
+)
 from pydantic import BaseModel, Field, field_validator
 from enum import Enum
+from geojson_pydantic import Feature, FeatureCollection
+from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.db_config.query_executor import DbResource
 from dynastore.models.localization import LocalizedText
 
 
+
+_SIDECAR_DATA_KEY = "_sidecar_data"
+
+# Columns that belong to the Hub table and must never appear in Feature.properties,
+# regardless of which sidecar is currently running.
+HUB_INTERNAL_COLUMNS: frozenset = frozenset({
+    "geoid",
+    "transaction_time",
+    "deleted_at",
+    "catalog_id",
+    "collection_id",
+})
+
+
+class SidecarDataEntry:
+    """
+    Holds raw row values published by a single sidecar during
+    ``map_row_to_feature``.  Each sidecar publishes under its own
+    ``sidecar_id`` to avoid column-name collisions between sidecars.
+
+    Usage example inside a downstream sidecar::
+
+        geom = context.get_sidecar("geometry")
+        if geom:
+            bbox = geom.get_context_values().get("bbox_geom")
+    """
+
+    __slots__ = ("_data",)
+
+    def __init__(self, data: Dict[str, Any]) -> None:
+        self._data: Dict[str, Any] = data
+
+    def get_context_values(self) -> Dict[str, Any]:
+        """Return all raw row values published by this sidecar."""
+        return dict(self._data)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._data.get(key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        return self._data[key]
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._data
+
+    def __repr__(self) -> str:
+        return f"SidecarDataEntry(keys={list(self._data.keys())})"
+
+
+class SidecarPipelineContext(dict):
+    """
+    Typed pipeline context passed through ``map_row_to_feature``.
+
+    Extends ``dict`` so all existing ``context.get(…)`` and
+    ``context["key"]`` access patterns continue to work unchanged.
+    The added API provides structured, namespace-safe sidecar access:
+
+    **Writing** (inside a sidecar's ``map_row_to_feature``)::
+
+        context.publish(self.sidecar_id, dict(row))
+
+    **Reading** (inside a downstream sidecar)::
+
+        attributes = context.get_sidecar("attributes")
+        if attributes:
+            asset_id = attributes.get("asset_id")
+
+    **Full context_values** example::
+
+        geometry = context.get_sidecar("geometry")
+        if geometry:
+            values = geometry.get_context_values()
+            bbox = values.get("bbox_geom")
+    """
+
+    # ── Sidecar data access ─────────────────────────────────────────────────
+
+    def publish(self, sidecar_id: str, data: Dict[str, Any]) -> None:
+        """
+        Store *data* under *sidecar_id* so downstream sidecars can read it.
+
+        Call this **first thing** inside ``map_row_to_feature`` with the raw
+        row values for this sidecar (whether or not they end up in the Feature).
+        """
+        self.setdefault(_SIDECAR_DATA_KEY, {})[sidecar_id] = data
+
+    def get_sidecar(self, sidecar_id: str) -> Optional["SidecarDataEntry"]:
+        """
+        Return the data entry published by *sidecar_id*, or ``None`` if that
+        sidecar was not included in the current query.
+        """
+        data = self.get(_SIDECAR_DATA_KEY, {}).get(sidecar_id)
+        return SidecarDataEntry(data) if data is not None else None
+
+    def all_sidecars(self) -> Dict[str, "SidecarDataEntry"]:
+        """Return all published sidecar entries keyed by sidecar_id."""
+        return {
+            sid: SidecarDataEntry(d)
+            for sid, d in self.get(_SIDECAR_DATA_KEY, {}).items()
+        }
+
+    # ── Typed shortcuts for common top-level context values ─────────────────
+
+    @property
+    def include_internal(self) -> bool:
+        """Helper to check the deprecated include_internal flag."""
+        return self.get("include_internal", False)
+
+    @property
+    def lang(self) -> str:
+        """The requested language for localization (default: 'en')."""
+        return self.get("lang", "en")
+
+    @property
+    def all_internal_columns(self) -> frozenset:
+        """
+        Return the full set of DB column names that must **never** appear
+        in ``Feature.properties``.
+
+        Combines:
+        - ``HUB_INTERNAL_COLUMNS`` — fixed Hub-table columns (geoid, etc.)
+        - ``_all_internal_cols`` — the per-pipeline aggregate computed by
+          ``ItemService.map_row_to_feature`` from every sidecar's
+          ``get_internal_columns()`` before the pipeline starts.
+
+        Usage inside any sidecar's ``map_row_to_feature``::
+
+            excluded = context.all_internal_columns
+            for key, val in row.items():
+                if key not in excluded and key not in props:
+                    props[key] = val
+        """
+        pipeline: set = self.get("_all_internal_cols", set())
+        return HUB_INTERNAL_COLUMNS | pipeline
+
+
 class FieldCapability(str, Enum):
     """Capabilities a field can have."""
-    FILTERABLE = "filterable"      # Can be used in WHERE
-    SORTABLE = "sortable"          # Can be used in ORDER BY
-    GROUPABLE = "groupable"        # Can be used in GROUP BY
+
+    FILTERABLE = "filterable"  # Can be used in WHERE
+    SORTABLE = "sortable"  # Can be used in ORDER BY
+    GROUPABLE = "groupable"  # Can be used in GROUP BY
     AGGREGATABLE = "aggregatable"  # Can be aggregated (SUM, COUNT, etc.)
-    SPATIAL = "spatial"            # Spatial operations available
-    INDEXED = "indexed"            # Has database index
+    SPATIAL = "spatial"  # Spatial operations available
+    INDEXED = "indexed"  # Has database index
+
 
 class FieldDefinition(BaseModel):
     """Definition of a queryable field."""
-    name: str
+
+    name: str  # Internal name (often same as database column or JSON key)
+    alias: Optional[str] = None  # External name (schema mapping)
     title: Optional[Union[str, LocalizedText]] = None
     description: Optional[Union[str, LocalizedText]] = None
     sql_expression: str  # e.g., "sc_geom.geom", "sc_attr.external_id"
     capabilities: List[FieldCapability]
     data_type: str  # "geometry", "text", "integer", "jsonb", etc.
-    aggregations: Optional[List[str]] = None  # None or ["*"] = all allowed, [] = none, ["count", "sum"] = specific
-    transformations: Optional[List[str]] = None  # None or ["*"] = all allowed, [] = none, ["upper", "lower"] = specific
-    
+    expose: bool = True  # Whether to expose this field in public APIs (OGC, STAC)
+    aggregations: Optional[List[str]] = (
+        None  # None or ["*"] = all allowed, [] = none, ["count", "sum"] = specific
+    )
+    transformations: Optional[List[str]] = (
+        None  # None or ["*"] = all allowed, [] = none, ["upper", "lower"] = specific
+    )
+
     def supports_aggregation(self, agg_func: str) -> bool:
         """Check if this field supports a specific aggregation."""
         if self.aggregations is None or "*" in (self.aggregations or []):
             return True  # All aggregations allowed
         return agg_func in (self.aggregations or [])
-    
+
     def supports_transformation(self, transform_func: str) -> bool:
         """Check if this field supports a specific transformation."""
         if self.transformations is None or "*" in (self.transformations or []):
             return True  # All transformations allowed
         return transform_func in (self.transformations or [])
 
+
 class ValidationResult(BaseModel):
     """Result of an operation validation."""
+
     valid: bool
     error: Optional[str] = None
+
+
+class SidecarConfigRegistry:
+    """
+    Registry for SidecarConfig subclasses to support polymorphic deserialization.
+    """
+
+    _registry: Dict[str, Type["SidecarConfig"]] = {}
+
+    @classmethod
+    def register(cls, sidecar_type: str, config_cls: Type["SidecarConfig"]):
+        """Register a SidecarConfig subclass for a specific sidecar type."""
+        cls._registry[sidecar_type] = config_cls
+
+    @classmethod
+    def resolve_config_class(cls, sidecar_type: str) -> Type["SidecarConfig"]:
+        """Resolve the specialized SidecarConfig subclass for a given type."""
+        return cls._registry.get(sidecar_type, SidecarConfig)
+
+
+class SidecarConfig(BaseModel):
+    """
+    Base configuration model for sidecars.
+    """
+
+    sidecar_type: str  # Discriminator field
+    enabled: bool = True
+
+    # Per-sidecar indexing configuration
+    # Note: IndexingConfig will be imported inside methods to avoid circular imports if needed
+    indexing: Optional[Dict[str, Any]] = Field(
+        default=None, description="Sidecar-specific indexing configuration"
+    )
+
+    @property
+    def partition_key_contributions(self) -> Dict[str, str]:
+        """
+        Returns a dictionary of {column_name: sql_type} for keys this sidecar
+        contributes to the global composite partition key.
+        Override in subclasses.
+        """
+        return {}
+
+    @property
+    def has_validity(self) -> bool:
+        """
+        Whether this sidecar is configured to manage validity.
+        """
+        return False
+
+    @property
+    def partition_keys(self) -> List[str]:
+        """
+        List of partition keys this sidecar contributes.
+        """
+        return list(self.partition_key_contributions.keys())
+
+    @property
+    def partition_key_types(self) -> Dict[str, str]:
+        """
+        Mapping of partition keys to their SQL types.
+        """
+        return self.partition_key_contributions
+
+    @property
+    def sidecar_id(self) -> str:
+        """
+        Returns the standard sidecar_id for this config type.
+        """
+        mapping = {"geometry": "geometry", "attributes": "attributes"}
+        return mapping.get(self.sidecar_type, self.sidecar_type)
+
+    @property
+    def provides_feature_id(self) -> bool:
+        """
+        Whether this sidecar provides the feature ID for the collection.
+
+        IMPORTANT: At most ONE sidecar per collection can return True.
+        This is validated during collection configuration.
+
+        When True, this sidecar's get_feature_id_condition() will be used
+        to add JOIN and WHERE clauses for feature ID resolution.
+
+        Default: False (feature_id == geoid)
+        """
+        return False
+
+    @property
+    def feature_id_field_name(self) -> Optional[str]:
+        """
+        The field name used for feature ID in this sidecar's table.
+        E.g., 'external_id' for AttributesSidecar, 'asset_id' for AssetSidecar.
+
+        Returns None if provides_feature_id is False.
+
+        Usage:
+        - Mapping result sets from database queries to feature IDs
+        - Understanding which column in the result corresponds to the feature ID
+        - NOT for table introspection or raw SQL construction
+
+        Example: When processing query results, this tells us that
+        row['external_id'] should be mapped to feature['id'] in the output.
+        """
+        return None
+
+    model_config = {"extra": "allow"}
 
 
 class SidecarProtocol(ABC):
     """
     Abstract base class for sidecar storage implementations.
-    
+
     Each sidecar manages a specific domain of data (geometry, attributes, etc.)
-    and must implement methods for DDL generation, data transformation, 
+    and must implement methods for DDL generation, data transformation,
     query resolution, and operation validation.
     """
-    
+
+    def __init__(self, config: SidecarConfig):
+        """Initialize with configuration."""
+        pass
+
+    @classmethod
+    def get_default_config(cls, context: Dict[str, Any]) -> Optional[SidecarConfig]:
+        """
+        Returns a default configuration for this sidecar type if it should be
+        automatically injected based on the provided context.
+        
+        Args:
+            context: injection context (e.g., {"stac_context": True})
+            
+        Returns:
+            SidecarConfig instance or None if not applicable.
+        """
+        return None
+
     @property
     @abstractmethod
     def sidecar_id(self) -> str:
@@ -86,95 +371,274 @@ class SidecarProtocol(ABC):
         Used for table naming: {physical_table}_{sidecar_id}
         """
         pass
-    
+
+    @property
+    @abstractmethod
+    def sidecar_type_id(self) -> str:
+        """
+        Type identifier matching config sidecar_type (e.g., 'attributes', 'geometries').
+        Used for protocol-based discovery and config matching.
+        """
+        pass
+
+    @property
+    def provides_feature_id(self) -> bool:
+        """
+        Whether this sidecar provides the feature ID for the collection.
+        Default: False.
+        """
+        return False
+
+    @property
+    def feature_id_field_name(self) -> Optional[str]:
+        """
+        The field name used for feature ID in this sidecar's table.
+        Default: None.
+        """
+        return None
+
+    @classmethod
+    def get_default_config(cls, context: Dict[str, Any]) -> Optional[SidecarConfig]:
+        """
+        Implementation-specific default configuration generator.
+        """
+        return None
+
     @abstractmethod
     def get_ddl(
-        self, 
-        physical_table: str, 
+        self,
+        physical_table: str,
         partition_keys: List[str] = [],
         partition_key_types: Dict[str, str] = {},
-        has_validity: bool = False
+        has_validity: bool = False,
     ) -> str:
         """
         Generates the CREATE TABLE DDL for this sidecar.
-        
+
         Args:
             physical_table: Physical Hub table name (e.g. 't_abc123')
             partition_keys: List of columns forming the composite partition key
             partition_key_types: Dictionary mapping key names to their SQL types
             has_validity: Flag indicating if the sidecar should include a 'validity' column.
-        
+
         Returns:
             SQL DDL string for creating the sidecar table
-            
+
         Note:
             - MUST include FK to Hub: FOREIGN KEY (geoid) REFERENCES hub(geoid) ON DELETE CASCADE
             - MUST use same PARTITION BY clause as Hub if partitioning is enabled
             - MUST use (partition_key, geoid) as composite PK
         """
         pass
-    
+
     @abstractmethod
     async def setup_lifecycle_hooks(
-        self, 
-        conn: DbResource, 
-        schema: str,
-        table_name: str
+        self, conn: DbResource, schema: str, table_name: str
     ) -> None:
         """Register maintenance hooks on table creation."""
         pass
-    
+
     @abstractmethod
     async def on_partition_create(
-        self, 
+        self,
         conn: DbResource,
         schema: str,
         parent_table: str,
         partition_table: str,
-        partition_value: Any
+        partition_value: Any,
     ) -> None:
         """Hook called after JIT partition creation."""
         pass
-    
+
     @abstractmethod
-    def resolve_query_path(
-        self, 
-        attr_name: str
-    ) -> Optional[Tuple[str, str]]:
+    def resolve_query_path(self, attr_name: str) -> Optional[Tuple[str, str]]:
         """Resolves an attribute reference to SQL and JOIN requirements."""
         pass
-    
+
+    @abstractmethod
+    def apply_query_context(
+        self,
+        request: QueryRequest,
+        context: Dict[str, Any],
+    ) -> None:
+        """
+        Allows the sidecar to inspect the query request and contribute to the
+        query definition (JOINs, params, SELECTs, WHEREs).
+
+        The context dictionary must support:
+        - "joins": List[str]            # Sidecar appends JOIN clauses here
+        - "params": Dict[str, Any]      # Sidecar adds bind parameters here
+        - "select_fields": List[str]    # Sidecar adds SELECT expressions here
+        - "where_conditions": List[str] # Sidecar adds WHERE conditions here
+        """
+        pass
+
+    @abstractmethod
+    def get_queryable_fields(self) -> Dict[str, FieldDefinition]:
+        """
+        Returns all fields that can be used in queries.
+        
+        This includes:
+        - Fields that can appear in WHERE clauses (filterable)
+        - Fields that can appear in SELECT (if expose=True)
+        - Fields that can appear in ORDER BY (sortable)
+        - Fields that can appear in GROUP BY (groupable)
+        - Storage-only fields (expose=False) that are queryable but not in Feature output
+        
+        Returns:
+            Dict mapping field names to FieldDefinition with capabilities
+        """
+        pass
+
+    @abstractmethod
+    def get_feature_type_schema(self) -> Dict[str, Any]:
+        """
+        Returns JSON Schema fragment for this sidecar's contribution to Feature output.
+        
+        Only includes fields where expose=True in get_queryable_fields().
+        For geometries sidecar, may include 'geometry' key for main geometry.
+        
+        Returns:
+            Dict with JSON Schema properties for Feature output
+        """
+        pass
+
+    def get_main_geometry_field(self) -> Optional[str]:
+        """
+        Returns the name of the main geometry field, if this sidecar provides one.
+        
+        Used when query requests 'geometry' without specifying which geometry field.
+        Default implementation returns None (non-geometry sidecars).
+        
+        Returns:
+            Field name of main geometry, or None
+        """
+        return None
+
+    @abstractmethod
+    def get_identity_columns(self) -> List[str]:
+        """
+        Returns the list of columns that form the identity (PK) of the sidecar table.
+        Example: ["geoid", "validity"] or just ["geoid"].
+        """
+        pass
+
+    @abstractmethod
+    def finalize_upsert_payload(
+        self,
+        sc_payload: Dict[str, Any],
+        hub_row: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Finalizes the sidecar payload before storage.
+        Allows injecting sidecar-specific details (like 'validity') from the Hub row or context.
+        """
+        pass
+
+    @abstractmethod
+    async def expire_version(
+        self,
+        conn: DbResource,
+        physical_schema: str,
+        physical_table: str,
+        geoid: str,
+        expire_at: datetime,
+    ) -> int:
+        """
+        Marks the current active version as expired.
+        Returns the number of rows updated.
+        """
+        pass
+
     @abstractmethod
     def prepare_upsert_payload(
-        self, 
-        feature: Dict[str, Any],
-        context: Dict[str, Any]
+        self, feature: Union[Feature, Dict[str, Any]], context: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
         """Transforms a feature into sidecar-specific insert data."""
         pass
-    
+
+    @abstractmethod
+    def map_row_to_feature(
+        self,
+        row: Dict[str, Any],
+        feature: Feature,
+        context: Dict[str, Any],
+    ) -> None:
+        """
+        Populate a GeoJSON feature from a database row.
+        Each sidecar is responsible for mapping its specialized columns/data
+        back into the standard GeoJSON structure (geometry, properties).
+
+        Must be stateless (no DB lookups) to support O(1) streaming.
+        Sidecars are allowed to override core Feature values (including the feature id)
+        if their logic supersedes the default (e.g. mapping external_id to id).
+
+        Sidecars SHOULD also populate ``context["_sidecar_data"][self.sidecar_id]``
+        with all raw row values they fetched (even those not exposed in the Feature),
+        so that downstream sidecars can access them (e.g. STAC reading bbox from
+        the geometry sidecar's context entry).
+        """
+        pass
+
+    def get_internal_columns(self) -> set:
+        """
+        Return the set of DB column names this sidecar manages that are
+        **never** part of the public Feature output.
+
+        Used by callers to build a dynamic exclusion set without hardcoding
+        column names outside the sidecar that owns them.
+
+        Default implementation returns an empty set.  Sidecars that store
+        identity, geometry, or other non-property columns must override this.
+        """
+        return set()
+
+    # ── Pipeline context ---------------------------------------------------
+    # Use SidecarPipelineContext (see module level) as the context type for
+    # map_row_to_feature.  All sidecars should call:
+    #   context.publish(self.sidecar_id, data)   # to write
+    #   context.get_sidecar(other_id)            # to read from another sidecar
+
+    async def on_item_created(
+        self,
+        conn: DbResource,
+        physical_schema: str,
+        physical_table: str,
+        geoid: str,
+        feature: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> None:
+        """
+        Hook called after a new item has been successfully inserted into the database.
+        Useful for side effects like linking assets, triggering events, etc.
+        """
+        pass
+
     # --- Query Generation Methods ---
-    
+
     @abstractmethod
     def get_select_fields(
         self,
+        request: Optional[QueryRequest] = None,
         hub_alias: str = "h",
         sidecar_alias: Optional[str] = None,
-        include_all: bool = False
+        include_all: bool = False,
     ) -> List[str]:
         """
-        Returns list of SELECT field expressions for this sidecar.
+        Returns list of SELECT field expressions.
+        
+        This method MUST be stateless and only use the request/config to 
+        determine which fields to return.
         
         Args:
-            hub_alias: Alias used for hub table
-            sidecar_alias: Alias for this sidecar table (auto-generated if None)
-            include_all: If True, include all sidecar columns; if False, only essential ones
-            
-        Returns:
-            List of SQL field expressions (e.g., ["sc.external_id", "ST_AsEWKB(sc.geom) as geom"])
+            request: The QueryRequest containing selection/filter/sort info.
+            hub_alias: Alias of the hub table.
+            sidecar_alias: Alias of the sidecar table.
+            include_all: If True, returns all available fields regardless of request.
         """
         pass
-    
+
     @abstractmethod
     def get_join_clause(
         self,
@@ -182,169 +646,244 @@ class SidecarProtocol(ABC):
         hub_table: str,
         hub_alias: str = "h",
         sidecar_alias: Optional[str] = None,
-        join_type: str = "LEFT"
+        join_type: str = "LEFT",
+        extra_condition: Optional[str] = None,
     ) -> str:
         """
         Returns JOIN clause for this sidecar.
-        
-        **Important**: Sidecars should ONLY join on `geoid` (and partition keys if applicable).
-        Validity filtering is a Hub-level concern and should NOT be included in sidecar JOINs.
-        
+
         Args:
             schema: Physical schema name
             hub_table: Physical hub table name
             hub_alias: Alias for hub table
             sidecar_alias: Alias for sidecar (auto-generated if None)
             join_type: JOIN type (LEFT, INNER, etc.)
-            
+            extra_condition: Additional condition to append to the ON clause (e.g. 'AND sc.validity @> NOW()')
+
         Returns:
             Complete JOIN clause (e.g., 'LEFT JOIN "schema"."table_geom" sc_geom ON h.geoid = sc_geom.geoid')
         """
         pass
-    
+
     def get_where_conditions(
-        self,
-        sidecar_alias: Optional[str] = None,
-        **filters
+        self, sidecar_alias: Optional[str] = None, **filters
     ) -> List[str]:
         """
         Returns WHERE clause conditions for filtering by this sidecar's columns.
-        
+
         Args:
             sidecar_alias: Alias for sidecar table
             **filters: Filter criteria (e.g., external_id="abc")
-            
+
         Returns:
             List of WHERE conditions (e.g., ["sc.external_id = :ext_id"])
         """
         return []
-    
-    def get_order_by_fields(
+
+    def get_feature_id_condition(
         self,
-        sidecar_alias: Optional[str] = None
-    ) -> List[str]:
+        feature_ids: Union[str, List[str]],
+        hub_alias: str = "h",
+        sidecar_alias: Optional[str] = None,
+        partition_keys: Optional[List[str]] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Returns JOIN and WHERE conditions for feature ID resolution.
+
+        This method is called when this sidecar is configured as the feature ID provider
+        (provides_feature_id = True). It returns additional JOIN conditions and a WHERE
+        clause to uniquely identify a feature by its ID.
+
+        Args:
+            feature_id: The feature ID to match
+            hub_alias: Alias for hub table
+            sidecar_alias: Alias for this sidecar table (auto-generated if None)
+            partition_keys: List of partition key columns (if collection is partitioned)
+
+        Returns:
+            Tuple of (join_clause, where_clause):
+            - join_clause: Additional JOIN conditions beyond geoid match.
+              Must include:
+              * Partition key matches (if partitioned)
+              * Temporal validity conditions (if versioned)
+              * Any other conditions needed for unique feature identification
+            - where_clause: WHERE condition to match the feature ID
+
+        Example for AttributesSidecar with validity and partitioning:
+            join_clause = "AND sc_attr.asset_id = h.asset_id AND sc_attr.validity @> NOW()"
+            where_clause = "sc_attr.external_id = %s"
+
+        The complete JOIN becomes:
+            LEFT JOIN t_abc_attributes sc_attr
+                ON sc_attr.geoid = h.geoid          -- Always present
+                AND sc_attr.asset_id = h.asset_id   -- Partition key match
+                AND sc_attr.validity @> NOW()       -- Temporal validity
+            WHERE sc_attr.external_id = %s          -- Feature ID match
+
+        This ensures a unique join that identifies exactly one feature version.
+
+        Returns (None, None) if provides_feature_id is False.
+        """
+        return (None, None)
+
+    def get_spatial_condition(
+        self,
+        bbox: Optional[List[float]] = None,
+        geometry: Optional[Dict[str, Any]] = None,
+        sidecar_alias: Optional[str] = None,
+        srid: int = 4326,
+    ) -> Optional[str]:
+        """
+        Returns a spatial filter condition for this sidecar.
+        """
+        return None
+
+    def get_geometry_select(
+        self, params: Dict[str, Any], sidecar_alias: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Returns the formatted geometry column expression for SELECT.
+        Handles SRID transforms, simplification, and MVT/GeoJSON/GML formatting.
+        """
+        return None
         """
         Returns list of fields that can be used in ORDER BY clauses.
-        
+
         Args:
             sidecar_alias: Alias for sidecar table
-            
+
         Returns:
             List of field names that support ordering (e.g., ["external_id", "asset_id"])
         """
         return []
-    
-    def get_group_by_fields(
-        self,
-        sidecar_alias: Optional[str] = None
-    ) -> List[str]:
+
+    def get_group_by_fields(self, sidecar_alias: Optional[str] = None) -> List[str]:
         """
         Returns list of fields that can be used in GROUP BY clauses.
-        
+
         Args:
             sidecar_alias: Alias for sidecar table
-            
-        Returns:
-            List of field names that support grouping (e.g., ["asset_id", "h3_res8"])
+
         """
         return []
+
+    # --- Partitioning & Capabilities ---
+
+    def get_partition_keys(self) -> List[str]:
+        """
+        Returns list of columns this sidecar contributes to composite partitioning.
+        """
+        return []
+
+    def get_partition_key_types(self) -> Dict[str, str]:
+        """
+        Returns mapping of partition keys to their SQL types.
+        """
+        return {}
+
+    def has_validity(self) -> bool:
+        """
+        Returns True if this sidecar manages temporal validity.
+        """
+        return False
 
     async def resolve_existing_item(
         self,
         conn: DbResource,
         physical_schema: str,
         physical_table: str,
-        processing_context: Dict[str, Any]
+        processing_context: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
         """
         Resolves an existing item based on the sidecar's identity logic (e.g. external_id).
-        
+
         This method allows a sidecar to identify if an incoming item matches an existing one,
         enabling upsert/versioning logic.
-        
+
         Args:
             conn: Database connection.
             physical_schema: Physical schema name.
             physical_table: Physical table name (Hub).
-            processing_context: Context containing resolved IDs (e.g. external_id).
-        
+            processing_context: Context containing resolved IDs.
+
         Returns:
-            Dictionary representing the existing item (must include 'geoid', and optionally 'validity'), 
+            Dictionary representing the existing item (must include 'geoid', and optionally 'validity'),
             or None if not found or not applicable.
         """
         return None
 
-    async def check_collision(
+    def get_identity_payload(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Returns the subset of the context that identifies the feature for this sidecar.
+        Used for collision detection and identity resolution.
+        """
+        return {}
+
+    async def check_upsert_collision(
         self,
         conn: DbResource,
         physical_schema: str,
         physical_table: str,
-        field_name: str,
-        value: Any,
-        exclude_geoid: Optional[Any] = None
+        processing_context: Dict[str, Any],
+        exclude_geoid: Optional[Any] = None,
     ) -> bool:
         """
-        Checks if a specific value already exists in the sidecar's table.
-        
-        This is used for high-performance collision detection (e.g. REFUSE_ON_ASSET_ID_COLLISION).
-        
-        Args:
-            conn: Database connection.
-            physical_schema: Physical schema name.
-            physical_table: Physical Hub table name.
-            field_name: Name of the field to check.
-            value: Value to check for.
-            exclude_geoid: Optional geoid to exclude from collision check (e.g. during update).
-            
-        Returns:
-            True if collision found, False otherwise.
+        Checks if the incoming feature conflicts with any existing feature
+        based on the sidecar's uniqueness constraints.
         """
         return False
 
-    def is_acceptable(
-        self,
-        feature: Dict[str, Any],
-        context: Dict[str, Any]
-    ) -> bool:
+    def is_acceptable(self, feature: Dict[str, Any], context: Dict[str, Any]) -> bool:
         """
         Checks if the sidecar can accept this feature for processing.
-        
+
         Args:
             feature: The incoming GeoJSON feature.
             context: Processing context.
-            
+
         Returns:
             True if feature is acceptable, False otherwise.
         """
         return True
-    
+
     def get_field_definitions(
-        self,
-        sidecar_alias: Optional[str] = None
+        self, sidecar_alias: Optional[str] = None
     ) -> Dict[str, FieldDefinition]:
         """
         Returns all queryable fields exposed by this sidecar.
         
+        DEPRECATED: Use get_queryable_fields() directly instead.
+        This method delegates to get_queryable_fields() for backward compatibility.
+
         Returns:
             Dict mapping field name to FieldDefinition
         """
-        return {}
-    
+        return self.get_queryable_fields()
+
+    def get_dynamic_field_definition(
+        self, field_name: str, sidecar_alias: Optional[str] = None
+    ) -> Optional[FieldDefinition]:
+        """
+        Returns definition for a field that is not statically defined but supported dynamically.
+        Used for schemaless sidecars (e.g. JSONB attributes).
+        """
+        return None
+
     def get_default_sort(self) -> Optional[List[Tuple[str, str]]]:
         """
         Returns default sort order for this sidecar.
-        
+
         Returns:
             List of (field_name, direction) tuples, e.g., [("external_id", "ASC")]
         """
         return None
-    
+
     def supports_aggregation(self, field_name: str, agg_func: str) -> bool:
         """Check if field supports specific aggregation."""
         fields = self.get_field_definitions()
         field = fields.get(field_name)
         return field is not None and field.supports_aggregation(agg_func)
-    
+
     def supports_transformation(self, field_name: str, transform_func: str) -> bool:
         """Check if field supports specific transformation."""
         fields = self.get_field_definitions()
@@ -354,9 +893,7 @@ class SidecarProtocol(ABC):
     # --- Operation Validation Hooks ---
 
     def validate_insert(
-        self, 
-        feature: Dict[str, Any], 
-        context: Dict[str, Any]
+        self, feature: Dict[str, Any], context: Dict[str, Any]
     ) -> ValidationResult:
         """
         Validate if a feature can be inserted into this sidecar.
@@ -365,10 +902,7 @@ class SidecarProtocol(ABC):
         return ValidationResult(valid=True)
 
     def validate_update(
-        self, 
-        feature: Dict[str, Any], 
-        existing: Dict[str, Any], 
-        context: Dict[str, Any]
+        self, feature: Dict[str, Any], existing: Dict[str, Any], context: Dict[str, Any]
     ) -> ValidationResult:
         """
         Validate if a feature update is allowed.
@@ -376,52 +910,9 @@ class SidecarProtocol(ABC):
         """
         return ValidationResult(valid=True)
 
-    def validate_delete(
-        self, 
-        geoid: str, 
-        context: Dict[str, Any]
-    ) -> ValidationResult:
+    def validate_delete(self, geoid: str, context: Dict[str, Any]) -> ValidationResult:
         """
         Validate if a feature deletion is allowed.
         Default implementation allows everything.
         """
         return ValidationResult(valid=True)
-    
-
-
-
-class SidecarConfig(BaseModel):
-    """
-    Base configuration model for sidecars.
-    """
-    sidecar_type: str  # Discriminator field
-    enabled: bool = True
-    
-    # Per-sidecar indexing configuration
-    # Note: IndexingConfig will be imported inside methods to avoid circular imports if needed
-    indexing: Optional[Dict[str, Any]] = Field(
-        default=None, 
-        description="Sidecar-specific indexing configuration"
-    )
-    
-    @property
-    def partition_key_contributions(self) -> Dict[str, str]:
-        """
-        Returns a dictionary of {column_name: sql_type} for keys this sidecar 
-        contributes to the global composite partition key.
-        Override in subclasses.
-        """
-        return {}
-    
-    @property
-    def sidecar_id(self) -> str:
-        """
-        Returns the standard sidecar_id for this config type.
-        """
-        mapping = {
-            "geometry": "geometry",
-            "attributes": "attributes"
-        }
-        return mapping.get(self.sidecar_type, self.sidecar_type)
-
-    model_config = {"extra": "allow"}

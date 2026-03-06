@@ -1,17 +1,17 @@
 #    Copyright 2025 FAO
-# 
+#
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
 #    You may obtain a copy of the License at
-# 
+#
 #        http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 #    Unless required by applicable law or agreed to in writing, software
 #    distributed under the License is distributed on an "AS IS" BASIS,
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
-# 
+#
 #    Author: Carlo Cancellieri (ccancellieri@gmail.com)
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
@@ -23,6 +23,7 @@ import inspect
 import logging
 import re
 from pathlib import Path
+from datetime import datetime
 from typing import List, Any, Dict, Optional, Callable
 
 from fastapi import APIRouter, FastAPI, Response, HTTPException, Request, Query
@@ -31,50 +32,71 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
-from dynastore.extensions import dynastore_extension, ExtensionProtocol
-from dynastore.extensions.tools.conformance import register_conformance_uris, get_active_conformance, Conformance
+from dynastore.extensions import ExtensionProtocol, get_extension_instance
+from dynastore.extensions.tools.conformance import (
+    register_conformance_uris,
+    get_active_conformance,
+    Conformance,
+)
 from dynastore.extensions.web.decorators import expose_static
-from dynastore.modules.apikey.policies import register_policy, register_principal, Policy, Principal
-from dynastore.modules.stats.service import STATS_SERVICE
-from dynastore.modules.catalog.log_manager import LOG_SERVICE
-
-logger = logging.getLogger(__name__)
+from dynastore.models.auth import Policy, Principal
+from dynastore.modules.apikey.models import Role
+from dynastore.models.protocols.policies import PolicyProtocol
+from dynastore.tools.discovery import get_protocol, register_plugin
 
 # Register public access policy for web extension
-register_policy(Policy(
-    id="public_access",
-    description="Allows anonymous access to public landing pages and documentation.",
-    actions=["GET", "OPTIONS"],
-    resources=[
-        "/$", 
-        "/docs.*", 
-        "/openapi.json", 
-        "/favicon.ico.*",
-        "/web.*",
-        "/web/.*",
-        "/web/auth/.*",
-        "/web/static/.*", 
-        "/web/extension-static/.*",
-        "/web/website/.*",
-        "/web/docs-.*",
-        "/web/docs-content/.*",
-        "/web/dashboard/.*",
-        "/web/health",
-        "/web/static/swagger_custom.js",
-        "/.well-known/.*"
-    ],
-    effect="ALLOW",
-    partition_key="global" # Will be overridden during provisioning
-))
+logger = logging.getLogger(__name__)
 
-# Register Anonymous Principal
-register_principal(Principal(
-    provider="system",
-    subject_id="anonymous",
-    display_name="Anonymous User",
-    roles=["anonymous"],
-    is_active=True
-))
+def register_web_policies():
+    policy = Policy(
+        id="web_public_access",
+        description="Allows anonymous access to public landing pages and documentation.",
+        actions=["GET", "OPTIONS"],
+        resources=[
+            "/$",
+            "/docs.*",
+            "/openapi.json",
+            "/favicon.ico.*",
+            "/web.*",
+            "/web/.*",
+            "/web/auth/.*",
+            "/web/static/.*",
+            "/web/extension-static/.*",
+            "/web/website/.*",
+            "/web/docs-.*",
+            "/web/docs-content/.*",
+            "/web/dashboard/.*",
+            "/web/health",
+            "/web/static/swagger_custom.js",
+            "/.well-known/.*",
+            "/processes.*",
+            "/processes/.*",
+        ],
+        effect="ALLOW",
+    )
+
+    policy_manager = get_protocol(PolicyProtocol)
+    if policy_manager:
+        policy_manager.register_policy(policy)
+
+        # Attach to anonymous role
+        policy_manager.register_role(
+            Role(name="anonymous", policies=["web_public_access"], is_system=True)
+        )
+    else:
+        logger.debug("PolicyProtocol not available, skipping policy registration.")
+
+    # Register Anonymous Principal as a plugin for discovery
+    register_plugin(
+        Principal(
+            provider="system",
+            subject_id="anonymous",
+            display_name="Anonymous User",
+            roles=["anonymous"],
+            is_active=True,
+        )
+    )
+
 
 def _find_project_root(start_path: str, markers: List[str]) -> Optional[str]:
     """Walks up from start_path to find a directory containing one of the marker files.
@@ -94,12 +116,16 @@ def _find_project_root(start_path: str, markers: List[str]) -> Optional[str]:
                 if marker_path.exists():
                     # If the marker is a project/config file, accept immediately
                     if marker.lower() in ("pyproject.toml", "setup.py"):
-                        logger.info(f"Found project root via marker '{marker}' at: {current_path}")
+                        logger.info(
+                            f"Found project root via marker '{marker}' at: {current_path}"
+                        )
                         return str(current_path)
 
                     # For generic markers (main.py), verify app structure
                     if _has_app_structure(current_path):
-                        logger.info(f"Found project root via marker '{marker}' at: {current_path}")
+                        logger.info(
+                            f"Found project root via marker '{marker}' at: {current_path}"
+                        )
                         return str(current_path)
 
         return None
@@ -107,10 +133,11 @@ def _find_project_root(start_path: str, markers: List[str]) -> Optional[str]:
         logger.debug(f"Error resolving project root: {e}")
         return None
 
+
 def _has_app_structure(root_dir: Path) -> bool:
     """Helper to verify if a directory looks like a Dynastore app."""
     comps = ["modules", "extensions", "tasks"]
-    
+
     # 1. Check direct children
     for comp in comps:
         if (root_dir / comp).is_dir():
@@ -143,8 +170,12 @@ WEB_CONFORMANCE_URIS = [
     "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/html",
 ]
 
-@dynastore_extension
-class Web(ExtensionProtocol):
+from dynastore.models.protocols import WebModuleProtocol
+
+
+class Web(ExtensionProtocol, WebModuleProtocol):
+    priority: int = 0
+    router: APIRouter = APIRouter(prefix="/web", tags=["Dynastore Web Service"])
     def generate_etag(self, content_parts: List[bytes]) -> str:
         """Generates a strong ETag for a list of content parts."""
         hasher = hashlib.md5()
@@ -157,10 +188,13 @@ class Web(ExtensionProtocol):
         eff_max_age = max_age if max_age is not None else self.DEFAULT_CACHE_MAX_AGE
         return {
             "Cache-Control": f"public, max-age={eff_max_age}, stale-while-revalidate=60",
-            "Vary": "Accept-Encoding"
+            "Vary": "Accept-Encoding",
         }
 
     def configure_app(self, app: FastAPI):
+        # Register policies
+        register_web_policies()
+
         app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
         app.add_middleware(GZipMiddleware, minimum_size=1000)
         app.add_middleware(
@@ -173,7 +207,9 @@ class Web(ExtensionProtocol):
 
         # Discover and register static providers from other extensions
         if hasattr(app.state, "ordered_configs"):
-            logger.info("WebService: Scanning other extensions for static content providers...")
+            logger.info(
+                "WebService: Scanning other extensions for static content providers..."
+            )
             for config in app.state.ordered_configs:
                 if config.instance and config.instance is not self:
                     self._scan_and_register_providers(config.instance)
@@ -194,7 +230,7 @@ class Web(ExtensionProtocol):
             root_path = request.scope.get("root_path", "").rstrip("/")
             return RedirectResponse(url=f"{root_path}/web/")
 
-        # Explicitly handle /web redirect to ensure consistent behavior 
+        # Explicitly handle /web redirect to ensure consistent behavior
         # regardless of Router prefix mounting order or strict slashes config.
         @app.get("/web", include_in_schema=False)
         async def web_redirect(request: Request):
@@ -207,22 +243,26 @@ class Web(ExtensionProtocol):
         #     app.router.routes.insert(0, app.router.routes.pop())
         #     logger.info("WebService: No root ('/') endpoint found. Added redirect to '/web'.")
 
-
-    def __init__(self, app: FastAPI):
+    def __init__(self, app: Optional[FastAPI] = None):
         self.app = app
-        self.router = APIRouter(prefix="/web", tags=["Dynastore Web Service"])
-        
+
         register_conformance_uris(WEB_CONFORMANCE_URIS)
-        logger.info("WebService: Successfully registered generic web conformance classes.")
+        logger.info(
+            "WebService: Successfully registered generic web conformance classes."
+        )
 
         # Use __file__ with helper to find root
-        self.project_root = _find_project_root(__file__, ["setup.py", "pyproject.toml", "main.py"])
-        
+        self.project_root = _find_project_root(
+            __file__, ["setup.py", "pyproject.toml", "main.py"]
+        )
+
         if not self.project_root:
-            logger.warning("WebService: Could not find project root. Docs scanning will be limited to local web directory.")
+            logger.warning(
+                "WebService: Could not find project root. Docs scanning will be limited to local web directory."
+            )
 
         self.static_dir = self._find_static_dir()
-        
+
         # Discover application directories under the detected project root
         self.app_dirs: List[str] = []
         if self.project_root:
@@ -234,35 +274,34 @@ class Web(ExtensionProtocol):
 
         # Scan and build a registry of all documentation
         self.docs_registry: Dict[str, Dict[str, Any]] = self._scan_for_documentation()
-        
+
         self.DEFAULT_CACHE_MAX_AGE = int(os.getenv("DEFAULT_CACHE_MAX_AGE", 3600))
-        
+
         # Registry for static content providers: { prefix: bound_method }
         self.static_providers: Dict[str, Callable[[], List[str]]] = {}
 
         # Registry for pluggable web pages: { page_id: {title, icon, handler} }
         self.web_pages: Dict[str, Dict[str, Any]] = {}
-        
+
         # Self-register static files from this class
         self._scan_and_register_providers(self)
-        
+
         self._register_routes()
 
     def _find_static_dir(self) -> Optional[str]:
         # MODERN APPROACH: Use pathlib to find the directory of this file
         current_path = Path(__file__).resolve().parent
-        
-        possible_dirs = [
-            current_path / "static",
-            current_path.parent / "static"
-        ]
-        
+
+        possible_dirs = [current_path / "static", current_path.parent / "static"]
+
         for d in possible_dirs:
             if d.is_dir():
                 logger.info(f"WebService: Serving static files from {d}")
                 return str(d)
-                
-        logger.warning(f"WebService: Could not find 'static' directory. Checked: {[str(p) for p in possible_dirs]}")
+
+        logger.warning(
+            f"WebService: Could not find 'static' directory. Checked: {[str(p) for p in possible_dirs]}"
+        )
         return None
 
     def _discover_app_dirs(self, project_root: str) -> List[str]:
@@ -312,7 +351,12 @@ class Web(ExtensionProtocol):
         """
         registry = {}
 
-        def process_doc_file(fpath: Path, category: str, component_name: Optional[str], root_reference: Path):
+        def process_doc_file(
+            fpath: Path,
+            category: str,
+            component_name: Optional[str],
+            root_reference: Path,
+        ):
             """Helper to process a single markdown file"""
             try:
                 # 1. Generate a clean, unique, and readable ID
@@ -323,12 +367,12 @@ class Web(ExtensionProtocol):
                 if component_name:
                     id_parts.append(component_name)
 
-                is_readme = fpath.stem.lower() == 'readme'
+                is_readme = fpath.stem.lower() == "readme"
                 if not is_readme:
                     stem = fpath.stem.lower()
                     # If stem is 'apikey_upgrade' and component is 'apikey', we just want 'upgrade'
                     if component_name and stem.startswith(component_name):
-                        clean_stem = stem[len(component_name):].lstrip('_-')
+                        clean_stem = stem[len(component_name) :].lstrip("_-")
                         # Only use if it's not empty
                         if clean_stem:
                             id_parts.append(clean_stem)
@@ -338,7 +382,7 @@ class Web(ExtensionProtocol):
 
                 if not id_parts:
                     id_parts.append(fpath.stem.lower())
-                
+
                 # Use ':' as a separator for readability, it's a valid path parameter character.
                 doc_id = ":".join(id_parts)
 
@@ -360,18 +404,21 @@ class Web(ExtensionProtocol):
 
                 # Attempt to read the actual title from file content
                 try:
-                    with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
-                        for _ in range(50): # Read first 50 lines max
+                    with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                        for _ in range(50):  # Read first 50 lines max
                             line = f.readline()
-                            if not line: break
+                            if not line:
+                                break
                             stripped = line.strip()
-                            if stripped.startswith('#'):
-                                raw_title = stripped.lstrip('#').strip()
+                            if stripped.startswith("#"):
+                                raw_title = stripped.lstrip("#").strip()
                                 if raw_title:
                                     # Clean Markdown links [Text](url) -> Text
-                                    clean_title = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', raw_title)
+                                    clean_title = re.sub(
+                                        r"\[([^\]]+)\]\([^)]+\)", r"\1", raw_title
+                                    )
                                     # Clean Markdown formatting * _ `
-                                    title = re.sub(r'[*_`]', '', clean_title).strip()
+                                    title = re.sub(r"[*_`]", "", clean_title).strip()
                                     break
                 except Exception as e:
                     logger.debug(f"Could not read title from {fpath}: {e}")
@@ -381,18 +428,21 @@ class Web(ExtensionProtocol):
                     comp_title = component_name.replace("_", " ").title()
                     # Check if title already starts with component name (case insensitive)
                     # And avoid duplicating if title is exactly the component name
-                    if title.lower() != comp_title.lower() and not title.lower().startswith(comp_title.lower()):
-                         title = f"{comp_title}: {title}"
+                    if (
+                        title.lower() != comp_title.lower()
+                        and not title.lower().startswith(comp_title.lower())
+                    ):
+                        title = f"{comp_title}: {title}"
 
                 # 3. Add to Registry
                 registry[doc_id] = {
                     "id": doc_id,
                     "title": title,
                     "path": str(fpath.resolve()),
-                    "category": category
+                    "category": category,
                 }
                 logger.debug(f"Registered doc: {doc_id} -> {title}")
-                
+
             except Exception as e:
                 logger.error(f"Error processing doc file {fpath}: {e}")
 
@@ -402,7 +452,7 @@ class Web(ExtensionProtocol):
             logger.info(f"Scanning root docs in: {root_path}")
             for item in root_path.glob("*.md"):
                 process_doc_file(item, "root", None, root_path)
-            
+
             # Also scan 'docs' folder in root if it exists
             docs_folder = root_path / "docs"
             if docs_folder.is_dir():
@@ -410,12 +460,12 @@ class Web(ExtensionProtocol):
                     process_doc_file(item, "root", None, docs_folder)
 
             # --- B. Scan App Directories (Modules, Extensions, Tasks) ---
-            app_dirs = getattr(self, 'app_dirs', []) or []
+            app_dirs = getattr(self, "app_dirs", []) or []
             categories = ["modules", "extensions", "tasks"]
-            
+
             for app_dir_str in app_dirs:
                 app_path = Path(app_dir_str)
-                
+
                 # Scan 'docs' folder in app_path if it exists
                 app_docs = app_path / "docs"
                 if app_docs.is_dir():
@@ -426,34 +476,40 @@ class Web(ExtensionProtocol):
                     cat_dir = app_path / cat
                     if not cat_dir.is_dir():
                         continue
-                        
+
                     # Iterate over components (e.g., modules/auth, modules/users)
                     for component_dir in cat_dir.iterdir():
                         if not component_dir.is_dir():
                             continue
-                            
+
                         # Recursively find ALL .md files in this component
                         # but EXPLICITLY SKIP node_modules
-                        
+
                         # Note: We use os.walk instead of rglob to efficiently skip directories
                         for root, dirs, files in os.walk(component_dir):
                             # In-place filtering of dirs to skip node_modules traversal
-                            dirs[:] = [d for d in dirs if d != "node_modules" and not d.startswith(".")]
-                            
+                            dirs[:] = [
+                                d
+                                for d in dirs
+                                if d != "node_modules" and not d.startswith(".")
+                            ]
+
                             for filename in files:
-                                if filename.lower().endswith(('.md', '.markdown')):
+                                if filename.lower().endswith((".md", ".markdown")):
                                     md_file = Path(root) / filename
-                                    process_doc_file(md_file, cat, component_dir.name, component_dir)
+                                    process_doc_file(
+                                        md_file, cat, component_dir.name, component_dir
+                                    )
 
                     # If cat is "extensions", also check "extensions" in the module itself
                     if cat == "extensions":
                         # Some extensions might be inside modules
-                         # Re-scan "dynastore/modules" to see if any module has an "extensions" folder
-                         pass # This logic is a bit circular if not careful. Sticking to standard structure.
+                        # Re-scan "dynastore/modules" to see if any module has an "extensions" folder
+                        pass  # This logic is a bit circular if not careful. Sticking to standard structure.
 
         logger.info(f"Documentation scan complete. Found {len(registry)} documents.")
         return registry
-    
+
     def _scan_and_register_providers(self, instance: Any):
         for name, method in inspect.getmembers(instance, predicate=inspect.ismethod):
             if hasattr(method, "_web_static_prefix"):
@@ -468,19 +524,21 @@ class Web(ExtensionProtocol):
         page_id = config["id"]
         if page_id in self.web_pages:
             logger.warning(f"WebService: Overwriting web page '{page_id}'")
-        
+
         self.web_pages[page_id] = {
             "id": page_id,
             "title": config["title"],
             "icon": config["icon"],
             "description": config.get("description", ""),
-            "handler": provider
+            "handler": provider,
         }
         logger.info(f"WebService: Registered web page '{page_id}'")
 
     def register_static_provider(self, prefix: str, provider: Callable[[], List[str]]):
         if prefix in self.static_providers:
-            logger.warning(f"WebService: Overwriting static provider for prefix '{prefix}'")
+            logger.warning(
+                f"WebService: Overwriting static provider for prefix '{prefix}'"
+            )
         self.static_providers[prefix] = provider
         logger.info(f"WebService: Registered static provider for prefix '{prefix}'")
 
@@ -519,17 +577,25 @@ class Web(ExtensionProtocol):
     async def serve_file(self, file_path: str) -> Response:
         if not os.path.isfile(file_path):
             raise HTTPException(status_code=404, detail="File not found")
-            
+
         mime_types = {
-            ".css": "text/css", ".js": "application/javascript", ".json": "application/json",
-            ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-            ".svg": "image/svg+xml", ".gif": "image/gif", ".ico": "image/x-icon",
-            ".html": "text/html", ".md": "text/markdown", ".wasm": "application/wasm",
-            ".whl": "application/octet-stream"
+            ".css": "text/css",
+            ".js": "application/javascript",
+            ".json": "application/json",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".svg": "image/svg+xml",
+            ".gif": "image/gif",
+            ".ico": "image/x-icon",
+            ".html": "text/html",
+            ".md": "text/markdown",
+            ".wasm": "application/wasm",
+            ".whl": "application/octet-stream",
         }
         _, ext = os.path.splitext(file_path)
         media_type = mime_types.get(ext.lower(), "application/octet-stream")
-            
+
         try:
             with open(file_path, "rb") as f:
                 content = f.read()
@@ -544,33 +610,46 @@ class Web(ExtensionProtocol):
 
         @self.router.get("", include_in_schema=False)
         async def redirect_web_root(request: Request):
-             # Force trailing slash for relative assets to work
-             path = request.url.path
-             if not path.endswith('/'):
-                 return RedirectResponse(url=path + "/")
-             # If already has slash, serve index (should be handled by @router.get("/"))
-             return await read_extension_root()
+            # Force trailing slash for relative assets to work
+            path = request.url.path
+            if not path.endswith("/"):
+                return RedirectResponse(url=path + "/")
+            # If already has slash, serve index (should be handled by @router.get("/"))
+            return await read_extension_root()
 
         @self.router.get("/", include_in_schema=False)
         async def read_extension_root():
             # Redirect root to website
-            website_index = os.path.join(os.path.dirname(__file__), "static", "website", "index.html")
+            website_index = os.path.join(
+                os.path.dirname(__file__), "static", "website", "index.html"
+            )
             if os.path.exists(website_index):
                 return await self.serve_file(website_index)
             # Fallback to default index if website not present
             if self.static_dir:
-                 index_path = os.path.join(self.static_dir, "index.html")
-                 if os.path.exists(index_path):
-                     return await self.serve_file(index_path)
+                index_path = os.path.join(self.static_dir, "index.html")
+                if os.path.exists(index_path):
+                    return await self.serve_file(index_path)
             return HTMLResponse("Not Found", status_code=404)
 
         @self.router.get("/dashboard/")
         async def read_dashboard_root():
-             dashboard_index = os.path.join(os.path.dirname(__file__), "static", "dashboard", "index.html")
-             if os.path.exists(dashboard_index):
-                 return await self.serve_file(dashboard_index)
-             return HTMLResponse("Dashboard Not Found", status_code=404)
-        
+            dashboard_index = os.path.join(
+                os.path.dirname(__file__), "static", "dashboard", "index.html"
+            )
+            if os.path.exists(dashboard_index):
+                return await self.serve_file(dashboard_index)
+            return HTMLResponse("Dashboard Not Found", status_code=404)
+
+        @self.router.get("/dashboard/processes/")
+        async def read_processes_page():
+            processes_index = os.path.join(
+                os.path.dirname(__file__), "static", "dashboard", "processes.html"
+            )
+            if os.path.exists(processes_index):
+                return await self.serve_file(processes_index)
+            return HTMLResponse("Processes Page Not Found", status_code=404)
+
         @self.router.get("/health", tags=["Web Health"])
         async def health_check():
             return {"status": "ok"}
@@ -582,47 +661,59 @@ class Web(ExtensionProtocol):
             for p in self.web_pages.values():
                 title = p["title"]
                 if isinstance(title, dict):
-                    title = title.get(language, title.get("en", next(iter(title.values()))))
-                
+                    title = title.get(
+                        language, title.get("en", next(iter(title.values())))
+                    )
+
                 description = p.get("description", "")
                 if isinstance(description, dict):
-                    description = description.get(language, description.get("en", next(iter(description.values())) if description else ""))
+                    description = description.get(
+                        language,
+                        description.get(
+                            "en",
+                            next(iter(description.values())) if description else "",
+                        ),
+                    )
 
-                results.append({
-                    "id": p["id"], 
-                    "title": title, 
-                    "icon": p["icon"], 
-                    "description": description
-                })
+                results.append(
+                    {
+                        "id": p["id"],
+                        "title": title,
+                        "icon": p["icon"],
+                        "description": description,
+                    }
+                )
             return results
 
         @self.router.get("/pages/{page_id}", response_class=HTMLResponse)
-        async def get_web_page_content(page_id: str, request: Request, language: str = Query("en")):
-             if page_id not in self.web_pages:
-                 raise HTTPException(status_code=404, detail="Page not found")
-             
-             handler = self.web_pages[page_id]["handler"]
-             try:
-                 # Check if handler accepts arguments to avoid TypeError
-                 sig = inspect.signature(handler)
-                 kwargs = {}
-                 if "request" in sig.parameters:
-                     kwargs["request"] = request
-                 if "language" in sig.parameters:
-                     kwargs["language"] = language
+        async def get_web_page_content(
+            page_id: str, request: Request, language: str = Query("en")
+        ):
+            if page_id not in self.web_pages:
+                raise HTTPException(status_code=404, detail="Page not found")
 
-                 if inspect.iscoroutinefunction(handler):
-                     content = await handler(**kwargs)
-                 else:
-                     content = handler(**kwargs)
-                
-                 if isinstance(content, Response):
-                     return content
-                 return HTMLResponse(content=str(content))
-             except Exception as e:
-                 logger.error(f"Error rendering page {page_id}: {e}", exc_info=True)
-                 raise HTTPException(status_code=500, detail=str(e))
-        
+            handler = self.web_pages[page_id]["handler"]
+            try:
+                # Check if handler accepts arguments to avoid TypeError
+                sig = inspect.signature(handler)
+                kwargs = {}
+                if "request" in sig.parameters:
+                    kwargs["request"] = request
+                if "language" in sig.parameters:
+                    kwargs["language"] = language
+
+                if inspect.iscoroutinefunction(handler):
+                    content = await handler(**kwargs)
+                else:
+                    content = handler(**kwargs)
+
+                if isinstance(content, Response):
+                    return content
+                return HTMLResponse(content=str(content))
+            except Exception as e:
+                logger.error(f"Error rendering page {page_id}: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e))
+
         @self.router.get("/docs-manifest", response_class=JSONResponse)
         async def get_docs_manifest():
             """
@@ -631,112 +722,274 @@ class Web(ExtensionProtocol):
             """
             # Use raw buckets first
             buckets = {"root": [], "modules": [], "extensions": [], "tasks": []}
-            
+
             # Iterate through the registry and bucket items by category
             for doc_item in self.docs_registry.values():
                 cat = doc_item.get("category", "root")
                 if cat not in buckets:
                     buckets[cat] = []
-                
-                buckets[cat].append({
-                    "id": doc_item["id"],
-                    "title": doc_item["title"],
-                    "path": doc_item["path"]
-                })
+
+                buckets[cat].append(
+                    {
+                        "id": doc_item["id"],
+                        "title": doc_item["title"],
+                        "path": doc_item["path"],
+                    }
+                )
 
             # Create the final manifest using raw category IDs as keys
             manifest = {}
             for cat, items in buckets.items():
                 if not items:
                     continue
-                    
+
                 # Sort each category alphabetically by title
-                items.sort(key=lambda x: x['title'])
-                
+                items.sort(key=lambda x: x["title"])
+
                 # Use raw category ID as key for the frontend
                 manifest[cat] = items
-            
+
             return manifest
 
         @self.router.get("/docs-content/{doc_id:path}", response_class=HTMLResponse)
         async def get_doc_content(doc_id: str):
             doc_item = self.docs_registry.get(doc_id)
-            
+
             if not doc_item or not os.path.exists(doc_item["path"]):
                 raise HTTPException(status_code=404, detail="Documentation not found")
-            
+
             try:
                 import markdown
             except ImportError:
-                logger.error("Markdown library not installed. Documentation rendering unavailable.")
-                return HTMLResponse("<h1>Documentation renderer (markdown) not installed</h1>", status_code=500)
+                logger.error(
+                    "Markdown library not installed. Documentation rendering unavailable."
+                )
+                return HTMLResponse(
+                    "<h1>Documentation renderer (markdown) not installed</h1>",
+                    status_code=500,
+                )
 
             try:
                 with open(doc_item["path"], "r", encoding="utf-8") as f:
                     md_content = f.read()
-                
+
                 # Convert to HTML
                 html_content = markdown.markdown(
-                    md_content, 
-                    extensions=['fenced_code', 'tables', 'def_list', 'nl2br']
+                    md_content,
+                    extensions=["fenced_code", "tables", "def_list", "nl2br"],
                 )
                 return HTMLResponse(content=html_content)
             except Exception as e:
                 logger.error(f"Error reading doc {doc_id}: {e}")
                 raise HTTPException(status_code=500, detail="Error reading document")
 
+        @self.router.get("/dashboard/catalogs", response_class=JSONResponse)
+        async def get_dashboard_catalogs(
+            limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)
+        ):
+            from dynastore.models.protocols import CatalogsProtocol
+
+            catalogs_provider: CatalogsProtocol = get_protocol(CatalogsProtocol)
+            if catalogs_provider:
+                cats = await catalogs_provider.list_catalogs(limit=limit, offset=offset)
+                return [c.model_dump() for c in cats]
+            return []
+
+        @self.router.get(
+            "/dashboard/catalogs/{catalog_id}/collections", response_class=JSONResponse
+        )
+        async def get_dashboard_collections(
+            catalog_id: str,
+            limit: int = Query(100, ge=1, le=1000),
+            offset: int = Query(0, ge=0),
+        ):
+            from dynastore.models.protocols import CollectionsProtocol
+            from dynastore.tools.discovery import get_protocol, register_plugin
+
+            collections_provider: CollectionsProtocol = get_protocol(
+                CollectionsProtocol
+            )
+            if collections_provider:
+                cols = await collections_provider.list_collections(
+                    catalog_id=catalog_id, limit=limit, offset=offset
+                )
+                return [c.model_dump() for c in cols]
+            return []
+
         @self.router.get("/dashboard/stats", response_class=JSONResponse)
-        async def get_dashboard_stats(request: Request):
-            catalog_id = getattr(request.state, "catalog_id", None)
-            
-            # Resolve schema using ApiKeyManager logic or CatalogModule
+        async def get_dashboard_stats(
+            catalog_id: str = Query(
+                "_system_", description="Catalog ID to filter stats for."
+            ),
+            principal_id: Optional[str] = Query(
+                None, description="Filter by Principal ID."
+            ),
+            api_key_hash: Optional[str] = Query(
+                None, description="Filter by API Key Hash."
+            ),
+            start_date: Optional[datetime] = Query(
+                None, description="Start date for stats aggregation."
+            ),
+            end_date: Optional[datetime] = Query(
+                None, description="End date for stats aggregation."
+            ),
+            request: Request = None,
+        ):
+            # Resolve schema using CatalogsProtocol
             from dynastore.modules import get_protocol
             from dynastore.models.protocols import CatalogsProtocol
+
             catalogs = get_protocol(CatalogsProtocol)
             db_resource = catalogs.engine if catalogs else None
-            schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=db_resource) or "catalog"
 
-            summary = await STATS_SERVICE.get_summary(schema=schema)
-            return summary.model_dump() if summary else {"total_requests": 0, "average_latency_ms": 0}
+            schema = "catalog"
+            if catalog_id and catalog_id != "_system_":
+                try:
+                    schema = (
+                        await catalogs.resolve_physical_schema(
+                            catalog_id, db_resource=db_resource
+                        )
+                        or "catalog"
+                    )
+                except ValueError:
+                    pass
+
+            from dynastore.models.protocols.stats import StatsProtocol
+            stats_service = get_protocol(StatsProtocol)
+            summary = None
+            if stats_service:
+                summary = await stats_service.get_summary(
+                    schema=schema,
+                    catalog_id=catalog_id if catalog_id != "_system_" else None,
+                    principal_id=principal_id,
+                    api_key_hash=api_key_hash,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+
+            return (
+                summary.model_dump()
+                if summary
+                else {"total_requests": 0, "average_latency_ms": 0}
+            )
 
         @self.router.get("/dashboard/tasks", response_class=JSONResponse)
         async def get_dashboard_tasks():
-            tasks_ext = getattr(self.app.state, 'tasks', None)
+            tasks_ext = getattr(self.app.state, "tasks", None)
             if tasks_ext:
                 tasks = await tasks_ext.get_tasks()
                 return tasks
             return []
 
         @self.router.get("/dashboard/logs", response_class=JSONResponse)
-        async def get_dashboard_logs(limit: int = 50):
-            from dynastore.extensions.logs.log_extension import get_log_extension
-            log_ext = get_log_extension()
+        async def get_dashboard_logs(
+            catalog_id: str = Query(
+                "_system_",
+                description="Catalog ID to filter logs for. Defaults to system logs.",
+            ),
+            collection_id: Optional[str] = Query(
+                None, description="Optional collection ID to filter logs for."
+            ),
+            event_type: Optional[str] = Query(
+                None, description="Optional event type to filter logs for."
+            ),
+            level: Optional[str] = Query(
+                None, description="Optional log level (e.g., ERROR, INFO)."
+            ),
+            limit: int = Query(
+                50, ge=1, le=1000, description="Number of logs to return."
+            ),
+            offset: int = Query(0, ge=0, description="Pagination offset."),
+        ):
+            from dynastore.models.protocols.logs import LogsProtocol
+            from dynastore.tools.discovery import get_protocol, register_plugin
+
+            log_ext = get_protocol(LogsProtocol)
             if log_ext:
-                logs = await log_ext.search_logs(catalog_id="_system_", limit=limit)
-                return [l.model_dump() for l in logs]
+                logs = await log_ext.list_logs(
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                    event_type=event_type,
+                    level=level,
+                    limit=limit,
+                    offset=offset,
+                )
+                return [l if isinstance(l, dict) else l.model_dump() for l in logs]
+            return []
+
+        @self.router.get("/dashboard/events", response_class=JSONResponse)
+        async def get_dashboard_events(
+            catalog_id: str = Query(..., description="Catalog ID to fetch events for."),
+            collection_id: Optional[str] = Query(
+                None, description="Optional collection ID to filter events for."
+            ),
+            event_type: Optional[str] = Query(
+                None, description="Optional event type to filter events for."
+            ),
+            limit: int = Query(
+                50, ge=1, le=1000, description="Number of events to return."
+            ),
+            offset: int = Query(0, ge=0, description="Pagination offset."),
+        ):
+            from dynastore.modules.catalog.catalog_module import _module_instance
+
+            catalog_mod = _module_instance
+            if catalog_mod and hasattr(catalog_mod, "event_service"):
+                from dynastore.tools.protocol_helpers import get_engine
+
+                engine = get_engine()
+                events = await catalog_mod.event_service.search_events(
+                    engine=engine,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                    event_type=event_type,
+                    limit=limit,
+                    offset=offset,
+                )
+
+                # Convert datetime objects to string for JSON serialization
+                for event in events:
+                    if "created_at" in event and event["created_at"]:
+                        event["created_at"] = event["created_at"].isoformat()
+
+                return events
             return []
 
         @self.router.get("/{prefix}/{filename:path}", include_in_schema=False)
         async def serve_static_content(prefix: str, filename: str):
             if prefix not in self.static_providers:
-                raise HTTPException(status_code=404, detail=f"No provider found for prefix '{prefix}'")
-            
+                raise HTTPException(
+                    status_code=404, detail=f"No provider found for prefix '{prefix}'"
+                )
+
             provider = self.static_providers[prefix]
             try:
                 allowed_files = provider()
             except Exception as e:
                 logger.error(f"Provider for '{prefix}' failed: {e}")
                 raise HTTPException(status_code=500, detail="Provider error")
-                
-            allowed_map = {os.path.abspath(f): f for f in allowed_files}
-            target_file = None
-            for abs_path in allowed_map.keys():
-                if abs_path.replace(os.sep, '/').endswith(filename.replace(os.sep, '/')):
-                     target_file = abs_path
-                     break
+
+            # Determine base directory for provider by finding the common prefix
+            # This assumes the provider returns files from a single root (common for expose_static)
+            if not allowed_files:
+                raise HTTPException(status_code=404, detail="No files available")
             
+            # Find the common base directory for the allowed files to calculate relative paths correctly
+            common_root = os.path.commonpath([os.path.dirname(f) for f in allowed_files])
+            
+            allowed_map = {
+                os.path.relpath(f, common_root).replace(os.sep, "/"): f 
+                for f in allowed_files
+            }
+            
+            # Normalize requested filename for lookup
+            lookup_key = filename.replace(os.sep, "/")
+            target_file = allowed_map.get(lookup_key)
+
             if not target_file:
-                 logger.warning(f"Access denied or file not found in provider allowlist: {filename} for prefix {prefix}")
-                 raise HTTPException(status_code=404, detail="File not found")
-            
+                logger.warning(
+                    f"Access denied or file not found in provider allowlist: {filename} for prefix {prefix}"
+                )
+                raise HTTPException(status_code=404, detail="File not found")
+
             return await self.serve_file(target_file)

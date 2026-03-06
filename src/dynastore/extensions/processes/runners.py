@@ -19,14 +19,16 @@
 import logging
 import asyncio
 import traceback
-
+from typing import Any
 from fastapi import BackgroundTasks
 
 from dynastore.modules.tasks import tasks_module
 from dynastore.modules.tasks.models import (Task, TaskCreate, TaskExecutionMode,
                                             TaskPayload, TaskStatusEnum,
                                             TaskUpdate, RunnerContext)
-from dynastore.modules.tasks.runners import RunnerProtocol, register_runner
+from dynastore.tools.plugin import ProtocolPlugin
+from dynastore.modules.tasks.runners import RunnerProtocol
+from dynastore.tools.discovery import register_plugin
 from dynastore.tasks import get_task_instance
 from dynastore.modules.processes.models import ExecuteRequest, as_process_task_payload
 
@@ -83,22 +85,24 @@ async def _run_and_update_task(context: RunnerContext, task_id, task_instance):
         await tasks_module.update_task(context.engine, task_id, update_request, schema=context.db_schema)
 
 
-@register_runner(TaskExecutionMode.ASYNCHRONOUS, priority=50)  # Higher priority
-class FastAPIBackgroundRunner(RunnerProtocol):
+class FastAPIBackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
     """
     An asynchronous runner that uses FastAPI's BackgroundTasks to execute the job.
     This is suitable for in-process asynchronous execution.
     """
-    async def run(self, context: RunnerContext) -> Task:
+    priority: int = 50
+    mode = TaskExecutionMode.ASYNCHRONOUS
+
+    @property
+    def capabilities(self):
+        from dynastore.modules.tasks.models import RunnerCapabilities
+        return RunnerCapabilities(requires_request_context=True)
+
+    async def run(self, context: RunnerContext):
         background_tasks = context.extra_context.get("background_tasks")
-        if background_tasks is None:
-            raise RuntimeError(
-                "FastAPIBackgroundRunner requires 'background_tasks' in the extra_context, but it was not provided."
-            )
-        if not isinstance(background_tasks, BackgroundTasks):
-            raise RuntimeError(
-                "FastAPIBackgroundRunner requires 'background_tasks' of type fastapi.BackgroundTasks in the extra_context."
-            )
+        if background_tasks is None or not isinstance(background_tasks, BackgroundTasks):
+            # Return None to allow fallback (dispatcher checks capabilities, but guard here too)
+            return None
 
         # This is an in-process runner, so it's responsible for getting the task instance.
         task_instance = get_task_instance(context.task_type)
@@ -117,5 +121,7 @@ class FastAPIBackgroundRunner(RunnerProtocol):
         background_tasks.add_task(_run_and_update_task, context, new_task.task_id, task_instance)
         logger.info(f"Scheduled task '{new_task.task_id}' to run in the background.")
 
-        # 4. Return the created task object immediately.
         return new_task
+
+# Register the runner
+register_plugin(FastAPIBackgroundRunner())

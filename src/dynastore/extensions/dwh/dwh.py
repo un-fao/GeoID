@@ -1,0 +1,634 @@
+#    Copyright 2025 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
+from dynastore.tools.discovery import get_protocol
+import logging
+import os
+from typing import Any, Dict, Generator, List, Iterator, Optional
+from async_lru import alru_cache
+
+from fastapi import (
+    HTTPException,
+    status,
+    Depends,
+    Response,
+    Request,
+    Request,
+    APIRouter,
+)
+from fastapi.responses import StreamingResponse
+from dynastore.models.shared_models import OutputFormatEnum, Link
+from google.cloud import bigquery
+
+from dynastore.extensions.dwh.models import (
+    DWHJoinRequest,
+    DWHJoinRequestBase,
+    DWHTiledJoinRequest,
+)
+from dynastore.extensions.tools.formatters import format_response
+from dynastore.models.protocols import (
+    CloudIdentityProtocol,
+    CatalogsProtocol,
+    ItemsProtocol,
+)
+from dynastore.modules.db_config.query_executor import (
+    DQLQuery,
+    ResultHandler,
+    managed_transaction,
+)
+from dynastore.tools.features import FeatureCollection
+from dynastore.modules.db_config import shared_queries
+from dynastore.tools.db import validate_sql_identifier
+from dynastore.extensions.tools.db import get_async_connection
+from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy import text
+from shapely.geometry import box
+from shapely import wkb
+import hashlib
+import json
+import dynastore.modules.tiles.tiles_module as tms_manager
+from dynastore.modules.tiles.tms_definitions import BUILTIN_TILE_MATRIX_SETS
+from dynastore.tools.discovery import get_protocol
+
+# --- App Setup & Configuration ---
+logger = logging.getLogger(__name__)
+
+
+class CursorWrapper:
+    """
+    Wraps an async iterator (from streaming query) to behave like a
+    synchronous iterator for FeatureCollection compatibility (handled via helper),
+    OR wraps a synchronous iterable.
+    """
+
+    def __init__(self, async_iterator):
+        self._async_iterator = async_iterator
+
+    async def __aiter__(self):
+        async for item in self._async_iterator:
+            yield item
+
+
+@alru_cache(maxsize=128)
+async def execute_bigquery_async(
+    query: str, join_column: str, project_id: str
+) -> Dict[Any, Dict[str, Any]]:
+    """
+    Executes a BigQuery query asynchronously.
+    Cached to optimize repeated lookups for the same query.
+    """
+    if not project_id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="GOOGLE_CLOUD_PROJECT is not configured.",
+        )
+
+    identity_provider = get_protocol(CloudIdentityProtocol)
+    if not identity_provider:
+        raise RuntimeError("CloudIdentityProtocol not found or not enabled.")
+
+    credentials = identity_provider.get_credentials_object()
+    client = bigquery.Client(project=project_id, credentials=credentials)
+
+    try:
+        logger.info(f"Executing BQ Query (cache miss): {query[:200]}...")
+        # We assume result sets are small enough to fit in memory (keys for joining)
+        # BQ also caches results internally, so this local cache avoids network roundtrips.
+        df = client.query(query).to_dataframe()
+
+        if join_column not in df.columns:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Join column '{join_column}' not found in BigQuery results.",
+            )
+
+        return {row[join_column]: row for row in df.to_dict("records")}
+
+    except Exception as e:
+        logger.error(f"BigQuery query failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"BigQuery query error: {str(e)}")
+    finally:
+        client.close()
+
+
+async def join_features_with_dwh_data_async(
+    features_async_iter, dwh_data: Dict, join_on: str
+):
+    """
+    Async Generator that streams features from DB and joins with in-memory DWH data.
+    """
+    async for feature_dict in features_async_iter:
+        # feature_dict comes from streaming query, it's a dict
+        join_key_value = feature_dict.get(join_on)
+
+        if join_key_value is None:
+            continue
+
+        supplementary_row = dwh_data.get(join_key_value)
+
+        # Ensure 'attributes' exists (it's a JSONB column from DB, usually)
+        attributes = feature_dict.get("attributes", {})
+        if attributes is None:
+            attributes = {}
+
+        if supplementary_row:
+            # Attach DWH data
+            attributes.update(supplementary_row)
+
+        feature_dict["attributes"] = attributes
+        yield feature_dict
+
+
+
+from dynastore.models.query_builder import QueryRequest, FieldSelection, FilterCondition
+
+
+from dynastore.extensions import ExtensionProtocol
+
+
+class DwhService(ExtensionProtocol):
+    priority: int = 100
+    router: APIRouter = APIRouter(prefix="/dwh", tags=["Data Warehouse API"])
+
+    async def _dwh_join_impl(
+        self,
+        request: Request,
+        req: DWHJoinRequestBase,
+        catalog_id: str,
+        conn: AsyncConnection,
+    ):
+        """
+        Shared implementation for DWH join logic.
+        """
+        try:
+            validate_sql_identifier(catalog_id)
+            validate_sql_identifier(req.collection)
+            validate_sql_identifier(req.join_column)
+        except (ValueError, TypeError) as e:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid identifier in request: {e}"
+            )
+
+        # 1. Resolve Catalog Provider
+        catalogs_provider = get_protocol(CatalogsProtocol)
+        if not catalogs_provider:
+            raise HTTPException(
+                status_code=500, detail="CatalogsProtocol not available."
+            )
+
+        # 2. Fetch BQ Data (Cached)
+        join_values = await execute_bigquery_async(
+            query=req.dwh_query,
+            join_column=req.dwh_join_column,
+            project_id=req.dwh_project_id,
+        )
+        if not join_values:
+            logger.info(
+                "DWH query returned no join values. Returning empty feature set."
+            )
+            # Return empty response immediately
+            return format_response(
+                request=request,
+                features=[],  # Empty list
+                output_format=req.output_format,
+                collection_id=req.collection,
+                target_srid=req.destination_crs,
+                encoding=req.output_encoding,
+            )
+
+        # 3. Stream Features from ItemsService
+        items_svc = get_protocol(ItemsProtocol)
+        if not items_svc:
+            raise HTTPException(status_code=500, detail="ItemsProtocol not available.")
+
+        # Build QueryRequest
+        selects = []
+        if req.with_geometry:
+            if req.destination_crs:
+                selects.append(
+                    FieldSelection(
+                        field="geom",
+                        transformation="ST_Transform",
+                        transform_args={"srid": req.destination_crs},
+                    )
+                )
+            else:
+                selects.append(FieldSelection(field="geom"))
+
+        if req.geospatial_attributes:
+            if "*" in req.geospatial_attributes:
+                selects.append(FieldSelection(field="attributes"))
+            else:
+                for attr in req.geospatial_attributes:
+                    selects.append(FieldSelection(field=attr))
+
+        if req.attributes:
+            for pg_attr in req.attributes:
+                if pg_attr == "bbox_geom":
+                    if req.destination_crs:
+                        selects.append(
+                            FieldSelection(
+                                field="bbox",
+                                alias="bbox_geom",
+                                transformation="ST_Transform",
+                                transform_args={"srid": req.destination_crs},
+                            )
+                        )
+                    else:
+                        selects.append(FieldSelection(field="bbox", alias="bbox_geom"))
+                else:
+                    selects.append(FieldSelection(field=pg_attr))
+
+        # Ensure join column is selected
+        # We need it to perform the join in python
+        # We assume it's available as a field (either column or json property)
+        # We check if it's already in selects to avoid dupes (though QueryBuilder handles dupes gracefully usually)
+        if req.join_column not in [
+            s.field for s in selects
+        ] and req.join_column not in [s.alias for s in selects]:
+            selects.append(FieldSelection(field=req.join_column))
+
+        # Handle raw_where (req.where is SQL)
+        query_req = QueryRequest(
+            select=selects, limit=req.limit, offset=req.offset, raw_where=req.where
+        )
+
+        # Stream via ItemService
+        query_context = await items_svc.stream_items(
+            catalog_id=catalog_id,
+            collection_id=req.collection,
+            request=query_req,
+            db_resource=conn,
+        )
+
+        # Use the items iterator from the context
+        joined_stream = join_features_with_dwh_data_async(
+            features_async_iter=query_context.items,
+            dwh_data=join_values,
+            join_on=req.join_column,
+        )
+
+        return format_response(
+            request=request,
+            features=joined_stream,
+            output_format=req.output_format,
+            collection_id=req.collection,
+            target_srid=req.destination_crs,
+            encoding=req.output_encoding,
+        )
+
+    def __init__(self):
+        self._register_routes()
+        
+        # Register query transformer
+        from dynastore.tools.discovery import register_plugin
+        from .query_transform import DWHJoinQueryTransform
+        register_plugin(DWHJoinQueryTransform())
+
+    def _register_routes(self):
+        self.router.add_api_route(
+            "/join", self.dwh_join, methods=["POST"], response_class=Response
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/join",
+            self.dwh_catalog_join,
+            methods=["POST"],
+            response_class=Response,
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/tiles/{z}/{x}/{y}/join.{format}",
+            self.dwh_tiled_join,
+            methods=["POST"],
+            response_class=Response,
+        )
+
+    async def dwh_join(
+        self,
+        request: Request,
+        req: DWHJoinRequest,
+        conn: AsyncConnection = Depends(get_async_connection),
+    ):
+        """
+        Legacy endpoint: Retrieves features and streams the joined response.
+        """
+        return await self._dwh_join_impl(request, req, req.catalog, conn)
+
+    async def dwh_catalog_join(
+        self,
+        request: Request,
+        catalog_id: str,
+        base_req: DWHJoinRequestBase,
+        conn: AsyncConnection = Depends(get_async_connection),
+    ):
+        """
+        New endpoint: Retrieves features from a specific catalog and streams the joined response.
+        """
+        return await self._dwh_join_impl(request, base_req, catalog_id, conn)
+
+    async def dwh_tiled_join(
+        self,
+        request: Request,
+        catalog_id: str,
+        z: int,
+        x: int,
+        y: int,
+        format: str,
+        req: DWHTiledJoinRequest,
+        conn: AsyncConnection = Depends(get_async_connection),
+    ):
+        """
+        Tiled DWH join endpoint: Returns MVT tiles with joined DWH data.
+        Cache is stored separately from regular tiles using a DWH-specific cache ID.
+        """
+        try:
+            validate_sql_identifier(catalog_id)
+            validate_sql_identifier(req.collection)
+            validate_sql_identifier(req.join_column)
+        except (ValueError, TypeError) as e:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid identifier in request: {e}"
+            )
+
+        if format not in ["mvt", "pbf"]:
+            raise HTTPException(
+                status_code=400, detail=f"Format '{format}' not supported."
+            )
+
+        # 1. Check cache if enabled (stored separately from regular tiles)
+        provider = None
+        cache_id = None
+        if req.tiles.enable_cache:
+            query_hash = hashlib.sha256(
+                f"{req.dwh_query}:{req.dwh_join_column}".encode()
+            ).hexdigest()[:12]
+            cache_id = f"{req.collection}@dwh-{query_hash}"
+
+            storage_priority = ["bucket", "pg"]
+            provider = tms_manager.get_storage_provider(storage_priority)
+
+            if provider:
+                try:
+                    tile = await provider.get_tile(
+                        catalog_id, cache_id, req.tiles.tileMatrixSetId, z, x, y, format
+                    )
+                    if tile:
+                        logger.info(
+                            f"DWH tile cache HIT: {catalog_id}/{cache_id}/{z}/{x}/{y}"
+                        )
+                        return Response(
+                            content=tile,
+                            media_type="application/vnd.mapbox-vector-tile",
+                        )
+                except Exception as e:
+                    logger.warning(f"DWH tile cache lookup failed: {e}")
+
+        # 2. Fetch BQ Data (Cached)
+        join_values = await execute_bigquery_async(
+            query=req.dwh_query,
+            join_column=req.dwh_join_column,
+            project_id=req.dwh_project_id,
+        )
+        if not join_values:
+            logger.info("DWH query returned no join values. Returning empty tile.")
+            return Response(status_code=204)
+
+        # 3. Validate TMS and get tile envelope
+        tms_def = await tms_manager.get_custom_tms(
+            catalog_id=catalog_id, tms_id=req.tiles.tileMatrixSetId
+        )
+        if not tms_def:
+            tms_def = BUILTIN_TILE_MATRIX_SETS.get(req.tiles.tileMatrixSetId)
+            if not tms_def:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"TMS '{req.tiles.tileMatrixSetId}' not supported.",
+                )
+
+        matrix = next((m for m in tms_def.tileMatrices if m.id == str(z)), None)
+        if not matrix:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Zoom {z} not defined in TMS {req.tiles.tileMatrixSetId}.",
+            )
+
+        if not (0 <= x < matrix.matrixWidth and 0 <= y < matrix.matrixHeight):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Tile out of bounds for TMS {req.tiles.tileMatrixSetId} @ {z}.",
+            )
+
+        # 4. Calculate tile envelope
+        origin = matrix.pointOfOrigin
+        tile_width = matrix.tileWidth
+        cell_size = matrix.cellSize
+        tile_span_x = tile_width * cell_size
+        tile_span_y = matrix.tileHeight * cell_size
+
+        min_x = origin[0] + (x * tile_span_x)
+        max_x = min_x + tile_span_x
+        max_y = origin[1] - (y * tile_span_y)
+        min_y = max_y - tile_span_y
+
+        bbox = box(min_x, min_y, max_x, max_y)
+        tile_wkb = wkb.dumps(bbox)
+
+        # 5. Resolve SRID
+        try:
+            target_srid = await tms_manager.resolve_srid(
+                conn=conn, crs_str=tms_def.crs, catalog_id=catalog_id
+            )
+            if not target_srid:
+                raise ValueError("Failed to resolve SRID.")
+        except Exception as e:
+            logger.error(f"SRID resolution failed: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not process CRS for TMS '{req.tiles.tileMatrixSetId}'.",
+            )
+
+        # 6. Get source SRID for collection
+        from dynastore.modules.tiles import tiles_module
+
+        meta = await tiles_module.get_tile_resolution_params(catalog_id, req.collection)
+        if not meta:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{req.collection}' not configured for tiles.",
+            )
+
+        source_srid = meta["source_srid"]
+
+        # 7. Stream Features (No Geometry)
+        items_svc = get_protocol(ItemsProtocol)
+        if not items_svc:
+            raise HTTPException(status_code=500, detail="ItemsProtocol not available.")
+
+        # Spatial Filter
+        spatial_filter = "ST_Intersects(geom, ST_Transform(ST_SetSRID(ST_GeomFromWKB(:tile_wkb), CAST(:target_srid AS INTEGER)), CAST(:srid AS INTEGER)))"
+
+        query_req = QueryRequest(
+            select=[
+                FieldSelection(field="geoid", alias="id"),
+                FieldSelection(field=req.join_column),
+                FieldSelection(field="attributes"),
+            ],
+            raw_where=spatial_filter,
+            raw_params={
+                "tile_wkb": tile_wkb,
+                "target_srid": target_srid,
+                "srid": source_srid,
+                "join_keys": list(join_values.keys()),
+            },
+        )
+        # Also filter by join keys to reduce data transfer if DWH result is small subset?
+        # If DWH result is smaller than tile features, filtering by join keys is good.
+        # If DWH result is larger, filtering by tile is better.
+        # We do both: tile filter AND join keys filter (if feasible).
+        # query_req.raw_where += f' AND "{req.join_column}" = ANY(:join_keys)'
+        # Using FieldSelection for join_column alias might be needed if it's different.
+
+        query_context = await items_svc.stream_items(
+            catalog_id=catalog_id,
+            collection_id=req.collection,
+            request=query_req,
+            db_resource=conn,
+        )
+
+        # 8. Join with DWH data
+        # joined_features = []
+        # async for feature_dict in query_context.items:
+        #     join_key_value = feature_dict.get(req.join_column)
+        #     if join_key_value is None:
+        #         continue
+        #
+        #     supplementary_row = join_values.get(join_key_value)
+        #     attributes = feature_dict.get("attributes", {}) or {}
+        #
+        #     if supplementary_row:
+        #         attributes.update(supplementary_row)
+        #
+        #     feature_dict["attributes"] = attributes
+        #     joined_features.append(feature_dict)
+
+        ids = []
+        attributes_array = []
+
+        async for feature_dict in query_context.items:
+            join_key_value = feature_dict.get(req.join_column)
+            if join_key_value is None:
+                continue
+
+            supplementary_row = join_values.get(join_key_value)
+            attributes = feature_dict.get("attributes", {}) or {}
+
+            if supplementary_row:
+                attributes.update(supplementary_row)
+
+            ids.append(feature_dict.get("id"))
+            attributes_array.append(json.dumps(attributes))
+
+        if not ids:
+            return Response(status_code=204)
+
+        # Use QueryOptimizer to handle geometry resolution (sidecars, transforms)
+        from dynastore.modules.catalog.query_optimizer import QueryOptimizer
+
+        optimizer = QueryOptimizer(col_config)
+        geom_req = QueryRequest(
+            select=[
+                FieldSelection(
+                    field="geom",
+                    transformation="ST_Transform",
+                    transform_args={"srid": int(target_srid)},
+                )
+            ],
+            raw_where="h.geoid = ANY(:ids_filter)",
+            raw_params={"ids_filter": ids},
+        )
+        geom_sql, geom_params = optimizer.build_optimized_query(
+            geom_req, schema=phys_schema, table=phys_table
+        )
+
+        # Merge params
+        mvt_params = {
+            "tile_wkb": tile_wkb,
+            "target_srid": target_srid,
+            "attributes_array": attributes_array,
+            "extent": req.tiles.extent,
+            "buffer": req.tiles.buffer,
+            "ids_input": ids,  # used for unnest
+            **geom_params,
+        }
+
+        # Use unnest(arr1, arr2) for cleaner query and direct join
+        mvt_query = f"""
+            WITH 
+            bounds AS (SELECT ST_SetSRID(ST_GeomFromWKB(:tile_wkb), :target_srid) AS geom),
+            features_db AS ( {geom_sql} ),
+            features_val AS (
+                SELECT 
+                    unnest(:ids_input::uuid[]) AS id,
+                    unnest(:attributes_array::jsonb[]) AS attributes
+            ),
+            features_final AS (
+                SELECT 
+                    v.id,
+                    v.attributes,
+                    ST_AsMVTGeom(
+                        d.geom, -- Already transformed by QueryOptimizer
+                        bounds.geom,
+                        :extent,
+                        :buffer,
+                        true
+                    ) AS geom
+                FROM features_val v
+                JOIN features_db d ON d.geoid = v.id
+                CROSS JOIN bounds
+                WHERE d.geom IS NOT NULL
+            )
+            SELECT ST_AsMVT(features_final.*, 'default', :extent, 'geom', 'id')
+            FROM features_final
+        """
+
+        mvt_content = await DQLQuery(
+            mvt_query, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
+        ).execute(conn, **mvt_params)
+
+        if not mvt_content:
+            return Response(status_code=204)
+
+        # 10. Cache the result if enabled
+        if req.tiles.enable_cache and provider and cache_id:
+            try:
+                await provider.save_tile(
+                    catalog_id,
+                    cache_id,
+                    req.tiles.tileMatrixSetId,
+                    z,
+                    x,
+                    y,
+                    mvt_content,
+                    format,
+                )
+                logger.info(f"DWH tile cached: {catalog_id}/{cache_id}/{z}/{x}/{y}")
+            except Exception as e:
+                logger.warning(f"Failed to cache DWH tile: {e}")
+
+        return Response(
+            content=mvt_content, media_type="application/vnd.mapbox-vector-tile"
+        )

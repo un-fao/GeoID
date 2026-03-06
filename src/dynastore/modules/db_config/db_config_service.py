@@ -17,17 +17,20 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from contextlib import asynccontextmanager
-from dynastore.modules import dynastore_module, ModuleProtocol
+from contextlib import asynccontextmanager, AsyncExitStack
+from dynastore.modules import ModuleProtocol
 from .db_config import DBConfig
 
 logger = logging.getLogger(__name__)
 
-@dynastore_module
+from dynastore.tools.discovery import register_plugin, unregister_plugin
+from .platform_config_manager import PlatformConfigManager
+
 class DBConfigModule(ModuleProtocol):
+    priority: int = 0
     
     def __init__(self):
-        logger.info("DBConfigModule: Configuration loaded and attached to app_state.db_config.")
+        logger.info("DBConfigModule: Initialized.")
 
     def get_config(self) -> DBConfig:
         """Returns the current database configuration."""
@@ -38,11 +41,28 @@ class DBConfigModule(ModuleProtocol):
         """Manages the configuration's presence in the app state during the app's lifecycle."""
         logger.info("DBConfigModule: Lifespan starting up.")
         self.app_state = app_state
-        try:
+        
+        async with AsyncExitStack() as stack:
+            # 1. Platform configuration
             app_state.db_config = DBConfig()
-
+            
+            # 2. Platform Config Manager (Plugin)
+            # Read engine directly from app_state to avoid circular dependency via get_engine(),
+            # which would scan all DatabaseProtocol providers (including TilesModule) before
+            # the DB engine has been set up.
+            engine = (
+                getattr(app_state, "engine", None)
+                or getattr(app_state, "sync_engine", None)
+            )
+            
+            pcfg = PlatformConfigManager(engine=engine)
+            await stack.enter_async_context(pcfg.lifespan(app_state))
+            register_plugin(pcfg)
+            stack.callback(unregister_plugin, pcfg)
+            
             yield
-        finally:
+            
             if hasattr(self.app_state, 'db_config'):
                 self.app_state.db_config = None
-            logger.info("DBConfigModule: Lifespan shutting down, config removed from app_state.")
+                
+        logger.info("DBConfigModule: Lifespan shutting down.")

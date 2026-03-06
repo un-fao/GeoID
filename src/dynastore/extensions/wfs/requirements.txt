@@ -1,0 +1,2 @@
+# WFS now depends on the full ingestion module, which includes db.
+-r ${APP_DIR}/src/dynastore/tasks/ingestion/requirements.txt

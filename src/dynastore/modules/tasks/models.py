@@ -20,10 +20,21 @@
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, Dict, Any, TypeVar, Generic, List
 from uuid import UUID, uuid4
-from datetime import datetime, timezone, UTC
+from datetime import datetime, timezone, UTC, timedelta
 from enum import Enum
+from dataclasses import dataclass, field
 
 import uuid
+
+from dynastore.models.tasks import (
+    TaskStatusEnum,
+    TaskExecutionMode,
+    TaskPayload,
+    TaskBase,
+    TaskCreate,
+    TaskUpdate,
+    Task,
+)
 
 from dynastore.modules.db_config.query_executor import DbResource
 
@@ -40,108 +51,25 @@ class RunnerContext(BaseModel):
 
 # --- Enumerations ---
 
-class TaskStatusEnum(str, Enum):
-    """Internal task status enumeration, mapped to standard API status strings for responses."""
-    PENDING = "PENDING"
-    RUNNING = "RUNNING"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    DISMISSED = "DISMISSED"
-    
-    def to_api_status(self) -> str:
-        """Maps internal status to standard API status strings (lowercase)."""
-        mapping = {
-            TaskStatusEnum.PENDING: "accepted",
-            TaskStatusEnum.RUNNING: "running",
-            TaskStatusEnum.COMPLETED: "successful",
-            TaskStatusEnum.FAILED: "failed",
-            TaskStatusEnum.DISMISSED: "dismissed"
-        }
-        return mapping.get(self, "unknown")
+# Moved to dynastore.models.tasks
 
-class TaskExecutionMode(str, Enum):
-    """Defines the execution strategy for a task runner."""
-    SYNCHRONOUS = "SYNCHRONOUS"
-    ASYNCHRONOUS = "ASYNCHRONOUS"
+@dataclass
+class RunnerCapabilities:
+    """Declares what a runner needs from the dispatcher (visibility window, etc.)."""
+    visibility_timeout: timedelta = field(default_factory=lambda: timedelta(minutes=5))
+    """How long the dispatcher should hold the lock before the Janitor can reclaim the task."""
+    requires_request_context: bool = False
+    """If True, this runner requires an active HTTP request context (e.g. BackgroundTasks).
+    The standalone worker dispatcher will automatically skip it and fall through to the next runner."""
+    max_concurrency: int = 1
+    """Maximum number of concurrent tasks this runner can handle."""
+    requires_task_discovery: bool = True
+    """If True, this runner requires a registered task instance to be available."""
 
 # --- Generic Payload Model ---
 
-InputsType = TypeVar("InputsType")
-
-class TaskPayload(BaseModel, Generic[InputsType]):
-    """
-    A standardized data-transfer object (DTO) for passing information
-    to a background task's `run` method.
-
-    Used for both tasks and process executions (process-as-task).
-    """
-    task_id: UUID = Field(..., description="The unique ID of the job record from the database.")
-    caller_id: str = Field(..., description="Identifier of the user or system that initiated the task.")
-    inputs: InputsType = Field(..., description="The specific, strongly-typed inputs for the task.")
-    asset: Optional[Any] = None
-
-    model_config = ConfigDict(from_attributes=True, arbitrary_types_allowed=True)
+# Moved to dynastore.models.tasks
 
 # --- Database & API Models ---
 
-class TaskBase(BaseModel):
-    caller_id: Optional[str] = None
-    task_type: str
-    inputs: Optional[Dict[str, Any]] = None
-    collection_id: Optional[str] = None
-
-class TaskCreate(TaskBase):
-    pass
-
-class TaskUpdate(BaseModel):
-    status: Optional[TaskStatusEnum] = None
-    progress: Optional[int] = Field(None, ge=0, le=100)
-    outputs: Optional[Dict[str, Any]] = None
-    error_message: Optional[str] = None
-
-class Task(TaskBase):
-    """
-    Task model aligned with standard API job status format for simplified type mapping.
-    This model can be directly converted to StatusInfo for API responses.
-    """
-    # Aligned with StatusInfo: jobID instead of task_id
-    jobID: UUID = Field(default_factory=uuid4, alias="task_id")
-    
-    # Aligned with StatusInfo: type field to distinguish tasks from processes
-    type: str = Field(default="task", description="Type of job: 'task' or 'process'")
-    
-    # Status and progress
-    status: TaskStatusEnum = TaskStatusEnum.PENDING
-    progress: int = Field(default=0, ge=0, le=100)
-    
-    # Outputs and errors
-    outputs: Optional[Dict[str, Any]] = None
-    error_message: Optional[str] = Field(None, alias="message")
-    
-    # Timestamps
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), alias="created")
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = Field(None, alias="updated")
-    
-    # Aligned with StatusInfo: links field for HATEOAS
-    links: List[Dict[str, Any]] = Field(default_factory=list)
-
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
-
-    @property
-    def task_id(self) -> UUID:
-        """Backward compatibility alias for jobID."""
-        return self.jobID
-    
-    def to_status_info(self) -> Dict[str, Any]:
-        """Converts Task to status info dict for API responses."""
-        return {
-            "jobID": str(self.jobID),
-            "type": self.type,
-            "status": self.status.to_api_status(),
-            "message": self.error_message,
-            "progress": self.progress,
-            "created": self.timestamp,
-            "updated": self.finished_at or self.started_at or self.timestamp,
-            "links": self.links
-        }
+# Moved to dynastore.models.tasks

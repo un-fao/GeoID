@@ -12,14 +12,17 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-from typing import Protocol, Optional, Any, runtime_checkable
+from typing import Protocol, Optional, Any, runtime_checkable, List, TYPE_CHECKING
 from datetime import datetime
+
+if TYPE_CHECKING:
+    from dynastore.modules.proxy.models import ShortURL, AnalyticsPage
 
 @runtime_checkable
 class ProxyProtocol(Protocol):
     """Protocol for short URL proxying and analytics."""
 
-    async def create_short_url(self, engine: Any, catalog_id: str, long_url: str, custom_key: Optional[str] = None, collection_id: Optional[str] = None, comment: Optional[str] = None) -> str:
+    async def create_short_url(self, engine: Any, catalog_id: str, long_url: str, custom_key: Optional[str] = None, collection_id: Optional[str] = None, comment: Optional[str] = None) -> "ShortURL":
         """Public API function to create a short URL."""
         ...
 
@@ -30,3 +33,21 @@ class ProxyProtocol(Protocol):
     async def log_redirect(self, engine: Any, catalog_id: str, short_key: str, ip_address: str, user_agent: str, referrer: str, timestamp: datetime) -> None:
         """Public API function to log a redirect event."""
         ...
+
+    async def get_urls_by_collection(self, engine: Any, catalog_id: str, collection_id: str, limit: int = 100, offset: int = 0) -> List["ShortURL"]:
+        """Public API function to retrieve a list of short URLs by collection."""
+        ...
+
+    async def get_analytics(self, engine: Any, catalog_id: str, short_key: str, cursor: Optional[str] = None, page_size: int = 100, aggregate: bool = False, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> "AnalyticsPage":
+        """Public API function to get analytics for a short URL."""
+        ...
+
+    async def delete_short_url(self, engine: Any, catalog_id: str, short_key: str) -> Optional[str]:
+        """Public API function to delete a short URL."""
+        ...
+
+    async def initialize_partitions(self, engine: Any, for_date: datetime) -> None:
+        """Public API function to initialize partitions for a given date."""
+        ...
+
+    

@@ -15,3 +15,10 @@
 #    Author: Carlo Cancellieri (ccancellieri@gmail.com)
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
+# Register this module's versioned database migrations.
+# The runner picks these up at startup after the catalog module has created
+# its own tables via lifecycle hooks (separation of concerns).
+from dynastore.modules.db_config.migration_runner import register_module_migrations
+
+register_module_migrations("catalog", "dynastore.modules.catalog.migrations")

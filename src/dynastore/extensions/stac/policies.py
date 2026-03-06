@@ -17,7 +17,9 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from dynastore.models.auth import Policy, AuthorizationProtocol
+from dynastore.models.auth import Policy
+from dynastore.modules.apikey.models import Role
+from dynastore.models.protocols.policies import PolicyProtocol
 from dynastore.tools.discovery import get_protocol
 
 logger = logging.getLogger(__name__)
@@ -34,9 +36,18 @@ def register_stac_policies():
         ]
     )
     
-    authz = get_protocol(AuthorizationProtocol)
-    if authz:
-        authz.register_policy(policy)
-        logger.debug("STAC policies registered via AuthorizationProtocol.")
+    policy_manager = get_protocol(PolicyProtocol)
+    if policy_manager:
+        policy_manager.register_policy(policy)
+
+        # Attach to anonymous role
+        policy_manager.register_role(Role(
+            name="anonymous",
+            description="Anonymous user with limited access.",
+            policies=["stac_public_access"],
+            is_system=True
+        ))
+
+        logger.debug("STAC policies registered via PolicyProtocol.")
     else:
-        logger.warning("No AuthorizationProtocol implementer found. STAC policies skipped.")
+        logger.warning("No PolicyProtocol implementer found. STAC policies skipped.")

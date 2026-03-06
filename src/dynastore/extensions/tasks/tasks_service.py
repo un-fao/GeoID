@@ -24,7 +24,6 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Query, status, FastAPI
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncConnection
-from dynastore.extensions import dynastore_extension
 from dynastore.extensions.tools.db import get_async_connection
 
 # Import the generic tasks module and its models
@@ -35,8 +34,8 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 logger = logging.getLogger(__name__)
 
-@dynastore_extension
-class TasksService(ExtensionProtocol): # Inherit ExtensionProtocol for consistency
+class TasksService(ExtensionProtocol):
+    priority: int = 100 # Inherit ExtensionProtocol for consistency
     
     """
     Provides a generic API for tasks status and results monitoring.

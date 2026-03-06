@@ -24,14 +24,12 @@ from pathlib import Path
 from typing import Dict, Any, Callable, List, Optional, Union
 from contextlib import asynccontextmanager
 
-from dynastore.modules import dynastore_module
 from dynastore.tools.language_utils import resolve_localized_field
 from .models import WebPageConfig
 
 logger = logging.getLogger(__name__)
 
 
-@dynastore_module
 class WebModule:
     """
     The WebModule acts as the central registry and logic provider for

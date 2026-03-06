@@ -32,18 +32,28 @@ from dynastore.modules.catalog.models import (
     Collection as CoreCollection,
     Catalog as CoreCatalog,
 )
-from dynastore.models.shared_models import Link
 from fastapi import Request
 from fastapi.responses import StreamingResponse
+import orjson
+from datetime import datetime, timezone
+from typing import AsyncIterator, Union, Generator, Iterator
+from dynastore.tools.json import orjson_default
 # Use the real file writers instead of placeholders
 from dynastore.tools.file_io import write_csv, write_geopackage, write_parquet, write_shapefile, write_geojson
 
 
 logger = logging.getLogger(__name__)
 
-from dynastore.models.shared_models import OutputFormatEnum
+from dynastore.models.shared_models import OutputFormatEnum, Link
 
 logger = logging.getLogger(__name__)
+
+class OGCResponseMetadata(BaseModel):
+    """Metadata for OGC API responses."""
+    numberMatched: Optional[int] = None
+    numberReturned: Optional[int] = None
+    timeStamp: Optional[datetime] = Field(default_factory=lambda: datetime.now(timezone.utc))
+    links: Optional[List[Link]] = None
 
 # class OutputFormatEnum(str, Enum): ... REMOVED
 
@@ -88,16 +98,63 @@ format_map = {
         "writer": write_geojson,
         "media_type": "application/json",
         "extension": "json"
+    },
+    OutputFormatEnum.GML: {
+        "media_type": "application/gml+xml",
+        "extension": "gml"
     }
 }
 
+async def _stream_ogc_json(
+    items: AsyncIterator[Any],
+    metadata: OGCResponseMetadata,
+    output_format: OutputFormatEnum = OutputFormatEnum.GEOJSON,
+) -> AsyncIterator[bytes]:
+    """Unified generator for streaming OGC GeoJSON or plain JSON."""
+    is_geojson = output_format == OutputFormatEnum.GEOJSON
+    
+    yield b'{"type":"FeatureCollection"' if is_geojson else b'{"items":['
+    
+    if metadata.links:
+        links_data = [l.model_dump(exclude_none=True) if hasattr(l, "model_dump") else l for l in metadata.links]
+        yield b',"links":' + orjson.dumps(links_data)
+        
+    if is_geojson:
+        yield b',"features":['
+    
+    is_first = True
+    returned_count = 0
+    async for item in items:
+        if not is_first:
+            yield b","
+        
+        if hasattr(item, "model_dump"):
+            feat_dict = item.model_dump(exclude_none=True, by_alias=True)
+        else:
+            feat_dict = item
+            
+        yield orjson.dumps(feat_dict, default=orjson_default)
+        is_first = False
+        returned_count += 1
+        
+    yield b']' # Close features or items array
+    
+    if metadata.numberMatched is not None:
+        yield b',"numberMatched":' + str(metadata.numberMatched).encode()
+    
+    yield b',"numberReturned":' + str(returned_count).encode()
+    
+    ts = metadata.timeStamp or datetime.now(timezone.utc)
+    yield b',"timeStamp":"' + ts.isoformat().replace("+00:00", "Z").encode() + b'"}'
+
 def format_response(
-    features: Iterable[Any],
+    features: Union[Iterable[Any], AsyncIterator[Any]],
     output_format: OutputFormatEnum,
     request: Optional[Request] = None,
     collection_id: str = "layer",
     target_srid: int = 4326,
-    encoding: str = "utf-8"
+    encoding: str = "utf-8",
+    metadata: Optional[OGCResponseMetadata] = None,
 ) -> StreamingResponse:
     """
     Dynamically formats a stream of features into the specified output format.
@@ -106,13 +163,55 @@ def format_response(
     if not formatter:
         raise ValueError(f"Unsupported format: {output_format}")
 
-    # The `features` iterable can yield Pydantic models or dicts.
-    # If they are Pydantic models, we dump them to dicts for the writers.
-    # Otherwise, we assume they are already dicts.
-    feature_dicts = (f.model_dump(by_alias=True) if hasattr(f, 'model_dump') else f for f in features)
+    # 1. Handle JSON/GeoJSON streaming (Preferred async path)
+    if output_format in (OutputFormatEnum.GEOJSON, OutputFormatEnum.JSON):
+        # Ensure it's an AsyncIterator
+        async def _as_async_iter(it):
+            if hasattr(it, '__aiter__'):
+                async for x in it: yield x
+            else:
+                for x in it: yield x
+        
+        return StreamingResponse(
+            _stream_ogc_json(
+                _as_async_iter(features), 
+                metadata or OGCResponseMetadata(),
+                output_format=output_format
+            ),
+            media_type=formatter["media_type"]
+        )
 
-    # The writers from file_io expect an iterator and the target SRID.
-    # They now also support an optional 'encoding' parameter.
+    # 2. Handle GML (special case for WFS)
+    if output_format == OutputFormatEnum.GML:
+        # GML usually comes pre-formatted or handled by a specific generator
+        # For now, if it's already a generator of bytes, just return it.
+        async def _byte_streamer():
+            if hasattr(features, '__aiter__'):
+                async for chunk in features: yield chunk
+            else:
+                for chunk in features: yield chunk
+        
+        return StreamingResponse(content=_byte_streamer(), media_type=formatter["media_type"])
+
+    # 3. Handle Other Formats (CSV, GPKG, etc.) - BRIDGE SYNC WRITERS
+    # These writers currently expect a sync Generator[Feature, None, None]
+    def _get_sync_gen():
+        if hasattr(features, '__aiter__'):
+            # This is slow but necessary if the upstream is async and we need sync
+            import asyncio
+            loop = asyncio.new_event_loop()
+            async def _consume():
+                res = []
+                async for f in features: res.append(f)
+                return res
+            items = loop.run_until_complete(_consume())
+            loop.close()
+            for x in items: yield x
+        else:
+            for x in features: yield x
+
+    feature_dicts = (f.model_dump(by_alias=True) if hasattr(f, 'model_dump') else f for f in _get_sync_gen())
+
     content_stream = formatter["writer"](feature_dicts, target_srid, encoding=encoding)
     
     headers = {

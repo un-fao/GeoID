@@ -31,165 +31,526 @@ Supports both:
 import logging
 import asyncio
 import inspect
-from typing import Callable, Awaitable, List, Dict, Any, Union
+from typing import Callable, Awaitable, List, Dict, Any, Union, Tuple, Optional
+from pydantic import BaseModel, ConfigDict
 from dynastore.modules.db_config.query_executor import DbResource
+from dynastore.tools.async_utils import signal_bus
+from dynastore.tools.discovery import get_protocol
+from dynastore.models.protocols import DatabaseProtocol
+# from dynastore.modules.catalog.event_service import emit_event, CatalogEventType  # Removed to avoid circular import
 
 logger = logging.getLogger(__name__)
 
 # Type aliases for synchronous lifecycle hooks (transactional table operations)
 # Note: These can now be async OR sync functions, but they run within the synchronous transaction context.
-SyncCatalogInitializer = Union[Callable[[DbResource, str, str], Awaitable[None]], Callable[[DbResource, str, str], None]]
-SyncCatalogDestroyer = Union[Callable[[DbResource, str, str], Awaitable[None]], Callable[[DbResource, str, str], None]]
-SyncCollectionInitializer = Union[Callable[[DbResource, str, str, str], Awaitable[None]], Callable[[DbResource, str, str, str], None]]
-SyncCollectionDestroyer = Union[Callable[[DbResource, str, str, str], Awaitable[None]], Callable[[DbResource, str, str, str], None]]
+# Hook type with priority
+HookWithPriority = Tuple[int, Any]
+
+SyncCatalogInitializer = Union[
+    Callable[[DbResource, str, str], Awaitable[None]],
+    Callable[[DbResource, str, str], None],
+]
+SyncCatalogDestroyer = Union[
+    Callable[[DbResource, str, str], Awaitable[None]],
+    Callable[[DbResource, str, str], None],
+]
+SyncCollectionInitializer = Union[
+    Callable[[DbResource, str, str, str], Awaitable[None]],
+    Callable[[DbResource, str, str, str], None],
+]
+SyncCollectionDestroyer = Union[
+    Callable[[DbResource, str, str, str], Awaitable[None]],
+    Callable[[DbResource, str, str, str], None],
+]
+
+# --- Context Models ---
+
+class LifecycleContext(BaseModel):
+    """
+    Formal context for background lifecycle operations.
+    Bridges the 'visibility gap' by providing metadata that might not 
+    yet be committed to the database.
+    """
+    model_config = ConfigDict(extra="allow")
+
+    physical_schema: str
+    physical_table: Optional[str] = None
+    config: Dict[str, Any] = {}
+
 
 # Type aliases for async external component hooks (receive config snapshots, run in background)
-AsyncCatalogInitializer = Callable[[str, str, Dict[str, Any]], Awaitable[None]]  # (schema, catalog_id, config_snapshot)
-AsyncCatalogDestroyer = Callable[[str, str, Dict[str, Any]], Awaitable[None]]  # (schema, catalog_id, config_snapshot)
-AsyncCollectionInitializer = Callable[[str, str, str, Dict[str, Any]], Awaitable[None]]  # (schema, catalog_id, collection_id, config_snapshot)
-AsyncCollectionDestroyer = Callable[[str, str, str, Dict[str, Any]], Awaitable[None]]  # (schema, catalog_id, collection_id, config_snapshot)
+AsyncCatalogInitializer = Callable[
+    [str, LifecycleContext], Awaitable[None]
+]  # (catalog_id, context)
+AsyncCatalogDestroyer = Callable[
+    [str, LifecycleContext], Awaitable[None]
+]  # (catalog_id, context)
+AsyncCollectionInitializer = Callable[
+    [str, str, LifecycleContext], Awaitable[None]
+]  # (catalog_id, collection_id, context)
+AsyncCollectionDestroyer = Callable[
+    [str, str, LifecycleContext], Awaitable[None]
+]  # (catalog_id, collection_id, context)
 
 # Type aliases for asset lifecycle hooks
-SyncAssetInitializer = Union[Callable[[DbResource, str, str, str, str], Awaitable[None]], Callable[[DbResource, str, str, str, str], None]]
-SyncAssetDestroyer = Union[Callable[[DbResource, str, str, str, str], Awaitable[None]], Callable[[DbResource, str, str, str, str], None]]
-AsyncAssetInitializer = Callable[[str, str, str, str, Dict[str, Any]], Awaitable[None]]  # (schema, catalog_id, collection_id, asset_code, config_snapshot)
-AsyncAssetDestroyer = Callable[[str, str, str, str, Dict[str, Any]], Awaitable[None]]    # (schema, catalog_id, collection_id, asset_code, config_snapshot)
+SyncAssetInitializer = Union[
+    Callable[[DbResource, str, str, str, str], Awaitable[None]],
+    Callable[[DbResource, str, str, str, str], None],
+]
+SyncAssetDestroyer = Union[
+    Callable[[DbResource, str, str, str, str], Awaitable[None]],
+    Callable[[DbResource, str, str, str, str], None],
+]
+AsyncAssetInitializer = Callable[
+    [str, str, str, LifecycleContext], Awaitable[None]
+]  # (catalog_id, collection_id, asset_code, context)
+AsyncAssetDestroyer = Callable[
+    [str, str, str, LifecycleContext], Awaitable[None]
+]  # (catalog_id, collection_id, asset_code, context)
 
 
 class LifecycleRegistry:
     """
     Centralized registry for catalog and collection lifecycle hooks.
-    
+
     Features:
     - Safe execution: Errors in one plugin don't block others
     - Granular control: Separate hooks for catalog vs collection
     - Extensible: Plugins register via decorators
     - Dual-mode: Sync transactional + Async external components
     """
-    
+
     def __init__(self):
         # Synchronous transactional hooks (tables)
-        self._sync_catalog_initializers: List[SyncCatalogInitializer] = []
-        self._sync_catalog_destroyers: List[SyncCatalogDestroyer] = []
-        self._sync_collection_initializers: List[SyncCollectionInitializer] = []
-        self._sync_collection_destroyers: List[SyncCollectionDestroyer] = []
-        
+        self._sync_catalog_initializers: List[HookWithPriority] = []
+        self._sync_catalog_destroyers: List[HookWithPriority] = []
+        self._sync_collection_initializers: List[HookWithPriority] = []
+        self._sync_collection_destroyers: List[HookWithPriority] = []
+        # Hard-delete-only hooks: fired only when a collection is permanently removed
+        # (partition drop, etc.).  NOT called on soft / logical deletion.
+        self._sync_collection_hard_destroyers: List[HookWithPriority] = []
+
         logger.info(f"INSTANCE: LifecycleRegistry initialized. ID: {id(self)}")
-        
+
         # Track background tasks to prevent loop errors in tests and allow clean shutdown
         self._active_tasks: List[asyncio.Task] = []
-        
+
         # Async external component hooks (GCP buckets, etc.)
-        self._async_catalog_initializers: List[AsyncCatalogInitializer] = []
-        self._async_catalog_destroyers: List[AsyncCatalogDestroyer] = []
-        self._async_collection_initializers: List[AsyncCollectionInitializer] = []
-        self._async_collection_destroyers: List[AsyncCollectionDestroyer] = []
-        
+        self._async_catalog_initializers: List[HookWithPriority] = []
+        self._async_catalog_destroyers: List[HookWithPriority] = []
+        self._async_collection_initializers: List[HookWithPriority] = []
+        self._async_collection_destroyers: List[HookWithPriority] = []
+
         # Asset lifecycle hooks
-        self._sync_asset_initializers: List[SyncAssetInitializer] = []
-        self._sync_asset_destroyers: List[SyncAssetDestroyer] = []
-        self._async_asset_initializers: List[AsyncAssetInitializer] = []
-        self._async_asset_destroyers: List[AsyncAssetDestroyer] = []
-    
+        self._sync_asset_initializers: List[HookWithPriority] = []
+        self._sync_asset_destroyers: List[HookWithPriority] = []
+        self._async_asset_initializers: List[HookWithPriority] = []
+        self._async_asset_destroyers: List[HookWithPriority] = []
+
+    def clear(self):
+        """Reset ALL registered hooks and cancel+clear active background tasks.
+        
+        This is a hard reset. Use soft_clear() for test isolation if you want
+        to preserve module-level static hooks (decorators).
+        """
+        self._sync_catalog_initializers.clear()
+        self._sync_catalog_destroyers.clear()
+        self._sync_collection_initializers.clear()
+        self._sync_collection_destroyers.clear()
+        self._sync_collection_hard_destroyers.clear()
+        self._async_catalog_initializers.clear()
+        self._async_catalog_destroyers.clear()
+        self._async_collection_initializers.clear()
+        self._async_collection_destroyers.clear()
+        self._sync_asset_initializers.clear()
+        self._sync_asset_destroyers.clear()
+        self._async_asset_initializers.clear()
+        self._async_asset_destroyers.clear()
+
+        for task in list(self._active_tasks):
+            if not task.done():
+                task.cancel()
+        self._active_tasks.clear()
+        logger.info("LifecycleRegistry fully cleared.")
+
+    def soft_clear(self):
+        """Standard reset for test isolation.
+        
+        Preserves 'static' hooks (plain functions, usually from decorators) 
+        and only clears 'dynamic' hooks (bound methods, usually instance-specific).
+        Also cancels all active background tasks to release DB connections.
+        """
+        lists_to_process = [
+            self._sync_catalog_initializers,
+            self._sync_catalog_destroyers,
+            self._sync_collection_initializers,
+            self._sync_collection_destroyers,
+            self._sync_collection_hard_destroyers,
+            self._async_catalog_initializers,
+            self._async_catalog_destroyers,
+            self._async_collection_initializers,
+            self._async_collection_destroyers,
+            self._sync_asset_initializers,
+            self._sync_asset_destroyers,
+            self._async_asset_initializers,
+            self._async_asset_destroyers,
+        ]
+
+        for hook_list in lists_to_process:
+            # Keep only hooks that are NOT bound methods (static hooks)
+            remaining = [h for h in hook_list if not hasattr(h[1], "__self__")]
+            deleted_count = len(hook_list) - len(remaining)
+            hook_list.clear()
+            hook_list.extend(remaining)
+            if deleted_count > 0:
+                logger.debug(f"SoftClear: Removed {deleted_count} dynamic hooks from a list.")
+
+        for task in list(self._active_tasks):
+            if not task.done():
+                task.cancel()
+        self._active_tasks.clear()
+        logger.info("LifecycleRegistry soft-cleared (Static hooks preserved).")
+
+    def _on_task_done(self, task):
+        """Safe callback to remove task from active list."""
+        try:
+            if task in self._active_tasks:
+                self._active_tasks.remove(task)
+        except (ValueError, RuntimeError):
+            pass
+
+    def _sort_hooks(self, hooks: List[HookWithPriority], reverse=False) -> List[Any]:
+        """Returns sorted list of hook functions."""
+        # Sort by priority (index 0) descending by default (higher priority first)
+        # For destruction, we might want reverse initialization order.
+        return [h[1] for h in sorted(hooks, key=lambda x: x[0], reverse=not reverse)]
+
+    def _register_hook(
+        self, hook_list: List[HookWithPriority], priority: int, func: Any
+    ) -> Any:
+        """Internal helper to register a hook with priority and deduplication.
+        
+        If the handler is a bound method, it replaces any existing hook for the same 
+        method name on the same class type (to handle module re-initialization in tests).
+        """
+        is_bound_method = hasattr(func, "__self__") and func.__self__ is not None
+        
+        new_hook_list = []
+        replaced = False
+        
+        for p, h in hook_list:
+            # Check for exact identity first
+            if h == func:
+                new_hook_list.append((priority, func))
+                replaced = True
+                continue
+            
+            # Check for bound method replacement (same class, same method name, but DIFFERENT instance)
+            if is_bound_method and hasattr(h, "__self__") and h.__self__ is not None:
+                if (type(h.__self__) == type(func.__self__) and 
+                    h.__self__ is not func.__self__ and
+                    getattr(h, "__name__", None) == getattr(func, "__name__", None)):
+                    # Replace old instance's hook with the new one
+                    new_hook_list.append((priority, func))
+                    replaced = True
+                    continue
+            
+            # Name/Module check for plain functions
+            if not is_bound_method and not hasattr(h, "__self__"):
+                if (getattr(h, "__name__", None) == getattr(func, "__name__", None) and 
+                    getattr(h, "__module__", None) == getattr(func, "__module__", None)):
+                    new_hook_list.append((priority, func))
+                    replaced = True
+                    continue
+
+            new_hook_list.append((p, h))
+
+        if not replaced:
+            new_hook_list.append((priority, func))
+            
+        # Re-sort by priority
+        new_hook_list.sort(key=lambda x: x[0])
+        
+        # Update in place
+        hook_list.clear()
+        hook_list.extend(new_hook_list)
+        
+        logger.info(f"Registered/Updated hook: {getattr(func, '__name__', str(func))} (priority: {priority})")
+        return func
+    def _unregister_hook(self, hook_list: List[HookWithPriority], func: Any) -> None:
+        """Internal helper to remove a hook by its function identity."""
+        # We search for the tuple(priority, func) and remove it
+        hooks_to_remove = [h for h in hook_list if h[1] == func]
+        for h in hooks_to_remove:
+            hook_list.remove(h)
+            logger.info(
+                f"Unregistered lifecycle hook: {func.__module__}.{func.__name__}"
+            )
+
+    def unregister_async_catalog_initializer(self, func: Any) -> None:
+        self._unregister_hook(self._async_catalog_initializers, func)
+
+    def unregister_async_catalog_destroyer(self, func: Any) -> None:
+        self._unregister_hook(self._async_catalog_destroyers, func)
+
     # Synchronous transactional hook registration
-    def sync_catalog_initializer(self, func: SyncCatalogInitializer) -> SyncCatalogInitializer:
-        """Register a catalog initialization hook (transactional table creation)."""
-        self._sync_catalog_initializers.append(func)
-        logger.info(f"Registered sync catalog initializer: {func.__module__}.{func.__name__}")
-        return func
-    
-    def sync_catalog_destroyer(self, func: SyncCatalogDestroyer) -> SyncCatalogDestroyer:
-        """Register a catalog destruction hook (transactional table cleanup)."""
-        self._sync_catalog_destroyers.append(func)
-        logger.info(f"Registered sync catalog destroyer: {func.__module__}.{func.__name__}")
-        return func
-    
-    def sync_collection_initializer(self, func: SyncCollectionInitializer) -> SyncCollectionInitializer:
-        """Register a collection initialization hook (transactional table creation)."""
-        if func not in self._sync_collection_initializers:
-            self._sync_collection_initializers.append(func)
-            logger.info(f"Registered sync collection initializer: {func.__module__}.{func.__name__}")
-        return func
-    
-    def sync_collection_destroyer(self, func: SyncCollectionDestroyer) -> SyncCollectionDestroyer:
-        """Register a collection destruction hook (transactional table cleanup)."""
-        self._sync_collection_destroyers.append(func)
-        logger.info(f"Registered sync collection destroyer: {func.__module__}.{func.__name__}")
-        return func
-    
+    def sync_catalog_initializer(
+        self, priority: int = 0
+    ) -> Callable[[SyncCatalogInitializer], SyncCatalogInitializer]:
+        """Decorator to register a catalog initialization hook."""
+
+        def decorator(func: SyncCatalogInitializer) -> SyncCatalogInitializer:
+            return self._register_hook(self._sync_catalog_initializers, priority, func)
+
+        # Handle case where it's used without parentheses: @registry.sync_catalog_initializer
+        if callable(priority):
+            func = priority
+            priority = 0
+            return decorator(func)
+
+        return decorator
+
+    def sync_catalog_destroyer(
+        self, priority: int = 0
+    ) -> Callable[[SyncCatalogDestroyer], SyncCatalogDestroyer]:
+        def decorator(func: SyncCatalogDestroyer) -> SyncCatalogDestroyer:
+            return self._register_hook(self._sync_catalog_destroyers, priority, func)
+
+        if callable(priority):
+            func = priority
+            priority = 0
+            return decorator(func)
+        return decorator
+
+    def sync_collection_initializer(
+        self, priority: int = 0
+    ) -> Callable[[SyncCollectionInitializer], SyncCollectionInitializer]:
+        def decorator(func: SyncCollectionInitializer) -> SyncCollectionInitializer:
+            return self._register_hook(self._sync_collection_initializers, priority, func)
+
+        if callable(priority):
+            func = priority
+            priority = 0
+            return decorator(func)
+        return decorator
+
+    def sync_collection_destroyer(
+        self, priority: int = 0
+    ) -> Callable[[SyncCollectionDestroyer], SyncCollectionDestroyer]:
+        def decorator(func: SyncCollectionDestroyer) -> SyncCollectionDestroyer:
+            return self._register_hook(self._sync_collection_destroyers, priority, func)
+
+        if callable(priority):
+            func = priority
+            priority = 0
+            return decorator(func)
+        return decorator
+
+    def sync_collection_hard_destroyer(
+        self, priority: int = 0
+    ) -> Callable[[SyncCollectionDestroyer], SyncCollectionDestroyer]:
+        def decorator(func: SyncCollectionDestroyer) -> SyncCollectionDestroyer:
+            return self._register_hook(
+                self._sync_collection_hard_destroyers, priority, func
+            )
+
+        if callable(priority):
+            func = priority
+            priority = 0
+            return decorator(func)
+        return decorator
+
     # Async external component hook registration
-    def async_catalog_initializer(self, func: AsyncCatalogInitializer) -> AsyncCatalogInitializer:
-        """Register async catalog external component initialization (e.g., GCP bucket creation)."""
-        self._async_catalog_initializers.append(func)
-        logger.info(f"Registered async catalog initializer: {func.__module__}.{func.__name__}")
-        return func
-    
-    def async_catalog_destroyer(self, func: AsyncCatalogDestroyer) -> AsyncCatalogDestroyer:
-        """Register async catalog external component destruction (e.g., GCP bucket deletion)."""
-        self._async_catalog_destroyers.append(func)
-        logger.info(f"Registered async catalog destroyer: {func.__module__}.{func.__name__}")
-        return func
-    
-    def async_collection_initializer(self, func: AsyncCollectionInitializer) -> AsyncCollectionInitializer:
-        """Register async collection external component initialization."""
-        self._async_collection_initializers.append(func)
-        logger.info(f"Registered async collection initializer: {func.__module__}.{func.__name__}")
-        return func
-    
-    def async_collection_destroyer(self, func: AsyncCollectionDestroyer) -> AsyncCollectionDestroyer:
-        """Register async collection external component destruction."""
-        self._async_collection_destroyers.append(func)
-        logger.info(f"Registered async collection destroyer: {func.__module__}.{func.__name__}")
-        return func
-    
+    def async_catalog_initializer(
+        self, priority: int = 0
+    ) -> Callable[[AsyncCatalogInitializer], AsyncCatalogInitializer]:
+        def decorator(func: AsyncCatalogInitializer) -> AsyncCatalogInitializer:
+            return self._register_hook(self._async_catalog_initializers, priority, func)
+
+        if callable(priority):
+            func = priority
+            priority = 0
+            return decorator(func)
+        return decorator
+
+    def async_catalog_destroyer(
+        self, priority: int = 0
+    ) -> Callable[[AsyncCatalogDestroyer], AsyncCatalogDestroyer]:
+        def decorator(func: AsyncCatalogDestroyer) -> AsyncCatalogDestroyer:
+            return self._register_hook(self._async_catalog_destroyers, priority, func)
+
+        if callable(priority):
+            func = priority
+            priority = 0
+            return decorator(func)
+        return decorator
+
+    def async_collection_initializer(
+        self, priority: int = 0
+    ) -> Callable[[AsyncCollectionInitializer], AsyncCollectionInitializer]:
+        def decorator(func: AsyncCollectionInitializer) -> AsyncCollectionInitializer:
+            return self._register_hook(self._async_collection_initializers, priority, func)
+
+        if callable(priority):
+            func = priority
+            priority = 0
+            return decorator(func)
+        return decorator
+
+    def async_collection_destroyer(
+        self, priority: int = 0
+    ) -> Callable[[AsyncCollectionDestroyer], AsyncCollectionDestroyer]:
+        def decorator(func: AsyncCollectionDestroyer) -> AsyncCollectionDestroyer:
+            return self._register_hook(self._async_collection_destroyers, priority, func)
+
+        if callable(priority):
+            func = priority
+            priority = 0
+            return decorator(func)
+        return decorator
+
     # Asset lifecycle hook registration
-    def sync_asset_initializer(self, func: SyncAssetInitializer) -> SyncAssetInitializer:
-        """Register an asset initialization hook (transactional)."""
-        self._sync_asset_initializers.append(func)
-        logger.info(f"Registered sync asset initializer: {func.__module__}.{func.__name__}")
-        return func
-    
-    def sync_asset_destroyer(self, func: SyncAssetDestroyer) -> SyncAssetDestroyer:
-        """Register an asset destruction hook (transactional)."""
-        self._sync_asset_destroyers.append(func)
-        logger.info(f"Registered sync asset destroyer: {func.__module__}.{func.__name__}")
-        return func
-    
-    def async_asset_initializer(self, func: AsyncAssetInitializer) -> AsyncAssetInitializer:
-        """Register async asset external component initialization."""
-        self._async_asset_initializers.append(func)
-        logger.info(f"Registered async asset initializer: {func.__module__}.{func.__name__}")
-        return func
-    
-    def async_asset_destroyer(self, func: AsyncAssetDestroyer) -> AsyncAssetDestroyer:
-        """Register async asset external component destruction."""
-        self._async_asset_destroyers.append(func)
-        logger.info(f"Registered async asset destroyer: {func.__module__}.{func.__name__}")
-        return func
-    
+    def sync_asset_initializer(
+        self, priority: int = 0
+    ) -> Callable[[SyncAssetInitializer], SyncAssetInitializer]:
+        def decorator(func: SyncAssetInitializer) -> SyncAssetInitializer:
+            return self._register_hook(self._sync_asset_initializers, priority, func)
+
+        if callable(priority):
+            func = priority
+            priority = 0
+            return decorator(func)
+        return decorator
+
+    def sync_asset_destroyer(
+        self, priority: int = 0
+    ) -> Callable[[SyncAssetDestroyer], SyncAssetDestroyer]:
+        def decorator(func: SyncAssetDestroyer) -> SyncAssetDestroyer:
+            return self._register_hook(self._sync_asset_destroyers, priority, func)
+
+        if callable(priority):
+            func = priority
+            priority = 0
+            return decorator(func)
+        return decorator
+
+    def async_asset_initializer(
+        self, priority: int = 0
+    ) -> Callable[[AsyncAssetInitializer], AsyncAssetInitializer]:
+        def decorator(func: AsyncAssetInitializer) -> AsyncAssetInitializer:
+            return self._register_hook(self._async_asset_initializers, priority, func)
+
+        if callable(priority):
+            func = priority
+            priority = 0
+            return decorator(func)
+        return decorator
+
+    def async_asset_destroyer(
+        self, priority: int = 0
+    ) -> Callable[[AsyncAssetDestroyer], AsyncAssetDestroyer]:
+        def decorator(func: AsyncAssetDestroyer) -> AsyncAssetDestroyer:
+            return self._register_hook(self._async_asset_destroyers, priority, func)
+
+        if callable(priority):
+            func = priority
+            priority = 0
+            return decorator(func)
+        return decorator
+
     # Synchronous transactional execution
-    async def init_catalog(self, conn: DbResource, schema: str, catalog_id: str) -> None:
-        """Execute all registered sync catalog initializers (transactional)."""
-        logger.info(f"Initializing catalog resources for '{catalog_id}' (schema: {schema})")
-        
-        for initializer in self._sync_catalog_initializers:
+    async def _run_initializer_isolated(self, conn, label: str, coro, **_) -> bool:
+        """
+        Run a coroutine inside its own SAVEPOINT so that if it fails,
+        only the SAVEPOINT is rolled back and the outer transaction remains healthy.
+        Returns True if successful, False if the initializer failed (non-fatal).
+        Raises if the outer transaction itself is already aborted (fatal).
+        """
+        from dynastore.modules.db_config.query_executor import is_async_resource
+        from sqlalchemy.ext.asyncio import AsyncConnection
+
+        # Only use begin_nested on async connections that support it
+        if not isinstance(conn, AsyncConnection):
+            # Sync connection or engine — call directly with try/except
             try:
-                if inspect.iscoroutinefunction(initializer):
-                    await initializer(conn, schema, catalog_id)
-                else:
-                    initializer(conn, schema, catalog_id)
+                result = coro
+                if inspect.isawaitable(result):
+                    await result
+                return True
             except Exception as e:
+                logger.error(f"{label} failed: {e}", exc_info=True)
+                return False
+
+        try:
+            async with conn.begin_nested():
+                result = coro
+                if inspect.isawaitable(result):
+                    await result
+            return True
+        except Exception as e:
+            # If begin_nested itself fails, the outer transaction is already aborted
+            # (InFailedSQLTransactionError on SAVEPOINT creation). This is fatal.
+            error_str = str(e)
+            
+            # Check for fatal connection errors - we cannot continue on a dead connection
+            from dynastore.modules.db_config.exceptions import DatabaseConnectionError
+            if isinstance(e, DatabaseConnectionError) or "ConnectionDoesNotExistError" in error_str:
+                logger.error(f"{label}: fatal connection error. Aborting lifecycle hooks. Error: {e}")
+                raise
+
+            if "InFailedSQLTransaction" in error_str or "current transaction is aborted" in error_str:
                 logger.error(
-                    f"Sync catalog initializer {initializer.__module__}.{initializer.__name__} "
-                    f"failed for '{catalog_id}': {e}",
-                    exc_info=True
+                    f"{label}: outer transaction already aborted before SAVEPOINT. "
+                    f"Cannot continue lifecycle initialization. Error: {e}"
                 )
-    
-    async def destroy_catalog(self, conn: DbResource, schema: str, catalog_id: str) -> None:
-        """Execute all registered sync catalog destroyers (transactional)."""
-        logger.info(f"Destroying catalog resources for '{catalog_id}' (schema: {schema})")
+                raise  # fatal — caller must roll back the outer transaction
+            # Otherwise the SAVEPOINT was rolled back cleanly; log and continue
+            logger.error(f"{label} failed (SAVEPOINT rolled back, outer tx healthy): {e}", exc_info=True)
+            return False
+
+    async def init_catalog(
+        self, conn: DbResource, schema: str, catalog_id: str
+    ) -> None:
+        """Execute all registered sync catalog initializers (transactional).
         
-        for destroyer in self._sync_catalog_destroyers:
+        Each initializer runs in its own SAVEPOINT so a failing hook cannot
+        poison the outer transaction.
+        """
+        logger.info(
+            f"Initializing catalog resources for '{catalog_id}' (schema: {schema})"
+        )
+
+        for initializer in self._sort_hooks(self._sync_catalog_initializers):
+            logger.info(f"Calling sync catalog initializer: {initializer.__module__}.{initializer.__name__}")
+            label = (
+                f"Sync catalog initializer {initializer.__module__}.{initializer.__name__} "
+                f"for '{catalog_id}'"
+            )
+            coro = (
+                initializer(conn, schema, catalog_id)
+                if inspect.iscoroutinefunction(initializer)
+                else initializer(conn, schema, catalog_id)
+            )
+            try:
+                await self._run_initializer_isolated(conn, label, coro)
+            except Exception:
+                # Outer transaction is aborted — stop trying further initializers
+                logger.error(
+                    f"Outer transaction aborted during catalog initialization for '{catalog_id}'. "
+                    "Aborting remaining initializers."
+                )
+                raise
+
+    async def destroy_catalog(
+        self, conn: DbResource, schema: str, catalog_id: str
+    ) -> None:
+        """Execute all registered sync catalog destroyers (transactional)."""
+        logger.info(
+            f"Destroying catalog resources for '{catalog_id}' (schema: {schema})"
+        )
+
+        # Sort destroyers in reverse priority (last initialized, first destroyed)
+        for destroyer in self._sort_hooks(self._sync_catalog_destroyers, reverse=True):
             try:
                 if inspect.iscoroutinefunction(destroyer):
                     await destroyer(conn, schema, catalog_id)
@@ -199,50 +560,57 @@ class LifecycleRegistry:
                 logger.error(
                     f"Sync catalog destroyer {destroyer.__module__}.{destroyer.__name__} "
                     f"failed for '{catalog_id}': {e}",
-                    exc_info=True
+                    exc_info=True,
                 )
-    
+
     async def init_collection(
-        self, 
-        conn: DbResource, 
-        schema: str, 
-        catalog_id: str, 
+        self,
+        conn: DbResource,
+        schema: str,
+        catalog_id: str,
         collection_id: str,
-        **kwargs
+        **kwargs,
     ) -> None:
-        """Execute all registered sync collection initializers (transactional)."""
+        """Execute all registered sync collection initializers (transactional).
+        
+        Each initializer runs in its own SAVEPOINT so a failing hook cannot
+        poison the outer transaction.
+        """
         logger.info(
             f"Initializing collection resources for '{catalog_id}:{collection_id}' "
             f"(schema: {schema})"
         )
-        
-        for initializer in self._sync_collection_initializers:
+
+        for initializer in self._sort_hooks(self._sync_collection_initializers):
+            label = (
+                f"Sync collection initializer {initializer.__module__}.{initializer.__name__} "
+                f"for '{catalog_id}:{collection_id}'"
+            )
+            coro = (
+                initializer(conn, schema, catalog_id, collection_id, **kwargs)
+                if inspect.iscoroutinefunction(initializer)
+                else initializer(conn, schema, catalog_id, collection_id, **kwargs)
+            )
             try:
-                if inspect.iscoroutinefunction(initializer):
-                    await initializer(conn, schema, catalog_id, collection_id, **kwargs)
-                else:
-                    initializer(conn, schema, catalog_id, collection_id, **kwargs)
-            except Exception as e:
+                await self._run_initializer_isolated(conn, label, coro)
+            except Exception:
+                # Outer transaction is aborted — stop trying further initializers
                 logger.error(
-                    f"Sync collection initializer {initializer.__module__}.{initializer.__name__} "
-                    f"failed for '{catalog_id}:{collection_id}': {e}",
-                    exc_info=True
+                    f"Outer transaction aborted during collection initialization for "
+                    f"'{catalog_id}:{collection_id}'. Aborting remaining initializers."
                 )
-    
+                raise
+
     async def destroy_collection(
-        self, 
-        conn: DbResource, 
-        schema: str, 
-        catalog_id: str, 
-        collection_id: str
+        self, conn: DbResource, schema: str, catalog_id: str, collection_id: str
     ) -> None:
         """Execute all registered sync collection destroyers (transactional)."""
         logger.info(
             f"Destroying collection resources for '{catalog_id}:{collection_id}' "
             f"(schema: {schema})"
         )
-        
-        for destroyer in self._sync_collection_destroyers:
+
+        for destroyer in self._sort_hooks(self._sync_collection_destroyers, reverse=True):
             try:
                 if inspect.iscoroutinefunction(destroyer):
                     await destroyer(conn, schema, catalog_id, collection_id)
@@ -252,185 +620,264 @@ class LifecycleRegistry:
                 logger.error(
                     f"Sync collection destroyer {destroyer.__module__}.{destroyer.__name__} "
                     f"failed for '{catalog_id}:{collection_id}': {e}",
-                    exc_info=True
+                    exc_info=True,
                 )
-    
-    # Async external component execution (with config snapshots)
-    def init_async_catalog(
-        self,
-        schema: str,
-        catalog_id: str,
-        config_snapshot: Dict[str, Any]
+
+    async def hard_destroy_collection(
+        self, conn: DbResource, schema: str, catalog_id: str, collection_id: str
     ) -> None:
-        """
-        Execute async external component initializers for catalog (e.g., GCP bucket creation).
-        Runs in background, receives config snapshot.
-        """
+        """Execute all registered hard-delete collection hooks."""
+        logger.info(
+            f"Hard destroying collection resources for '{catalog_id}:{collection_id}' "
+            f"(schema: {schema})"
+        )
+
+        for destroyer in self._sort_hooks(
+            self._sync_collection_hard_destroyers, reverse=True
+        ):
+            try:
+                if inspect.iscoroutinefunction(destroyer):
+                    await destroyer(conn, schema, catalog_id, collection_id)
+                else:
+                    destroyer(conn, schema, catalog_id, collection_id)
+            except Exception as e:
+                logger.error(
+                    f"Sync collection hard destroyer {destroyer.__module__}.{destroyer.__name__} "
+                    f"failed for '{catalog_id}:{collection_id}': {e}",
+                    exc_info=True,
+                )
+
+    def init_async_catalog(
+        self, catalog_id: str, context: LifecycleContext
+    ) -> asyncio.Task:
+        """Execute all registered async catalog initializers (external)."""
         if not self._async_catalog_initializers:
-            return
-            
+            # Return a dummy completed task if no hooks are registered
+            task = asyncio.create_task(asyncio.sleep(0))
+            task.cancel() # Mark as cancelled to indicate no work was done
+            return task
+
         logger.info(f"Scheduling async catalog initialization for '{catalog_id}'")
-        
+
         from dynastore.modules.concurrency import run_in_background
-        
+
         async def _run_all():
-            for initializer in self._async_catalog_initializers:
+            # Wait for the catalog to be fully persisted (AFTER_CATALOG_CREATION signal)
+            # This bridges the visibility gap for background tasks.
+            try:
+                # 30 second timeout as a safety measure
+                await signal_bus.wait_for(
+                    "AFTER_CATALOG_CREATION", identifier=catalog_id, timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Background task for catalog '{catalog_id}' timed out waiting for AFTER_CATALOG_CREATION signal. Proceeding anyway..."
+                )
+
+            for initializer in self._sort_hooks(self._async_catalog_initializers):
                 try:
-                    await initializer(schema, catalog_id, config_snapshot)
+                    await initializer(catalog_id, context)
                 except Exception as e:
                     logger.error(
                         f"Async catalog initializer {initializer.__module__}.{initializer.__name__} "
                         f"failed for '{catalog_id}': {e}",
-                        exc_info=True
+                        exc_info=True,
                     )
-        
+            
+            # Cleanup signal
+            await signal_bus.clear("AFTER_CATALOG_CREATION", identifier=catalog_id)
+
         task = run_in_background(_run_all(), name=f"init_catalog_async_{catalog_id}")
         self._active_tasks.append(task)
-        task.add_done_callback(self._active_tasks.remove)
+        task.add_done_callback(self._on_task_done)
         return task
-    
+
     def destroy_async_catalog(
-        self,
-        schema: str,
-        catalog_id: str,
-        config_snapshot: Dict[str, Any]
-    ) -> None:
+        self, catalog_id: str, context: LifecycleContext
+    ) -> asyncio.Task:
         """
         Execute async external component destroyers for catalog (e.g., GCP bucket deletion).
         Runs in background with config snapshot BEFORE schema drop.
         """
         if not self._async_catalog_destroyers:
-            return
-            
+            # Return a dummy completed task if no hooks are registered
+            task = asyncio.create_task(asyncio.sleep(0))
+            task.cancel() # Mark as cancelled to indicate no work was done
+            return task
+
         logger.info(f"Scheduling async catalog destruction for '{catalog_id}'")
-        
+
         from dynastore.modules.concurrency import run_in_background
-        
+
         async def _run_all():
-            for destroyer in self._async_catalog_destroyers:
+            for destroyer in self._sort_hooks(self._async_catalog_destroyers, reverse=True):
                 try:
-                    await destroyer(schema, catalog_id, config_snapshot)
+                    await destroyer(catalog_id, context)
                 except Exception as e:
                     logger.error(
                         f"Async catalog destroyer {destroyer.__module__}.{destroyer.__name__} "
                         f"failed for '{catalog_id}': {e}",
-                        exc_info=True
+                        exc_info=True,
                     )
-        
+                    # Emit failure event
+                    try:
+                        from dynastore.modules.catalog.event_service import (
+                            emit_event,
+                            CatalogEventType,
+                        )
+
+                        db_proto = get_protocol(DatabaseProtocol)
+                        if db_proto:
+                            await emit_event(
+                                CatalogEventType.CATALOG_HARD_DELETION_FAILURE,
+                                catalog_id=catalog_id,
+                                payload={
+                                    "error": str(e),
+                                    "schema": schema,
+                                    "component": f"{destroyer.__module__}.{destroyer.__name__}",
+                                },
+                                db_resource=db_proto.engine,
+                            )
+                    except Exception as emit_err:
+                        logger.error(
+                            f"Failed to emit CATALOG_HARD_DELETION_FAILURE: {emit_err}"
+                        )
+
         task = run_in_background(_run_all(), name=f"destroy_catalog_async_{catalog_id}")
         self._active_tasks.append(task)
         task.add_done_callback(self._active_tasks.remove)
         return task
-    
+
     def init_async_collection(
         self,
-        schema: str,
         catalog_id: str,
         collection_id: str,
-        config_snapshot: Dict[str, Any]
-    ) -> None:
-        """Execute async external component initializers for collection."""
+        context: LifecycleContext,
+    ) -> asyncio.Task:
+        """Execute all registered async collection initializers (external)."""
         if not self._async_collection_initializers:
-            return
-            
+            # Return a dummy completed task if no hooks are registered
+            task = asyncio.create_task(asyncio.sleep(0))
+            task.cancel() # Mark as cancelled to indicate no work was done
+            return task
+
         logger.info(
             f"Scheduling async collection initialization for '{catalog_id}:{collection_id}'"
         )
-        
+
         from dynastore.modules.concurrency import run_in_background
-        
+
         async def _run_all():
-            for initializer in self._async_collection_initializers:
+            # Wait for the collection to be fully persisted (AFTER_COLLECTION_CREATION signal)
+            try:
+                await signal_bus.wait_for(
+                    "AFTER_COLLECTION_CREATION", identifier=collection_id, timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Background task for collection '{collection_id}' timed out waiting for AFTER_COLLECTION_CREATION signal. Proceeding anyway..."
+                )
+
+            for initializer in self._sort_hooks(self._async_collection_initializers):
                 try:
-                    await initializer(schema, catalog_id, collection_id, config_snapshot)
+                    await initializer(catalog_id, collection_id, context)
                 except Exception as e:
                     logger.error(
                         f"Async collection initializer {initializer.__module__}.{initializer.__name__} "
-                        f"failed for '{catalog_id}:{collection_id}': {e}",
-                        exc_info=True
+                        f"failed for '{catalog_id}/{collection_id}': {e}",
+                        exc_info=True,
                     )
-        
-        task = run_in_background(_run_all(), name=f"init_collection_async_{catalog_id}_{collection_id}")
+            
+            # Cleanup signal
+            await signal_bus.clear("AFTER_COLLECTION_CREATION", identifier=collection_id)
+
+        task = run_in_background(
+            _run_all(), name=f"init_collection_async_{catalog_id}_{collection_id}"
+        )
         self._active_tasks.append(task)
         task.add_done_callback(self._active_tasks.remove)
         return task
-    
+
     def destroy_async_collection(
         self,
-        schema: str,
         catalog_id: str,
         collection_id: str,
-        config_snapshot: Dict[str, Any]
-    ) -> None:
-        """Execute async external component destroyers for collection."""
+        context: LifecycleContext,
+    ) -> asyncio.Task:
+        """Execute all registered async collection destroyers (external)."""
         if not self._async_collection_destroyers:
-            return
-            
+            # Return a dummy completed task if no hooks are registered
+            task = asyncio.create_task(asyncio.sleep(0))
+            task.cancel() # Mark as cancelled to indicate no work was done
+            return task
+
         logger.info(
             f"Scheduling async collection destruction for '{catalog_id}:{collection_id}'"
         )
-        
+
         from dynastore.modules.concurrency import run_in_background
-        
+
         async def _run_all():
-            for destroyer in self._async_collection_destroyers:
+            for destroyer in self._sort_hooks(self._async_collection_destroyers, reverse=True):
                 try:
                     await destroyer(schema, catalog_id, collection_id, config_snapshot)
                 except Exception as e:
                     logger.error(
                         f"Async collection destroyer {destroyer.__module__}.{destroyer.__name__} "
                         f"failed for '{catalog_id}:{collection_id}': {e}",
-                        exc_info=True
+                        exc_info=True,
                     )
-        
-        task = run_in_background(_run_all(), name=f"destroy_collection_async_{catalog_id}_{collection_id}")
+
+        task = run_in_background(
+            _run_all(), name=f"destroy_collection_async_{catalog_id}_{collection_id}"
+        )
         self._active_tasks.append(task)
         task.add_done_callback(self._active_tasks.remove)
         return task
-    
+
     # Asset lifecycle execution
-    async def init_asset(
+    async def init_asset_sync(
         self,
         conn: DbResource,
         schema: str,
         catalog_id: str,
         collection_id: str,
-        asset_code: str
+        asset_code: str,
     ) -> None:
         """Execute all registered sync asset initializers (transactional)."""
         logger.info(
-            f"[LIFECYCLE] Initializing asset '{asset_code}' for '{catalog_id}:{collection_id}' "
-            f"(schema: {schema})"
+            f"Initializing sync asset resources for '{catalog_id}:{collection_id}:{asset_code}'"
         )
-        
-        for initializer in self._sync_asset_initializers:
+
+        for initializer in self._sort_hooks(self._sync_asset_initializers):
             try:
                 if inspect.iscoroutinefunction(initializer):
-                    await initializer(conn, schema, catalog_id, collection_id, asset_code)
+                    await initializer(
+                        conn, schema, catalog_id, collection_id, asset_code
+                    )
                 else:
                     initializer(conn, schema, catalog_id, collection_id, asset_code)
             except Exception as e:
                 logger.error(
                     f"Sync asset initializer {initializer.__module__}.{initializer.__name__} "
                     f"failed for '{catalog_id}:{collection_id}:{asset_code}': {e}",
-                    exc_info=True
+                    exc_info=True,
                 )
-    
-    async def destroy_asset(
+
+    async def destroy_asset_sync(
         self,
         conn: DbResource,
         schema: str,
         catalog_id: str,
         collection_id: str,
-        asset_code: str
+        asset_code: str,
     ) -> None:
         """Execute all registered sync asset destroyers (transactional)."""
         logger.info(
-            f"[LIFECYCLE] Destroying asset '{asset_code}' for '{catalog_id}:{collection_id}' "
-            f"(schema: {schema})"
+            f"Destroying sync asset resources for '{catalog_id}:{collection_id}:{asset_code}'"
         )
-        
-        for destroyer in self._sync_asset_destroyers:
+
+        for destroyer in self._sort_hooks(self._sync_asset_destroyers, reverse=True):
             try:
                 if inspect.iscoroutinefunction(destroyer):
                     await destroyer(conn, schema, catalog_id, collection_id, asset_code)
@@ -440,113 +887,192 @@ class LifecycleRegistry:
                 logger.error(
                     f"Sync asset destroyer {destroyer.__module__}.{destroyer.__name__} "
                     f"failed for '{catalog_id}:{collection_id}:{asset_code}': {e}",
-                    exc_info=True
+                    exc_info=True,
                 )
-    
+
     def init_async_asset(
         self,
-        schema: str,
         catalog_id: str,
         collection_id: str,
         asset_code: str,
-        config_snapshot: Dict[str, Any]
-    ) -> None:
-        """Execute async external component initializers for asset."""
+        context: LifecycleContext,
+    ) -> asyncio.Task:
+        """Execute all registered async asset initializers (external)."""
         if not self._async_asset_initializers:
-            return
-            
+            # Return a dummy completed task if no hooks are registered
+            task = asyncio.create_task(asyncio.sleep(0))
+            task.cancel() # Mark as cancelled to indicate no work was done
+            return task
+
         logger.info(
-            f"[LIFECYCLE] Scheduling async asset initialization for "
+            f"Scheduling async asset initialization for "
             f"'{catalog_id}:{collection_id}:{asset_code}'"
         )
-        
+
         from dynastore.modules.concurrency import run_in_background
-        
+
         async def _run_all():
-            for initializer in self._async_asset_initializers:
+            for initializer in self._sort_hooks(self._async_asset_initializers):
                 try:
-                    await initializer(schema, catalog_id, collection_id, asset_code, config_snapshot)
+                    await initializer(
+                        catalog_id, collection_id, asset_code, context
+                    )
                 except Exception as e:
                     logger.error(
                         f"Async asset initializer {initializer.__module__}.{initializer.__name__} "
                         f"failed for '{catalog_id}:{collection_id}:{asset_code}': {e}",
-                        exc_info=True
+                        exc_info=True,
                     )
-        
-        task = run_in_background(_run_all(), name=f"init_asset_async_{catalog_id}_{collection_id}_{asset_code}")
-        self._active_tasks.append(task)
-        task.add_done_callback(self._active_tasks.remove)
-        return task
-    
-    def destroy_async_asset(
-        self,
-        schema: str,
-        catalog_id: str,
-        collection_id: str,
-        asset_code: str,
-        config_snapshot: Dict[str, Any]
-    ) -> None:
-        """Execute async external component destroyers for asset."""
-        if not self._async_asset_destroyers:
-            return
-            
-        logger.info(
-            f"[LIFECYCLE] Scheduling async asset destruction for "
-            f"'{catalog_id}:{collection_id}:{asset_code}'"
+
+        task = run_in_background(
+            _run_all(),
+            name=f"init_asset_async_{catalog_id}_{collection_id}_{asset_code}",
         )
-        
-        from dynastore.modules.concurrency import run_in_background
-        
-        async def _run_all():
-            for destroyer in self._async_asset_destroyers:
-                try:
-                    await destroyer(schema, catalog_id, collection_id, asset_code, config_snapshot)
-                except Exception as e:
-                    logger.error(
-                        f"Async asset destroyer {destroyer.__module__}.{destroyer.__name__} "
-                        f"failed for '{catalog_id}:{collection_id}:{asset_code}': {e}",
-                        exc_info=True
-                    )
-        
-        task = run_in_background(_run_all(), name=f"destroy_asset_async_{catalog_id}_{collection_id}_{asset_code}")
         self._active_tasks.append(task)
         task.add_done_callback(self._active_tasks.remove)
         return task
 
-    async def wait_for_all_tasks(self, timeout: float = 30.0) -> None:
+    def destroy_async_asset(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        asset_code: str,
+        context: LifecycleContext,
+    ) -> asyncio.Task:
+        """Execute all registered async asset destroyers (external)."""
+        if not self._async_asset_destroyers:
+            # Return a dummy completed task if no hooks are registered
+            task = asyncio.create_task(asyncio.sleep(0))
+            task.cancel() # Mark as cancelled to indicate no work was done
+            return task
+
+        logger.info(
+            f"Scheduling async asset destruction for "
+            f"'{catalog_id}:{collection_id}:{asset_code}'"
+        )
+
+        from dynastore.modules.concurrency import run_in_background
+
+        async def _run_all():
+            for destroyer in self._sort_hooks(self._async_asset_destroyers, reverse=True):
+                try:
+                    await destroyer(
+                        catalog_id, collection_id, asset_code, context
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Async asset destroyer {destroyer.__module__}.{destroyer.__name__} "
+                        f"failed for '{catalog_id}:{collection_id}:{asset_code}': {e}",
+                        exc_info=True,
+                    )
+
+        task = run_in_background(
+            _run_all(),
+            name=f"destroy_asset_async_{catalog_id}_{collection_id}_{asset_code}",
+        )
+        self._active_tasks.append(task)
+        task.add_done_callback(self._active_tasks.remove)
+        return task
+
+
+    async def wait_for_all_tasks(self, timeout: float = 30.0):
         """
-        Wait for all active background tasks to complete (useful for tests).
-        Filters tasks to only those on the current running event loop.
+        Wait for all background tasks and enqueued tasks to finish.
+        Used during graceful shutdown to drain in-flight work before
+        releasing resources (DB connections, GCP clients, etc.).
         """
-        if not self._active_tasks:
-            return
-            
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # No loop running, can't wait for tasks
-            return
-            
-        # Filter tasks that belong to the current loop and are not done
-        current_tasks = [
-            t for t in self._active_tasks 
-            if not t.done() and t.get_loop() == loop
-        ]
-        
-        if not current_tasks:
-            # Remove any tasks from other loops that are already done
+        # --- 1. Internal Task Registry Wait ---
+        if self._active_tasks:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+                current_tasks = [
+                    t for t in self._active_tasks if not t.done() and t.get_loop() == loop
+                ]
+
+                if current_tasks:
+                    logger.info(
+                        f"Waiting for {len(current_tasks)} background lifecycle tasks to complete on the current loop..."
+                    )
+                    try:
+                        await asyncio.wait(current_tasks, timeout=timeout)
+                    except Exception as e:
+                        logger.warning(f"Error while waiting for background tasks: {e}")
+
+        # --- 2. Database Task Queue Wait ---
+        from dynastore.models.protocols import DatabaseProtocol
+        from dynastore.modules import get_protocol
+        db_proto = get_protocol(DatabaseProtocol)
+        if db_proto:
+            engine = db_proto.get_any_engine()
+            if engine:
+                from dynastore.modules.tasks.tasks_module import get_task_schema
+                from dynastore.modules.db_config.locking_tools import check_table_exists
+                from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler, managed_transaction
+                from dynastore.tasks import get_loaded_task_types
+                
+                schema = get_task_schema()
+                loaded_types = list(get_loaded_task_types())
+                
+                # If no task types are loaded on this instance, skip DB wait entirely.
+                # This service has no tasks to wait for (e.g. dynastore-auth, dynastore-maps).
+                if not loaded_types:
+                    logger.debug("wait_for_all_tasks: No task types loaded — skipping DB wait.")
+                else:
+                    start_time = asyncio.get_event_loop().time()
+                    
+                    # Discover all catalog schemas to monitor
+                    schemas_to_monitor = {schema}
+                    from dynastore.models.protocols import CatalogsProtocol
+                    catalogs_proto = get_protocol(CatalogsProtocol)
+                    if catalogs_proto:
+                        try:
+                            catalog_list = await catalogs_proto.list_catalogs(limit=1000)
+                            for cat in catalog_list:
+                                s = await catalogs_proto.resolve_physical_schema(cat.id)
+                                if s: schemas_to_monitor.add(s)
+                        except Exception as e:
+                            logger.debug(f"wait_for_all_tasks: failed to list catalogs: {e}")
+
+                    while (asyncio.get_event_loop().time() - start_time) < timeout:
+                        try:
+                            total_count = 0
+                            async with managed_transaction(engine) as conn:
+                                for s in schemas_to_monitor:
+                                    if await check_table_exists(conn, "tasks", s):
+                                        placeholders = ", ".join(f":t_{i}" for i in range(len(loaded_types)))
+                                        type_params = {f"t_{i}": t for i, t in enumerate(loaded_types)}
+                                        sql = f"""SELECT COUNT(*) FROM "{s}".tasks 
+                                                  WHERE status IN ('PENDING', 'ACTIVE', 'RUNNING')
+                                                    AND task_type IN ({placeholders})"""
+                                        count = await DQLQuery(sql, result_handler=ResultHandler.SCALAR_ONE).execute(
+                                            conn, **type_params
+                                        )
+                                        total_count += count
+                            
+                            # Refresh internal registry
+                            self._active_tasks = [t for t in self._active_tasks if not t.done()]
+                            
+                            if total_count == 0 and not self._active_tasks:
+                                break
+                        except Exception as e:
+                            logger.debug(f"wait_for_all_tasks: check failed: {e}")
+                            if not self._active_tasks:
+                                break
+                        
+                        await asyncio.sleep(0.5)
+
+        # Final settlement check for internal tasks
+        start_time = asyncio.get_event_loop().time()
+        while self._active_tasks and (asyncio.get_event_loop().time() - start_time) < timeout:
+            await asyncio.sleep(0.1)
             self._active_tasks = [t for t in self._active_tasks if not t.done()]
-            return
-            
-        logger.info(f"Waiting for {len(current_tasks)} background lifecycle tasks to complete on the current loop...")
-        try:
-            # We wait only for tasks on the CURRENT loop
-            await asyncio.wait(current_tasks, timeout=timeout)
-        except Exception as e:
-            logger.warning(f"Error while waiting for background tasks: {e}")
-            
-        # Clean up the list to remove finished tasks from any loop
-        self._active_tasks = [t for t in self._active_tasks if not t.done()]
+
+    def clear_registry(self) -> None:
+        """Alias for `clear()`. Kept for backward compatibility."""
+        self.clear()
 
 
 # Global instance
@@ -557,6 +1083,7 @@ sync_catalog_initializer = lifecycle_registry.sync_catalog_initializer
 sync_catalog_destroyer = lifecycle_registry.sync_catalog_destroyer
 sync_collection_initializer = lifecycle_registry.sync_collection_initializer
 sync_collection_destroyer = lifecycle_registry.sync_collection_destroyer
+sync_collection_hard_destroyer = lifecycle_registry.sync_collection_hard_destroyer
 
 async_catalog_initializer = lifecycle_registry.async_catalog_initializer
 async_catalog_destroyer = lifecycle_registry.async_catalog_destroyer

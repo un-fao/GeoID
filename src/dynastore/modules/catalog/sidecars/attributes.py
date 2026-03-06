@@ -25,17 +25,24 @@ This module provides the FeatureAttributeSidecar which manages:
 """
 
 import logging
-from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime
+from typing import Dict, Any, List, Optional, Tuple, Union
 from enum import Enum
-from pydantic import Field
+from pydantic import Field, BaseModel
+from geojson_pydantic import Feature
+from dynastore.models.query_builder import QueryRequest
 from sqlalchemy import text
-from dynastore.modules.db_config.query_executor import DbResource
+from dynastore.modules.db_config.query_executor import DbResource, DDLQuery
+from dynastore.models.protocols import ConfigsProtocol, AssetsProtocol
+from dynastore.tools.discovery import get_protocol
+from dynastore.modules.db_config.tools import map_pg_to_json_type
+from dynastore.tools.json import CustomJSONEncoder
 from dynastore.modules.catalog.sidecars.base import (
-    SidecarProtocol, 
-    SidecarConfig, 
+    SidecarProtocol,
+    SidecarConfig,
     ValidationResult,
     FieldDefinition,
-    FieldCapability
+    FieldCapability,
 )
 from dynastore.modules.catalog.models import LocalizedText
 from dynastore.modules.catalog.sidecars.attributes_config import (
@@ -43,23 +50,28 @@ from dynastore.modules.catalog.sidecars.attributes_config import (
     AttributeStorageMode,
     PostgresType,
     AttributeIndexType,
-    AttributeSchemaEntry
+    AttributeSchemaEntry,
 )
-from dynastore.modules.db_config.query_executor import DbResource
-from dynastore.modules.db_config.locking_tools import acquire_lock_if_needed, check_trigger_exists
+from dynastore.modules.db_config.locking_tools import (
+    acquire_lock_if_needed,
+    check_trigger_exists,
+)
 
 logger = logging.getLogger(__name__)
+
+
+from pydantic_core import PydanticUndefined
 
 
 class FeatureAttributeSidecar(SidecarProtocol):
     """
     Sidecar for feature attributes and identity.
-    
+
     Manages:
     - Identity: external_id, asset_id (optional)
     - Attributes: Relational columns or JSONB document
     """
-    
+
     def __init__(self, config: FeatureAttributeSidecarConfig):
         self.config = config
 
@@ -71,50 +83,198 @@ class FeatureAttributeSidecar(SidecarProtocol):
         if self.config.attribute_schema:
             return AttributeStorageMode.COLUMNAR
         return AttributeStorageMode.JSONB
-    
+
     @property
     def sidecar_id(self) -> str:
         return "attributes"
 
     @property
+    def sidecar_type_id(self) -> str:
+        """Type ID for protocol-based discovery and config matching."""
+        return "attributes"
+
+    @classmethod
+    def get_default_config(
+        cls, context: Dict[str, Any]
+    ) -> Optional[FeatureAttributeSidecarConfig]:
+        """Auto-inject attributes sidecar by default."""
+        return FeatureAttributeSidecarConfig()
+
+    @property
+    def provides_feature_id(self) -> bool:
+        """Returns True if this sidecar provides the feature ID (geoid)."""
+        return self.config.provides_feature_id
+
+    @property
+    def feature_id_field_name(self) -> Optional[str]:
+        return self.config.feature_id_field_name
+
+    @property
     def partition_key_contributions(self) -> Dict[str, str]:
         """Expose keys available for partitioning."""
-        keys = {}
-        if self.config.enable_external_id:
-            keys["external_id"] = "text"
+        return self.config.partition_key_contributions
+
+    def get_queryable_fields(self) -> Dict[str, FieldDefinition]:
+        """
+        Returns all queryable fields including auto-included asset_id.
+
+        Fields with expose=False are queryable but not in Feature output.
+        """
+        # Alias must match builder convention
+        alias = f"sc_{self.sidecar_id}"
+
+        fields = {}
+
+        # ALWAYS include asset_id if enabled (even if not in attribute_schema)
         if self.config.enable_asset_id:
-            keys["asset_id"] = "text"
-        if self.config.enable_validity:
-            keys["validity"] = "tstzrange" # Actually managed by sidecar now
-        
-        # Columnar attributes could also be partitioning keys if marked as such
-        if self.resolved_storage_mode == AttributeStorageMode.COLUMNAR and self.config.attribute_schema:
+            fields["asset_id"] = FieldDefinition(
+                name="asset_id",
+                sql_expression=f"{alias}.asset_id",
+                capabilities=[
+                    FieldCapability.FILTERABLE,
+                    FieldCapability.SORTABLE,
+                    FieldCapability.GROUPABLE,
+                ],
+                data_type="uuid",
+                expose=False,  # Never in Feature output unless explicitly configured
+                title="Asset ID",
+                description="Reference to parent asset",
+            )
+
+        # external_id - always query-only, mapped to Feature.id
+        if self.config.enable_external_id:
+            fields["external_id"] = FieldDefinition(
+                name="external_id",
+                alias="id",
+                sql_expression=f"{alias}.external_id",
+                capabilities=[
+                    FieldCapability.FILTERABLE,
+                    FieldCapability.SORTABLE,
+                    FieldCapability.GROUPABLE,
+                ],
+                data_type="text",
+                expose=False,  # Mapped to Feature.id, not exposed as property
+                title="External ID",
+                description="External identifier",
+            )
+
+        # Attributes from schema
+        if self.config.attribute_schema:
             for attr in self.config.attribute_schema:
-                if attr.can_partition:
-                    keys[attr.name] = attr.type.value
-        return keys
-    
+                # Check if this is a storage-only field
+                is_storage_only = attr.name in (
+                    getattr(self.config, "storage_only_fields", None) or []
+                )
+
+                # Determine capabilities based on type
+                caps = [
+                    FieldCapability.FILTERABLE,
+                    FieldCapability.SORTABLE,
+                    FieldCapability.GROUPABLE,
+                ]
+                if attr.type in [
+                    PostgresType.INTEGER,
+                    PostgresType.BIGINT,
+                    PostgresType.NUMERIC,
+                    PostgresType.FLOAT,
+                ]:
+                    caps.append(FieldCapability.AGGREGATABLE)
+
+                fields[attr.name] = FieldDefinition(
+                    name=attr.name,
+                    sql_expression=f"{alias}.{attr.name}",
+                    capabilities=caps,
+                    data_type=attr.type.value.lower(),
+                    expose=not is_storage_only,  # Storage-only fields not in Feature output
+                    title=attr.title if hasattr(attr, "title") else attr.name,
+                    description=attr.description
+                    if hasattr(attr, "description")
+                    else None,
+                )
+
+        # Merge with other definitions (validity, transaction_time) from get_field_definitions
+        # Pass the correct alias!
+        other_fields = self.get_field_definitions(sidecar_alias=alias)
+        # We only add fields that aren't already covered or if we prefer the detailed definition
+        # get_field_definitions includes external_id/asset_id/attributes too.
+        # It seems there's duplication between get_queryable_fields and get_field_definitions?
+        # Yes. We should probably rely on get_field_definitions more.
+
+        for k, v in other_fields.items():
+            if k not in fields:
+                fields[k] = v
+
+        return fields
+
+    def get_feature_type_schema(self) -> Dict[str, Any]:
+        """
+        Returns JSON Schema for Feature properties contribution.
+
+        Only includes fields where expose=True.
+        asset_id only included if explicitly in feature_type_schema config.
+        """
+        schema = {}
+
+        # Check if asset_id should be in output (explicit config override)
+        feature_type_config = getattr(self.config, "feature_type_schema", None)
+        if feature_type_config and "asset_id" in feature_type_config:
+            schema["asset_id"] = feature_type_config["asset_id"]
+
+        # Attributes (excluding storage_only_fields)
+        if self.config.attribute_schema:
+            storage_only = getattr(self.config, "storage_only_fields", None) or []
+            for attr in self.config.attribute_schema:
+                if attr.name not in storage_only:
+                    schema[attr.name] = {
+                        "type": self._map_pg_to_json_type(attr.type),
+                        "description": str(attr.description)
+                        if attr.description
+                        else f"{attr.name} attribute",
+                    }
+                    if not attr.nullable:
+                        schema[attr.name]["required"] = True
+
+        return schema
+
+    def _map_pg_to_json_type(self, pg_type: PostgresType) -> str:
+        """Map PostgreSQL type to JSON Schema type."""
+        return map_pg_to_json_type(pg_type)
+
+    # --- Partitioning & Capabilities ---
+
+    def get_partition_keys(self) -> List[str]:
+        """Returns list of columns this sidecar contributes to composite partitioning."""
+        return self.config.partition_keys
+
+    def get_partition_key_types(self) -> Dict[str, str]:
+        """Returns mapping of partition keys to their SQL types."""
+        return self.config.partition_key_types
+
+    def has_validity(self) -> bool:
+        """Returns True if this sidecar manages temporal validity."""
+        return self.config.has_validity
+
     def get_ddl(
-        self, 
-        physical_table: str, 
+        self,
+        physical_table: str,
         partition_keys: List[str] = [],
         partition_key_types: Dict[str, str] = {},
-        has_validity: bool = False
+        has_validity: bool = False,
     ) -> str:
         """Generate DDL for attribute sidecar table."""
         table_name = f"{physical_table}_{self.sidecar_id}"
         columns = ["geoid UUID NOT NULL"]
         known_columns = {"geoid"}
-        
+
         # Add Identity Columns
         if self.config.enable_external_id:
             columns.append("external_id VARCHAR(255)")
             known_columns.add("external_id")
-        
+
         if self.config.enable_asset_id:
             columns.append("asset_id VARCHAR(255)")
             known_columns.add("asset_id")
-        
+
         # Add Attribute Storage
         indexes = []
         if self.resolved_storage_mode == AttributeStorageMode.COLUMNAR:
@@ -122,10 +282,15 @@ class FeatureAttributeSidecar(SidecarProtocol):
             if self.config.attribute_schema:
                 for attr in self.config.attribute_schema:
                     null_constraint = "" if attr.nullable else " NOT NULL"
+                    sql_default = attr.get_sql_default()
+                    default_clause = f" DEFAULT {sql_default}" if sql_default else ""
+
                     unique_constraint = " UNIQUE" if attr.unique else ""
-                    columns.append(f"{attr.name} {attr.type.value}{null_constraint}{unique_constraint}")
+                    columns.append(
+                        f"{attr.name} {attr.type.value}{null_constraint}{default_clause}{unique_constraint}"
+                    )
                     known_columns.add(attr.name)
-                    
+
                     # Create index if specified
                     if attr.index != AttributeIndexType.NONE:
                         idx_type = attr.index.value.upper()
@@ -138,31 +303,35 @@ class FeatureAttributeSidecar(SidecarProtocol):
             # Mode B: JSONB column
             columns.append(f"{self.config.jsonb_column_name} JSONB")
             known_columns.add(self.config.jsonb_column_name)
-            
+
             # GIN index for full document containment (if not overridden by functional indexes)
             # Standard GIN
-            indexes.append(f'CREATE INDEX IF NOT EXISTS "idx_{table_name}_attrs_gin" ON {{schema}}."{table_name}" USING GIN({self.config.jsonb_column_name})')
-            
+            indexes.append(
+                f'CREATE INDEX IF NOT EXISTS "idx_{table_name}_attrs_gin" ON {{schema}}."{table_name}" USING GIN({self.config.jsonb_column_name})'
+            )
+
             # Functional B-Tree indexes on specific JSON paths for trillion-row scale
             for path, cast_type in self.config.jsonb_indexed_paths.items():
                 indexes.append(
                     f'CREATE INDEX IF NOT EXISTS "idx_{table_name}_{path}" ON {{schema}}."{table_name}" '
                     f"(({self.config.jsonb_column_name}->>'{path}')::{cast_type.value})"
                 )
-        
+
         # Prepare validity column
         validity_col = ""
         if has_validity or "validity" in partition_keys:
-             if "validity" not in known_columns:
-                 # validity_col = '"validity" TSTZRANGE NOT NULL,' # WRONG: we need to add it to columns list
-                 columns.append('"validity" TSTZRANGE NOT NULL')
-                 known_columns.add("validity")
+            if "validity" not in known_columns:
+                # validity_col = '"validity" TSTZRANGE NOT NULL,' # WRONG: we need to add it to columns list
+                columns.append(
+                    "\"validity\" TSTZRANGE NOT NULL DEFAULT tstzrange(CURRENT_TIMESTAMP, NULL, '[)')"
+                )
+                known_columns.add("validity")
 
         # Composite PK Construction
         # Rule: Partition keys FIRST, then Hub identity (geoid, validity)
         pk_columns = []
         partition_clause = ""
-        
+
         if partition_keys:
             # 1. Add any non-sidecar partition keys (e.g. catalog_id from Hub)
             for key in partition_keys:
@@ -170,144 +339,134 @@ class FeatureAttributeSidecar(SidecarProtocol):
                     col_type = partition_key_types.get(key, "TEXT")
                     columns.insert(0, f'"{key}" {col_type} NOT NULL')
                     known_columns.add(key)
-            
+
             # 2. Partitions must be part of the PK
             pk_set = set()
             for key in partition_keys:
                 pk_columns.append(f'"{key}"')
                 pk_set.add(key)
-            
+
             # 3. Complete the PK with identity if not already present
             if "geoid" not in pk_set:
                 pk_columns.append('"geoid"')
                 pk_set.add("geoid")
-            if (has_validity or "validity" in partition_keys) and "validity" not in pk_set:
+            if (
+                has_validity or "validity" in partition_keys
+            ) and "validity" not in pk_set:
                 pk_columns.append('"validity"')
                 pk_set.add("validity")
-                
-            partition_clause = f" PARTITION BY LIST ({', '.join([f'"{k}"' for k in partition_keys])})"
+
+            partition_clause = (
+                f" PARTITION BY LIST ({', '.join([f'"{k}"' for k in partition_keys])})"
+            )
         else:
             partition_clause = ""
             # Non-partitioned table: PK is geoid + validity (if has_validity)
             pk_columns = ['"geoid"']
             if has_validity or "validity" in partition_keys:
-                 pk_columns.append('"validity"')
+                pk_columns.append('"validity"')
 
         # Build DDL
         storage_params = ""
-        if self.resolved_storage_mode == AttributeStorageMode.JSONB and self.config.use_hot_updates:
+        if (
+            self.resolved_storage_mode == AttributeStorageMode.JSONB
+            and self.config.use_hot_updates
+        ):
             storage_params = " WITH (FILLFACTOR=80)"
 
         ddl = f"""
 CREATE TABLE IF NOT EXISTS {{schema}}."{table_name}" (
-    {', '.join(columns)},
-    PRIMARY KEY ({', '.join(pk_columns)})
+    {", ".join(columns)},
+    PRIMARY KEY ({", ".join(pk_columns)})
 ){partition_clause}{storage_params};
 """
-        
+
         # Foreign Key to Hub - only if validity matches or only geoid
         ref_cols = ["geoid"]
-        if has_validity or "validity" in partition_keys:
-             ref_cols.append("validity")
-             
+
+        # Determine if validity should be in FK
+        # Only if validity is a partition key (shared with Hub)
+        if "validity" in partition_keys:
+            ref_cols.append("validity")
+
         ddl += f"""
 ALTER TABLE {{schema}}."{table_name}"
 ADD CONSTRAINT "fk_{table_name}_geoid"
 FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{physical_table}" ON DELETE CASCADE;
 """
-        
+
         # Add Indices
         # Identity Indices
         if self.config.enable_external_id and self.config.index_external_id:
             ddl += f'\nCREATE UNIQUE INDEX IF NOT EXISTS "idx_{table_name}_ext_id" ON {{schema}}."{table_name}" ({", ".join(pk_columns[:-1] + ["external_id"] if len(pk_columns) > 1 else ["external_id"])});'
-        
+
         if self.config.enable_asset_id and self.config.index_asset_id:
             ddl += f'\nCREATE INDEX IF NOT EXISTS "idx_{table_name}_asset_id" ON {{schema}}."{table_name}" (asset_id);'
+            # Note: We cannot add a simple FK to assets(asset_id) because assets table is partitioned by collection_id
+            # and thus PK is (collection_id, asset_id).
+            # Integrity is enforced via trigger (trg_asset_cleanup).
 
         # Add Computed Indices from schema/paths
         for idx_stmt in indexes:
             ddl += f"\n{idx_stmt};"
-        
+
         return ddl
-    
+
     async def setup_lifecycle_hooks(
-        self, 
-        conn: DbResource, 
-        schema: str,
-        table_name: str
+        self, conn: DbResource, schema: str, table_name: str
     ) -> None:
         """Setup maintenance for attribute table."""
         if self.resolved_storage_mode == AttributeStorageMode.JSONB:
-            logger.info(f"JSONB table {schema}.{table_name} configured with FILLFACTOR=80")
-        
+            logger.info(
+                f"JSONB table {schema}.{table_name} configured with FILLFACTOR=80"
+            )
+
         # Setup Asset Cleanup Trigger if asset_id is enabled
         if self.config.enable_asset_id:
             logger.info(f"Setting up asset cleanup trigger for {schema}.{table_name}")
-            
-            # Using a stable trigger name
-            trigger_name = "trg_asset_cleanup"
-            
-            # Derive Hub Physical Table Name
-            # table_name is {hub_physical_table}_{sidecar_id}
-            # We assume sidecar_id is 'attributes'
-            suffix = f"_{self.sidecar_id}"
-            if table_name.endswith(suffix):
-                hub_physical_table = table_name[:-len(suffix)]
+            am = get_protocol(AssetsProtocol)
+            if am:
+                await am.ensure_asset_cleanup_trigger(
+                    schema, table_name, db_resource=conn
+                )
             else:
-                # Fallback or error? 
-                # If naming convention changes, this breaks. 
-                # But for now strict convention is enforced in CollectionService.
-                logger.warning(f"Could not derive hub table from {table_name}. Skipping trigger.")
-                return
+                logger.warning(
+                    f"AssetsProtocol not available. Skipping asset cleanup trigger for {schema}.{table_name}"
+                )
 
-            # Safe DDL Execution
-            # Using acquire_lock_if_needed directly to avoid splitting issues in execute_safe_ddl
-            
-            # Use check_trigger_exists as existence check
-            async def _check():
-                return await check_trigger_exists(conn, trigger_name, schema)
-
-            # Using same lock for trigger creation
-            lock_key = f"ddl.trigger.{schema}.{table_name}.{trigger_name}"
-            
-            async with acquire_lock_if_needed(conn, lock_key, _check) as should_run:
-                if should_run:
-                    # Drop first (idempotency, or replace if modified). No trailing semicolon for asyncpg prepared stmt.
-                    await should_run.execute(text(f'DROP TRIGGER IF EXISTS {trigger_name} ON "{schema}"."{table_name}"'))
-                    
-                    # Create. No trailing semicolon.
-                    create_sql = f"""
-                    CREATE TRIGGER {trigger_name}
-                    AFTER DELETE OR UPDATE OF asset_id ON "{schema}"."{table_name}"
-                    FOR EACH ROW
-                    EXECUTE FUNCTION asset_cleanup('{hub_physical_table}')
-                    """.strip()
-                    await should_run.execute(text(create_sql))
-    
     async def on_partition_create(
-        self, 
+        self,
         conn: DbResource,
         schema: str,
         parent_table: str,
         partition_table: str,
-        partition_value: Any
+        partition_value: Any,
     ) -> None:
         """Partition-specific setup."""
         pass
-    
-    def resolve_query_path(
-        self, 
-        attr_name: str
-    ) -> Optional[Tuple[str, str]]:
+
+    def resolve_query_path(self, attr_name: str) -> Optional[Tuple[str, str]]:
         """Resolve attribute access."""
-        alias = "a"
-        
+        # Alias must match what _get_features_builder expects/generates
+        # Builder convention: sc_{sidecar_id} -> sc_attributes
+        alias = f"sc_{self.sidecar_id}"
+
+        # Hub Columns (Special handling: we return them with 'h' alias but associate with this sidecar?)
+        # Or we return None and let ItemService handle it?
+        # If ItemService falls through to sidecars, we must handle it if we want to support it via this path.
+        if attr_name == "transaction_time":
+            return ("h.transaction_time", "h")
+
+        # Identity and Versioning
+        if attr_name == "validity" and self.config.enable_validity:
+            return (f"{alias}.validity", alias)
+
         # Identity Columns
         if self.config.enable_external_id and attr_name == "external_id":
-             return (f"{alias}.external_id", alias)
+            return (f"{alias}.external_id", alias)
         if self.config.enable_asset_id and attr_name == "asset_id":
-             return (f"{alias}.asset_id", alias)
-        
+            return (f"{alias}.asset_id", alias)
+
         # Columnar Mode
         if self.resolved_storage_mode == AttributeStorageMode.COLUMNAR:
             if self.config.attribute_schema:
@@ -318,317 +477,955 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         else:
             if attr_name == self.config.jsonb_column_name:
                 return (f"{alias}.{self.config.jsonb_column_name}", alias)
-            
+
             # Check if it's a known functional path
             if attr_name in self.config.jsonb_indexed_paths:
                 cast_type = self.config.jsonb_indexed_paths[attr_name].value
-                return (f"({alias}.{self.config.jsonb_column_name}->>'{attr_name}')::{cast_type}", alias)
+                return (
+                    f"({alias}.{self.config.jsonb_column_name}->>'{attr_name}')::{cast_type}",
+                    alias,
+                )
 
             # Nested JSON path fallback
             if attr_name.startswith("properties."):
                 json_key = attr_name.split(".", 1)[1]
-                return (f"{alias}.{self.config.jsonb_column_name}->>'{json_key}'", alias)
+                return (
+                    f"{alias}.{self.config.jsonb_column_name}->>'{json_key}'",
+                    alias,
+                )
             else:
-                return (f"{alias}.{self.config.jsonb_column_name}->>'{attr_name}'", alias)
-        
+                return (
+                    f"{alias}.{self.config.jsonb_column_name}->>'{attr_name}'",
+                    alias,
+                )
+
         return None
-    
+
     def get_select_fields(
         self,
+        request: Optional[QueryRequest] = None,
         hub_alias: str = "h",
         sidecar_alias: Optional[str] = None,
-        include_all: bool = False
+        include_all: bool = False,
     ) -> List[str]:
         """Returns SELECT field expressions for attributes sidecar."""
         alias = sidecar_alias or f"sc_{self.sidecar_id}"
         fields = []
-        
-        if self.resolved_storage_mode == AttributeStorageMode.JSONB:
-            fields.append(f"{alias}.attributes")
-            # We explicitly EXCLUDE external_id and asset_id from default selects 
-            # to satisfy privacy/security requirements (e.g. external_id hiding).
-            if include_all:
-                 if self.config.enable_external_id:
-                      fields.append(f"{alias}.external_id")
-                 if self.config.enable_asset_id:
-                      fields.append(f"{alias}.asset_id")
-        elif include_all:
-              # For relational mode, we might want to be careful too.
-              fields.append(f"{alias}.*")
+
+        if request is not None and not include_all:
+            # Selective mode: only return what's needed
+            requested = {sel.field for sel in request.select} if hasattr(request, "select") and request.select else set()
+            filter_fields = {f.field for f in request.filters} if hasattr(request, "filters") and request.filters else set()
+            sort_fields = {s.field for s in (request.sort or [])} if hasattr(request, "sort") and request.sort else set()
+            all_needed = requested | filter_fields | sort_fields
+
+            # 1. Identity Columns
+            if self.config.enable_external_id and (
+                "external_id" in all_needed or "id" in all_needed or "*" in requested or not requested
+            ):
+                fields.append(f"{alias}.external_id")
+
+            if self.config.enable_asset_id and (
+                "asset_id" in all_needed or "*" in requested
+            ):
+                fields.append(f"{alias}.asset_id")
+
+            # 2. Attribute Columns
+            storage_mode = self.resolved_storage_mode
+            if storage_mode == AttributeStorageMode.JSONB:
+                fields.append(f"{alias}.{self.config.jsonb_column_name}")
+            else:
+                # Relational mode: return selectively
+                if self.config.attribute_schema:
+                    for attr in self.config.attribute_schema:
+                        if attr.name in all_needed or "*" in requested or not requested:
+                            fields.append(f'{alias}."{attr.name}"')
         else:
-              # Relational mode: return all columnar attributes EXCEPT internal IDs
-              known_internal = {"geoid", "validity", "external_id", "asset_id"}
-              if self.config.attribute_schema:
-                   for attr in self.config.attribute_schema:
-                        if attr.name not in known_internal:
-                             fields.append(f'{alias}."{attr.name}"')
-        
+            # Full mode: return all fields (existing behavior)
+            if self.config.enable_external_id:
+                fields.append(f"{alias}.external_id")
+
+            if self.config.enable_asset_id:
+                fields.append(f"{alias}.asset_id")
+
+            storage_mode = self.resolved_storage_mode
+            if storage_mode == AttributeStorageMode.JSONB:
+                fields.append(f"{alias}.{self.config.jsonb_column_name}")
+            else:
+                if self.config.attribute_schema:
+                    for attr in self.config.attribute_schema:
+                        fields.append(f'{alias}."{attr.name}"')
+
         return fields
-    
+
     def get_join_clause(
         self,
         schema: str,
         hub_table: str,
         hub_alias: str = "h",
         sidecar_alias: Optional[str] = None,
-        join_type: str = "LEFT"
+        join_type: str = "LEFT",
+        extra_condition: Optional[str] = None,
     ) -> str:
         """Returns JOIN clause for attributes sidecar (geoid-only join)."""
         alias = sidecar_alias or f"sc_{self.sidecar_id}"
         table = f"{hub_table}_{self.sidecar_id}"
-        return f'{join_type} JOIN "{schema}"."{table}" {alias} ON {hub_alias}.geoid = {alias}.geoid'
-    
+        on_clause = f"{hub_alias}.geoid = {alias}.geoid"
+        if self.config.enable_validity:
+            on_clause = (
+                f"{on_clause} AND {alias}.validity @> {hub_alias}.transaction_time"
+            )
+        if extra_condition:
+            on_clause = f"{on_clause} {extra_condition}"
+        return f'{join_type} JOIN "{schema}"."{table}" {alias} ON {on_clause}'
+
     def get_where_conditions(
-        self,
-        sidecar_alias: Optional[str] = None,
-        **filters
+        self, sidecar_alias: Optional[str] = None, **filters
     ) -> List[str]:
-        """Returns WHERE conditions for filtering by attributes."""
-        alias = sidecar_alias or f"sc_{self.sidecar_id}"
+        """Returns WHERE clause conditions for filtering."""
         conditions = []
-        
-        if "external_id" in filters and self.config.enable_external_id:
-            conditions.append(f"{alias}.external_id = CAST(:ext_id AS TEXT)")
-        
-        if "asset_id" in filters and self.config.enable_asset_id:
+        alias = sidecar_alias or f"sc_{self.sidecar_id}"
+        if "external_id" in filters and filters["external_id"] is not None:
+            conditions.append(f"{alias}.external_id = :external_id")
+        if "asset_id" in filters and filters["asset_id"] is not None:
             conditions.append(f"{alias}.asset_id = :asset_id")
-        
         return conditions
-    
-    def get_order_by_fields(
+
+    def get_feature_id_condition(
         self,
-        sidecar_alias: Optional[str] = None
-    ) -> List[str]:
+        feature_ids: Union[str, List[str]],
+        hub_alias: str = "h",
+        sidecar_alias: Optional[str] = None,
+        partition_keys: Optional[List[str]] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Returns JOIN and WHERE conditions for feature ID resolution.
+
+        For attributes sidecar:
+        - JOIN condition includes partition key matches and temporal validity
+        - WHERE condition matches the external_id(s)
+        - Using hub_alias.transaction_time ensures we match the sidecar record
+          that was active at the time of the hub record creation.
+        """
+        if not self.config.feature_id_field_name:
+            return (None, None)
+        if not self.provides_feature_id:
+            return (None, None)
+
+        alias = sidecar_alias or f"sc_{self.sidecar_id}"
+
+        # Build JOIN condition components
+        join_conditions = []
+
+        # 1. Partition key matches (if collection is partitioned)
+        if partition_keys:
+            for pk in partition_keys:
+                join_conditions.append(f"{alias}.{pk} = {hub_alias}.{pk}")
+
+        # Combine JOIN conditions
+        join_clause = " AND ".join(join_conditions) if join_conditions else None
+        # Note: We don't add validity check here as it's already in get_join_clause
+        if join_clause:
+            join_clause = f"AND {join_clause}"
+
+        # WHERE condition: match external_id (singular or array)
+        # AND ensure we only get active records if validity is enabled
+        # If we query by ID, we generally want the current state.
+        validity_filter = ""
+        # FIX: The test item has validity=NULL (infinite), but lower/upper are usually timestamps.
+        # upper(validity) IS NULL means infinite future -> active.
+        # But if the item was inserted without explicit validity, does it default to [now, NULL)?
+        # In get_ddl, it's NOT NULL.
+        # But verify logic logic.
+        if self.config.enable_validity:
+            validity_filter = f"AND (upper({alias}.validity) IS NULL OR upper({alias}.validity) > NOW())"
+
+        if isinstance(feature_ids, list):
+            # Check both external_id and fallback to hub geoid
+            where_clause = f"({alias}.external_id::text = ANY(CAST(:item_ids AS TEXT[])) OR {hub_alias}.geoid::text = ANY(CAST(:item_ids AS TEXT[]))) {validity_filter}"
+        else:
+            # Check both external_id and fallback to hub geoid
+            where_clause = f"({alias}.external_id::text = CAST(:item_id AS TEXT) OR {hub_alias}.geoid::text = CAST(:item_id AS TEXT)) {validity_filter}"
+
+        return (join_clause, where_clause)
+
+    def get_order_by_fields(self, sidecar_alias: Optional[str] = None) -> List[str]:
         """Returns fields that can be used for ordering."""
         alias = sidecar_alias or f"sc_{self.sidecar_id}"
         fields = []
-        
+
         if self.config.enable_external_id:
             fields.append(f"{alias}.external_id")
-        
+
         if self.config.enable_asset_id:
             fields.append(f"{alias}.asset_id")
-        
+
         # Columnar mode attributes can be ordered
-        if self.resolved_storage_mode == AttributeStorageMode.COLUMNAR and self.config.attribute_schema:
+        if (
+            self.resolved_storage_mode == AttributeStorageMode.COLUMNAR
+            and self.config.attribute_schema
+        ):
             for attr in self.config.attribute_schema:
                 fields.append(f"{alias}.{attr.name}")
-        
+
         return fields
-    
-    def get_group_by_fields(
-        self,
-        sidecar_alias: Optional[str] = None
-    ) -> List[str]:
+
+    def get_group_by_fields(self, sidecar_alias: Optional[str] = None) -> List[str]:
         """Returns fields that can be used for grouping."""
         alias = sidecar_alias or f"sc_{self.sidecar_id}"
         fields = []
-        
+
         if self.config.enable_external_id:
             fields.append(f"{alias}.external_id")
-        
+
         if self.config.enable_asset_id:
             fields.append(f"{alias}.asset_id")
-        
+
         # Columnar mode attributes can be grouped
-        if self.resolved_storage_mode == AttributeStorageMode.COLUMNAR and self.config.attribute_schema:
+        if (
+            self.resolved_storage_mode == AttributeStorageMode.COLUMNAR
+            and self.config.attribute_schema
+        ):
             for attr in self.config.attribute_schema:
                 fields.append(f"{alias}.{attr.name}")
-        
+
         return fields
-    
+
     def get_field_definitions(
-        self,
-        sidecar_alias: Optional[str] = None
+        self, sidecar_alias: Optional[str] = None
     ) -> Dict[str, FieldDefinition]:
-        """Returns capabilities of attribute fields."""
+        """Returns capabilities of attribute fields and identity mapping."""
         alias = sidecar_alias or f"sc_{self.sidecar_id}"
         fields = {}
-        
+
+        # 1. Identity Columns
         if self.config.enable_external_id:
             fields["external_id"] = FieldDefinition(
                 name="external_id",
-                title=LocalizedText(en="External ID", fr="Identifiant Externe", es="Identificador Externo"),
-                description=LocalizedText(en="The unique identifier of the feature in the source system.", fr="L'identifiant unique de l'entité dans le système source.", es="El identificador único de la entidad en el sistema de origen."),
+                alias="id",  # Standard external name for STAC/OGC
+                title=LocalizedText(
+                    en="External ID",
+                    fr="Identifiant Externe",
+                    es="Identificador Externo",
+                ),
+                description=LocalizedText(
+                    en="The unique identifier of the feature in the source system.",
+                    fr="L'identifiant unique de l'entité dans le système source.",
+                    es="El identificador único de la entidad en el sistema de origen.",
+                ),
                 sql_expression=f"{alias}.external_id",
-                capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE, 
-                             FieldCapability.GROUPABLE, FieldCapability.INDEXED],
+                capabilities=[
+                    FieldCapability.FILTERABLE,
+                    FieldCapability.SORTABLE,
+                    FieldCapability.GROUPABLE,
+                    FieldCapability.INDEXED,
+                ],
                 data_type="text",
                 aggregations=["count", "array_agg"],
-                transformations=None  # All string transformations allowed
+                expose=True,
             )
-        
+
         if self.config.enable_asset_id:
             fields["asset_id"] = FieldDefinition(
                 name="asset_id",
-                title=LocalizedText(en="Asset ID", fr="Identifiant de l'Actif", es="Identificador del Activo"),
-                description=LocalizedText(en="The identifier of the associated physical asset.", fr="L'identifiant de l'actif physique associé.", es="El identificador del activo físico asociado."),
+                alias="asset_id",
+                title=LocalizedText(
+                    en="Asset ID",
+                    fr="Identifiant de l'Actif",
+                    es="Identificador del Activo",
+                ),
+                description=LocalizedText(
+                    en="The identifier of the associated physical asset.",
+                    fr="L'identifiant de l'actif physique associé.",
+                    es="El identificador del activo físico asociado.",
+                ),
                 sql_expression=f"{alias}.asset_id",
-                capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE, 
-                             FieldCapability.GROUPABLE, FieldCapability.INDEXED],
+                capabilities=[
+                    FieldCapability.FILTERABLE,
+                    FieldCapability.SORTABLE,
+                    FieldCapability.GROUPABLE,
+                    FieldCapability.INDEXED,
+                ],
                 data_type="text",
                 aggregations=["count", "array_agg"],
-                transformations=[]  # No transformations for asset_id
+                expose=True,
             )
-            
+
+        # 2. Internal geoid Exposure (Optional)
+        if self.config.expose_geoid:
+            fields["geoid"] = FieldDefinition(
+                name="geoid",
+                alias="geoid",
+                title=LocalizedText(en="Internal ID", fr="ID Interne", es="ID Interno"),
+                description=LocalizedText(
+                    en="Internal stable identifier (UUID).",
+                    fr="Identifiant stable interne (UUID).",
+                    es="Identificador estable interno (UUID).",
+                ),
+                sql_expression="h.geoid",
+                capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
+                data_type="uuid",
+                expose=True,
+            )
+
+        # 3. Validity Mapping (Bi-temporal exposure)
         if self.config.enable_validity:
+            # start_datetime mapping
+            fields["start_datetime"] = FieldDefinition(
+                name="validity_start",
+                alias="start_datetime",
+                title=LocalizedText(
+                    en="Valid From", fr="Valide à partir de", es="Válido desde"
+                ),
+                description=LocalizedText(
+                    en="Start of the temporal validity period.",
+                    fr="Début de la période de validité temporelle.",
+                    es="Inicio del periodo de validez temporal.",
+                ),
+                sql_expression=f"lower({alias}.validity)",
+                capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
+                data_type="timestamptz",
+                expose=True,
+            )
+            # end_datetime mapping
+            fields["end_datetime"] = FieldDefinition(
+                name="validity_end",
+                alias="end_datetime",
+                title=LocalizedText(
+                    en="Valid To", fr="Valide jusqu'à", es="Válido hasta"
+                ),
+                description=LocalizedText(
+                    en="End of the temporal validity period.",
+                    fr="Fin de la période de validité temporelle.",
+                    es="Fin del periodo de validez temporal.",
+                ),
+                sql_expression=f"upper({alias}.validity)",
+                capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
+                data_type="timestamptz",
+                expose=True,
+            )
+            # validity range mapping
             fields["validity"] = FieldDefinition(
                 name="validity",
-                title=LocalizedText(en="Validity Period", fr="Période de Validité", es="Periodo de Validez"),
-                description=LocalizedText(en="The temporal range for which this feature version is valid.", fr="La plage temporelle pour laquelle cette version de l'entité est valide.", es="El rango temporal para el cual esta versión de la entidad es válida."),
+                title=LocalizedText(
+                    en="Temporal Validity",
+                    fr="Validité Temporelle",
+                    es="Validez Temporal",
+                ),
+                description=LocalizedText(
+                    en="The temporal validity range of the record.",
+                    fr="La période de validité temporelle de l'enregistrement.",
+                    es="El rango de validez temporal del registro.",
+                ),
                 sql_expression=f"{alias}.validity",
-                capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE, 
-                             FieldCapability.GROUPABLE, FieldCapability.INDEXED],
+                capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
                 data_type="tstzrange",
-                aggregations=[], # Maybe specialized range aggs?
-                transformations=["lower", "upper"]
+                expose=True,
             )
-            
-        # Standard Hub fields that might be useful to expose via attribute sidecar for consistency
-        # transaction_time is often needed for STAC items
+
+        # 4. Standard Hub Temporal Info
         fields["transaction_time"] = FieldDefinition(
             name="transaction_time",
-            title=LocalizedText(en="Transaction Time", fr="Temps de Transaction", es="Tiempo de Transacción"),
-            description=LocalizedText(en="The time when this record was recorded in the database.", fr="Le moment où cet enregistrement a été consigné dans la base de données.", es="El momento en que este registro fue grabado en la base de datos."),
-            sql_expression="h.transaction_time", # Hub field
+            title=LocalizedText(
+                en="Transaction Time",
+                fr="Temps de Transaction",
+                es="Tiempo de Transacción",
+            ),
+            description=LocalizedText(
+                en="The time when this record was recorded in the database.",
+                fr="Le moment où cet enregistrement a été consigné dans la base de données.",
+                es="El momento en que este registro fue grabado en la base de datos.",
+            ),
+            sql_expression="h.transaction_time",
             capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
-            data_type="timestamptz"
+            data_type="timestamptz",
+            expose=True,
         )
-            
-        # Columnar mode attributes
-        if self.resolved_storage_mode == AttributeStorageMode.COLUMNAR and self.config.attribute_schema:
+
+        # 5. Columnar Mode Attributes
+        if (
+            self.resolved_storage_mode == AttributeStorageMode.COLUMNAR
+            and self.config.attribute_schema
+        ):
             for attr in self.config.attribute_schema:
-                # Map postgres type to capabilities
-                caps = [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.GROUPABLE]
-                if attr.index_type != AttributeIndexType.NONE:
+                caps = [
+                    FieldCapability.FILTERABLE,
+                    FieldCapability.SORTABLE,
+                    FieldCapability.GROUPABLE,
+                ]
+                if attr.index != AttributeIndexType.NONE:
                     caps.append(FieldCapability.INDEXED)
-                
-                # Determine aggregations/transformations based on type
+
                 aggs = ["count", "array_agg"]
                 transforms = []
-                
-                if attr.pg_type in [PostgresType.INTEGER, PostgresType.BIGINT, PostgresType.NUMERIC, PostgresType.FLOAT]:
+
+                if attr.type in [
+                    PostgresType.INTEGER,
+                    PostgresType.BIGINT,
+                    PostgresType.NUMERIC,
+                    PostgresType.FLOAT,
+                ]:
                     caps.append(FieldCapability.AGGREGATABLE)
                     aggs.extend(["sum", "avg", "min", "max"])
-                elif attr.pg_type in [PostgresType.TEXT, PostgresType.VARCHAR]:
-                    transforms = None  # All string transformations allowed
-                
+                elif attr.type in [PostgresType.TEXT, PostgresType.VARCHAR_255]:
+                    transforms = None
+
                 fields[attr.name] = FieldDefinition(
                     name=attr.name,
                     sql_expression=f"{alias}.{attr.name}",
                     capabilities=caps,
-                    data_type=attr.pg_type.value,
+                    data_type=attr.type.value,
                     aggregations=aggs,
-                    transformations=transforms
+                    transformations=transforms,
+                    expose=True,  # Standard attributes exposed by default
                 )
-        
+
         return fields
-    
+
+    def get_dynamic_field_definition(
+        self, field_name: str, sidecar_alias: Optional[str] = None
+    ) -> Optional[FieldDefinition]:
+        """
+        Dynamically resolves fields for JSONB storage mode.
+        """
+        if self.resolved_storage_mode != AttributeStorageMode.JSONB:
+            return None
+
+        alias = sidecar_alias or f"sc_{self.sidecar_id}"
+
+        # Determine SQL expression
+        sql_expr = None
+        if field_name in self.config.jsonb_indexed_paths:
+            cast_type = self.config.jsonb_indexed_paths[field_name].value
+            sql_expr = f"({alias}.{self.config.jsonb_column_name}->>'{field_name}')::{cast_type}"
+        elif field_name.startswith("properties."):
+            json_key = field_name.split(".", 1)[1]
+            sql_expr = f"{alias}.{self.config.jsonb_column_name}->>'{json_key}'"
+        else:
+            # Assume root level property
+            sql_expr = f"{alias}.{self.config.jsonb_column_name}->>'{field_name}'"
+
+        return FieldDefinition(
+            name=field_name,
+            sql_expression=sql_expr,
+            capabilities=[
+                FieldCapability.FILTERABLE,
+                FieldCapability.SORTABLE,
+                FieldCapability.GROUPABLE,
+            ],
+            data_type="text",  # JSONB extraction defaults to text unless cast
+            aggregations=["count", "array_agg"],  # Basic aggregations
+            expose=True,
+        )
+
     def get_default_sort(self) -> Optional[List[Tuple[str, str]]]:
+
         if self.config.enable_external_id:
             return [("external_id", "ASC")]
         return None
 
     def prepare_upsert_payload(
-        self, 
-        feature: Dict[str, Any],
-        context: Dict[str, Any]
+        self, feature: Union[Feature, Dict[str, Any]], context: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
         """Extract attributes and identity from feature."""
-        # Use context geoid or generate/fail
+        # 1. Identity Extraction & Mapping
+        if isinstance(feature, Feature):
+            ext_id = feature.id
+        else:
+            field_path = getattr(self.config, "external_id_field", "id")
+            ext_id = self._extract_value(feature, field_path)
+
+        # Fallback to context if not in feature
+        if ext_id is None:
+            ext_id = context.get("external_id")
+
+        if self.config.enable_external_id and ext_id:
+            ext_id_str = str(ext_id)
+            context["external_id"] = ext_id_str
+
+        # 2. Resolve Geoid from Context
         geoid = context.get("geoid")
         if not geoid:
             raise ValueError("geoid is required in context")
-        
+
         payload = {"geoid": geoid}
-        
-        # Partition Key check
-        # If partition key is provided in context, use it. 
-        # But we might also be the SOURCE of the partition key (e.g. valid_from or asset_id)
+
+        # 3. Partition Key check
         if context.get("partition_key_name"):
-             payload[context["partition_key_name"]] = context["partition_key_value"]
+            payload[context["partition_key_name"]] = context["partition_key_value"]
 
-        # Identity Extraction: "The external_id value is the id of the incoming feature"
-        if self.config.enable_external_id:
-            # 1. Identity Logic
-            # Try to extract the external_id using logical rules
-            field_path = getattr(self.config, "external_id_field", "id")
-            ext_id = self._extract_value(feature, field_path)
-            
-            if ext_id:
-                # DECENTRALIZATION: Populate context so other components (like ItemService) can use it
-                ext_id_str = str(ext_id)
-                payload["external_id"] = ext_id_str
-                context["external_id"] = ext_id_str
+        # 4. Identity Column Storage
+        if self.config.enable_external_id and ext_id:
+            payload["external_id"] = str(ext_id)
 
-        asset_id = None
         if self.config.enable_asset_id:
-            # 1. Start with context (System-assigned ID from ingestion has priority)
+            # IMPORTANT: asset_id is ONLY extracted from context, not feature body.
             asset_id = context.get("asset_id")
-            
-            # 2. If not in context, try configured field
-            if not asset_id:
-                field_path = getattr(self.config, "asset_id_field", "asset_id")
-                asset_id = self._extract_value(feature, field_path)
-                
             if asset_id:
-                # DECENTRALIZATION: Ensure context has the resolved asset_id
                 asset_id_str = str(asset_id)
                 payload["asset_id"] = asset_id_str
                 context["asset_id"] = asset_id_str
-        
-        # Validity Logic
-        if self.config.enable_validity:
-            # Standardized fields for validity
-            valid_from = feature.get("valid_from")
-            if not valid_from:
-                valid_from = feature.get("properties", {}).get("valid_from")
-            
-            if valid_from:
-                context["valid_from"] = valid_from
 
-            valid_to = feature.get("valid_to")
-            if not valid_to:
-                valid_to = feature.get("properties", {}).get("valid_to")
-                
-            if valid_to:
-                context["valid_to"] = valid_to
+        # 5. Temporal Fields extraction (Supports JSON-FG 'time' member)
+        if hasattr(feature, "time") and feature.time:
+            # JSON-FG time can be an instant or interval. For simplicity in mapping to validity:
+            if isinstance(feature.time, dict):
+                valid_from = feature.time.get("date") or feature.time.get("timestamp")
+                valid_to = None
+            elif isinstance(feature.time, (list, tuple)) and len(feature.time) == 2:
+                valid_from = feature.time[0]
+                valid_to = feature.time[1]
+            else:
+                valid_from = feature.time
+                valid_to = None
+        elif isinstance(feature, Feature):
+            valid_from = feature.properties.get("valid_from") or feature.properties.get(
+                "datetime"
+            )
+            valid_to = feature.properties.get("valid_to")
+        else:
+            time_val = feature.get("time")
+            if time_val:
+                if isinstance(time_val, dict):
+                    valid_from = time_val.get("date") or time_val.get("timestamp")
+                    valid_to = None
+                elif isinstance(time_val, (list, tuple)) and len(time_val) == 2:
+                    valid_from = time_val[0]
+                    valid_to = time_val[1]
+                else:
+                    valid_from = time_val
+                    valid_to = None
+            else:
+                valid_from = (
+                    feature.get("valid_from")
+                    or feature.get("properties", {}).get("valid_from")
+                    or feature.get("properties", {}).get("datetime")
+                )
+                valid_to = feature.get("valid_to") or feature.get("properties", {}).get(
+                    "valid_to"
+                )
 
-        # Attributes
-        properties = feature.get("properties", {})
-        
+        if valid_from:
+            if isinstance(valid_from, str):
+                try:
+                    from dateutil.parser import isoparse
+
+                    valid_from = isoparse(valid_from)
+                except (ValueError, ImportError):
+                    logger.warning(f"Failed to parse valid_from string: {valid_from}")
+            context["valid_from"] = valid_from
+
+        if valid_to:
+            if isinstance(valid_to, str):
+                try:
+                    from dateutil.parser import isoparse
+
+                    valid_to = isoparse(valid_to)
+                except (ValueError, ImportError):
+                    logger.warning(f"Failed to parse valid_to string: {valid_to}")
+            context["valid_to"] = valid_to
+
+        # 6. Attributes Extraction
+        if isinstance(feature, Feature):
+            properties = feature.properties
+        else:
+            properties = feature.get("properties", {})
+
         if self.resolved_storage_mode == AttributeStorageMode.COLUMNAR:
             if self.config.attribute_schema:
                 for attr in self.config.attribute_schema:
-                    if attr.name in properties:
-                        payload[attr.name] = properties[attr.name]
-                    # Also check top-level for convenience (e.g. STAC extensions)
-                    elif attr.name in feature:
-                        payload[attr.name] = feature[attr.name]
-        else:
-            # JSONB Mode
-            # We store the entire properties dict
-            if properties:
-                # OPTIONAL: Remove identity fields from attributes JSONB if they have their own columns
-                # to avoid duplication and satisfy privacy/security requirements.
-                # We work on a copy to avoid side-effects on the input feature object.
-                props_to_save = dict(properties)
-                
-                if self.config.enable_external_id:
-                     field_path = getattr(self.config, "external_id_field", "id")
-                     if "." not in field_path and field_path in props_to_save:
-                          del props_to_save[field_path]
-                
-                if self.config.enable_asset_id:
-                     field_path = getattr(self.config, "asset_id_field", "asset_id")
-                     if "." not in field_path and field_path in props_to_save:
-                          del props_to_save[field_path]
+                    val = self._extract_value(
+                        feature, f"properties.{attr.name}"
+                    ) or feature.get(attr.name)
 
-                import json
-                # Assuming simple JSON serialization handled by DB driver or upper layer dump
-                payload[self.config.jsonb_column_name] = json.dumps(props_to_save)
-        
+                    # Apply default if missing
+                    if val is None:
+                        val = attr.default
+
+                    if val is not None and val is not PydanticUndefined:
+                        payload[attr.name] = val
+        else:
+            # JSONB Mode: Clean duplicates
+            props_to_save = dict(properties)
+
+            # Apply defaults from schema if present (even in JSONB mode)
+            if self.config.attribute_schema:
+                for attr in self.config.attribute_schema:
+                    if (
+                        attr.name not in props_to_save
+                        or props_to_save[attr.name] is None
+                    ):
+                        if attr.default is not None:
+                            props_to_save[attr.name] = attr.default
+
+            if self.config.enable_external_id:
+                field_path = getattr(self.config, "external_id_field", "id")
+                if "." not in field_path and field_path in props_to_save:
+                    del props_to_save[field_path]
+                
+                ext_id = context.get("external_id")
+                if not ext_id:
+                    ext_id = self._extract_value(feature, field_path)
+                if ext_id:
+                    payload["external_id"] = ext_id
+
+            if self.config.enable_asset_id:
+                asset_id_field = getattr(self.config, "asset_id_field", "asset_id")
+                if "." not in asset_id_field and asset_id_field in props_to_save:
+                    del props_to_save[asset_id_field]
+                
+                asset_id = context.get("asset_id")
+                if not asset_id:
+                    asset_id = self._extract_value(feature, asset_id_field)
+                if asset_id:
+                    payload["asset_id"] = asset_id
+                    context["asset_id"] = asset_id
+
+            import json
+
+            # IMPORTANT: We use json.dumps because some database drivers
+            # (like asyncpg without specific JSONB codec registration)
+            # expect a string for JSONB columns.
+            payload[self.config.jsonb_column_name] = json.dumps(
+                props_to_save, cls=CustomJSONEncoder
+            )
+
         return payload
+
+    def get_internal_columns(self) -> set:
+        """Columns owned by this sidecar that are never part of Feature properties."""
+        cols = {"geoid", "external_id", "validity", "transaction_time", "deleted_at",
+                "transaction_period", "catalog_id", "collection_id"}
+        if self.config.enable_asset_id:
+            cols.add("asset_id")
+        return cols
+
+    def map_row_to_feature(
+        self,
+        row: Dict[str, Any],
+        feature: Feature,
+        context: Dict[str, Any],
+    ) -> None:
+        """Populate Feature from database row.
+
+        Pipeline responsibilities:
+          - **Identity**: If configured as the feature-id provider
+            (``external_id_as_feature_id=True``), override ``feature.id``
+            with ``external_id``.  The Hub already set ``geoid`` as the
+            default; this sidecar only overrides when appropriate.
+          - **Properties**: Merge attribute columns / JSONB blob into
+            ``feature.properties``.
+          - **Context enrichment**: Write all fetched row values into
+            ``context["_sidecar_data"]["attributes"]`` so downstream
+            sidecars (e.g. STAC) can access them (e.g. ``asset_id``).
+        """
+        # Publish all raw row values under this sidecar's key in context.
+        sidecar_data = getattr(context, "_sidecar_data", None)
+        if sidecar_data is None:
+            sidecar_data = {}
+            setattr(context, "_sidecar_data", sidecar_data)
+            
+        sidecar_data[self.sidecar_id] = dict(row)
+
+        # 1. Identity Mapping
+        # The Hub already initialised feature.id = geoid.  We only override
+        # when this sidecar is the designated feature-id provider.
+        if self.config.provides_feature_id:
+            ext_id = row.get("external_id")
+            if ext_id is not None:
+                feature.id = str(ext_id)
+            # else: keep Hub's geoid-based id
+
+        # 2. Publish asset_id into shared context for downstream sidecars.
+        asset_id = row.get("asset_id")
+        if asset_id is not None:
+            context["asset_id"] = asset_id
+
+        # 2. Attributes Mapping (STRICT MODE)
+        storage_mode = self.resolved_storage_mode
+        props = feature.properties if feature.properties else {}
+
+        if storage_mode == AttributeStorageMode.COLUMNAR:
+            # Use schema to identify attribute columns (STRICT)
+            if self.config.attribute_schema:
+                for attr in self.config.attribute_schema:
+                    if attr.name in row:
+                        props[attr.name] = row[attr.name]
+        else:
+            # JSONB Mode (STRICT)
+            jsonb_col = self.config.jsonb_column_name
+            if jsonb_col in row:
+                val = row[jsonb_col]
+                if isinstance(val, str):
+                    try:
+                        import json
+
+                        val = json.loads(val)
+                    except Exception:
+                        logger.warning(f"Failed to parse JSONB column {jsonb_col}")
+                        val = None
+
+                if isinstance(val, dict):
+                    # Merge JSONB content into properties
+                    new_props = dict(feature.properties) if feature.properties else {}
+                    new_props.update(val)
+
+                    # Remove raw column key to avoid nesting
+                    new_props.pop(jsonb_col, None)
+
+                    # Explicit re-assignment to trigger Pydantic validation/update
+                    feature.properties = new_props
+
+            # JSONB Mode: merge individual non-internal columns that the Optimizer
+            # selected but are not already in properties.
+            # Use get_internal_columns() dynamically instead of a hardcoded list.
+            internal_cols = self.get_internal_columns()
+            jsonb_col = self.config.jsonb_column_name
+            props = feature.properties if feature.properties is not None else {}
+            
+            # Delegate exclusion entirely to the pipeline context, which already
+            # merged HUB_INTERNAL_COLUMNS + every other sidecar's get_internal_columns().
+            excluded = context.all_internal_columns
+            for key, val in row.items():
+                if key not in internal_cols and key not in excluded and key != jsonb_col and key not in props:
+                    if val is not PydanticUndefined and not isinstance(val, (bytes, bytearray)):
+                        props[key] = val
+            feature.properties = props
+
+        # 3. Time Standardization
+        # Map transaction_time -> created (ISO8601 UTC with 'Z')
+        if "transaction_time" in row and row["transaction_time"] is not None:
+            from datetime import datetime
+
+            tx_time = row["transaction_time"]
+            if isinstance(tx_time, datetime):
+                # Ensure UTC and format with 'Z'
+                if tx_time.tzinfo is None:
+                    from datetime import timezone
+
+                    tx_time = tx_time.replace(tzinfo=timezone.utc)
+                props["created"] = tx_time.isoformat().replace("+00:00", "Z")
+            elif isinstance(tx_time, str):
+                # Already formatted, ensure it ends with 'Z'
+                props["created"] = (
+                    tx_time if tx_time.endswith("Z") else tx_time.replace("+00:00", "Z")
+                )
+
+        # 4. Validity Mapping (if enabled)
+        if self.config.enable_validity and "validity" in row:
+            validity = row["validity"]
+            if validity is not None:
+                from datetime import datetime
+                from datetime import timezone as dt_timezone
+
+                # Extract start and end from validity range
+                # asyncpg returns Range objects, but they might be strings in some contexts
+                if hasattr(validity, "lower") and hasattr(validity, "upper"):
+                    start = validity.lower
+                    end = validity.upper
+                elif isinstance(validity, str):
+                    # Parse string representation of range
+                    # Example: "[2023-01-01 00:00:00+00,2023-12-31 23:59:59+00)"
+                    import re
+
+                    match = re.match(r"\[([^,]+),([^\)]+)\)", validity)
+                    if match:
+                        from dateutil.parser import isoparse
+
+                        try:
+                            start = isoparse(match.group(1).strip())
+                            end_str = match.group(2).strip()
+                            end = isoparse(end_str) if end_str != "infinity" else None
+                        except Exception:
+                            start = None
+                            end = None
+                    else:
+                        start = None
+                        end = None
+                else:
+                    start = None
+                    end = None
+
+                # Map to STAC datetime fields (ISO8601 UTC with 'Z')
+                if start is not None:
+                    if isinstance(start, datetime):
+                        if start.tzinfo is None:
+                            start = start.replace(tzinfo=dt_timezone.utc)
+                        props["start_datetime"] = start.isoformat().replace(
+                            "+00:00", "Z"
+                        )
+
+                if end is not None:
+                    if isinstance(end, datetime):
+                        if end.tzinfo is None:
+                            end = end.replace(tzinfo=dt_timezone.utc)
+                        props["end_datetime"] = end.isoformat().replace("+00:00", "Z")
+
+        # 5. Update feature properties
+        if props:
+            feature.properties = props
+
+    async def on_item_created(
+        self,
+        conn: DbResource,
+        physical_schema: str,
+        physical_table: str,
+        geoid: str,
+        feature: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> None:
+        """
+        Hook to link assets if an asset_id was identified during preparation.
+        """
+        if not self.config.enable_asset_id:
+            return
+
+        asset_id = context.get("asset_id")
+        if not asset_id:
+            return
+
+        try:
+            # Import protocol to avoid circular imports
+            from dynastore.tools.discovery import get_protocol
+            from dynastore.models.protocols import AssetsProtocol
+
+            assets_protocol = get_protocol(AssetsProtocol)
+            if not assets_protocol:
+                logger.warning(
+                    f"AssetsProtocol not available. Cannot link asset {asset_id} to feature {geoid}."
+                )
+                return
+
+            await assets_protocol.link_asset_to_feature(
+                physical_schema,
+                physical_table,
+                geoid=geoid,
+                asset_id=asset_id,
+                db_resource=conn,
+            )
+            logger.info(f"Linked asset {asset_id} to feature {geoid}.")
+
+        except Exception as e:
+            logger.error(
+                f"Failed to link asset {asset_id} to feature {geoid}: {e}",
+                exc_info=True,
+            )
+
+    def apply_query_context(
+        self,
+        request: QueryRequest,
+        context: Dict[str, Any],
+    ) -> None:
+        """
+        Allows the sidecar to inspect the query request and contribute to the
+        query definition (e.g., by adding JOINs or SELECT fields via context).
+        """
+        alias = f"sc_{self.sidecar_id}"
+        
+        # Check if requested explicitly or implicitly via select=* / empty select
+        requested_fields = {sel.field for sel in request.select} if hasattr(request, "select") and request.select else {"*"}
+        filter_fields = {f.field for f in request.filters} if hasattr(request, "filters") and request.filters else set()
+        sort_fields = {s.field for s in (request.sort or [])} if hasattr(request, "sort") and request.sort else set()
+        all_needed = requested_fields | filter_fields | sort_fields
+
+        # Use get_select_fields logic to populate context
+        fields_to_add = self.get_select_fields(request=request, sidecar_alias=alias)
+        
+        for expr in fields_to_add:
+            if expr not in context.get("select_fields", []):
+                context.setdefault("select_fields", []).append(expr)
+
+    def get_identity_columns(self) -> List[str]:
+        """Returns identity columns for this sidecar (geoid + validity if versioned)."""
+        cols = ["geoid"]
+        if self.config.enable_validity:
+            cols.append("validity")
+        return cols
+
+    def finalize_upsert_payload(
+        self,
+        sc_payload: Dict[str, Any],
+        hub_row: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Finalizes attributes payload by injecting validity from Hub or context."""
+        payload = sc_payload.copy()
+
+        # Geoid is already in sc_payload from prepare_upsert_payload
+
+        # Inject validity if managed by this sidecar
+        if self.config.enable_validity and "validity" not in payload:
+            validity = hub_row.get("validity") or context.get("validity")
+            if validity:
+                payload["validity"] = validity
+            else:
+                # Check for explicit valid_from/to in context (extracted from properties)
+                v_from = context.get("valid_from")
+                v_to = context.get("valid_to")
+
+                from datetime import datetime, timezone
+                from asyncpg import Range
+
+                # If start missing, MUST sync with Hub transaction_time to ensure join consistency.
+                # Do NOT rely on DB default CURRENT_TIMESTAMP as it will be > transaction_time.
+                if not v_from:
+                    v_from = hub_row.get("transaction_time") or datetime.now(
+                        timezone.utc
+                    )
+
+                payload["validity"] = Range(
+                    v_from, v_to, lower_inc=True, upper_inc=False
+                )
+
+        return payload
+
+    # --- Query Generation Methods ---
+
+    async def check_upsert_collision(
+        self,
+        conn: DbResource,
+        physical_schema: str,
+        physical_table: str,
+        processing_context: Dict[str, Any],
+        exclude_geoid: Optional[Any] = None,
+    ) -> bool:
+        """
+        Checks for identity collisions (external_id or asset_id).
+        """
+        alias = f"sc_{self.sidecar_id}"
+        table = f"{physical_table}_{self.sidecar_id}"
+
+        # 1. Check Asset ID Collision (if behavior requires it)
+        # Note: ItemService handles the check based on versioning_behavior,
+        # but here we provide the implementation for specific fields.
+        asset_id = processing_context.get("asset_id")
+        if asset_id and self.config.enable_asset_id:
+            query = text(f"""
+                SELECT 1 FROM "{physical_schema}"."{table}"
+                WHERE asset_id = :asset_id
+                {f"AND geoid != :exclude_geoid" if exclude_geoid else ""}
+                LIMIT 1
+            """)
+            params = {"asset_id": str(asset_id), "exclude_geoid": exclude_geoid}
+            if await conn.scalar(query, params):
+                return True
+
+        # 2. Check External ID Collision (for unique constraints if not versioned)
+        # Attributes sidecar usually handles external_id uniquely within active versions.
+        # This is mostly handled by the unique index, but can be checked here too.
+
+        return False
+
+    def get_identity_payload(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Returns the subset of the context that identifies the feature for this sidecar.
+        """
+        identity = {}
+        if self.config.enable_external_id and "external_id" in context:
+            identity["external_id"] = context["external_id"]
+        if self.config.enable_asset_id and "asset_id" in context:
+            identity["asset_id"] = context["asset_id"]
+        return identity
 
     async def check_collision(
         self,
@@ -637,17 +1434,17 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         physical_table: str,
         field_name: str,
         value: Any,
-        exclude_geoid: Optional[Any] = None
+        exclude_geoid: Optional[Any] = None,
     ) -> bool:
         """Check for value existence in external_id or asset_id columns."""
         if field_name == "external_id" and not self.config.enable_external_id:
             return False
         if field_name == "asset_id" and not self.config.enable_asset_id:
             return False
-            
+
         # We only support checks for identity fields or columnar attributes
         sc_table = f"{physical_table}_{self.sidecar_id}"
-        
+
         # Check standard identity fields
         if field_name in ["external_id", "asset_id"]:
             sql = f'SELECT 1 FROM "{physical_schema}"."{sc_table}" WHERE {field_name} = :val'
@@ -655,15 +1452,18 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
             if exclude_geoid:
                 sql += " AND geoid <> :exclude"
                 params["exclude"] = exclude_geoid
-            
+
             # Limit 1 for speed
             sql += " LIMIT 1"
-            
+
             res = await conn.execute(text(sql), params)
             return res.scalar() is not None
 
         # Check columnar attributes
-        if self.resolved_storage_mode == AttributeStorageMode.COLUMNAR and self.config.attribute_schema:
+        if (
+            self.resolved_storage_mode == AttributeStorageMode.COLUMNAR
+            and self.config.attribute_schema
+        ):
             attr_names = {a.name for a in self.config.attribute_schema}
             if field_name in attr_names:
                 sql = f'SELECT 1 FROM "{physical_schema}"."{sc_table}" WHERE "{field_name}" = :val'
@@ -671,11 +1471,11 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                 if exclude_geoid:
                     sql += " AND geoid <> :exclude"
                     params["exclude"] = exclude_geoid
-                
+
                 sql += " LIMIT 1"
                 res = await conn.execute(text(sql), params)
                 return res.scalar() is not None
-        
+
         return False
 
     async def resolve_existing_item(
@@ -683,54 +1483,58 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         conn: DbResource,
         physical_schema: str,
         physical_table: str,
-        processing_context: Dict[str, Any]
+        processing_context: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
         """
         Resolves existing item by external_id (or other identity fields).
         """
         if not self.config.enable_external_id:
             return None
-            
+
         external_id = processing_context.get("external_id")
         if not external_id:
             return None
-            
+
         # Build query to match external_id and find active record
         sc_table = f"{physical_table}_{self.sidecar_id}"
-        
+
         # We need geoid and validity (if enabled)
         select_fields = ["h.geoid", "h.content_hash"]
-        
-        # Check active status: 
+
+        # Check active status:
         # 1. Hub deleted_at IS NULL
         # 2. Sidecar validity is active (if enabled)
-        
+
         where_conditions = [
             """s.external_id = :ext_id""",
             """h.deleted_at IS NULL""",
-            """h.geoid = s.geoid""" # Join condition
+            """h.geoid = s.geoid""",  # Join condition
         ]
-        
+
         if self.config.enable_validity:
             # Active usually means valid_to is infinite (upper bound is NULL)
             # OR we match the logic "current version".
+            # For exact ID lookup (external_id), we typically want the ACTIVE version.
+            # If deleted_at is NULL (checked above), we also want validity to be current.
             where_conditions.append("""upper(s.validity) IS NULL""")
             select_fields.append("s.validity")
-            
+
         sql = f"""
             SELECT {", ".join(select_fields)}
             FROM "{physical_schema}"."{physical_table}" h, "{physical_schema}"."{sc_table}" s
             WHERE {" AND ".join(where_conditions)}
+            ORDER BY h.transaction_time DESC
             LIMIT 1;
         """
-        
+
         from sqlalchemy import text
+
         result = await conn.execute(text(sql), {"ext_id": str(external_id)})
         row = result.fetchone()
-        
+
         if row:
             return dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
-            
+
         return None
 
     def _extract_value(self, data: Dict[str, Any], path: str) -> Any:
@@ -748,19 +1552,50 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
             val = current
         else:
             val = data.get(path)
-            
+
         # Fallback to properties if not found at root (standard GIS/STAC behavior)
         if val is None and ("id" in path or "asset_id" in path):
-             val = data.get("properties", {}).get(path)
-             
+            val = data.get("properties", {}).get(path)
+
         return val
 
-    def is_acceptable(
+    def validate_insert(
+        self, feature: Dict[str, Any], context: Dict[str, Any]
+    ) -> ValidationResult:
+        """
+        Processes business rules for feature acceptance.
+        """
+        external_id = self._extract_value(feature, self.config.external_id_field)
+
+        if self.config.require_external_id and external_id is None:
+            logger.warning(
+                f"Feature rejected: external_id missing (required by config)"
+            )
+            return ValidationResult(
+                valid=False,
+                error=f"Missing required external_id field: '{self.config.external_id_field}'",
+            )
+
+        return ValidationResult(valid=True)
+
+    async def expire_version(
         self,
-        feature: Dict[str, Any],
-        context: Dict[str, Any]
-    ) -> bool:
-        """
-        Refuses feature if external_id is required but missing.
-        """
-        return True
+        conn: DbResource,
+        physical_schema: str,
+        physical_table: str,
+        geoid: str,
+        expire_at: datetime,
+    ) -> int:
+        """Marks the current active version as expired in the attributes sidecar table."""
+        if not self.config.enable_validity:
+            return 0
+
+        sc_table = f"{physical_table}_{self.sidecar_id}"
+        # Standard Postgres temporal range update: set upper bound to expire_at
+        sql = f'UPDATE "{physical_schema}"."{sc_table}" SET validity = tstzrange(lower(validity), :expire_at, \'[)\') WHERE geoid = :geoid'
+
+        from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
+
+        return await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
+            conn, geoid=geoid, expire_at=expire_at
+        )

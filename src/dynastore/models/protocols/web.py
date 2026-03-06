@@ -1,7 +1,7 @@
 from typing import List, Callable, Dict, Any, Optional
 
 
-class WebModuleProtocol:
+class WebModuleProtocol():
     web_pages: Dict[str, Dict[str, Any]]
     static_providers: Dict[str, Callable[[], List[str]]]
 

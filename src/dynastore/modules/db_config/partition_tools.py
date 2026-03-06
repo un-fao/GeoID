@@ -92,24 +92,19 @@ async def ensure_partition_exists(
         partition_name, create_sql = _get_partition_ddl(table_name, schema, strategy, partition_value, interval, parent_table_name, parent_table_schema, sub_partition_def)
         
         if create_sql and partition_name:
-            from dynastore.modules.db_config.locking_tools import check_table_exists, acquire_lock_if_needed
-            
+            from .locking_tools import check_table_exists
+
             # Check if partition already exists before acquiring lock
             async def check_partition():
                 return await check_table_exists(conn, partition_name, schema)
-            
-            # acquire_lock_if_needed already wraps in managed_transaction internally
-            async with acquire_lock_if_needed(
-                conn, 
-                f"partition_{schema}_{partition_name}",
-                check_partition
-            ) as result:
-                if result is not False:
-                    # result is the active_conn from acquire_startup_lock
-                    await DDLQuery(create_sql).execute(result)
-                    logger.debug(f"Partition '{schema}.{partition_name}' verified/created.")
-                else:
-                    logger.debug(f"Partition '{schema}.{partition_name}' already exists, skipping creation.")
+
+            # Use the centralized DDLQuery system
+            await DDLQuery(
+                create_sql,
+                check_query=check_partition,
+                lock_key=f"partition_{schema}_{partition_name}"
+            ).execute(conn)
+            logger.debug(f"Partition '{schema}.{partition_name}' verified/created.")
 
     except Exception as e:
         # PostgreSQL error code 42P07 ("duplicate_table") is harmless here due to IF NOT EXISTS,
@@ -200,38 +195,38 @@ async def ensure_list_hash_partitions(
         hash_partition_column: The column name to use for HASH sub-partitioning (e.g., "id").
         num_hash_partitions: The number of HASH sub-partitions to create.
     """
-    from dynastore.modules.db_config.locking_tools import check_table_exists, acquire_lock_if_needed
+    from .locking_tools import check_table_exists
     
     # The intermediate table has the same name as the parent, but in the partition_schema
     _, base_table_name = parent_table_fqn.split('.')
     intermediate_partition_fqn = f'"{partition_schema}"."{base_table_name}"'
 
-    # Check if intermediate partition already exists before acquiring lock
+    # Define existence check for the intermediate partition
     async def check_intermediate():
         return await check_table_exists(conn, base_table_name, partition_schema)
     
-    # acquire_lock_if_needed already wraps in managed_transaction internally
-    async with acquire_lock_if_needed(conn, f"partition_{partition_schema}_{base_table_name}", check_intermediate) as result:
-        if result is not False:
-            # result is the active_conn from acquire_startup_lock
-            # 1. Create the intermediate LIST partition, defining its HASH sub-partitioning.
-            list_partition_sql = f"""
-            CREATE TABLE IF NOT EXISTS {intermediate_partition_fqn}
-            PARTITION OF {parent_table_fqn}
-            FOR VALUES IN ('{list_partition_value}')
-            PARTITION BY HASH ({hash_partition_column});
-            """
-            await DDLQuery(list_partition_sql).execute(result)
-
-            # 2. Create the final HASH sub-partitions.
-            for i in range(num_hash_partitions):
-                hash_partition_name = f"{base_table_name}_p{i}"
-                hash_partition_sql = f"""
-                CREATE TABLE IF NOT EXISTS "{partition_schema}"."{hash_partition_name}"
-                PARTITION OF {intermediate_partition_fqn}
-                FOR VALUES WITH (MODULUS {num_hash_partitions}, REMAINDER {i});
-                """
-                await DDLQuery(hash_partition_sql).execute(result)
-            logger.info(f"Ensured LIST->HASH partitions for {parent_table_fqn} in schema '{partition_schema}'.")
-        else:
-            logger.debug(f"LIST->HASH partitions for {parent_table_fqn} in schema '{partition_schema}' already exist, skipping creation.")
+    # 1. Create the intermediate LIST partition, defining its HASH sub-partitioning.
+    list_partition_sql = f"""
+    CREATE TABLE IF NOT EXISTS {intermediate_partition_fqn}
+    PARTITION OF {parent_table_fqn}
+    FOR VALUES IN ('{list_partition_value}')
+    PARTITION BY HASH ({hash_partition_column})
+    """
+    
+    # 2. Add final HASH sub-partitions to the same block
+    statements = [list_partition_sql]
+    for i in range(num_hash_partitions):
+        hash_partition_name = f"{base_table_name}_p{i}"
+        statements.append(f"""
+        CREATE TABLE IF NOT EXISTS "{partition_schema}"."{hash_partition_name}"
+        PARTITION OF {intermediate_partition_fqn}
+        FOR VALUES WITH (MODULUS {num_hash_partitions}, REMAINDER {i})
+        """)
+    
+    # Execute as a single coordinated block
+    await DDLQuery(
+        ";\n".join(statements),
+        check_query=check_intermediate,
+        lock_key=f"partition_{partition_schema}_{base_table_name}"
+    ).execute(conn)
+    logger.info(f"Ensured LIST->HASH partitions for {parent_table_fqn} in schema '{partition_schema}'.")

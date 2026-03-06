@@ -23,7 +23,7 @@ from uuid import UUID
 from datetime import datetime
 from dynastore.models.shared_models import Link
 import uuid
-from dynastore.modules.tasks.models import TaskPayload
+from dynastore.models.tasks import Task, TaskPayload
 
 if TYPE_CHECKING:
     from dynastore.modules.tasks.models import Task
@@ -130,13 +130,49 @@ def task_to_status_info(task: "Task", links: Optional[List[Link]] = None) -> Sta
     Returns:
         OGC-compliant StatusInfo model
     """
-    return StatusInfo(
+    from dynastore.modules.tasks.models import TaskStatusEnum
+    
+    # Specialized OGC status mapping
+    mapping = {
+        TaskStatusEnum.PENDING:     "accepted",
+        TaskStatusEnum.ACTIVE:      "running",
+        TaskStatusEnum.RUNNING:     "running",
+        TaskStatusEnum.COMPLETED:   "successful",
+        TaskStatusEnum.FAILED:      "failed",
+        TaskStatusEnum.DISMISSED:   "dismissed",
+        TaskStatusEnum.DEAD_LETTER: "failed",
+    }
+    api_status = mapping.get(task.status, "accepted")
+
+    info = StatusInfo(
         jobID=task.jobID,
-        status=task.status.to_api_status(),  # Generic task status to API format
+        status=api_status,
         message=task.error_message,
-        type="process",  # OGC processes always use "process" type
+        type=task.type,
         progress=task.progress,
         created=task.timestamp,
         updated=task.finished_at or task.started_at or task.timestamp,
-        links=links or task.links or []
+        links=links or task.links.copy() if task.links else []
     )
+
+    # OGC Process ID mapping
+    # Note: we use task.task_type as the processID when type is 'process'
+    # This assumes the task_type string corresponds to the process identifier.
+    
+    # Ensure 'self' link is present
+    has_self = any(l.rel == "self" for l in info.links)
+    if not has_self:
+        info.links.append(Link(rel="self", type="application/json", title="this job", href=""))
+
+    # If successful, ensure results link is present
+    if task.status == TaskStatusEnum.COMPLETED:
+        has_results = any(l.rel == "http://www.opengis.net/def/rel/ogc/1.0/results" for l in info.links)
+        if not has_results:
+            info.links.append(Link(
+                rel="http://www.opengis.net/def/rel/ogc/1.0/results",
+                type="application/json",
+                title="job results",
+                href=""
+            ))
+
+    return info

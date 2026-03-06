@@ -46,6 +46,8 @@ def resolve_localized_field(
         field_dict = {k: v for k, v in all_fields.items() if v is not None}
     elif isinstance(field, dict):
         field_dict = {k: v for k, v in field.items() if v is not None}
+    elif isinstance(field, (str, list)):
+        return field
     else:
         return None
     

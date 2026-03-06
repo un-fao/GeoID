@@ -18,9 +18,13 @@
 
 # dynastore/modules/protocols.py
 
+import logging
 from typing import Protocol, AsyncGenerator, Any, Optional, runtime_checkable
 from contextlib import asynccontextmanager
 from dynastore.models.auth import Principal
+from dynastore.tools.plugin import ProtocolPlugin
+
+logger = logging.getLogger(__name__)
 
 # Re-exporting for backward compatibility if needed, or simply cleaning up.
 # The core protocols are now in dynastore.models.auth
@@ -38,7 +42,26 @@ class HasConfigManager(Protocol):
         """
         ...
 
-class ModuleProtocol(HasConfigManager, Protocol):
+    def get_protocol(self, protocol_type: Any) -> Any:
+        """
+        Discovers and caches a protocol implementation at the instance level.
+        Provides a standardized way for modules and extensions to access other protocols.
+        """
+        if not hasattr(self, "_protocol_cache"):
+            self._protocol_cache = {}
+        if protocol_type not in self._protocol_cache:
+            from dynastore.tools.discovery import get_protocol
+            instance = get_protocol(protocol_type)
+            if not instance:
+                logger.debug(
+                    f"Protocol {protocol_type.__name__ if hasattr(protocol_type, '__name__') else protocol_type} not found at this stage."
+                )
+                return None
+            self._protocol_cache[protocol_type] = instance
+        return self._protocol_cache[protocol_type]
+
+
+class ModuleProtocol(ProtocolPlugin[object], HasConfigManager):
     """
     Defines the contract for a DynaStore foundational Module.
 
@@ -46,58 +69,29 @@ class ModuleProtocol(HasConfigManager, Protocol):
     (like database connections or configuration management) to the rest of the
     application. They are independent of FastAPI.
 
+    Each Module is a ``ProtocolPlugin[object]``, meaning:
+    - Its ``lifespan(app_state: object)`` is the single lifecycle hook.
+    - Its ``priority`` is compared *only* against other modules (same category).
+    - ``is_available()`` controls whether it is returned by protocol discovery.
+
     ---
-    Conventional Members:
-    The system checks for the presence of these members at runtime.
-
-    - `__init__(self, app_state: object)`: A module can optionally define a
-      constructor. If the constructor accepts arguments, the module loader
-      will pass the shared `app_state` object to it.
-
-    - `lifespan(self, app_state: object)`: This is the primary entrypoint for a
-      module. It's an async context manager for managing resources, called
-      during application startup and shutdown.
-    ---
-
     Example:
     ```python
-    @dynastore_module
-    class MyModule:
-        # This module has no __init__ because it's stateless at creation.
+    class MyModule(ModuleProtocol):
 
         @asynccontextmanager
         async def lifespan(self, app_state: object):
-            print("MyModule is starting up...")
-            # Setup resources and attach them to the state
             app_state.my_service = MyService()
             try:
                 yield
             finally:
-                # Clean up resources
-                print("MyModule is shutting down.")
                 del app_state.my_service
     ```
     """
-
-    @asynccontextmanager
-    async def lifespan(self, app_state: object) -> AsyncGenerator[None, None]:
-        """A context manager to manage the module's lifecycle."""
-        yield
-
-    _registered_name: str = "unregistered_module" # Default value, will be set by decorator
-    priority: int = 0  # Default priority
-
-    def is_available(self) -> bool:
-        """
-        Returns whether the module is currently available to provide its protocol capability.
-        Used by the discovery mechanism for prioritized fallbacks.
-        """
-        return True
 
     @classmethod
     def get_name(cls) -> str:
         """
         Returns the registered name of the module.
-        This class method reads the name set by the @dynastore_module decorator.
         """
-        return cls._registered_name
+        return getattr(cls, "_registered_name", "unregistered_module")

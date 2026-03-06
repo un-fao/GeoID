@@ -1,17 +1,17 @@
 #    Copyright 2025 FAO
-# 
+#
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
 #    You may obtain a copy of the License at
-# 
+#
 #        http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 #    Unless required by applicable law or agreed to in writing, software
 #    distributed under the License is distributed on an "AS IS" BASIS,
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
-# 
+#
 #    Author: Carlo Cancellieri (ccancellieri@gmail.com)
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
@@ -20,17 +20,23 @@ import logging
 from sqlalchemy import create_engine
 from contextlib import asynccontextmanager
 from dynastore.modules.db_config.db_config import DBConfig
-from dynastore.modules.db_config.tools import get_config, ensure_init_db, normalize_db_url
+from dynastore.modules.db_config.tools import (
+    get_config,
+    ensure_init_db,
+    normalize_db_url,
+)
 from dynastore.modules.db_config.query_executor import managed_transaction
 import os
-from dynastore.modules import dynastore_module, ModuleProtocol
+from dynastore.modules import ModuleProtocol
+from typing import Optional, Any
 
 from dynastore.models.protocols import DatabaseProtocol
 
 logger = logging.getLogger(__name__)
 
-@dynastore_module
+
 class DatastoreModule(ModuleProtocol, DatabaseProtocol):
+    priority: int = 10
     app_state: object
 
     def __init__(self, app_state: object):
@@ -38,38 +44,50 @@ class DatastoreModule(ModuleProtocol, DatabaseProtocol):
 
     @property
     def priority(self) -> int:
-        return 5  # Lower priority for sync engine, but available in task context
+        return 5  # Lower priority than DBService, but this module is only loaded in task context
 
     @property
-    def engine(self) -> Optional[Any]:
-        """DatabaseProtocol implementation."""
-        return getattr(self.app_state, 'sync_engine', None)
+    def engine(self) -> Any:
+        """
+        DatabaseProtocol implementation.
+        Returns the first available database engine (sync or async).
+        """
+        engine = getattr(self.app_state, "sync_engine", None)
+        if engine:
+            return engine
+        engine = getattr(self.app_state, "engine", None)
+        if engine:
+            return engine
+        raise RuntimeError("No database engine available (sync or async).")
 
     @property
     def async_engine(self) -> Optional[Any]:
-        """DatabaseProtocol implementation."""
-        return getattr(self.app_state, 'engine', None)
+        """DatabaseProtocol implementation - not available in task context."""
+        return None
 
     @property
     def sync_engine(self) -> Optional[Any]:
         """DatabaseProtocol implementation."""
-        return getattr(self.app_state, 'sync_engine', None)
+        return getattr(self.app_state, "sync_engine", None)
 
     def get_any_engine(self) -> Optional[Any]:
         """DatabaseProtocol implementation."""
-        from dynastore.modules.db_config.tools import get_any_engine
-        return get_any_engine(self.app_state)
+        from dynastore.tools.protocol_helpers import get_engine
+
+        return get_engine()
+
+    @asynccontextmanager
     async def lifespan(self, app_state: object):
         """
         Manages the lifespan for the synchronous database engine.
         """
         logger.info("Synchronous database connection startup initiated...")
-        
+
         try:
             db_config: DBConfig = get_config(app_state)
             app_state.sync_engine = None
-            
-            if hasattr(app_state, 'sync_engine') and app_state.sync_engine is not None:
+
+            if hasattr(app_state, "sync_engine") and app_state.sync_engine is not None:
                 logger.info("Synchronous database engine already exists in app state.")
                 raise Exception("Synchronous database engine already initialized.")
             else:
@@ -86,30 +104,36 @@ class DatastoreModule(ModuleProtocol, DatabaseProtocol):
                 # so we can await the tool. The tool will handle the sync engine correctly.
                 # _current_file_dir = os.path.dirname(os.path.abspath(__file__))
                 # init_sql_path: str = os.path.join(_current_file_dir, "db_init/init.sql")
-                
+
                 # managed_transaction works for sync engines too (yields a standard connection)
                 # But here we are passing the engine directly to the tool via a transaction wrapper
                 # to ensure we have a connection context for the lock.
-                
-                # Note: managed_transaction for a sync engine behaves synchronously, 
+
+                # Note: managed_transaction for a sync engine behaves synchronously,
                 # but we need to wrap it to call the async tool?
                 # Actually, managed_transaction is an @asynccontextmanager that yields a sync conn if engine is sync.
                 await ensure_init_db(app_state.sync_engine)
+                
+                # B. Apply versioned database migrations
+                # This ensures the task worker has the correct schema even if it starts before/without the API.
+                from dynastore.modules.db_config.migration_runner import run_migrations
+                await run_migrations(app_state.sync_engine)
                 # async with managed_transaction(app_state.sync_engine) as conn:
-                    # A. Ensure Critical Extensions (PostGIS)
-                    # await maintenance_tools.execute_sql_script(
-                    #     conn=conn,
-                    #     script_path=init_sql_path,
-                    #     lock_key="datastore_service_init_script"
-                    # )
-                    
-            
+                # A. Ensure Critical Extensions (PostGIS)
+                # await maintenance_tools.execute_sql_script(
+                #     conn=conn,
+                #     script_path=init_sql_path,
+                #     lock_key="datastore_service_init_script"
+                # )
+
         except Exception as e:
-            logger.error(f"Failed to initialize synchronous database pool: {e}", exc_info=True)
+            logger.error(
+                f"Failed to initialize synchronous database pool: {e}", exc_info=True
+            )
             raise
-        
+
         yield
-        
+
         # --- Application Shutdown ---
         logger.info("Synchronous database connection shutdown initiated...")
 

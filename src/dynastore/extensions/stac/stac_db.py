@@ -16,77 +16,78 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from dynastore.models.protocols import CatalogsProtocol
+from dynastore.models.protocols import ItemsProtocol
 from dynastore.tools.discovery import get_protocol
-from dynastore.models.query_builder import QueryRequest, FieldSelection, SortOrder
 from dynastore.modules.stac.stac_config import StacPluginConfig
 import logging
+
 logger = logging.getLogger(__name__)
 
 from typing import Any, Dict, List, Optional, Tuple
+
+
 async def get_stac_items_paginated(
-    conn: Any, 
+    conn: Any,
     catalog_id: str,
-    collection_id: str, 
-    limit: int, 
-    offset: int, 
-    stac_config: Optional[StacPluginConfig] = None
+    collection_id: str,
+    limit: int,
+    offset: int,
+    stac_config: Optional[StacPluginConfig] = None,
 ) -> Tuple[list, int]:
     """
     Fetches a paginated list of items for STAC using the optimized CatalogsProtocol.
     Geometries are simplified at the database level based on the StacPluginConfig.
     """
-    catalogs: CatalogsProtocol = get_protocol(CatalogsProtocol)
-    
-    # Determine simplification SQL
-    if stac_config and stac_config.simplification:
-        simp_conf = stac_config.simplification
-        case_sql = "CASE "
-        # Sort thresholds descending by vertex count
-        for points, tolerance in sorted(simp_conf.vertex_thresholds.items(), key=lambda item: item[0], reverse=True):
-            case_sql += f"WHEN ST_NPoints(sc_geometry.geom) > {points} THEN {tolerance} "
-        case_sql += f"ELSE {simp_conf.default_tolerance} END"
-        simplification_sql = f"({case_sql})"
-    else:
-        simplification_sql = "0.0001"
+    # 1. Resolve Items Service
+    items_svc = get_protocol(ItemsProtocol)
+    if not items_svc:
+        raise RuntimeError("ItemsProtocol not available")
 
-    # Construct QueryRequest leveraging the sidecar-aware execution pipeline
-    request = QueryRequest(
-        limit=limit,
-        offset=offset,
-        include_total_count=True,
-        select=[
-            FieldSelection(field="*"), # Includes HUB, attributes, and geometry
-            # Explicitly format validity components using sidecar-supported transformations
-            FieldSelection(field="validity", transformation="lower", alias="valid_from"),
-            FieldSelection(field="validity", transformation="upper", alias="valid_to"),
-            # BBOX components optimized via bbox_geom in GeometrySidecar
-            FieldSelection(field="bbox_xmin"),
-            FieldSelection(field="bbox_ymin"),
-            FieldSelection(field="bbox_xmax"),
-            FieldSelection(field="bbox_ymax"),
+    # 2. Determine Simplification
+    # Note: GeometrySidecar now handles simplification via 'simplification' param
+    simplification = 0.0001
+    if stac_config and stac_config.simplification:
+        simplification = stac_config.simplification.default_tolerance
+        # We use a single tolerance for the whole request for consistency with unified builder
+
+    # 3. Request Features via unified ItemService (using stream for raw rows)
+    # We use stream_features with as_geojson=False to get raw dictionaries.
+    # This preserves 'validity' range objects and sidecar columns needed for STAC processing.
+
+    params = {
+        "limit": limit,
+        "offset": offset,
+        "include_total_count": True,
+        "simplification": simplification,
+        "geom_format": "WKB",  # pystac expect WKB or GeoJSON
+        "select_columns": [
+            "transaction_time",  # Exposed by AttributesSidecar as h.transaction_time
+            "bbox_xmin",
+            "bbox_ymin",
+            "bbox_xmax",
+            "bbox_ymax",  # Delegated to GeometrySidecar
         ],
-        raw_selects=[
-            # Custom simplification requires raw access to GeometrySidecar alias 'sc_geometry'
-            # (Alias choice is deterministic in QueryOptimizer)
-            f"ST_AsEWKB(ST_SimplifyPreserveTopology(sc_geometry.geom, {simplification_sql})) AS geom"
-        ],
-        sort=[SortOrder(field="id", direction="ASC")]
-    )
-    
-    # Execute through protocol which automatically joins sidecars
-    rows = await catalogs.search_items(
+    }
+
+    stream = await items_svc.stream_features(
+        conn,
         catalog_id=catalog_id,
         collection_id=collection_id,
-        request=request,
-        db_resource=conn
+        col_config=None,  # Will be resolved by service if None
+        params=params,
+        as_geojson=True, # RETURN FEATURE MODELS
+        lang="*", # Let stac_generator handle specific language selection
     )
-    
-    total_count = 0
-    if rows:
-        total_count = rows[0].get("_total_count", 0)
-        # Keep internal metadata out of the final result list
-        for r in rows:
-            r.pop("_total_count", None)
-            
-    return rows, total_count
+
+    if stream is None:
+        return [], 0
+
+    processed_result = [feature async for feature in stream]
+
+    # 4. Get Total Count
+    # We'll use get_features_count for total_count
+    total_count = await items_svc.get_features_count(
+        conn, catalog_id=catalog_id, collection_id=collection_id, params=params
+    )
+
+    return processed_result, total_count

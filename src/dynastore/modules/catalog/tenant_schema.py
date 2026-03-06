@@ -19,7 +19,7 @@
 import logging
 from typing import List, Callable, Awaitable
 from dynastore.modules.db_config.query_executor import DDLQuery, DbResource
-from dynastore.modules.db_config.maintenance_tools import ensure_schema_exists, execute_ddl_block
+from dynastore.modules.db_config.maintenance_tools import ensure_schema_exists
 
 logger = logging.getLogger(__name__)
 
@@ -127,12 +127,13 @@ async def initialize_tenant_shell(conn: DbResource, schema: str, catalog_id: str
     # 1. Create Schema
     await ensure_schema_exists(conn, schema)
 
-    # 2. Core Tables (Tenant-local, not globally partitioned)
-    await execute_ddl_block(conn, TENANT_COLLECTIONS_DDL, schema=schema)
-    await execute_ddl_block(conn, TENANT_ASSETS_DDL, schema=schema)
-    await execute_ddl_block(conn, TENANT_CATALOG_CONFIGS_DDL, schema=schema)
-    await execute_ddl_block(conn, TENANT_COLLECTION_CONFIGS_DDL, schema=schema)
-    # await execute_ddl_block(conn, TENANT_ASSET_FEATURE_MAP_DDL, schema=schema)
+    # 2. Core Tables (Tenant-local, not globally partitioned) - Combined for efficiency
+    await DDLQuery(
+        TENANT_COLLECTIONS_DDL
+        + TENANT_ASSETS_DDL
+        + TENANT_CATALOG_CONFIGS_DDL
+        + TENANT_COLLECTION_CONFIGS_DDL
+    ).execute(conn, schema=schema)
 
     # 3. Run Registered Module Initializers
     if _tenant_initializers:
