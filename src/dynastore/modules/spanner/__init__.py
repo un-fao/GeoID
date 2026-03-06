@@ -1,1 +1,0 @@
-from dynastore.modules.spanner import spanner_module
