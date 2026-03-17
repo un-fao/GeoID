@@ -31,17 +31,17 @@ build-backend = "setuptools.build_meta"
 # --- Base Dependencies (Modules/Extensions/Tasks) ---
 
 # Granular Modules
-module-catalog = ["dynastore[geospatial]", "sqlalchemy>=2.0.0", "async-lru>=2.0.0"]
+module-catalog = ["dynastore[geospatial-core]", "sqlalchemy>=2.0.0", "async-lru>=2.0.0"]
 module-gcp = ["gcloud-aio-storage==9.6.0", "google-cloud-bigquery==3.24.0", "google-cloud-run", "google-cloud-storage>=3.1.0", "google-cloud-pubsub", "gcsfs>=2024.5.0", "charset-normalizer", "httpx"]
 module-datastore = ["dynastore[db-sync]", "psycopg2-binary>=2.9.7"]
 module-db-config = ["async-lru", "psycopg2-binary>=2.9.7", "sqlalchemy", "geoalchemy2", "h3>=4.4.2", "s2sphere>=0.2.5", "python-dateutil"]
 module-apikey = ["pydantic[email]", "argon2-cffi", "bcrypt"]
 module-db = ["dynastore[db-async]", "sqlalchemy[asyncio]", "asyncpg"]
-module-crs = ["dynastore[geospatial]", "pyproj>=3.0.0"]
+module-crs = ["dynastore[geospatial-core]", "pyproj>=3.0.0"]
 module-events = ["psycopg[binary,pool]"]
 module-elasticsearch = ["elasticsearch[async]"]
-module-gdal = ["dynastore[geospatial]", "GDAL==3.11.4"]
-module-tiles = ["dynastore[geospatial]"]
+module-gdal = ["dynastore[geospatial-core]", "GDAL==3.11.4"]
+module-tiles = ["dynastore[geospatial-core]"]
 module-tasks = []
 module-proxy = []
 module-styles = []
@@ -59,7 +59,7 @@ extension-stac = ["dynastore[extension-base]", "dynastore[ingestion]", "pystac[v
 extension-auth = ["dynastore[extension-base]", "identify_middleware[google,fastapi] @ git+https://github.com/un-fao/identify-middleware.git@ref", "python-multipart>=0.0.9"]
 extension-template = ["dynastore[extension-base]", "attrs>=25.3.0", "aiohttp>=3.12.15", "jinja2>=3.1.6", "xmltodict>=0.13.0", "httpx>=0.24.1"]
 extension-processes = ["dynastore[extension-base]", "jsonschema"]
-extension-features = ["dynastore[extension-base]", "dynastore[geospatial]", "dynastore[stac]"]
+extension-features = ["dynastore[extension-base]", "dynastore[geospatial-core]", "dynastore[stac]"]
 extension-tiles = ["dynastore[extension-base]", "dynastore[module-tiles]"]
 extension-tasks = ["dynastore[extension-base]", "dynastore[module-tasks]"]
 extension-proxy = ["dynastore[extension-base]", "dynastore[module-proxy]"]
@@ -71,14 +71,14 @@ extension-configs = ["dynastore[extension-base]"]
 extension-stats = ["dynastore[extension-base]", "dynastore[module-stats]"]
 extension-crs = ["dynastore[extension-base]", "dynastore[module-crs]"]
 extension-events = ["dynastore[extension-base]", "dynastore[module-events]"]
-extension-wfs = ["dynastore[extension-base]", "dynastore[geospatial]", "dynastore[ingestion]"]
+extension-wfs = ["dynastore[extension-base]", "dynastore[geospatial-core]", "dynastore[ingestion]"]
 extension-admin = ["dynastore[extension-base]", "dynastore[extension-apikey]"]
 extension-assets = ["dynastore[extension-base]"]
 extension-notebooks = ["dynastore[extension-base]", "dynastore[module-notebooks]"]
 extension-search = ["dynastore[extension-base]"]
 extension-gcp-bucket = ["dynastore[extension-base]", "dynastore[module-gcp]"]
 extension-geoid = ["dynastore[extension-base]", "dynastore[extension-web]", "user-agents>=2.2.0"]
-extension-maps = ["dynastore[extension-base]", "dynastore[geospatial]", "dynastore[mvt]", "GDAL==3.11.4"]
+extension-maps = ["dynastore[extension-base]", "dynastore[geospatial-core]", "dynastore[mvt]", "GDAL==3.11.4"]
 extension-dwh = ["dynastore[extension-base]", "dynastore[dwh]"]
 
 # Granular Tasks
@@ -87,8 +87,8 @@ task-gcp-provision = ["dynastore[module-gcp]"]
 task-elasticsearch = ["dynastore[module-elasticsearch]"]
 task-ingestion = ["dynastore[geospatial]", "dynastore[module-gcp]"]
 task-dwh-join = ["dynastore[dwh]"]
-task-export_features = ["dynastore[geospatial]", "dynastore[stac]"]
-task-tiles-preseed = ["dynastore[geospatial]", "morecantile==7.0.2"]
+task-export_features = ["dynastore[geospatial-core]", "dynastore[stac]"]
+task-tiles-preseed = ["dynastore[geospatial-core]", "morecantile==7.0.2"]
 
 # --- Features (Public Aliases composing Module + Extension) ---
 catalog = ["dynastore[module-catalog]", "dynastore[extension-catalog]"]
@@ -120,23 +120,27 @@ auth = ["dynastore[extension-auth]"]
 template = ["dynastore[extension-template]"]
 
 # --- Logical Groupings (Primitives) ---
-geospatial = [
-    "lxml==6.0.2",
+geospatial-core = [
     "shapely>=2.1.1",
+    "geojson-pydantic>=1.0.0",
+]
+geospatial-io = [
+    "dynastore[geospatial-core]",
+    "lxml==6.0.2",
     "pyarrow<19,>=16",
     "numpy==1.26.4",
     "geopandas>=0.14.0",
     "fiona>=1.9.4",
-    "geojson-pydantic>=1.0.0",
 ]
-geometries = ["dynastore[geospatial]", "dynastore[extension-wfs]", "dynastore[features]", "dynastore[tiles]"]
+geospatial = ["dynastore[geospatial-io]"]
+geometries = ["dynastore[geospatial-core]", "dynastore[extension-wfs]", "dynastore[features]", "dynastore[tiles]"]
 maps-group = ["dynastore[styles]", "dynastore[maps]"]
 google = ["dynastore[module-gcp]", "dynastore[dwh]"]
 db-async = ["dynastore[db_config]", "dynastore[db]"]
 db-sync = ["dynastore[db_config]", "dynastore[datastore]"]
 
 # --- Catalog Groupings ---
-catalog-group = ["dynastore[geospatial]", "dynastore[db-async]", "dynastore[catalog]", "dynastore[events]", "dynastore[stats]", "dynastore[extension-search]", "dynastore[assets]", "dynastore[configs]"]
+catalog-group = ["dynastore[geospatial-core]", "dynastore[db-async]", "dynastore[catalog]", "dynastore[events]", "dynastore[stats]", "dynastore[extension-search]", "dynastore[assets]", "dynastore[configs]"]
 g-catalog = ["dynastore[catalog-group]", "dynastore[gdal]", "dynastore[google]"]
 
 # --- Task Groupings (sync-db) ---
@@ -146,7 +150,7 @@ ingestion = ["dynastore[task-base]", "dynastore[module-gcp]", "dynastore[task-in
 # Per Cloud Run Job extras (all use db-sync via task-base)
 task-dwh-join-job = ["dynastore[task-base]", "dynastore[dwh]"]
 task-ingestion-job = ["dynastore[ingestion]", "dynastore[g-catalog]"]
-task-export-features-job = ["dynastore[task-base]", "dynastore[stac]", "dynastore[geospatial]"]
+task-export-features-job = ["dynastore[task-base]", "dynastore[stac]", "dynastore[geospatial-core]"]
 task-tiles-preseed-job = ["dynastore[task-base]", "dynastore[tiles]", "dynastore[crs]"]
 task-gdal-job = ["dynastore[task-base]", "dynastore[gdal]"]
 
