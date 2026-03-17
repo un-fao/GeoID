@@ -23,13 +23,18 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import shapely
 from shapely import wkb
-from pyproj import CRS, Transformer
 from shapely.geometry import Point, box
 from shapely.validation import make_valid
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform
 
 # Try importing optional spatial libraries
+try:
+    from pyproj import CRS, Transformer
+except ImportError:
+    CRS = None
+    Transformer = None
+
 try:
     import h3
 except ImportError:
@@ -110,6 +115,11 @@ def process_geometry(
                 f"SRID mismatch: Incoming SRID {source_srid} != target SRID {storage_config.target_srid}. Policy is REJECT."
             )
         elif storage_config.srid_mismatch_policy == SridMismatchPolicy.TRANSFORM:
+            if Transformer is None or CRS is None:
+                raise GeometryProcessingError(
+                    "CRS transformation requested but pyproj is not installed. "
+                    "Install the 'crs' extra: pip install dynastore[crs]"
+                )
             try:
                 transformer = Transformer.from_crs(
                     CRS(f"EPSG:{source_srid}"),
@@ -189,19 +199,26 @@ def process_geometry(
 
         # If the processed_geom is not already in 4326, transform it temporarily for bbox calculation
         if current_srid_for_bbox != 4326:
-            try:
-                transformer_to_4326 = Transformer.from_crs(
-                    CRS(f"EPSG:{current_srid_for_bbox}"),
-                    CRS("EPSG:4326"),
-                    always_xy=True,
-                )
-                bbox_geom = transform(transformer_to_4326.transform, processed_geom)
-                logger.debug(f"Calculated bbox in EPSG:4326 for validation.")
-            except Exception as e:
+            if Transformer is None or CRS is None:
                 logger.warning(
-                    f"Could not transform geometry to EPSG:4326 for bbox calculation: {e}. Bbox might be in original SRID and cause validation errors."
+                    "pyproj not installed — cannot transform bbox to EPSG:4326. "
+                    "Bbox will be in the storage SRID."
                 )
                 bbox_coords = list(bbox_geom.bounds)
+            else:
+                try:
+                    transformer_to_4326 = Transformer.from_crs(
+                        CRS(f"EPSG:{current_srid_for_bbox}"),
+                        CRS("EPSG:4326"),
+                        always_xy=True,
+                    )
+                    bbox_geom = transform(transformer_to_4326.transform, processed_geom)
+                    logger.debug(f"Calculated bbox in EPSG:4326 for validation.")
+                except Exception as e:
+                    logger.warning(
+                        f"Could not transform geometry to EPSG:4326 for bbox calculation: {e}. Bbox might be in original SRID and cause validation errors."
+                    )
+                    bbox_coords = list(bbox_geom.bounds)
 
         if bbox_coords is None:  # If transformation was successful or already in 4326
             bbox_coords = list(bbox_geom.bounds)
@@ -293,6 +310,9 @@ def calculate_spatial_indices(
 
         # Ensure geometry is in 4326 for H3/S2 if possible
         if geom_srid != 4326:
+            if Transformer is None or CRS is None:
+                logger.warning("pyproj not installed — cannot transform geometry to EPSG:4326 for spatial index calculation. Skipping.")
+                return indices
             try:
                 transformer_to_4326 = Transformer.from_crs(
                     CRS(f"EPSG:{geom_srid}"), CRS("EPSG:4326"), always_xy=True

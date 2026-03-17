@@ -27,7 +27,6 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Any, Dict, Optional, Callable
 
-import jwt
 from fastapi import APIRouter, FastAPI, Response, HTTPException, Request, Query, Header
 
 from fastapi.middleware.gzip import GZipMiddleware
