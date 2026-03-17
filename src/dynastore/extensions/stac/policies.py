@@ -17,37 +17,47 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from dynastore.models.auth import Policy
-from dynastore.modules.apikey.models import Role
-from dynastore.models.protocols.policies import PolicyProtocol
+from dynastore.models.protocols.policies import Policy, Role
 from dynastore.tools.discovery import get_protocol
 
 logger = logging.getLogger(__name__)
 
-# Register public access policy for stac extension
+
 def register_stac_policies():
-    policy = Policy(
+    """Register STAC public-access policy and anonymous role.
+
+    Always registers into the module-level in-memory registry so that
+    provision_default_policies() picks it up at lifespan startup,
+    regardless of whether PermissionProtocol is already available.
+    """
+    from dynastore.modules.apikey.policies import (
+        register_policy as _reg_policy,
+        register_role as _reg_role,
+    )
+    from dynastore.models.protocols.policies import PermissionProtocol
+
+    stac_policy = Policy(
         id="stac_public_access",
-        description="Allows anonymous access to STAC endpoints.",
+        description="Allows anonymous GET access to STAC API and browser.",
         actions=["GET", "OPTIONS"],
         resources=[
-            "/stac.*",
-            "/stac/.*"
-        ]
+            "/stac",
+            "/stac/",
+            "/stac/.*",
+            "/web/pages/stac_browser",  # expose_web_page route
+        ],
+        effect="ALLOW",
     )
-    
-    policy_manager = get_protocol(PolicyProtocol)
+    _reg_policy(stac_policy)
+    _reg_role(Role(name="anonymous", policies=["stac_public_access"], is_system=True))
+
+    logger.debug("STAC policies pre-registered into in-memory registry.")
+
+    # If PermissionProtocol is already live, push immediately.
+    policy_manager = get_protocol(PermissionProtocol)
     if policy_manager:
-        policy_manager.register_policy(policy)
-
-        # Attach to anonymous role
-        policy_manager.register_role(Role(
-            name="anonymous",
-            description="Anonymous user with limited access.",
-            policies=["stac_public_access"],
-            is_system=True
-        ))
-
-        logger.debug("STAC policies registered via PolicyProtocol.")
-    else:
-        logger.warning("No PolicyProtocol implementer found. STAC policies skipped.")
+        policy_manager.register_policy(stac_policy)
+        policy_manager.register_role(
+            Role(name="anonymous", policies=["stac_public_access"], is_system=True)
+        )
+        logger.debug("STAC policies also applied to live PermissionProtocol.")

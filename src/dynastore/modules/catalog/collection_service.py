@@ -28,6 +28,7 @@ from dynastore.modules.db_config.query_executor import (
     DbResource,
     ResultHandler,
     managed_transaction,
+    managed_nested_transaction,
 )
 from dynastore.modules.catalog.models import Collection, CollectionUpdate, Catalog
 from dynastore.modules.catalog.catalog_config import (
@@ -41,7 +42,7 @@ from dynastore.tools.async_utils import signal_bus
 from dynastore.tools.json import CustomJSONEncoder
 from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry, LifecycleContext
 from dynastore.modules.db_config import shared_queries
-from dynastore.modules.db_config.platform_config_manager import ConfigRegistry
+from dynastore.modules.db_config.platform_config_service import ConfigRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -521,6 +522,7 @@ class CollectionService:
         offset: int = 0,
         lang: str = "en",
         db_resource: Optional[DbResource] = None,
+        q: Optional[str] = None,
     ) -> List[Collection]:
         async with managed_transaction(db_resource or self.engine) as conn:
             phys_schema = await self._resolve_physical_schema(
@@ -529,10 +531,16 @@ class CollectionService:
             if not phys_schema:
                 return []
 
-            query_sql = f'SELECT * FROM "{phys_schema}".collections WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT :limit OFFSET :offset;'
-            result_rows = await DQLQuery(
-                query_sql, result_handler=ResultHandler.ALL_DICTS
-            ).execute(conn, limit=limit, offset=offset)
+            if not q:
+                query_sql = f'SELECT * FROM "{phys_schema}".collections WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT :limit OFFSET :offset;'
+                result_rows = await DQLQuery(
+                    query_sql, result_handler=ResultHandler.ALL_DICTS
+                ).execute(conn, limit=limit, offset=offset)
+            else:
+                query_sql = f'SELECT * FROM "{phys_schema}".collections WHERE deleted_at IS NULL AND (id ILIKE :q OR title->>\'en\' ILIKE :q OR description->>\'en\' ILIKE :q) ORDER BY created_at DESC LIMIT :limit OFFSET :offset;'
+                result_rows = await DQLQuery(
+                    query_sql, result_handler=ResultHandler.ALL_DICTS
+                ).execute(conn, limit=limit, offset=offset, q=f"%{q}%")
 
             results = []
             for row_dict in result_rows:
@@ -865,7 +873,7 @@ async def create_physical_collection_impl(
         merged = deep_update(base_dump, layer_config_dict)
         try:
             # Avoid circular import by using local import or registry
-            from dynastore.modules.db_config.platform_config_manager import (
+            from dynastore.modules.db_config.platform_config_service import (
                 ConfigRegistry,
             )
 
@@ -962,6 +970,30 @@ async def create_physical_collection_impl(
                 )
             except ValueError as e:
                 logger.warning(f"Skipping sidecar table creation: {e}")
+
+    # Store schema snapshot hash for drift detection
+    try:
+        import hashlib
+        import json as _json
+        config_dump = col_config.model_dump() if hasattr(col_config, "model_dump") else {}
+        schema_hash = hashlib.sha256(
+            _json.dumps(config_dump, sort_keys=True, default=str).encode()
+        ).hexdigest()
+        async with managed_nested_transaction(conn):
+            await DQLQuery(
+                f'UPDATE "{schema}".collection_configs '
+                f'SET schema_hash = :schema_hash, updated_at = NOW() '
+                f'WHERE catalog_id = :catalog_id AND collection_id = :collection_id '
+                f"AND plugin_id = 'collection';",
+                result_handler=ResultHandler.NONE,
+            ).execute(
+                conn,
+                schema_hash=schema_hash,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+            )
+    except Exception as e:
+        logger.warning(f"LIFECYCLE: Failed to store schema hash: {e}")
 
     # Ensure asset cleanup trigger (using AssetsProtocol)
     am = get_protocol(AssetsProtocol)

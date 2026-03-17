@@ -14,7 +14,7 @@
 
 from typing import List, Optional
 from pydantic import Field
-from dynastore.modules.db_config.platform_config_manager import PluginConfig, register_config
+from dynastore.modules.db_config.platform_config_service import PluginConfig, register_config
 
 WFS_PLUGIN_CONFIG_ID = "wfs"
 

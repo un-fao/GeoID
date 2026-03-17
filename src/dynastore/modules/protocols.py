@@ -30,12 +30,12 @@ logger = logging.getLogger(__name__)
 # The core protocols are now in dynastore.models.auth
 
 
-class HasConfigManager(Protocol):
+class HasConfigService(Protocol):
     """
     Protocol for any component (Module, Extension, Task) that provides access 
     to the centralized Configuration Manager.
     """
-    def get_config_manager(self) -> Any:
+    def get_config_service(self) -> Any:
         """
         Returns the configuration manager instance (typically ConfigManager).
         The return type is Any to avoid circular imports with the concrete class.
@@ -61,7 +61,7 @@ class HasConfigManager(Protocol):
         return self._protocol_cache[protocol_type]
 
 
-class ModuleProtocol(ProtocolPlugin[object], HasConfigManager):
+class ModuleProtocol(ProtocolPlugin[object], HasConfigService):
     """
     Defines the contract for a DynaStore foundational Module.
 
@@ -73,6 +73,9 @@ class ModuleProtocol(ProtocolPlugin[object], HasConfigManager):
     - Its ``lifespan(app_state: object)`` is the single lifecycle hook.
     - Its ``priority`` is compared *only* against other modules (same category).
     - ``is_available()`` controls whether it is returned by protocol discovery.
+
+    Subclasses are **automatically registered** in ``_DYNASTORE_MODULES`` when
+    their defining Python module is imported (no decorator required).
 
     ---
     Example:
@@ -88,6 +91,19 @@ class ModuleProtocol(ProtocolPlugin[object], HasConfigManager):
                 del app_state.my_service
     ```
     """
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Auto-register every concrete subclass when it is first defined."""
+        super().__init_subclass__(**kwargs)
+        # Skip abstract classes (those that still have unimplemented abstract methods)
+        if getattr(cls, '__abstractmethods__', None):
+            return
+        # Defer import to avoid circular imports at module load time
+        try:
+            from dynastore.modules import _register_module
+            _register_module(cls)
+        except Exception as e:
+            logger.debug(f"ModuleProtocol.__init_subclass__: skipping auto-registration of {cls.__name__}: {e}")
 
     @classmethod
     def get_name(cls) -> str:

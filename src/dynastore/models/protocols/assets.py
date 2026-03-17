@@ -23,7 +23,7 @@ Asset management protocol definitions.
 from typing import Protocol, Optional, Any, List, Dict, runtime_checkable, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from dynastore.modules.catalog.asset_manager import Asset, AssetUploadDefinition, AssetUpdate, AssetFilter
+    from dynastore.modules.catalog.asset_service import Asset, AssetUploadDefinition, AssetUpdate, AssetFilter
 
 
 @runtime_checkable

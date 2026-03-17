@@ -21,9 +21,8 @@
 import logging
 from dynastore.modules import get_protocol
 from dynastore.modules.db_config.query_executor import DbResource
-from dynastore.modules.catalog import catalog_module
-from dynastore.modules.catalog.catalog_module import CatalogEventType
-
+from dynastore.modules.catalog.event_service import CatalogEventType, register_event_listener
+from dynastore.models.protocols import CatalogsProtocol
 
 from . import events_module
 
@@ -82,43 +81,40 @@ async def on_collection_hard_deletion(catalog_id: str, collection_id: str, *args
         logger.error(f"Failed to dispatch event for {CatalogEventType.COLLECTION_HARD_DELETION.value}: {e}", exc_info=True)
         
 
-# --- Registration Function ---
-
 def register_all_listeners():
-    """
-    Subscribes all our event-generating listeners to the catalog module.
-    This is called once at application startup.
-    
-    The listeners will run and fetch the engine from the singleton.
-    """
+    catalog_module = get_protocol(CatalogsProtocol)
+    if not catalog_module:
+        logger.warning("EventsModule: CatalogsProtocol not found. Cannot register listeners.")
+        return
+
     logger.info("Registering catalog event listeners to generate persistent events...")
     
-    catalog_module.register_event_listener(
+    register_event_listener(
         CatalogEventType.CATALOG_CREATION,
         on_catalog_creation
     )
     
-    catalog_module.register_event_listener(
+    register_event_listener(
         CatalogEventType.CATALOG_DELETION,
         on_catalog_deletion
     )
 
-    catalog_module.register_event_listener(
+    register_event_listener(
         CatalogEventType.CATALOG_HARD_DELETION,
         on_catalog_hard_deletion
     )
     
-    catalog_module.register_event_listener(
+    register_event_listener(
         CatalogEventType.COLLECTION_CREATION,
         on_collection_creation
     )
     
-    catalog_module.register_event_listener(
+    register_event_listener(
         CatalogEventType.COLLECTION_DELETION,
         on_collection_deletion
     )
     
-    catalog_module.register_event_listener(
+    register_event_listener(
         CatalogEventType.COLLECTION_HARD_DELETION,
         on_collection_hard_deletion
     )

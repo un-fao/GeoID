@@ -23,7 +23,7 @@ from uuid import UUID
 from contextlib import asynccontextmanager
 from typing import List, Optional, Dict, Any
 import asyncio
-from dynastore.modules import ModuleProtocol, dynastore_module, get_protocol
+from dynastore.modules import ModuleProtocol, get_protocol
 from dynastore.modules.db_config.query_executor import (DDLQuery, DQLQuery, managed_transaction, ResultHandler, DbResource)
 from dynastore.tools.protocol_helpers import resolve
 from .models import (EventSubscription, EventSubscriptionCreate, AuthMethod, AuthConfigAPIKey)

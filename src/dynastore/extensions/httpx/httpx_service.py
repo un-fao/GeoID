@@ -36,7 +36,6 @@ from dynastore.modules.httpx.httpx_module import (
 )
 
 from dynastore.models.protocols import HttpxProtocol
-
 class HttpxExtension(ExtensionProtocol, HttpxProtocol):
     priority: int = 100
     """

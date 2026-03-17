@@ -7,6 +7,7 @@
     <title>DynaStore | SysAdmin Dashboard</title>
     <link rel="stylesheet" href="styles.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="../website/context-selector.js"></script>
     <script src="app.js" defer></script>
 </head>
 
@@ -47,12 +48,7 @@
             <header class="top-bar">
                 <h2 id="page-title">System Overview</h2>
                 <div class="actions" style="display: flex; gap: 1rem; align-items: center;">
-                    <select id="catalog-select" class="filter-select" onchange="app.onCatalogChange()">
-                        <option value="_system_">System (Global)</option>
-                    </select>
-                    <select id="collection-select" class="filter-select" onchange="app.refreshAll()">
-                        <option value="">All Collections</option>
-                    </select>
+                    <div id="context-selector-container"></div>
                     <span id="last-updated">Updated: Just now</span>
                     <button class="refresh-btn" onclick="app.refreshAll()">↻ Refresh</button>
                     <a href="/web/" class="exit-btn">Exit to Site</a>

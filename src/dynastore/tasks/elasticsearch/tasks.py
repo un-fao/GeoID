@@ -14,7 +14,6 @@ class ElasticsearchIndexInputs(BaseModel):
     collection_id: Optional[str] = None
     item_id: Optional[str] = None
     payload: Dict[str, Any]
-
 class ElasticsearchIndexTask(TaskProtocol):
     priority: int = 100
     """

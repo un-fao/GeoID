@@ -16,6 +16,121 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
+"""
+### Task Interaction Overview
+
+This module defines the data models for background tasks and asynchronous processes.
+The task system uses a database-backed queue (PostgreSQL) for durability and visibility.
+
+#### Interaction Diagram
+
+```mermaid
+sequenceDiagram
+    participant App as Application Service
+    participant DB as PostgreSQL (tasks table)
+    participant Disp as Dispatcher / QueueListener
+    participant Exec as BackgroundExecutor (Worker)
+    participant HB as Heartbeat Manager
+
+    App->>DB: INSERT Task (PENDING)
+    Disp->>DB: SELECT PENDING Tasks (FOR UPDATE SKIP LOCKED)
+    DB-->>Disp: Returns task row
+    Disp->>DB: UPDATE Task (ACTIVE, locked_until)
+    Disp->>Exec: Submit task execution
+    Exec->>HB: Start heartbeats
+    loop Task Execution
+        HB->>DB: UPDATE Task (last_heartbeat_at, locked_until)
+        Exec->>Exec: Run task logic
+    end
+    Exec->>HB: Stop heartbeats
+    Exec->>DB: UPDATE Task (COMPLETED/FAILED, outputs/error)
+```
+
+#### Lifecycle & Interactions
+
+1.  **Submission:** 
+    A task is enqueued from the application using a `BackgroundRunner`. This inserts a row into the `tasks` table with status `PENDING`.
+    
+2.  **Discovery & Dispatch:**
+    A background `Dispatcher` (for global tasks) or `QueueListener` (per tenant) periodically polls (or listens via pg_notify) for `PENDING` tasks. 
+    It "claims" a task by setting its status to `ACTIVE`, assigning a unique `owner_id`, and setting a `locked_until` timestamp to prevent other dispatchers from picking it up.
+
+3.  **Execution:**
+    The dispatcher passes the task hydrated into a `TaskPayload` to a `BackgroundExecutor` worker. The executor runs the specific task's `run()` method.
+
+4.  **Liveness & Heartbeats:**
+    For long-running tasks, a `HeartbeatManager` runs concurrently with the task execution. It periodically updates the `last_heartbeat_at` and `locked_until` fields in the database.
+    If a worker crashes, the `locked_until` expires, and a 'Janitor' process eventually resets the task to `PENDING` or `FAILED`.
+
+5.  **Completion:**
+    Upon finishing, the worker updates the task record to `COMPLETED` (or `FAILED`), stores the results in `outputs` (or `error_message`), and clears the lock.
+
+6.  **Observation:**
+    The `tasks` table serves as a Source of Truth. Utilities like `wait_for_all_tasks` can query this table across schemas to synchronize test state.
+
+#### Data Partitioning & Table Structure
+
+To ensure scalability and isolation, the task system is split across multiple levels:
+
+*   **System Level (Global Tasks):**
+    Defined in the `tasks.tasks` schema/table. This table stores tasks that affect the entire platform or common infrastructure (e.g., global provisioning, system-wide maintenance).
+*   **Catalog Level (Tenant Tasks):**
+    Each catalog (tenant) has its own isolated `tasks` table within its physical schema (e.g., `s_<catalog_id>.tasks`). This prevents cross-tenant noise and ensures that heavy task loads in one catalog do not impact others.
+*   **Collection Level:**
+    Tasks targeting a specific STAC Collection (e.g. data ingestion into a collection) live inside the tenant-level `tasks` table but are identified by the `collection_id` column. This allows for rapid filtering of tasks relevant to a specific dataset.
+
+#### Maintenance & Retention
+
+The task system is designed for high-volume, ephemeral data management:
+
+*   **Partitioning:** All `tasks` tables are partitioned by **RANGE** on the `timestamp` column. By default, partitions are created monthly (`ensure_future_partitions`).
+*   **Retention Policy:** A background process (`register_retention_policy`) manages the data lifecycle. COMPLETED and FAILED tasks are typically pruned after 1 month to prevent the database from growing indefinitely.
+*   **Recovery:** A 'Janitor' process detects tasks in `ACTIVE` state that have missed their heartbeats (exceeding `locked_until`) and automatically resets them to `PENDING` for retry or moves them to `DEAD_LETTER`.
+
+#### Multi-Application Distributed Execution
+
+DynaStore supports distributed task execution across multiple application instances (e.g., Cloud Run services) sharing a single PostgreSQL database.
+
+##### Parallelism & Synchronization
+*   **Ownership:** When a runner claims a task, it sets a unique `owner_id` (instance identity) and a `locked_until` timestamp.
+*   **Contention Management:** The system uses `FOR UPDATE SKIP LOCKED` during task acquisition to ensure multiple replicas can poll the same table without blocking each other or picking up the same task.
+*   **Reactive Scaling:** Using PostgreSQL `LISTEN/NOTIFY`, replicas are alerted immediately when new tasks are queued, minimizing latency without heavy polling.
+
+##### Hypothetical Configurations
+
+1. **Unified Configuration (Monolithic Runner)**
+   A single Cloud Run service handles both HTTP API requests and all background task modules.
+   ```
+   [ Cloud Run Service (API + Runner) ] x 10 Replicas
+           |
+           +--> [ DB: public.catalogs ]
+           +--> [ DB: tasks.tasks     ] (All modules enabled)
+   ```
+   *   **Pros:** Simpler deployment and infra management.
+   *   **Cons:** CPU-heavy tasks (like ingestion) can degrade API responsiveness.
+
+2. **Split Configuration (Specialized Workers)**
+   Distinct services are deployed for API vs. specific background workloads using the `DYNASTORE_TASK_MODULES` filter.
+   ```
+   [ Cloud Run API ] x 5 Replicas (DYNASTORE_TASK_MODULES="")
+   [ Cloud Run Provisioner ] x 2 Replicas (DYNASTORE_TASK_MODULES="gcp_provision")
+   [ Cloud Run Ingestor ] x 20 Replicas (DYNASTORE_TASK_MODULES="stac_ingest")
+           |
+           v
+   [ Database (Shared Task Infrastructure) ]
+   ```
+   *   **Pros:** Isolated scaling; ingestion spikes don't impact API latency.
+   *   **Cons:** Higher management overhead.
+
+##### Pitfalls & Improvements
+*   **Deadlocks:** Can occur if tasks acquire multiple database locks in inconsistent orders (e.g., locking a catalog row, then a task row, while another process does the reverse). *Improvement:* Standardize lock ordering and keep transactions short.
+*   **Resource Leaks:** Long-running tasks that fail to release database connections or file handles can exhaust service quotas. *Improvement:* Use `asynccontextmanager` for all resources and implement aggressive timeouts in `managed_transaction`.
+*   **Closed Channel Errors (gRPC):** Occur if module clients (GCP) are closed while background threads are still active. *Improvement:* Improved runner lifecycle to await all active tasks before module destruction.
+
+For a deeper dive into architecture and operational best practices, see the [DynaStore Distributed Task System README](./README.md).
+
+"""
+
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, Dict, Any, TypeVar, Generic, List
 from uuid import UUID, uuid4
@@ -39,6 +154,13 @@ class TaskExecutionMode(str, Enum):
     """Defines the execution strategy for a task runner."""
     SYNCHRONOUS = "SYNCHRONOUS"
     ASYNCHRONOUS = "ASYNCHRONOUS"
+
+
+class TaskScope(str, Enum):
+    """Scope of a task within the platform."""
+    CATALOG = "CATALOG"      # Scoped to a catalog (schema_name = tenant schema)
+    SYSTEM = "SYSTEM"        # Platform-level (schema_name = 'system')
+    ASSET = "ASSET"          # Scoped to an asset operation
 
 # --- Generic Payload Model ---
 
@@ -68,6 +190,13 @@ class TaskBase(BaseModel):
     collection_id: Optional[str] = None
 
 class TaskCreate(TaskBase):
+    execution_mode: str = TaskExecutionMode.ASYNCHRONOUS
+    scope: str = TaskScope.CATALOG
+    dedup_key: Optional[str] = Field(
+        default=None,
+        description="Deduplication key. If set, INSERT uses ON CONFLICT DO NOTHING "
+                    "to prevent duplicate tasks from the same event.",
+    )
     extra_context: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Optional context passed by the dispatcher (e.g. originating_event for rollback). "
@@ -92,6 +221,12 @@ class Task(TaskBase):
     """
     jobID: UUID = Field(default_factory=uuid4, alias="task_id")
     type: str = Field(default="task", description="Type of job: 'task' or 'process'")
+
+    # Global table fields
+    schema_name: Optional[str] = Field(default=None, description="Tenant schema name (e.g. s_2ka8fbc3) or 'system'")
+    scope: str = Field(default=TaskScope.CATALOG, description="Task scope: CATALOG, SYSTEM, or ASSET")
+    execution_mode: str = Field(default=TaskExecutionMode.ASYNCHRONOUS, description="SYNCHRONOUS or ASYNCHRONOUS")
+    dedup_key: Optional[str] = Field(default=None, description="Deduplication key for event-driven task creation")
 
     status: TaskStatusEnum = TaskStatusEnum.PENDING
     progress: int = Field(default=0, ge=0, le=100)

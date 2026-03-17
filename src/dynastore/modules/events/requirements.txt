@@ -1,1 +1,1 @@
--r ${APP_DIR}/src/dynastore/modules/procrastinate/requirements.txt
+psycopg[binary,pool]

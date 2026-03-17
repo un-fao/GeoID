@@ -112,6 +112,7 @@ class CollectionsProtocol(Protocol):
         offset: int = 0,
         lang: str = "en",
         db_resource: Optional[Any] = None,
+        q: Optional[str] = None,
     ) -> List[Any]:
         """
         Lists all collections in a catalog.

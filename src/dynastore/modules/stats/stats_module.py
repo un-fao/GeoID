@@ -106,11 +106,13 @@ CREATE TABLE IF NOT EXISTS {SYSTEM_SCHEMA}.stats_aggregates (
     period_start TIMESTAMPTZ NOT NULL,
     catalog_id VARCHAR(100) NOT NULL DEFAULT 'none',
     principal_id VARCHAR(255) NOT NULL DEFAULT 'none',
-    api_key_hash VARCHAR(100) NOT NULL DEFAULT 'none',
-    total_requests INTEGER DEFAULT 0,
-    average_latency_ms FLOAT DEFAULT 0.0,
-    PRIMARY KEY (period_start, catalog_id, principal_id, api_key_hash)
-);
+    api_key_hash VARCHAR(64) NOT NULL DEFAULT 'none',
+    status_code INT NOT NULL,
+    shard_id INT NOT NULL DEFAULT 0,
+    request_count BIGINT DEFAULT 0,
+    total_latency_ms FLOAT DEFAULT 0,
+    PRIMARY KEY (period_start, catalog_id, principal_id, api_key_hash, status_code, shard_id)
+) PARTITION BY RANGE (period_start);
 """
 
 
@@ -144,6 +146,13 @@ async def initialize_system_stats(conn: DbResource):
         retention_period="3 months",
         column="timestamp",
     )
+    await maintenance_tools.register_partition_creation_policy(
+        conn,
+        schema=SYSTEM_SCHEMA,
+        table="access_logs",
+        interval="monthly",
+        periods_ahead=3,
+    )
 
     await maintenance_tools.ensure_future_partitions(
         conn,
@@ -161,6 +170,14 @@ async def initialize_system_stats(conn: DbResource):
         interval="monthly",
         retention_period="5 years",
         column="period_start",
+    )
+    await maintenance_tools.register_partition_creation_policy(
+        conn,
+        schema=SYSTEM_SCHEMA,
+        table="stats_aggregates",
+        interval="yearly",
+        periods_ahead=2,
+        schedule_cron="0 2 1 1 *",
     )
 
 
@@ -198,6 +215,13 @@ async def _initialize_stats_tenant_slice(
             retention_period="3 months",
             column="timestamp",
         )
+        await maintenance_tools.register_partition_creation_policy(
+            conn,
+            schema=schema,
+            table="access_logs",
+            interval="monthly",
+            periods_ahead=3,
+        )
 
         await maintenance_tools.ensure_future_partitions(
             conn,
@@ -216,6 +240,14 @@ async def _initialize_stats_tenant_slice(
             retention_period="10 years",
             column="period_start",
         )
+        await maintenance_tools.register_partition_creation_policy(
+            conn,
+            schema=schema,
+            table="stats_aggregates",
+            interval="yearly",
+            periods_ahead=2,
+            schedule_cron="0 2 1 1 *",
+        )
     except Exception:
         import traceback
 
@@ -225,7 +257,6 @@ async def _initialize_stats_tenant_slice(
 
 from dynastore.tools.discovery import register_plugin, unregister_plugin
 from .storage import PostgresStatsDriver
-
 class STATS(ModuleProtocol):
     priority: int = 100
 

@@ -25,12 +25,12 @@ import os
 import inspect
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Dict, Type, TypeVar, cast, List, Optional
-from dotenv import load_dotenv
+from typing import Any, Dict, Type, TypeVar, cast, List, Optional
 from pathlib import Path
 
 from .protocols import ModuleProtocol
 from dynastore.tools.discovery import get_protocol, get_protocols
+from dynastore.tools.env import load_component_dotenv
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +66,6 @@ def _register_module(cls: Type[T_Module], registration_name: Optional[str] = Non
     logger.info(f"Registered module: {cls.__name__} (as '{registration_name}')")
     return cls
 
-def dynastore_module(cls: Type[T_Module]) -> Type[T_Module]:
-    """A decorator to register a class as a DynaStore Module."""
-    return _register_module(cls)
-
 def get_module_instance(name: str) -> ModuleProtocol | None:
     """Retrieves the singleton instance of a registered module by name."""
     import warnings
@@ -101,115 +97,67 @@ def get_module_instance_by_class(cls: Type[T_Module]) -> T_Module | None:
     return None
 
 
-def discover_modules(enabled_modules: Optional[List[str]] = None):
+def discover_modules(include_only: Optional[List[str]] = None):
     """
-    Discovers modules by dynamically importing sub-packages, loading .env files
-    in a hierarchical order: root first, then module-specific (overriding).
+    Discovers all foundational modules dynamically using PEP-517 entry points
+    under the 'dynastore.modules' group.
+    """
+    if include_only is None:
+        scope = os.getenv("SCOPE")
+        if scope:
+            include_only = [s.strip() for s in scope.split(",")]
+
+    logger.info("--- [modules] Discovering components via entry points... ---")
+    from dynastore.tools.discovery import discover_and_load_plugins
     
-    Args:
-        enabled_modules: Optional list of module names to enabled. 
-                         If provided, overrides DYNASTORE_MODULES env var.
-    """
-    # 1. Load the root .env file first, without overriding existing env vars.
-    # This assumes a project structure like: /path/to/project/dynastore/modules
-    project_root = Path(__file__).resolve().parents[2]
-    root_dotenv_path = project_root / '.env'
-    if root_dotenv_path.exists():
-        load_dotenv(dotenv_path=root_dotenv_path, override=False)
-        logger.info(f"Loaded base environment variables from '{root_dotenv_path}'")
-    else:
-        logger.warning(f"Root .env file not found at '{root_dotenv_path}'.")
-
-    package_path = os.path.dirname(__file__)
-    package_name = __name__
-
-    if enabled_modules is None:
-        enabled_modules_str = os.getenv("DYNASTORE_MODULES", "")
-        if enabled_modules_str.strip() == "*":
-            enabled_modules = [
-                item for item in os.listdir(package_path)
-                if os.path.isdir(os.path.join(package_path, item)) and not item.startswith('__')
-            ]
-            logger.info(f"Wildcard '*' detected for DYNASTORE_MODULES. Discovered: {enabled_modules}")
-        else:
-            enabled_modules = [m.strip() for m in enabled_modules_str.split(',') if m.strip()]
-
-
-    if not enabled_modules:
-        logger.warning("DYNASTORE_MODULES is not set. No foundational modules will be loaded.")
-        return
-
-    logger.info(f"Attempting to load enabled modules in order: {enabled_modules}")
-
-    # 2. Iterate through modules in the specified order.
-    for module_name in enabled_modules:
-        module_path = os.path.join(package_path, module_name)
-        if not os.path.isdir(module_path):
-            logger.warning(f"Enabled module '{module_name}' not found at path '{module_path}'. Skipping.")
-            continue
-
-        try:
-            # 3. Load module-specific .env file, OVERRIDING previous values.
-            module_dotenv_path = os.path.join(module_path, '.env')
-            if os.path.exists(module_dotenv_path):
-                load_dotenv(dotenv_path=module_dotenv_path, override=True)
-                logger.debug(f"Loaded and override environment variables from '{module_dotenv_path}'")
-
-            # 4. Filter by requirements.txt if present
-            from dynastore.tools.dependencies import check_requirements
-            requirements_path = os.path.join(module_path, 'requirements.txt')
-            if not check_requirements(requirements_path):
-                logger.warning(f"Skipping module '{module_name}' due to unsatisfied requirements in '{requirements_path}'.")
-                continue
-
-            # 5. Import the Python modules to trigger registration.
-            sub_package_name = f"{package_name}.{module_name}"
-            for _, sub_module_name, _ in pkgutil.iter_modules([module_path]):
-                full_module_path = f"{sub_package_name}.{sub_module_name}"
-                try:
-                    target_module = importlib.import_module(full_module_path)
-                    for name, obj in inspect.getmembers(target_module, inspect.isclass):
-                        # Use a robust check: must be a ModuleProtocol subclass with a lifespan
-                        if hasattr(obj, 'lifespan') and obj.__module__ == full_module_path:
-                            if issubclass(obj, ModuleProtocol) and getattr(obj, "__name__", "") != "ModuleProtocol":
-                                _register_module(obj, registration_name=module_name)
-                except Exception:
-                     logger.error(f"Failed to import/scan submodule '{full_module_path}'", exc_info=True)
-        except Exception:
-            logger.error(f"Failed to load module '{module_name}'", exc_info=True)
-
-
-FOUNDATIONAL_MODULES = ["db_config", "db"]
-
-def _get_ordered_modules(enabled_modules: Optional[List[str]] = None) -> List[str]:
-    """
-    Determines the ordered list of modules to load based on environment variables
-    or an explicit list, ensuring foundational modules come first.
-    """
-    if enabled_modules is None:
-        enabled_modules_str = os.getenv("DYNASTORE_MODULES", "")
-        if enabled_modules_str.strip() == "*":
-            # Start with foundational modules, then add the rest alphabetically
-            available_modules = sorted(_DYNASTORE_MODULES.keys())
-            ordered_modules = [m for m in FOUNDATIONAL_MODULES if m in available_modules]
-            ordered_modules.extend([m for m in available_modules if m not in FOUNDATIONAL_MODULES])
-        else:
-            ordered_modules = [m.strip() for m in enabled_modules_str.split(',') if m.strip()]
-    else:
-        ordered_modules = enabled_modules
+    # Discovery now returns uninstantiated classes based purely on entry points
+    classes = discover_and_load_plugins("dynastore.modules", include_only=include_only)
     
-    # Re-verify foundational order even if explicit list is provided?
-    # Usually, we trust the explicit list, but for safety in CI we might want to ensure it.
-    # For now, let's just make it easier to get the right list.
-    return ordered_modules
+    # Populate _DYNASTORE_MODULES with the discovered classes
+    for name, cls in classes.items():
+        _DYNASTORE_MODULES[name] = ModuleConfig(cls=cls)
+            
+    logger.info(f"--- DISCOVERED MODULES: {list(_DYNASTORE_MODULES.keys())} ---")
 
-def instantiate_modules(app_state: object, enabled_modules: Optional[List[str]] = None):
+
+def _get_ordered_modules() -> List[str]:
+    """
+    Returns modules sorted by their ``priority`` class attribute (ascending).
+    A lower priority value means the module is started earlier.
+    Modules without a ``priority`` attribute default to 100.
+    """
+    def _priority(name: str) -> int:
+        config = _DYNASTORE_MODULES.get(name)
+        if config is None:
+            return 100
+        return getattr(config.cls, "priority", 100)
+
+    return sorted(_DYNASTORE_MODULES.keys(), key=_priority)
+
+def instantiate_modules(app_state: object, include_only: Optional[List[str]] = None):
     """
     Instantiates all discovered modules and attaches them to the app_state.
     This is separated from the main lifespan to allow for early instantiation
     before the full application startup.
     """
-    ordered_modules = _get_ordered_modules(enabled_modules)
+    available_modules = list(_DYNASTORE_MODULES.keys())
+
+    # If filtering is requested (e.g. for tests), apply it
+    if include_only is not None:
+        target_names = {name.lower().replace("_", "-") for name in include_only}
+        available_modules = [
+            name for name in available_modules 
+            if name.lower().replace("_", "-") in target_names
+        ]
+
+    # Sort by priority so foundational modules (lower priority value) come first
+    def _priority(name: str) -> int:
+        config = _DYNASTORE_MODULES.get(name)
+        if config is None:
+            return 100
+        return getattr(config.cls, "priority", 100)
+
+    ordered_modules = sorted(available_modules, key=_priority)
     
     logger.info(f"Instantiating modules in order: {ordered_modules}")
     for module_name in ordered_modules:
@@ -218,22 +166,29 @@ def instantiate_modules(app_state: object, enabled_modules: Optional[List[str]] 
             continue
         
         cls = config.cls
+        load_component_dotenv(cls)
         try:
             sig = inspect.signature(cls)
-            config.instance = cls(app_state=app_state) if 'app_state' in sig.parameters else cls()
-            logger.warning(f"DEBUG: Instantiated module '{module_name}' ({cls.__name__}) at {id(config.instance)}")
+            instance = cls(app_state=app_state) if 'app_state' in sig.parameters else cls()
+            config.instance = instance
+
+            # Register in the central protocol discovery registry
+            from dynastore.tools.discovery import register_plugin
+            register_plugin(instance)
+
+            logger.info(f"Instantiated module '{module_name}' ({cls.__name__})")
         except Exception:
             logger.error(f"CRITICAL: Failed during __init__ of module '{module_name}'. It will be unavailable.", exc_info=True)
             config.instance = None
 
 
 @asynccontextmanager
-async def lifespan(app_state: object, enabled_modules: Optional[List[str]] = None):
+async def lifespan(app_state: object):
     """
     Manages the combined lifecycle of all registered modules, ensuring they are
     started and stopped in the correct dependency order.
     """
-    ordered_modules = _get_ordered_modules(enabled_modules)
+    ordered_modules = _get_ordered_modules()
 
     if not ordered_modules:
         yield
@@ -264,8 +219,8 @@ async def lifespan(app_state: object, enabled_modules: Optional[List[str]] = Non
                     logger.warning(f"DEBUG: Lifespan for module '{config.cls.__name__}' entered successfully.")
                 except Exception as e:
                     logger.error(f"Failed to enter lifespan for module '{config.cls.__name__}'", exc_info=True)
-                    # Foundational modules MUST succeed, or we abort early to prevent cascading noise
-                    if any(foundational in config.cls.__module__ for foundational in FOUNDATIONAL_MODULES):
+                    # Low-priority modules (< 20) are foundational — abort hard on failure
+                    if getattr(config.cls, "priority", 100) < 20:
                         raise RuntimeError(f"CRITICAL: Foundational module '{config.cls.__name__}' failed during startup. Aborting.") from e
 
         

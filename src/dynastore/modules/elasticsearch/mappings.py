@@ -243,3 +243,27 @@ def get_all_index_names(prefix: str) -> List[Dict[str, Any]]:
         {"name": get_index_name(prefix, entity_type), "mapping": mapping}
         for entity_type, mapping in MAPPINGS.items()
     ]
+
+
+# ---------------------------------------------------------------------------
+# Obfuscated GeoID index mapping
+#
+# Used when a catalog has ElasticsearchCatalogConfig.obfuscated = True.
+# Only the geoid UUID is indexed — no geometry, no attributes, no free-text.
+# This index supports a single operation: GET /{index}/_doc/{geoid}.
+# Spatial search, full-text search, and listing are intentionally impossible.
+# ---------------------------------------------------------------------------
+
+GEOID_OBFUSCATED_MAPPING: Dict[str, Any] = {
+    "dynamic": False,          # reject any field not declared below
+    "properties": {
+        "geoid":         {"type": "keyword"},
+        "catalog_id":    {"type": "keyword"},
+        "collection_id": {"type": "keyword"},
+    },
+}
+
+
+def get_obfuscated_index_name(prefix: str, catalog_id: str) -> str:
+    """Return the name of the geoid-only obfuscated index for a catalog."""
+    return f"{prefix}-geoid-{catalog_id}"

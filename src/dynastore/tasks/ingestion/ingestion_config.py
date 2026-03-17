@@ -18,7 +18,7 @@
 
 from typing import List, Optional, Any, Literal, Dict, Type
 from pydantic import BaseModel, Field, model_validator
-from dynastore.modules.db_config.platform_config_manager import PluginConfig, register_config
+from dynastore.modules.db_config.platform_config_service import PluginConfig, register_config
 from dynastore.modules.catalog.catalog_config import VersioningBehaviorEnum
 
 # --- Configuration Identifier ---

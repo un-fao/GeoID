@@ -1,13 +1,10 @@
 from typing import List, Dict, Any, Optional
 from types import SimpleNamespace
-from dynastore.modules.protocols import ModuleProtocol
-from dynastore.modules import get_protocol
+from dynastore.modules import ModuleProtocol, get_protocol
 from dynastore.models.protocols import DatabaseProtocol, CatalogsProtocol
 from dynastore.modules.db_config.query_executor import managed_transaction
 from dynastore.modules.db_config.shared_queries import DbResource
 from .models import NotebookCreate, Notebook
-
-
 class NotebooksModule(ModuleProtocol):
     priority: int = 100
     def __init__(self, app_state: SimpleNamespace):

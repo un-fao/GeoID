@@ -78,10 +78,8 @@ TILE_MATRIX_SETS_COMMENT_DDL = "COMMENT ON TABLE tiles.tile_matrix_sets IS 'Stor
 TILE_MATRIX_SETS_COMMENT_DDL = "COMMENT ON TABLE tiles.tile_matrix_sets IS 'Stores custom, user-defined TileMatrixSet definitions, partitioned by catalog.';"
 
 # --- Module Implementation ---
-
-
 class TilesModule(ModuleProtocol, DatabaseProtocol):
-    priority: int = 100
+    priority: int = 0
     """
     The foundational module for managing custom TileMatrixSets.
     It owns the `tiles.tile_matrix_sets` table and provides the core logic
@@ -90,10 +88,6 @@ class TilesModule(ModuleProtocol, DatabaseProtocol):
 
     _engine: Optional[DbResource] = None
     app_state: object = None
-
-    @property
-    def priority(self) -> int:
-        return 0  # Consumer/Transparent provider
 
     def __init__(self, app_state: object = None):
         self.app_state = app_state
@@ -868,8 +862,8 @@ async def get_collection_source_srid(
         catalogs = get_protocol(CatalogsProtocol)
         if not catalogs:
             return 4326
-        config_manager = catalogs.configs
-        tiles_config = await config_manager.get_config(
+        config_service = catalogs.configs
+        tiles_config = await config_service.get_config(
             TILES_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
         )
 
@@ -939,10 +933,16 @@ async def get_tile_resolution_params(
         source_srid = await get_collection_source_srid(catalog_id, collection_id)
 
         # 3. Resolve Simplification Configuration (Waterfall handled by ConfigManager)
-        config_manager = catalogs.configs
-        tiles_config = await config_manager.get_config(
-            TILES_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
+        config_service = catalogs.configs
+        tiles_config = await config_service.get_config(
+            TILES_PLUGIN_CONFIG_ID, catalog_id, db_resource=conn
         )
+        if not tiles_config:
+            # If not present, we can initialize it with defaults
+            tiles_config = TilesPluginConfig(storage_priority=["bucket", "pg"])
+            await config_service.set_config(
+                TILES_PLUGIN_CONFIG_ID, tiles_config, catalog_id=catalog_id, db_resource=conn
+            )
 
         # Extract relevant fields
         simplification_by_zoom = {}

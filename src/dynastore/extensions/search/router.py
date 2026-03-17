@@ -7,27 +7,50 @@ GET  /search/catalogs    – Keyword search over catalog index
 POST /search/catalogs    – Body-based catalog search
 GET  /search/collections – Keyword search over collection index
 POST /search/collections – Body-based collection search
+GET  /search/geoid/{geoid}                                       – Single geoid lookup (obfuscated index)
+POST /search/geoid                                               – Batch geoid lookup (obfuscated index)
+POST /search/reindex/catalogs/{catalog_id}                       – Trigger bulk catalog reindex (admin)
+POST /search/reindex/catalogs/{catalog_id}/collections/{cid}     – Trigger single collection reindex (admin)
 
 Conformance class: https://api.stacspec.org/v1.0.0/item-search
+
+The router discovers its backend via ``SearchProtocol`` — no direct import
+of any search implementation (Elasticsearch, Solr, etc.).
 """
 import logging
-from typing import List, Optional
-from fastapi import APIRouter, Depends, Query, Request
+from typing import Any, Dict, List, Literal, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .search_models import CatalogSearchBody, ItemCollection, GenericCollection, SearchBody
-# Removed top-level SearchService import to avoid circular dependency
+from .search_models import (
+    CatalogSearchBody,
+    GeoidCollection,
+    GeoidSearchBody,
+    GenericCollection,
+    ItemCollection,
+    SearchBody,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/search", tags=["Item Search"])
 
-# We instantiate the service locally or via protocol discovery within endpoints
-# to avoid circular imports.
-
 
 def _base_url(request: Request) -> str:
     """Derive base URL (scheme + host) from request."""
     return str(request.base_url).rstrip("/")
+
+
+def _get_search_service():
+    """Discover the SearchProtocol implementation at runtime."""
+    from dynastore.models.protocols.search import SearchProtocol
+    from dynastore.tools.discovery import get_protocol
+    svc = get_protocol(SearchProtocol)
+    if not svc:
+        raise HTTPException(
+            status_code=503,
+            detail="Search backend not available. No SearchProtocol implementation loaded.",
+        )
+    return svc
 
 
 # ---------------------------------------------------------------------------
@@ -70,8 +93,7 @@ async def get_search(
         sortby=sortby,
         token=token,
     )
-    from .search_service import SearchService
-    _service = SearchService()
+    _service = _get_search_service()
     return await _service.search_items(body, base_url=_base_url(request))
 
 
@@ -92,8 +114,7 @@ async def get_search(
     response_model_exclude_none=True,
 )
 async def post_search(request: Request, body: SearchBody) -> ItemCollection:
-    from .search_service import SearchService
-    _service = SearchService()
+    _service = _get_search_service()
     return await _service.search_items(body, base_url=_base_url(request))
 
 
@@ -120,8 +141,7 @@ async def get_search_catalogs(
         limit=limit,
         token=token,
     )
-    from .search_service import SearchService
-    _service = SearchService()
+    _service = _get_search_service()
     return await _service.search_catalogs(body, base_url=_base_url(request))
 
 
@@ -133,8 +153,7 @@ async def get_search_catalogs(
     response_model_exclude_none=True,
 )
 async def post_search_catalogs(request: Request, body: CatalogSearchBody) -> GenericCollection:
-    from .search_service import SearchService
-    _service = SearchService()
+    _service = _get_search_service()
     return await _service.search_catalogs(body, base_url=_base_url(request))
 
 
@@ -161,8 +180,7 @@ async def get_search_collections(
         limit=limit,
         token=token,
     )
-    from .search_service import SearchService
-    _service = SearchService()
+    _service = _get_search_service()
     return await _service.search_collections(body, base_url=_base_url(request))
 
 
@@ -174,6 +192,102 @@ async def get_search_collections(
     response_model_exclude_none=True,
 )
 async def post_search_collections(request: Request, body: CatalogSearchBody) -> GenericCollection:
-    from .search_service import SearchService
-    _service = SearchService()
+    _service = _get_search_service()
     return await _service.search_collections(body, base_url=_base_url(request))
+
+
+# ---------------------------------------------------------------------------
+# GeoID Lookup – Query the obfuscated index by geoid
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/geoid/{geoid}",
+    response_model=GeoidCollection,
+    summary="Look up a single geoid in the obfuscated index.",
+    description=(
+        "Returns the catalog_id and collection_id for a geoid stored in "
+        "an obfuscated index. Searches across all obfuscated catalogs unless "
+        "catalog_id is specified."
+    ),
+    response_model_exclude_none=True,
+)
+async def get_geoid(
+    request: Request,
+    geoid: str,
+    catalog_id: Optional[str] = Query(
+        None,
+        description="Restrict lookup to a single catalog's obfuscated index.",
+    ),
+) -> GeoidCollection:
+    _service = _get_search_service()
+    return await _service.search_by_geoid([geoid], catalog_id=catalog_id, limit=1)
+
+
+@router.post(
+    "/geoid",
+    response_model=GeoidCollection,
+    summary="Batch geoid lookup in the obfuscated index.",
+    description=(
+        "Look up one or more geoid values. Returns matching records from "
+        "the obfuscated index ({geoid, catalog_id, collection_id}). "
+        "Optionally restrict to a single catalog."
+    ),
+    response_model_exclude_none=True,
+)
+async def post_geoid(request: Request, body: GeoidSearchBody) -> GeoidCollection:
+    _service = _get_search_service()
+    return await _service.search_by_geoid(
+        body.geoids, catalog_id=body.catalog_id, limit=body.limit,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Reindex – Admin-only bulk reindex triggers (POST only)
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/reindex/catalogs/{catalog_id}",
+    response_model=Dict[str, Any],
+    summary="Trigger full catalog reindex (admin only).",
+    description=(
+        "Enqueues a bulk reindex task for all items in the catalog. "
+        "When the catalog is configured with obfuscated=True, the task writes "
+        "geoid-only documents to the obfuscated index. Otherwise, items are "
+        "written to the STAC items index (collections with search_index=True "
+        "only). Returns 202 with task_id."
+    ),
+    status_code=202,
+)
+async def post_reindex_catalog(
+    request: Request,
+    catalog_id: str,
+    mode: Optional[Literal["catalog", "obfuscated"]] = Query(
+        None,
+        description="Reindex mode: 'catalog' or 'obfuscated'. Defaults to the catalog's indexer config.",
+    ),
+) -> Dict[str, Any]:
+    _service = _get_search_service()
+    return await _service.reindex_catalog(catalog_id, mode=mode)
+
+
+@router.post(
+    "/reindex/catalogs/{catalog_id}/collections/{collection_id}",
+    response_model=Dict[str, Any],
+    summary="Trigger single collection reindex (admin only).",
+    description=(
+        "Enqueues a bulk reindex task for one collection. "
+        "Mode follows the same logic as the full-catalog endpoint."
+    ),
+    status_code=202,
+)
+async def post_reindex_collection(
+    request: Request,
+    catalog_id: str,
+    collection_id: str,
+    mode: Optional[Literal["catalog", "obfuscated"]] = Query(
+        None,
+        description="Reindex mode: 'catalog' or 'obfuscated'. Defaults to the catalog's indexer config.",
+    ),
+) -> Dict[str, Any]:
+    _service = _get_search_service()
+    return await _service.reindex_collection(catalog_id, collection_id, mode=mode)

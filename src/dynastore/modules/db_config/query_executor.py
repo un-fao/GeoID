@@ -572,7 +572,6 @@ def split_ddl(ddl_text: str) -> List[str]:
     if final_stmt:
         statements.append(final_stmt)
     
-    logger.debug(f"split_ddl: extracted {len(statements)} statements from block.")
     return statements
 
 
@@ -705,12 +704,10 @@ class DDLExecutor(BaseExecutor):
                 acquired = result.scalar()
 
                 if not acquired:
-                    # Wait with timeout to prevent indefinite blocking
-                    await tx_conn.execute(text("SET LOCAL lock_timeout = '10s'"))
-                    await tx_conn.execute(
-                        text("SELECT pg_advisory_xact_lock(:lock_id)"),
-                        {"lock_id": lock_id},
-                    )
+                    # Another worker holds the lock — they are creating the same object.
+                    # Skip and let them finish. The existence check after the transaction
+                    # will confirm the object was created by the other worker.
+                    return await self._apply_post_processing_async(None)
 
                 # Timeout guard to prevent DDL hangs
                 await tx_conn.execute(text("SET LOCAL statement_timeout = '30s'"))
@@ -718,12 +715,9 @@ class DDLExecutor(BaseExecutor):
                 # Support multi-statement DDL by splitting (asyncpg limitation)
                 statements = split_ddl(stmt_text)
                 if len(statements) > 1:
-                    logger.debug(f"DDLExecutor: executing {len(statements)} statements sequentially.")
                     for i, stmt in enumerate(statements):
-                        logger.debug(f"DDLExecutor: executing statement {i+1}/{len(statements)}: {stmt[:100]}...")
                         await tx_conn.execute(text(stmt), params)
                 else:
-                    logger.debug(f"DDLExecutor: executing single statement: {stmt_text[:100]}...")
                     await tx_conn.execute(query_obj, params)
 
             return await self._apply_post_processing_async(None)

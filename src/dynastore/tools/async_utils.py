@@ -1,6 +1,6 @@
 import logging
 import asyncio
-from typing import Optional, Any, Iterator, Callable, List, Awaitable, Dict
+from typing import Optional, Any, Iterator, Callable, List, Awaitable, Dict, Tuple
 from dynastore.modules.db_config.query_executor import run_in_event_loop as _real_run
 
 logger = logging.getLogger(__name__)
@@ -182,10 +182,21 @@ class WaitableSignal:
     """
     A simple wrapper around asyncio.Event that allows multiple waiters
     to wait for a specific signal identified by a name and an optional identifier.
+    
+    Robustness: recreate the internal Event if the event loop changes.
     """
 
     def __init__(self):
-        self._event = asyncio.Event()
+        self._event = None
+        self._loop = None
+
+    def _ensure_event(self) -> asyncio.Event:
+        """Lazily creates or recreates the event for the current loop."""
+        loop = asyncio.get_running_loop()
+        if self._event is None or self._loop != loop:
+            self._event = asyncio.Event()
+            self._loop = loop
+        return self._event
 
     async def wait(self, timeout: Optional[float] = None) -> bool:
         """
@@ -193,42 +204,58 @@ class WaitableSignal:
         Returns True if the signal was received, False if it timed out.
         Clears the event upon successful wakeup to allow subsequent waits.
         """
+        event = self._ensure_event()
         try:
             if timeout is not None:
-                await asyncio.wait_for(self._event.wait(), timeout=timeout)
+                await asyncio.wait_for(event.wait(), timeout=timeout)
             else:
-                await self._event.wait()
+                await event.wait()
             # Clear the event so future wait() calls will actually block
-            self._event.clear()
+            event.clear()
             return True
         except asyncio.TimeoutError:
-            self._event.clear() # Ensure clean state on timeout
+            event.clear() # Ensure clean state on timeout
             return False
 
     def emit(self):
         """Emits the signal, waking up all waiters."""
-        self._event.set()
+        # Note: emit might be called from a context where we don't want to 
+        # initialize a loop-bound event if one doesn't exist.
+        # But usually emit and wait happen in the same process/loop context.
+        if self._event:
+            self._event.set()
 
 
 class SignalBus:
     """
     Registry for WaitableSignals, allowing tasks to synchronize across different
     parts of the application without direct references.
+    
+    Robustness: handles multiple event loops (useful for tests).
     """
 
     def __init__(self):
-        self._signals: Dict[Tuple[str, Optional[str]], WaitableSignal] = {}
-        self._lock = asyncio.Lock()
+        # We store signals per loop to avoid interaction between tests
+        self._signals_per_loop: Dict[asyncio.AbstractEventLoop, Dict[Tuple[str, Optional[str]], WaitableSignal]] = {}
+        self._locks_per_loop: Dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
+
+    def _get_context(self) -> Tuple[asyncio.Lock, Dict[Tuple[str, Optional[str]], WaitableSignal]]:
+        loop = asyncio.get_running_loop()
+        if loop not in self._locks_per_loop:
+            self._locks_per_loop[loop] = asyncio.Lock()
+            self._signals_per_loop[loop] = {}
+        return self._locks_per_loop[loop], self._signals_per_loop[loop]
 
     async def get_signal(
         self, name: str, identifier: Optional[str] = None
     ) -> WaitableSignal:
         """Retrieves or creates a signal for the given name and identifier."""
+        lock, signals = self._get_context()
         key = (name, identifier)
-        async with self._lock:
-            if key not in self._signals:
-                self._signals[key] = WaitableSignal()
-            return self._signals[key]
+        async with lock:
+            if key not in signals:
+                signals[key] = WaitableSignal()
+            return signals[key]
 
     async def emit(self, name: str, identifier: Optional[str] = None):
         """Emits a signal, creating it if it doesn't exist."""
@@ -246,14 +273,15 @@ class SignalBus:
         return await signal.wait(timeout=timeout)
 
     async def clear(self, name: Optional[str] = None, identifier: Optional[str] = None):
-        """Removes a signal from the registry. If name is None, clears ALL signals."""
-        async with self._lock:
+        """Removes a signal from the registry. If name is None, clears ALL signals for the current loop."""
+        lock, signals = self._get_context()
+        async with lock:
             if name is None:
-                self._signals.clear()
-                logger.debug("Cleared all signals from SignalBus.")
+                signals.clear()
+                logger.debug("Cleared all signals from SignalBus for current loop.")
             else:
                 key = (name, identifier)
-                self._signals.pop(key, None)
+                signals.pop(key, None)
                 logger.debug(f"Cleared signal '{name}' (id={identifier}) from SignalBus.")
 
 

@@ -242,6 +242,129 @@ async def register_retention_policy(
         raise e
 
 
+async def register_partition_creation_policy(
+    conn: DbResource,
+    schema: str,
+    table: str,
+    interval: Literal["monthly", "yearly"] = "monthly",
+    periods_ahead: int = 3,
+    schedule_cron: str = "0 2 1 * *",
+):
+    """
+    Registers a pg_cron job that creates future partitions automatically.
+
+    This complements ensure_future_partitions (which runs at startup) by
+    ensuring partitions are created even if the application runs continuously
+    without restarts for longer than the initial periods_ahead window.
+
+    Args:
+        conn: Database connection or engine.
+        schema: Schema containing the partitioned table.
+        table: Partitioned table name.
+        interval: Partition interval — "monthly" or "yearly".
+        periods_ahead: Number of future periods to ensure exist on each run.
+        schedule_cron: Cron expression for the job. Default: 1st of each month at 2 AM.
+    """
+    try:
+        func_name = f"create_partitions_{schema}_{table}"
+        job_name = f"partcreate_{schema}_{table}"
+
+        async def check_job_exists():
+            return await check_cron_job_exists(conn, job_name)
+
+        if interval == "monthly":
+            # Generate partition names like {table}_YYYY_MM with monthly bounds
+            create_func_sql = f"""
+            CREATE OR REPLACE FUNCTION "{schema}"."{func_name}"() RETURNS void AS $$
+            DECLARE
+                i INT;
+                target_date DATE;
+                start_date TIMESTAMPTZ;
+                end_date TIMESTAMPTZ;
+                part_name TEXT;
+            BEGIN
+                FOR i IN 0..{periods_ahead} LOOP
+                    target_date := date_trunc('month', NOW()) + (i || ' months')::INTERVAL;
+                    start_date := target_date;
+                    end_date := target_date + INTERVAL '1 month';
+                    part_name := '{table}_' || to_char(target_date, 'YYYY_MM');
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_class c
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                        WHERE n.nspname = '{schema}' AND c.relname = part_name
+                    ) THEN
+                        EXECUTE format(
+                            'CREATE TABLE IF NOT EXISTS "{schema}".%I PARTITION OF "{schema}"."{table}" FOR VALUES FROM (%L) TO (%L)',
+                            part_name, start_date::TEXT, end_date::TEXT
+                        );
+                        RAISE NOTICE 'Created partition: {schema}.%', part_name;
+                    END IF;
+                END LOOP;
+            END;
+            $$ LANGUAGE plpgsql;
+            """
+        elif interval == "yearly":
+            create_func_sql = f"""
+            CREATE OR REPLACE FUNCTION "{schema}"."{func_name}"() RETURNS void AS $$
+            DECLARE
+                i INT;
+                target_date DATE;
+                start_date TIMESTAMPTZ;
+                end_date TIMESTAMPTZ;
+                part_name TEXT;
+            BEGIN
+                FOR i IN 0..{periods_ahead} LOOP
+                    target_date := date_trunc('year', NOW()) + (i || ' years')::INTERVAL;
+                    start_date := target_date;
+                    end_date := target_date + INTERVAL '1 year';
+                    part_name := '{table}_' || to_char(target_date, 'YYYY');
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_class c
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                        WHERE n.nspname = '{schema}' AND c.relname = part_name
+                    ) THEN
+                        EXECUTE format(
+                            'CREATE TABLE IF NOT EXISTS "{schema}".%I PARTITION OF "{schema}"."{table}" FOR VALUES FROM (%L) TO (%L)',
+                            part_name, start_date::TEXT, end_date::TEXT
+                        );
+                        RAISE NOTICE 'Created partition: {schema}.%', part_name;
+                    END IF;
+                END LOOP;
+            END;
+            $$ LANGUAGE plpgsql;
+            """
+        else:
+            raise ValueError(f"Unsupported interval for partition creation policy: {interval}")
+
+        policy_ddl = f"""
+        {create_func_sql};
+
+        -- SAFE UNSCHEDULE
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM cron.job WHERE jobname = '{job_name}') THEN
+                PERFORM cron.unschedule('{job_name}');
+            END IF;
+        END;
+        $$;
+
+        SELECT cron.schedule('{job_name}', '{schedule_cron}', $CMD$SELECT "{schema}"."{func_name}"()$CMD$);
+        """
+
+        await DDLQuery(
+            policy_ddl,
+            check_query=check_job_exists,
+            lock_key=f"partition_creation_{job_name}",
+        ).execute(conn)
+
+        logger.info(f"Registered partition creation policy for {schema}.{table} ({interval}, {periods_ahead} ahead, schedule: {schedule_cron})")
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        raise e
+
+
 async def ensure_global_cron_cleanup(
     conn: DbResource, schedule_cron: str = "0 4 * * *"
 ):
@@ -265,9 +388,9 @@ async def ensure_global_cron_cleanup(
         schema_exists BOOLEAN;
     BEGIN
         FOR job_rec IN SELECT jobid, jobname FROM cron.job LOOP
-            -- Try to parse 'prune_[schema]_[table]'
-            -- We look for jobs starting with 'prune_'
-            IF job_rec.jobname LIKE 'prune_%' THEN
+            -- Try to parse 'prune_[schema]_[table]' or 'partcreate_[schema]_[table]'
+            -- We look for jobs starting with 'prune_' or 'partcreate_'
+            IF job_rec.jobname LIKE 'prune_%' OR job_rec.jobname LIKE 'partcreate_%' THEN
                 parts := string_to_array(job_rec.jobname, '_');
                 -- Assuming format: prune_schemaname_tablename...
                 -- Minimum parts: prune, schema, table (3 parts)

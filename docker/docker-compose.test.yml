@@ -6,10 +6,11 @@ services:
     ports:
       - "54320:5432"
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-gis_dev}" ]
+      test: [ "CMD-SHELL", "psql -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-gis_dev} -c 'SELECT 1' -q --no-align --tuples-only" ]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 15
+      start_period: 10s
 
   api:
     extends:
@@ -21,9 +22,7 @@ services:
       dockerfile: docker/Dockerfile
       target: builder
       args:
-        DYNASTORE_MODULES: ${TEST_API_MODULES:-*}
-        DYNASTORE_EXTENSION_MODULES: ${TEST_API_MODULES:-*}
-        DYNASTORE_TASK_MODULES: ${TEST_API_EXTENSION_MODULES:-*}
+        SCOPE: ${API_SCOPE:-all}
     container_name: dynastore_api_test
     env_file: .env
     depends_on:
@@ -54,9 +53,7 @@ services:
       dockerfile: docker/Dockerfile
       target: builder
       args:
-        DYNASTORE_MODULES: ${DYNASTORE_MODULES:-*}
-        DYNASTORE_EXTENSION_MODULES: ${DYNASTORE_EXTENSION_MODULES:-*}
-        DYNASTORE_TASK_MODULES: ${DYNASTORE_TASK_MODULES:-*}
+        SCOPE: ${WORKER_SCOPE:-all}
     container_name: dynastore_worker_test
     env_file: .env
     depends_on:
@@ -83,9 +80,7 @@ services:
       dockerfile: docker/Dockerfile
       target: tester
       args:
-        DYNASTORE_MODULES: ${DYNASTORE_MODULES:-*}
-        DYNASTORE_EXTENSION_MODULES: ${DYNASTORE_EXTENSION_MODULES:-*}
-        DYNASTORE_TASK_MODULES: ${DYNASTORE_TASK_MODULES:-*}
+        SCOPE: ${TEST_SCOPE:-all}
     container_name: dynastore_test_runner
     env_file: .env
     environment:

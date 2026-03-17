@@ -17,37 +17,53 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from dynastore.models.auth import Policy
-from dynastore.modules.apikey.models import Role
-from dynastore.models.protocols.policies import PolicyProtocol
+from dynastore.models.protocols.policies import Policy, Role
 from dynastore.tools.discovery import get_protocol
 
 logger = logging.getLogger(__name__)
 
-# Register public access policy for tiles extension
+
 def register_tiles_policies():
-    policy = Policy(
+    """Register Tiles public-access policy and anonymous role.
+
+    Always registers into the module-level in-memory registry so that
+    provision_default_policies() picks it up at lifespan startup,
+    regardless of whether PermissionProtocol is already available.
+    """
+    from dynastore.modules.apikey.policies import (
+        register_policy as _reg_policy,
+        register_role as _reg_role,
+    )
+    from dynastore.models.protocols.policies import PermissionProtocol
+
+    tiles_policy = Policy(
         id="tiles_public_access",
         description="Allows anonymous access to tiles endpoints.",
         actions=["GET", "OPTIONS"],
         resources=[
             "/tiles.*",
-            "/tiles/.*"
-        ]
+            "/tiles/.*",
+        ],
+        effect="ALLOW",
     )
-    
-    policy_manager = get_protocol(PolicyProtocol)
-    if policy_manager:
-        policy_manager.register_policy(policy)
+    _reg_policy(tiles_policy)
+    _reg_role(Role(
+        name="anonymous",
+        description="Anonymous user with limited access.",
+        policies=["tiles_public_access"],
+        is_system=True,
+    ))
 
-        # Attach to anonymous role
+    logger.debug("Tiles policies pre-registered into in-memory registry.")
+
+    # If PermissionProtocol is already live, push immediately.
+    policy_manager = get_protocol(PermissionProtocol)
+    if policy_manager:
+        policy_manager.register_policy(tiles_policy)
         policy_manager.register_role(Role(
             name="anonymous",
             description="Anonymous user with limited access.",
             policies=["tiles_public_access"],
-            is_system=True
+            is_system=True,
         ))
-
-        logger.debug("Tiles policies registered via PolicyProtocol.")
-    else:
-        logger.warning("No PolicyProtocol implementer found. Tiles policies skipped.")
+        logger.debug("Tiles policies also applied to live PermissionProtocol.")

@@ -39,7 +39,7 @@ class EvaluationContext:
     request: Optional[Request] 
     storage: AbstractApiKeyStorage
     usage_cache: LRUCache
-    manager: Optional[Any] = None # ApiKeyManager for buffered increments
+    manager: Optional[Any] = None # ApiKeyService for buffered increments
     api_key_hash: Optional[str] = None # The ID of the API Key (Parent)
     token_identifier: Optional[str] = None # The ID of the specific Token (Child)
     principal_id: Optional[str] = None # The User ID
@@ -225,7 +225,7 @@ class MaxCountHandler(ConditionHandler):
         # the DB count might be ahead of local cache if cache was not refreshed.
         # However, increment_key_usage goes through storage/aggregator directly.
         # ctx.usage_cache is local to this context (if created per request) or shared (if passed from manager).
-        # ApiKeyManager passes self.usage_cache.
+        # ApiKeyService passes self.usage_cache.
         
         if ctx.manager:
             await ctx.manager.increment_usage(
@@ -447,7 +447,7 @@ class LogicalNotHandler(ConditionHandler):
 
 # --- Registry ---
 
-class ConditionManager:
+class ConditionRegistry:
     def __init__(self):
         self._handlers: Dict[str, ConditionHandler] = {}
         self.register(RateLimitHandler())
@@ -488,15 +488,19 @@ class ConditionManager:
                     results.append(status)
         return results
 
-condition_manager = ConditionManager()
+condition_registry = ConditionRegistry()
+
+# --- Legacy Aliases ---
+ConditionManager = ConditionRegistry
+condition_manager = condition_registry
 
 async def evaluate_condition(condition: Condition, ctx: EvaluationContext) -> bool:
     """Helper to evaluate a single condition."""
-    return await condition_manager.evaluate_all([condition], ctx)
+    return await condition_registry.evaluate_all([condition], ctx)
 
 async def evaluate_conditions(conditions: List[Condition], ctx: EvaluationContext) -> bool:
     """Helper to evaluate a list of conditions."""
-    return await condition_manager.evaluate_all(conditions, ctx)
+    return await condition_registry.evaluate_all(conditions, ctx)
 
 def register_condition_handler(handler: ConditionHandler):
     """
@@ -506,4 +510,4 @@ def register_condition_handler(handler: ConditionHandler):
         class MyHandler(ConditionHandler): ...
         register_condition_handler(MyHandler())
     """
-    condition_manager.register(handler)
+    condition_registry.register(handler)

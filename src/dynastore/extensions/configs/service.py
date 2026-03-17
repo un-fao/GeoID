@@ -17,18 +17,20 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from typing import Dict, Any, Optional
+import os
+from typing import Dict, Any, Optional, List
 
 from fastapi import APIRouter, HTTPException, status, Request, Query, FastAPI
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, HTMLResponse
 
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.tools.conflict_handler import conflict_to_409
 from dynastore.extensions.tools.exception_handlers import handle_exception
 import dynastore.modules.catalog.catalog_module as catalog_manager
 from dynastore.modules import get_protocol
-from dynastore.models.protocols import ConfigsProtocol
-from dynastore.modules.db_config.platform_config_manager import (
+from dynastore.extensions.web.decorators import expose_web_page
+from dynastore.models.protocols import WebModuleProtocol, ConfigsProtocol
+from dynastore.modules.db_config.platform_config_service import (
     ConfigRegistry,
     enforce_config_immutability,
 )
@@ -39,10 +41,21 @@ from dynastore.modules.db_config.exceptions import (
     is_conflict_error,
 )
 
+from .policies import register_configs_policies
+
+# Ensure core plugins are registered by importing their config modules if available
+try:
+    import dynastore.modules.catalog.catalog_config
+    import dynastore.modules.tiles.tiles_config
+    import dynastore.modules.stac.stac_config
+    import dynastore.modules.tasks.tasks_config
+    import dynastore.modules.gcp.gcp_config
+    import dynastore.extensions.wfs.wfs_config
+    import dynastore.extensions.features.features_config
+except ImportError as e:
+    logger.debug(f"ConfigsService: Some core configs not available for pre-registration: {e}")
+
 logger = logging.getLogger(__name__)
-
-
-
 class ConfigsService(ExtensionProtocol):
     priority: int = 100
     """
@@ -56,7 +69,40 @@ class ConfigsService(ExtensionProtocol):
         self.router = APIRouter(prefix="/configs", tags=["Configurations"])
         self._setup_routes()
 
+    def configure_app(self, app: FastAPI):
+        """Register the Configuration Editor as a web page via WebModuleProtocol."""
+        register_configs_policies()
+        logger.info("ConfigsService: Policies registered.")
+
+        web = get_protocol(WebModuleProtocol)
+        if web:
+            web.scan_and_register_providers(self)
+            logger.info("ConfigsService: Web page registered via WebModuleProtocol.")
+    @expose_web_page(
+        page_id="configs_editor",
+        title="Configurations",
+        icon="fa-sliders",
+        description="Dynamic platform configuration management.",
+        required_roles=["sysadmin"],
+        section="admin",
+        priority=30,
+    )
+    async def provide_configs_editor(self, request: Request):
+        """Serve the configurations editor HTML page."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        html_path = os.path.join(static_dir, "configurations.html")
+        if not os.path.exists(html_path):
+             raise HTTPException(status_code=404, detail="Configuration editor template not found.")
+        with open(html_path, "r") as f:
+            return HTMLResponse(f.read())
+
     def _setup_routes(self):
+        self.router.add_api_route(
+            "/schemas",
+            self.get_config_schemas,
+            methods=["GET"],
+            summary="Get JSON schemas for all registered configurations",
+        )
         self.router.add_api_route(
             "/plugins",
             self.list_registered_plugins,
@@ -94,47 +140,47 @@ class ConfigsService(ExtensionProtocol):
             summary="List all catalog-level configurations",
         )
         self.router.add_api_route(
+            "/catalogs/{catalog_id}/configs/{plugin_id}",
+            self.get_catalog_config,
+            methods=["GET"],
+            summary="Get effective configuration for a catalog",
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/configs/{plugin_id}",
+            self.update_catalog_config,
+            methods=["PUT"],
+            summary="Set or update a catalog-level configuration",
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/configs/{plugin_id}",
+            self.delete_catalog_config,
+            methods=["DELETE"],
+            summary="Delete a catalog-level configuration",
+            status_code=status.HTTP_204_NO_CONTENT,
+        )
+        self.router.add_api_route(
             "/catalogs/{catalog_id}/collections/{collection_id}/configs",
             self.list_collection_configs,
             methods=["GET"],
             summary="List all collection-level configurations",
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/plugins/{plugin_id}",
+            "/catalogs/{catalog_id}/collections/{collection_id}/configs/{plugin_id}",
             self.get_collection_config,
             methods=["GET"],
             summary="Get effective configuration for a collection",
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/plugins/{plugin_id}",
+            "/catalogs/{catalog_id}/collections/{collection_id}/configs/{plugin_id}",
             self.update_collection_config,
             methods=["PUT"],
             summary="Set or update a collection-level configuration",
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/plugins/{plugin_id}",
+            "/catalogs/{catalog_id}/collections/{collection_id}/configs/{plugin_id}",
             self.delete_collection_config,
             methods=["DELETE"],
             summary="Delete a collection-level configuration",
-            status_code=status.HTTP_204_NO_CONTENT,
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/plugins/{plugin_id}",
-            self.get_catalog_config,
-            methods=["GET"],
-            summary="Get effective configuration for a catalog",
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/plugins/{plugin_id}",
-            self.update_catalog_config,
-            methods=["PUT"],
-            summary="Set or update a catalog-level configuration",
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/plugins/{plugin_id}",
-            self.delete_catalog_config,
-            methods=["DELETE"],
-            summary="Delete a catalog-level configuration",
             status_code=status.HTTP_204_NO_CONTENT,
         )
         # Search routes
@@ -155,6 +201,15 @@ class ConfigsService(ExtensionProtocol):
     def configs(self) -> ConfigsProtocol:
         return self.get_protocol(ConfigsProtocol)
 
+
+    async def get_config_schemas(self):
+        """
+        Retrieves JSON schemas for all registered configuration models.
+        """
+        schemas = {}
+        for plugin_id, config_class in ConfigRegistry._registry.items():
+            schemas[plugin_id] = config_class.model_json_schema()
+        return schemas
 
     # --- Discovery Endpoint ---
 

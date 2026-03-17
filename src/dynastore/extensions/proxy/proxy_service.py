@@ -106,8 +106,6 @@ async def _log_proxy_analytics(
         )
     except Exception as e:
         logger.error(f"Failed to log proxy analytics: {e}")
-
-
 class ProxyService(ExtensionProtocol):
     priority: int = 100
     router: APIRouter = APIRouter(prefix="/proxy", tags=["URL Proxy"])

@@ -42,8 +42,6 @@ from dynastore.tools.protocol_helpers import get_engine
 from dynastore.modules.processes.models import Process, ExecuteRequest, StatusInfo
 
 logger = logging.getLogger(__name__)
-
-
 class TilePreseedTask(
     ProcessTaskProtocol[Process, TaskPayload[TilePreseedRequest], Optional[StatusInfo]]
 ):

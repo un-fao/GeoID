@@ -25,11 +25,11 @@ else:
     APIRouter = Any
 
 from contextlib import asynccontextmanager
-from dynastore.modules.protocols import HasConfigManager
+from dynastore.modules.protocols import HasConfigService
 from dynastore.tools.plugin import ProtocolPlugin
 
 
-class ExtensionProtocol(ProtocolPlugin["FastAPI"], HasConfigManager):
+class ExtensionProtocol(ProtocolPlugin["FastAPI"], HasConfigService):
     """
     Defines the contract for a DynaStore FastAPI Web Extension.
 
@@ -70,6 +70,21 @@ class ExtensionProtocol(ProtocolPlugin["FastAPI"], HasConfigManager):
         ``app_state`` is the FastAPI application instance.
         """
         yield
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Auto-register every concrete subclass in _DYNASTORE_EXTENSIONS on import."""
+        super().__init_subclass__(**kwargs)
+        # Skip classes that still have unimplemented abstract methods
+        if getattr(cls, '__abstractmethods__', None):
+            return
+        try:
+            from dynastore.extensions.registry import _register_extension
+            _register_extension(cls)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).debug(
+                f"ExtensionProtocol.__init_subclass__: skipping auto-registration of {cls.__name__}: {e}"
+            )
 
     @classmethod
     def get_name(cls) -> str:

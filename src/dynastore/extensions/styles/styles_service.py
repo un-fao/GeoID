@@ -40,7 +40,6 @@ logger = logging.getLogger(__name__)
 
 
 from dynastore.models.protocols import StylesProtocol
-
 class StylesService(protocols.ExtensionProtocol, StylesProtocol):
     priority: int = 100
     """

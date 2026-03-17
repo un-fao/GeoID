@@ -87,6 +87,8 @@ CREATE TABLE IF NOT EXISTS {schema}.collections (
     providers JSONB,
     summaries JSONB,
     item_assets JSONB,
+    stac_version VARCHAR(20) DEFAULT '1.1.0',
+    stac_extensions JSONB DEFAULT '[]'::jsonb,
     extra_metadata JSONB,
     physical_table VARCHAR,
     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -217,8 +219,8 @@ def get_catalog_engine(db_resource: Optional[DbResource] = None) -> DbResource:
 # --- Queries ---
 
 _create_catalog_strict_query = DQLQuery(
-    "INSERT INTO catalog.catalogs (id, physical_schema, title, description, keywords, license, conforms_to, links, assets, extra_metadata, provisioning_status) "
-    "VALUES (:id, :physical_schema, :title, :description, :keywords, :license, :conforms_to, :links, :assets, :extra_metadata, :provisioning_status);",
+    "INSERT INTO catalog.catalogs (id, physical_schema, title, description, keywords, license, conforms_to, links, assets, extra_metadata, provisioning_status, stac_version, stac_extensions) "
+    "VALUES (:id, :physical_schema, :title, :description, :keywords, :license, :conforms_to, :links, :assets, :extra_metadata, :provisioning_status, :stac_version, :stac_extensions);",
     result_handler=ResultHandler.ROWCOUNT,
 )
 
@@ -351,7 +353,7 @@ class CatalogService(CatalogsProtocol):
             raise ValueError(f"Catalog '{catalog_id}' not found.")
         
         ps = catalog_model.physical_schema if catalog_model else None
-        logger.warning(f"Resolved physical schema for '{catalog_id}': {ps}")
+        # logger.warning(f"Resolved physical schema for '{catalog_id}': {ps}")
         return ps
 
     # --- Collection Resolution ---
@@ -563,6 +565,8 @@ class CatalogService(CatalogsProtocol):
                 assets=None, # Assets are not part of core Catalog model yet, or are managed separately
                 extra_metadata=user_extra_metadata,
                 provisioning_status=catalog_model.provisioning_status,
+                stac_version=catalog_model.stac_version,
+                stac_extensions=json.dumps(catalog_model.stac_extensions, cls=CustomJSONEncoder) if catalog_model.stac_extensions else None,
             )
 
             # Lifecycle Phase 2: EVENT (Now after schema is ready AND record exists)
@@ -637,7 +641,7 @@ class CatalogService(CatalogsProtocol):
             data["conformsTo"] = data["conforms_to"]
         
         # Ensure jsonb fields are loaded correctly if driver doesn't cast automatically
-        for key in ["conformsTo", "links", "assets", "extra_metadata"]:
+        for key in ["conformsTo", "links", "assets", "extra_metadata", "stac_extensions"]:
             dict_val = data.get(key)
             if isinstance(dict_val, str):
                 try:
@@ -839,12 +843,19 @@ class CatalogService(CatalogsProtocol):
         offset: int = 0,
         lang: str = "en",
         db_resource: Optional[DbResource] = None,
+        q: Optional[str] = None,
     ) -> List[Catalog]:
         """List all catalogs."""
         async with managed_transaction(get_catalog_engine(db_resource)) as conn:
-            results = await _list_catalogs_query.execute(
-                conn, limit=limit, offset=offset
-            )
+            if not q:
+                results = await _list_catalogs_query.execute(
+                    conn, limit=limit, offset=offset
+                )
+            else:
+                sql = "SELECT * FROM catalog.catalogs WHERE deleted_at IS NULL AND (id ILIKE :q OR title->>'en' ILIKE :q OR description->>'en' ILIKE :q) ORDER BY id LIMIT :limit OFFSET :offset;"
+                query = DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS)
+                results = await query.execute(conn, limit=limit, offset=offset, q=f"%{q}%")
+                
             # Use unpacker to handle legacy JSON packing for list results too
             # Filter out Nones in case unpacking fails for some rows
             models = [self._unpack_catalog_row(r) for r in results]
@@ -1044,29 +1055,34 @@ class CatalogService(CatalogsProtocol):
 
             # Dropping schema
             if physical_schema:
+                logger.warning(f"DEBUG: delete_catalog: Dropping schema {physical_schema}")
                 # We should probably use a helper that uses DDLQuery with schema
                 # _drop_schema_query is defined above
                 await _drop_schema_query.execute(conn, schema=physical_schema)
+                logger.warning(f"DEBUG: delete_catalog: Schema dropped")
 
             # Delete from catalogs table
             await _hard_delete_catalog_query.execute(conn, id=catalog_id)
 
             # Emit main HARD_DELETION event (triggers async destroyers)
+            logger.warning(f"DEBUG: delete_catalog: Emitting CATALOG_HARD_DELETION")
             await emit_event(
                 CatalogEventType.CATALOG_HARD_DELETION,
                 catalog_id=catalog_id,
                 db_resource=conn,
                 physical_schema=physical_schema,
             )
+            logger.warning(f"DEBUG: delete_catalog: Emitted CATALOG_HARD_DELETION")
 
             # Emit AFTER event
+            logger.warning(f"DEBUG: delete_catalog: Emitting AFTER_CATALOG_HARD_DELETION")
             await emit_event(
                 CatalogEventType.AFTER_CATALOG_HARD_DELETION,
                 catalog_id=catalog_id,
                 db_resource=conn,
                 physical_schema=physical_schema,
             )
-
+            logger.warning(f"DEBUG: delete_catalog: Emitted AFTER_CATALOG_HARD_DELETION")
         # Post-transaction cleanup
         self._get_catalog_model_cached.cache_invalidate(catalog_id)
 
@@ -1100,9 +1116,10 @@ class CatalogService(CatalogsProtocol):
         offset: int = 0,
         lang: str = "en",
         db_resource: Optional[DbResource] = None,
+        q: Optional[str] = None,
     ):
         return await self._collection_service.list_collections(
-            catalog_id, limit=limit, offset=offset, lang=lang, db_resource=db_resource
+            catalog_id, limit=limit, offset=offset, lang=lang, db_resource=db_resource, q=q
         )
 
     async def get_collection_model(

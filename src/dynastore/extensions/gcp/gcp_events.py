@@ -25,8 +25,6 @@ import fnmatch
 import asyncio
 from dynastore.tools.protocol_helpers import get_engine
 from dynastore.modules import get_protocol
-from dynastore.modules.catalog import catalog_module
-from dynastore.modules.catalog.asset_manager import Asset, AssetBase
 from dynastore.modules.gcp.tools import bucket as bucket_tool
 from dynastore.modules.db_config.query_executor import (
     managed_transaction,
@@ -44,7 +42,7 @@ from dynastore.modules.gcp.gcp_config import (
     GCP_EVENTING_CONFIG_ID,
     GCP_COLLECTION_BUCKET_CONFIG_ID,
 )
-from dynastore.modules.catalog.catalog_module import CatalogEventType
+from dynastore.modules.catalog.event_service import CatalogEventType, register_event_listener
 from dynastore.modules.events.models import (
     API_KEY_NAME,
     AuthConfigAPIKey,
@@ -497,123 +495,156 @@ async def _trigger_configured_actions(
 
 
 async def _adapter_catalog_hard_deletion(catalog_id: str, **kwargs):
-    """Adapter for internal Catalog Module events."""
-    from dynastore.models.protocols import DatabaseProtocol
-    from dynastore.tools.discovery import get_protocol
+    """Enqueues a GcpCatalogCleanupTask when a catalog is hard-deleted.
+
+    Fires on BEFORE_CATALOG_HARD_DELETION — the schema is still intact,
+    so we pre-resolve the bucket name and pass it in the task inputs.
+    This way the cleanup task works even after the schema is dropped.
+    """
+    from dynastore.models.protocols import DatabaseProtocol, StorageProtocol
+    from dynastore.models.tasks import TaskCreate
+    from dynastore.modules.tasks.tasks_module import create_task_for_catalog
+    from dynastore.tasks.gcp.gcp_catalog_cleanup_task import CleanupScope
 
     db = get_protocol(DatabaseProtocol)
     if not db:
+        logger.warning("_adapter_catalog_hard_deletion: DatabaseProtocol not available.")
         return
 
-    # CRITICAL: We DO NOT pass db_resource here.
-    # This event runs in a background workflow (after/during deletion).
-    # Sharing the connection causes InterfaceError if the main logic is also using it.
-    # We let the handler obtain its own fresh connection from the engine.
-    await on_catalog_hard_deletion(db.engine, {"catalog_id": catalog_id})
+    # Pre-resolve bucket name while schema is still available
+    bucket_name = None
+    storage = get_protocol(StorageProtocol)
+    if storage:
+        try:
+            bucket_name = await storage.get_storage_identifier(catalog_id)
+        except Exception as e:
+            logger.debug(f"Could not pre-resolve bucket name for '{catalog_id}': {e}")
+
+    try:
+        task_data = TaskCreate(
+            task_type="gcp_catalog_cleanup",
+            caller_id="gcp_events:catalog_hard_deletion",
+            inputs={
+                "scope": CleanupScope.CATALOG.value,
+                "catalog_id": catalog_id,
+                "bucket_name": bucket_name,
+            },
+        )
+        await create_task_for_catalog(db.engine, task_data, catalog_id)
+        logger.info(
+            f"Enqueued GcpCatalogCleanupTask[CATALOG] for catalog '{catalog_id}'."
+        )
+    except Exception as e:
+        logger.error(
+            f"Failed to enqueue GcpCatalogCleanupTask for catalog '{catalog_id}': {e}",
+            exc_info=True,
+        )
 
 
 async def _adapter_collection_hard_deletion(
     catalog_id: str, collection_id: str, **kwargs
 ):
-    """Adapter for internal Catalog Module events."""
+    """Enqueues a GcpCatalogCleanupTask when a collection is hard-deleted."""
     from dynastore.models.protocols import DatabaseProtocol
-    from dynastore.tools.discovery import get_protocol
+    from dynastore.models.tasks import TaskCreate
+    from dynastore.modules.tasks.tasks_module import create_task_for_catalog
+    from dynastore.tasks.gcp.gcp_catalog_cleanup_task import CleanupScope
 
     db = get_protocol(DatabaseProtocol)
     if not db:
+        logger.warning("_adapter_collection_hard_deletion: DatabaseProtocol not available.")
         return
 
-    # CRITICAL: We DO NOT pass db_resource here. See above.
-    await on_collection_hard_deletion(
-        db.engine, {"catalog_id": catalog_id, "collection_id": collection_id}
-    )
+    try:
+        task_data = TaskCreate(
+            task_type="gcp_catalog_cleanup",
+            caller_id="gcp_events:collection_hard_deletion",
+            inputs={
+                "scope": CleanupScope.COLLECTION.value,
+                "catalog_id": catalog_id,
+                "collection_id": collection_id,
+            },
+        )
+        await create_task_for_catalog(db.engine, task_data, catalog_id)
+        logger.info(
+            f"Enqueued GcpCatalogCleanupTask[COLLECTION] for "
+            f"'{catalog_id}:{collection_id}'."
+        )
+    except Exception as e:
+        logger.error(
+            f"Failed to enqueue GcpCatalogCleanupTask for collection "
+            f"'{catalog_id}:{collection_id}': {e}",
+            exc_info=True,
+        )
 
-    # --- Reactive Hooks for storage events ASSETS ---
+
+# --- Reactive Hooks for storage events ASSETS ---
 
 
 async def handle_asset_events(
     catalog_id: str,
     collection_id: Optional[str],
     event_payload: Dict[str, Any],
-    event_type_str: str = None,
+    event_type_str: Optional[str] = None,
 ):
-    """Reactive sync when files are uploaded/deleted in external storage."""
-    logger.debug(
-        f"Handling asset events for catalog '{catalog_id}', collection '{collection_id}' with payload: {event_payload}"
-    )
-    from dynastore.modules.catalog.asset_manager import AssetTypeEnum
+    """
+    Enqueues a GcsStorageEventTask for the received GCS object event.
 
-    _, _, assets, _ = _get_providers()
-    if not assets:
-        return
-    asset_manager = (
-        assets  # assets provider implements AssetsProtocol which HAS create_asset etc.
-    )
-
-    # Use passed event string or try to get it from payload (less reliable for attributes)
+    Returns immediately — the task executor handles the actual asset operation
+    with retry/heartbeat guarantees.
+    """
     event_type = event_type_str or event_payload.get("eventType")
     if event_type not in ["OBJECT_FINALIZE", "OBJECT_DELETE", "OBJECT_ARCHIVE"]:
+        logger.debug(f"handle_asset_events: ignoring event_type '{event_type}'.")
         return
 
     object_name = event_payload.get("name")
-    url = f"gs://{event_payload.get('bucket')}/{object_name}"
-
-    # The asset_id is now reliably sourced from the object's custom metadata.
-    metadata = event_payload.get("metadata", {})
+    metadata = event_payload.get("metadata") or {}
     asset_id = metadata.get("asset_id") or metadata.get("asset_code")
-    asset_type_str = metadata.get("asset_type", "ASSET")
-    asset_type = AssetTypeEnum(asset_type_str)
 
     if not asset_id:
         logger.warning(
-            f"GCS event for '{object_name}' is missing 'asset_id' in metadata. Cannot create asset."
+            f"GCS event for '{object_name}' is missing 'asset_id' in metadata. "
+            "Cannot enqueue asset task."
         )
         return
 
-    if event_type == "OBJECT_FINALIZE":
-        logger.debug(
-            f"Creating asset '{asset_id}' in catalog '{catalog_id}' from GCS OBJECT_FINALIZE event."
+    uri = f"gs://{event_payload.get('bucket')}/{object_name}"
+    asset_type = metadata.get("asset_type", "ASSET")
+
+    from dynastore.models.protocols import DatabaseProtocol
+    from dynastore.models.tasks import TaskCreate
+    from dynastore.modules.tasks.tasks_module import create_task_for_catalog
+
+    db = get_protocol(DatabaseProtocol)
+    if not db:
+        logger.warning("handle_asset_events: DatabaseProtocol not available.")
+        return
+
+    try:
+        task_data = TaskCreate(
+            task_type="gcs_storage_event",
+            caller_id=f"gcp_events:{event_type}",
+            inputs={
+                "catalog_id": catalog_id,
+                "collection_id": collection_id,
+                "event_type": event_type,
+                "asset_id": asset_id,
+                "asset_type": asset_type,
+                "uri": uri,
+                "metadata": metadata,
+            },
         )
-        # 1. Create the asset record in the database.
-        await asset_manager.create_asset(
-            catalog_id=catalog_id,
-            collection_id=collection_id,
-            asset=AssetBase(
-                uri=url, asset_id=asset_id, asset_type=asset_type, metadata=metadata
-            ),
-        )
+        await create_task_for_catalog(db.engine, task_data, catalog_id)
         logger.info(
-            f"Successfully created asset '{asset_id}' from GCS event in {catalog_id}:{collection_id or ''}."
+            f"Enqueued GcsStorageEventTask({event_type}) for asset '{asset_id}' "
+            f"in {catalog_id}:{collection_id or ''}."
         )
-    elif event_type in ["OBJECT_DELETE"]:
-        logger.debug(
-            f"Deleting asset '{asset_id}' in catalog '{catalog_id}' from GCS OBJECT_DELETE event."
+    except Exception as e:
+        logger.error(
+            f"Failed to enqueue GcsStorageEventTask for asset '{asset_id}': {e}",
+            exc_info=True,
         )
-        asset = await asset_manager.get_asset(
-            asset_id=asset_id, catalog_id=catalog_id, collection_id=collection_id
-        )
-        if asset:
-            logger.debug("Found matching asset. Proceeding with hard deletion.")
-            # This triggers the hard_delete event which might clean up physical files
-            # if the logic allows, but here we are reacting TO the storage deletion.
-            await asset_manager.hard_delete_asset(
-                asset.catalog_id, asset.asset_id, propagate=True
-            )
-    elif event_type in ["OBJECT_ARCHIVE"]:
-        logger.debug(
-            f"Soft-deleting asset '{asset_id}' in catalog '{catalog_id}' from GCS OBJECT_ARCHIVE event."
-        )
-        asset = await asset_manager.get_asset(
-            asset_id=asset_id, catalog_id=catalog_id, collection_id=collection_id
-        )
-        if asset:
-            logger.debug("Found matching asset. Proceeding with soft deletion.")
-            # This triggers the hard_delete event which might clean up physical files
-            # if the logic allows, but here we are reacting TO the storage deletion.
-            await asset_manager.soft_delete_asset(asset.catalog_id, asset.asset_id)
-    logger.debug(
-        f"Completed handling asset event '{event_type}' for asset '{asset_id}'."
-    )
 
 
 # --- Registration Functions ---
@@ -626,11 +657,11 @@ def register_listeners():
     """
     logger.info("Registering GCP module as a listener for Catalog events...")
 
-    catalog_module.register_event_listener(
+    register_event_listener(
         CatalogEventType.BEFORE_CATALOG_HARD_DELETION, _adapter_catalog_hard_deletion
     )
 
-    catalog_module.register_event_listener(
+    register_event_listener(
         CatalogEventType.BEFORE_COLLECTION_HARD_DELETION,
         _adapter_collection_hard_deletion,
     )

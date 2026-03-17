@@ -62,7 +62,19 @@ logger = logging.getLogger(__name__)
 async def _get_features_builder(
     conn: DbResource, params: Dict[str, Any]
 ) -> BuilderResult:
-    """A unified builder for feature retrieval across STAC, WFS, Tiles, and DWH."""
+    """A unified builder for feature retrieval across STAC, WFS, Tiles, and DWH.
+
+    LEGACY / PRIMARY query path
+    ───────────────────────────
+    This builder is used by all ItemService methods (get_features, stream_features,
+    get_item, get_features_count, etc.).  It always JOINs every configured sidecar
+    unconditionally and supports full spatial filtering (bbox, geometry, WKT).
+
+    The newer path is ``QueryOptimizer.build_optimized_query()``, which selectively
+    JOINs only the sidecars required for a given ``QueryRequest``.  Once that path
+    reaches parity (spatial filters, feature-ID resolution, streaming), this builder
+    should be replaced.  Track parity by comparing the two implementations.
+    """
     from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
 
     col_config = params["col_config"]
@@ -672,9 +684,6 @@ class ItemService:
                     )
                     raise RuntimeError(f"Failed to upsert item. Geoid: {geoid}")
 
-            # Recalculate extents once at the end
-            await recalculate_and_update_extents(conn, catalog_id, collection_id)
-            
             # Return valid results (Sidecar-aware mapping)
             results = [self.map_row_to_feature(row, col_config) for row in created_rows]
             
@@ -1647,13 +1656,6 @@ class ItemService:
             )
             valid_to = processing_context.get("valid_to")
 
-            # Using tuple for asyncpg/Postgres range compatibility: (Lower, Upper, Bounds)
-            # asyncpg accepts a Range object or a tuple (lower, upper).
-            # For TSTZRANGE, we can also use a string representation.
-            # But the most compatible way for both sync/async (if we share logic)
-            # is often a tuple or the native Range object of the driver.
-            # However, ItemService is primarily async.
-
             from asyncpg import Range
 
             validity = Range(valid_from, valid_to, lower_inc=True, upper_inc=False)
@@ -1903,18 +1905,29 @@ class ItemService:
         self, conn, schema, table, data, conflict_cols: List[str] = ["geoid"]
     ):
         """Sidecar upsert with ON CONFLICT (conflict_cols)."""
-        cols = []
-        vals = []
-        updates = []
+        cols: list = []
+        vals: list = []
+        updates: list = []
         params = {}
         for k, v in data.items():
             cols.append(f'"{k}"')
-            # Explicitly handle geometry columns to ensure Z-dimension preservation from HEX WKB
+            # Geometry columns: pass WKB hex through ST_GeomFromEWKB
             if k in ["geom", "bbox_geom", "centroid"] and isinstance(v, str):
                 vals.append(f"ST_GeomFromEWKB(decode(:{k}, 'hex'))")
+                params[k] = v
+            # Range columns (e.g. validity TSTZRANGE): duck-type for any Range-like
+            # object (asyncpg.Range, etc.) which psycopg2 cannot serialise directly.
+            # Expand into lower/upper params and emit tstzrange() so both drivers work.
+            elif hasattr(v, "lower") and hasattr(v, "upper") and hasattr(v, "lower_inc"):
+                lk, uk = f"{k}_lower", f"{k}_upper"
+                lb = "[" if v.lower_inc else "("
+                ub = "]" if v.upper_inc else ")"
+                vals.append(f"tstzrange(:{lk}, :{uk}, '{lb}{ub}')")
+                params[lk] = v.lower
+                params[uk] = v.upper
             else:
                 vals.append(f":{k}")
-            params[k] = v
+                params[k] = v
             if k not in conflict_cols:
                 updates.append(f'"{k}" = EXCLUDED."{k}"')
 

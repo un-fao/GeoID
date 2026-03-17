@@ -209,3 +209,79 @@ core   v0002 → Add manifest_hash to app_state
 catalog v0001 → Add provisioning_status to catalog.catalogs
 catalog v0002 → STAC compliance columns (conforms_to, links, assets, stac_version, …)
 ```
+
+---
+
+## Admin-Only Trigger (No Auto-Apply)
+
+Startup calls `check_migration_status()` and **never applies DDL**. It returns one of:
+
+| Status | Meaning |
+|--------|---------|
+| `UP_TO_DATE` | Manifest hash matches — nothing to do |
+| `PENDING_MIGRATIONS` | New scripts registered — operator must apply |
+| `DRIFT_DETECTED` | Applied script checksum changed — fatal, operator must resolve |
+
+Apply pending migrations via the admin REST API or the migrations dashboard:
+
+```
+POST /admin/migrations/apply
+{"scope": "all", "dry_run": false}
+```
+
+---
+
+## Tenant Migrations
+
+Register a package of SQL scripts to be applied to every existing tenant schema:
+
+```python
+from dynastore.modules.db_config.migration_runner import register_tenant_migrations
+
+register_tenant_migrations("catalog", "dynastore.modules.catalog.tenant_migrations")
+```
+
+Scripts use `{schema}` as a placeholder:
+
+```sql
+-- v0001__add_schema_hash.sql
+ALTER TABLE {schema}.collection_configs
+    ADD COLUMN IF NOT EXISTS schema_hash VARCHAR(64);
+```
+
+Applied versions are tracked in `{schema}.schema_migrations` per tenant.
+
+---
+
+## Rollback Convention
+
+Place a `v{NNNN}__rollback.sql` alongside each forward script. The content is stored in `schema_migrations.rollback_sql` at apply time. Trigger rollback via:
+
+```
+POST /admin/migrations/rollback
+{"module": "db_config", "version": "v0003"}
+```
+
+---
+
+## Dry-Run
+
+Return pending SQL without executing:
+
+```python
+from dynastore.modules.db_config.migration_runner import run_migrations
+
+pending_sql = await run_migrations(engine, dry_run=True)
+```
+
+
+---
+
+## Registered Migration Packages
+
+| Module | Scope | Package | SQL Scripts |
+|--------|-------|---------|-------------|
+| `catalog` | global | `dynastore.modules.catalog.migrations` | `v0001__catalog_schema.sql` — `catalog` schema, `catalog.catalogs`, `catalog.shared_properties` |
+| `catalog` | tenant | `dynastore.modules.catalog.tenant_migrations` | `v0001__config_tables.sql` — per-tenant `catalog_configs`, `collection_configs` |
+
+Bootstrap tables (`public.schema_migrations`, `public.app_state`, `{schema}.schema_migrations`) are created by `_ensure_tracking_tables()` — inline DDL that runs before any SQL script, not tracked by the migration system itself.

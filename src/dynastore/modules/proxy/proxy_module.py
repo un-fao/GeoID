@@ -96,6 +96,7 @@ async def _initialize_proxy_tenant_slice(conn: DbResource, schema: str, catalog_
     logger.info(f"Creating url_analytics partitions for schema '{schema}'...")
     await maintenance_tools.ensure_future_partitions(conn, schema=schema, table="url_analytics", interval="monthly", periods_ahead=12)
     await maintenance_tools.register_retention_policy(conn, schema=schema, table="url_analytics", policy="prune", interval="daily", retention_period="1 month", column="timestamp")
+    await maintenance_tools.register_partition_creation_policy(conn, schema=schema, table="url_analytics", interval="monthly", periods_ahead=3)
     
     # 3. Aggregates Table (for optimized analytics queries)
     from .queries import CREATE_PROXY_AGGREGATES_TABLE, CREATE_PROXY_AGGREGATES_INDEX_KEY_PERIOD, CREATE_PROXY_AGGREGATES_INDEX_PERIOD_BRIN
@@ -261,6 +262,10 @@ class ProxyModule(ModuleProtocol, ProxyProtocol):
                     await maintenance_tools.register_retention_policy(
                         conn, schema="proxy", table="url_analytics",
                         retention_period="6 months", schedule_cron="30 3 * * 0"
+                    )
+                    await maintenance_tools.register_partition_creation_policy(
+                        conn, schema="proxy", table="url_analytics",
+                        interval="monthly", periods_ahead=3,
                     )
 
             yield

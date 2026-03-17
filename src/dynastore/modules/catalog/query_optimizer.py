@@ -40,7 +40,24 @@ logger = logging.getLogger(__name__)
 
 
 class QueryOptimizer:
-    """Optimizes queries based on sidecar capabilities and requested operations."""
+    """Optimizes queries based on sidecar capabilities and requested operations.
+
+    OPTIMIZED / SECONDARY query path
+    ─────────────────────────────────
+    ``build_optimized_query()`` selectively JOINs only the sidecars required for
+    a given ``QueryRequest`` (via ``determine_required_sidecars()``), avoiding
+    unnecessary table JOINs and fetching only the columns actually needed.
+
+    The primary path for all ItemService CRUD and streaming operations is the
+    legacy ``_get_features_builder`` in ``item_service.py``, which always joins
+    all sidecars unconditionally.  This optimizer is used when callers explicitly
+    construct a ``QueryRequest`` (e.g. STAC search, virtual collection filters,
+    advanced OGC queries).
+
+    Migration plan: once spatial-filter support and full streaming parity are
+    achieved here, ``_get_features_builder`` should be retired in favour of this
+    optimizer.
+    """
 
     def __init__(self, col_config: CollectionPluginConfig):
         self.col_config = col_config
@@ -268,17 +285,27 @@ class QueryOptimizer:
             "required": ["geometry", "properties"],
         }
 
-    def determine_required_sidecars(self, query: QueryRequest) -> List[SidecarConfig]:
+    def determine_required_sidecars(
+        self,
+        query: QueryRequest,
+        require_geometry: bool = True,
+    ) -> List[SidecarConfig]:
         """
         Determine which sidecars are actually needed for this query.
 
+        Args:
+            query: The QueryRequest to analyse.
+            require_geometry: When True (default), always include any sidecar that
+                provides a main geometry field.  This ensures GeoJSON Feature
+                responses always have geometry even when the query only filters by
+                non-spatial fields (e.g. asset_id for virtual collections).
+                Pass False for pure aggregate / COUNT queries where geometry is
+                not part of the output.
+
         Returns:
-            List of sidecar configs that must be joined
+            List of sidecar configs that must be joined, in declaration order.
         """
         required_sidecars = set()
-
-        # We assume if raw_where is used, it might require all sidecars just to be safe.
-        # Alternatively, we just verify if select * is requested.
 
         # Check SELECT fields
         for sel in query.select:
@@ -310,7 +337,17 @@ class QueryOptimizer:
                     sidecar, _ = self.field_index[field]
                     required_sidecars.add(sidecar.config.sidecar_id)
 
-        # Return only required sidecar configs, preserving order
+        # Always include the geometry sidecar for full Feature responses.
+        # Without this, queries that only filter by non-spatial fields (e.g.
+        # asset_id) would produce features without geometry.
+        if require_geometry:
+            from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+            for sc_config in self.col_config.sidecars:
+                sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
+                if sidecar and sidecar.get_main_geometry_field() is not None:
+                    required_sidecars.add(sc_config.sidecar_id)
+
+        # Return only required sidecar configs, preserving declaration order
         return [
             sc for sc in self.col_config.sidecars if sc.sidecar_id in required_sidecars
         ]
@@ -335,8 +372,15 @@ class QueryOptimizer:
         if errors:
             raise ValueError(f"Invalid query: {'; '.join(errors)}")
 
-        # Determine required sidecars
-        required_sidecars = self.determine_required_sidecars(query)
+        # Determine required sidecars.
+        # Skip geometry for pure aggregate queries (e.g. COUNT-only) — they produce
+        # no Feature output and don't need the geometry JOIN.
+        is_count_only = bool(query.select) and all(
+            sel.aggregation for sel in query.select
+        )
+        required_sidecars = self.determine_required_sidecars(
+            query, require_geometry=not is_count_only
+        )
 
         # Build SELECT clause
         select_fields = []
@@ -346,7 +390,16 @@ class QueryOptimizer:
 
         if any(sel.field == "*" for sel in query.select):
             select_fields.append("h.*")
-            # Note: Sidecar SELECT fields are now populated via context later down
+            # Also include all sidecar SELECT fields — h.* only covers the Hub table.
+            for sc_config in required_sidecars:
+                sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
+                if sidecar:
+                    sc_alias = f"sc_{sidecar.sidecar_id}"
+                    for f in sidecar.get_select_fields(
+                        request=query, hub_alias="h", sidecar_alias=sc_alias, include_all=True
+                    ):
+                        if f not in select_fields:
+                            select_fields.append(f)
         elif not query.select:
             # Default empty select -> similar to `select *` just without h.*
             pass
@@ -480,28 +533,35 @@ class QueryOptimizer:
 
         # Build JOINs (only for required sidecars)
         joins = []
-        # Allow sidecars to inspect the request and contribute via apply_query_context
+        # Allow sidecars to inspect the request and contribute via apply_query_context.
+        # schema/table are included so sidecars that build their own JOINs don't need
+        # a separate call to get_join_clause with missing arguments.
         query_context: Dict[str, Any] = {
             "joins": [],
             "params": params,
             "select_fields": select_fields,
             "where_conditions": where_conditions,
+            "schema": schema,
+            "table": table,
         }
 
         for sc_config in required_sidecars:
             sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
             if not sidecar:
                 continue
-            
+
             # Use a stable alias for the sidecar
             sc_alias = f"sc_{sidecar.sidecar_id}"
 
             # 1. Let sidecar populate context (SELECTs, JOINs, parameters)
             sidecar.apply_query_context(query, query_context)
-            
-            # 2. Add default JOIN for the sidecar if not already added by it
-            # We check if a join for this alias already exists in context['joins']
-            join_exists = any(f" {sc_alias} " in j for j in query_context["joins"])
+
+            # 2. Add default JOIN for the sidecar if not already added by it.
+            # Check using "AS {sc_alias} " because JOIN strings look like:
+            #   LEFT JOIN "schema"."table_foo" AS sc_foo ON ...
+            # The old " {sc_alias} " check (space on both sides) was fragile because
+            # the alias is followed by " ON", not a space.
+            join_exists = any(f" AS {sc_alias} " in j for j in query_context["joins"])
             if not join_exists:
                 query_context["joins"].append(
                     sidecar.get_join_clause(schema, table, hub_alias="h", sidecar_alias=sc_alias)
@@ -519,6 +579,20 @@ class QueryOptimizer:
                 unique_selects.append(field)
                 seen.add(field)
         select_fields = unique_selects
+
+        # Handle provides_feature_id: ensure the correct column is aliased as 'id'.
+        # One sidecar at most can be the feature-id provider (validated at config time).
+        # Default is h.geoid; a configured sidecar (e.g. attributes with external_id)
+        # can override this for all optimizer-generated queries.
+        if not any("AS id" in f or f.rstrip().endswith(" id") for f in select_fields):
+            feature_id_expr = "h.geoid"
+            for sc_config in required_sidecars:
+                sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
+                if sidecar and sidecar.provides_feature_id and sidecar.feature_id_field_name:
+                    sc_alias = f"sc_{sidecar.sidecar_id}"
+                    feature_id_expr = f"{sc_alias}.{sidecar.feature_id_field_name}"
+                    break
+            select_fields.append(f"{feature_id_expr} AS id")
 
         # Build GROUP BY
         group_by_clause = ""

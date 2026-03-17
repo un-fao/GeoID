@@ -32,7 +32,7 @@ from pydantic import (
     SerializeAsAny,
 )
 from datetime import date, datetime
-from dynastore.modules.db_config.platform_config_manager import (
+from dynastore.modules.db_config.platform_config_service import (
     PluginConfig,
     register_config,
     Immutable,
@@ -58,7 +58,7 @@ from dynastore.modules.catalog.sidecars.attributes_config import (
     FeatureAttributeSidecarConfig,
     VersioningBehaviorEnum,
 )
-from dynastore.modules.db_config.platform_config_manager import (
+from dynastore.modules.db_config.platform_config_service import (
     PluginConfig,
     register_config,
     Immutable,

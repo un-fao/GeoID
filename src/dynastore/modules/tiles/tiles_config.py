@@ -14,7 +14,7 @@
 
 from typing import List, Optional, Dict, Tuple
 from pydantic import Field, BaseModel
-from dynastore.modules.db_config.platform_config_manager import PluginConfig, register_config
+from dynastore.modules.db_config.platform_config_service import PluginConfig, register_config
 from dynastore.tools.geospatial import SimplificationAlgorithm
 
 TILES_PLUGIN_CONFIG_ID = "tiles"

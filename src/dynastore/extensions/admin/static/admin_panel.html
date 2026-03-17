@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Admin Panel — Agro-Informatics Platform</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #21262d;
+    --border: #30363d;
+    --primary: #58a6ff;
+    --primary-dark: #1f6feb;
+    --success: #3fb950;
+    --danger: #f85149;
+    --warning: #d29922;
+    --text: #c9d1d9;
+    --text-dim: #8b949e;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+  .panel { max-width: 1200px; margin: 0 auto; padding: 24px 20px; }
+  h1 { font-size: 1.6rem; font-weight: 700; color: #fff; margin-bottom: 4px; }
+  h1 i { color: var(--primary); margin-right: 10px; }
+  .subtitle { color: var(--text-dim); font-size: 0.9rem; margin-bottom: 24px; }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--border); margin-bottom: 24px; }
+  .tab-btn {
+    padding: 10px 20px; border: none; background: none; color: var(--text-dim);
+    font-family: 'Inter', sans-serif; font-size: 0.9rem; cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all .2s;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+  .tab-pane { display: none; }
+  .tab-pane.active { display: block; }
+
+  /* Toolbar */
+  .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  .search-box {
+    flex: 1; min-width: 200px; padding: 8px 12px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--text); font-size: 0.85rem;
+    outline: none;
+  }
+  .search-box:focus { border-color: var(--primary); }
+  .btn {
+    padding: 8px 16px; border-radius: var(--radius); border: none; cursor: pointer;
+    font-family: 'Inter', sans-serif; font-size: 0.85rem; font-weight: 500;
+    display: flex; align-items: center; gap: 7px; transition: all .2s;
+  }
+  .btn-primary { background: var(--primary-dark); color: #fff; }
+  .btn-primary:hover { background: var(--primary); }
+  .btn-danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+  .btn-danger:hover { background: var(--danger); color: #fff; }
+  .btn-sm { padding: 4px 10px; font-size: 0.78rem; }
+
+  /* Table */
+  .table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th { background: var(--surface2); color: var(--text-dim); font-weight: 600; padding: 10px 14px; text-align: left; }
+  td { padding: 10px 14px; border-top: 1px solid var(--border); vertical-align: middle; }
+  tr:hover td { background: rgba(88,166,255,.04); }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 0.75rem; font-weight: 600;
+  }
+  .badge-ok { background: rgba(63,185,80,.15); color: var(--success); }
+  .badge-off { background: rgba(248,81,73,.15); color: var(--danger); }
+  .badge-role { background: rgba(88,166,255,.12); color: var(--primary); margin: 2px; }
+  .badge-sys { background: rgba(210,153,34,.15); color: var(--warning); }
+
+  /* Modal */
+  .modal-bg {
+    position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 100;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal-bg.hidden { display: none; }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 28px; width: 480px; max-width: 95vw; max-height: 85vh; overflow-y: auto;
+  }
+  .modal h2 { font-size: 1.1rem; margin-bottom: 20px; }
+  .form-row { margin-bottom: 14px; }
+  label { display: block; font-size: 0.8rem; color: var(--text-dim); margin-bottom: 5px; }
+  input, textarea, select {
+    width: 100%; padding: 8px 12px; background: var(--surface2);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    color: var(--text); font-size: 0.85rem; outline: none;
+    font-family: 'Inter', sans-serif;
+  }
+  input:focus, textarea:focus, select:focus { border-color: var(--primary); }
+  textarea { resize: vertical; min-height: 80px; }
+  .form-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+
+  /* Alerts */
+  #toast {
+    position: fixed; bottom: 24px; right: 24px; z-index: 200;
+    padding: 12px 20px; border-radius: var(--radius); font-size: 0.85rem;
+    opacity: 0; transition: opacity .3s; pointer-events: none; max-width: 320px;
+  }
+  #toast.show { opacity: 1; }
+  #toast.ok { background: #1e3a25; border: 1px solid var(--success); color: var(--success); }
+  #toast.err { background: #3a1a1a; border: 1px solid var(--danger); color: var(--danger); }
+
+  .loader { text-align: center; padding: 40px; color: var(--text-dim); }
+  .empty { text-align: center; padding: 40px; color: var(--text-dim); font-size: 0.9rem; }
+  .chip-list { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip-input { width: 100%; margin-top: 6px; }
+</style>
+<script src="../website/context-selector.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@json-editor/json-editor@latest/dist/jsoneditor.min.js"></script>
+</head>
+<body>
+<div class="panel">
+  <h1><i class="fa-solid fa-shield-halved"></i> Agro-Informatics Platform: Admin Panel</h1>
+  <p class="subtitle">Manage users, roles, policies and catalog access on the AgroInformatics Platform.</p>
+
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('users')"><i class="fa-solid fa-users"></i> Users</button>
+      <button class="tab-btn" onclick="switchTab('principals')"><i class="fa-solid fa-fingerprint"></i> Principals</button>
+      <button class="tab-btn" onclick="switchTab('roles')"><i class="fa-solid fa-user-tag"></i> Roles</button>
+      <button class="tab-btn" onclick="switchTab('policies')"><i class="fa-solid fa-file-shield"></i> Policies</button>
+      <button class="tab-btn" onclick="switchTab('apikeys')"><i class="fa-solid fa-key"></i> API Keys</button>
+    </div>
+
+  <!-- ── USERS TAB ── -->
+  <div id="tab-users" class="tab-pane active">
+    <div class="toolbar">
+      <input class="search-box" id="user-search" placeholder="Search by username…" oninput="filterUsers()">
+      <button class="btn btn-primary" onclick="openUserModal()"><i class="fa-solid fa-plus"></i> New User</button>
+      <button class="btn btn-primary" onclick="loadUsers()"><i class="fa-solid fa-rotate"></i></button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Username</th><th>Provider</th><th>Roles</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody id="users-tbody"><tr><td colspan="5" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ── PRINCIPALS TAB ── -->
+  <div id="tab-principals" class="tab-pane">
+    <div class="toolbar">
+      <input class="search-box" id="principal-search" placeholder="Search by identifier or role…">
+      <button class="btn btn-primary" onclick="loadPrincipals()"><i class="fa-solid fa-rotate"></i> Refresh</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Display Name</th><th>Provider</th><th>Subject ID</th><th>Roles</th><th>Active</th><th>Actions</th></tr></thead>
+        <tbody id="principals-tbody"><tr><td colspan="6" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ── ROLES TAB ── -->
+  <div id="tab-roles" class="tab-pane">
+    <div class="toolbar">
+      <button class="btn btn-primary" onclick="openRoleModal()"><i class="fa-solid fa-plus"></i> New Role</button>
+      <button class="btn btn-primary" onclick="loadRoles()"><i class="fa-solid fa-rotate"></i></button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Description</th><th>Policies</th><th>System</th><th>Actions</th></tr></thead>
+        <tbody id="roles-tbody"><tr><td colspan="5" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ── POLICIES TAB ── -->
+  <div id="tab-policies" class="tab-pane">
+    <div class="toolbar">
+      <div id="cs-policies-container"></div>
+      <button class="btn btn-primary" onclick="openPolicyModal()"><i class="fa-solid fa-plus"></i> New Policy</button>
+      <button class="btn btn-primary" onclick="loadPolicies()"><i class="fa-solid fa-rotate"></i></button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>ID</th><th>Effect</th><th>Actions</th><th>Resources</th><th>Description</th><th>Ops</th></tr></thead>
+        <tbody id="policies-tbody"><tr><td colspan="6" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ── API KEYS TAB ── -->
+  <div id="tab-apikeys" class="tab-pane">
+    <div class="toolbar">
+      <input class="search-box" id="apikey-search" placeholder="Search by principal ID…">
+      <button class="btn btn-primary" onclick="openApiKeyModal()"><i class="fa-solid fa-plus"></i> New API Key</button>
+      <button class="btn btn-primary" onclick="loadApiKeys()"><i class="fa-solid fa-rotate"></i></button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Prefix</th><th>Principal ID</th><th>Status</th><th>Expires At</th><th>Usage</th><th>Actions</th></tr></thead>
+        <tbody id="apikeys-tbody"><tr><td colspan="7" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── MODALS ── -->
+
+<!-- New User Modal -->
+<div id="user-modal" class="modal-bg hidden">
+  <div class="modal">
+    <h2><i class="fa-solid fa-user-plus" style="color:var(--primary);margin-right:8px"></i>Create User</h2>
+    <div class="form-row"><label>Username *</label><input id="nm-username" placeholder="e.g. jsmith"/></div>
+    <div class="form-row"><label>Password *</label><input id="nm-password" type="password" placeholder="Minimum 8 characters"/></div>
+    <div class="form-row"><label>Email</label><input id="nm-email" type="email" placeholder="user@example.com"/></div>
+    <div class="form-row"><label>Roles (comma-separated)</label><input id="nm-roles" value="user" placeholder="e.g. user, viewer"/></div>
+    <div class="form-actions">
+      <button class="btn" onclick="closeUserModal()" style="color:var(--text-dim)">Cancel</button>
+      <button class="btn btn-primary" onclick="createUser()"><i class="fa-solid fa-check"></i> Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Assign Catalog Role Modal -->
+<div id="catalog-modal" class="modal-bg hidden">
+  <div class="modal">
+    <h2><i class="fa-solid fa-database" style="color:var(--primary);margin-right:8px"></i>Assign Catalog Role</h2>
+    <input type="hidden" id="cm-principal-id"/>
+    <div class="form-row"><label>Catalog ID *</label><input id="cm-catalog" placeholder="e.g. agro_data_2024"/></div>
+    <div class="form-row"><label>Role *</label><input id="cm-role" placeholder="e.g. viewer, editor, admin"/></div>
+    <div class="form-actions">
+      <button class="btn" onclick="closeCatalogModal()" style="color:var(--text-dim)">Cancel</button>
+      <button class="btn btn-primary" onclick="assignCatalogRole()"><i class="fa-solid fa-check"></i> Assign</button>
+    </div>
+  </div>
+</div>
+
+<!-- New Role Modal -->
+<div id="role-modal" class="modal-bg hidden">
+  <div class="modal">
+    <h2><i class="fa-solid fa-user-tag" style="color:var(--primary);margin-right:8px"></i>Create Role</h2>
+    <div class="form-row"><label>Name *</label><input id="rm-name" placeholder="e.g. data_editor"/></div>
+    <div class="form-row"><label>Description</label><input id="rm-desc" placeholder="Brief description"/></div>
+    <div class="form-row"><label>Policies (comma-separated IDs)</label><input id="rm-policies" placeholder="e.g. stac_public_access, web_public_access"/></div>
+    <div class="form-row"><label>Parent Roles (comma-separated)</label><input id="rm-parents" placeholder="e.g. user"/></div>
+    <div class="form-actions">
+      <button class="btn" onclick="document.getElementById('role-modal').classList.add('hidden')" style="color:var(--text-dim)">Cancel</button>
+      <button class="btn btn-primary" onclick="createRole()"><i class="fa-solid fa-check"></i> Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- New Policy Modal -->
+<div id="policy-modal" class="modal-bg hidden">
+  <div class="modal">
+    <h2><i class="fa-solid fa-file-shield" style="color:var(--primary);margin-right:8px"></i>Create Policy</h2>
+    <div class="form-row"><label>Policy ID *</label><input id="pm-id" placeholder="e.g. my_catalog_read"/></div>
+    <div class="form-row"><label>Description</label><input id="pm-desc" placeholder="Brief description"/></div>
+    <div class="form-row"><label>Effect</label>
+      <select id="pm-effect"><option value="ALLOW">ALLOW</option><option value="DENY">DENY</option></select>
+    </div>
+    <div class="form-row"><label>Actions (comma-separated)</label><input id="pm-actions" placeholder="GET, POST, PUT, DELETE"/></div>
+    <div class="form-row"><label>Resources (regex patterns, one per line)</label>
+      <textarea id="pm-resources" placeholder="/my/resource/.*&#10;/other/path">/my/resource/.*</textarea>
+    </div>
+    <div class="form-actions">
+      <button class="btn" onclick="document.getElementById('policy-modal').classList.add('hidden')" style="color:var(--text-dim)">Cancel</button>
+      <button class="btn btn-primary" onclick="createPolicy()"><i class="fa-solid fa-check"></i> Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- New API Key Modal -->
+<div id="apikey-modal" class="modal-bg hidden">
+  <div class="modal">
+    <h2><i class="fa-solid fa-key" style="color:var(--primary);margin-right:8px"></i>Create API Key</h2>
+    <div class="form-row"><label>Principal ID *</label><input id="akm-principal" placeholder="UUID of the principal"/></div>
+    <div class="form-row"><label>Name / Description</label><input id="akm-name" placeholder="e.g. My App Key"/></div>
+    <div class="form-row"><label>Max Usage (Call limit)</label><input type="number" id="akm-max-usage" placeholder="e.g. 1000"/></div>
+    <div class="form-row"><label>Expires At (UTC Timestamp)</label><input type="datetime-local" id="akm-expires"/></div>
+    <div class="form-actions">
+      <button class="btn" onclick="document.getElementById('apikey-modal').classList.add('hidden')" style="color:var(--text-dim)">Cancel</button>
+      <button class="btn btn-primary" onclick="createApiKey()"><i class="fa-solid fa-check"></i> Create</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div><script>
+const BASE = '/admin';
+let TOKEN_KEY = 'ds_token';
+let _tokenKeyPromise = fetch('/configs/web_config').then(r => r.ok ? r.json() : {}).then(c => {
+  if (c.token_key) TOKEN_KEY = c.token_key;
+}).catch(() => {});
+
+async function getAuthHeaders() {
+  await _tokenKeyPromise;
+  const token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || '';
+  return token ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+               : { 'Content-Type': 'application/json' };
+}
+
+async function apiFetch(path, opts = {}) {
+  const headers = await getAuthHeaders();
+  opts.headers = { ...headers, ...(opts.headers || {}) };
+  const res = await fetch(BASE + path, opts);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || res.statusText);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+function toast(msg, ok = true) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = `show ${ok ? 'ok' : 'err'}`;
+  setTimeout(() => t.className = '', 3000);
+}
+
+function csvToList(s) { return s.split(',').map(x => x.trim()).filter(Boolean); }
+
+// ── Tab switching ──
+function switchTab(name) {
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  event.currentTarget.classList.add('active');
+  if (name === 'users') loadUsers();
+  if (name === 'principals') loadPrincipals();
+  if (name === 'roles') loadRoles();
+  if (name === 'policies') loadPolicies();
+  if (name === 'apikeys') loadApiKeys();
+}
+
+// ── USERS ──
+async function loadUsers() {
+  const tb = document.getElementById('users-tbody');
+  tb.innerHTML = '<tr><td colspan="5" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr>';
+  try {
+    _allUsers = await apiFetch('/users');
+    renderUsers(_allUsers);
+  } catch(e) { tb.innerHTML = `<tr><td colspan="5" class="empty">Error: ${e.message}</td></tr>`; }
+}
+function renderUsers(list) {
+  const tb = document.getElementById('users-tbody');
+  if (!list.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">No users found.</td></tr>'; return; }
+  tb.innerHTML = list.map(u => `
+    <tr>
+      <td><strong>${u.display_name || u.subject_id}</strong></td>
+      <td><span style="color:var(--text-dim)">${u.provider || 'local'}</span></td>
+      <td><div class="chip-list">${(u.roles||[]).map(r=>`<span class="badge badge-role">${r}</span>`).join('')}</div></td>
+      <td><span class="badge ${u.is_active?'badge-ok':'badge-off'}">${u.is_active?'Active':'Inactive'}</span></td>
+      <td>
+        <button class="btn btn-sm btn-danger" onclick="deactivateUser('${u.id}')"><i class="fa-solid fa-ban"></i></button>
+        <button class="btn btn-sm btn-primary" onclick="openCatalogModal('${u.id}')" style="margin-left:4px"><i class="fa-solid fa-database"></i></button>
+      </td>
+    </tr>`).join('');
+}
+function filterUsers() {
+  const q = document.getElementById('user-search').value.toLowerCase();
+  renderUsers(_allUsers.filter(u =>
+    (u.display_name||'').toLowerCase().includes(q) ||
+    (u.subject_id||'').toLowerCase().includes(q)
+  ));
+}
+function openUserModal() { document.getElementById('user-modal').classList.remove('hidden'); }
+function closeUserModal() { document.getElementById('user-modal').classList.add('hidden'); }
+async function createUser() {
+  const username = document.getElementById('nm-username').value.trim();
+  const password = document.getElementById('nm-password').value;
+  const email = document.getElementById('nm-email').value.trim();
+  const roles = csvToList(document.getElementById('nm-roles').value);
+  if (!username || !password) { toast('Username and password are required.', false); return; }
+  try {
+    await apiFetch('/users', { method:'POST', body: JSON.stringify({username,password,email,roles}) });
+    toast('User created successfully.'); closeUserModal(); loadUsers();
+  } catch(e) { toast(e.message, false); }
+}
+async function deactivateUser(id) {
+  if (!confirm('Deactivate this user?')) return;
+  try {
+    await apiFetch(`/users/${id}`, { method:'PUT', body: JSON.stringify({is_active: false}) });
+    toast('User deactivated.'); loadUsers();
+  } catch(e) { toast(e.message, false); }
+}
+
+// ── CATALOG ROLE ──
+function openCatalogModal(principalId) {
+  document.getElementById('cm-principal-id').value = principalId;
+  document.getElementById('catalog-modal').classList.remove('hidden');
+}
+function closeCatalogModal() { document.getElementById('catalog-modal').classList.add('hidden'); }
+async function assignCatalogRole() {
+  const pid = document.getElementById('cm-principal-id').value;
+  const catalog = document.getElementById('cm-catalog').value.trim();
+  const role = document.getElementById('cm-role').value.trim();
+  if (!catalog || !role) { toast('Catalog ID and role are required.', false); return; }
+  try {
+    await apiFetch(`/principals/${pid}/catalogs/${catalog}/roles`, { method:'POST', body: JSON.stringify({role}) });
+    toast(`Role '${role}' assigned to catalog '${catalog}'.`); closeCatalogModal();
+  } catch(e) { toast(e.message, false); }
+}
+
+// ── PRINCIPALS ──
+async function loadPrincipals() {
+  const tb = document.getElementById('principals-tbody');
+  tb.innerHTML = '<tr><td colspan="6" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr>';
+  try {
+    _allPrincipals = await apiFetch('/principals');
+    renderPrincipals(_allPrincipals);
+  } catch(e) { tb.innerHTML = `<tr><td colspan="6" class="empty">Error: ${e.message}</td></tr>`; }
+}
+function renderPrincipals(list) {
+  const tb = document.getElementById('principals-tbody');
+  if (!list.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">No principals found.</td></tr>'; return; }
+  tb.innerHTML = list.map(p => `
+    <tr>
+      <td><strong>${p.display_name || '—'}</strong></td>
+      <td><span style="color:var(--text-dim)">${p.provider || '—'}</span></td>
+      <td style="font-family:monospace;font-size:0.8rem">${p.subject_id || '—'}</td>
+      <td><div class="chip-list">${(p.roles||[]).map(r=>`<span class="badge badge-role">${r}</span>`).join('')}</div></td>
+      <td><span class="badge ${p.is_active?'badge-ok':'badge-off'}">${p.is_active?'Yes':'No'}</span></td>
+      <td><button class="btn btn-sm btn-primary" onclick="openCatalogModal('${p.id}')"><i class="fa-solid fa-database"></i> Catalog Role</button></td>
+    </tr>`).join('');
+}
+
+// ── ROLES ──
+async function loadRoles() {
+  const tb = document.getElementById('roles-tbody');
+  tb.innerHTML = '<tr><td colspan="5" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr>';
+  try {
+    _allRoles = await apiFetch('/roles');
+    renderRoles(_allRoles);
+  } catch(e) { tb.innerHTML = `<tr><td colspan="5" class="empty">Error: ${e.message}</td></tr>`; }
+}
+function renderRoles(list) {
+  const tb = document.getElementById('roles-tbody');
+  if (!list.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">No roles found.</td></tr>'; return; }
+  tb.innerHTML = list.map(r => `
+    <tr>
+      <td><strong>${r.name}</strong></td>
+      <td style="color:var(--text-dim)">${r.description || '—'}</td>
+      <td><div class="chip-list">${(r.policies||[]).map(p=>`<span class="badge badge-role">${p}</span>`).join('')}</div></td>
+      <td>${r.is_system ? '<span class="badge badge-sys">System</span>' : ''}</td>
+      <td>${r.is_system ? '' : `
+        <button class="btn btn-sm btn-danger" onclick="deleteRole('${r.name}')"><i class="fa-solid fa-trash"></i></button>`}
+      </td>
+    </tr>`).join('');
+}
+function openRoleModal() { document.getElementById('role-modal').classList.remove('hidden'); }
+async function createRole() {
+  const name = document.getElementById('rm-name').value.trim();
+  const description = document.getElementById('rm-desc').value.trim();
+  const policies = csvToList(document.getElementById('rm-policies').value);
+  const parent_roles = csvToList(document.getElementById('rm-parents').value);
+  if (!name) { toast('Role name is required.', false); return; }
+  try {
+    await apiFetch('/roles', { method:'POST', body: JSON.stringify({name,description,policies,parent_roles}) });
+    toast('Role created.'); document.getElementById('role-modal').classList.add('hidden'); loadRoles();
+  } catch(e) { toast(e.message, false); }
+}
+async function deleteRole(name) {
+  if (!confirm(`Delete role '${name}'?`)) return;
+  try {
+    await apiFetch(`/roles/${name}`, { method:'DELETE' });
+    toast('Role deleted.'); loadRoles();
+  } catch(e) { toast(e.message, false); }
+}
+
+// ── POLICIES ──
+async function loadPolicies() {
+  const tb = document.getElementById('policies-tbody');
+  tb.innerHTML = '<tr><td colspan="6" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr>';
+  try {
+    let url = '/policies';
+    if (_csPolicies && _csPolicies.state.catalogId && _csPolicies.state.catalogId !== '_system_') {
+      url += `?catalog_id=${encodeURIComponent(_csPolicies.state.catalogId)}`;
+    }
+    _allPolicies = await apiFetch(url);
+    renderPolicies(_allPolicies);
+  } catch(e) { tb.innerHTML = `<tr><td colspan="6" class="empty">Error: ${e.message}</td></tr>`; }
+}
+function renderPolicies(list) {
+  const tb = document.getElementById('policies-tbody');
+  const sys = new Set(['public_access','self_service_access','sysadmin_full_access']);
+  if (!list.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">No policies found.</td></tr>'; return; }
+  tb.innerHTML = list.map(p => `
+    <tr>
+      <td><strong style="font-family:monospace">${p.id}</strong></td>
+      <td><span class="badge" style="background:${p.effect==='ALLOW'?'rgba(63,185,80,.15)':'rgba(248,81,73,.15)'};color:${p.effect==='ALLOW'?'var(--success)':'var(--danger)'}">${p.effect}</span></td>
+      <td><div class="chip-list">${(p.actions||[]).map(a=>`<span class="badge badge-role">${a}</span>`).join('')}</div></td>
+      <td style="font-family:monospace;font-size:0.75rem;max-width:260px;overflow:hidden;text-overflow:ellipsis">${(p.resources||[]).join(', ')}</td>
+      <td style="color:var(--text-dim)">${p.description || '—'}</td>
+      <td>${sys.has(p.id) ? '<span class="badge badge-sys">System</span>' : `
+        <button class="btn btn-sm btn-danger" onclick="deletePolicy('${p.id}')"><i class="fa-solid fa-trash"></i></button>`}
+      </td>
+    </tr>`).join('');
+}
+function openPolicyModal() { document.getElementById('policy-modal').classList.remove('hidden'); }
+async function createPolicy() {
+  const id = document.getElementById('pm-id').value.trim();
+  const description = document.getElementById('pm-desc').value.trim();
+  const effect = document.getElementById('pm-effect').value;
+  const actions = csvToList(document.getElementById('pm-actions').value);
+  const resources = document.getElementById('pm-resources').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  if (!id || !actions.length || !resources.length) { toast('ID, actions and resources are required.', false); return; }
+  try {
+    await apiFetch('/policies', { method:'POST', body: JSON.stringify({id,description,effect,actions,resources}) });
+    toast('Policy created.'); document.getElementById('policy-modal').classList.add('hidden'); loadPolicies();
+  } catch(e) { toast(e.message, false); }
+}
+async function deletePolicy(id) {
+  if (!confirm(`Delete policy '${id}'?`)) return;
+  try {
+    await apiFetch(`/policies/${id}`, { method:'DELETE' });
+    toast('Policy deleted.'); loadPolicies();
+  } catch(e) { toast(e.message, false); }
+}
+
+// ── API KEYS ──
+let _allApiKeys = [];
+async function loadApiKeys() {
+  const tb = document.getElementById('apikeys-tbody');
+  tb.innerHTML = '<tr><td colspan="7" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr>';
+  try {
+    _allApiKeys = await apiFetch('/apikeys');
+    renderApiKeys(_allApiKeys);
+  } catch(e) { tb.innerHTML = `<tr><td colspan="7" class="empty">Error: ${e.message}</td></tr>`; }
+}
+function renderApiKeys(list) {
+  const tb = document.getElementById('apikeys-tbody');
+  if (!list.length) { tb.innerHTML = '<tr><td colspan="7" class="empty">No API keys found.</td></tr>'; return; }
+  let html = '';
+  for (const k of list) {
+    const expires = k.expires_at ? new Date(k.expires_at).toLocaleString() : 'Never';
+    const usage = k.max_usage ? (k.usage || 0) + ' / ' + k.max_usage : 'Unlimited';
+    const activeClass = k.is_active ? 'badge-ok' : 'badge-off';
+    const activeText = k.is_active ? 'Active' : 'Inactive';
+    html += '<tr>' +
+      '<td><strong>' + (k.name || '—') + '</strong></td>' +
+      '<td style="font-family:monospace">' + k.key_prefix + '***</td>' +
+      '<td style="font-family:monospace;font-size:0.8rem">' + k.principal_id + '</td>' +
+      '<td><span class="badge ' + activeClass + '">' + activeText + '</span></td>' +
+      '<td>' + expires + '</td>' +
+      '<td>' + usage + '</td>' +
+      '<td>' +
+        '<button class="btn btn-sm btn-danger" onclick="deleteApiKey(\'' + k.key_hash + '\')"><i class="fa-solid fa-trash"></i></button>' +
+      '</td>' +
+    '</tr>';
+  }
+  tb.innerHTML = html;
+}
+function openApiKeyModal() { document.getElementById('apikey-modal').classList.remove('hidden'); }
+async function createApiKey() {
+  const principal_id = document.getElementById('akm-principal').value.trim();
+  const name = document.getElementById('akm-name').value.trim();
+  const max_usage_val = document.getElementById('akm-max-usage').value;
+  const max_usage = max_usage_val ? parseInt(max_usage_val) : null;
+  const expires_val = document.getElementById('akm-expires').value;
+  const expires_at = expires_val ? new Date(expires_val).toISOString() : null;
+  
+  if (!principal_id) { toast('Principal ID is required.', false); return; }
+  
+  try {
+    const res = await apiFetch('/apikeys', { 
+        method:'POST', 
+        body: JSON.stringify({principal_id, name, max_usage, expires_at}) 
+    });
+    // Show the key to the user
+    // In a real app, use a proper modal for this. For simplicity here:
+    prompt("API Key created! Please copy it now as it won't be shown again:", res.api_key);
+    document.getElementById('apikey-modal').classList.add('hidden'); 
+    loadApiKeys();
+  } catch(e) { toast(e.message, false); }
+}
+async function deleteApiKey(key_hash) {
+  if (!confirm(`Revoke and delete this API key?`)) return;
+  try {
+    await apiFetch(`/apikeys/${key_hash}`, { method:'DELETE' });
+    toast('API Key deleted.'); loadApiKeys();
+  } catch(e) { toast(e.message, false); }
+}
+
+// Initial load
+let _csPolicies = null;
+document.addEventListener('DOMContentLoaded', () => {
+  _csPolicies = new ContextSelector({
+    containerId: 'cs-policies-container',
+    enableCollection: false,
+    enableSearch: true,
+    onChange: () => {
+      if (document.getElementById('tab-policies').classList.contains('active')) {
+        loadPolicies();
+      }
+    }
+  });
+  
+  _csPolicies = new ContextSelector({
+    containerId: 'cs-policies-container',
+    enableCollection: false,
+    enableSearch: true,
+    onChange: () => {
+      if (document.getElementById('tab-policies').classList.contains('active')) {
+        loadPolicies();
+      }
+    }
+  });
+});
+loadUsers();
+
+</script>
+</body>
+</html>

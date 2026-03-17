@@ -24,7 +24,7 @@ PayloadType = TypeVar('PayloadType', contravariant=True)
 ReturnType = TypeVar('ReturnType', covariant=True)
 
 @runtime_checkable
-class ProcessTaskProtocol(Protocol[DefinitionType, PayloadType, ReturnType]):
+class ProcessTaskProtocol(TaskProtocol[DefinitionType, PayloadType, ReturnType], Protocol):
     """
     A specialized TaskProtocol for tasks that explicitly expose an OGC Process definition.
     """

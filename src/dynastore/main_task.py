@@ -45,30 +45,36 @@ async def report_failure(task_id: str, schema: str, error_message: str):
 
     try:
         from dynastore import modules
-        from dynastore.modules.tasks import tasks_module
         from dynastore.modules.tasks.models import TaskUpdate, TaskStatusEnum
         from dynastore.bootstrap import bootstrap_foundation, instantiate_foundation
         
         app_state = SimpleNamespace()
-        # Initialize foundational modules (db_config, db)
-        bootstrap_foundation(modules_list=["db_config", "datastore", "catalog"])
-        instantiate_foundation(app_state, modules_list=["db_config", "datastore", "catalog"])
+        # Initialize foundational modules for reporting (failsafe)
+        from dynastore.tasks.bootstrap import bootstrap_task_env
+        bootstrap_task_env(app_state)
         
-        async with modules.lifespan(app_state, enabled_modules=["db_config", "datastore", "catalog"]):
+        async with modules.lifespan(app_state):
             logger.info(f"Reporting failure for task '{task_id}' in schema '{schema}'...")
             from dynastore.modules import get_protocol
-            from dynastore.models.protocols import DatabaseProtocol
+            from dynastore.models.protocols import DatabaseProtocol, TasksProtocol
+            
             db = get_protocol(DatabaseProtocol)
             if not db:
-                raise RuntimeError("DatabaseProtocol implementation not found.")
+                logger.warning("DatabaseProtocol implementation not found. Cannot report failure to DB.")
+                return
             engine = db.engine
+            
+            tasks_mgr = get_protocol(TasksProtocol)
+            if not tasks_mgr:
+                logger.warning("TasksProtocol implementation not found. Cannot report failure to DB.")
+                return
             
             update_data = TaskUpdate(
                 status=TaskStatusEnum.FAILED,
                 error_message=f"Fatal Runner Error: {error_message}"
             )
             import uuid
-            await tasks_module.update_task(engine, uuid.UUID(task_id), update_data, schema=schema)
+            await tasks_mgr.update_task(engine, uuid.UUID(task_id), update_data, schema=schema)
             logger.info(f"Successfully reported failure for task '{task_id}'.")
     except Exception as e:
         logger.critical(f"Failed to report failure to database: {e}", exc_info=True)
@@ -129,18 +135,21 @@ async def main(task_name: str, payload: dict, schema: str):
             if task_id:
                 logger.info(f"Attempting to report task failure using active lifecycle for task '{task_id}'...")
                 from dynastore.modules import get_protocol
-                from dynastore.models.protocols import DatabaseProtocol
+                from dynastore.models.protocols import DatabaseProtocol, TasksProtocol
                 try:
                     db = get_protocol(DatabaseProtocol)
-                    if not db:
-                        raise RuntimeError("DatabaseProtocol implementation not found.")
-                    engine = db.engine
-                    update_data = TaskUpdate(
-                        status=TaskStatusEnum.FAILED,
-                        error_message=f"Runtime Error: {str(e)}"
-                    )
-                    await tasks_module.update_task(engine, uuid.UUID(task_id), update_data, schema=schema)
-                    logger.info("Successfully reported failure to DB.")
+                    tasks_mgr = get_protocol(TasksProtocol)
+                    
+                    if not db or not tasks_mgr:
+                        logger.warning("DatabaseProtocol or TasksProtocol not found. Cannot report failure to DB.")
+                    else:
+                        engine = db.engine
+                        update_data = TaskUpdate(
+                            status=TaskStatusEnum.FAILED,
+                            error_message=f"Runtime Error: {str(e)}"
+                        )
+                        await tasks_mgr.update_task(engine, uuid.UUID(task_id), update_data, schema=schema)
+                        logger.info("Successfully reported failure to DB.")
                 except Exception as report_error:
                     logger.error(f"Failed to report failure within lifecycle: {report_error}. Falling back to external reporter.")
             raise

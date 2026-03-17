@@ -547,8 +547,6 @@ def _check_headers(which_headers, requests_object, headers, param_name):
         except Exception as e:
             raise HTTPException(
                 status_code=500, detail=f"Parameter '{param_name}' should be a valid object: {str(which_headers)}\nException: {str(e)}")
-
-
 class TemplatingExtension(ExtensionProtocol):
     priority: int = 100
 

@@ -23,7 +23,7 @@ Configuration management protocol definitions.
 from typing import Protocol, Optional, Any, List, Dict, runtime_checkable, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from dynastore.modules.db_config.platform_config_manager import PluginConfig
+    from dynastore.modules.db_config.platform_config_service import PluginConfig
 
 
 @runtime_checkable

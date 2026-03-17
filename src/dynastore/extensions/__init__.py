@@ -67,17 +67,16 @@ async def lifespan(app: FastAPI):
     of all enabled extensions.
     """
     configs: List[ExtensionConfig] = getattr(app.state, "ordered_configs", [])
-    ordered_modules: List[str] = getattr(app.state, "ordered_modules", [])
 
-    if not ordered_modules:
-        logger.warning("Lifespan: No extension modules enabled.")
+    if not configs:
+        logger.warning("Lifespan: No extensions enabled/instantiated.")
         yield
         return
 
     # 1. Setup the global help infrastructure
     setup_global_help_endpoint(app)
 
-    logger.info(f"Activating {len(configs)} extensions in order: {ordered_modules}")
+    logger.info(f"Activating {len(configs)} extensions...")
 
     async with AsyncExitStack() as stack:
         # --- PHASE 2: Lifespans ---

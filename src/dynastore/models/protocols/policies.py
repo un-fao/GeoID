@@ -14,26 +14,43 @@
 
 from typing import Protocol, List, Optional, Tuple, Any, runtime_checkable
 
+# Re-export permission-related models so extensions only need ONE import:
+#   from dynastore.models.protocols.policies import PermissionProtocol, Policy, Role, Principal
+from dynastore.models.auth import Policy, Principal          # Policy, Principal canonical home
+from dynastore.models.auth_models import Role               # Role canonical home
+
+__all__ = [
+    "PermissionProtocol",
+    "Policy",
+    "Role",
+    "Principal",
+]
+
 
 @runtime_checkable
-class PolicyProtocol(Protocol):
-    """Protocol for Policy Management and Evaluation."""
+class PermissionProtocol(Protocol):
+    """Unified protocol for Policy, Role, and permission management/evaluation.
+
+    Extensions register their policies and roles via:
+        get_protocol(PermissionProtocol).register_policy(Policy(...))
+        get_protocol(PermissionProtocol).register_role(Role(...))
+    """
 
     async def create_policy(
-        self, policy: Any, catalog_id: Optional[str] = None
+        self, policy: Policy, catalog_id: Optional[str] = None
     ) -> Any: ...
 
     async def get_policy(
         self, policy_id: str, catalog_id: Optional[str] = None
-    ) -> Optional[Any]: ...
+    ) -> Optional[Policy]: ...
 
     async def update_policy(
-        self, policy: Any, catalog_id: Optional[str] = None
-    ) -> Optional[Any]: ...
+        self, policy: Policy, catalog_id: Optional[str] = None
+    ) -> Optional[Policy]: ...
 
     async def list_policies(
         self, limit: int = 100, offset: int = 0, catalog_id: Optional[str] = None
-    ) -> List[Any]: ...
+    ) -> List[Policy]: ...
 
     async def delete_policy(
         self, policy_id: str, catalog_id: Optional[str] = None
@@ -46,10 +63,10 @@ class PolicyProtocol(Protocol):
         limit: int = 10,
         offset: int = 0,
         catalog_id: Optional[str] = None,
-    ) -> List[Any]: ...
+    ) -> List[Policy]: ...
 
     async def evaluate_policy_statements(
-        self, policy: Any, method: str, path: str, request_context: Any = None
+        self, policy: Policy, method: str, path: str, request_context: Any = None
     ) -> bool: ...
 
     async def evaluate_access(
@@ -61,6 +78,8 @@ class PolicyProtocol(Protocol):
         catalog_id: Optional[str] = None,
     ) -> Tuple[bool, str]: ...
 
-    def register_policy(self, policy: Any) -> Any: ...
+    # --- Extension injection points ---
 
-    def register_role(self, role: Any) -> Any: ...
+    def register_policy(self, policy: Policy) -> Policy: ...
+
+    def register_role(self, role: Role) -> Role: ...

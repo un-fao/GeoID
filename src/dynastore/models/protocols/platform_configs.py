@@ -19,7 +19,7 @@
 from typing import Protocol, Optional, Any, Dict, runtime_checkable, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from dynastore.modules.db_config.platform_config_manager import PluginConfig
+    from dynastore.modules.db_config.platform_config_service import PluginConfig
 
 
 @runtime_checkable
@@ -28,6 +28,11 @@ class PlatformConfigsProtocol(Protocol):
     Protocol for platform-level configuration management.
     Handles global system settings that act as the base tier of the configuration waterfall.
     """
+
+    @property
+    def is_platform_manager(self) -> bool:
+        """Marker property to distinguish from ConfigsProtocol during discovery."""
+        ...
 
     async def get_config(
         self, plugin_id: str, db_resource: Optional[Any] = None

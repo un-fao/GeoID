@@ -40,13 +40,11 @@ class MVTQueryTransform:
     when geom_format == "MVT".
     """
 
+    priority: int = 100  # Run after basic geometry transforms
+
     @property
     def transform_id(self) -> str:
         return "mvt"
-
-    @property
-    def priority(self) -> int:
-        return 100  # Run after basic geometry transforms
 
     def can_transform(self, context: Dict[str, Any]) -> bool:
         """Check if this is an MVT query"""

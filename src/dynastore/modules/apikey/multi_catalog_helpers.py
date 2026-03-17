@@ -22,7 +22,7 @@ async def create_global_principal(
     Create a global principal with platform-wide permissions.
     
     Args:
-        iam_manager: ApiKeyManager instance
+        iam_manager: ApiKeyService instance
         identity: Identity dict with 'provider' and 'sub' keys
         roles: List of global role names (e.g., ["DataSteward", "Auditor"])
         policies: List of Policy objects with catalog:* wildcards
@@ -85,7 +85,7 @@ async def sync_principal_across_catalogs(
     roles and policies.
     
     Args:
-        iam_manager: ApiKeyManager instance
+        iam_manager: ApiKeyService instance
         identity: Identity dict with 'provider' and 'sub' keys
         catalog_ids: List of catalog codes to sync to
         roles: List of role names
@@ -165,7 +165,7 @@ async def list_catalogs_for_identity(
     List all catalogs where an identity has a principal.
     
     Args:
-        iam_manager: ApiKeyManager instance
+        iam_manager: ApiKeyService instance
         provider: Identity provider (e.g., "keycloak", "local")
         subject_id: Subject ID from provider
         
@@ -220,7 +220,7 @@ async def get_effective_permissions_for_catalog(
     Shows global permissions, catalog permissions, and effective merged permissions.
     
     Args:
-        iam_manager: ApiKeyManager instance
+        iam_manager: ApiKeyService instance
         provider: Identity provider
         subject_id: Subject ID
         catalog_id: Target catalog code

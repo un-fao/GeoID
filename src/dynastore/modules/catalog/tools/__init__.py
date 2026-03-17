@@ -166,9 +166,6 @@ async def recalculate_and_update_extents(
                 {join_clause}
                 WHERE h.deleted_at IS NULL AND {geom_alias}.{geom_col} IS NOT NULL
             ) 
-        """
-
-        query_template += """
             SELECT
                 ST_XMin(combined_geom),
                 ST_YMin(combined_geom),
@@ -181,8 +178,6 @@ async def recalculate_and_update_extents(
 
         # We format the string directly because DQLQuery template substitution might conflict
         # with our physical schema quoting needs if not careful.
-        # However, DQLQuery handles params safely.
-        # Let's use string formatting for schema/table to ensure correct quoting.
         final_sql = query_template.format(
             phys_schema=phys_schema, phys_table=phys_table
         )
@@ -190,14 +185,15 @@ async def recalculate_and_update_extents(
         calculate_extents_query = DQLQuery(final_sql, result_handler=ResultHandler.ONE)
         row = await calculate_extents_query.execute(conn)
 
-        new_bbox = [0, 0, 0, 0]
         if row and row[0] is not None:
             min_lon = max(-180.0, min(180.0, row[0]))
             min_lat = max(-90.0, min(90.0, row[1]))
             max_lon = max(-180.0, min(180.0, row[2]))
             max_lat = max(-90.0, min(90.0, row[3]))
             new_bbox = [min_lon, min_lat, max_lon, max_lat]
-
+        else:
+            new_bbox = [-180.0, -90.0, 180.0, 90.0]  # Default full extent if empty
+            
         new_spatial_extent = SpatialExtent(bbox=[list(new_bbox)])
 
         min_time = row[4] if row else None
@@ -212,13 +208,16 @@ async def recalculate_and_update_extents(
             # Ensure extent exists
             if not collection.extent:
                 from dynastore.models.shared_models import Extent
-
                 collection.extent = Extent(
                     spatial=new_spatial_extent, temporal=new_temporal_extent
                 )
             else:
                 collection.extent.spatial = new_spatial_extent
                 collection.extent.temporal = new_temporal_extent
+            
+            # Skip update if nothing changed
+            # This check is crucial for performance - we don't need to bump transaction counts
+            # or do unnecessary writes
             await catalogs.update_collection(
                 catalog_id,
                 collection_id,

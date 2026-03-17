@@ -27,27 +27,18 @@ from dynastore.modules import ModuleProtocol
 from dynastore.modules.db_config.db_config import DBConfig
 from dynastore.modules.db_config.tools import (
     get_config,
-    ensure_init_db,
     normalize_db_url,
 )
-from dynastore.modules.db_config.query_executor import managed_transaction
-from dynastore.modules.db_config import maintenance_tools
 
 from dynastore.models.protocols import DatabaseProtocol
 
 logger = logging.getLogger(__name__)
-
-
 class DBService(ModuleProtocol, DatabaseProtocol):
     priority: int = 10
     app_state: object
 
     def __init__(self, app_state: object):
         self.app_state = app_state
-
-    @property
-    def priority(self) -> int:
-        return 10  # Higher priority for async engine in API context
 
     @property
     def engine(self) -> Any:
@@ -125,24 +116,34 @@ class DBService(ModuleProtocol, DatabaseProtocol):
                     "DBService: ASYNC Database connection pool established successfully."
                 )
 
-            # A. Fast-path startup: check if manifest is already current
-            # This avoids expensive IDEMPOTENT but slow DDL calls (extensions, triggers, etc.)
-            from dynastore.modules.db_config.migration_runner import is_up_to_date
+            # Status-check only: migrations are admin-triggered, never auto-applied.
+            from dynastore.modules.db_config.migration_runner import (
+                check_migration_status,
+                MigrationStatus,
+            )
 
-            if app_state.engine and await is_up_to_date(app_state.engine):
-                logger.info("DBService: [Fast-Path] Database manifest is current. Skipping full initialization.")
-            else:
-                logger.info("DBService: [Slow-Path] Initialization required (new deploy or manifest delta).")
-                # 1. Ensure Critical Extensions (PostGIS)
-                if app_state.engine:
-                    await ensure_init_db(app_state.engine)
+            if app_state.engine:
+                status = await check_migration_status(app_state.engine)
+                if status == MigrationStatus.UP_TO_DATE:
+                    logger.info(
+                        "DBService: Database is up to date."
+                    )
+                elif status == MigrationStatus.PENDING_MIGRATIONS:
+                    logger.warning(
+                        "DBService: PENDING MIGRATIONS detected. "
+                        "Apply via admin API before full functionality is available."
+                    )
+                elif status == MigrationStatus.DRIFT_DETECTED:
+                    logger.warning(
+                        "DBService: DRIFT DETECTED — module configuration "
+                        "does not match database state. Check admin API."
+                    )
+                elif status == MigrationStatus.UNCHECKED:
+                    logger.warning(
+                        "DBService: Database not yet initialized. "
+                        "Run initial migration via admin API."
+                    )
 
-                    # 2. Apply versioned database migrations
-                    from dynastore.modules.db_config.migration_runner import run_migrations
-                    await run_migrations(app_state.engine)
-
-                    # 3. Ensure Global Maintenance Tasks
-                    await maintenance_tools.ensure_global_cron_cleanup(app_state.engine)
 
             yield
 

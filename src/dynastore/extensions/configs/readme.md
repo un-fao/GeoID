@@ -55,9 +55,9 @@ class CachingConfig(PluginConfig):
 # from dynastore.modules.catalog import catalog_module
 #
 # async def some_caching_logic(catalog_id: str, collection_id: str):
-#     config_manager = catalog_module.get_config_manager()
+#     config_service = catalog_module.get_config_service()
 #     # This will resolve the config through the Collection > Catalog > Platform hierarchy
-#     caching_config = await config_manager.get_config(CACHING_PLUGIN_ID, catalog_id, collection_id)
+#     caching_config = await config_service.get_config(CACHING_PLUGIN_ID, catalog_id, collection_id)
 #     # caching_config will be an instance of CachingConfig
 #     print(f"Using cache TTL: {caching_config.ttl_seconds}")
 ```

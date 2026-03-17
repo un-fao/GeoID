@@ -51,8 +51,7 @@ def resolve(protocol_type: Type[T]) -> T:
         # Professionals prefer clear, actionable error messages
         raise RuntimeError(
             f"Required protocol '{protocol_type.__name__}' is not available. "
-            "Ensure the responsible module is listed in DYNASTORE_MODULES "
-            "and has been correctly initialized."
+            "Ensure the responsible module is installed and has been correctly initialized."
         )
     return instance
 

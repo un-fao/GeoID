@@ -40,8 +40,7 @@ from dynastore.extensions.tools.security import get_principal
 from dynastore.models.auth import Principal
 from fastapi import Depends
 from dynastore.modules.catalog.catalog_module import CatalogModule
-from dynastore.modules.catalog.asset_manager import (
-    AssetManager,
+from dynastore.modules.catalog.asset_service import (
     Asset,
     AssetBase,
     AssetFilter,
@@ -75,9 +74,6 @@ class SearchQuery(BaseModel):
     ]
     limit: int = Field(10, ge=1, le=100)
     offset: int = Field(0, ge=0)
-
-
-
 class AssetService(ExtensionProtocol):
     priority: int = 100
     """

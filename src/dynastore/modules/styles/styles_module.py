@@ -20,11 +20,10 @@
 
 import logging
 from contextlib import asynccontextmanager
-from dynastore.modules import ModuleProtocol
-from dynastore.modules.db_config.query_executor import DDLQuery, managed_transaction
-from dynastore.modules import get_protocol
+from dynastore.modules import ModuleProtocol, get_protocol
 from dynastore.models.protocols import DatabaseProtocol
 from dynastore.modules.db_config import maintenance_tools
+from dynastore.modules.db_config.query_executor import managed_transaction, DDLQuery
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +44,6 @@ STYLES_SCHEMA = """
         UNIQUE (catalog_id, collection_id, style_id)
     ) PARTITION BY LIST (catalog_id);
 """
-
 class StylesModule(ModuleProtocol):
     priority: int = 100
     @asynccontextmanager

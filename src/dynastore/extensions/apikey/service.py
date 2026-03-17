@@ -42,9 +42,11 @@ from datetime import datetime
 from uuid import UUID
 from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
 
-from dynastore.extensions import dynastore_extension
+import os
+from fastapi.responses import HTMLResponse
 from dynastore.extensions.protocols import ExtensionProtocol
-from dynastore.models.protocols import ApiKeyProtocol
+from dynastore.extensions.web import expose_web_page
+from dynastore.models.protocols import ApiKeyProtocol, WebModuleProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.db_config.tools import normalize_db_url
 from dynastore.modules.db_config.query_executor import DbResource
@@ -72,7 +74,7 @@ from dynastore.modules.stats.storage import (
 )
 from dynastore.models.protocols import ApiKeyProtocol
 from dynastore.modules import get_protocol
-from dynastore.modules.apikey.policies import PolicyManager
+from dynastore.modules.apikey.policies import PolicyService
 from dynastore.modules.apikey.exceptions import (
     ConflictingResourceError,
     PrincipalNotFoundError,
@@ -366,8 +368,6 @@ def ensure_sysadmin_if_targeting_admin(request: Request, target_role: str):
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient privileges: Only System Administrators can manage Admin accounts.",
         )
-
-
 class ApiKeyExtension(ExtensionProtocol):
     priority: int = 100
     # Base router for high-level categorization
@@ -388,7 +388,7 @@ class ApiKeyExtension(ExtensionProtocol):
         super().__init__()
         self.app = app
         self._apikey_manager: Optional[ApiKeyProtocol] = None
-        self._policy_manager: Optional[PolicyManager] = None
+        self._policy_service: Optional[PolicyService] = None
         self._engine: Optional[DbResource] = None
 
         self._register_routes()
@@ -540,8 +540,88 @@ class ApiKeyExtension(ExtensionProtocol):
 
         app.openapi = custom_openapi
 
-        # Sub-routers are mounted to self.router in __init__ 
+        # Register admin panel web page
+        web = get_protocol(WebModuleProtocol)
+        if web:
+            web.scan_and_register_providers(self)
+
+        # Sub-routers are mounted to self.router in __init__
         # The central extension loader will handle app.include_router(self.router)
+
+    @expose_web_page(
+        page_id="admin",
+        title="Admin",
+        icon="fa-shield-halved",
+        description="Administration and platform management.",
+        required_roles=["sysadmin", "admin"],
+        priority=10,
+    )
+    async def provide_admin_hub(self, request: Request):
+        """Admin landing hub — lists accessible admin sub-pages as cards."""
+        return HTMLResponse(content="""
+<div class="space-y-6">
+  <div>
+    <h2 class="text-2xl font-bold text-white mb-1">Administration</h2>
+    <p class="text-slate-400 text-sm">Manage the platform resources available to you.</p>
+  </div>
+  <div id="admin-hub-cards" class="grid md:grid-cols-2 gap-5">
+    <div class="text-slate-600 text-sm py-4"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Loading...</div>
+  </div>
+</div>
+<script>
+(function() {
+  const iconColors = {
+    'fa-users-gear': 'text-blue-400 bg-blue-500/10 border-blue-500/20',
+    'fa-sliders':    'text-purple-400 bg-purple-500/10 border-purple-500/20',
+  };
+  const grid = document.getElementById('admin-hub-cards');
+  if (!grid) return;
+
+  const tkey = (typeof TOKEN_KEY !== 'undefined') ? TOKEN_KEY : 'ds_token';
+  const token = (typeof authToken !== 'undefined' && authToken) || localStorage.getItem(tkey) || sessionStorage.getItem(tkey);
+  const headers = token ? { 'Authorization': 'Bearer ' + token } : {};
+
+  fetch('/web/config/pages', { headers })
+    .then(r => r.json())
+    .then(pages => {
+      const subPages = pages.filter(p => p.section === 'admin');
+      grid.innerHTML = '';
+      if (!subPages.length) {
+        grid.innerHTML = '<p class="text-slate-500 text-sm">No admin tools available.</p>';
+        return;
+      }
+      subPages.forEach(p => {
+        const colorClass = iconColors[p.icon] || 'text-slate-400 bg-slate-500/10 border-slate-500/20';
+        const btn = document.createElement('button');
+        btn.onclick = () => switchTab(p.id);
+        btn.className = 'glass-panel text-left p-6 rounded-2xl border border-white/5 hover:border-white/10 transition-all group';
+        btn.innerHTML = `
+          <div class="w-12 h-12 rounded-xl ${colorClass} border flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+            <i class="fa-solid ${p.icon} text-xl"></i>
+          </div>
+          <h3 class="font-semibold text-white mb-1">${p.title}</h3>
+          <p class="text-slate-400 text-sm">${p.description || ''}</p>`;
+        grid.appendChild(btn);
+      });
+    })
+    .catch(() => { grid.innerHTML = '<p class="text-red-400 text-sm">Failed to load admin tools.</p>'; });
+})();
+</script>
+""")
+
+    @expose_web_page(
+        page_id="admin_panel",
+        title="Admin Panel",
+        icon="fa-users-gear",
+        description="Manage users, roles, policies and catalog permissions.",
+        required_roles=["sysadmin", "admin"],
+        section="admin",
+        priority=20,
+    )
+    async def provide_admin_panel(self, request: Request):
+        file_path = os.path.join(os.path.dirname(__file__), "..", "admin", "static", "admin_panel.html")
+        with open(os.path.normpath(file_path), "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
@@ -549,7 +629,7 @@ class ApiKeyExtension(ExtensionProtocol):
         
         # Initialize instance attributes
         self._apikey_manager = await self._get_apikey_manager()
-        self._policy_manager = self._apikey_manager.get_policy_manager()
+        self._policy_service = self._apikey_manager.get_policy_service()
         
         from dynastore.models.protocols import DatabaseProtocol
         db_protocol = get_protocol(DatabaseProtocol)
@@ -560,8 +640,8 @@ class ApiKeyExtension(ExtensionProtocol):
         # Seed default policies (idempotent)
         try:
             # Seed both global (apikey) and system (catalog) schemas
-            await self._policy_manager.provision_default_policies(catalog_id=None)
-            await self._policy_manager.provision_default_policies(catalog_id="_system_")
+            await self._policy_service.provision_default_policies(catalog_id=None)
+            await self._policy_service.provision_default_policies(catalog_id="_system_")
         except Exception as e:
             logger.error(f"Failed to seed default policies: {e}")
 
@@ -588,8 +668,8 @@ class ApiKeyExtension(ExtensionProtocol):
         return self._apikey_manager
 
     @property
-    def policy_manager(self) -> PolicyManager:
-        return self._policy_manager
+    def policy_service(self) -> PolicyService:
+        return self._policy_service
 
     # ==========================================
     # 1. PUBLIC / SELF-SERVICE (Any Auth User)
@@ -704,7 +784,7 @@ class ApiKeyExtension(ExtensionProtocol):
             partition_key=policy_req.partition_key,
         )
         try:
-            return await self.policy_manager.create_policy(
+            return await self.policy_service.create_policy(
                 policy_model, catalog_id=catalog_id
             )
         except Exception as e:
@@ -734,7 +814,7 @@ class ApiKeyExtension(ExtensionProtocol):
         updated_model = existing.model_copy(update=update_data)
 
         try:
-            result = await self.policy_manager.update_policy(
+            result = await self.policy_service.update_policy(
                 updated_model, catalog_id=catalog_id
             )
             if not result:
@@ -758,7 +838,7 @@ class ApiKeyExtension(ExtensionProtocol):
     ):
         """Search and list policies."""
         catalog_id = getattr(request.state, "catalog_id", None)
-        return await self.policy_manager.search_policies(
+        return await self.policy_service.search_policies(
             resource_pattern=resource,
             action_pattern=action,
             limit=limit,
@@ -768,7 +848,7 @@ class ApiKeyExtension(ExtensionProtocol):
 
     async def delete_access_policy(self, request: Request, policy_id: UUID):
         catalog_id = getattr(request.state, "catalog_id", None)
-        deleted = await self.policy_manager.delete_policy(policy_id, catalog_id=catalog_id)
+        deleted = await self.policy_service.delete_policy(policy_id, catalog_id=catalog_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Policy not found")
 

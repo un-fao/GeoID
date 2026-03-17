@@ -230,8 +230,6 @@ def get_configs_provider() -> ConfigsProtocol:
             detail="Configuration service unavailable.",
         )
     return provider
-
-
 class BucketService(ExtensionProtocol):
     priority: int = 100
     router: APIRouter = APIRouter(prefix="/gcp", tags=["GCP Services"])
@@ -657,6 +655,9 @@ class BucketService(ExtensionProtocol):
                 detail = f"Precondition failed: The object 'gs://{bucket_name}/{blob_path}' might already exist and 'if_generation_match=0' was specified, or the provided generation/metageneration does not match. (GCS Error: {detail})"
 
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+        except HTTPException:
+            # Re-raise FastAPI HTTPExceptions as-is (e.g. 503 Service Unavailable from line 550)
+            raise
         except Exception as e:
             logger.error(f"Error initiating upload: {e}", exc_info=True)
             # Log more details about the request to help debugging

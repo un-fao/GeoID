@@ -665,9 +665,9 @@ class LifecycleRegistry:
             # Wait for the catalog to be fully persisted (AFTER_CATALOG_CREATION signal)
             # This bridges the visibility gap for background tasks.
             try:
-                # 30 second timeout as a safety measure
+                # 3 second timeout — signal should arrive within milliseconds in normal use
                 await signal_bus.wait_for(
-                    "AFTER_CATALOG_CREATION", identifier=catalog_id, timeout=30.0
+                    "AFTER_CATALOG_CREATION", identifier=catalog_id, timeout=3.0
                 )
             except asyncio.TimeoutError:
                 logger.warning(
@@ -745,7 +745,7 @@ class LifecycleRegistry:
 
         task = run_in_background(_run_all(), name=f"destroy_catalog_async_{catalog_id}")
         self._active_tasks.append(task)
-        task.add_done_callback(self._active_tasks.remove)
+        task.add_done_callback(self._on_task_done)
         return task
 
     def init_async_collection(
@@ -770,8 +770,9 @@ class LifecycleRegistry:
         async def _run_all():
             # Wait for the collection to be fully persisted (AFTER_COLLECTION_CREATION signal)
             try:
+                # 3 second timeout — signal should arrive within milliseconds in normal use
                 await signal_bus.wait_for(
-                    "AFTER_COLLECTION_CREATION", identifier=collection_id, timeout=30.0
+                    "AFTER_COLLECTION_CREATION", identifier=collection_id, timeout=3.0
                 )
             except asyncio.TimeoutError:
                 logger.warning(
@@ -795,7 +796,7 @@ class LifecycleRegistry:
             _run_all(), name=f"init_collection_async_{catalog_id}_{collection_id}"
         )
         self._active_tasks.append(task)
-        task.add_done_callback(self._active_tasks.remove)
+        task.add_done_callback(self._on_task_done)
         return task
 
     def destroy_async_collection(
@@ -832,7 +833,7 @@ class LifecycleRegistry:
             _run_all(), name=f"destroy_collection_async_{catalog_id}_{collection_id}"
         )
         self._active_tasks.append(task)
-        task.add_done_callback(self._active_tasks.remove)
+        task.add_done_callback(self._on_task_done)
         return task
 
     # Asset lifecycle execution
@@ -976,30 +977,17 @@ class LifecycleRegistry:
 
 
     async def wait_for_all_tasks(self, timeout: float = 30.0):
-        """
-        Wait for all background tasks and enqueued tasks to finish.
-        Used during graceful shutdown to drain in-flight work before
-        releasing resources (DB connections, GCP clients, etc.).
-        """
+        """Waits for all scheduled catalog lifecycle tasks (both internal and DB-tracked)."""
+        import asyncio
+        import time
+
         # --- 1. Internal Task Registry Wait ---
         if self._active_tasks:
             try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                pass
-            else:
-                current_tasks = [
-                    t for t in self._active_tasks if not t.done() and t.get_loop() == loop
-                ]
-
-                if current_tasks:
-                    logger.info(
-                        f"Waiting for {len(current_tasks)} background lifecycle tasks to complete on the current loop..."
-                    )
-                    try:
-                        await asyncio.wait(current_tasks, timeout=timeout)
-                    except Exception as e:
-                        logger.warning(f"Error while waiting for background tasks: {e}")
+                # Wait for internal asyncio tasks first.
+                await asyncio.wait(list(self._active_tasks), timeout=min(timeout, 5.0))
+            except Exception as e:
+                logger.debug(f"wait_for_all_tasks: Internal tasks error: {e}")
 
         # --- 2. Database Task Queue Wait ---
         from dynastore.models.protocols import DatabaseProtocol
@@ -1009,64 +997,57 @@ class LifecycleRegistry:
             engine = db_proto.get_any_engine()
             if engine:
                 from dynastore.modules.tasks.tasks_module import get_task_schema
-                from dynastore.modules.db_config.locking_tools import check_table_exists
-                from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler, managed_transaction
+                from dynastore.modules.db_config.query_executor import managed_transaction
                 from dynastore.tasks import get_loaded_task_types
-                
+                from sqlalchemy import text
+
                 schema = get_task_schema()
                 loaded_types = list(get_loaded_task_types())
-                
-                # If no task types are loaded on this instance, skip DB wait entirely.
-                # This service has no tasks to wait for (e.g. dynastore-auth, dynastore-maps).
-                if not loaded_types:
-                    logger.debug("wait_for_all_tasks: No task types loaded — skipping DB wait.")
-                else:
-                    start_time = asyncio.get_event_loop().time()
-                    
-                    # Discover all catalog schemas to monitor
-                    schemas_to_monitor = {schema}
-                    from dynastore.models.protocols import CatalogsProtocol
-                    catalogs_proto = get_protocol(CatalogsProtocol)
-                    if catalogs_proto:
-                        try:
-                            catalog_list = await catalogs_proto.list_catalogs(limit=1000)
-                            for cat in catalog_list:
-                                s = await catalogs_proto.resolve_physical_schema(cat.id)
-                                if s: schemas_to_monitor.add(s)
-                        except Exception as e:
-                            logger.debug(f"wait_for_all_tasks: failed to list catalogs: {e}")
+                logger.info(f"wait_for_all_tasks: loaded_types={loaded_types}, default_schema={schema}")
 
-                    while (asyncio.get_event_loop().time() - start_time) < timeout:
+                if loaded_types:
+                    # Single COUNT on the global tasks table — no per-schema discovery needed.
+                    placeholders = ", ".join(f":t_{i}" for i in range(len(loaded_types)))
+                    type_params = {f"t_{i}": t for i, t in enumerate(loaded_types)}
+                    count_sql = text(
+                        f"SELECT COUNT(*) FROM {schema}.tasks "
+                        f"WHERE status IN ('PENDING', 'ACTIVE', 'RUNNING') "
+                        f"AND task_type IN ({placeholders})"
+                    )
+
+                    poll_timeout = min(timeout, 30.0)
+                    start_time = asyncio.get_event_loop().time()
+
+                    while (asyncio.get_event_loop().time() - start_time) < poll_timeout:
+                        self._active_tasks = [t for t in self._active_tasks if not t.done()]
+
                         try:
-                            total_count = 0
                             async with managed_transaction(engine) as conn:
-                                for s in schemas_to_monitor:
-                                    if await check_table_exists(conn, "tasks", s):
-                                        placeholders = ", ".join(f":t_{i}" for i in range(len(loaded_types)))
-                                        type_params = {f"t_{i}": t for i, t in enumerate(loaded_types)}
-                                        sql = f"""SELECT COUNT(*) FROM "{s}".tasks 
-                                                  WHERE status IN ('PENDING', 'ACTIVE', 'RUNNING')
-                                                    AND task_type IN ({placeholders})"""
-                                        count = await DQLQuery(sql, result_handler=ResultHandler.SCALAR_ONE).execute(
-                                            conn, **type_params
-                                        )
-                                        total_count += count
-                            
-                            # Refresh internal registry
-                            self._active_tasks = [t for t in self._active_tasks if not t.done()]
-                            
-                            if total_count == 0 and not self._active_tasks:
-                                break
+                                await conn.execute(text("SET LOCAL lock_timeout = '50ms'"))
+                                res = await conn.execute(count_sql, type_params)
+                                total_pending = res.scalar_one() or 0
                         except Exception as e:
-                            logger.debug(f"wait_for_all_tasks: check failed: {e}")
+                            logger.debug(f"wait_for_all_tasks: poll error: {e}")
                             if not self._active_tasks:
                                 break
-                        
-                        await asyncio.sleep(0.5)
+                            await asyncio.sleep(0.1)
+                            continue
+
+                        if total_pending == 0 and not self._active_tasks:
+                            break
+
+                        from dynastore.modules.tasks.queue import TASK_STATUS_CHANGED
+                        from dynastore.tools.async_utils import signal_bus
+                        cycle_timeout = 0.1 if not self._active_tasks else 0.5
+                        try:
+                            await signal_bus.wait_for(TASK_STATUS_CHANGED, timeout=cycle_timeout)
+                        except asyncio.TimeoutError:
+                            pass
 
         # Final settlement check for internal tasks
+        settlement_timeout = min(timeout, 5.0)
         start_time = asyncio.get_event_loop().time()
-        while self._active_tasks and (asyncio.get_event_loop().time() - start_time) < timeout:
+        while self._active_tasks and (asyncio.get_event_loop().time() - start_time) < settlement_timeout:
             await asyncio.sleep(0.1)
             self._active_tasks = [t for t in self._active_tasks if not t.done()]
 

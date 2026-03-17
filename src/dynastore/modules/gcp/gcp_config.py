@@ -19,7 +19,7 @@
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, Literal, List, Annotated, Dict, Any, Union, TYPE_CHECKING
 from datetime import date
-from dynastore.modules.db_config.platform_config_manager import PluginConfig, register_config, Immutable
+from dynastore.modules.db_config.platform_config_service import PluginConfig, register_config, Immutable
 import os
 if TYPE_CHECKING:
     from dynastore.modules.gcp.gcp_module import GCPModule
@@ -33,6 +33,7 @@ from dynastore.modules.gcp.models import (
 from enum import Enum, StrEnum
 
 # --- Configuration Identifiers ---
+GCP_MODULE_CONFIG_ID = "gcp_module"
 GCP_CATALOG_BUCKET_CONFIG_ID = "gcp_catalog_bucket"
 GCP_COLLECTION_BUCKET_CONFIG_ID = "gcp_collection_bucket"
 GCP_EVENTING_CONFIG_ID = "gcp_eventing"
@@ -159,6 +160,25 @@ class GcpCatalogBucketConfig(PluginConfig):
         description="CORS rules for the bucket."
     )
 
+
+@register_config(GCP_MODULE_CONFIG_ID)
+class GcpModuleConfig(PluginConfig):
+    """
+    Defines global configurations for the GCP module.
+    """
+    project_id: str = Field(os.getenv("PROJECT_ID", "local-project"), description="The GCP Project ID.")
+    region: str = Field(os.getenv("REGION", "europe-west1"), description="The default GCP region.")
+    
+    # Visibility and Propagation Tuning (Critical for tests)
+    catalog_visibility_max_retries: int = Field(
+        int(os.environ.get("GCP_CATALOG_VISIBILITY_MAX_RETRIES", "20")), 
+        description="Max retries when checking for catalog visibility."
+    )
+    catalog_visibility_retry_interval: float = Field(
+        float(os.environ.get("GCP_CATALOG_VISIBILITY_RETRY_INTERVAL", "0.2")), 
+        description="Interval between visibility checks, in seconds."
+    )
+
 class TriggeredAction(BaseModel):
     """Defines a process to be triggered by a GCS event."""
     process_id: str = Field(..., description="The ID of the process to execute (e.g., 'ingestion').")
@@ -267,5 +287,5 @@ class InitiateUploadResponse(BaseModel):
     status: str = "initiated"
     message: str = "Upload session initiated. Use the upload_uri for direct GCS upload."
 
-from dynastore.modules.catalog.asset_manager import AssetUploadDefinition
+from dynastore.modules.catalog.asset_service import AssetUploadDefinition
 InitiateUploadRequest.model_rebuild()

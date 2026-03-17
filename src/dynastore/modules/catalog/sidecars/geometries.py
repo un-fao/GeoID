@@ -40,6 +40,7 @@ from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.catalog.sidecars.base import (
     SidecarProtocol,
     SidecarConfig,
+    SidecarPipelineContext,
     ValidationResult,
     FieldDefinition,
     FieldCapability,
@@ -1257,9 +1258,12 @@ class GeometriesSidecar(SidecarProtocol):
         self,
         row: Dict[str, Any],
         feature: Feature,
-        context: Dict[str, Any],
+        context: SidecarPipelineContext,
     ) -> None:
         """Populate Feature geometry from database row."""
+        # Publish all raw row values for downstream sidecars (e.g. STAC for bbox).
+        context.publish(self.sidecar_id, {k: row[k] for k in self.get_internal_columns() if k in row})
+
         # 1. Geometry Mapping
         if "geom" in row:
             geom_data = row["geom"]

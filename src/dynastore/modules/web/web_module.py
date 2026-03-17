@@ -25,12 +25,14 @@ from typing import Dict, Any, Callable, List, Optional, Union
 from contextlib import asynccontextmanager
 
 from dynastore.tools.language_utils import resolve_localized_field
-from .models import WebPageConfig
+from dynastore.modules import ModuleProtocol, get_protocols
+from dynastore.models.protocols.web import WebModuleProtocol, WebPageProtocol, StaticFilesProtocol, WebOverrideProtocol
+from dynastore.models.protocols.configs import ConfigsProtocol
+from .models import WebPageConfig, WebPageSettingsConfig
 
 logger = logging.getLogger(__name__)
 
-
-class WebModule:
+class WebModule(WebModuleProtocol, ModuleProtocol):
     """
     The WebModule acts as the central registry and logic provider for
     Dynastore's web interface capabilities. It manages:
@@ -41,7 +43,7 @@ class WebModule:
     """
 
     def __init__(self):
-        # Registry for pluggable web pages: { page_id: {config, handler} }
+        # Registry for pluggable web pages: { page_id: {config: WebPageConfig, providers: List[Tuple[int, Callable, bool]]} }
         self.web_pages: Dict[str, Dict[str, Any]] = {}
 
         # Registry for static content providers: { prefix: provider_callable }
@@ -55,10 +57,23 @@ class WebModule:
         self.project_root: Optional[str] = None
 
     @asynccontextmanager
-    async def lifespan(self):
+    async def lifespan(self, app_state: object):
+
         """Module lifecycle management."""
         self._initialize_discovery()
+        
+        # Register the configuration schema for web pages
+        configs = get_protocols(ConfigsProtocol)
+        for c in configs:
+            from dynastore.modules.db_config.platform_config_service import ConfigRegistry
+            if not ConfigRegistry.get_model("web_pages"):
+                ConfigRegistry.register("web_pages", WebPageSettingsConfig)
+        
+        # Automatic discovery of protocol implementers
+        self.scan_and_register_providers(None) # Scan global protocols
+        
         yield
+
 
     def _initialize_discovery(self):
         """Initialize project structure discovery."""
@@ -73,19 +88,60 @@ class WebModule:
                 "WebModule: Could not find project root. Docs scanning will be limited."
             )
 
-    def register_web_page(self, config: Dict[str, Any], provider: Callable[[], Any]):
+    def register_web_page(self, config: Dict[str, Any], provider: Callable[..., Any]):
         """Registers a web page handler."""
         page_id = config["id"]
-        if page_id in self.web_pages:
-            logger.warning(f"WebModule: Overwriting web page '{page_id}'")
+        priority = config.get("priority", 0)
+        is_embed = config.get("is_embed", False)
 
-        self.web_pages[page_id] = {
-            "config": WebPageConfig(**config),  # Validate with model
-            "handler": provider,
-        }
-        logger.info(f"WebModule: Registered web page '{page_id}'")
+        if page_id not in self.web_pages:
+            # Initialise with a placeholder config; a non-embed provider will
+            # set the real config below (or this embed is the only registrant).
+            self.web_pages[page_id] = {
+                "config": WebPageConfig(**config),
+                "providers": [],
+            }
 
-    def register_static_provider(self, prefix: str, provider: Callable[[], List[str]]):
+        # Guard: same handler may arrive from decorator scan (configure_app)
+        # AND global protocol scan (WebModule.lifespan) — skip duplicates.
+        # Python creates a fresh bound-method object on every getattr, so `is`
+        # alone is unreliable; compare by underlying function + instance instead.
+        def _same_handler(h1: Any, h2: Any) -> bool:
+            if h1 is h2:
+                return True
+            return (
+                hasattr(h1, "__func__") and hasattr(h2, "__func__")
+                and h1.__func__ is h2.__func__
+                and getattr(h1, "__self__", None) is getattr(h2, "__self__", None)
+            )
+
+        existing_handlers = [p[1] for p in self.web_pages[page_id]["providers"]]
+        if any(_same_handler(h, provider) for h in existing_handlers):
+            logger.debug(f"WebModule: Skipping duplicate provider for '{page_id}'")
+            return
+
+        # Add provider tuple and keep list sorted by priority (lower = first)
+        self.web_pages[page_id]["providers"].append((priority, provider, is_embed))
+        self.web_pages[page_id]["providers"].sort(key=lambda x: x[0])
+
+        # Only non-embed providers carry authoritative navigation metadata
+        # (title, icon, section, required_roles).  An embed provider injecting
+        # supplemental content must not overwrite the page's nav config.
+        if not is_embed and priority < self.web_pages[page_id]["config"].priority:
+            self.web_pages[page_id]["config"] = WebPageConfig(**config)
+
+        logger.info(f"WebModule: Registered {'embed ' if is_embed else ''}provider for '{page_id}' (priority: {priority})")
+
+        # If this page targets a section (e.g., 'home'), also register it as a provider for that section
+        section = config.get("section")
+        if section and section != page_id:
+            logger.info(f"WebModule: Also registering provider for section '{section}' (from page '{page_id}')")
+            section_config = config.copy()
+            section_config["id"] = section
+            section_config["is_embed"] = True # section targets are always embedded
+            self.register_web_page(section_config, provider)
+
+    def register_static_provider(self, prefix: str, provider: Any):
         """Registers a static file provider."""
         if prefix in self.static_providers:
             logger.warning(
@@ -94,37 +150,209 @@ class WebModule:
         self.static_providers[prefix] = provider
         logger.info(f"WebModule: Registered static provider for prefix '{prefix}'")
 
-    def scan_and_register_providers(self, instance: Any):
-        """Scans an object instance for decorated methods (@expose_web_page, @expose_static)."""
-        for name, method in inspect.getmembers(instance, predicate=inspect.ismethod):
-            if hasattr(method, "_web_static_prefix"):
-                prefix = getattr(method, "_web_static_prefix").strip("/")
-                self.register_static_provider(prefix, method)
+    async def is_static_file_provided(self, prefix: str, path: str) -> bool:
+        """Checks if a static file is provided by any registered provider."""
+        provider = self.static_providers.get(prefix)
+        if not provider:
+            return False
+            
+        if isinstance(provider, StaticFilesProtocol):
+            return await provider.is_file_provided(path)
+        
+        # Legacy: provider is a callable returning a list of files
+        try:
+            files = provider()
+            return path in files
+        except Exception:
+            return False
 
-            if hasattr(method, "_web_page_config"):
-                config = getattr(method, "_web_page_config")
-                self.register_web_page(config, method)
+    async def list_static_files(self, prefix: str, query: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[str]:
+        """Lists static files for a prefix with optional filtering and pagination."""
+        provider = self.static_providers.get(prefix)
+        if not provider:
+            return []
+            
+        if isinstance(provider, StaticFilesProtocol):
+            return await provider.list_static_files(query=query, limit=limit, offset=offset)
+        
+        # Legacy fallback
+        try:
+            files = provider()
+            if query:
+                files = [f for f in files if query.lower() in f.lower()]
+            return files[offset:offset+limit]
+        except Exception:
+            return []
 
-    def get_web_pages_config(self, language: str = "en") -> List[Dict[str, Any]]:
+
+    def scan_and_register_providers(self, instance: Any = None):
+        """
+        Scans an object instance (or global protocols if instance is None) 
+        for web providers.
+        """
+        if instance:
+            # Legacy/Decorator-based scanning
+            for name, method in inspect.getmembers(instance, predicate=inspect.ismethod):
+                if hasattr(method, "_web_static_prefix"):
+                    prefix = getattr(method, "_web_static_prefix").strip("/")
+                    self.register_static_provider(prefix, method)
+
+                if hasattr(method, "_web_page_config"):
+                    config = getattr(method, "_web_page_config")
+                    self.register_web_page(config, method)
+        else:
+            # Protocol-based scanning
+            for page_prov in get_protocols(WebPageProtocol):
+                try:
+                    config = page_prov.get_web_page_config()
+                    handler = getattr(page_prov, "render_page", None)
+                    if handler:
+                        self.register_web_page(config, handler)
+                except Exception as e:
+                    logger.error(f"WebModule: Failed to register WebPageProtocol from {page_prov}: {e}")
+
+            for static_prov in get_protocols(StaticFilesProtocol):
+                try:
+                    prefix = static_prov.get_static_prefix().strip("/")
+                    # We wrap the protocol in a provider-like callable for now
+                    self.register_static_provider(prefix, static_prov)
+                except Exception as e:
+                    logger.error(f"WebModule: Failed to register StaticFilesProtocol from {static_prov}: {e}")
+
+    async def _get_overrides(self) -> Dict[str, WebPageConfig]:
+        """Fetch persistent overrides from the config system."""
+        configs = get_protocols(ConfigsProtocol)
+        for c in configs:
+            try:
+                settings: WebPageSettingsConfig = await c.get_config("web_pages")
+                return settings.pages
+            except Exception as e:
+                logger.debug(f"WebModule: Could not fetch web_pages config: {e}")
+        return {}
+
+    async def get_web_pages_config(self, language: str = "en") -> List[Dict[str, Any]]:
         """
         Returns the list of registered web pages with localized titles and descriptions.
+        Merges protocol/decorator metadata with persistent configuration overrides.
         """
+        overrides = await self._get_overrides()
+        
         results = []
         for p in self.web_pages.values():
-            config: WebPageConfig = p["config"]
+            base_config: WebPageConfig = p["config"]
+            
+            # Apply persistent overrides if available
+            override = overrides.get(base_config.id)
+            if override:
+                # Merge logic: overrides take precedence
+                config_data = base_config.model_dump()
+                override_data = override.model_dump(exclude_unset=True)
+                config_data.update(override_data)
+                config = WebPageConfig(**config_data)
+            else:
+                config = base_config
 
+            if not config.enabled:
+                continue
+
+            # Embed-only providers inject content into a parent page; they are
+            # not standalone navigation destinations and must not appear in the
+            # left-side menu returned to the frontend.
+            if config.is_embed:
+                continue
+
+            # Resolve translations
             title = resolve_localized_field(config.title, language)
             description = resolve_localized_field(config.description, language)
+            section = resolve_localized_field(config.section, language) if config.section else None
+            icon = config.icon
 
             results.append(
                 {
                     "id": config.id,
                     "title": title,
-                    "icon": config.icon,
+                    "icon": icon,
                     "description": description,
+                    "priority": config.priority,
+                    "section": section,
+                    "is_embed": config.is_embed,
+                    "required_roles": config.required_roles,
                 }
             )
+
         return results
+
+    async def get_web_page_content(self, page_id: str, request: Any, language: str = "en") -> Any:
+        """
+        Retrieves and aggregates content for a specific web page by ID.
+        Supports multiple registered providers which are joined together.
+        """
+        if page_id not in self.web_pages:
+            return None
+        
+        providers = self.web_pages[page_id].get("providers", [])
+        content_parts = []
+        
+        for priority, handler, is_embed in providers:
+            try:
+                sig = inspect.signature(handler)
+                kwargs = {}
+                if "request" in sig.parameters:
+                    kwargs["request"] = request
+                if "language" in sig.parameters:
+                    kwargs["language"] = language
+                
+                if inspect.iscoroutinefunction(handler):
+                    content = await handler(**kwargs)
+                elif callable(handler):
+                    content = handler(**kwargs)
+                else:
+                    content = handler
+                
+                from fastapi import Response
+                if isinstance(content, Response):
+                    # We might need to handle response objects by extracting content
+                    if hasattr(content, "body"):
+                         content_parts.append(content.body.decode())
+                    else:
+                         content_parts.append(str(content))
+                else:
+                    content_parts.append(str(content))
+            except Exception as e:
+                logger.error(f"WebModule: Error calling provider for '{page_id}': {e}", exc_info=True)
+                continue
+
+        if not content_parts:
+            return ""
+            
+        return "\n".join(content_parts)
+
+    def generate_etag(self, content: Any) -> str:
+        """Generates an ETag for the given content."""
+        import hashlib
+        if isinstance(content, str):
+            content = content.encode("utf-8")
+        elif not isinstance(content, bytes):
+            content = str(content).encode("utf-8")
+        return hashlib.md5(content).hexdigest()
+
+    def get_cache_headers(self, etag: str) -> Dict[str, str]:
+        """Returns standard cache headers including ETag."""
+        return {
+            "ETag": f'"{etag}"',
+            "Cache-Control": "public, max-age=3600",
+        }
+
+
+    def get_style_overrides(self) -> List[str]:
+        """
+        Aggregates all style overrides from registered WebOverrideProtocol providers.
+        """
+        overrides = get_protocols(WebOverrideProtocol)
+        all_styles = []
+        for o in overrides:
+            all_styles.extend(o.get_style_overrides())
+        return all_styles
 
     def get_docs_manifest(self) -> Dict[str, List[Dict[str, str]]]:
         """Returns the organized documentation manifest."""

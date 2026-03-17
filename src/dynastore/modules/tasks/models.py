@@ -38,6 +38,15 @@ from dynastore.models.tasks import (
 
 from dynastore.modules.db_config.query_executor import DbResource
 
+
+class PermanentTaskFailure(Exception):
+    """
+    Raised when a task encounters a condition that will never succeed regardless
+    of retries (e.g., required infrastructure is unavailable).
+    The dispatcher will dead-letter the task immediately without retrying.
+    """
+
+
 class RunnerContext(BaseModel):
     engine: DbResource
     task_type: str

@@ -23,16 +23,18 @@ from dynastore.bootstrap import bootstrap_foundation, instantiate_foundation
 
 logger = logging.getLogger(__name__)
 
-def bootstrap_task_env(app_state: object, modules_list: Optional[List[str]] = None, tasks_list: Optional[List[str]] = None):
+def bootstrap_task_env(
+    app_state: object,
+    include_modules: Optional[List[str]] = None,
+    include_tasks: Optional[List[str]] = None,
+):
     """
     Bootstraps the generic task environment for background workers.
     """
-    # 1. Discover foundational modules
-    bootstrap_foundation(modules_list=modules_list)
+    # 1. Discover and instantiate foundation
+    bootstrap_foundation(include_only=include_modules)
+    instantiate_foundation(app_state, include_only=include_modules)
 
     # 2. Discover tasks
-    logger.info("--- [tasks/bootstrap.py] Discovering background tasks... ---")
-    tasks.discover_tasks(enabled_tasks=tasks_list, enabled_modules=modules_list)
-
-    # 3. Instantiate foundational modules
-    instantiate_foundation(app_state, modules_list=modules_list)
+    logger.info("--- [tasks/bootstrap.py] Discovering background tasks ---")
+    tasks.discover_tasks(include_only=include_tasks)

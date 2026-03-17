@@ -19,7 +19,7 @@
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Set
-from dynastore.modules.protocols import ModuleProtocol
+from dynastore.modules import ModuleProtocol
 from .service import GDAL_AVAILABLE, STATIC_RASTER_MIME_TYPES, STATIC_VECTOR_MIME_TYPES, FileType
 
 try:
@@ -28,8 +28,6 @@ except ImportError:
     gdal = None
 
 logger = logging.getLogger(__name__)
-
-
 class GdalModule(ModuleProtocol):
     priority: int = 100
     """

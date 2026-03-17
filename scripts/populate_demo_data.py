@@ -24,10 +24,6 @@ async def populate():
 
     app_state = SimpleNamespace()
     
-    # Enable core modules and extensions
-    os.environ["DYNASTORE_MODULES"] = "db_config,db,catalog,stats,config"
-    os.environ["DYNASTORE_EXTENSION_MODULES"] = "features,stac"
-    
     # 1. Discover and Instantiate
     modules.discover_modules()
     modules.instantiate_modules(app_state)
@@ -114,8 +110,6 @@ async def cleanup():
     if not db_url: return
     
     app_state = SimpleNamespace()
-    os.environ["DYNASTORE_MODULES"] = "db_config,db,catalog"
-    
     modules.discover_modules()
     modules.instantiate_modules(app_state)
     

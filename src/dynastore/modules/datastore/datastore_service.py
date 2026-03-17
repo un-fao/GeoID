@@ -33,18 +33,12 @@ from typing import Optional, Any
 from dynastore.models.protocols import DatabaseProtocol
 
 logger = logging.getLogger(__name__)
-
-
 class DatastoreModule(ModuleProtocol, DatabaseProtocol):
-    priority: int = 10
+    priority: int = 5
     app_state: object
 
     def __init__(self, app_state: object):
         self.app_state = app_state
-
-    @property
-    def priority(self) -> int:
-        return 5  # Lower priority than DBService, but this module is only loaded in task context
 
     @property
     def engine(self) -> Any:
@@ -113,18 +107,27 @@ class DatastoreModule(ModuleProtocol, DatabaseProtocol):
                 # but we need to wrap it to call the async tool?
                 # Actually, managed_transaction is an @asynccontextmanager that yields a sync conn if engine is sync.
                 await ensure_init_db(app_state.sync_engine)
-                
-                # B. Apply versioned database migrations
-                # This ensures the task worker has the correct schema even if it starts before/without the API.
-                from dynastore.modules.db_config.migration_runner import run_migrations
-                await run_migrations(app_state.sync_engine)
-                # async with managed_transaction(app_state.sync_engine) as conn:
-                # A. Ensure Critical Extensions (PostGIS)
-                # await maintenance_tools.execute_sql_script(
-                #     conn=conn,
-                #     script_path=init_sql_path,
-                #     lock_key="datastore_service_init_script"
-                # )
+
+                # Status-check only: migrations are admin-triggered, never auto-applied.
+                from dynastore.modules.db_config.migration_runner import (
+                    check_migration_status,
+                    MigrationStatus,
+                )
+                status = await check_migration_status(app_state.sync_engine)
+                if status == MigrationStatus.PENDING_MIGRATIONS:
+                    logger.warning(
+                        "DatastoreModule: PENDING MIGRATIONS detected. "
+                        "Apply via admin API before full functionality is available."
+                    )
+                elif status == MigrationStatus.DRIFT_DETECTED:
+                    logger.warning(
+                        "DatastoreModule: DRIFT DETECTED — check admin API."
+                    )
+                elif status == MigrationStatus.UNCHECKED:
+                    logger.warning(
+                        "DatastoreModule: Database not yet initialized. "
+                        "Run initial migration via admin API."
+                    )
 
         except Exception as e:
             logger.error(

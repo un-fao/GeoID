@@ -7,8 +7,6 @@ from dynastore.modules.notebooks import notebooks_module as notebook_service
 from dynastore.modules.notebooks.models import NotebookCreate, Notebook
 from dynastore.extensions.auth.dependencies import get_current_active_user
 from dynastore.modules.apikey.models import Principal as User
-
-
 class NotebooksExtension(ExtensionProtocol):
     priority: int = 100
     """

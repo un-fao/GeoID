@@ -22,17 +22,17 @@ from dynastore import modules
 
 logger = logging.getLogger(__name__)
 
-def bootstrap_foundation(modules_list: Optional[List[str]] = None):
+def bootstrap_foundation(include_only: Optional[List[str]] = None):
     """
     Bootstraps the foundational components of the DynaStore framework.
     This typically involves discovering and registering core modules.
     """
     logger.info("--- [bootstrap.py] Discovering foundational modules... ---")
-    modules.discover_modules(enabled_modules=modules_list)
+    modules.discover_modules(include_only=include_only)
     logger.info("--- [bootstrap.py] Foundational module discovery complete. ---")
 
-def instantiate_foundation(app_state: object, modules_list: Optional[List[str]] = None):
+def instantiate_foundation(app_state: object, include_only: Optional[List[str]] = None):
     """
     Instantiates the foundational modules and attaches them to the shared application state.
     """
-    modules.instantiate_modules(app_state, enabled_modules=modules_list)
+    modules.instantiate_modules(app_state, include_only=include_only)

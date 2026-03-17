@@ -24,7 +24,7 @@ from typing import Optional, cast, Dict, Any, Tuple, List, Union
 
 import pystac
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import Response
+from fastapi.responses import Response, HTMLResponse
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import text
@@ -33,6 +33,7 @@ from dynastore.models.protocols import (
     AssetsProtocol,
     ConfigsProtocol,
     StorageProtocol,
+    ApiKeyProtocol,
 )
 
 
@@ -84,6 +85,7 @@ logger = logging.getLogger(__name__)
 from dynastore.modules.db_config.exceptions import TableNotFoundError
 from dynastore.extensions.tools.language_utils import get_language
 from dynastore.extensions.web import expose_web_page
+from dynastore.models.protocols.web import StaticFilesProtocol
 import os
 
 STAC_API_URIS = [
@@ -101,9 +103,7 @@ STAC_API_URIS = [
     "https://api.stacspec.org/v1.0.0/item-search#filter:cql-json",
     "http://www.opengis.net/spec/ogcapi-features-3/1.0/conf/filter",
 ]
-
-
-class STACService(ExtensionProtocol):
+class STACService(ExtensionProtocol, StaticFilesProtocol):
     priority: int = 100
     router: APIRouter = APIRouter(
         prefix="/stac", tags=["OGC API - STAC - Spatio Temporal Asset Catalog"]
@@ -120,6 +120,36 @@ class STACService(ExtensionProtocol):
 
         register_stac_policies()
         logger.info("STACService: Policies registered.")
+
+        # Register @expose_web_page methods via WebModuleProtocol
+        from dynastore.modules import get_protocol
+        from dynastore.models.protocols import WebModuleProtocol
+        web = get_protocol(WebModuleProtocol)
+        if web:
+            web.scan_and_register_providers(self)
+            logger.info("STACService: Web pages registered via WebModuleProtocol.")
+
+    def get_static_prefix(self) -> str:
+        """Returns the static prefix for STAC."""
+        return "stac"
+
+    async def is_file_provided(self, path: str) -> bool:
+        """Checks if a static file is provided."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        full_path = os.path.join(static_dir, path.lstrip("/"))
+        return os.path.isfile(full_path)
+
+    async def list_static_files(self, query: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[str]:
+        """Lists static files for STAC with pagination and search."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        files = []
+        for root, _, filenames in os.walk(static_dir):
+            for filename in filenames:
+                full_path = os.path.join(root, filename)
+                rel_path = os.path.relpath(full_path, static_dir)
+                if not query or query.lower() in rel_path.lower():
+                    files.append(full_path)
+        return sorted(files)[offset : offset + limit]
 
     def __init__(self, app: Optional[FastAPI] = None):
         register_conformance_uris(STAC_API_URIS)
@@ -312,10 +342,30 @@ class STACService(ExtensionProtocol):
         offset: int = Query(0, ge=0),
         language: str = Depends(get_language),
     ):
-        """Lists all available STAC catalogs."""
+        """Lists available STAC catalogs, filtered by catalog admin access for non-sysadmin roles."""
         catalogs_svc = await self._get_catalogs_service()
         catalogs = await catalogs_svc.list_catalogs(limit=limit, offset=offset, lang=language)
-        # Use stac_generator to create proper STAC Catalog objects (summaries)
+
+        # Role-based catalog visibility:
+        #   sysadmin → all catalogs (no filter)
+        #   admin (global, not sysadmin) → only catalogs where they have catalog-scoped roles
+        #   anonymous / user → all public catalogs (policy middleware already controls access)
+        principal = getattr(request.state, "principal", None)
+        if principal and principal.roles:
+            roles = set(principal.roles)
+            if "admin" in roles and "sysadmin" not in roles:
+                try:
+                    apikey = get_protocol(ApiKeyProtocol)
+                    if apikey and apikey.storage:
+                        accessible_ids = set(
+                            await apikey.storage.get_catalogs_for_identity(
+                                principal.provider, principal.subject_id
+                            )
+                        )
+                        catalogs = [c for c in catalogs if c.id in accessible_ids]
+                except Exception as e:
+                    logger.warning(f"Failed to filter catalogs by admin access: {e}")
+
         content = [
             stac_generator.create_catalog_summary(request, c, lang=language)
             for c in catalogs
@@ -683,7 +733,8 @@ class STACService(ExtensionProtocol):
 
         # Merge all published sidecar data into a single row-like dict
         row = {}
-        for sc_id, data in context._sidecar_data.items():
+        for sc_id, entry in context.all_sidecars().items():
+            data = entry._data if hasattr(entry, "_data") else entry
             if isinstance(data, dict):
                 row.update(data)
         
@@ -1610,10 +1661,10 @@ class STACService(ExtensionProtocol):
 
         async with managed_transaction(engine) as conn:
             # Get STAC config to find the hierarchy rule
-            config_manager = catalog_manager.get_config_manager()
+            config_service = await self._get_configs_service()
             stac_config = cast(
                 StacPluginConfig,
-                await config_manager.get_config(
+                await config_service.get_config(
                     STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
                 ),
             )
@@ -1652,6 +1703,7 @@ class STACService(ExtensionProtocol):
             # Map to Features
             from dynastore.models.protocols import ItemsProtocol
             items_svc = get_protocol(ItemsProtocol)
+            catalogs_svc = await self._get_catalogs_service()
             features = []
             for row in items_rows:
                 # Hierarchy queries return base table rows + sidecar joins if configured
@@ -1723,10 +1775,10 @@ class STACService(ExtensionProtocol):
 
         async with managed_transaction(engine) as conn:
             # Get STAC config to find the hierarchy rule
-            config_manager = catalog_manager.get_config_manager()
+            config_service = await self._get_configs_service()
             stac_config = cast(
                 StacPluginConfig,
-                await config_manager.get_config(
+                await config_service.get_config(
                     STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
                 ),
             )

@@ -38,8 +38,14 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from enum import Enum
 
+from dynastore.modules.events.primitives import (
+    EventScope,
+    EventRegistry,
+    define_event,
+)
 from dynastore.modules.catalog.models import EventType
 from dynastore.models.protocols import EventsProtocol
+from dynastore.models.protocols.event_bus import EventBusProtocol
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     DDLQuery,
@@ -362,47 +368,6 @@ async def _drop_collection_events_partition(
     # No lock needed: collection deletion is already serialised by the caller
     await DDLQuery(archive_sql + drop_sql).execute(conn)
     logger.info("Dropped collection_events partition '%s.%s'.", schema, partition_table)
-
-
-class EventScope(str, Enum):
-    PLATFORM = "platform"
-    CATALOG = "catalog"
-    COLLECTION = "collection"
-
-
-class EventRegistry:
-    """Central registry for dynamic event definitions."""
-
-    _events: Dict[str, EventScope] = {}
-
-    @classmethod
-    def register(cls, name: str, scope: EventScope):
-        if name in cls._events and cls._events[name] != scope:
-            logger.warning(
-                f"Event '{name}' re-registered with different scope: {scope} (was {cls._events[name]})"
-            )
-        cls._events[name] = scope
-        logger.debug(f"Registered event '{name}' with scope '{scope.value}'")
-
-    @classmethod
-    def is_valid(cls, name: str) -> bool:
-        return name in cls._events
-
-
-def define_event(name: str, scope: EventScope = EventScope.CATALOG):
-    """
-    Decorator/Function to register a new event type dynamically.
-    Usage:
-        MY_EVENT = define_event("my.custom.event", EventScope.CATALOG)
-    """
-    EventRegistry.register(name, scope)
-    return name
-
-
-# --- Standard Events ---
-# These are pre-registered for backward compatibility and core functionality.
-
-
 class CatalogEventType(EventType):
     # Catalog Lifecycle
     BEFORE_CATALOG_CREATION = define_event(
@@ -864,42 +829,52 @@ class EventConsumerWorker:
 
     async def _listener_loop(self):
         """Dedicated connection loop to LISTEN for notifications."""
+        from dynastore.modules.db_config.query_executor import is_async_resource
+
         logger.info(f"Starting DB Listener on channel '{self.CHANNEL_NAME}'...")
         while self._running:
-            conn = None
             try:
-                # We need a raw asyncpg connection for LISTEN
-                # Accessing the raw pool from the SQLAlchemy engine
-                raw_conn = await self.engine.raw_connection()
-                try:
-                    conn = raw_conn.driver_connection
-
-                    # Define callback
-                    def notify_handler(connection, pid, channel, payload):
-                        # logger.debug(f"Received notification on {channel}: {payload}")
-                        self._notify_event.set()
-
-                    await conn.add_listener(self.CHANNEL_NAME, notify_handler)
-
-                    # Keep connection open and waiting
+                if not is_async_resource(self.engine):
+                    # Sync engine — no LISTEN support, rely on polling only.
+                    logger.info("EventConsumerWorker: Sync engine — LISTEN disabled.")
                     while self._running:
                         await asyncio.sleep(self.poll_interval)
-                        # Ping or check connection health if needed
-                        if conn.is_closed():
-                            break
+                        self._notify_event.set()
+                    break
 
-                finally:
-                    if conn and not conn.is_closed():
-                        try:
-                            await conn.remove_listener(
-                                self.CHANNEL_NAME, notify_handler
-                            )
-                        except Exception:
-                            import traceback
+                async with self.engine.connect() as sa_conn:
+                    raw = await sa_conn.get_raw_connection()
+                    driver_conn = getattr(raw, "driver_connection", None)
 
-                            traceback.print_exc()
-                            raise
-                    raw_conn.close()  # Return to pool/close wrapper
+                    if not (driver_conn and hasattr(driver_conn, "add_listener")):
+                        logger.info(
+                            f"EventConsumerWorker: asyncpg not available "
+                            f"(driver={type(driver_conn).__name__}) — LISTEN disabled."
+                        )
+                        while self._running:
+                            await asyncio.sleep(self.poll_interval)
+                            self._notify_event.set()
+                        break
+
+                    def notify_handler(connection, pid, channel, payload):
+                        self._notify_event.set()
+
+                    await driver_conn.add_listener(self.CHANNEL_NAME, notify_handler)
+                    logger.info(f"EventConsumerWorker: LISTEN active on '{self.CHANNEL_NAME}'.")
+
+                    try:
+                        while self._running:
+                            await asyncio.sleep(self.poll_interval)
+                            if driver_conn.is_closed():
+                                break
+                    finally:
+                        if not driver_conn.is_closed():
+                            try:
+                                await driver_conn.remove_listener(
+                                    self.CHANNEL_NAME, notify_handler
+                                )
+                            except Exception:
+                                pass
 
             except asyncio.CancelledError:
                 break
@@ -943,8 +918,15 @@ class EventConsumerWorker:
     async def _process_batch(self) -> bool:
         """Fetch and process a batch. Returns True if a full batch was processed (implying more work)."""
         events = []
-        async with managed_transaction(self.engine) as conn:
-            events = await self.storage.consume(conn, limit=self.batch_size)
+        try:
+            async with managed_transaction(self.engine) as conn:
+                events = await self.storage.consume(conn, limit=self.batch_size)
+        except Exception as e:
+            err = str(e).lower()
+            if "does not exist" in err or "42p01" in err:
+                # Table not created yet (startup race) — skip silently
+                return False
+            raise
 
         if not events:
             return False
@@ -961,10 +943,11 @@ class EventConsumerWorker:
         return len(events) >= self.batch_size
 
 
-class EventService(EventsProtocol):
+class EventService(EventBusProtocol):
     """
     Manages event registration, emission, and persistence.
-    Supports pluggable background execution strategies and persistent storage.
+    Implements EventBusProtocol (which extends EventsProtocol) for durable
+    event delivery via the global tasks.events outbox table.
     """
 
     # Shared state for listeners across all instances (Singleton behavior for registration)
@@ -977,18 +960,20 @@ class EventService(EventsProtocol):
         storage: Optional[EventStorageSPI] = None
     ):
         from dynastore.tools.discovery import get_protocol
-        
+
         if not runner:
             discovered_runner = get_protocol(BackgroundRunner)
             self._runner: BackgroundRunner = discovered_runner if discovered_runner else DefaultRunner()
         else:
             self._runner = runner
-            
+
         if not storage:
             discovered_storage = get_protocol(EventStorageSPI)
             self.storage: Optional[EventStorageSPI] = discovered_storage if discovered_storage else GlobalSystemEventStore()
         else:
             self.storage = storage
+
+        self._consumer: Optional[EventConsumerWorker] = None
 
     def set_runner(self, runner: BackgroundRunner) -> None:
         self._runner = runner
@@ -1195,19 +1180,258 @@ class EventService(EventsProtocol):
             )
         return []
 
-    def create_consumer(
-        self,
-        engine: DbResource,
-        handler: Callable[[Dict[str, Any]], Awaitable[None]],
-        batch_size: int = 100,
-        poll_interval: float = 10.0,
-    ) -> EventConsumerWorker:
-        if not self.storage:
-            raise RuntimeError("Cannot create consumer: No EventStorageSPI configured.")
+    # --- EventBusProtocol durable outbox methods ---
 
-        return EventConsumerWorker(
-            engine, self.storage, handler, batch_size, poll_interval
+    async def publish(
+        self,
+        event_type: str,
+        payload: Dict[str, Any],
+        scope: str = "PLATFORM",
+        schema_name: Optional[str] = None,
+        collection_id: Optional[str] = None,
+        dedup_key: Optional[str] = None,
+        db_resource: Optional[Any] = None,
+    ) -> Optional[str]:
+        """
+        Publish an event to the global tasks.events outbox.
+
+        If db_resource is provided, the INSERT participates in the caller's
+        transaction (transactional outbox pattern). Returns event_id on
+        success, or None if dedup_key already exists.
+        """
+        import os
+        event_schema = os.getenv("DYNASTORE_TASK_SCHEMA", "tasks")
+
+        serialized_payload = json.dumps(payload, cls=CustomJSONEncoder)
+
+        if dedup_key is not None:
+            sql = f"""
+                INSERT INTO {event_schema}.events
+                    (event_type, scope, schema_name, collection_id, payload, dedup_key)
+                VALUES
+                    (:event_type, :scope, :schema_name, :collection_id, :payload, :dedup_key)
+                ON CONFLICT (dedup_key, created_at)
+                    WHERE dedup_key IS NOT NULL AND status NOT IN ('DEAD_LETTER')
+                DO NOTHING
+                RETURNING event_id;
+            """
+        else:
+            sql = f"""
+                INSERT INTO {event_schema}.events
+                    (event_type, scope, schema_name, collection_id, payload)
+                VALUES
+                    (:event_type, :scope, :schema_name, :collection_id, :payload)
+                RETURNING event_id;
+            """
+
+        params: Dict[str, Any] = {
+            "event_type": event_type,
+            "scope": scope,
+            "schema_name": schema_name,
+            "collection_id": collection_id,
+            "payload": serialized_payload,
+            "dedup_key": dedup_key,
+        }
+
+        if db_resource:
+            # Participate in caller's transaction
+            from dynastore.modules.db_config.query_executor import _is_in_transaction
+            if _is_in_transaction(db_resource):
+                result = await DQLQuery(sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE).execute(
+                    db_resource, **params
+                )
+                return str(result) if result else None
+
+        # Otherwise open our own transaction
+        from dynastore.tools.protocol_helpers import get_engine
+        engine = db_resource or get_engine()
+        async with managed_transaction(engine) as conn:
+            result = await DQLQuery(sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE).execute(
+                conn, **params
+            )
+        return str(result) if result else None
+
+    async def consume_batch(
+        self,
+        engine: Any,
+        batch_size: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """
+        Claim and return a batch of pending events using FOR UPDATE SKIP LOCKED.
+        Claimed events are marked as PROCESSING.
+
+        Returns an empty list if the events table does not exist yet (the
+        TasksModule creates it during its lifespan — race on startup).
+        """
+        import os
+        event_schema = os.getenv("DYNASTORE_TASK_SCHEMA", "tasks")
+
+        sql = f"""
+            UPDATE {event_schema}.events
+            SET status = 'PROCESSING',
+                processed_at = NOW()
+            WHERE (created_at, event_id) IN (
+                SELECT created_at, event_id FROM {event_schema}.events
+                WHERE status = 'PENDING'
+                ORDER BY created_at ASC
+                LIMIT :batch_size
+                FOR UPDATE SKIP LOCKED
+            )
+            RETURNING event_id, event_type, scope, schema_name, collection_id,
+                      payload, created_at, dedup_key, retry_count;
+        """
+        try:
+            async with managed_transaction(engine) as conn:
+                rows = await DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS).execute(
+                    conn, batch_size=batch_size
+                )
+            return rows or []
+        except Exception as e:
+            err = str(e).lower()
+            if "does not exist" in err or "42p01" in err:
+                logger.debug("consume_batch: events table not ready yet, skipping.")
+                return []
+            raise
+
+    async def ack(
+        self,
+        engine: Any,
+        event_ids: List[str],
+    ) -> None:
+        """
+        Acknowledge consumed events. Logs to the appropriate scope via
+        LogsProtocol, then DELETEs the events from the outbox.
+        """
+        if not event_ids:
+            return
+
+        import os
+        event_schema = os.getenv("DYNASTORE_TASK_SCHEMA", "tasks")
+
+        sql = f"""
+            DELETE FROM {event_schema}.events
+            WHERE event_id = ANY(:event_ids);
+        """
+        async with managed_transaction(engine) as conn:
+            await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
+                conn, event_ids=event_ids
+            )
+
+    async def nack(
+        self,
+        engine: Any,
+        event_id: str,
+        error: str,
+    ) -> None:
+        """
+        Negative-acknowledge a consumed event. Increments retry_count.
+        If max retries (5) exceeded, moves to DEAD_LETTER.
+        """
+        import os
+        event_schema = os.getenv("DYNASTORE_TASK_SCHEMA", "tasks")
+        max_retries = 5
+
+        sql = f"""
+            UPDATE {event_schema}.events
+            SET status = CASE
+                    WHEN retry_count + 1 < {max_retries} THEN 'PENDING'
+                    ELSE 'DEAD_LETTER'
+                END,
+                error_message = :error,
+                retry_count = retry_count + 1,
+                processed_at = NOW()
+            WHERE event_id = :event_id;
+        """
+        async with managed_transaction(engine) as conn:
+            await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
+                conn, event_id=event_id, error=error
+            )
+
+    def has_listeners(self) -> bool:
+        """Returns True if any async event listeners are registered."""
+        return bool(self._async_listeners)
+
+    async def start_consumer(self, shutdown_event: Any) -> None:
+        """
+        Start the background event consumer that processes events from
+        the global tasks.events outbox. Uses the existing EventConsumerWorker
+        infrastructure with LISTEN/NOTIFY optimization.
+        """
+        if self._consumer is not None and getattr(self._consumer, '_running', False):
+            logger.warning("EventService: Consumer already running.")
+            return
+
+        from dynastore.tools.protocol_helpers import get_engine
+        engine = get_engine()
+
+        # The consumer uses the global outbox — create a lightweight
+        # adapter that bridges EventBusProtocol to the EventStorageSPI
+        # interface expected by EventConsumerWorker.
+        bus_self = self
+
+        class _OutboxAdapter(EventStorageSPI):
+            """Adapts EventBusProtocol.consume_batch to EventStorageSPI.consume."""
+            async def initialize(self, conn: DbResource) -> None:
+                pass  # Global table already created by TasksModule
+
+            async def ensure_partition(self, conn: DbResource, catalog_id: str, schema: Optional[str] = None) -> None:
+                pass  # Partitions managed by TasksModule
+
+            async def store(self, conn: DbResource, catalog_id: Optional[str],
+                          event_type: str, payload: Dict[str, Any],
+                          schema: Optional[str] = None) -> None:
+                pass  # Use publish() instead
+
+            async def consume(self, conn: DbResource, limit: int = 100) -> List[Dict[str, Any]]:
+                return await bus_self.consume_batch(engine, batch_size=limit)
+
+            async def search_events(self, engine: DbResource, catalog_id: str,
+                                   collection_id: Optional[str] = None,
+                                   event_type: Optional[str] = None,
+                                   limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+                return []
+
+        async def _dispatch_event(event: Dict[str, Any]) -> None:
+            """Dispatch a consumed event to registered async listeners, then ack."""
+            event_type_str = event.get("event_type", "")
+            payload = event.get("payload", {})
+            event_id = str(event.get("event_id"))
+
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+
+            try:
+                # Dispatch to registered async listeners
+                async_listeners = self._async_listeners.get(event_type_str, [])
+                for listener in async_listeners:
+                    args = payload.get("args", [])
+                    kwargs = payload.get("kwargs", {})
+                    await listener(*args, **kwargs)
+
+                # Ack on success
+                await self.ack(engine, [event_id])
+            except Exception as e:
+                logger.error(f"Failed to process event {event_id} ({event_type_str}): {e}", exc_info=True)
+                await self.nack(engine, event_id, str(e))
+
+        consumer = EventConsumerWorker(
+            engine=engine,
+            storage=_OutboxAdapter(),
+            handler=_dispatch_event,
+            batch_size=100,
+            poll_interval=10.0,
         )
+        self._consumer = consumer
+        await consumer.start()
+        logger.info("EventService: Durable event consumer started.")
+
+    async def stop_consumer(self) -> None:
+        """Stop the background event consumer loop gracefully."""
+        consumer = self._consumer
+        if consumer is not None:
+            await consumer.stop()
+            self._consumer = None
+            logger.info("EventService: Durable event consumer stopped.")
 
     @asynccontextmanager
     async def transaction(
@@ -1254,15 +1478,3 @@ async def emit_event(
     await event_service.emit(event_type, *args, db_resource=db_resource, **kwargs)
 
 
-async def process_queued_event(event: Dict[str, Any]):
-    """
-    Handler for the background worker.
-    Deserializes events from the Outbox and processes them.
-    """
-    event_type_str = event.get("event_type")
-    payload = event.get("payload", {})
-    args = payload.get("args", [])
-    kwargs = payload.get("kwargs", {})
-
-    logger.debug(f"Worker processing event: {event_type_str} (ID: {event.get('id')})")
-    event_service.emit_detached(event_type_str, *args, **kwargs)

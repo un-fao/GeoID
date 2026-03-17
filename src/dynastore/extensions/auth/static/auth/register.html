@@ -60,6 +60,15 @@
     </div>
     <script>
         const urlParams = new URLSearchParams(window.location.search);
+        
+        const errorMsg = urlParams.get('error');
+        if (errorMsg) {
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'mb-6 p-3 bg-red-500/10 border border-red-500/50 rounded-lg text-red-400 text-sm text-center font-medium shadow-lg shadow-red-500/10';
+            errorDiv.innerText = errorMsg;
+            const form = document.querySelector('form');
+            form.parentElement.insertBefore(errorDiv, form);
+        }
         document.getElementById('redirect_uri').value = urlParams.get('redirect_uri') || '/auth/debug';
         document.getElementById('state').value = urlParams.get('state') || 'init';
     </script>

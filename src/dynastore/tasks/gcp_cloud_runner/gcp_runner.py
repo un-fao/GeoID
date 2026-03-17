@@ -42,6 +42,8 @@ class GcpCloudRunRunner(RunnerProtocol, ProtocolPlugin[Any]):
     """
     A runner for asynchronous processes that triggers a Google Cloud Run job.
     """
+    _job_map_cache: Dict[str, str] = {}
+
     async def setup(self, app_state: Any):
         """
         Discovers Cloud Run jobs from the configuration and dynamically registers
@@ -49,6 +51,16 @@ class GcpCloudRunRunner(RunnerProtocol, ProtocolPlugin[Any]):
         them to be treated like any other task and be exposed as OGC Processes.
         """
         await register_cloud_run_jobs_as_tasks()
+        # Cache job map for can_handle() (sync method)
+        try:
+            self._job_map_cache = await load_job_config()
+        except Exception as e:
+            logger.warning(f"GcpCloudRunRunner: Failed to cache job map: {e}")
+            self._job_map_cache = {}
+
+    def can_handle(self, task_type: str) -> bool:
+        """Returns True if a Cloud Run Job is configured for this task type."""
+        return task_type in self._job_map_cache
 
     async def run(self, context: RunnerContext) -> Task:
         """

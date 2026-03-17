@@ -91,7 +91,6 @@ def check_requirements(requirements_file: str) -> bool:
 
     requirements = parse_requirements_list(requirements_file)
     for req_str in requirements:
-        logger.debug(f"Checking '{req_str}' from '{requirements_file}'")
         if not is_requirement_satisfied(req_str):
             logger.debug(f"Requirement '{req_str}' from '{requirements_file}' NOT satisfied.")
             return False

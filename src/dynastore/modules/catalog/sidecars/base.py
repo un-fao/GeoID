@@ -94,6 +94,23 @@ class SidecarDataEntry:
         return f"SidecarDataEntry(keys={list(self._data.keys())})"
 
 
+# ── ContextContract ─────────────────────────────────────────────────────────
+# Well-known top-level context keys and their ownership.
+# Use the typed properties on SidecarPipelineContext (e.g. context.asset_id)
+# rather than accessing these keys directly.
+#
+# Key                  Written by                    Read by
+# ─────────────────    ─────────────────────────     ──────────────────────────
+# "asset_id"           FeatureAttributeSidecar        StacItemsSidecar, STAC gen
+# "valid_from"         FeatureAttributeSidecar        StacItemsSidecar
+# "valid_to"           FeatureAttributeSidecar        StacItemsSidecar
+# "lang"               ItemService.map_row_to_feature All sidecars
+# "include_internal"   Callers                        All sidecars
+# "_all_internal_cols" ItemService.map_row_to_feature All sidecars (via property)
+# "_sidecar_data"      context.publish()              context.get_sidecar()
+# ────────────────────────────────────────────────────────────────────────────
+
+
 class SidecarPipelineContext(dict):
     """
     Typed pipeline context passed through ``map_row_to_feature``.
@@ -118,6 +135,14 @@ class SidecarPipelineContext(dict):
         if geometry:
             values = geometry.get_context_values()
             bbox = values.get("bbox_geom")
+
+    **Typed shortcuts** (preferred over raw dict access)::
+
+        context.lang        # requested language, default "en"
+        context.asset_id    # asset_id from attributes sidecar (or None)
+        context.geoid       # Hub geoid for the current row (or None)
+        context.valid_from  # validity start from attributes sidecar (or None)
+        context.valid_to    # validity end from attributes sidecar (or None)
     """
 
     # ── Sidecar data access ─────────────────────────────────────────────────
@@ -157,6 +182,65 @@ class SidecarPipelineContext(dict):
     def lang(self) -> str:
         """The requested language for localization (default: 'en')."""
         return self.get("lang", "en")
+
+    @property
+    def asset_id(self) -> Optional[str]:
+        """
+        The asset_id associated with the current feature row.
+
+        Dual-path resolution:
+        1. Direct top-level key ``context["asset_id"]`` — written by
+           FeatureAttributeSidecar for backward compatibility.
+        2. Via sidecar data: ``context.get_sidecar("attributes").get("asset_id")``
+           — available after Fix 2 ensures correct context.publish() usage.
+
+        Downstream sidecars (e.g. STAC) should use this property rather than
+        accessing ``context["asset_id"]`` directly.
+        """
+        v = self.get("asset_id")
+        if v is not None:
+            return str(v)
+        attrs = self.get_sidecar("attributes")
+        if attrs:
+            v = attrs.get("asset_id")
+            return str(v) if v is not None else None
+        return None
+
+    @property
+    def geoid(self) -> Optional[str]:
+        """Hub geoid for the current row, if set in context."""
+        v = self.get("geoid")
+        return str(v) if v is not None else None
+
+    @property
+    def valid_from(self) -> Optional[Any]:
+        """
+        Validity start for the current feature version.
+
+        Written by FeatureAttributeSidecar when validity is enabled.
+        Reads from sidecar data first, then falls back to top-level key.
+        """
+        attrs = self.get_sidecar("attributes")
+        if attrs:
+            v = attrs.get("valid_from")
+            if v is not None:
+                return v
+        return self.get("valid_from")
+
+    @property
+    def valid_to(self) -> Optional[Any]:
+        """
+        Validity end for the current feature version.
+
+        Written by FeatureAttributeSidecar when validity is enabled.
+        Reads from sidecar data first, then falls back to top-level key.
+        """
+        attrs = self.get_sidecar("attributes")
+        if attrs:
+            v = attrs.get("valid_to")
+            if v is not None:
+                return v
+        return self.get("valid_to")
 
     @property
     def all_internal_columns(self) -> frozenset:
@@ -430,6 +514,55 @@ class SidecarProtocol(ABC):
             - MUST use (partition_key, geoid) as composite PK
         """
         pass
+
+    def get_evolution_ddl(
+        self,
+        physical_table: str,
+        current_columns: Set[str],
+        target_columns: Dict[str, str],
+        partition_keys: List[str] = [],
+        partition_key_types: Dict[str, str] = {},
+    ) -> Optional[str]:
+        """
+        Returns ALTER TABLE DDL for safe schema evolution, or None if
+        the changes require a full export-import (unsafe).
+
+        Override in sidecar implementations to provide custom evolution
+        logic (e.g. adding H3 index columns at a new resolution).
+
+        Default implementation: returns ADD COLUMN statements for new
+        columns, or None if any column was removed or changed type.
+
+        Args:
+            physical_table:    Base physical table name (hub).
+            current_columns:   Set of column names currently in the DB.
+            target_columns:    Dict of column_name → SQL type spec from config.
+            partition_keys:    Active partition keys.
+            partition_key_types: Map of partition key → SQL type.
+
+        Returns:
+            SQL string with safe ALTER TABLE statements, or None if
+            export-import is required.
+        """
+        new_cols = set(target_columns.keys()) - current_columns
+        removed_cols = current_columns - set(target_columns.keys())
+
+        # If columns were removed, we can't do it safely
+        if removed_cols:
+            return None
+
+        if not new_cols:
+            return None  # Nothing to do
+
+        sidecar_table = f"{physical_table}_{self.sidecar_id}"
+        stmts: List[str] = []
+        for col_name in sorted(new_cols):
+            col_spec = target_columns[col_name]
+            stmts.append(
+                f'ALTER TABLE "{{schema}}"."{sidecar_table}" '
+                f'ADD COLUMN IF NOT EXISTS "{col_name}" {col_spec};'
+            )
+        return "\n".join(stmts)
 
     @abstractmethod
     async def setup_lifecycle_hooks(

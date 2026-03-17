@@ -17,9 +17,9 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from typing import Any, Callable, Coroutine, List, Union, Dict, Tuple, Type, Protocol, runtime_checkable
+from typing import Any, Callable, Coroutine, List, Union, Dict, Tuple, Type, Protocol, runtime_checkable, AsyncGenerator
+from contextlib import asynccontextmanager
 
-from dynastore.modules.tasks import tasks_module
 from dynastore.modules.tasks.models import (Task, TaskCreate, TaskExecutionMode,
                                             TaskPayload, TaskStatusEnum,
                                             TaskUpdate, RunnerContext)
@@ -103,6 +103,17 @@ class RunnerProtocol(Protocol):
         """Returns the capabilities of this runner (e.g. max_concurrency, tags)."""
         ...
 
+    def can_handle(self, task_type: str) -> bool:
+        """
+        Returns True if this runner can execute tasks of the given type.
+
+        Used by the CapabilityMap at startup (and on refresh) to build the
+        set of task types this instance can claim from the global queue.
+
+        Default: returns True (runner accepts all task types).
+        """
+        return True
+
     async def run(self, context: RunnerContext) -> Union[Task, Any]:
         """
         The core execution logic for the runner. This method is required.
@@ -113,6 +124,9 @@ def get_runners(mode: TaskExecutionMode) -> List[RunnerProtocol]:
     """
     Retrieves a prioritized list of registered runner instances for a given mode.
     """
+    # Ensure default runners are registered
+    register_default_runners()
+    
     from dynastore.tools.discovery import get_protocols
     return [r for r in get_protocols(RunnerProtocol) if getattr(r, "mode", None) == mode]
 
@@ -147,10 +161,19 @@ class SyncRunner(RunnerProtocol, ProtocolPlugin[Any]):
         from dynastore.modules.tasks.models import RunnerCapabilities
         return RunnerCapabilities(max_concurrency=100)
 
+    def can_handle(self, task_type: str) -> bool:
+        return get_task_instance(task_type) is not None
+
     async def run(self, context: RunnerContext) -> Any:
+        from dynastore.tools.protocol_helpers import resolve
+        from dynastore.models.protocols.tasks import TasksProtocol
+        
+        # Resolve the task management protocol
+        tasks_mgr = resolve(TasksProtocol)
+        
         # This is an in-process runner, so it's responsible for getting the task instance.
         task_instance = get_task_instance(context.task_type)
-        logger.warning(f"DEBUG: SyncRunner lookup for '{context.task_type}' -> {task_instance}")
+        logger.debug(f"SyncRunner: lookup for '{context.task_type}' -> {task_instance}")
         if not task_instance:
             return None
 
@@ -160,86 +183,11 @@ class SyncRunner(RunnerProtocol, ProtocolPlugin[Any]):
             task_type=str(context.task_type),
             inputs=context.inputs,
         )
-        job = await tasks_module.create_task(context.engine, task_create_request, schema=context.db_schema)
+        
+        job = await tasks_mgr.create_task(context.engine, task_create_request, schema=context.db_schema)
         logger.info(f"Created audit task '{job.task_id}' for synchronous process '{context.task_type}'.")
-
-        # FIX: Pydantic v2 requires model_validate for casting, or just passing fields.
-        # But 'inputs' in TaskPayload is a generic InputsType.
-        # In context.inputs, we have a Dict[str, Any] which is actually an ExecuteRequest.model_dump().
-        # However, TaskPayload expects 'inputs' to be of type ExecuteRequest (the Pydantic model), NOT a dict.
-        # So we need to reconstruct the Pydantic model from the dict.
         
-        # We need to know the type of 'inputs' expected by the TaskPayload[T].
-        # In this generic runner, we don't know T.
-        # But wait, the task_instance.run(payload) expects a specific T.
-        # If we pass a dict, Pydantic v2 validation MIGHT handle it if configured correctly,
-        # OR we might be hitting a validation error if TaskPayload expects a model instance.
-        
-        # Actually, looking at the error: "AttributeError: 'dict' object has no attribute 'inputs'"
-        # This happened inside IngestionTask.run(), where it tried `ogc_process_inputs.inputs`.
-        # This implies `ogc_process_inputs` was a dict, not an ExecuteRequest object.
-        # So `payload.inputs` was a dict.
-        
-        # Why?
-        # context.inputs is a Dict (ExecuteRequest.model_dump()).
-        # TaskPayload.inputs is defined as InputsType (Generic).
-        # When we create TaskPayload(..., inputs=context.inputs), Pydantic sees a Dict.
-        # Since InputsType is generic, Pydantic might just be accepting the Dict as is, 
-        # effectively resolving InputsType to Dict.
-        
-        # But IngestionTask expects TaskPayload[ExecuteRequest].
-        # So inside run(), it expects payload.inputs to be an ExecuteRequest object.
-        
-        # Ideally, we should convert the dict back to the model if we know the model type.
-        # But the Runner is generic.
-        
-        # OPTION 1: The Runner shouldn't care, but the Task implementation should handle both Dict and Model?
-        # OPTION 2: We should try to hydrate the model if possible.
-        # OPTION 3: In IngestionTask.run, we check if it's a dict and convert/use it.
-        
-        # The error was: `catalog_id = ogc_process_inputs.inputs['catalog_id']`
-        # `ogc_process_inputs` is `payload.inputs`.
-        # If it's a dict, `ogc_process_inputs['inputs']['catalog_id']` would work.
-        # But the code tried `ogc_process_inputs.inputs`. This implies it expected an object.
-        
-        # Let's check IngestionTask again.
-        # `async def run(self, payload: TaskPayload[ExecuteRequest])`
-        # It types payload.inputs as ExecuteRequest.
-        
-        # If we pass a dict to TaskPayload constructor for a field typed as a Model, Pydantic v2 usually validates/converts it.
-        # BUT here TaskPayload is Generic[InputsType].
-        # In `SyncRunner`, we execute `TaskPayload(...)`. We are NOT instantiating `TaskPayload[ExecuteRequest]`.
-        # We are instantiating a raw `TaskPayload` (effectively `TaskPayload[Any]`).
-        # So Pydantic doesn't know it should convert `inputs` to `ExecuteRequest`.
-        
-        # So `payload.inputs` remains a `dict`.
-        # Then we pass this `payload` to `task_instance.run(payload)`.
-        # Python's runtime type hints don't cast data.
-        
-        # FIX: In IngestionTask.run, we must handle the fact that payload.inputs might be a dict (from generic runners) 
-        # or properly ensure it's converted.
-        # Since fixing it in every Task is annoying, maybe we can fix it here?
-        # But we don't know the type.
-        
-        # So the fix MUST be in IngestionTask.run (or a base class helper) to be robust.
-        # Or, we change how we construct payload to use the specific type if known? No, runner is generic.
-        
-        # Let's fix IngestionTask.run to handle dicts. I tried that but I made a mistake in the Edit.
-        # "inputs_dict = ogc_process_inputs.inputs" -> This was the error line I tried to introduce?
-        # No, the previous code was: `catalog_id = ogc_process_inputs.inputs['catalog_id']`
-        # If ogc_process_inputs is a dict, it has no attribute `.inputs`. It has key `['inputs']`.
-        
-        # So `inputs_dict = ogc_process_inputs['inputs']` would work if it's a dict.
-        # `inputs_dict = ogc_process_inputs.inputs` works if it's an object.
-        
-        # Robust way:
-        # if isinstance(ogc_process_inputs, dict):
-        #    inputs_dict = ogc_process_inputs['inputs']
-        # else:
-        #    inputs_dict = ogc_process_inputs.inputs
-        
-        # However, I should probably just leave this Runner alone and fix IngestionTask.
-        
+        # ... (rest of the logic remains the same, but using tasks_mgr) ...
         from dynastore.tasks import hydrate_task_payload
 
         raw_payload = {
@@ -251,7 +199,7 @@ class SyncRunner(RunnerProtocol, ProtocolPlugin[Any]):
 
         try:
             logger.info(f"Executing sync task '{job.task_id}'...")
-            await tasks_module.update_task(context.engine, job.task_id, TaskUpdate(status=TaskStatusEnum.RUNNING), schema=context.db_schema)
+            await tasks_mgr.update_task(context.engine, job.task_id, TaskUpdate(status=TaskStatusEnum.RUNNING), schema=context.db_schema)
 
             # Hydrate and execute
             hydrated_payload = hydrate_task_payload(task_instance, raw_payload)
@@ -259,7 +207,7 @@ class SyncRunner(RunnerProtocol, ProtocolPlugin[Any]):
 
             # OGC sync processes return the result directly; it's not stored in 'outputs'.
             update_data = TaskUpdate(status=TaskStatusEnum.COMPLETED, progress=100)
-            await tasks_module.update_task(context.engine, job.task_id, update_data, schema=context.db_schema)
+            await tasks_mgr.update_task(context.engine, job.task_id, update_data, schema=context.db_schema)
             logger.info(f"Sync task '{job.task_id}' completed successfully.")
             return result
 
@@ -267,7 +215,7 @@ class SyncRunner(RunnerProtocol, ProtocolPlugin[Any]):
             logger.error(f"Sync task '{job.task_id}' failed: {e}", exc_info=True)
             error_message = f"Synchronous execution failed: {str(e)}"
             update_data = TaskUpdate(status=TaskStatusEnum.FAILED, error_message=error_message)
-            await tasks_module.update_task(context.engine, job.task_id, update_data, schema=context.db_schema)
+            await tasks_mgr.update_task(context.engine, job.task_id, update_data, schema=context.db_schema)
             await _emit_task_failure(context, job, error_message, e)
             # Re-raise to allow the service layer to return a 500 error.
             raise
@@ -280,12 +228,42 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
     Uses Starlette/FastAPI BackgroundTasks if available in context, otherwise asyncio.create_task.
     Returns a StatusInfo object immediately (201 Created pattern).
     """
+    def __init__(self):
+        self._running_tasks = set()
+
+    def can_handle(self, task_type: str) -> bool:
+        return get_task_instance(task_type) is not None
+
+    @asynccontextmanager
+    async def lifespan(self, app_state: object) -> AsyncGenerator[None, None]:
+        try:
+            yield
+        finally:
+            # Shutdown: wait for running tasks to finish or timeout
+            if self._running_tasks:
+                pending_count = len(self._running_tasks)
+                logger.info(f"BackgroundRunner: Waiting for {pending_count} background tasks to complete...")
+                # We give them a decent timeout as some might be provisioning resources
+                _, pending = await asyncio.wait(list(self._running_tasks), timeout=10.0)
+                if pending:
+                    logger.warning(f"BackgroundRunner: {len(pending)} tasks did not finish in time and will be cancelled.")
+                    for p in pending:
+                        p.cancel()
+                    await asyncio.gather(*list(pending), return_exceptions=True)
+                logger.info("BackgroundRunner: Cleaned up background tasks.")
+
     @property
     def capabilities(self) -> Any:
         from dynastore.modules.tasks.models import RunnerCapabilities
         return RunnerCapabilities(max_concurrency=20)
 
     async def run(self, context: RunnerContext) -> Any:
+        from dynastore.tools.protocol_helpers import resolve
+        from dynastore.models.protocols.tasks import TasksProtocol
+        
+        # Resolve the task management protocol
+        tasks_mgr = resolve(TasksProtocol)
+        
         # This is an in-process runner
         logger.debug(f"BackgroundRunner.run called for task_type: {context.task_type}, mode: {self.mode}")
         task_instance = get_task_instance(context.task_type)
@@ -300,7 +278,10 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
             task_type=str(context.task_type),
             inputs=context.inputs,
         )
-        job = await tasks_module.create_task(context.engine, task_create_request, schema=context.db_schema)
+        job = await tasks_mgr.create_task(
+            context.engine, task_create_request, schema=context.db_schema,
+            initial_status="RUNNING",
+        )
         logger.info(f"Created audit task '{job.task_id}' for async process '{context.task_type}'.")
 
         from dynastore.tasks import hydrate_task_payload
@@ -318,25 +299,21 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
         async def _execute_background():
             try:
                 logger.info(f"Executing async task '{job.task_id}' in background...")
-                # We need a new engine wrapper or ensure the existing one is thread-safe/async-safe context
-                # The context.engine is likely an AsyncEngine wrapper.
-                
-                await tasks_module.update_task(context.engine, job.task_id, TaskUpdate(status=TaskStatusEnum.RUNNING), schema=context.db_schema)
-                
+
                 # Hydrate and execute
                 hydrated_payload = hydrate_task_payload(task_instance, raw_payload)
                 result = await task_instance.run(hydrated_payload)
                 
                 # Update to COMPLETED with outputs
                 update_data = TaskUpdate(status=TaskStatusEnum.COMPLETED, progress=100, outputs=result)
-                await tasks_module.update_task(context.engine, job.task_id, update_data, schema=context.db_schema)
+                await tasks_mgr.update_task(context.engine, job.task_id, update_data, schema=context.db_schema)
                 logger.info(f"Async task '{job.task_id}' completed successfully.")
                 
             except asyncio.CancelledError:
                 logger.warning(f"Async task '{job.task_id}' was cancelled (SIGTERM?). Resetting to PENDING.")
                 try:
                     # Reset to PENDING so another worker can pick it up
-                    await tasks_module.update_task(context.engine, job.task_id, TaskUpdate(status=TaskStatusEnum.PENDING), schema=context.db_schema)
+                    await tasks_mgr.update_task(context.engine, job.task_id, TaskUpdate(status=TaskStatusEnum.PENDING), schema=context.db_schema)
                 except Exception as e:
                     logger.error(f"Failed to reset cancelled task '{job.task_id}': {e}")
                 raise
@@ -345,7 +322,7 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
                 error_message = f"Asynchronous execution failed: {str(e)}"
                 try:
                     update_data = TaskUpdate(status=TaskStatusEnum.FAILED, error_message=error_message)
-                    await tasks_module.update_task(context.engine, job.task_id, update_data, schema=context.db_schema)
+                    await tasks_mgr.update_task(context.engine, job.task_id, update_data, schema=context.db_schema)
                 except Exception as update_error:
                     logger.critical(f"Failed to update task '{job.task_id}' status to FAILED: {update_error}")
                 await _emit_task_failure(context, job, error_message, e)
@@ -354,11 +331,14 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
         if background_tasks:
              # Starlette BackgroundTasks expects a sync callable or async coroutine? 
              # It handles async functions. add_task(func, *args, **kwargs)
+             # NOTE: we don't track Starlette tasks here as Starlette is responsible for them.
              background_tasks.add_task(_execute_background)
              logger.info(f"Task '{job.task_id}' submitted to Starlette BackgroundTasks.")
         else:
              # Fallback to asyncio
-             asyncio.create_task(_execute_background())
+             t = asyncio.create_task(_execute_background())
+             self._running_tasks.add(t)
+             t.add_done_callback(self._running_tasks.discard)
              logger.info(f"Task '{job.task_id}' submitted to asyncio event loop.")
 
         # For ASYNC, we return a StatusInfo object (or similar) immediately.
@@ -380,6 +360,64 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
             progress=0,
             links=[] 
         )
+
+class CapabilityMap:
+    """
+    In-memory map of task_type to capable runners, grouped by execution mode.
+
+    Built at dispatcher startup by querying each runner's can_handle() method.
+    Refreshable at runtime when Cloud Run Jobs are added/removed.
+    """
+
+    def __init__(self):
+        self._async_types: set = set()
+        self._sync_types: set = set()
+        self._lock = asyncio.Lock()
+
+    async def refresh(self) -> None:
+        """Rebuild capability map from current runners and loaded task types."""
+        from dynastore.tasks import get_loaded_task_types
+        async with self._lock:
+            self._async_types.clear()
+            self._sync_types.clear()
+            for task_type in get_loaded_task_types():
+                for runner in get_runners(TaskExecutionMode.ASYNCHRONOUS):
+                    if runner.can_handle(task_type):
+                        self._async_types.add(task_type)
+                        break
+                for runner in get_runners(TaskExecutionMode.SYNCHRONOUS):
+                    if runner.can_handle(task_type):
+                        self._sync_types.add(task_type)
+                        break
+            logger.info(
+                f"CapabilityMap refreshed: async={sorted(self._async_types)}, "
+                f"sync={sorted(self._sync_types)}"
+            )
+
+    @property
+    def async_types(self) -> List[str]:
+        return list(self._async_types)
+
+    @property
+    def sync_types(self) -> List[str]:
+        return list(self._sync_types)
+
+    @property
+    def all_types(self) -> List[str]:
+        return list(self._async_types | self._sync_types)
+
+    def can_claim(self, task_type: str, execution_mode: str) -> bool:
+        """Check if this instance can claim a task of the given type and mode."""
+        if execution_mode == TaskExecutionMode.ASYNCHRONOUS:
+            return task_type in self._async_types
+        elif execution_mode == TaskExecutionMode.SYNCHRONOUS:
+            return task_type in self._sync_types
+        return False
+
+
+# Singleton capability map instance
+capability_map = CapabilityMap()
+
 
 def register_default_runners() -> None:
     """Ensures that default runners are registered in the global plugin registry.

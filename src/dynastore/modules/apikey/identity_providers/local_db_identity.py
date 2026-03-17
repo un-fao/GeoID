@@ -21,7 +21,7 @@
 import logging
 import secrets
 import hashlib
-import bcrypt
+from argon2 import PasswordHasher, exceptions as argon2_exceptions
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
@@ -139,8 +139,29 @@ class LocalDBIdentityProvider(IdentityProviderProtocol):
                 logger.error(f"User {username} has no password hash")
                 return None
             
-            if not bcrypt.checkpw(password.encode(), password_hash.encode()):
-                logger.debug(f"Invalid password for user: {username}")
+            ph = PasswordHasher()
+            try:
+                # Handle old bcrypt hashes gracefully by falling back to bcrypt if needed
+                # (You must have bcrypt installed for this to work on older hashes)
+                if password_hash.startswith("$2b$") or password_hash.startswith("$2a$"):
+                    import bcrypt
+                    if bcrypt.checkpw(password.encode(), password_hash.encode()):
+                        # Rehash with Argon2id
+                        new_hash = ph.hash(password)
+                        await self.storage.update_local_user(user.get("id"), password_hash=new_hash, schema="users")
+                    else:
+                        logger.debug(f"Invalid bcrypt password for user: {username}")
+                        return None
+                else:
+                    ph.verify(password_hash, password)
+                    if ph.check_needs_rehash(password_hash):
+                        new_hash = ph.hash(password)
+                        await self.storage.update_local_user(user.get("id"), password_hash=new_hash, schema="users")
+            except argon2_exceptions.VerifyMismatchError:
+                logger.debug(f"Invalid argon2 password for user: {username}")
+                return None
+            except Exception as e:
+                logger.error(f"Password verification error for {username}: {e}")
                 return None
             
             return user
@@ -318,11 +339,22 @@ class LocalDBIdentityProvider(IdentityProviderProtocol):
         if not identity:
             raise ValueError("Invalid access token")
         
+        user_id = UUID(identity["sub"])
+        
         # Fetch full user details
-        user = await self.storage.get_local_user_by_id(UUID(identity["sub"]), schema="users")
+        user = await self.storage.get_local_user_by_id(user_id, schema="users")
         
         if not user:
             raise ValueError("User not found")
+            
+        # Fetch principal to get roles
+        roles = []
+        try:
+            principal = await self.storage.get_principal(user_id, schema="apikey")
+            if principal:
+                roles = principal.roles
+        except Exception as e:
+            logger.debug(f"Could not fetch roles for principal {user_id}: {e}")
         
         return {
             "sub": str(user.get("id")),
@@ -330,7 +362,9 @@ class LocalDBIdentityProvider(IdentityProviderProtocol):
             "username": user.get("username"),
             "email_verified": True,  # Local users are pre-verified
             "name": user.get("email"),  # Use email as display name
+            "roles": roles
         }
+
     
     def _generate_access_token(self, user: Dict[str, Any]) -> str:
         """Generates a JWT access token for a user."""
@@ -374,7 +408,8 @@ class LocalDBIdentityProvider(IdentityProviderProtocol):
             User UUID
         """
         # Hash password
-        password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+        ph = PasswordHasher()
+        password_hash = ph.hash(password)
         
         # Create user
         user_id = uuid4()

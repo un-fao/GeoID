@@ -17,9 +17,9 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import abc
-from typing import Protocol, AsyncGenerator, TypeVar, Generic, runtime_checkable, Any
+from typing import Protocol, AsyncGenerator, TypeVar, Generic, runtime_checkable, Any, List, Callable, Optional
 from contextlib import asynccontextmanager
-from dynastore.modules.protocols import HasConfigManager
+from dynastore.modules.protocols import HasConfigService
 from dynastore.tools.plugin import ProtocolPlugin
 
 DefinitionType = TypeVar('DefinitionType', covariant=True)
@@ -27,43 +27,46 @@ PayloadType = TypeVar('PayloadType', contravariant=True)
 ReturnType = TypeVar('ReturnType', covariant=True)
 
 
-class TaskProtocol(ProtocolPlugin[object], HasConfigManager, Generic[DefinitionType, PayloadType, ReturnType]):
+@runtime_checkable
+class TaskProtocol(HasConfigService, Protocol, Generic[DefinitionType, PayloadType, ReturnType]):
     """
     Defines the contract for a DynaStore Background Task.
-
-    Each Task is a ``ProtocolPlugin[object]``, meaning:
-    - Its ``lifespan(app_state: object)`` is the single lifecycle hook —
-      no separate ``startup`` / ``shutdown`` methods are needed.
-    - Its ``priority`` is compared *only* against other tasks (same category).
-    - ``is_available()`` allows optional tasks to be skipped when prereqs are absent.
-
-    The ``run`` method handles the actual task payload execution.
-
-    ---
-    Example:
-    ```python
-    class MessageQueueTask(TaskProtocol):
-        priority: int = 5
-
-        @asynccontextmanager
-        async def lifespan(self, app_state: object):
-            self.connection = await connect_to_queue()
-            try:
-                yield
-            finally:
-                await self.connection.close()
-
-        async def run(self, payload):
-            await self.connection.process(payload)
-    ```
     """
+
+    priority: int = 0
+
+    def is_available(self) -> bool:
+        """
+        Return True if this task is available for execution.
+        """
+        return True
+
+    @asynccontextmanager
+    async def lifespan(self, app_state: Any) -> AsyncGenerator[None, None]:
+        """
+        Task lifecycle manager.
+        """
+        yield
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        # Skip abstract classes and Protocols
+        if cls.__name__.endswith("Protocol") or abc.ABC in cls.__bases__ or getattr(cls, "__is_protocol__", False):
+            return
+        
+        try:
+            from dynastore.tasks import _register_task
+            _register_task(cls)
+        except ImportError:
+            # Fallback for when tasks module is not yet fully initialized or available
+            pass
 
     @classmethod
     def get_name(cls) -> str:
         """
         Returns the registered name of the task.
         """
-        return cls._registered_name
+        return getattr(cls, "_registered_name", cls.__name__.lower())
 
     @abc.abstractmethod
     async def run(self, payload: PayloadType) -> ReturnType:

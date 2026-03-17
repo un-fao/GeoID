@@ -29,7 +29,7 @@ from starlette.requests import Request
 from starlette.responses import Response, JSONResponse
 from dynastore.modules.apikey.conditions import condition_manager, EvaluationContext
 from dynastore.models.protocols.stats import StatsProtocol
-from dynastore.models.protocols.policies import PolicyProtocol
+from dynastore.models.protocols.policies import PermissionProtocol
 from dynastore.models.protocols.apikey import ApiKeyProtocol
 from dynastore.modules.apikey.models import ApiKeyPolicy
 
@@ -38,12 +38,12 @@ logger = logging.getLogger(__name__)
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):
     _apikey_manager: Optional[ApiKeyProtocol] = None
-    _policy_manager: Optional[PolicyProtocol] = None
+    _policy_service: Optional[PermissionProtocol] = None
 
     def __init__(self, app, **kwargs):
         super().__init__(app)
         self._apikey_manager: Optional[ApiKeyProtocol] = None
-        self._policy_manager: Optional[PolicyProtocol] = None
+        self._policy_service: Optional[PermissionProtocol] = None
 
     def lazy_init_manager(self):
         if self._apikey_manager is None:
@@ -54,11 +54,11 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
                 )
 
             self._apikey_manager = apikey_protocol
-            self._policy_manager = apikey_protocol.get_policy_manager()
+            self._policy_service = apikey_protocol.get_policy_service()
 
-            if not self._policy_manager:
+            if not self._policy_service:
                 raise RuntimeError(
-                    "PolicyManager not available in ApiKeyProtocol implementation."
+                    "PolicyService not available in ApiKeyProtocol implementation."
                 )
 
     async def dispatch(
@@ -69,8 +69,7 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         )
         start_time = time.time()
         method = request.method
-        route = request.scope.get("route")
-        path = route.path if route else request.url.path
+        path = request.url.path
 
         query_params = dict(request.query_params)
         query_params_tuple = tuple(sorted(query_params.items()))
@@ -193,7 +192,7 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
             # Enforce Allow/Deny statements
             # We wrap the list in ApiKeyPolicy for the evaluator
             ak_policy = ApiKeyPolicy(statements=api_key_metadata.policy)
-            if not self._policy_manager.evaluate_policy_statements(
+            if not self._policy_service.evaluate_policy_statements(
                 ak_policy, method, path
             ):
                 return JSONResponse(
@@ -207,7 +206,7 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         # B. Token/Principal Policy (The "User")
         if principal_obj and principal_obj.custom_policies:
             p_policy = ApiKeyPolicy(statements=principal_obj.custom_policies)
-            if not self._policy_manager.evaluate_policy_statements(
+            if not self._policy_service.evaluate_policy_statements(
                 p_policy, method, path
             ):
                 return JSONResponse(
@@ -226,7 +225,7 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
             else ([principal_role] if principal_role else [])
         )
 
-        allowed_by_global, reason = await self._policy_manager.evaluate_access(
+        allowed_by_global, reason = await self._policy_service.evaluate_access(
             principals=principals_to_check,
             path=path,
             method=method,

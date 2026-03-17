@@ -19,10 +19,10 @@
 import logging
 import asyncio
 from typing import List, Optional, Dict, Any, Union, Callable, Awaitable
-from dynastore.modules.catalog.asset_manager import (
+from dynastore.modules.catalog.asset_service import (
     Asset,
     AssetTypeEnum,
-    AssetManager,
+    AssetService,
     AssetUpdate,
 )
 from dynastore.modules.tasks.models import TaskPayload
@@ -63,8 +63,6 @@ GDALINFO_PROCESS_DEFINITION = Process(
         )
     },
 )
-
-
 class GdalInfoTask(TaskProtocol, AssetTasksSPI):
     """
     Task that calculates GDAL/OGR info for an asset and enriches its metadata.

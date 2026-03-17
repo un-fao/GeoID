@@ -1,3 +1,4 @@
 pydantic[email]
+argon2-cffi
 bcrypt
 # jose

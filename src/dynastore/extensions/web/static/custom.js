@@ -9,111 +9,191 @@ let docsLoaded = false;
 let dashboardPulse = null;
 let dashboardLastUpdate = 0;
 let currentLocale = 'en';
+let currentUser = null;
+let authToken = null;
+let platformConfig = null;
+let TOKEN_KEY = 'ds_token'; // Default fallback
+const REFRESH_KEY = 'ds_refresh_token';
+let _refreshTimer = null;
 
-// --- Navigation Logic ---
-function switchTab(tabId) {
-    // 1. Hide all main sections
-    document.querySelectorAll('[id^="section-"]').forEach(el => {
-        // Don't hide the app viewer if we are just switching tabs unless we explicitly close it
-        if(el.id !== 'section-app-viewer') {
-            el.classList.add('hidden-section');
-        }
-    });
-    
-    // 2. Show selected section with animation
-    const target = document.getElementById(`section-${tabId}`);
-    if(target) {
-        target.classList.remove('hidden-section');
-        target.classList.remove('fade-in');
-        void target.offsetWidth; // Force reflow
-        target.classList.add('fade-in');
-    }
 
-    // 3. Update Nav State
-    document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active-tab'));
-    const navBtn = document.getElementById(`nav-${tabId}`);
-    if (navBtn) navBtn.classList.add('active-tab');
-    
-    // 4. Component-Specific Loaders
-    if (tabId === 'docs' && !docsLoaded) initDocs();
-    if (tabId === 'dashboard') {
-        initDashboard();
-        if (!dashboardPulse) dashboardPulse = setInterval(updateDashboard, 5000);
-    } else {
-        if (dashboardPulse) { clearInterval(dashboardPulse); dashboardPulse = null; }
-    }
-    if (tabId === 'extensions') {
-        loadExtensions();
-    }
-
-    // 5. Scroll to top
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-}
-
-// --- I18n Logic ---
+// --- I18n & Interface Logic ---
 function toggleLangDropdown() {
     const dd = document.getElementById('lang-dropdown');
     if (dd) dd.classList.toggle('show');
 }
 
 function setLanguage(lang) {
+    if (!lang) return;
     currentLocale = lang;
-    
-    // Update active state in UI
-    document.querySelectorAll('.lang-btn').forEach(btn => {
-        if (btn.dataset.lang === lang) btn.classList.add('bg-blue-500/10', 'text-blue-400', 'font-bold');
-        else btn.classList.remove('bg-blue-500/10', 'text-blue-400', 'font-bold');
-    });
-
-    // Update Label
+    localStorage.setItem('ds_lang', lang);
     const label = document.getElementById('current-lang-label');
-    if (label) {
-        const names = { 'en': 'English', 'es': 'Español', 'fr': 'Français' };
-        label.innerText = names[lang] || lang.toUpperCase();
-    }
-
-    // Close Dropdown
-    const dd = document.getElementById('lang-dropdown');
-    if (dd) dd.classList.remove('show');
-
-    // Reload active Extension if visible
-    const viewer = document.getElementById('section-app-viewer');
-    if (viewer && !viewer.classList.contains('hidden-section')) {
-        const frame = document.getElementById('app-viewer-frame');
-        if (frame && frame.src) {
-            const url = new URL(frame.src);
-            url.searchParams.set('language', lang);
-            frame.src = url.toString();
-        }
-    }
+    if (label) label.innerText = lang.toUpperCase();
     
-    // Reload Extensions list if active
-    const extSection = document.getElementById('section-extensions');
-    if (extSection && !extSection.classList.contains('hidden-section')) {
-        loadExtensions();
+    // Refresh sidebar and content
+    loadSidebar();
+    const currentHash = window.location.hash.substring(1).split(':')[0] || 'home';
+    switchTab(currentHash);
+    
+    const langDd = document.getElementById('lang-dropdown');
+    if (langDd) langDd.classList.remove('show');
+}
+
+async function loadSidebar() {
+    const container = document.getElementById('nav-container');
+    if (!container) return;
+
+    try {
+        const token = authToken || localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
+        const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+        const res = await fetch(`config/pages?language=${currentLocale}`, { headers });
+        if (!res.ok) throw new Error("Failed to load nav config");
+        const allPages = await res.json();
+
+        // 1. Separate Top-level items from fragments
+        const pages = allPages.filter(p => !p.is_embed);
+        
+        // 2. Find Top-level items (no section)
+        const topLevelPages = pages.filter(p => !p.section).sort((a, b) => {
+            if (a.id === 'home') return -1;
+            if (b.id === 'home') return 1;
+            if (b.priority !== a.priority) return b.priority - a.priority;
+            return a.title.localeCompare(b.title);
+        });
+
+        container.innerHTML = topLevelPages.map(page => {
+            // Find pages targeting this one as a section
+            const subPages = pages.filter(p => p.section === page.id).sort((a, b) => (b.priority || 0) - (a.priority || 0));
+            
+            let subHtml = '';
+            if (subPages.length > 0) {
+                subHtml = `
+                    <div class="mt-1 mb-3 ml-4 border-l border-white/5 pl-2 space-y-1 hidden lg:block">
+                        ${subPages.map(s => `
+                            <button onclick="switchTab('${s.id}')" id="nav-${s.id}" class="nav-btn w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-slate-500 hover:text-blue-400 hover:bg-white/5 transition-all text-xs">
+                                <i class="fa-solid ${s.icon} w-4 text-center text-[10px]"></i>
+                                <span class="truncate font-medium">${s.title}</span>
+                            </button>
+                        `).join('')}
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="nav-group">
+                    <button onclick="switchTab('${page.id}')" id="nav-${page.id}" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 transition-all group">
+                        <i class="fa-solid ${page.icon} text-lg w-6 text-center group-hover:text-blue-400 transition-colors"></i>
+                        <span class="hidden lg:block text-sm font-medium">${page.title}</span>
+                    </button>
+                    ${subHtml}
+                </div>
+            `;
+        }).join('');
+
+        // Ensure current active tab is highlighted
+        updateActiveNav();
+
+    } catch (e) {
+        console.error("Sidebar load error:", e);
     }
 }
 
-// --- Layout Logic ---
-function toggleSidebar() {
-    const sidebar = document.querySelector('aside');
-    const icon = document.getElementById('sidebar-toggle-icon');
-    const span = icon.nextElementSibling;
-    
-    sidebar.classList.toggle('sidebar-collapsed');
-    
-    if (sidebar.classList.contains('sidebar-collapsed')) {
-        icon.classList.remove('fa-angles-left');
-        icon.classList.add('fa-angles-right');
-        if (span) span.innerText = '';
-    } else {
-        icon.classList.remove('fa-angles-right');
-        icon.classList.add('fa-angles-left');
-        if (span) span.innerText = 'Collapse';
+function updateActiveNav(activeTabId) {
+    const tabId = activeTabId || window.location.hash.substring(1).split(':')[0] || 'home';
+    document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active-tab'));
+    const activeBtn = document.getElementById(`nav-${tabId}`);
+    if (activeBtn) activeBtn.classList.add('active-tab');
+}
+
+async function switchTab(tabId) {
+    const contentArea = document.getElementById('tab-content');
+    const wrapper = document.getElementById('content-area');
+    if (!contentArea) return;
+
+    // 1. Update Navigation UI immediately with the target tab
+    updateActiveNav(tabId);
+
+    // 2. Show Loader
+    contentArea.innerHTML = '<div class="flex items-center justify-center h-full py-40"><i class="fa-solid fa-circle-notch fa-spin text-4xl text-blue-500"></i></div>';
+
+    let isFullPage = false;
+    try {
+        // 3. Fetch Content Fragment
+        const res = await fetch(`pages/${tabId}?language=${currentLocale}`);
+        if (!res.ok) throw new Error(`Failed to load ${tabId}`);
+        const html = await res.text();
+
+        // 4. Detect full-page document vs fragment.
+        // Full-page docs (stac_browser, map_viewer, etc.) must be rendered in an
+        // iframe so their <style> rules don't leak into the shell's body layout.
+        isFullPage = /^\s*<!DOCTYPE/i.test(html) || /^\s*<html/i.test(html);
+
+        if (isFullPage) {
+            // Full-page app: render in iframe, expand wrapper to fill height
+            if (wrapper) {
+                wrapper.classList.add('!p-0');
+                wrapper.classList.remove('overflow-y-auto');
+                wrapper.style.overflow = 'hidden';
+            }
+            contentArea.classList.remove('max-w-7xl', 'mx-auto', 'fade-in');
+            contentArea.style.cssText = 'height:100%;display:flex;flex-direction:column;';
+            contentArea.innerHTML = `<iframe src="pages/${tabId}?language=${currentLocale}" style="width:100%;flex:1;border:none;display:block;" allowfullscreen></iframe>`;
+        } else {
+            // Fragment: inject HTML then check if it requests full-height treatment
+            contentArea.classList.add('max-w-7xl', 'mx-auto');
+            contentArea.style.cssText = '';
+            contentArea.innerHTML = html;
+            executeScripts(contentArea);
+
+            const fillsViewport = contentArea.querySelector('[data-fills-viewport]');
+            if (fillsViewport) {
+                // Full-height fragment (e.g. map viewer): mirror full-page wrapper treatment
+                if (wrapper) {
+                    wrapper.classList.add('!p-0');
+                    wrapper.classList.remove('overflow-y-auto');
+                    // Set height explicitly so percentage heights inside the fragment resolve correctly
+                    wrapper.style.cssText = 'overflow:hidden;height:100%;display:flex;flex-direction:column;';
+                }
+                contentArea.classList.remove('max-w-7xl', 'mx-auto');
+                contentArea.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column;';
+                fillsViewport.style.cssText = 'flex:1;min-height:0;';
+            } else {
+                // Normal scrollable fragment: restore wrapper defaults
+                if (wrapper) {
+                    wrapper.classList.remove('!p-0');
+                    wrapper.classList.add('overflow-y-auto');
+                    wrapper.style.cssText = '';
+                }
+            }
+
+            contentArea.classList.remove('fade-in');
+            void contentArea.offsetWidth; // Force reflow
+            contentArea.classList.add('fade-in');
+        }
+
+        // 5. Component-Specific Handlers
+        if (tabId === 'docs') initDocs();
+        if (tabId === 'dashboard') {
+            initDashboard();
+            if (!dashboardPulse) dashboardPulse = setInterval(updateDashboard, 5000);
+        } else {
+            if (dashboardPulse) { clearInterval(dashboardPulse); dashboardPulse = null; }
+        }
+
+    } catch (e) {
+        console.error(`Error switching to tab ${tabId}:`, e);
+        contentArea.innerHTML = `<div class="p-20 text-center text-red-400"><i class="fa-solid fa-triangle-exclamation text-4xl mb-4"></i><p>Failed to load ${tabId}</p></div>`;
     }
+
+    // 6. Update Hash and Scroll
+    if (window.location.hash !== `#${tabId}`) {
+        window.history.pushState(null, null, `#${tabId}`);
+    }
+    if (!isFullPage) window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 // --- Extensions Logic ---
+// We keep loadExtensions for when the 'extensions' tab specifically needs to re-populate its grid
 async function loadExtensions() {
     const container = document.getElementById('extensions-grid');
     if (!container) return;
@@ -121,17 +201,23 @@ async function loadExtensions() {
     container.innerHTML = '<div class="col-span-full text-center py-20 text-slate-500"><i class="fa-solid fa-circle-notch fa-spin text-2xl"></i><p class="mt-2">Loading extensions...</p></div>';
 
     try {
-        // Use relative path to 'config/pages' to support proxy prefixes
         const res = await fetch(`config/pages?language=${currentLocale}`);
         if (!res.ok) throw new Error("Failed to load extensions config");
         const pages = await res.json();
         
-        if (pages.length === 0) {
-            container.innerHTML = '<div class="col-span-full text-center py-20 text-slate-500">No extensions found.</div>';
+        const corePageIds = ['home', 'docs', 'extensions', 'dashboard'];
+        const appPages = pages.filter(p => 
+            (p.section === 'extensions' || !p.section) && 
+            !corePageIds.includes(p.id) && 
+            !p.is_embed
+        );
+
+        if (appPages.length === 0) {
+            container.innerHTML = '<div class="col-span-full text-center py-20 text-slate-500">No additional applications available.</div>';
             return;
         }
 
-        container.innerHTML = pages.map(page => `
+        container.innerHTML = appPages.map(page => `
             <div class="glass-card p-6 rounded-xl hover:bg-white/5 transition-colors group cursor-pointer border border-white/5 hover:border-blue-500/30" onclick="openExtension('${page.id}')">
                 <div class="flex items-start justify-between mb-4">
                     <div class="w-12 h-12 bg-blue-500/10 rounded-lg flex items-center justify-center text-blue-400 group-hover:scale-110 transition-transform">
@@ -216,16 +302,22 @@ function renderSidebar(manifest) {
 
     let html = '';
     const categoryMapping = {
-        'root': { title: 'Architecture', icon: 'fa-sitemap' },
-        'modules': { title: 'Modules', icon: 'fa-cubes' },
-        'extensions': { title: 'Extensions', icon: 'fa-puzzle-piece' },
-        'tasks': { title: 'Tasks', icon: 'fa-gears' }
+        'platform':     { title: 'Platform',     icon: 'fa-book-open' },
+        'architecture': { title: 'Architecture', icon: 'fa-sitemap' },
+        'components':   { title: 'Components',   icon: 'fa-puzzle-piece' },
+        'modules':      { title: 'Modules',      icon: 'fa-cubes' },
+        'extensions':   { title: 'Extensions',   icon: 'fa-layer-group' },
+        'tasks':        { title: 'Tasks',        icon: 'fa-gears' },
+        'root':         { title: 'Overview',     icon: 'fa-circle-info' },
     };
 
-    // Ensure 'root' is always processed first
+    // Fixed display order for known categories; unknown ones go last alphabetically
+    const categoryOrder = ['platform', 'architecture', 'components', 'modules', 'extensions', 'tasks', 'root'];
     const sortedKeys = Object.keys(manifest).sort((a, b) => {
-        if (a === 'root') return -1;
-        if (b === 'root') return 1;
+        const ia = categoryOrder.indexOf(a), ib = categoryOrder.indexOf(b);
+        if (ia !== -1 && ib !== -1) return ia - ib;
+        if (ia !== -1) return -1;
+        if (ib !== -1) return 1;
         return a.localeCompare(b);
     });
 
@@ -351,7 +443,11 @@ async function fetchDashboardLogs() {
         const logs = await res.json();
         const container = document.getElementById('dashboard-logs');
         if (container) {
-             container.innerHTML = logs.length ? logs.map(l => `<div class="text-xs font-mono p-1 hover:bg-white/5 flex gap-2"><span class="text-slate-500 shrink-0">${new Date(l.created_at).toLocaleTimeString()}</span> <span class="font-bold ${l.level=='ERROR'?'text-red-400':l.level=='WARN'?'text-yellow-400':'text-blue-400'} w-12 shrink-0">${l.level}</span> <span class="break-all">${l.message}</span></div>`).join('') : '<div class="text-slate-500 text-center py-4">No logs</div>';
+             container.innerHTML = logs.length ? logs.map(l => {
+                 const date = l.created_at ? new Date(l.created_at) : new Date();
+                 const timeStr = isNaN(date.getTime()) ? new Date().toLocaleTimeString() : date.toLocaleTimeString();
+                 return `<div class="text-xs font-mono p-1 hover:bg-white/5 flex gap-2"><span class="text-slate-500 shrink-0">${timeStr}</span> <span class="font-bold ${l.level=='ERROR'?'text-red-400':l.level=='WARN'?'text-yellow-400':'text-blue-400'} w-12 shrink-0">${l.level}</span> <span class="break-all">${l.message}</span></div>`;
+             }).join('') : '<div class="text-slate-500 text-center py-4">No logs</div>';
         }
     } catch(e) {}
 }
@@ -368,14 +464,25 @@ async function fetchDashboardTasks() {
 }
 
 // --- Initialization ---
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    // Restore sidebar collapsed state
+    if (localStorage.getItem('ds_sidebar_collapsed') === '1') {
+        const sidebar = document.getElementById('main-sidebar');
+        const icon = document.getElementById('sidebar-toggle-icon');
+        if (sidebar) sidebar.classList.add('sidebar-collapsed');
+        if (icon) icon.className = 'fa-solid fa-angles-right';
+    }
+
+    // 1. Load sidebar config and render
+    await loadSidebar();
+
     window.addEventListener('hashchange', handleHashChange);
     
     const hash = window.location.hash;
-    if (hash.startsWith('#docs')) { switchTab('docs'); }
-    else if (hash === '#dashboard') switchTab('dashboard');
-    else if (hash === '#extensions') switchTab('extensions');
-    else switchTab('home');
+    if (hash.startsWith('#docs')) { await switchTab('docs'); }
+    else if (hash === '#dashboard') await switchTab('dashboard');
+    else if (hash === '#extensions') await switchTab('extensions');
+    else await switchTab('home');
 
     // Language Selector Listeners
     document.querySelectorAll('.lang-btn').forEach(btn => {
@@ -384,16 +491,18 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Test Badges Toggle Logic
+    // CI Status Badge Panel
     const badgeTrigger = document.getElementById('badge-trigger');
     const badgePanel = document.getElementById('badge-panel');
-    
+
     if (badgeTrigger && badgePanel) {
         badgeTrigger.addEventListener('click', (e) => {
             e.stopPropagation();
+            const wasHidden = badgePanel.classList.contains('hidden');
             badgePanel.classList.toggle('hidden');
+            if (wasHidden) loadTestResults();
         });
-        
+
         document.addEventListener('click', (e) => {
             if (!badgePanel.contains(e.target) && !badgeTrigger.contains(e.target)) {
                 badgePanel.classList.add('hidden');
@@ -401,13 +510,456 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Global click listener to close lang dropdown
+    // Global click listener to close dropdowns
     document.addEventListener('click', (e) => {
-        const dd = document.getElementById('lang-dropdown');
-        const btn = document.getElementById('lang-dropdown-btn');
-        if (dd && btn && !dd.contains(e.target) && !btn.contains(e.target)) {
-            dd.classList.remove('show');
+        // Lang dropdown
+        const langDd = document.getElementById('lang-dropdown');
+        const langBtn = document.getElementById('lang-dropdown-btn');
+        if (langDd && langBtn && !langDd.contains(e.target) && !langBtn.contains(e.target)) {
+            langDd.classList.remove('show');
+        }
+
+        // User dropdown
+        const userDd = document.getElementById('user-dropdown');
+        const userBtn = document.getElementById('user-menu-btn');
+        if (userDd && userBtn && !userDd.contains(e.target) && !userBtn.contains(e.target)) {
+            hideUserDropdown();
         }
     });
 
+    // --- Bootstrapping Platform & Auth ---
+    bootstrap();
+
 });
+
+function executeScripts(container) {
+    const scripts = container.querySelectorAll('script');
+    scripts.forEach(oldScript => {
+        const newScript = document.createElement('script');
+        Array.from(oldScript.attributes).forEach(attr => newScript.setAttribute(attr.name, attr.value));
+        newScript.appendChild(document.createTextNode(oldScript.innerHTML));
+        oldScript.parentNode.replaceChild(newScript, oldScript);
+    });
+}
+
+// --- CI Test Results Panel ---
+
+async function loadTestResults() {
+    const content = document.getElementById('ci-results-content');
+    const meta = document.getElementById('ci-meta');
+    const dot = document.getElementById('ci-status-dot');
+    if (!content) return;
+
+    try {
+        const res = await fetch('/web/static/test-results.json');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        const statusColor = {
+            passed: 'bg-emerald-500',
+            failed: 'bg-red-500',
+            error: 'bg-red-500',
+            pending: 'bg-slate-600',
+        };
+
+        const overallOk = data.unit.status === 'passed' && data.integration.status === 'passed';
+        const overallPending = data.unit.status === 'pending' && data.integration.status === 'pending';
+
+        if (dot) {
+            dot.className = `w-2 h-2 rounded-full ${overallPending ? 'bg-slate-600' : overallOk ? 'bg-emerald-500 animate-pulse' : 'bg-red-500 animate-pulse'}`;
+        }
+
+        function suiteRow(label, suite) {
+            const color = statusColor[suite.status] || 'bg-slate-600';
+            const textColor = suite.status === 'passed' ? 'text-emerald-400' : suite.status === 'failed' || suite.status === 'error' ? 'text-red-400' : 'text-slate-500';
+            return `
+                <div class="flex items-center justify-between gap-2">
+                    <span class="text-slate-400 text-[10px]">${label}</span>
+                    <div class="flex items-center gap-1.5">
+                        ${suite.total > 0 ? `<span class="text-[9px] ${textColor}">${suite.passed}/${suite.total}</span>` : ''}
+                        <span class="w-1.5 h-1.5 rounded-full ${color}"></span>
+                    </div>
+                </div>`;
+        }
+
+        content.innerHTML = `
+            <div class="space-y-2">
+                ${suiteRow('Unit Tests', data.unit)}
+                ${suiteRow('Integration', data.integration)}
+            </div>`;
+
+        if (meta) {
+            const ts = data.generated_at ? new Date(data.generated_at).toLocaleDateString() : '';
+            meta.textContent = `${data.branch} · ${data.commit}${ts ? ' · ' + ts : ''}`;
+        }
+    } catch (e) {
+        if (content) content.innerHTML = '<div class="text-slate-600 text-[10px] text-center py-1">Not available locally</div>';
+        if (meta) meta.textContent = 'Run CI to generate results';
+    }
+}
+
+async function bootstrap() {
+    try {
+        const resp = await fetch('/configs/web_config');
+        if (resp.ok) {
+            platformConfig = await resp.json();
+            if (platformConfig.token_key) {
+                TOKEN_KEY = platformConfig.token_key;
+            }
+            
+            // Sync Brand Name
+            const brandEl = document.getElementById('platform-brand-name');
+            if (brandEl && platformConfig.brand_name) {
+                brandEl.innerText = platformConfig.brand_name;
+            }
+            const subEl = document.getElementById('platform-brand-subtitle');
+            if (subEl && platformConfig.brand_subtitle) {
+                subEl.innerText = platformConfig.brand_subtitle;
+            }
+        }
+    } catch (e) {
+        console.warn("Failed to fetch platform config, using defaults:", e);
+    }
+    
+    // Now load token
+    authToken = localStorage.getItem(TOKEN_KEY);
+    
+    // Initialize Auth Session
+    await initAuthSession();
+}
+
+// --- Authentication & Session Management ---
+
+// --- Token Refresh Logic ---
+
+/** Parse the exp claim from a JWT without verifying the signature. */
+function _jwtExp(token) {
+    try {
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        return payload.exp || 0;
+    } catch { return 0; }
+}
+
+/**
+ * Store access + refresh tokens and schedule a proactive refresh 60 s before expiry.
+ */
+function storeTokens(data) {
+    authToken = data.access_token;
+    localStorage.setItem(TOKEN_KEY, authToken);
+    if (data.refresh_token) {
+        localStorage.setItem(REFRESH_KEY, data.refresh_token);
+    }
+    _scheduleTokenRefresh();
+}
+
+function _scheduleTokenRefresh() {
+    if (_refreshTimer) clearTimeout(_refreshTimer);
+    const exp = _jwtExp(authToken);
+    if (!exp) return;
+    const msUntilRefresh = (exp * 1000) - Date.now() - 60_000; // 60 s early
+    if (msUntilRefresh <= 0) return; // already expired or imminent — handled reactively
+    _refreshTimer = setTimeout(async () => {
+        const ok = await tryRefreshToken();
+        if (!ok) handleLogout();
+    }, msUntilRefresh);
+}
+
+/**
+ * Exchange the stored refresh token for a new access token.
+ * Returns true on success, false on failure.
+ */
+async function tryRefreshToken() {
+    const refreshToken = localStorage.getItem(REFRESH_KEY);
+    if (!refreshToken) return false;
+    try {
+        const form = new URLSearchParams();
+        form.append('refresh_token', refreshToken);
+        const res = await fetch('/auth/refresh', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: form,
+        });
+        if (!res.ok) {
+            localStorage.removeItem(REFRESH_KEY);
+            return false;
+        }
+        const data = await res.json();
+        storeTokens(data);
+        console.log('Access token silently refreshed.');
+        return true;
+    } catch (e) {
+        console.warn('Token refresh failed:', e);
+        return false;
+    }
+}
+
+/**
+ * Initializes the auth session by checking for a 'code' in URL or existing token.
+ */
+async function initAuthSession() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const code = urlParams.get('code');
+
+    if (code) {
+        console.log("Detected auth code, exchanging for token...");
+        // Clean URL immediately for better UX
+        const cleanUrl = window.location.protocol + "//" + window.location.host + window.location.pathname + window.location.hash;
+        window.history.replaceState({path: cleanUrl}, '', cleanUrl);
+        
+        await exchangeCodeForToken(code);
+    }
+
+    if (authToken) {
+        // Proactively refresh if the stored token is already expired or expiring soon
+        if (_jwtExp(authToken) * 1000 < Date.now() + 30_000) {
+            const refreshed = await tryRefreshToken();
+            if (!refreshed) {
+                localStorage.removeItem(TOKEN_KEY);
+                authToken = null;
+            }
+        }
+        if (authToken) await refreshUserProfile();
+        else updateUserWidget(null);
+    } else {
+        updateUserWidget(null);
+    }
+}
+
+async function exchangeCodeForToken(code) {
+    try {
+        const formData = new URLSearchParams();
+        formData.append('grant_type', 'authorization_code');
+        formData.append('code', code);
+        formData.append('redirect_uri', window.location.pathname);
+        formData.append('client_id', 'dynastore');
+
+        const response = await fetch('/auth/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: formData
+        });
+
+        if (response.ok) {
+            const data = await response.json();
+            storeTokens(data);
+            console.log("Auth token acquired and stored under:", TOKEN_KEY);
+            await refreshUserProfile();
+        } else {
+            console.error("Token exchange failed", await response.text());
+        }
+    } catch (e) {
+        console.error("Error during token exchange", e);
+    }
+}
+
+async function refreshUserProfile() {
+    if (!authToken) return;
+
+    try {
+        const response = await fetch('/auth/me', {
+            headers: { 'Authorization': `Bearer ${authToken}` }
+        });
+
+        if (response.ok) {
+            currentUser = await response.json();
+            console.log("User profile loaded:", currentUser);
+            updateUserWidget(currentUser);
+            // Reload sidebar so role-gated pages (admin, configs) become visible
+            await loadSidebar();
+            _scheduleTokenRefresh();
+        } else if (response.status === 401) {
+            // Token expired — try silent refresh before giving up
+            const refreshed = await tryRefreshToken();
+            if (refreshed) {
+                await refreshUserProfile(); // retry with new token
+            } else {
+                handleLogout();
+            }
+        }
+    } catch (e) {
+        console.error("Failed to fetch user profile", e);
+    }
+}
+
+function updateUserWidget(user) {
+    const userWidget = document.getElementById('user-widget');
+    const authButtons = document.getElementById('auth-buttons');
+    
+    if (!user) {
+        if (userWidget) userWidget.classList.add('hidden');
+        if (authButtons) authButtons.classList.remove('hidden');
+        return;
+    }
+
+    if (userWidget) userWidget.classList.remove('hidden');
+    if (authButtons) authButtons.classList.add('hidden');
+
+    // Update UI elements
+    const nameEl = document.getElementById('user-display-name');
+    const emailEl = document.getElementById('user-email');
+    const avatarEl = document.getElementById('user-avatar');
+    const adminLink = document.getElementById('admin-panel-link');
+
+    if (nameEl) nameEl.innerText = user.username || user.name || 'User';
+    if (emailEl) emailEl.innerText = user.email || '';
+    
+    if (avatarEl) {
+        const initial = (user.username || user.name || 'U').charAt(0).toUpperCase();
+        avatarEl.innerText = initial;
+    }
+
+    // Role-based visibility for Admin Panel
+    if (adminLink) {
+        const roles = user.roles || []; // Note: /auth/me should return roles if possible
+        const isPrivileged = roles.includes('sysadmin') || roles.includes('admin');
+        if (isPrivileged) {
+            adminLink.classList.remove('hidden');
+            adminLink.classList.add('flex');
+        } else {
+            adminLink.classList.add('hidden');
+            adminLink.classList.remove('flex');
+        }
+    }
+}
+
+function toggleSidebar() {
+    const sidebar = document.getElementById('main-sidebar');
+    const icon = document.getElementById('sidebar-toggle-icon');
+    if (!sidebar) return;
+    const isCollapsed = sidebar.classList.toggle('sidebar-collapsed');
+    if (icon) {
+        icon.className = isCollapsed ? 'fa-solid fa-angles-right' : 'fa-solid fa-angles-left';
+    }
+    localStorage.setItem('ds_sidebar_collapsed', isCollapsed ? '1' : '0');
+}
+
+function toggleUserDropdown() {
+    const dd = document.getElementById('user-dropdown');
+    if (!dd) return;
+    const isHidden = dd.classList.contains('opacity-0');
+    if (isHidden) {
+        dd.classList.remove('pointer-events-none', 'opacity-0', 'scale-95');
+        dd.classList.add('opacity-100', 'scale-100');
+    } else {
+        hideUserDropdown();
+    }
+}
+
+function hideUserDropdown() {
+    const dd = document.getElementById('user-dropdown');
+    if (dd) {
+        dd.classList.add('pointer-events-none', 'opacity-0', 'scale-95');
+        dd.classList.remove('opacity-100', 'scale-100');
+    }
+}
+
+function handleLogout() {
+    if (_refreshTimer) clearTimeout(_refreshTimer);
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(REFRESH_KEY);
+    authToken = null;
+    currentUser = null;
+    window.location.reload();
+}
+
+// --- Profile Modal Logic ---
+
+function showProfileModal() {
+    hideUserDropdown();
+    const modal = document.getElementById('profile-modal');
+    if (!modal) return;
+
+    // Populate modal
+    if (currentUser) {
+        document.getElementById('modal-display-name').innerText = currentUser.username || currentUser.name || 'User';
+        document.getElementById('modal-email').innerText = currentUser.email || '';
+        document.getElementById('modal-avatar-init').innerText = (currentUser.username || 'U').charAt(0).toUpperCase();
+        document.getElementById('profile-name-input').value = currentUser.username || '';
+        document.getElementById('profile-lang-input').value = currentLocale;
+        
+        const roles = currentUser.roles || ['user'];
+        document.getElementById('user-role-badge').innerText = roles[0].toUpperCase();
+    }
+
+    modal.classList.remove('hidden');
+    // Trigger animations
+    setTimeout(() => {
+        modal.classList.remove('opacity-0');
+        modal.querySelector('.glass-panel').classList.remove('scale-95');
+        modal.querySelector('.glass-panel').classList.add('scale-100');
+    }, 10);
+}
+
+function hideProfileModal() {
+    const modal = document.getElementById('profile-modal');
+    if (!modal) return;
+
+    modal.classList.add('opacity-0');
+    modal.querySelector('.glass-panel').classList.remove('scale-100');
+    modal.querySelector('.glass-panel').classList.add('scale-95');
+    
+    setTimeout(() => {
+        modal.classList.add('hidden');
+    }, 300);
+}
+
+// Intercept profile form submission
+document.getElementById('profile-form')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    alert('Profile updates are coming soon! This is a preview of the interface.');
+    hideProfileModal();
+});
+
+// Handle password updates
+async function updatePassword() {
+    const currentPassword = document.getElementById('profile-current-password').value;
+    const newPassword = document.getElementById('profile-new-password').value;
+    const confirmPassword = document.getElementById('profile-confirm-password').value;
+
+    if (!currentPassword || !newPassword || !confirmPassword) {
+        alert('All password fields are required.');
+        return;
+    }
+
+    if (newPassword !== confirmPassword) {
+        alert('New passwords do not match.');
+        return;
+    }
+
+    if (newPassword.length < 8) {
+        alert('New password must be at least 8 characters long.');
+        return;
+    }
+
+    const token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
+    const formData = new URLSearchParams();
+    formData.append('current_password', currentPassword);
+    formData.append('new_password', newPassword);
+
+    try {
+        const res = await fetch('/auth/password', {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${authToken || token}`,
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: formData.toString()
+        });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to update password');
+        }
+
+        alert('Password updated successfully!');
+        
+        // Clear fields
+        document.getElementById('profile-current-password').value = '';
+        document.getElementById('profile-new-password').value = '';
+        document.getElementById('profile-confirm-password').value = '';
+
+    } catch (e) {
+        console.error('Password update error:', e);
+        alert(e.message);
+    }
+}

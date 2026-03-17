@@ -35,9 +35,6 @@ try:
 except ImportError:
     class StatsProtocol:
         pass
-
-
-
 class StatsExtension(ExtensionProtocol, StatsProtocol):
     priority: int = 100
     engine: Optional[DbResource] = None

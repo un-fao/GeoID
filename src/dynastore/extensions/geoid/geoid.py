@@ -1,262 +1,363 @@
 import os
 import logging
-import inspect
-from typing import List, Any, Dict, Optional
+import itertools
+from typing import List, Any, Dict, Optional, Callable
 
-from fastapi import APIRouter, FastAPI, Response, HTTPException, Request, Query
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.middleware.cors import CORSMiddleware
-from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 
-from dynastore.extensions import dynastore_extension, ExtensionProtocol
-from dynastore.modules import get_protocol
-from dynastore.models.protocols.web import WebModuleProtocol
+from dynastore.extensions import ExtensionProtocol
+from dynastore.models.protocols.web import WebOverrideProtocol, WebPageProtocol, StaticFilesProtocol
 
-# Use the new module-level decorators
+# Use the module-level decorators so Web discovers pages and static files automatically
 from dynastore.modules.web.decorators import expose_static, expose_web_page
+
+import user_agents  # Enforces installation-driven discovery
 
 logger = logging.getLogger(__name__)
 
 
-@dynastore_extension
-class Geoid(ExtensionProtocol):
+class Geoid(ExtensionProtocol, WebOverrideProtocol, WebPageProtocol, StaticFilesProtocol):
+    """
+    GeoID extension — a content provider that plugs into the Web extension's
+    routing infrastructure.
+
+    Responsibilities:
+    - Override the platform home section with GeoID branding (is_embed page).
+    - Provide the /web/pages/geoid service page.
+    - Serve geoid static assets under the "geoid" prefix.
+    - Declare style overrides for landing-page rebranding.
+
+    Everything else (middleware, root redirects, /web/config/pages, /web/docs-*,
+    /web/health, /{prefix}/{filename} static dispatch) is handled by the Web
+    extension, which discovers this class through the StaticFilesProtocol,
+    WebPageProtocol and WebOverrideProtocol at configure_app time.
+    """
+
+    priority: int = -10  # Load before Web so policies are ready
+
     def __init__(self, app: FastAPI):
         self.app = app
-        self.router = APIRouter(prefix="/web", tags=["GeoID Web Service"])
+
+        # Pre-register anonymous-access policies so the apikey module
+        # picks them up before it starts, even if this extension loads first.
+        from dynastore.extensions.web.web import register_web_policies
+        register_web_policies()
 
         self.static_dir = os.path.join(os.path.dirname(__file__), "static")
 
-        # Get the Web Module
-        self.web_module: Optional[WebModuleProtocol] = get_protocol(WebModuleProtocol)
+    # ------------------------------------------------------------------ #
+    #  StaticFilesProtocol                                                 #
+    # ------------------------------------------------------------------ #
 
-        if not self.web_module:
-            logger.error(
-                "GeoidExtension: WebModule not found! Functionality will be limited."
-            )
-            # We could raise an error, but let's try to degrade gracefully or fail hard.
-            # Given it replaces 'web', it implies it needs the module.
+    def get_static_prefix(self) -> str:
+        """Prefix under which geoid static files are served: /web/geoid/<filename>."""
+        return "geoid"
 
-        self._configure_app()
-        self._register_routes()
+    async def is_file_provided(self, path: str) -> bool:
+        """Return True if *path* (relative to the geoid static dir) exists on disk."""
+        if not self.static_dir:
+            return False
+        full_path = os.path.join(self.static_dir, path.lstrip("/"))
+        return os.path.isfile(full_path)
 
-        # Register self
-        if self.web_module:
-            self.web_module.scan_and_register_providers(self)
-
-    def _configure_app(self):
-        self.app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
-        self.app.add_middleware(GZipMiddleware, minimum_size=1000)
-        self.app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-
-        # Scan other extensions for content
-        if self.web_module and hasattr(self.app.state, "ordered_configs"):
-            logger.info("GeoidExtension: Scanning extensions for web content...")
-            for config in self.app.state.ordered_configs:
-                if config.instance and config.instance is not self:
-                    self.web_module.scan_and_register_providers(config.instance)
-
-        # Root Redirects
-        @self.app.get("", include_in_schema=False)
-        @self.app.get("/", include_in_schema=False)
-        async def root_redirect(request: Request):
-            root_path = request.scope.get("root_path", "").rstrip("/")
-            return RedirectResponse(url=f"{root_path}/web/")
-
-        @self.app.get("/web", include_in_schema=False)
-        async def web_redirect(request: Request):
-            root_path = request.scope.get("root_path", "").rstrip("/")
-            return RedirectResponse(url=f"{root_path}/web/")
-
-    @expose_static("geoid")
-    def _provide_geoid_static(self) -> List[str]:
+    async def list_static_files(
+        self, query: Optional[str] = None, limit: int = 100, offset: int = 0
+    ) -> List[str]:
+        """Return absolute paths of geoid static files, optionally filtered and paginated."""
         if not self.static_dir or not os.path.isdir(self.static_dir):
             return []
-        files = []
+
+        files: List[str] = []
         for root, _, filenames in os.walk(self.static_dir):
             for filename in filenames:
-                files.append(os.path.join(root, filename))
-        return files
+                full_path = os.path.join(root, filename)
+                rel_path = os.path.relpath(full_path, self.static_dir)
+                if query and query.lower() not in rel_path.lower():
+                    continue
+                files.append(full_path)
 
-    @expose_web_page(
-        page_id="geoid",
-        title={
-            "en": "Geoid Service",
-            "es": "Servicio de Geoide",
-            "fr": "Service géoïde",
-        },
-        icon="fa-earth-americas",
-        description={
-            "en": "Geoid height calculation service.",
-            "es": "Cálculo de altura del geoide.",
-            "fr": "Calcul de la hauteur du géoïde.",
-        },
-    )
-    def geoid_page(self, language: str = "en"):
-        # Sanitize language to avoid path traversal or invalid chars
+        files.sort()
+        return list(itertools.islice(files, offset, offset + limit))
+
+    # Static files are registered via the StaticFilesProtocol methods above
+    # (get_static_prefix / list_static_files / is_file_provided), discovered by
+    # WebModule's global protocol scan.  No @expose_static decorator needed here.
+
+    # ------------------------------------------------------------------ #
+    #  WebPageProtocol                                                     #
+    # ------------------------------------------------------------------ #
+
+    def get_web_page_config(self) -> Dict[str, Any]:
+        """
+        Metadata for the Geoid service page, used by WebModule for navigation
+        and role-based visibility.  Served at /web/pages/geoid via render_page().
+        """
+        return {
+            "id": "geoid",
+            "title": {
+                "en": "Geoid Service",
+                "es": "Servicio de Geoide",
+                "fr": "Service géoïde",
+            },
+            "icon": "fa-earth-americas",
+            "description": {
+                "en": "Geoid height calculation service.",
+                "es": "Cálculo de altura del geoide.",
+                "fr": "Calcul de la hauteur du géoïde.",
+            },
+            "priority": 0,
+            "is_embed": False,
+        }
+
+    async def render_page(self, request: Any, language: str = "en") -> Any:
+        """
+        Called by Web's /web/pages/geoid handler.  Delegates to geoid_page()
+        so all rendering logic lives in one place.
+        """
+        return self.geoid_page(language=language)
+
+    def geoid_page(self, language: str = "en") -> HTMLResponse:
+        """
+        Serve the language-specific Geoid SPA entry point.
+
+        Lookup order:
+          1. static/index_{lang}.html  (e.g. index_es.html)
+          2. static/index.html         (language-neutral fallback)
+          3. 404 response if neither exists
+        """
         lang_code = language.lower().split("-")[0]
         if lang_code not in ["en", "es", "fr"]:
             lang_code = "en"
 
-        # Try to find specific language index
-        index_filename = f"index_{lang_code}.html"
-        index_path = os.path.join(self.static_dir, index_filename)
-
-        # Fallback to default index.html if specific lang not found
+        index_path = os.path.join(self.static_dir, f"index_{lang_code}.html")
         if not os.path.exists(index_path):
             index_path = os.path.join(self.static_dir, "index.html")
 
         if os.path.exists(index_path):
             with open(index_path, "r", encoding="utf-8") as f:
-                content = f.read()
-                return HTMLResponse(content=content)
+                return HTMLResponse(content=f.read())
         return HTMLResponse("Geoid service page not found", status_code=404)
 
-    # --- Routing Logic (Delegates to WebModule registries) ---
+    # ------------------------------------------------------------------ #
+    #  WebOverrideProtocol                                                 #
+    # ------------------------------------------------------------------ #
 
-    async def serve_file(self, file_path: str) -> Response:
-        if not os.path.isfile(file_path):
-            raise HTTPException(status_code=404, detail="File not found")
-
-        mime_types = {
-            ".css": "text/css",
-            ".js": "application/javascript",
-            ".json": "application/json",
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".svg": "image/svg+xml",
-            ".gif": "image/gif",
-            ".ico": "image/x-icon",
-            ".html": "text/html",
-            ".md": "text/markdown",
-            ".wasm": "application/wasm",
-            ".whl": "application/octet-stream",
+    def get_landing_page_override(self) -> Optional[Dict[str, Any]]:
+        """
+        Rebrand the platform landing page with GeoID / UN-FAO identity.
+        Consumed by WebModule.get_landing_page_override() aggregators.
+        """
+        return {
+            "title": {
+                "en": "GeoID - UN-FAO",
+                "es": "GeoID - UN-FAO",
+                "fr": "GeoID - UN-FAO",
+            },
+            "description": {
+                "en": "Global Geoid Height Service",
+                "es": "Servicio Global de Altura del Geoide",
+                "fr": "Service mondial de hauteur du géoïde",
+            },
+            "icon": "fa-globe",
         }
-        _, ext = os.path.splitext(file_path)
-        media_type = mime_types.get(ext.lower(), "application/octet-stream")
 
-        try:
-            with open(file_path, "rb") as f:
-                content = f.read()
-            return Response(content=content, media_type=media_type)
-        except Exception as e:
-            logger.error(f"Error serving file {file_path}: {e}")
-            raise HTTPException(status_code=500, detail="Internal Server Error")
+    def get_style_overrides(self) -> List[str]:
+        """CSS paths injected into the platform shell for GeoID branding."""
+        return ["/web/geoid/static/custom_style.css"]
 
-    def _register_routes(self):
+    def get_component_overrides(self) -> Dict[str, Callable]:
+        """Reserved for future UI component substitutions; currently empty."""
+        return {}
 
-        @self.router.get("", include_in_schema=False)
-        async def redirect_web_root(request: Request):
-            path = request.url.path
-            if not path.endswith("/"):
-                return RedirectResponse(url=path + "/")
-            return await read_extension_root()
+    # ------------------------------------------------------------------ #
+    #  Home embed — injected into the Web platform's home page            #
+    # ------------------------------------------------------------------ #
 
-        @self.router.get("/", include_in_schema=False)
-        async def read_extension_root():
-            # Geoid Extension specific root: Serve the Geoid App directly?
-            # Or redirect to the geoid page?
-            # The previous 'web' extension served a dashboard/website.
-            # Let's serve the geoid page as the root for this extension.
-            return self.geoid_page()
+    @expose_web_page(
+        page_id="geoid_home",   # unique id — NOT "home"
+        title="GeoID Home",
+        icon="fa-home",
+        priority=-500,
+        section="home",         # injects content into the home page via section mechanism
+        is_embed=True,          # not a standalone nav item
+    )
+    async def geoid_home_page(self, language: str = "en") -> str:
+        """
+        GeoID-branded content embedded in the platform home page.
 
-        @self.router.get("/health", tags=["Web Health"])
-        async def health_check():
-            return {"status": "ok", "provider": "geoid"}
+        Uses section="home" so WebModule registers this provider both under its
+        own page_id ("geoid_home") AND as an embed provider for the "home" page.
+        This avoids overwriting the home page's navigation config while still
+        injecting content when /web/pages/home is rendered.
+        """
+        lang = language.lower().split("-")[0]
 
-        @self.router.get("/config/pages", response_class=JSONResponse)
-        async def get_web_pages_config(language: str = Query("en")):
-            if not self.web_module:
-                return []
-            return self.web_module.get_web_pages_config(language)
+        titles = {
+            "en": "GeoID — UN-FAO",
+            "es": "GeoID — UN-FAO",
+            "fr": "GeoID — UN-FAO",
+        }
+        subtitles = {
+            "en": "Global Federated Places Service",
+            "es": "Servicio Global de Lugares Federados",
+            "fr": "Service mondial de lieux fédérés",
+        }
+        descriptions = {
+            "en": "A Digital Public Good to manage, store, retrieve and share billions of geospatial locations — OGC-compliant, open-source, freely replicable.",
+            "es": "Un Bien Público Digital para gestionar, almacenar, recuperar y compartir miles de millones de ubicaciones geoespaciales.",
+            "fr": "Un bien public numérique pour gérer, stocker, récupérer et partager des milliards de localisations géospatiales.",
+        }
 
-        @self.router.get("/pages/{page_id}", response_class=HTMLResponse)
-        async def get_web_page_content(
-            page_id: str, request: Request, language: str = Query("en")
-        ):
-            if not self.web_module or page_id not in self.web_module.web_pages:
-                raise HTTPException(status_code=404, detail="Page not found")
+        title = titles.get(lang, titles["en"])
+        subtitle = subtitles.get(lang, subtitles["en"])
+        desc = descriptions.get(lang, descriptions["en"])
 
-            handler = self.web_module.web_pages[page_id]["handler"]
-            try:
-                sig = inspect.signature(handler)
-                kwargs = {}
-                if "request" in sig.parameters:
-                    kwargs["request"] = request
-                if "language" in sig.parameters:
-                    kwargs["language"] = language
+        explore_label = {"en": "Explore Places", "es": "Explorar Lugares", "fr": "Explorer les lieux"}.get(lang, "Explore Places")
+        launch_label = {"en": "Launch Geoid Tool", "es": "Iniciar Herramienta", "fr": "Lancer l'outil"}.get(lang, "Launch Geoid Tool")
 
-                if inspect.iscoroutinefunction(handler):
-                    content = await handler(**kwargs)
-                else:
-                    content = handler(**kwargs)
+        phase1_label = {"en": "Phase 1 — Anonymous Places Service", "es": "Fase 1 — Servicio Anónimo de Lugares", "fr": "Phase 1 — Service de lieux anonyme"}.get(lang, "Phase 1 — Anonymous Places Service")
+        phase2_label = {"en": "Phase 2 — Identity, Authority &amp; Expanded Services", "es": "Fase 2 — Identidad, Autoridad y Servicios Ampliados", "fr": "Phase 2 — Identité, Autorité et Services Étendus"}.get(lang, "Phase 2 — Identity, Authority &amp; Expanded Services")
 
-                if isinstance(content, Response):
-                    return content
-                return HTMLResponse(content=str(content))
-            except Exception as e:
-                logger.error(f"Error rendering page {page_id}: {e}", exc_info=True)
-                raise HTTPException(status_code=500, detail=str(e))
+        return f"""
+        <script>
+            document.getElementById('home-title').innerText = '{title}';
+            document.getElementById('home-subtitle').innerText = '{subtitle}';
+            document.getElementById('home-description').innerText = '{desc}';
+            document.querySelectorAll('.ds-default-home').forEach(el => el.style.display = 'none');
+            const actions = document.getElementById('home-actions');
+            if (actions && !document.getElementById('action-geoid')) {{
+                const btn = document.createElement('button');
+                btn.id = 'action-geoid';
+                btn.onclick = () => switchTab('geoid');
+                btn.className = 'px-6 py-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium shadow-lg shadow-blue-500/20 transition-all';
+                btn.innerText = '{explore_label}';
+                actions.appendChild(btn);
 
-        @self.router.get("/docs-manifest", response_class=JSONResponse)
-        async def get_docs_manifest():
-            if not self.web_module:
-                return {}
-            return self.web_module.get_docs_manifest()
+                const btn2 = document.createElement('button');
+                btn2.id = 'action-geoid-tool';
+                btn2.onclick = () => switchTab('geoid');
+                btn2.className = 'px-6 py-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium border border-white/10 transition-all';
+                btn2.innerText = '{launch_label}';
+                actions.appendChild(btn2);
+            }}
+        </script>
 
-        @self.router.get("/docs-content/{doc_id:path}", response_class=HTMLResponse)
-        async def get_doc_content(doc_id: str):
-            if not self.web_module:
-                raise HTTPException(status_code=404)
+        <!-- GeoID Project Overview -->
+        <div class="mt-16 space-y-10">
 
-            path = self.web_module.get_doc_path(doc_id)
-            if not path or not os.path.exists(path):
-                raise HTTPException(status_code=404, detail="Documentation not found")
+          <!-- Hero card -->
+          <div class="glass-panel p-8 rounded-3xl border border-white/5 bg-gradient-to-br from-blue-500/5 to-emerald-500/5">
+            <div class="flex flex-col md:flex-row items-center gap-8">
+              <div class="w-20 h-20 rounded-2xl bg-blue-500/10 flex items-center justify-center text-blue-400 shrink-0">
+                <i class="fa-solid fa-earth-americas text-4xl"></i>
+              </div>
+              <div class="flex-1">
+                <h2 class="text-2xl font-bold text-white mb-2">Global Federated Places Service</h2>
+                <p class="text-slate-400 mb-4">
+                  GeoID is a <strong class="text-white">Digital Public Good</strong> designed to manage, safely store,
+                  retrieve and share billions of geospatial locations (points, areas and lines) efficiently.
+                  The core service is open-source, the base place data is open-data and freely copyable,
+                  enabling federated collaboration and widespread use.
+                </p>
+                <div class="flex flex-wrap gap-2">
+                  <span class="px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-xs text-blue-300">OGC API — Features</span>
+                  <span class="px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300">Apache Iceberg</span>
+                  <span class="px-3 py-1 rounded-full bg-purple-500/10 border border-purple-500/20 text-xs text-purple-300">GeoParquet</span>
+                  <span class="px-3 py-1 rounded-full bg-yellow-500/10 border border-yellow-500/20 text-xs text-yellow-300">H3 / S2 / Geohash</span>
+                  <span class="px-3 py-1 rounded-full bg-slate-700/50 border border-white/10 text-xs text-slate-300">STAC</span>
+                  <span class="px-3 py-1 rounded-full bg-slate-700/50 border border-white/10 text-xs text-slate-300">Decentralized Identifiers (DIDs)</span>
+                </div>
+              </div>
+            </div>
+          </div>
 
-            try:
-                import markdown
+          <!-- Project Benefits -->
+          <div>
+            <h3 class="text-lg font-semibold text-slate-300 mb-4 uppercase tracking-wider text-sm">Project Benefits</h3>
+            <div class="grid md:grid-cols-3 gap-4">
+              <div class="glass-panel p-5 rounded-xl border border-white/5">
+                <i class="fa-solid fa-share-nodes text-blue-400 text-xl mb-3"></i>
+                <h4 class="font-semibold text-white mb-1">Share Location Data</h4>
+                <p class="text-slate-400 text-sm">Easily and efficiently share location data, both privately and publicly, for scientific, analytical, and operational use.</p>
+              </div>
+              <div class="glass-panel p-5 rounded-xl border border-white/5">
+                <i class="fa-solid fa-bolt text-yellow-400 text-xl mb-3"></i>
+                <h4 class="font-semibold text-white mb-1">Faster Insights</h4>
+                <p class="text-slate-400 text-sm">High-performance access and efficient query tools — analyze geospatial data and make decisions faster with O(log N) spatial indexing.</p>
+              </div>
+              <div class="glass-panel p-5 rounded-xl border border-white/5">
+                <i class="fa-solid fa-shield-halved text-emerald-400 text-xl mb-3"></i>
+                <h4 class="font-semibold text-white mb-1">Data Integrity</h4>
+                <p class="text-slate-400 text-sm">Long-term, immutable storage with data provenance tracking. Unique URIs and cryptographic hashes for every place.</p>
+              </div>
+              <div class="glass-panel p-5 rounded-xl border border-white/5">
+                <i class="fa-solid fa-users text-purple-400 text-xl mb-3"></i>
+                <h4 class="font-semibold text-white mb-1">Drive Collaboration</h4>
+                <p class="text-slate-400 text-sm">Open, collaborative platform where data is copyable and reusable, enabling a wide community to contribute and benefit.</p>
+              </div>
+              <div class="glass-panel p-5 rounded-xl border border-white/5">
+                <i class="fa-solid fa-coins text-orange-400 text-xl mb-3"></i>
+                <h4 class="font-semibold text-white mb-1">Cut Operational Costs</h4>
+                <p class="text-slate-400 text-sm">One common, centralised registry for location data — stop duplicating efforts and systems across projects.</p>
+              </div>
+              <div class="glass-panel p-5 rounded-xl border border-white/5">
+                <i class="fa-solid fa-layer-group text-sky-400 text-xl mb-3"></i>
+                <h4 class="font-semibold text-white mb-1">Build for the Future</h4>
+                <p class="text-slate-400 text-sm">Cloud-native architecture on open standards, ready to integrate with future advancements in spatial intelligence and federation.</p>
+              </div>
+            </div>
+          </div>
 
-                with open(path, "r", encoding="utf-8") as f:
-                    md_content = f.read()
-                html_content = markdown.markdown(
-                    md_content,
-                    extensions=["fenced_code", "tables", "def_list", "nl2br"],
-                )
-                return HTMLResponse(content=html_content)
-            except Exception as e:
-                logger.error(f"Error reading doc {doc_id}: {e}")
-                raise HTTPException(status_code=500, detail="Error reading document")
+          <!-- Roadmap -->
+          <div class="grid md:grid-cols-2 gap-6">
+            <!-- Phase 1 -->
+            <div class="glass-panel p-6 rounded-2xl border border-blue-500/20">
+              <div class="flex items-center gap-3 mb-4">
+                <span class="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-bold">1</span>
+                <h3 class="font-semibold text-white">{phase1_label}</h3>
+              </div>
+              <ul class="space-y-2 text-sm text-slate-400">
+                <li class="flex gap-2"><i class="fa-solid fa-check text-blue-400 mt-0.5 shrink-0"></i> Store single geospatial places with Decentralized Identifiers (DIDs)</li>
+                <li class="flex gap-2"><i class="fa-solid fa-check text-blue-400 mt-0.5 shrink-0"></i> Bulk ingestion &amp; download (GeoJSON, GeoParquet, Shapefile)</li>
+                <li class="flex gap-2"><i class="fa-solid fa-check text-blue-400 mt-0.5 shrink-0"></i> Query / search API and webapp for place discovery</li>
+                <li class="flex gap-2"><i class="fa-solid fa-check text-blue-400 mt-0.5 shrink-0"></i> Integration with FAO Agro-informatics Platform &amp; Ground app</li>
+                <li class="flex gap-2"><i class="fa-solid fa-check text-blue-400 mt-0.5 shrink-0"></i> Asset Registry 1.0, Ground &amp; AIP Well-Known-Areas ingestion</li>
+                <li class="flex gap-2"><i class="fa-solid fa-check text-blue-400 mt-0.5 shrink-0"></i> CI/CD pipeline, backup &amp; disaster recovery</li>
+                <li class="flex gap-2"><i class="fa-solid fa-check text-blue-400 mt-0.5 shrink-0"></i> Public open-source release</li>
+              </ul>
+            </div>
+            <!-- Phase 2 -->
+            <div class="glass-panel p-6 rounded-2xl border border-purple-500/20">
+              <div class="flex items-center gap-3 mb-4">
+                <span class="w-8 h-8 rounded-full bg-purple-600 flex items-center justify-center text-white text-sm font-bold">2</span>
+                <h3 class="font-semibold text-white">{phase2_label}</h3>
+              </div>
+              <ul class="space-y-2 text-sm text-slate-400">
+                <li class="flex gap-2"><i class="fa-solid fa-circle text-purple-400 mt-0.5 shrink-0 text-xs"></i> Organization / User registration, authentication &amp; authorization</li>
+                <li class="flex gap-2"><i class="fa-solid fa-circle text-purple-400 mt-0.5 shrink-0 text-xs"></i> Authority URIs, metadata &amp; "my data" view for authorized users</li>
+                <li class="flex gap-2"><i class="fa-solid fa-circle text-purple-400 mt-0.5 shrink-0 text-xs"></i> Authorized bulk access services for data modeling</li>
+                <li class="flex gap-2"><i class="fa-solid fa-circle text-purple-400 mt-0.5 shrink-0 text-xs"></i> Extensible auxiliary data linkage service</li>
+                <li class="flex gap-2"><i class="fa-solid fa-circle text-purple-400 mt-0.5 shrink-0 text-xs"></i> Survey, Cadastral Register &amp; Ground Truth dataset ingestion</li>
+                <li class="flex gap-2"><i class="fa-solid fa-circle text-purple-400 mt-0.5 shrink-0 text-xs"></i> Federation design with OpenStreetMap &amp; Overture</li>
+                <li class="flex gap-2"><i class="fa-solid fa-circle text-purple-400 mt-0.5 shrink-0 text-xs"></i> Zero-Knowledge Proofs &amp; Decentralized Anonymous Credentials</li>
+              </ul>
+            </div>
+          </div>
 
-        @self.router.get("/{prefix}/{filename:path}", include_in_schema=False)
-        async def serve_static_content(prefix: str, filename: str):
-            if not self.web_module or prefix not in self.web_module.static_providers:
-                raise HTTPException(
-                    status_code=404, detail=f"No provider found for prefix '{prefix}'"
-                )
+          <!-- Tech stack footer -->
+          <div class="glass-panel p-5 rounded-xl border border-white/5 flex flex-col md:flex-row items-center gap-4">
+            <div class="text-slate-500 text-xs uppercase tracking-widest font-semibold shrink-0">Technology Stack</div>
+            <div class="flex flex-wrap gap-3 justify-center md:justify-start">
+              <span class="flex items-center gap-2 px-3 py-1 rounded-lg bg-slate-800/80 text-xs text-slate-300 border border-white/5"><i class="fa-solid fa-database text-blue-400"></i> Apache Iceberg</span>
+              <span class="flex items-center gap-2 px-3 py-1 rounded-lg bg-slate-800/80 text-xs text-slate-300 border border-white/5"><i class="fa-solid fa-file-arrow-down text-emerald-400"></i> GeoParquet</span>
+              <span class="flex items-center gap-2 px-3 py-1 rounded-lg bg-slate-800/80 text-xs text-slate-300 border border-white/5"><i class="fa-solid fa-hexagon-nodes text-yellow-400"></i> H3 / S2 / Geohash</span>
+              <span class="flex items-center gap-2 px-3 py-1 rounded-lg bg-slate-800/80 text-xs text-slate-300 border border-white/5"><i class="fa-solid fa-globe text-sky-400"></i> OGC API Features</span>
+              <span class="flex items-center gap-2 px-3 py-1 rounded-lg bg-slate-800/80 text-xs text-slate-300 border border-white/5"><i class="fa-solid fa-image text-purple-400"></i> STAC</span>
+              <span class="flex items-center gap-2 px-3 py-1 rounded-lg bg-slate-800/80 text-xs text-slate-300 border border-white/5"><i class="fa-solid fa-fingerprint text-orange-400"></i> DIDs &amp; URIs</span>
+              <span class="flex items-center gap-2 px-3 py-1 rounded-lg bg-slate-800/80 text-xs text-slate-300 border border-white/5"><i class="fa-brands fa-python text-blue-300"></i> FastAPI / DynaStore</span>
+            </div>
+          </div>
 
-            provider = self.web_module.static_providers[prefix]
-            try:
-                allowed_files = provider()
-            except Exception as e:
-                raise HTTPException(status_code=500, detail="Provider error")
-
-            allowed_map = {os.path.abspath(f): f for f in allowed_files}
-            target_file = None
-            for abs_path in allowed_map.keys():
-                if abs_path.replace(os.sep, "/").endswith(
-                    filename.replace(os.sep, "/")
-                ):
-                    target_file = abs_path
-                    break
-
-            if not target_file:
-                raise HTTPException(status_code=404, detail="File not found")
-
-            return await self.serve_file(target_file)
+        </div>
+        """

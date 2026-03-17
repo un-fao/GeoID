@@ -55,24 +55,16 @@ async def lifespan(app: FastAPI):
     5. Shutdown Modules.
     """
     # The outer context manager initializes foundational modules.
-    # They populate the `app.state` object with core services like `db_config` and `sync_engine`.
+    # They populate `app.state` with core services. TasksModule.lifespan
+    # already manages task singletons and the dispatcher internally.
     async with modules.lifespan(app.state):
-        logger.info("--- [main.py] Foundational Modules are active. ---")
-
-        # This context manager instantiates all task singletons.
-        async with tasks.manage_tasks(app.state):
-            logger.info("--- [main.py] Background Task singletons are active. ---")
-            # The inner context manager initializes web extensions.
-            # Extensions can now reliably access services from modules and task instances.
-            async with extensions.lifespan(app):
-                logger.info("--- [main.py] Web Extensions are active. Application is running. ---")
-                yield
-    
-    logger.info("--- [main.py] Application shutdown complete. ---")
+        logger.info("--- [main.py] Modules are active. ---")
+        # Extensions can now reliably access services from modules and task instances.
+        async with extensions.lifespan(app):
+            logger.info("--- [main.py] Web Extensions are active. Application is running. ---")
+            yield
 
     logger.info("--- [main.py] Application shutdown complete. ---")
-
-# --- Main Application Creation ---
 
 # --- Main Application Creation ---
 
@@ -80,8 +72,13 @@ app = FastAPI(
     default_response_class=ORJSONResponse,
     lifespan=lifespan,
     root_path=os.getenv("API_ROOT_PATH", "/"),
-    title=os.getenv("TITLE", "DynaStore API"),
-    description=os.getenv("DESCRIPTION", "Dynamic Storage API server"),
+    title=os.getenv("TITLE", "Agro-Informatics Platform - Catalog Services API"),
+    description=os.getenv(
+        "DESCRIPTION", 
+        "Agro-Informatics Platform - Catalog Services is an enterprise-grade, cloud-native platform for geospatial data.\n\n"
+        "### 📚 [Read the Full Documentation via the Web Dashboard](/web/)\n"
+        "*(Includes Architecture overviews, deep-dives on Modules/Extensions, and the Developer Roadmap)*"
+    ),
     version=os.getenv("VERSION", "0.1.0"),
     docs_url=None, # We will serve custom docs
     redoc_url=None, # We will serve custom redoc
@@ -118,3 +115,50 @@ setup_exception_handlers(app)
 bootstrap_app(app)
 
 logger.info("--- [main.py] FastAPI application instance created. ---")
+
+
+async def run_worker(concurrency: int = 1):
+    """
+    Initializes the application's modules via their lifespans and runs as a
+    long-lived worker process.
+
+    The TasksModule lifespan is responsible for starting the dispatcher and
+    queue listener internally — no schema or dispatcher knowledge is needed here.
+
+    Args:
+        concurrency: Reserved for future use. The dispatcher concurrency is
+                     configured via the TasksModule.
+    """
+    logger.info("--- [main.py] Initializing worker context (concurrency=%d)... ---", concurrency)
+
+    app_state = SimpleNamespace()
+
+    # 1. Discover all modules based on SCOPE environment variable.
+    modules.discover_modules()
+
+    # 2. Instantiate all discovered modules using the shared state object.
+    modules.instantiate_modules(app_state)
+
+    # 3. Run module lifespans — TasksModule will start the dispatcher and queue listener.
+    async with modules.lifespan(app_state):
+        logger.info("--- [main.py] Worker running. Dispatcher managed by TasksModule. ---")
+        # Block until manually terminated (SIGTERM will set the shutdown event
+        # inside TasksModule and clean up gracefully).
+        shutdown_event = asyncio.Event()
+        await shutdown_event.wait()
+
+    logger.info("--- [main.py] Worker shut down cleanly. ---")
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="DynaStore Application Entry Point")
+    parser.add_argument("--worker", action="store_true", help="Run as a background worker instead of API server")
+    parser.add_argument("--concurrency", type=int, default=1,
+                        help="Number of concurrent worker processes (worker mode only, default: 1)")
+    args = parser.parse_args()
+
+    if args.worker:
+        asyncio.run(run_worker(concurrency=args.concurrency))
+    else:
+        print("This script is intended to be imported by an ASGI server (for API) or run with --worker (for Worker).")

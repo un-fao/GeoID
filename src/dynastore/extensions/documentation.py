@@ -253,8 +253,6 @@ def enrich_extension_metadata(app: FastAPI, config: ExtensionConfig, router: API
 
             # 5. Enrich Tags Metadata
             if not app.openapi_tags: app.openapi_tags = []
-            
-            logger.info(f"Extension '{extension_name}': Found README. Added help route and enriching tags: {tags_to_enrich}")
 
             for tag in tags_to_enrich:
                 tag_name = str(tag.value) if isinstance(tag, Enum) else str(tag)
@@ -270,9 +268,6 @@ def enrich_extension_metadata(app: FastAPI, config: ExtensionConfig, router: API
                         "name": tag_name,
                         "description": header_html,
                     })
-
-        else:
-            logger.info(f"Extension '{extension_name}': No README found at '{readme_path}'. Help section skipped.")
 
     except Exception as e:
         logger.error(f"Failed to setup docs for {extension_name}: {e}", exc_info=True)

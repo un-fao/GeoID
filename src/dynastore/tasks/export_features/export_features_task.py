@@ -49,8 +49,6 @@ EXPORT_FEATURES_PROCESS_DEFINITION = Process(
     jobControlOptions=["async-execute"],
     outputTransmission=["value"]
 )
-
-
 class ExportFeaturesTask(TaskProtocol[Process, TaskPayload[ExecuteRequest], Optional[StatusInfo]]):
     priority: int = 100
     @staticmethod

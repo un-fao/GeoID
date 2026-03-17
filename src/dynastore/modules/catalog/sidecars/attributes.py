@@ -40,6 +40,7 @@ from dynastore.tools.json import CustomJSONEncoder
 from dynastore.modules.catalog.sidecars.base import (
     SidecarProtocol,
     SidecarConfig,
+    SidecarPipelineContext,
     ValidationResult,
     FieldDefinition,
     FieldCapability,
@@ -1104,7 +1105,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         self,
         row: Dict[str, Any],
         feature: Feature,
-        context: Dict[str, Any],
+        context: SidecarPipelineContext,
     ) -> None:
         """Populate Feature from database row.
 
@@ -1119,13 +1120,9 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
             ``context["_sidecar_data"]["attributes"]`` so downstream
             sidecars (e.g. STAC) can access them (e.g. ``asset_id``).
         """
-        # Publish all raw row values under this sidecar's key in context.
-        sidecar_data = getattr(context, "_sidecar_data", None)
-        if sidecar_data is None:
-            sidecar_data = {}
-            setattr(context, "_sidecar_data", sidecar_data)
-            
-        sidecar_data[self.sidecar_id] = dict(row)
+        # Publish all raw row values under this sidecar's key in context so that
+        # downstream sidecars (e.g. STAC) can access them via context.get_sidecar().
+        context.publish(self.sidecar_id, dict(row))
 
         # 1. Identity Mapping
         # The Hub already initialised feature.id = geoid.  We only override

@@ -3,176 +3,440 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DynaStore | STAC Browser</title>
-    
-    <!-- Favicon and Fonts from main app -->
+    <title>AIP | STAC Browser</title>
+
+    <!-- Favicon and Fonts -->
     <link rel="icon" type="image/png" href="/web/static/dynastore.png">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    
-    <!-- STAC Browser CDN -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radiantearth/stac-browser@3/css/stac-browser.css">
-    <script src="https://cdn.jsdelivr.net/npm/@radiantearth/stac-browser@3/js/stac-browser.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Marked.js for rendering description markdown -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- Context Selector for dynamic navigation -->
+    <script src="/web/static/website/context-selector.js"></script>
 
     <style>
-        /* Basic styling to match the dark theme */
         body {
-            font-family: 'Inter', sans-serif; /* Assuming Inter is available or falls back */
-            background-color: #020617; /* dyna-darker */
-            color: #e2e8f0; /* slate-200 */
+            font-family: 'Inter', sans-serif;
+            background-color: #020617;
+            color: #e2e8f0;
             margin: 0;
             padding: 0;
             height: 100vh;
             display: flex;
             flex-direction: column;
         }
-
-        /* Header to provide context and a way back */
         .header {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 1rem 2rem;
+            padding: 0.75rem 1.5rem;
             background: rgba(15, 23, 42, 0.85);
             backdrop-filter: blur(16px);
             border-bottom: 1px solid rgba(255, 255, 255, 0.08);
             flex-shrink: 0;
+            z-index: 10;
         }
-        .header-title {
+        .header-title { display: flex; align-items: center; gap: 0.75rem; font-weight: bold; font-size: 1.1rem; color: white; }
+        .header-title img { width: 2rem; height: 2rem; border-radius: 0.4rem; }
+        .back-link { color: #94a3b8; text-decoration: none; font-size: 0.875rem; transition: color 0.2s; }
+        .back-link:hover { color: white; }
+
+        .main-layout {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        /* Sidebar */
+        #sidebar {
+            width: 280px;
+            min-width: 220px;
+            background: rgba(15, 23, 42, 0.95);
+            border-right: 1px solid rgba(255,255,255,0.07);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        #sidebar-header {
+            padding: 1rem;
+            border-bottom: 1px solid rgba(255,255,255,0.07);
+        }
+        #breadcrumb {
+            font-size: 0.7rem;
+            color: #64748b;
+            padding: 0.5rem 1rem 0;
+            min-height: 1.5rem;
+        }
+        #items-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0.5rem;
+        }
+        .item-card {
             display: flex;
             align-items: center;
-            gap: 0.75rem;
-            font-weight: bold;
-            font-size: 1.25rem;
-            color: white;
-        }
-        .header-title img {
-            width: 2.5rem;
-            height: 2.5rem;
+            gap: 0.6rem;
+            padding: 0.6rem 0.75rem;
             border-radius: 0.5rem;
+            cursor: pointer;
+            transition: background 0.15s;
+            border: 1px solid transparent;
         }
-        .back-link {
-            color: #94a3b8; /* slate-400 */
-            text-decoration: none;
-            font-size: 0.875rem;
-            transition: color 0.2s;
-        }
-        .back-link:hover {
-            color: white;
-        }
+        .item-card:hover { background: rgba(59,130,246,0.1); border-color: rgba(59,130,246,0.2); }
+        .item-card.active { background: rgba(59,130,246,0.15); border-color: rgba(59,130,246,0.3); }
+        .item-card .icon { color: #3b82f6; width: 1.25rem; text-align: center; flex-shrink: 0; }
+        .item-card .label { font-size: 0.85rem; font-weight: 500; color: #e2e8f0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .item-card .sublabel { font-size: 0.7rem; color: #64748b; }
 
-        /* STAC Browser container */
-        #stac-browser-container {
-            flex-grow: 1;
-            overflow: hidden;
-            padding: 1rem;
+        /* Detail pane */
+        #detail-pane {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1.5rem 2rem;
+            background: #020617;
         }
+        #detail-title { font-size: 1.5rem; font-weight: 700; color: white; margin-bottom: 0.25rem; }
+        #detail-desc { font-size: 0.875rem; color: #94a3b8; margin-bottom: 1rem; max-width: 700px; }
+        .detail-meta { font-size: 0.75rem; color: #475569; margin-bottom: 1.5rem; }
+        .detail-section-title { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #3b82f6; margin: 1.5rem 0 0.75rem; }
+        .prop-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+        .prop-table td { padding: 0.4rem 0.6rem; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: top; }
+        .prop-table td:first-child { color: #64748b; width: 35%; font-family: monospace; }
+        .prop-table td:last-child { color: #e2e8f0; word-break: break-all; }
 
-        /* Overriding STAC Browser styles for dark theme */
-        :root {
-            --stac-browser-bg-color: #0f172a; /* dyna-dark */
-            --stac-browser-bg-color-light: #1e293b; /* a bit lighter */
-            --stac-browser-bg-color-dark: #020617; /* dyna-darker */
-            --stac-browser-primary-color: #3b82f6; /* dyna-primary */
-            --stac-browser-secondary-color: #64748b; /* dyna-secondary */
-            --stac-browser-text-color: #e2e8f0; /* slate-200 */
-            --stac-browser-link-color: #0ea5e9; /* dyna-accent */
-            --stac-browser-border-color: rgba(255, 255, 255, 0.1);
-            --stac-browser-font-family: 'Inter', sans-serif;
-            --stac-browser-font-family-mono: 'Fira Code', monospace;
+        .badge { display: inline-block; font-size: 0.65rem; font-weight: 600; padding: 0.15rem 0.5rem; border-radius: 9999px; margin: 0.1rem; }
+        .badge-blue { background: rgba(59,130,246,0.15); color: #93c5fd; border: 1px solid rgba(59,130,246,0.25); }
+        .badge-green { background: rgba(34,197,94,0.1); color: #86efac; border: 1px solid rgba(34,197,94,0.2); }
+
+        .loading-spinner { text-align: center; padding: 3rem 1rem; color: #64748b; }
+        .error-box { padding: 1rem; background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2); border-radius: 0.5rem; color: #f87171; font-size: 0.85rem; }
+        .search-input {
+            width: 100%; padding: 0.5rem 0.75rem; background: rgba(30,41,59,0.7);
+            border: 1px solid rgba(255,255,255,0.1); border-radius: 0.4rem;
+            color: #e2e8f0; font-size: 0.85rem; outline: none;
+            box-sizing: border-box;
         }
-        
-        /* More specific overrides for better integration */
-        .stac-browser .thumbnail-overlay {
-            background-color: rgba(15, 23, 42, 0.7);
-        }
-        .stac-browser .breadcrumb a {
-            color: var(--stac-browser-link-color);
-        }
-        .stac-browser .card, .stac-browser .card-body {
-             background-color: var(--stac-browser-bg-color-light);
-             border: 1px solid var(--stac-browser-border-color);
-        }
-        .stac-browser .nav-link.active {
-            background-color: var(--stac-browser-primary-color) !important;
-            border-color: var(--stac-browser-primary-color) !important;
-        }
-        .stac-browser .nav-link {
-            border: 1px solid var(--stac-browser-border-color);
-            color: var(--stac-browser-text-color);
-        }
-        .stac-browser .nav-link:hover {
-            background-color: var(--stac-browser-bg-color);
-        }
-        .stac-browser .search-input {
-            background-color: var(--stac-browser-bg-color-dark);
-            border: 1px solid var(--stac-browser-border-color);
-            color: var(--stac-browser-text-color);
-        }
+        .search-input:focus { border-color: rgba(59,130,246,0.5); }
     </style>
 </head>
 <body>
 
     <header class="header">
         <div class="header-title">
-            <img src="/web/static/dynastore.png" alt="DynaStore Logo">
-            <span>STAC Browser</span>
+            <img src="/web/static/dynastore.png" alt="AIP Logo">
+            <span>Agro-Informatics Platform: STAC Browser</span>
         </div>
         <a href="/web/" class="back-link">
             <i class="fa-solid fa-arrow-left"></i> Back to Home
         </a>
     </header>
 
-    <div id="stac-browser-container"></div>
+    <div class="main-layout">
+        <div id="sidebar">
+            <div id="sidebar-header">
+                <div id="cs-container" style="margin-bottom: 0.5rem;"></div>
+                <input class="search-input" id="search-box" type="text" placeholder="&#xf002;  Filter..." oninput="filterItems(this.value)">
+            </div>
+            <div id="breadcrumb"></div>
+            <div id="items-list">
+                <div class="loading-spinner"><i class="fa-solid fa-circle-notch fa-spin text-xl"></i><p class="mt-2 text-sm">Loading catalogs...</p></div>
+            </div>
+        </div>
+        <div id="detail-pane">
+            <div style="text-align:center; padding:4rem 1rem; color:#334155;">
+                <i class="fa-solid fa-layer-group text-5xl mb-4" style="color:#1e3a5f;"></i>
+                <p class="text-slate-400 mt-4">Select a catalog or collection from the sidebar to explore it.</p>
+            </div>
+        </div>
+    </div>
 
     <script>
-        document.addEventListener("DOMContentLoaded", function() {
-            const container = document.getElementById('stac-browser-container');
-            if (!container) {
-                console.error("STAC Browser container not found.");
+        // -----------------------------------------------
+        // AIP Self-contained STAC Browser
+        // Calls /stac/ API directly — no external class deps
+        // -----------------------------------------------
+
+        const STAC_ROOT = '/stac/';
+        let allItems = [];  // flat list for sidebar filter
+
+        // Discover root STAC URL (handles /web/pages/ prefix)
+        function stacRoot() {
+            const p = window.location.pathname;
+            const idx = p.indexOf('/web/');
+            return idx !== -1
+                ? window.location.origin + p.substring(0, idx) + '/stac/'
+                : window.location.origin + '/stac/';
+        }
+
+        const ROOT = stacRoot();
+        console.log("STAC Root:", ROOT);
+
+        async function fetchJson(url) {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`HTTP ${res.status} — ${url}`);
+            return res.json();
+        }
+
+        // ---- Sidebar rendering ----
+        function setLoading(msg = 'Loading...') {
+            document.getElementById('items-list').innerHTML =
+                `<div class="loading-spinner"><i class="fa-solid fa-circle-notch fa-spin text-xl"></i><p class="mt-2 text-sm">${msg}</p></div>`;
+        }
+
+        function setError(msg, list=true) {
+            const el = list ? document.getElementById('items-list') : document.getElementById('detail-pane');
+            el.innerHTML = `<div class="error-box m-2"><i class="fa-solid fa-triangle-exclamation mr-2"></i>${msg}</div>`;
+        }
+
+        function renderItems(items) {
+            allItems = items;
+            applyItemFilter('');
+        }
+
+        function applyItemFilter(q) {
+            const filtered = q ? allItems.filter(i =>
+                (i.title||i.id||'').toLowerCase().includes(q.toLowerCase())
+            ) : allItems;
+
+            const list = document.getElementById('items-list');
+            if (filtered.length === 0) {
+                list.innerHTML = '<div class="loading-spinner text-sm">No items found.</div>';
                 return;
             }
+            list.innerHTML = filtered.map(item => `
+                <div class="item-card" data-id="${item.id}" data-url="${item._self || ''}" onclick="openItem(this)" title="${item.id}">
+                    <span class="icon"><i class="fa-solid ${item._icon || 'fa-cube'}"></i></span>
+                    <div style="min-width:0">
+                        <div class="label">${item.title || item.id}</div>
+                        ${item._sub ? `<div class="sublabel">${item._sub}</div>` : ''}
+                    </div>
+                </div>
+            `).join('');
+        }
 
+        function filterItems(q) { applyItemFilter(q); }
+
+        function setBreadcrumb(parts) {
+            document.getElementById('breadcrumb').innerHTML = parts.map((p,i) =>
+                i < parts.length -1
+                    ? `<a href="#" class="hover:text-blue-400" onclick="p.action()">${p.label}</a> <span class="mx-1">/</span>`
+                    : `<span class="text-slate-400">${p.label}</span>`
+            ).join('');
+        }
+
+        function openItem(el) {
+            document.querySelectorAll('.item-card').forEach(c => c.classList.remove('active'));
+            el.classList.add('active');
+            const url = el.dataset.url;
+            if (url) loadDetail(url);
+        }
+
+        // ---- Detail pane ----
+        async function loadDetail(url) {
+            const pane = document.getElementById('detail-pane');
+            pane.innerHTML = `<div class="loading-spinner"><i class="fa-solid fa-circle-notch fa-spin text-xl"></i></div>`;
             try {
-                // The root of your STAC API
-                // 1. Check for 'url' parameter
-                const urlParams = new URLSearchParams(window.location.search);
-                let stacRootUrl = urlParams.get('url');
+                const data = await fetchJson(url);
+                renderDetail(data);
+                return data;
+            } catch(e) {
+                pane.innerHTML = `<div class="error-box">${e.message}</div>`;
+                throw e;
+            }
+        }
 
-                // 2. Fallback to computed local STAC root
-                // Assumes STAC root is at /stac/ relative to the app root
-                if (!stacRootUrl) {
-                    const pathParts = window.location.pathname.split('/');
-                    // Find where 'web' starts to know the prefix. Warning: this simple logic might fail with custom prefixes.
-                    // Better approach: Go up from /web/pages/stac_browser -> /stac/
-                    // Actually, let's use origin + /stac/ if we are at root, or handle prefixes.
-                    // We can also assume the app is hosted at root for now or rely on relative "../../../stac/" if possible.
-                    // But StacBrowser needs an absolute URL usually.
+        function renderDetail(d) {
+            const pane = document.getElementById('detail-pane');
+            const type = d.type || (d.collections ? 'Catalog' : d.features ? 'ItemCollection' : 'Unknown');
+            const links = d.links || [];
+            const selfLink = links.find(l => l.rel === 'self')?.href || '';
+            const collections = d.collections || [];
+            const features = d.features || [];
+
+            let html = `
+                <div id="detail-title">${d.title || d.id || 'Catalog'}</div>
+                <div id="detail-desc">${d.description ? (typeof marked !== 'undefined' ? marked.parse(d.description) : d.description) : ''}</div>
+                <div class="detail-meta">
+                    <span class="badge badge-blue">${type}</span>
+                    ${d.id ? `<span class="badge badge-green">${d.id}</span>` : ''}
+                </div>
+            `;
+
+            // Spatial extent
+            if (d.extent?.spatial?.bbox) {
+                const bb = d.extent.spatial.bbox[0];
+                html += `<div class="detail-section-title">Spatial Extent</div>
+                <table class="prop-table">
+                    <tr><td>West / South</td><td>${bb[0]}, ${bb[1]}</td></tr>
+                    <tr><td>East / North</td><td>${bb[2]}, ${bb[3]}</td></tr>
+                </table>`;
+            }
+            if (d.extent?.temporal?.interval) {
+                const iv = d.extent.temporal.interval[0];
+                html += `<div class="detail-section-title">Temporal Extent</div>
+                <table class="prop-table">
+                    <tr><td>From</td><td>${iv[0] || '—'}</td></tr>
+                    <tr><td>To</td><td>${iv[1] || 'present'}</td></tr>
+                </table>`;
+            }
+
+            // Collections
+            if (collections.length > 0) {
+                html += `<div class="detail-section-title">Collections (${collections.length})</div>
+                <div style="display:flex;flex-wrap:wrap;gap:0.5rem;">`;
+                for (const c of collections) {
+                    const cSelf = (c.links||[]).find(l=>l.rel==='self')?.href || `${selfLink}/collections/${c.id}`;
+                    html += `<div class="badge badge-blue" style="cursor:pointer;padding:0.3rem 0.75rem;font-size:0.75rem;" onclick="loadDetailAndHighlight('${cSelf}','${c.id}')">${c.title || c.id}</div>`;
+                }
+                html += '</div>';
+            }
+
+            // Items
+            if (features.length > 0) {
+                html += `<div class="detail-section-title">Items (${features.length})</div>
+                <table class="prop-table">
+                    <tr style="color:#64748b;"><td>ID</td><td>Date</td></tr>`;
+                for (const f of features) {
+                    html += `<tr><td style="font-family:monospace">${f.id}</td><td>${f.properties?.datetime || f.properties?.start_datetime || '—'}</td></tr>`;
+                }
+                html += '</table>';
+            }
+
+            // Links
+            if (links.length > 0) {
+                html += `<div class="detail-section-title">Links</div>
+                <table class="prop-table">`;
+                for (const l of links) {
+                    html += `<tr><td>${l.rel}</td><td><a href="${l.href}" target="_blank" class="text-blue-400 hover:underline" style="font-size:0.75rem;">${l.title || l.href}</a></td></tr>`;
+                }
+                html += '</table>';
+            }
+
+            // Properties
+            if (d.properties) {
+                html += `<div class="detail-section-title">Properties</div>
+                <table class="prop-table">`;
+                for (const [k,v] of Object.entries(d.properties)) {
+                    html += `<tr><td>${k}</td><td>${JSON.stringify(v)}</td></tr>`;
+                }
+                html += '</table>';
+            }
+
+            pane.innerHTML = html;
+        }
+
+        function loadDetailAndHighlight(url, id) {
+            // Temporarily highlight in sidebar
+            loadDetail(url);
+        }
+
+        function updateSidebarFromData(data, url) {
+            let items = [];
+            if (data.type === 'FeatureCollection' || data.features) {
+                items = (data.features || []).map(f => ({
+                    id: f.id,
+                    title: f.id,
+                    _self: (f.links||[]).find(l=>l.rel==='self')?.href || `${url}/items/${f.id}`,
+                    _icon: 'fa-file',
+                    _sub: 'item',
+                }));
+            } else if (data.collections) {
+                items = data.collections.map(c => ({
+                    id: c.id,
+                    title: c.title || c.id,
+                    _self: (c.links||[]).find(l=>l.rel==='self')?.href || `${url}/collections/${c.id}`,
+                    _icon: 'fa-folder-open',
+                    _sub: 'collection',
+                }));
+            } else {
+                const childLinks = (data.links || []).filter(l => ['child', 'collection', 'item'].includes(l.rel));
+                items = childLinks.map(l => ({
+                    id: l.title || l.href,
+                    title: l.title || l.href,
+                    _self: l.href,
+                    _icon: l.rel === 'item' ? 'fa-file' : (l.rel === 'collection' ? 'fa-folder-open' : 'fa-link'),
+                    _sub: l.rel,
+                }));
+            }
+            renderItems(items);
+        }
+
+        // ---- Initial load ----
+        async function init() {
+            setLoading('Connecting to STAC API…');
+            
+            // Initialize Context Selector
+            const cs = new ContextSelector({
+                containerId: 'cs-container',
+                enableCollection: true,
+                enableVirtualCollections: true,
+                enableAssets: false,
+                onChange: async (detail) => {
+                    const catId = Array.isArray(detail.catalogId) ? detail.catalogId[0] : detail.catalogId;
+                    const colId = Array.isArray(detail.collectionId) ? detail.collectionId[0] : detail.collectionId;
                     
-                    // Robust way: removing /web/.* from current path and adding /stac/
-                    const currentPath = window.location.pathname;
-                    const webIndex = currentPath.indexOf('/web/');
-                    if (webIndex !== -1) {
-                         stacRootUrl = window.location.origin + currentPath.substring(0, webIndex) + '/stac/';
-                    } else {
-                         stacRootUrl = window.location.origin + '/stac/';
+                    let targetUrl = ROOT;
+                    if (catId && catId !== '_system_' && colId) {
+                        targetUrl = `${ROOT}catalogs/${catId}/collections/${colId}`;
+                    } else if (catId && catId !== '_system_') {
+                        targetUrl = `${ROOT}catalogs/${catId}`;
+                    }
+                    
+                    try {
+                        const data = await loadDetail(targetUrl);
+                        updateSidebarFromData(data, targetUrl);
+                    } catch (e) {
+                        console.error('Failed to update context detail:', e);
                     }
                 }
+            });
 
-                console.log("Loading STAC Browser with root:", stacRootUrl);
+            try {
+                const root = await fetchJson(ROOT);
+                const catalogLinks = (root.links || []).filter(l =>
+                    ['child', 'catalog', 'collection', 'data'].includes(l.rel)
+                );
 
-                const browser = new StacBrowser(container, {
-                    catalogUrl: stacRootUrl,
-                    allowExternalAccess: true, // Allow navigating to external STAC resources if linked
-                    showThumbnails: true,
-                    useAbsoluteUrls: false,
-                    // The theme is mostly handled by CSS variables now
-                });
+                let items = [];
+                if (catalogLinks.length > 0) {
+                    items = catalogLinks.map(l => ({
+                        id: l.title || l.href,
+                        title: l.title || l.href,
+                        _self: l.href,
+                        _icon: l.rel === 'collection' ? 'fa-folder-open' : 'fa-globe',
+                        _sub: l.rel,
+                    }));
+                } else {
+                    // Try /stac/catalogs
+                    try {
+                        const cats = await fetchJson(ROOT.replace(/\/$/, '') + '/catalogs');
+                        items = (Array.isArray(cats) ? cats : cats.catalogs || []).map(c => ({
+                            id: c.id,
+                            title: c.title || c.id,
+                            _self: (c.links||[]).find(l=>l.rel==='self')?.href || `${ROOT}catalogs/${c.id}`,
+                            _icon: 'fa-database',
+                            _sub: 'catalog',
+                        }));
+                    } catch(_) {}
+                }
 
-            } catch (error) {
-                console.error("Error initializing STAC Browser:", error);
-                container.innerHTML = '<div style="text-align: center; padding: 2rem; color: #ef4444;">Could not load STAC Browser. See console for details.</div>';
+                if (items.length === 0) {
+                    document.getElementById('items-list').innerHTML =
+                        '<div class="loading-spinner text-sm text-yellow-400">No catalogs found in STAC root.</div>';
+                } else {
+                    renderItems(items);
+                }
+
+                // Show root in detail pane
+                renderDetail(root);
+
+            } catch(e) {
+                setError(`Could not connect to STAC API at <code>${ROOT}</code>: ${e.message}`);
+                console.error("STAC init error:", e);
             }
-        });
+        }
+
+        init();
     </script>
 
 </body>

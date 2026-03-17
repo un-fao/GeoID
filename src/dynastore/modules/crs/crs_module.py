@@ -22,9 +22,7 @@ import logging
 from typing import Optional, List, AsyncGenerator
 from contextlib import asynccontextmanager
 
-from dynastore.modules import ModuleProtocol
-from dynastore.modules.db_config.partition_tools import ensure_partition_exists
-from dynastore.modules import get_protocol
+from dynastore.modules import ModuleProtocol, get_protocol
 from dynastore.models.protocols import DatabaseProtocol, CRSProtocol
 from dynastore.modules.db_config.query_executor import managed_transaction, DDLQuery
 from dynastore.modules.db_config.query_executor import DbResource
@@ -33,7 +31,6 @@ from .models import CRS, CRSCreate
 from . import queries
 
 logger = logging.getLogger(__name__)
-
 class CRSModule(ModuleProtocol, CRSProtocol):
     priority: int = 100
     """

@@ -265,6 +265,12 @@ async def execute_process_collection(
     return _handle_execution_result(result, request)
 
 
+def _task_to_status_info(task: Task, request: Request) -> models.StatusInfo:
+    """Helper to convert a task to OGC StatusInfo with appropriate links."""
+    links = _get_job_links(task, request)
+    return models.task_to_status_info(task, links=links)
+
+
 def _get_preferred_mode(request: Request):
     prefer_header = request.headers.get("Prefer")
     if prefer_header:
@@ -277,6 +283,7 @@ def _get_preferred_mode(request: Request):
 
 def _handle_execution_exception(process_id: str, e: Exception):
     if isinstance(e, (ValidationError, ValueError)):
+        logger.error(f"Validation error for process '{process_id}': {e}")
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
         )
@@ -517,8 +524,6 @@ def _handle_job_results(task: Task, job_id: uuid.UUID):
             detail=f"Job '{job_id}' is not complete. Current status: {task.status}",
         )
     return task.outputs or {}
-
-
 class ProcessesService(ExtensionProtocol):
     priority: int = 100
     """

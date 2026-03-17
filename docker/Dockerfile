@@ -21,7 +21,7 @@ ENV PATH="${VENV_PATH}/bin:$PATH"
 ENV PYTHONPATH=${APP_DIR}/src
 
 # Install Production Dependencies
-COPY pyproject.toml setup.py LICENSE README.md requirements*.txt pytest.ini* setup.cfg* .coveragerc* ./
+COPY pyproject.toml LICENSE README.md requirements*.txt pytest.ini* setup.cfg* .coveragerc* ./
 
 # Copy .env file if it exists (CI creates it in root, local has it in env/)
 # We use pyproject.toml as a sentinel to prevent COPY from failing if .env is missing.
@@ -37,20 +37,13 @@ COPY tests ./tests
 COPY docker/scripts/start.sh /usr/local/bin/start.sh
 COPY docker/scripts/start-task.sh /usr/local/bin/start-task.sh
 RUN chmod +x /usr/local/bin/start.sh /usr/local/bin/start-task.sh
-
+# SCOPE selects which pyproject.toml extras to install.
+# Set per-service via docker-compose.yml build args (from .env) or CI.
+ARG SCOPE=all
 # Use buildkit cache for pip
-# These ARGs are used by setup.py wildcard discovery
-ARG DYNASTORE_MODULES="*"
-ARG DYNASTORE_EXTENSION_MODULES="*"
-ARG DYNASTORE_TASK_MODULES="*"
-
-# Install dependencies.
 RUN --mount=type=cache,target=/root/.cache/pip \
     ${VENV_PATH}/bin/pip install --upgrade pip setuptools wheel && \
-    DYNASTORE_MODULES="${DYNASTORE_MODULES}" \
-    DYNASTORE_EXTENSION_MODULES="${DYNASTORE_EXTENSION_MODULES}" \
-    DYNASTORE_TASK_MODULES="${DYNASTORE_TASK_MODULES}" \
-    ${VENV_PATH}/bin/pip install ".[dynastore-enabled-modules]" uvicorn gunicorn
+    ${VENV_PATH}/bin/pip install ".[${SCOPE}]" uvicorn gunicorn
 
 EXPOSE 80
 
@@ -64,10 +57,20 @@ FROM builder AS tester
 ARG APP_DIR=/dynastore
 WORKDIR ${APP_DIR}
 
+ARG SCOPE=test,all
 RUN --mount=type=cache,target=/root/.cache/pip \
-    ${VENV_PATH}/bin/pip install ".[test,dev]"
+    ${VENV_PATH}/bin/pip install ".[${SCOPE},dev]"
 
-# STAGE 3: Runtime (Production image)
+# STAGE 3: Development (Specific for local development with debugging)
+FROM tester AS development
+
+ARG APP_DIR=/dynastore
+WORKDIR ${APP_DIR}
+
+# debugpy is already installed via .[dev] in tester stage
+EXPOSE 5678 5679
+
+# STAGE 4: Runtime (Production image)
 FROM ghcr.io/osgeo/gdal:ubuntu-full-3.11.4 AS runtime
 
 ARG APP_USER=dynastore

@@ -29,11 +29,9 @@ from dynastore.modules.processes.models import Process, ExecuteRequest, StatusIn
 
 # Asset SPI imports
 from dynastore.modules.catalog.asset_tasks_spi import AssetTasksSPI
-from dynastore.modules.catalog.asset_manager import Asset, AssetTypeEnum
+from dynastore.modules.catalog.asset_service import Asset, AssetTypeEnum
 
 logger = logging.getLogger(__name__)
-
-
 class IngestionTask(ProcessTaskProtocol[Process, TaskPayload[ExecuteRequest], Optional[StatusInfo]], AssetTasksSPI):
     priority: int = 100
     """

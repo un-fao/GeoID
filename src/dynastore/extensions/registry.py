@@ -16,31 +16,27 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-import importlib
-import inspect
+# dynastore/extensions/registry.py
+
 import logging
-import os
-import pkgutil
+from typing import Dict, Type, TypeVar, Optional, List, cast
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Type, TypeVar, cast, Optional
+import warnings
 
-from dotenv import load_dotenv
-from fastapi import FastAPI
-
-from .protocols import ExtensionProtocol
+from dynastore.extensions.protocols import ExtensionProtocol
+from dynastore.tools.env import load_component_dotenv
 
 logger = logging.getLogger(__name__)
-
-# --- Central Extension Registry ---
-_DYNASTORE_EXTENSIONS: Dict[str, "ExtensionConfig"] = {}
 
 T_Extension = TypeVar("T_Extension", bound=ExtensionProtocol)
 
 @dataclass
 class ExtensionConfig:
-    """A data structure to hold the configuration for a discovered extension."""
     cls: Type[ExtensionProtocol]
     instance: ExtensionProtocol | None = None
+
+_DYNASTORE_EXTENSIONS: Dict[str, ExtensionConfig] = {}
+
 
 def _register_extension(cls: Type[T_Extension], registration_name: Optional[str] = None) -> Type[T_Extension]:
     """
@@ -48,7 +44,6 @@ def _register_extension(cls: Type[T_Extension], registration_name: Optional[str]
     """
     if registration_name is None:
         try:
-            # Robustly determine the module name by finding the segment after 'extensions'
             parts = cls.__module__.split('.')
             idx = parts.index('extensions')
             registration_name = parts[idx + 1]
@@ -56,162 +51,132 @@ def _register_extension(cls: Type[T_Extension], registration_name: Optional[str]
             registration_name = cls.__name__
 
     if registration_name in _DYNASTORE_EXTENSIONS:
-        # Avoid redundant registration if same class
         if _DYNASTORE_EXTENSIONS[registration_name].cls == cls:
             return cls
-        logger.warning(f"Web extension '{registration_name}' is already registered with a different class. Overwriting.")
-    
+        logger.warning(f"Extension '{registration_name}' is already registered. Overwriting.")
+        
     _DYNASTORE_EXTENSIONS[registration_name] = ExtensionConfig(cls=cls)
     cls._registered_name = registration_name
-    logger.info(f"Registered web extension: {cls.__name__} (as '{registration_name}')")
+    logger.info(f"Registered extension: {cls.__name__} (as '{registration_name}')")
     return cls
 
 def dynastore_extension(cls: Type[T_Extension]) -> Type[T_Extension]:
     """A decorator to register a class as a DynaStore Extension."""
     return _register_extension(cls)
 
-
 def get_extension_instance(name: str) -> ExtensionProtocol | None:
+    """Retrieves the singleton instance of a registered extension by name."""
+    warnings.warn(
+        f"get_extension_instance('{name}') is deprecated. Use get_protocol(...) instead for better decoupling.",
+        DeprecationWarning,
+        stacklevel=2
+    )
     config = _DYNASTORE_EXTENSIONS.get(name)
     return config.instance if config else None
 
 def get_extension_instance_by_class(cls: Type[T_Extension]) -> T_Extension | None:
-    logger.warning(
+    """
+    Retrieves the singleton instance of a registered extension by its class type.
+    This provides better type hinting than get_extension_instance(name).
+    """
+    warnings.warn(
         f"get_extension_instance_by_class({cls.__name__}) is deprecated. Use get_protocol(...) instead for better decoupling.",
-        stack_info=True
+        DeprecationWarning,
+        stacklevel=2
     )
-    for config in _DYNASTORE_EXTENSIONS.values():
+    for _, config in _DYNASTORE_EXTENSIONS.items():
         if config.instance and isinstance(config.instance, cls):
             return cast(T_Extension, config.instance)
     return None
 
+def discover_extensions(include_only: Optional[List[str]] = None):
+    """
+    Discovers extensions using PEP-517 entry points defined in pyproject.toml
+    under the "dynastore.extensions" group.
+    """
+    if include_only is None:
+        import os
+        scope = os.getenv("SCOPE")
+        if scope:
+            include_only = [s.strip() for s in scope.split(",")]
 
-def discover_extensions(enabled_extensions: Optional[List[str]] = None, enabled_modules: Optional[List[str]] = None):
-    # Ensure foundational modules are discovered/loaded first
-    # This is critical for extensions that import modules at the top level
-    from dynastore import modules
-    modules.discover_modules(enabled_modules)
-
-    package_path = os.path.dirname(__file__)
-    package_name = __name__.rsplit('.', 1)[0] # Handle if this is a subpackage
-    logger.info(f"Discovering web extensions in '{package_path}'...")
+    logger.info("--- [extensions] Discovering components via entry points... ---")
+    # Discovery returns uninstantiated classes based purely on entry points
+    from dynastore.tools.discovery import discover_and_load_plugins
+    classes = discover_and_load_plugins("dynastore.extensions", include_only=include_only)
     
-    if enabled_extensions is None:
-        enabled_modules_str = os.getenv("DYNASTORE_EXTENSION_MODULES", "")
-        if enabled_modules_str.strip() == "*":
-            enabled_modules = [
-                item for item in os.listdir(package_path)
-                if os.path.isdir(os.path.join(package_path, item)) and not item.startswith('__')
-            ]
-            logger.info(f"Wildcard '*' detected for DYNASTORE_EXTENSION_MODULES. Discovered: {enabled_modules}")
-        else:
-            enabled_modules = [m.strip() for m in enabled_modules_str.split(',') if m.strip()]
-    else:
-        enabled_modules = enabled_extensions
+    # Populate _DYNASTORE_EXTENSIONS directly from discovered classes
+    for name, cls in classes.items():
+        _DYNASTORE_EXTENSIONS[name] = ExtensionConfig(cls=cls)
+ 
+    logger.info(f"--- DISCOVERED EXTENSIONS: {list(_DYNASTORE_EXTENSIONS.keys())} ---")
 
-    if not enabled_modules:
-        logger.warning("DYNASTORE_EXTENSION_MODULES is not set. No extensions will be discovered.")
-        return
+def instantiate_extensions(app: object, include_only: Optional[List[str]] = None):
+    """
+    Instantiates all discovered extensions.
+    """
+    extensions_to_load = _DYNASTORE_EXTENSIONS.keys()
 
-    logger.info(f"Attempting to load enabled extension modules: {enabled_modules}")
+    # If filtering is requested (e.g. for tests), apply it
+    if include_only is not None:
+        target_names = {name.lower().replace("_", "-") for name in include_only}
+        extensions_to_load = [
+            name for name in extensions_to_load 
+            if name.lower().replace("_", "-") in target_names
+        ]
     
-    base_dotenv_path = os.path.join(package_path, '.env')
-    if os.path.exists(base_dotenv_path):
-        load_dotenv(dotenv_path=base_dotenv_path, override=True)
+    # Sort extensions by priority if defined
+    def get_priority(name):
+        config = _DYNASTORE_EXTENSIONS.get(name)
+        return getattr(config.cls, "priority", 0) if config else 0
+    
+    extensions_to_load = sorted(extensions_to_load, key=get_priority)
 
-    for module_name in enabled_modules:
-        module_path = os.path.join(package_path, module_name)
-        if not os.path.isdir(module_path):
-            logger.warning(f"Enabled module '{module_name}' not found at path '{module_path}'. Skipping.")
+    logger.info(f"Attempting to instantiate enabled extension modules: {list(extensions_to_load)}")
+    ordered_configs = []
+    for extension_name in extensions_to_load:
+        config = _DYNASTORE_EXTENSIONS.get(extension_name)
+        if not config:
+            logger.warning(f"Extension '{extension_name}' is enabled but not discovered. Skipping instantiation.")
             continue
             
+        cls = config.cls
+        load_component_dotenv(cls)
         try:
-            module_dotenv_path = os.path.join(module_path, '.env')
-            if os.path.exists(module_dotenv_path):
-                load_dotenv(dotenv_path=module_dotenv_path, override=True)
-
-            # 4. Filter by requirements.txt if present
-            from dynastore.tools.dependencies import check_requirements
-            requirements_path = os.path.join(module_path, 'requirements.txt')
-            if not check_requirements(requirements_path):
-                logger.warning(f"Skipping extension '{module_name}' due to unsatisfied requirements in '{requirements_path}'.")
-                continue
-
-            sub_package_name = f"{package_name}.{module_name}"
-            # Because discover_extensions is usually called from __init__, package_name might be 'dynastore.extensions'
-            # We need to import the module 'dynastore.extensions.{module_name}'
+            import inspect
+            sig = inspect.signature(cls)
+            if "app" in sig.parameters:
+                instance = cls(app=app)
+            elif "app_state" in sig.parameters:
+                instance = cls(app_state=getattr(app, 'state', app))
+            else:
+                instance = cls()
             
-            # Simple recursive importer for the extension folder
-            for _, sub_module_name, _ in pkgutil.iter_modules([module_path]):
-                full_module_path = f"{sub_package_name}.{sub_module_name}"
-                try:
-                    try:
-                        target_module = importlib.import_module(full_module_path)
-                    except ImportError:
-                        # Fallback for when package_name calculation is tricky based on invocation
-                        fallback_path = f"dynastore.extensions.{module_name}.{sub_module_name}"
-                        target_module = importlib.import_module(fallback_path)
-                    
-                    for name, obj in inspect.getmembers(target_module, inspect.isclass):
-                        # Use a robust check for extensions: must be an ExtensionProtocol subclass
-                        # and belong directly to the scanned module (not an import)
-                        if issubclass(obj, ExtensionProtocol) and obj.__module__ == target_module.__name__:
-                            if obj.__name__ != "ExtensionProtocol":
-                                _register_extension(obj, registration_name=module_name)
-                except Exception:
-                     logger.error(f"Failed to import/scan extension submodule '{sub_module_name}' from '{module_name}'", exc_info=True)
-
-        except Exception:
-            logger.error(f"Failed to load extension module '{module_name}'", exc_info=True)
-
-def get_ordered_configs(enabled_extensions: Optional[List[str]] = None) -> Tuple[List[ExtensionConfig], List[str]]:
-    if enabled_extensions is None:
-        enabled_modules_str = os.getenv("DYNASTORE_EXTENSION_MODULES", "")
-        if enabled_modules_str.strip() == "*":
-            # Note: We still need to order them logically. For now, we use the registered order.
-            def _get_module(cfg):
-                parts = cfg.cls.__module__.split('.')
-                try:
-                    idx = parts.index('extensions')
-                    return parts[idx + 1]
-                except (ValueError, IndexError):
-                    return parts[2] if len(parts) > 2 else 'unknown'
-
-            ordered_modules = list(set(_get_module(config) for config in _DYNASTORE_EXTENSIONS.values()))
-        else:
-            ordered_modules = [m.strip() for m in enabled_modules_str.split(',') if m.strip()]
-    else:
-        ordered_modules = enabled_extensions
-    
-    module_map: Dict[str, List[ExtensionConfig]] = {}
-    for config in _DYNASTORE_EXTENSIONS.values():
-        parts = config.cls.__module__.split('.')
-        try:
-            idx = parts.index('extensions')
-            module_name = parts[idx + 1]
-        except (ValueError, IndexError):
-            module_name = parts[2] if len(parts) > 2 else 'unknown'
-        module_map.setdefault(module_name, []).append(config)
-
-    ordered_configs: List[ExtensionConfig] = []
-    for module_name in ordered_modules:
-        if module_name in module_map:
-            ordered_configs.extend(module_map[module_name])
-
-    return ordered_configs, ordered_modules
-
-def instantiate_extensions(app: FastAPI, enabled_extensions: Optional[List[str]] = None):
-    configs, ordered_modules = get_ordered_configs(enabled_extensions)
-    app.state.ordered_configs = configs
-    app.state.ordered_modules = ordered_modules
-
-    logger.info("--- Instantiating all web extensions ---")
-    for config in configs:
-        if config.instance: continue
-        name, cls = config.cls.__name__, config.cls
-        try:
-            sig = inspect.signature(cls.__init__)
-            config.instance = cls(app=app) if 'app' in sig.parameters else cls()
-            logger.info(f"Singleton for extension '{name}' created successfully.")
+            config.instance = instance
+            
+            # Register in central registry
+            from dynastore.tools.discovery import register_plugin
+            register_plugin(instance)
+            
+            logger.info(f"Instantiated Extension: '{extension_name}' ({cls.__name__})")
+            if config.instance:
+                ordered_configs.append(config)
         except Exception as e:
-            logger.error(f"CRITICAL: Failed during __init__ of extension '{name}': {str(e)}. It will be unavailable.", exc_info=True)
+            logger.error(f"Failed to instantiate extension '{extension_name}': {e}", exc_info=True)
+            config.instance = None
+
+    # Attach ordered configs to app state
+    if hasattr(app, "state"):
+        app.state.ordered_configs = ordered_configs
+        logger.info(f"Attached {len(ordered_configs)} ordered extension configs to app.state")
+
+def apply_app_configurations(app: object):
+    """
+    Applies configurations to the FastAPI app for all successfully instantiated extensions.
+    """
+    for extension_name, config in _DYNASTORE_EXTENSIONS.items():
+        if config.instance:
+            try:
+                config.instance.configure_app(app)
+            except Exception:
+                logger.error(f"Failed to configure app for extension '{extension_name}'", exc_info=True)

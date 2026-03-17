@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DynaStore Login</title>
+    <title>AIP | Login</title>
     <link rel="icon" type="image/png" href="/web/static/dynastore.png">
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
@@ -17,9 +17,9 @@
     
     <div class="glass-panel w-full max-w-md p-8 rounded-2xl shadow-2xl relative z-10">
         <div class="text-center mb-8">
-            <img src="/web/static/dynastore.png" alt="DynaStore" class="w-16 h-16 mx-auto mb-4 rounded-xl shadow-lg shadow-blue-500/20">
-            <h2 class="text-2xl font-bold text-white tracking-tight">Sign in to DynaStore</h2>
-            <p class="text-slate-400 text-sm mt-2">Enter your credentials to access the platform</p>
+            <img src="/web/static/dynastore.png" alt="AgroInformatics Platform" class="w-16 h-16 mx-auto mb-4 rounded-xl shadow-lg shadow-blue-500/20">
+            <h2 class="text-2xl font-bold text-white tracking-tight">AIP | Catalog Services</h2>
+            <p class="text-slate-400 text-sm mt-2">AgroInformatics Platform — Sign in to continue</p>
         </div>
 
         <form method="post" id="loginForm" class="space-y-6">
@@ -49,7 +49,7 @@
         
         <div class="mt-8 text-center border-t border-slate-700 pt-6">
             <p class="text-xs text-slate-500">
-                Protected by DynaStore Identity Provider<br>
+                Protected by AIP Identity Provider<br>
                 &copy; 2025 FAO
             </p>
         </div>
@@ -60,18 +60,23 @@
         // We rely on JS to pick up query params from the URL.
         const urlParams = new URLSearchParams(window.location.search);
         
+        const errorMsg = urlParams.get('error');
+        if (errorMsg) {
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'mb-6 p-3 bg-red-500/10 border border-red-500/50 rounded-lg text-red-400 text-sm text-center font-medium shadow-lg shadow-red-500/10';
+            errorDiv.innerText = errorMsg;
+            const form = document.getElementById('loginForm');
+            form.parentElement.insertBefore(errorDiv, form);
+        }
+
         // We use '||' to provide defaults if params are missing
-        document.getElementById('redirect_uri').value = urlParams.get('redirect_uri') || '/auth/debug';
+        document.getElementById('redirect_uri').value = urlParams.get('redirect_uri') || '/web/';
         document.getElementById('state').value = urlParams.get('state') || 'init';
         document.getElementById('scope').value = urlParams.get('scope') || 'openid email profile';
 
-        // Dynamically set form action to handle path prefixes
-        // It assumes the login handler is at ./login relative to this page (if this page is /auth/login)
-        // OR we can reconstruct it from root.
-        // Since this page is likely served at .../auth/login, submitting to empty action or ./login works.
-        // However, explicit path is safer.
-        const loginUrl = window.location.href.split('?')[0]; 
-        document.getElementById('loginForm').action = loginUrl;
+        // Set form action explicitly — always POST to /auth/login
+        // Avoid relying on window.location.href which can include hash/fragment
+        document.getElementById('loginForm').action = '/auth/login';
     </script>
 </body>
 </html>

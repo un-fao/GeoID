@@ -32,7 +32,7 @@ async def get_current_active_user(
     
     # authenticate_and_get_role extracts token from request, but here we have the token dependency.
     # We can use authenticate_apikey (which handles keys) or authenticate_and_get_principal (for IdPs).
-    # Since we want to support both, we should replicate the logic from ApiKeyManager.authenticate_and_get_role
+    # Since we want to support both, we should replicate the logic from ApiKeyService.authenticate_and_get_role
     # but without re-extracting the token.
     
     # Actually, let's use a helper in manager if possible, or manual logic here.

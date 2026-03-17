@@ -166,9 +166,26 @@ def _create_bucket_sync(
         return bucket
     except Conflict:
         logger.warning(f"Bucket {bucket_name} already exists.")
-        # Return the bucket object for the existing bucket
+        # GCS eventual consistency: the bucket was just created (by another process/request)
+        # but metadata may not yet be visible. Retry get_bucket with backoff.
         client_to_use = client or _get_shared_gcs_client()
-        return client_to_use.get_bucket(bucket_name)
+        import time
+        for attempt in range(5):
+            try:
+                return client_to_use.get_bucket(bucket_name)
+            except NotFound:
+                if attempt < 4:
+                    wait = 0.5 * (2 ** attempt)  # 0.5, 1, 2, 4 seconds
+                    logger.warning(
+                        f"Bucket {bucket_name} not yet visible after conflict (attempt {attempt + 1}/5). "
+                        f"Retrying in {wait}s..."
+                    )
+                    time.sleep(wait)
+                else:
+                    logger.error(
+                        f"Bucket {bucket_name} still not visible after 5 retries. Raising."
+                    )
+                    raise
     except Exception as e:
         logger.error(f"Failed to create bucket {bucket_name}: {e}", exc_info=True)
         raise

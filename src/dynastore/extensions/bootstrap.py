@@ -24,32 +24,31 @@ from dynastore.tools.db import InvalidIdentifierError
 
 logger = logging.getLogger(__name__)
 
-def bootstrap_app(app: Any, modules_list: Optional[List[str]] = None, extensions_list: Optional[List[str]] = None, tasks_list: Optional[List[str]] = None):
+def bootstrap_app(
+    app: Any,
+    include_modules: Optional[List[str]] = None,
+    include_extensions: Optional[List[str]] = None,
+    include_tasks: Optional[List[str]] = None,
+):
     """
-    Bootstraps the FastAPI application by discovering and instantiating all extensions.
+    Bootstraps the FastAPI application by discovering and instantiating 
+    extensions and modules based on installed entry points.
     """
     from fastapi import FastAPI, Request
     from dynastore.extensions.tools.fast_api import ORJSONResponse
     
     app = cast(FastAPI, app)
-    # 1. Discover foundational modules
-    bootstrap_foundation(modules_list=modules_list)
-
-    # 2. Discover extensions and tasks
-    logger.info("--- [extensions/bootstrap.py] Discovering extensions and tasks... ---")
-    tasks.discover_tasks(enabled_tasks=tasks_list, enabled_modules=modules_list)
-    extensions.discover_extensions(enabled_extensions=extensions_list, enabled_modules=modules_list)
-    from dynastore.extensions.registry import _DYNASTORE_EXTENSIONS
-    logger.info(f"--- DISCOVERED EXTENSIONS: {list(_DYNASTORE_EXTENSIONS.keys())} ---")
     
+    # 1. Discover and instantiate foundation
+    bootstrap_foundation(include_only=include_modules)
+    instantiate_foundation(app.state, include_only=include_modules)
 
-    # 3. Instantiate foundational modules
-    instantiate_foundation(app.state, modules_list=modules_list)
-
-    # 4. Instantiate extensions
-    extensions.instantiate_extensions(app, enabled_extensions=extensions_list)
-
-    # 5. Apply early configurations
+    # 2. Discover and instantiate extensions
+    logger.info("--- [extensions/bootstrap.py] Discovering extensions and tasks ---")
+    tasks.discover_tasks(include_only=include_tasks)
+    extensions.discover_extensions(include_only=include_extensions)
+    
+    extensions.instantiate_extensions(app, include_only=include_extensions)
     extensions.apply_app_configurations(app)
 
     # 6. Global Exception Handlers

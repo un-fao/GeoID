@@ -1,25 +1,30 @@
 """
-Search Service backed by Elasticsearch.
+Search Service — Elasticsearch-backed implementation of SearchProtocol.
 
-Primary goal: search by id, title, description, or any property of items,  
+Primary goal: search by id, title, description, or any property of items,
              supporting multilingual fields (title, description stored as JSON objects
              with language keys, e.g. {"en": "Food security", "fr": "Sécurité alimentaire"}).
-             
+
 The service uses ES wildcard field patterns (title.*, description.*) to search
 across all language variants transparently. Callers can optionally pass `lang`
 to boost a specific language.
+
+Implements ``SearchProtocol`` so that the router and other consumers discover
+the search backend via protocol discovery, not direct imports.
 """
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import APIRouter, FastAPI
 from contextlib import asynccontextmanager
 from dynastore.extensions import ExtensionProtocol
 
 from dynastore.modules.elasticsearch.config import config as es_config
-from dynastore.modules.elasticsearch.mappings import get_index_name
+from dynastore.modules.elasticsearch.mappings import get_index_name, get_obfuscated_index_name
 from .search_models import (
     CatalogSearchBody,
+    GeoidCollection,
+    GeoidResult,
     GenericCollection,
     ItemCollection,
     SearchBody,
@@ -226,10 +231,20 @@ def _build_generic_query(body: CatalogSearchBody) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# SearchService
+# SearchService — implements SearchProtocol (discoverable via get_protocol)
 # ---------------------------------------------------------------------------
-
 class SearchService(ExtensionProtocol):
+    """
+    Elasticsearch-backed implementation of ``SearchProtocol``.
+
+    Discovered at runtime by the router via ``get_protocol(SearchProtocol)``
+    — the router has zero direct imports from this module or from ES.
+
+    To swap to a different backend (Solr, Meilisearch, etc.), create a new
+    ``ExtensionProtocol`` that satisfies the same ``SearchProtocol`` contract
+    and ensure it is loaded instead of this one.
+    """
+
     priority: int = 100
     router: APIRouter
 
@@ -243,9 +258,11 @@ class SearchService(ExtensionProtocol):
         """
         Protocol-discoverable service that provides STAC-compliant search
         backed by Elasticsearch.
-        
+
         Implements paginated search for Items, Catalogs, and Collections.
         """
+        from .policies import register_search_policies
+        register_search_policies()
         yield
 
     async def search_items(
@@ -316,6 +333,139 @@ class SearchService(ExtensionProtocol):
             numberMatched=total,
             numberReturned=len(features),
         )
+
+    async def search_by_geoid(
+        self,
+        geoids: List[str],
+        catalog_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> GeoidCollection:
+        """
+        Look up geoid values in the obfuscated index.
+
+        If catalog_id is provided, searches only that catalog's obfuscated
+        index ({prefix}-geoid-{catalog_id}). Otherwise searches across all
+        obfuscated indexes ({prefix}-geoid-*).
+        """
+        if catalog_id:
+            index = get_obfuscated_index_name(es_config.index_prefix, catalog_id)
+        else:
+            index = f"{es_config.index_prefix}-geoid-*"
+
+        es_body: Dict[str, Any] = {
+            "query": {"terms": {"geoid": geoids}},
+            "size": limit,
+        }
+
+        es = _build_es_client()
+        try:
+            resp = await es.search(index=index, body=es_body, ignore_unavailable=True)
+        finally:
+            await es.close()
+
+        raw_hits = resp.get("hits", {}).get("hits", [])
+        results = [
+            GeoidResult(
+                geoid=h["_source"]["geoid"],
+                catalog_id=h["_source"]["catalog_id"],
+                collection_id=h["_source"]["collection_id"],
+            )
+            for h in raw_hits
+            if "geoid" in h.get("_source", {})
+        ]
+
+        return GeoidCollection(
+            results=results,
+            numberReturned=len(results),
+        )
+
+    async def reindex_catalog(
+        self,
+        catalog_id: str,
+        mode: Optional[Literal["catalog", "obfuscated"]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Dispatch a BulkCatalogReindexTask and return 202 + task_id.
+
+        If `mode` is omitted, falls back to the catalog's indexer config
+        (obfuscated=True → "obfuscated", otherwise "catalog").
+        """
+        from dynastore.models.protocols import DatabaseProtocol
+        from dynastore.modules.tasks import tasks as tasks_module
+        from dynastore.modules.tasks.models import TaskCreate
+        from dynastore.tools.discovery import get_protocol
+
+        resolved_mode = mode or await self._resolve_mode(catalog_id)
+
+        db = get_protocol(DatabaseProtocol)
+        if not db:
+            raise RuntimeError("DatabaseProtocol not available.")
+
+        task = await tasks_module.create_task(
+            engine=db,
+            task_data=TaskCreate(
+                caller_id="system:search",
+                task_type="elasticsearch_bulk_reindex_catalog",
+                inputs={"catalog_id": catalog_id, "mode": resolved_mode},
+            ),
+            schema=tasks_module.get_task_schema(),
+        )
+        return {"task_id": str(task.id), "catalog_id": catalog_id, "mode": resolved_mode, "status": "queued"}
+
+    async def reindex_collection(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        mode: Optional[Literal["catalog", "obfuscated"]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Dispatch a BulkCollectionReindexTask and return 202 + task_id.
+        """
+        from dynastore.models.protocols import DatabaseProtocol
+        from dynastore.modules.tasks import tasks as tasks_module
+        from dynastore.modules.tasks.models import TaskCreate
+        from dynastore.tools.discovery import get_protocol
+
+        resolved_mode = mode or await self._resolve_mode(catalog_id)
+
+        db = get_protocol(DatabaseProtocol)
+        if not db:
+            raise RuntimeError("DatabaseProtocol not available.")
+
+        task = await tasks_module.create_task(
+            engine=db,
+            task_data=TaskCreate(
+                caller_id="system:search",
+                task_type="elasticsearch_bulk_reindex_collection",
+                inputs={"catalog_id": catalog_id, "collection_id": collection_id, "mode": resolved_mode},
+            ),
+            schema=tasks_module.get_task_schema(),
+        )
+        return {
+            "task_id": str(task.id),
+            "catalog_id": catalog_id,
+            "collection_id": collection_id,
+            "mode": resolved_mode,
+            "status": "queued",
+        }
+
+    async def _resolve_mode(self, catalog_id: str) -> Literal["catalog", "obfuscated"]:
+        """Resolve the reindex mode from the catalog's indexer config.
+
+        Uses ConfigsProtocol discovery — no direct import from any module.
+        The config key ``"elasticsearch"`` is a plain string, not an imported constant.
+        """
+        try:
+            from dynastore.models.protocols.configs import ConfigsProtocol
+            from dynastore.tools.discovery import get_protocol
+            configs_proto = get_protocol(ConfigsProtocol)
+            if configs_proto:
+                cfg = await configs_proto.get_config("elasticsearch", catalog_id=catalog_id)
+                if cfg and getattr(cfg, "obfuscated", False):
+                    return "obfuscated"
+        except Exception:
+            pass
+        return "catalog"
 
     async def search_catalogs(
         self,

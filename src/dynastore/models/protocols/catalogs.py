@@ -238,6 +238,7 @@ class CatalogsProtocol(ItemsProtocol, CollectionsProtocol, Protocol):
         offset: int = 0,
         lang: str = "en",
         db_resource: Optional[Any] = None,
+        q: Optional[str] = None,
     ) -> List["Catalog"]:
         """
         Lists all catalogs.

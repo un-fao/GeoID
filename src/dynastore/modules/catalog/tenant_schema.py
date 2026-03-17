@@ -77,10 +77,11 @@ CREATE INDEX IF NOT EXISTS idx_assets_created_at ON {schema}.assets (created_at)
 # 3. CONFIGS
 TENANT_CATALOG_CONFIGS_DDL = """
 CREATE TABLE IF NOT EXISTS {schema}.catalog_configs (
-    catalog_id VARCHAR NOT NULL,
-    plugin_id VARCHAR NOT NULL,
+    catalog_id  VARCHAR NOT NULL,
+    plugin_id   VARCHAR NOT NULL,
     config_data JSONB NOT NULL,
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    schema_hash VARCHAR(64),
+    updated_at  TIMESTAMPTZ DEFAULT NOW(),
     PRIMARY KEY (catalog_id, plugin_id)
 );
 """
@@ -90,6 +91,7 @@ CREATE TABLE IF NOT EXISTS {schema}.collection_configs (
     collection_id VARCHAR NOT NULL,
     plugin_id VARCHAR NOT NULL,
     config_data JSONB NOT NULL,
+    schema_hash VARCHAR(64),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     PRIMARY KEY (catalog_id, collection_id, plugin_id)
 );

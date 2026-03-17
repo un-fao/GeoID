@@ -19,7 +19,7 @@
 # dynastore/modules/catalog/asset_tasks_spi.py
 
 from typing import Protocol, Any, runtime_checkable, Optional
-from dynastore.modules.catalog.asset_manager import Asset
+from dynastore.modules.catalog.asset_service import Asset
 from dynastore.modules.processes.models import Process, ExecuteRequest
 from dynastore.modules.tasks.models import TaskPayload
 

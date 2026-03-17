@@ -37,7 +37,7 @@ from fastapi import (
     Path,
     BackgroundTasks,
 )
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 from sqlalchemy.ext.asyncio import AsyncConnection
 from pyproj import CRS
@@ -45,7 +45,7 @@ from pyproj import CRS
 from dynastore.extensions import protocols, get_extension_instance
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.protocols.configs import ConfigsProtocol
-from dynastore.models.protocols.web import WebModuleProtocol
+from dynastore.models.protocols.web import WebModuleProtocol, StaticFilesProtocol
 from dynastore.extensions.web.decorators import expose_static
 from dynastore.extensions.tools.db import get_async_connection
 from .policies import register_tiles_policies
@@ -74,9 +74,7 @@ from dynastore.modules.tiles.tiles_models import (
 from dynastore.modules.tiles.tms_definitions import BUILTIN_TILE_MATRIX_SETS
 
 logger = logging.getLogger(__name__)
-
-
-class TilesService(protocols.ExtensionProtocol):
+class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
     priority: int = 100
     """
     Provides OGC API - Tiles functionality.
@@ -146,6 +144,28 @@ class TilesService(protocols.ExtensionProtocol):
                 files.append(os.path.join(root, filename))
         return files
 
+    def get_static_prefix(self) -> str:
+        """Returns the static prefix for tiles."""
+        return "tiles"
+
+    async def is_file_provided(self, path: str) -> bool:
+        """Checks if a static file is provided."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        full_path = os.path.join(static_dir, path.lstrip("/"))
+        return os.path.isfile(full_path)
+
+    async def list_static_files(self, query: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[str]:
+        """Lists static files for tiles with pagination and search."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        files = []
+        for root, _, filenames in os.walk(static_dir):
+            for filename in filenames:
+                full_path = os.path.join(root, filename)
+                rel_path = os.path.relpath(full_path, static_dir)
+                if not query or query.lower() in rel_path.lower():
+                    files.append(full_path)
+        return sorted(files)[offset : offset + limit]
+
     @staticmethod
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -158,8 +178,10 @@ class TilesService(protocols.ExtensionProtocol):
         page_id="map_viewer",
         title="Map Viewer",
         icon="fa-map",
+        priority=10,
         description="Visualize tiled datasets.",
     )
+
     async def provide_map_viewer(self, request: Request):
         file_path = os.path.join(os.path.dirname(__file__), "static", "map.html")
         if not os.path.exists(file_path):

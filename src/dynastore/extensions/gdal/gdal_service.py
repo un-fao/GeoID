@@ -36,7 +36,6 @@ from dynastore.modules.gdal.gdal_module import GdalModule
 from dynastore.modules.gdal.service import FileType, get_raster_info, get_vector_info
 
 logger = logging.getLogger(__name__)
-
 class GdalService(ExtensionProtocol):
     priority: int = 100
     router:APIRouter = APIRouter(prefix="/gdal", tags=["Gdal Utilities"])

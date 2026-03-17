@@ -64,14 +64,14 @@ If you have an external application that runs closer to the DynaStore database, 
 services:
   es_sync_worker:
     image: my-es-sync-worker:latest
+    build:
+      args:
+        # Install only the extras required for this worker.
+        # This mirrors the SCOPE build arg pattern used in Dynastore Dockerfiles.
+        SCOPE: "db-async,elasticsearch,task-base"
     environment:
       # Connect to the DynaStore database
       - DYNASTORE_DB_URL=postgresql://postgres:postgres@db:5432/gis_dev
-      # The worker requires the core db, events, and tasks infrastructure
-      - DYNASTORE_MODULES=db_config,db,elasticsearch,tasks
-      - DYNASTORE_EXTENSION_MODULES=events,tasks
-      # Which specific task runners to enable
-      - DYNASTORE_TASK_MODULES=elasticsearch
     depends_on:
       - db
       - elasticsearch

@@ -6,46 +6,24 @@ const app = {
     
     // --- Initialization ---
     init() {
+        this.contextSelector = new ContextSelector({
+            containerId: 'context-selector-container',
+            enableCollection: true,
+            enableVirtualCollections: false,
+            enableAssets: false,
+            enableSearch: true,
+            defaultCatalog: '_system_',
+            onChange: (context) => {
+                this.state.catalogId = context.catalogId;
+                this.state.collectionId = context.collectionId;
+                this.refreshAll();
+            }
+        });
+
         this.bindEvents();
-        this.loadCatalogs();
         this.refreshAll();
         // Auto-refresh every 30s
         setInterval(() => this.refreshAll(), 30000);
-    },
-
-    async loadCatalogs() {
-        try {
-            const res = await fetch('/web/dashboard/catalogs');
-            const catalogs = await res.json();
-            const select = document.getElementById('catalog-select');
-            catalogs.forEach(c => {
-                const opt = document.createElement('option');
-                opt.value = c.id || c.code;
-                opt.textContent = `${c.title || c.id || c.code}`;
-                select.appendChild(opt);
-            });
-        } catch(e) { console.error("Failed to load catalogs", e); }
-    },
-
-    async onCatalogChange() {
-        const catalogId = document.getElementById('catalog-select').value;
-        const colSelect = document.getElementById('collection-select');
-        colSelect.innerHTML = '<option value="">All Collections</option>';
-        colSelect.disabled = catalogId === '_system_';
-
-        if (catalogId !== '_system_') {
-            try {
-                const res = await fetch(`/web/dashboard/catalogs/${catalogId}/collections`);
-                const cols = await res.json();
-                cols.forEach(c => {
-                    const opt = document.createElement('option');
-                    opt.value = c.id || c.code;
-                    opt.textContent = c.title || c.id || c.code;
-                    colSelect.appendChild(opt);
-                });
-            } catch(e) { console.error("Failed to load collections", e); }
-        }
-        this.refreshAll();
     },
 
     bindEvents() {
@@ -94,8 +72,12 @@ const app = {
 
     async loadOverview() {
         try {
-            const catalogId = document.getElementById('catalog-select').value;
-            const res = await fetch(`/web/dashboard/stats?catalog_id=${catalogId}`);
+            const catalogId = this.state.catalogId;
+            const collectionId = this.state.collectionId;
+            let url = `/web/dashboard/stats?catalog_id=${catalogId}`;
+            if (collectionId) url += `&collection_id=${collectionId}`;
+            
+            const res = await fetch(url);
             const data = await res.json();
             
             // Populate Cards
@@ -112,8 +94,8 @@ const app = {
 
     async loadLogs() {
         try {
-            const catalogId = document.getElementById('catalog-select').value;
-            const collectionId = document.getElementById('collection-select').value;
+            const catalogId = this.state.catalogId;
+            const collectionId = this.state.collectionId;
             
             let url = `/web/dashboard/logs?limit=20&catalog_id=${catalogId}`;
             if (collectionId) url += `&collection_id=${collectionId}`;
@@ -138,8 +120,9 @@ const app = {
                 if(log.level === 'ERROR') color = '#ef4444';
                 if(log.level === 'WARNING') color = '#f59e0b';
                 
+                const timeStr = log.timestamp ? new Date(log.timestamp).toLocaleString() : (log.created_at ? new Date(log.created_at).toLocaleString() : 'Just now');
                 tr.innerHTML = `
-                    <td>${new Date(log.timestamp).toLocaleString()}</td>
+                    <td>${timeStr}</td>
                     <td><span style="color:${color}; font-weight:700;">${log.level}</span></td>
                     <td>${log.service || 'system'}</td>
                     <td>${log.message}</td>

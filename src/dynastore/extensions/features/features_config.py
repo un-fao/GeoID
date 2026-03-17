@@ -14,7 +14,7 @@
 
 from typing import List, Optional
 from pydantic import Field
-from dynastore.modules.db_config.platform_config_manager import PluginConfig, register_config
+from dynastore.modules.db_config.platform_config_service import PluginConfig, register_config
 
 FEATURES_PLUGIN_CONFIG_ID = "features"
 

@@ -20,16 +20,15 @@
 
 import logging
 from contextlib import asynccontextmanager
-from dynastore.modules import get_protocol
-from dynastore.modules.protocols import ModuleProtocol
+from dynastore.modules import ModuleProtocol, get_protocol
 from dynastore.models.auth import (
     AuthenticationProtocol,
     AuthorizationProtocol,
     Principal,
 )
-from .apikey_manager import ApiKeyManager
+from .apikey_service import ApiKeyService
 from .apikey_storage import AbstractApiKeyStorage
-from .policies import PolicyManager
+from .policies import PolicyService
 from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
 from dynastore.modules.db_config import maintenance_tools
 from dynastore.modules.db_config.query_executor import DbResource
@@ -39,12 +38,11 @@ from dynastore.tools.discovery import register_plugin, unregister_plugin
 logger = logging.getLogger(__name__)
 
 
-from dynastore.models.protocols.policies import PolicyProtocol
-
-class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, PolicyProtocol):
+from dynastore.models.protocols.policies import PermissionProtocol
+class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, PermissionProtocol):
     priority: int = 100
-    _apikey_manager: Optional[ApiKeyManager] = None
-    _policy_manager: Optional[PolicyManager] = None
+    _apikey_manager: Optional[ApiKeyService] = None
+    _policy_service: Optional[PolicyService] = None
     storage: Optional[AbstractApiKeyStorage] = None
 
     def __init__(self, *args, **kwargs):
@@ -62,11 +60,11 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
 
         self.storage = PostgresApiKeyStorage(app_state)
         policy_storage = PostgresPolicyStorage(app_state)
-        self._policy_manager = PolicyManager(
+        self._policy_service = PolicyService(
             app_state, storage=policy_storage, apikey_storage=self.storage
         )
-        self._apikey_manager = ApiKeyManager(
-            self.storage, self._policy_manager, app_state=app_state
+        self._apikey_manager = ApiKeyService(
+            self.storage, self._policy_service, app_state=app_state
         )
         # Register early to avoid race conditions in middleware discovery
         register_plugin(self._apikey_manager)
@@ -96,7 +94,7 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
                     await policy_storage._initialize_schema(conn, schema="apikey")
 
                     # Provision default global policies
-                    await self._policy_manager.provision_default_policies(conn=conn)
+                    await self._policy_service.provision_default_policies(conn=conn)
 
                     # Initialize users schema for identity management
                     await self.storage._initialize_schema(conn, schema="users")
@@ -127,7 +125,7 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
             # Unregister plugins on exit
             unregister_plugin(local_provider)
             unregister_plugin(self._apikey_manager)
-            # ApiKeyManager stops via AsyncExitStack
+            # ApiKeyService stops via AsyncExitStack
         
         # Finally unregister self
         unregister_plugin(self)
@@ -156,30 +154,74 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
     ) -> bool:
         """
         Implementation of AuthorizationProtocol.
-        Delegates to the PolicyManager.
+        Delegates to the PolicyService.
         """
-        if not self._policy_manager:
+        if not self._policy_service:
             return False
 
-        return await self._policy_manager.check_permission(principal, action, resource)
+        return await self._policy_service.check_permission(principal, action, resource)
+
+    async def _provision_late_item(self, item: Any, is_policy: bool = True):
+        """Helper to provision a late-registered item."""
+        if not self._policy_service:
+            return
+
+        try:
+            # We use the background task system or a direct call if safe
+            from dynastore.modules.db_config.query_executor import managed_transaction
+            from dynastore.models.protocols import DatabaseProtocol
+            db = get_protocol(DatabaseProtocol)
+            engine = db.engine if db else None
+            
+            async with managed_transaction(engine) as conn:
+                if is_policy:
+                    await self._policy_service.storage.update_policy(item, schema="apikey", conn=conn)
+                    logger.debug(f"Late-provisioned policy: {item.id}")
+                else:
+                    await self.storage.update_role(item, schema="apikey", conn=conn)
+                    logger.debug(f"Late-provisioned role: {item.name}")
+                    
+                # Invalidate cache to ensure changes take effect
+                self._policy_service._invalidate_cache()
+        except Exception as e:
+            logger.debug(f"Proactive provisioning of {item} failed: {e}")
 
     def register_policy(self, policy: Any) -> Any:
         """
-        Implementation of AuthorizationProtocol and PolicyProtocol.
+        Implementation of AuthorizationProtocol and PermissionProtocol.
         Registers a policy for late provisioning.
         """
         from .policies import register_policy as _reg
-
-        return _reg(policy)
+        res = _reg(policy)
+        
+        # Proactively attempt provisioning if modules are up
+        if self._policy_service:
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._provision_late_item(res, is_policy=True))
+            except RuntimeError:
+                pass # No loop running
+        return res
 
     def register_role(self, role: Any) -> Any:
         """
-        Implementation of PolicyProtocol.
+        Implementation of PermissionProtocol.
         Registers a role for late provisioning.
         """
         from .policies import register_role as _reg
+        res = _reg(role)
 
-        return _reg(role)
+        # Proactively attempt provisioning if modules are up
+        if self._policy_service:
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._provision_late_item(res, is_policy=False))
+            except RuntimeError:
+                pass # No loop running
+        return res
+
 
 
 @lifecycle_registry.sync_catalog_initializer
@@ -199,11 +241,11 @@ async def initialize_apikey_tenant(conn: DbResource, schema: str, catalog_id: st
     await storage._initialize_schema(conn, schema=schema)
 
     # Provision default policies for the new tenant
-    from .policies import PolicyManager
+    from .policies import PolicyService
 
-    policy_manager = PolicyManager(
+    policy_service = PolicyService(
         None, storage=policy_storage, apikey_storage=storage
     )  # app_state not strictly needed for provisioning with explicit conn
-    await policy_manager.provision_default_policies(
+    await policy_service.provision_default_policies(
         catalog_id, conn=conn, schema=schema
     )

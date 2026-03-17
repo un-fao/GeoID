@@ -115,7 +115,7 @@ CREATE_API_KEYS_TABLE = DDLQuery("""
         conditions JSONB,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         PRIMARY KEY (key_hash, principal_id)
-    ) PARTITION BY HASH (key_hash);
+    );
 """)
 
 # V1: Usage Counters
@@ -127,7 +127,7 @@ CREATE_USAGE_COUNTERS_TABLE = DDLQuery("""
         count BIGINT DEFAULT 0,
         last_accessed_at TIMESTAMPTZ DEFAULT NOW(),
         PRIMARY KEY (period_start, key_hash, shard_id)
-    ) PARTITION BY RANGE (period_start);
+    );
 """)
 
 CREATE_QUOTA_COUNTERS_TABLE = DDLQuery("""
@@ -137,7 +137,7 @@ CREATE_QUOTA_COUNTERS_TABLE = DDLQuery("""
         count BIGINT DEFAULT 0,
         last_accessed_at TIMESTAMPTZ DEFAULT NOW(),
         PRIMARY KEY (key_hash, shard_id)
-    ) PARTITION BY HASH (key_hash);
+    );
 """)
 
 # V2: Dynamic Roles
@@ -1108,37 +1108,25 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
                 check_query=lambda: check_table_exists(conn, "policies_global", schema=schema),
             ).execute(conn, schema=schema)
 
-        # 2. Hash Partitions (Static)
-        for i in range(4):
-            await DDLQuery(
-                f"CREATE TABLE IF NOT EXISTS {{schema}}.api_keys_{i} PARTITION OF {{schema}}.api_keys FOR VALUES WITH (MODULUS 4, REMAINDER {i});",
-                lock_key=f"{schema}_api_keys_part_{i}",
-                check_query=lambda i=i: check_table_exists(conn, f"api_keys_{i}", schema=schema),
-            ).execute(conn, schema=schema)
-        for i in range(4):
-            await DDLQuery(
-                f"CREATE TABLE IF NOT EXISTS {{schema}}.quota_counters_{i} PARTITION OF {{schema}}.quota_counters FOR VALUES WITH (MODULUS 4, REMAINDER {i});",
-                lock_key=f"{schema}_quota_counters_part_{i}",
-                check_query=lambda i=i: check_table_exists(conn, f"quota_counters_{i}", schema=schema),
-            ).execute(conn, schema=schema)
+        # 2. Maintenance (System Schema Only)
+        if schema == "apikey":
+            # 3. Proactive Maintenance (Usage Counters)
+            await maintenance_tools.ensure_future_partitions(
+                conn,
+                schema=schema,
+                table="usage_counters",
+                interval="monthly",
+                periods_ahead=2,
+            )
 
-        # 3. Proactive Maintenance (Usage Counters)
-        await maintenance_tools.ensure_future_partitions(
-            conn,
-            schema=schema,
-            table="usage_counters",
-            interval="monthly",
-            periods_ahead=2,
-        )
-
-        # 4. Register Retention Policy
-        await maintenance_tools.register_retention_policy(
-            conn,
-            schema=schema,
-            table="usage_counters",
-            retention_period="24 months",
-            schedule_cron="15 3 * * 0",
-        )
+            # 4. Register Retention Policy
+            await maintenance_tools.register_retention_policy(
+                conn,
+                schema=schema,
+                table="usage_counters",
+                retention_period="24 months",
+                schedule_cron="15 3 * * 0",
+            )
 
         logger.info(f"PostgresApiKeyStorage initialization complete for '{schema}'.")
 
@@ -1921,7 +1909,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             return await UPDATE_ROLE.execute(
                 db,
                 schema=schema,
-                name=role.id,
+                name=role.name,
                 description=role.description,
                 level=0,
                 metadata=json.dumps(role.metadata),

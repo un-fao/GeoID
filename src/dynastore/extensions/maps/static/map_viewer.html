@@ -1,40 +1,30 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="/web/static/website/context-selector.js"></script>
 
-<div class="h-[calc(100vh-140px)] flex gap-4">
-    <!-- Sidebar -->
-    <div class="w-80 glass-panel rounded-xl flex flex-col p-4">
-        <h3 class="text-lg font-bold text-white mb-4">Map Layers</h3>
-        
-        <div class="space-y-4 flex-grow overflow-y-auto pr-2 custom-scrollbar">
-            <!-- Dataset Selector -->
-            <div>
-                <label class="block text-xs font-medium text-slate-400 mb-1">Dataset</label>
-                <select id="map-dataset-select" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-sm text-white focus:ring-2 focus:ring-blue-500 outline-none" onchange="loadCollections()">
-                    <option value="">Select Dataset...</option>
-                </select>
-            </div>
-
-            <!-- Collection Selector -->
-            <div>
-                <label class="block text-xs font-medium text-slate-400 mb-1">Collection</label>
-                 <select id="map-collection-select" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-sm text-white focus:ring-2 focus:ring-blue-500 outline-none" disabled onchange="addLayer()">
-                    <option value="">Select Collection...</option>
-                </select>
-            </div>
-
-            <div class="border-t border-white/10 my-2"></div>
-
-            <!-- Active Layers List -->
-            <div id="active-layers-list" class="space-y-2">
-                <!-- Layers will be added here -->
+<div data-fills-viewport class="flex flex-col" style="height:100%;">
+    <div class="flex gap-4 overflow-hidden" style="flex:1;min-height:0;">
+        <!-- Sidebar -->
+        <div class="w-80 glass-panel rounded-xl flex flex-col p-4">
+            <h3 class="text-lg font-bold text-white mb-4">Map layers</h3>
+            <div class="space-y-4 flex-grow overflow-y-auto pr-2 custom-scrollbar">
+                <!-- Context Selector -->
+                <div>
+                    <label class="block text-xs font-medium text-slate-400 mb-1">Select Layers</label>
+                    <div id="map-context-selector-container"></div>
+                </div>
+                <div class="border-t border-white/10 my-2"></div>
+                <!-- Active Layers List -->
+                <div id="active-layers-list" class="space-y-2">
+                    <!-- Layers will be added here -->
+                </div>
             </div>
         </div>
-    </div>
 
-    <!-- Map Container -->
-    <div class="flex-grow glass-panel rounded-xl relative overflow-hidden">
-        <div id="map" class="w-full h-full z-10"></div>
+        <!-- Map Container -->
+        <div class="flex-grow relative overflow-hidden rounded-xl">
+            <div id="map" class="w-full h-full"></div>
+        </div>
     </div>
 </div>
 
@@ -54,95 +44,89 @@
             maxZoom: 20
         }).addTo(map);
 
-        loadDatasets();
+        // Initialize Context Selector
+        const cs = new ContextSelector({
+            containerId: 'map-context-selector-container',
+            enableCollection: true,
+            multipleCollections: true,
+            autoSelectFirst: true,
+            preferredCollection: 'demo',
+            onChange: (detail) => {
+                const dataset = Array.isArray(detail.catalogId) ? detail.catalogId[0] : detail.catalogId;
+                const collections = Array.isArray(detail.collectionIds) ? detail.collectionIds : (detail.collectionId ? [detail.collectionId] : []);
+                updateMapLayers(dataset, collections);
+            }
+        });
     }
 
-    async function loadDatasets() {
-        try {
-            const response = await fetch('/maps/');
-            const landing = await response.json();
-            // Landing page returns links to datasets. We need to parse them.
-            // Or better, stick to catalog API for discovery since maps API is per dataset.
-            // Let's use the catalog API to list catalogs provided by STAC service (module manager)
-            const catResponse = await fetch('/stac/catalogs');
-            const catalogs = await catResponse.json();
-            
-            const select = document.getElementById('map-dataset-select');
-            catalogs.forEach(cat => {
-                const opt = document.createElement('option');
-                opt.value = cat.id;
-                opt.textContent = cat.title || cat.id;
-                select.appendChild(opt);
+    function updateMapLayers(dataset, collections) {
+        if (!dataset || dataset === '_system_') {
+            // Remove all if dataset is invalid
+            Object.keys(activeLayers).forEach(layerId => {
+                map.removeLayer(activeLayers[layerId]);
+                delete activeLayers[layerId];
             });
-        } catch (e) {
-            console.error("Error loading datasets", e);
+            renderActiveLayersList();
+            return;
         }
+
+        // Remove layers no longer selected
+        Object.keys(activeLayers).forEach(layerId => {
+            const [layerDataset, layerCollection] = layerId.split(':');
+            if (layerDataset !== dataset || !collections.includes(layerCollection)) {
+                map.removeLayer(activeLayers[layerId]);
+                delete activeLayers[layerId];
+            }
+        });
+
+        // Add new layers
+        collections.forEach(collectionId => {
+            if (!collectionId) return;
+            const layerId = `${dataset}:${collectionId}`;
+            if (!activeLayers[layerId]) {
+                const tileUrl = `/maps/${dataset}/map/tiles/WebMercatorQuad/{z}/{x}/{y}?collections=${collectionId}`;
+                const layer = L.tileLayer(tileUrl, { maxZoom: 19, attribution: collectionId }).addTo(map);
+                activeLayers[layerId] = layer;
+            }
+        });
+
+        renderActiveLayersList();
     }
 
-    async function loadCollections() {
-        const dataset = document.getElementById('map-dataset-select').value;
-        const colSelect = document.getElementById('map-collection-select');
-        colSelect.innerHTML = '<option value="">Select Collection...</option>';
-        colSelect.disabled = true;
-
-        if (!dataset) return;
-
-        try {
-            const response = await fetch(`/stac/catalogs/${dataset}/collections`);
-            const data = await response.json();
-            const collections = data.collections || [];
-
-            collections.forEach(col => {
-                 const opt = document.createElement('option');
-                opt.value = col.id;
-                opt.textContent = col.title || col.id;
-                colSelect.appendChild(opt);
-            });
-            colSelect.disabled = false;
-        } catch (e) {
-            console.error("Error loading collections", e);
+    function renderActiveLayersList() {
+        const list = document.getElementById('active-layers-list');
+        list.innerHTML = '';
+        const layers = Object.keys(activeLayers);
+        
+        if (layers.length === 0) {
+            list.innerHTML = '<div class="text-xs text-slate-500 italic">No active layers</div>';
+            return;
         }
+
+        layers.forEach(layerId => {
+            const [dataset, collectionId] = layerId.split(':');
+            const item = document.createElement('div');
+            item.className = 'flex items-center justify-between bg-slate-800/50 p-2 rounded text-sm border border-slate-700/50';
+            item.innerHTML = `
+                <span class="text-slate-300 truncate" title="${layerId}"><i class="fa-solid fa-layer-group text-slate-500 mr-2 text-xs"></i>${collectionId}</span>
+                <button onclick="removeLayerFromMap('${layerId}')" class="text-red-400 hover:text-red-300 ml-2" title="Hide layer"><i class="fa-solid fa-eye-slash text-xs"></i></button>
+            `;
+            list.appendChild(item);
+        });
     }
 
-    function addLayer() {
-         const dataset = document.getElementById('map-dataset-select').value;
-         const collectionId = document.getElementById('map-collection-select').value;
-         
-         if (!dataset || !collectionId) return;
-
-         const layerId = `${dataset}:${collectionId}`;
-         if (activeLayers[layerId]) return; // Already added
-
-         // Construct Tile URL (XYZ)
-         // Assuming WebMercatorQuad (EPSG:3857) defaults
-         const tileUrl = `/maps/${dataset}/map/tiles/WebMercatorQuad/{z}/{x}/{y}?collections=${collectionId}`;
-
-         const layer = L.tileLayer(tileUrl, {
-             maxZoom: 19,
-             attribution: collectionId
-         }).addTo(map);
-
-         activeLayers[layerId] = layer;
-
-         // UI Update: Add to active layers list
-         const list = document.getElementById('active-layers-list');
-         const item = document.createElement('div');
-         item.className = 'flex items-center justify-between bg-slate-800/50 p-2 rounded text-sm';
-         item.innerHTML = `
-            <span class="text-slate-300 truncate" title="${layerId}">${collectionId}</span>
-            <button onclick="removeLayer('${layerId}', this)" class="text-red-400 hover:text-red-300"><i class="fa-solid fa-times"></i></button>
-         `;
-         list.appendChild(item);
-    }
-
-    window.removeLayer = function(layerId, btnElement) {
+    window.removeLayerFromMap = function(layerId) {
         if (activeLayers[layerId]) {
             map.removeLayer(activeLayers[layerId]);
             delete activeLayers[layerId];
-            btnElement.parentElement.remove();
         }
+        renderActiveLayersList();
     }
 
-    // Init Logic
-    setTimeout(initMap, 500); // Small delay to ensure container size is calculated
+    // Init Logic — delay lets the flex layout settle before Leaflet measures the container
+    setTimeout(() => {
+        initMap();
+        // Invalidate size after a second tick in case the container resized post-init
+        setTimeout(() => { if (map) map.invalidateSize(); }, 200);
+    }, 100);
 </script>

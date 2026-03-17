@@ -159,8 +159,6 @@ from dynastore.models.query_builder import QueryRequest, FieldSelection, FilterC
 
 
 from dynastore.extensions import ExtensionProtocol
-
-
 class DwhService(ExtensionProtocol):
     priority: int = 100
     router: APIRouter = APIRouter(prefix="/dwh", tags=["Data Warehouse API"])

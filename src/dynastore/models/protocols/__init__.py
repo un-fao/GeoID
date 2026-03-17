@@ -29,6 +29,8 @@ This package contains protocol definitions organized by domain:
 - cloud_storage_client.py: Cloud storage client access protocols (optional, enterprise)
 - cloud_identity.py: Cloud identity and context protocols (optional, enterprise)
 - eventing.py: Cloud eventing and notification protocols (optional, enterprise)
+- search.py: Search query protocols (backend-agnostic)
+- indexer.py: Document indexing lifecycle protocols (backend-agnostic)
 """
 
 from dynastore.models.protocols.catalogs import CatalogsProtocol
@@ -43,9 +45,13 @@ from dynastore.models.protocols.cloud_storage_client import CloudStorageClientPr
 from dynastore.models.protocols.cloud_identity import CloudIdentityProtocol
 from dynastore.models.protocols.eventing import EventingProtocol
 from dynastore.models.protocols.events import EventsProtocol
+from dynastore.models.protocols.tasks import TasksProtocol
+from dynastore.models.protocols.task_queue import TaskQueueProtocol
+from dynastore.models.protocols.event_bus import EventBusProtocol
 from dynastore.models.protocols.apikey import ApiKeyProtocol
 from dynastore.models.protocols.proxy import ProxyProtocol
 from dynastore.models.protocols.database import DatabaseProtocol
+DbProtocol = DatabaseProtocol
 from dynastore.models.protocols.properties import PropertiesProtocol
 from dynastore.models.protocols.localization import LocalizationProtocol
 from dynastore.models.protocols.web import WebModuleProtocol
@@ -53,6 +59,8 @@ from dynastore.models.protocols.query_transform import QueryTransformProtocol
 from dynastore.models.protocols.crs import CRSProtocol
 from dynastore.models.protocols.httpx import HttpxProtocol
 from dynastore.models.protocols.styles import StylesProtocol
+from dynastore.models.protocols.search import SearchProtocol
+from dynastore.models.protocols.indexer import IndexerProtocol
 # Export auth_models for convenience
 from dynastore.models.auth_models import (
     SYSTEM_USER_ID,
@@ -83,9 +91,13 @@ __all__ = [
     "CloudIdentityProtocol",
     "EventingProtocol",
     "EventsProtocol",
+    "TasksProtocol",
+    "TaskQueueProtocol",
+    "EventBusProtocol",
     "ApiKeyProtocol",
     "ProxyProtocol",
     "DatabaseProtocol",
+    "DbProtocol",
     "PropertiesProtocol",
     "LocalizationProtocol",
     "WebModuleProtocol",
@@ -93,6 +105,8 @@ __all__ = [
     "CRSProtocol",
     "HttpxProtocol",
     "StylesProtocol",
+    "SearchProtocol",
+    "IndexerProtocol",
     # Auth models
     "SYSTEM_USER_ID",
     "ApiKeyPolicy",

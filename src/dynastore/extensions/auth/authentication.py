@@ -29,7 +29,7 @@ KEYCLOAK_CLIENT_ID = os.getenv("KEYCLOAK_CLIENT_ID")
 
 
 class Authentication(ExtensionProtocol):
-    priority: int = 100
+    priority: int = 50
     """
     Authentication Extension - OAuth2 Identity Validation
 
@@ -147,14 +147,20 @@ class Authentication(ExtensionProtocol):
             )
 
             if not user:
-                # Return login page with error
-                html_error = f"""
-                <script>
-                    alert('Invalid credentials');
-                    window.history.back();
-                </script>
-                """
-                return HTMLResponse(content=html_error, status_code=401)
+                # Redirect back to login with error parameter
+                if "?" in request.url.path: # Should not happen, path has no query
+                    login_url = f"{request.url.path}&error=Invalid+credentials"
+                else:
+                    login_url = f"{request.url.path}?error=Invalid+credentials"
+                
+                # Maintain state and redirect URI if present
+                if redirect_uri:
+                    from urllib.parse import quote_plus
+                    login_url += f"&redirect_uri={quote_plus(redirect_uri)}"
+                if state:
+                    login_url += f"&state={state}"
+
+                return RedirectResponse(url=login_url, status_code=303)
 
             # Generate authorization code
             code = await self.local_identity_provider.create_authorization_code(
@@ -163,8 +169,9 @@ class Authentication(ExtensionProtocol):
 
             # Redirect back to client with code
             if "?" in redirect_uri:
-                return RedirectResponse(url=f"{redirect_uri}&code={code}&state={state}")
-            return RedirectResponse(url=f"{redirect_uri}?code={code}&state={state}")
+                return RedirectResponse(url=f"{redirect_uri}&code={code}&state={state}", status_code=303)
+            return RedirectResponse(url=f"{redirect_uri}?code={code}&state={state}", status_code=303)
+
 
         @self.router.get("/register", include_in_schema=False)
         async def register_page(
@@ -198,10 +205,13 @@ class Authentication(ExtensionProtocol):
             if not redirect_uri:
                 redirect_uri = f"{root_path}/auth/debug"
             if password != confirm_password:
-                return HTMLResponse(
-                    "<script>alert('Passwords do not match'); window.history.back();</script>",
-                    status_code=400,
-                )
+                url = f"{request.url.path}?error=Passwords+do+not+match"
+                if redirect_uri:
+                    from urllib.parse import quote_plus
+                    url += f"&redirect_uri={quote_plus(redirect_uri)}"
+                if state:
+                    url += f"&state={state}"
+                return RedirectResponse(url=url, status_code=303)
 
             try:
                 # Create user in LocalDB
@@ -213,10 +223,13 @@ class Authentication(ExtensionProtocol):
                     username
                 )
                 if existing:
-                    return HTMLResponse(
-                        "<script>alert('Username already taken'); window.history.back();</script>",
-                        status_code=400,
-                    )
+                    url = f"{request.url.path}?error=Username+already+taken"
+                    if redirect_uri:
+                        from urllib.parse import quote_plus
+                        url += f"&redirect_uri={quote_plus(redirect_uri)}"
+                    if state:
+                        url += f"&state={state}"
+                    return RedirectResponse(url=url, status_code=303)
 
                 # Create user
                 await self.local_identity_provider.create_user(
@@ -234,10 +247,14 @@ class Authentication(ExtensionProtocol):
 
             except Exception as e:
                 logger.error(f"Registration failed: {e}")
-                return HTMLResponse(
-                    f"<script>alert('Registration failed: {str(e)}'); window.history.back();</script>",
-                    status_code=500,
-                )
+                from urllib.parse import quote_plus
+                error_msg = quote_plus(str(e))
+                url = f"{request.url.path}?error=Registration+failed:+{error_msg}"
+                if redirect_uri:
+                    url += f"&redirect_uri={quote_plus(redirect_uri)}"
+                if state:
+                    url += f"&state={state}"
+                return RedirectResponse(url=url, status_code=303)
 
         @self.router.post("/token")
         async def token(
@@ -280,10 +297,10 @@ class Authentication(ExtensionProtocol):
                 raise HTTPException(400, f"Unsupported grant_type: {grant_type}")
 
         @self.router.get("/userinfo")
+        @self.router.get("/me")
         async def userinfo(authorization: str = Header(None)):
             """
-            OAuth2 UserInfo Endpoint
-
+            OAuth2 UserInfo / Current User Profile Endpoint
             Returns user profile for a valid access token.
             """
             if not authorization or not authorization.startswith("Bearer "):
@@ -295,8 +312,10 @@ class Authentication(ExtensionProtocol):
             try:
                 user_info = await self.local_identity_provider.get_user_info(token)
                 return user_info
-            except:
+            except Exception as e:
+                logger.debug(f"Local userinfo failed: {e}")
                 pass
+
 
             # Try Keycloak
             if self.keycloak_identity_provider:
@@ -309,6 +328,55 @@ class Authentication(ExtensionProtocol):
                     pass
 
             raise HTTPException(401, "Invalid access token")
+
+        @self.router.put("/password")
+        async def update_password(
+            request: Request,
+            current_password: str = Form(...),
+            new_password: str = Form(...),
+            authorization: str = Header(None)
+        ):
+            """Update the current user's password."""
+            if not authorization or not authorization.startswith("Bearer "):
+                raise HTTPException(401, "Missing or invalid Authorization header")
+
+            token = authorization[7:]
+
+            # Try LocalDB first
+            user_info = None
+            try:
+                user_info = await self.local_identity_provider.get_user_info(token)
+            except Exception as e:
+                logger.debug(f"Local userinfo failed: {e}")
+
+            if not user_info:
+                raise HTTPException(401, "Invalid access token or not a local user")
+
+            username = user_info.get("username")
+            if not username:
+                raise HTTPException(400, "Username not found in token")
+
+            # Authenticate with current password to verify
+            auth_result = await self.local_identity_provider.authenticate_user(username, current_password)
+            if not auth_result:
+                raise HTTPException(401, "Incorrect current password")
+
+            # Hash the new password and update
+            from argon2 import PasswordHasher
+            ph = PasswordHasher()
+            pw_hash = ph.hash(new_password)
+            
+            # Use the local provider's set_password method if available
+            if hasattr(self.local_identity_provider, "set_password"):
+                await self.local_identity_provider.set_password(username, pw_hash)
+            else:
+                # Fallback to direct DB update if set_password isn't implemented
+                user_id = auth_result.get("id")
+                await self.local_identity_provider.storage.update_local_user(
+                    user_id, password_hash=pw_hash, schema="users"
+                )
+
+            return {"message": "Password updated successfully"}
 
         @self.router.post("/refresh")
         async def refresh(refresh_token: str = Form(...)):
@@ -380,18 +448,18 @@ class Authentication(ExtensionProtocol):
         try:
             props = get_protocol(PropertiesProtocol)
             if props:
-                jwt_secret = await props.get_property("jwt_secret")
+                jwt_secret = await props.get_property("apikey_jwt_secret")
                 if not jwt_secret:
                     # Generate new secret and store it
-                    jwt_secret = secrets.token_urlsafe(32)
+                    jwt_secret = os.environ.get("JWT_SECRET", secrets.token_urlsafe(32))
                     await props.set_property(
-                        "jwt_secret", jwt_secret, owner_code="system"
+                        "apikey_jwt_secret", jwt_secret, owner_code="system"
                     )
                     logger.info(
-                        "✓ Generated new JWT secret and stored via PropertiesProtocol"
+                        "✓ Generated new JWT secret (apikey_jwt_secret) and stored via PropertiesProtocol"
                     )
                 else:
-                    logger.info("✓ Loaded JWT secret via PropertiesProtocol")
+                    logger.info("✓ Loaded JWT secret via PropertiesProtocol (apikey_jwt_secret)")
             else:
                 logger.warning(
                     "PropertiesProtocol not available for JWT secret loading."
@@ -401,7 +469,7 @@ class Authentication(ExtensionProtocol):
 
         # Fallback: generate temporary secret
         if not jwt_secret:
-            jwt_secret = secrets.token_urlsafe(32)
+            jwt_secret = os.environ.get("JWT_SECRET", secrets.token_urlsafe(32))
             logger.warning("⚠ Using temporary JWT secret (no database available)")
 
         # LocalDB provider (on-premise)
@@ -409,6 +477,40 @@ class Authentication(ExtensionProtocol):
             storage=storage, jwt_secret=jwt_secret
         )
         logger.info("✓ LocalDB identity provider initialized")
+
+        # --- Auto-provision sysadmin user (on-premise) ---
+        try:
+            _sa_user = "sysadmin"
+            existing = await self.local_identity_provider.storage.get_local_user_by_username(
+                _sa_user, schema="users"
+            )
+            if not existing:
+                _sa_id = await self.local_identity_provider.create_user(
+                    username=_sa_user, password=_sa_user, email=f"{_sa_user}@localhost"
+                )
+                logger.info(f"✓ Provisioned sysadmin user (id={_sa_id}) in users.users (argon2)")
+                try:
+                    from dynastore.modules.apikey.models import Principal as _P
+                    await storage.create_principal(
+                        _P(id=_sa_id, identifier=_sa_user, display_name="System Administrator",
+                           roles=["sysadmin"], is_active=True),
+                        schema="apikey",
+                    )
+                    await storage.create_identity_link(
+                        principal_id=_sa_id, provider="local", subject_id=str(_sa_id),
+                        email=f"{_sa_user}@localhost", schema="apikey",
+                    )
+                    await storage.grant_roles(
+                        provider="local", subject_id=str(_sa_id),
+                        roles=["sysadmin"], schema="apikey",
+                    )
+                    logger.info("✓ sysadmin provisioned with sysadmin role in identity_roles")
+                except Exception as _le:
+                    logger.warning(f"Could not link sysadmin principal (may exist): {_le}")
+            else:
+                logger.info(f"✓ sysadmin already exists (id={existing.get('id')})")
+        except Exception as _e:
+            logger.error(f"Failed to provision sysadmin: {_e}", exc_info=True)
 
         # Keycloak provider (cloud) - optional
         if KEYCLOAK_ISSUER_URL and KEYCLOAK_CLIENT_ID:
@@ -449,7 +551,7 @@ class Authentication(ExtensionProtocol):
 
             apikey_protocol = get_protocol(ApiKeyProtocol)
             if apikey_protocol:
-                await apikey_protocol.get_policy_manager().provision_default_policies()
+                await apikey_protocol.get_policy_service().provision_default_policies()
                 logger.info("✓ Authentication policies registered and provisioned")
         except Exception as e:
             logger.error(f"Failed to provision authentication policies: {e}")

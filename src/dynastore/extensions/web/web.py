@@ -20,13 +20,16 @@ import os
 import glob
 import hashlib
 import inspect
+import itertools
 import logging
 import re
 from pathlib import Path
 from datetime import datetime
 from typing import List, Any, Dict, Optional, Callable
 
-from fastapi import APIRouter, FastAPI, Response, HTTPException, Request, Query
+import jwt
+from fastapi import APIRouter, FastAPI, Response, HTTPException, Request, Query, Header
+
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
@@ -38,53 +41,83 @@ from dynastore.extensions.tools.conformance import (
     get_active_conformance,
     Conformance,
 )
-from dynastore.extensions.web.decorators import expose_static
-from dynastore.models.auth import Policy, Principal
-from dynastore.modules.apikey.models import Role
-from dynastore.models.protocols.policies import PolicyProtocol
-from dynastore.tools.discovery import get_protocol, register_plugin
+from dynastore.extensions.web.decorators import expose_static, expose_web_page
+from dynastore.models.protocols.policies import PermissionProtocol, Policy, Role, Principal
+from dynastore.tools.discovery import get_protocol, get_protocols, register_plugin
 
 # Register public access policy for web extension
 logger = logging.getLogger(__name__)
 
 def register_web_policies():
-    policy = Policy(
+    """Register the web extension's public-access policy and anonymous role.
+
+    Always registers into the module-level in-memory registry so that
+    `provision_default_policies()` picks them up at lifespan startup, even
+    when this is called before the `PermissionProtocol` (ApiKeyModule) is
+    fully initialised.
+    """
+    from dynastore.modules.apikey.policies import (
+        register_policy as _reg_policy,
+        register_role as _reg_role,
+    )
+
+    web_policy = Policy(
         id="web_public_access",
-        description="Allows anonymous access to public landing pages and documentation.",
+        description="Allows anonymous access to web UI, pages, and static assets.",
         actions=["GET", "OPTIONS"],
         resources=[
             "/$",
             "/docs.*",
             "/openapi.json",
             "/favicon.ico.*",
-            "/web.*",
+            "/web",
+            "/web/",
             "/web/.*",
-            "/web/auth/.*",
+            "/web/pages/.*",           # expose_web_page routes
+            "/web/extension-static/.*", # expose_static routes
             "/web/static/.*",
-            "/web/extension-static/.*",
             "/web/website/.*",
-            "/web/docs-.*",
             "/web/docs-content/.*",
             "/web/dashboard/.*",
             "/web/health",
-            "/web/static/swagger_custom.js",
             "/.well-known/.*",
             "/processes.*",
-            "/processes/.*",
+            "/configs/schemas",
+            "/configs/web_config",
+            "/configs/plugins",
         ],
         effect="ALLOW",
     )
+    _reg_policy(web_policy)
+    _reg_role(Role(name="anonymous", policies=["web_public_access"], is_system=True))
 
-    policy_manager = get_protocol(PolicyProtocol)
+    # Sysadmin-only: POST/DELETE actions on /web/admin/* (demo populate/cleanup, etc.)
+    web_sysadmin_policy = Policy(
+        id="web_sysadmin_access",
+        description="Grants sysadmin write access to web admin management endpoints.",
+        actions=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        resources=[
+            "/web/admin",
+            "/web/admin/",
+            "/web/admin/.*",
+            "/web/pages/demo_manager",  # expose_web_page route
+        ],
+        effect="ALLOW",
+    )
+    _reg_policy(web_sysadmin_policy)
+    _reg_role(Role(name="sysadmin", policies=["web_sysadmin_access"], is_system=True))
+
+    logger.debug("Web policies pre-registered into in-memory registry.")
+
+    # If the PermissionProtocol is already live (e.g. on a hot-reload path), push
+    # the changes immediately so they take effect without waiting for lifespan.
+    policy_manager = get_protocol(PermissionProtocol)
     if policy_manager:
-        policy_manager.register_policy(policy)
-
-        # Attach to anonymous role
+        policy_manager.register_policy(web_policy)
         policy_manager.register_role(
             Role(name="anonymous", policies=["web_public_access"], is_system=True)
         )
-    else:
-        logger.debug("PolicyProtocol not available, skipping policy registration.")
+        logger.debug("Web policies also applied to live PermissionProtocol.")
 
     # Register Anonymous Principal as a plugin for discovery
     register_plugin(
@@ -97,6 +130,9 @@ def register_web_policies():
         )
     )
 
+# Auto-register policies on import so that modular loaders (like ApiKeyModule)
+# pick them up during foundational lifespan before extension instantiation.
+register_web_policies()
 
 def _find_project_root(start_path: str, markers: List[str]) -> Optional[str]:
     """Walks up from start_path to find a directory containing one of the marker files.
@@ -170,12 +206,41 @@ WEB_CONFORMANCE_URIS = [
     "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/html",
 ]
 
-from dynastore.models.protocols import WebModuleProtocol
+from dynastore.models.protocols.web import WebModuleProtocol, WebPageProtocol, StaticFilesProtocol
+from dynastore.modules.db_config.platform_config_service import PluginConfig, ConfigRegistry
 
 
-class Web(ExtensionProtocol, WebModuleProtocol):
-    priority: int = 0
+class WebConfig(PluginConfig):
+    """Configuration for the Web Platform interface."""
+    brand_name: str = "Agro-Informatics Platform"
+    brand_subtitle: str = "Catalog Services"
+    token_key: str = "ds_token"
+    default_language: str = "en"
+    enterprise_tier: bool = True
+
+
+ConfigRegistry.register("web_config", WebConfig)
+class Web(ExtensionProtocol):
+    """
+    Core web platform extension.
+
+    All pages (home, docs, dashboard) and static prefixes (static, website,
+    dashboard, extension-static) are registered exclusively via the
+    @expose_web_page / @expose_static decorator scan that runs in configure_app.
+
+    This class intentionally does NOT inherit WebPageProtocol or
+    StaticFilesProtocol — that would trigger a second registration of the
+    same handlers through the global protocol scan in WebModule.lifespan,
+    causing every page to render its content twice.
+
+    Other extensions (e.g. Geoid, Tiles, STAC) that implement those protocols
+    are discovered by the decorator scan AND the global scan; the deduplication
+    guard in WebModule.register_web_page prevents double-rendering.
+    """
+
+    priority: int = 100  # High number = low priority (registers last)
     router: APIRouter = APIRouter(prefix="/web", tags=["Dynastore Web Service"])
+
     def generate_etag(self, content_parts: List[bytes]) -> str:
         """Generates a strong ETag for a list of content parts."""
         hasher = hashlib.md5()
@@ -192,9 +257,7 @@ class Web(ExtensionProtocol, WebModuleProtocol):
         }
 
     def configure_app(self, app: FastAPI):
-        # Register policies
-        register_web_policies()
-
+        """Configures global settings like middleware and CORS."""
         app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
         app.add_middleware(GZipMiddleware, minimum_size=1000)
         app.add_middleware(
@@ -205,14 +268,15 @@ class Web(ExtensionProtocol, WebModuleProtocol):
             allow_headers=["*"],
         )
 
-        # Discover and register static providers from other extensions
+        # Discover and register static / page providers from other extensions.
+        # Skip self — Web.__init__() already called scan_and_register_providers(self).
         if hasattr(app.state, "ordered_configs"):
             logger.info(
                 "WebService: Scanning other extensions for static content providers..."
             )
             for config in app.state.ordered_configs:
                 if config.instance and config.instance is not self:
-                    self._scan_and_register_providers(config.instance)
+                    self.scan_and_register_providers(config.instance)
 
         # Add root redirect if no other root endpoint exists.
         # This assumes the 'web' extension is loaded LAST in DYNASTORE_EXTENSION_MODULES
@@ -246,6 +310,7 @@ class Web(ExtensionProtocol, WebModuleProtocol):
     def __init__(self, app: Optional[FastAPI] = None):
         self.app = app
 
+        # Conformance URIs
         register_conformance_uris(WEB_CONFORMANCE_URIS)
         logger.info(
             "WebService: Successfully registered generic web conformance classes."
@@ -277,14 +342,13 @@ class Web(ExtensionProtocol, WebModuleProtocol):
 
         self.DEFAULT_CACHE_MAX_AGE = int(os.getenv("DEFAULT_CACHE_MAX_AGE", 3600))
 
-        # Registry for static content providers: { prefix: bound_method }
-        self.static_providers: Dict[str, Callable[[], List[str]]] = {}
+        # Registry for pluggable web pages: DEPRECATED - now managed by WebModule
+        # self.web_pages: Dict[str, Dict[str, Any]] = {}
 
-        # Registry for pluggable web pages: { page_id: {title, icon, handler} }
-        self.web_pages: Dict[str, Dict[str, Any]] = {}
-
-        # Self-register static files from this class
-        self._scan_and_register_providers(self)
+        # Self-register via discovery if possible
+        self.web_module = get_protocol(WebModuleProtocol)
+        if self.web_module:
+            self.web_module.scan_and_register_providers(self)
 
         self._register_routes()
 
@@ -456,8 +520,16 @@ class Web(ExtensionProtocol, WebModuleProtocol):
             # Also scan 'docs' folder in root if it exists
             docs_folder = root_path / "docs"
             if docs_folder.is_dir():
-                for item in docs_folder.glob("*.md"):
-                    process_doc_file(item, "root", None, docs_folder)
+                _SKIP_STEMS = {"files_to_remove"}  # internal/admin docs to hide
+                for item in sorted(docs_folder.iterdir()):
+                    if item.is_file() and item.suffix.lower() in (".md", ".markdown"):
+                        if item.stem.lower() not in _SKIP_STEMS:
+                            process_doc_file(item, "platform", None, docs_folder)
+                    elif item.is_dir():
+                        # Sub-directory (architecture/, components/, …) → own category
+                        subcat = item.name.lower()
+                        for md in sorted(item.rglob("*.md")):
+                            process_doc_file(md, subcat, None, item)
 
             # --- B. Scan App Directories (Modules, Extensions, Tasks) ---
             app_dirs = getattr(self, "app_dirs", []) or []
@@ -469,7 +541,7 @@ class Web(ExtensionProtocol, WebModuleProtocol):
                 # Scan 'docs' folder in app_path if it exists
                 app_docs = app_path / "docs"
                 if app_docs.is_dir():
-                    for item in app_docs.glob("*.md"):
+                    for item in app_docs.rglob("*.md"):
                         process_doc_file(item, "root", None, app_docs)
 
                 for cat in categories:
@@ -510,37 +582,262 @@ class Web(ExtensionProtocol, WebModuleProtocol):
         logger.info(f"Documentation scan complete. Found {len(registry)} documents.")
         return registry
 
-    def _scan_and_register_providers(self, instance: Any):
-        for name, method in inspect.getmembers(instance, predicate=inspect.ismethod):
-            if hasattr(method, "_web_static_prefix"):
-                prefix = getattr(method, "_web_static_prefix").strip("/")
-                self.register_static_provider(prefix, method)
+    # No WebPageProtocol / StaticFilesProtocol methods here.
+    # All pages and static prefixes are registered via @expose_web_page /
+    # @expose_static decorators, discovered by Web.configure_app() calling
+    # web_module.scan_and_register_providers(instance) for each extension.
 
-            if hasattr(method, "_web_page_config"):
-                config = getattr(method, "_web_page_config")
-                self.register_web_page(config, method)
+    # Legacy method compatibility
+    def scan_and_register_providers(self, instance: Any):
+        if self.web_module:
+            self.web_module.scan_and_register_providers(instance)
 
-    def register_web_page(self, config: Dict[str, str], provider: Callable[[], Any]):
-        page_id = config["id"]
-        if page_id in self.web_pages:
-            logger.warning(f"WebService: Overwriting web page '{page_id}'")
+    @expose_web_page(page_id="home", title="Home", icon="fa-home", priority=-100)
+    def home_page(self, language: str = "en"):
+        # We wrap the content in a container that can be appended to or replaced
+        return """
+        <div id="section-home" class="fade-in max-w-7xl mx-auto">
+            <header class="py-16 text-center ds-default-home">
+                <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 text-xs font-medium mb-6">
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    Agro-Informatics Platform
+                </div>
+                <h1 class="text-4xl md:text-6xl font-bold text-white mb-6 tracking-tight">
+                    <span id="home-title">Agro-Informatics Hub</span><br>
+                    <span class="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-blue-400" id="home-subtitle">Digital Agricultural Infrastructure</span>
+                </h1>
+                <p class="text-slate-400 max-w-2xl mx-auto mb-10" id="home-description">
+                    High-performance geospatial data catalog and processing platform for agricultural intelligence.
+                </p>
+                <div class="flex items-center justify-center gap-6" id="home-actions">
+                    <button onclick="switchTab('docs')" class="px-6 py-3 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white font-medium transition-all">
+                        Documentation
+                    </button>
+                    <button onclick="switchTab('stac_browser')" class="px-6 py-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium shadow-lg shadow-emerald-500/20 transition-all">
+                        Explore Data
+                    </button>
+                </div>
+            </header>
 
-        self.web_pages[page_id] = {
-            "id": page_id,
-            "title": config["title"],
-            "icon": config["icon"],
-            "description": config.get("description", ""),
-            "handler": provider,
-        }
-        logger.info(f"WebService: Registered web page '{page_id}'")
+            <div id="home-content-append" class="space-y-12">
+                <!-- Extensions can append content here or replace parts via JS -->
+            </div>
+            
+            <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6 mt-12 ds-default-home" id="home-featured-grid">
+                 <div class="glass-panel p-6 rounded-2xl border border-white/5 hover:border-emerald-500/30 transition-colors group cursor-pointer" onclick="switchTab('stac_browser')">
+                    <div class="w-12 h-12 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-400 mb-4 group-hover:scale-110 transition-transform">
+                        <i class="fa-solid fa-layer-group text-xl"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold text-white mb-2">STAC Browser</h3>
+                    <p class="text-slate-400 text-sm">Explore satellite imagery and geospatial assets using the STAC standard.</p>
+                 </div>
+                 <div class="glass-panel p-6 rounded-2xl border border-white/5 hover:border-blue-500/30 transition-colors group cursor-pointer" onclick="switchTab('map_viewer')">
+                    <div class="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-400 mb-4 group-hover:scale-110 transition-transform">
+                        <i class="fa-solid fa-map text-xl"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold text-white mb-2">Map Viewer</h3>
+                    <p class="text-slate-400 text-sm">Visualize tiled datasets and explore geospatial layers in real-time.</p>
+                 </div>
+                 <div class="glass-panel p-6 rounded-2xl border border-white/5 hover:border-purple-500/30 transition-colors group cursor-pointer" onclick="switchTab('dashboard')">
+                    <div class="w-12 h-12 rounded-xl bg-purple-500/10 flex items-center justify-center text-purple-400 mb-4 group-hover:scale-110 transition-transform">
+                        <i class="fa-solid fa-gauge-high text-xl"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold text-white mb-2">Platform Stats</h3>
+                    <p class="text-slate-400 text-sm">Monitor system health, usage statistics, and background task progress.</p>
+                 </div>
+            </div>
+        </div>
+        """
+
+    @expose_web_page(
+        page_id="demo_manager",
+        title="Demo Data",
+        icon="fa-flask",
+        description="Provision or clean up the demo catalog for testing.",
+        required_roles=["sysadmin"],
+        section="admin",
+        priority=40,
+    )
+    def demo_manager_page(self, language: str = "en"):
+        return """
+<div class="space-y-8 max-w-2xl">
+  <div>
+    <h2 class="text-2xl font-bold text-white mb-1">Demo Data Manager</h2>
+    <p class="text-slate-400 text-sm">
+      Provision a <code class="bg-slate-800 px-1 rounded text-xs">demo_catalog</code> with sample
+      geospatial points, or wipe it to start fresh. Requires <strong class="text-white">sysadmin</strong> role.
+    </p>
+  </div>
+
+  <div class="grid md:grid-cols-2 gap-6">
+    <!-- Provision -->
+    <div class="glass-panel p-6 rounded-2xl border border-emerald-500/20">
+      <div class="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mb-4">
+        <i class="fa-solid fa-database-plus text-xl"></i>
+      </div>
+      <h3 class="font-semibold text-white mb-1">Provision Demo Data</h3>
+      <p class="text-slate-400 text-sm mb-4">
+        Creates <code class="bg-slate-800 px-1 rounded text-xs">demo_catalog</code> with
+        <code class="bg-slate-800 px-1 rounded text-xs">demo_collection</code> containing a 2×3 grid of
+        tile polygons covering Italy. Any existing demo catalog is replaced.
+      </p>
+      <button id="btn-populate"
+        onclick="demoAction('populate')"
+        class="w-full px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium transition-all flex items-center justify-center gap-2">
+        <i class="fa-solid fa-plus-circle"></i> Provision Demo Data
+      </button>
+    </div>
+
+    <!-- Cleanup -->
+    <div class="glass-panel p-6 rounded-2xl border border-red-500/20">
+      <div class="w-12 h-12 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 mb-4">
+        <i class="fa-solid fa-trash-alt text-xl"></i>
+      </div>
+      <h3 class="font-semibold text-white mb-1">Clean Up Demo Data</h3>
+      <p class="text-slate-400 text-sm mb-4">
+        Permanently deletes <code class="bg-slate-800 px-1 rounded text-xs">demo_catalog</code>
+        and all its collections and items. This action cannot be undone.
+      </p>
+      <button id="btn-cleanup"
+        onclick="demoAction('cleanup')"
+        class="w-full px-4 py-2 rounded-lg bg-red-700 hover:bg-red-600 text-white text-sm font-medium transition-all flex items-center justify-center gap-2">
+        <i class="fa-solid fa-trash-alt"></i> Clean Up Demo Data
+      </button>
+    </div>
+  </div>
+
+  <div id="demo-result" class="hidden glass-panel p-4 rounded-xl border border-white/5 text-sm"></div>
+</div>
+
+<script>
+async function demoAction(action) {
+  const labels = { populate: 'provision demo data', cleanup: 'DELETE the demo catalog' };
+  if (!confirm(`Are you sure you want to ${labels[action]}?\\nThis cannot be undone.`)) return;
+
+  const btnId = action === 'populate' ? 'btn-populate' : 'btn-cleanup';
+  const btn = document.getElementById(btnId);
+  const resultDiv = document.getElementById('demo-result');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Working…'; }
+  if (resultDiv) resultDiv.classList.add('hidden');
+
+  const tkey = (typeof TOKEN_KEY !== 'undefined') ? TOKEN_KEY : 'ds_token';
+  const token = (typeof authToken !== 'undefined' && authToken) || localStorage.getItem(tkey);
+  try {
+    const res = await fetch(`/web/admin/demo/${action}`, {
+      method: 'POST',
+      headers: token ? { 'Authorization': 'Bearer ' + token } : {}
+    });
+    const data = await res.json();
+    if (resultDiv) {
+      resultDiv.classList.remove('hidden', 'border-red-500/20', 'border-emerald-500/20');
+      if (res.ok) {
+        const msg = action === 'populate'
+          ? `Demo catalog provisioned: <strong>${data.items}</strong> items in <code>${data.catalog_id} / ${data.collection_id}</code>.`
+          : `Demo catalog <code>${data.deleted}</code> deleted successfully.`;
+        resultDiv.className = 'glass-panel p-4 rounded-xl border border-emerald-500/20 text-emerald-300 text-sm';
+        resultDiv.innerHTML = '<i class="fa-solid fa-check-circle mr-2"></i>' + msg;
+      } else {
+        resultDiv.className = 'glass-panel p-4 rounded-xl border border-red-500/20 text-red-400 text-sm';
+        resultDiv.innerHTML = '<i class="fa-solid fa-exclamation-triangle mr-2"></i>' + (data.detail || JSON.stringify(data));
+      }
+    }
+  } catch (e) {
+    if (resultDiv) {
+      resultDiv.className = 'glass-panel p-4 rounded-xl border border-red-500/20 text-red-400 text-sm';
+      resultDiv.innerHTML = '<i class="fa-solid fa-exclamation-triangle mr-2"></i>' + e.message;
+      resultDiv.classList.remove('hidden');
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = action === 'populate'
+        ? '<i class="fa-solid fa-plus-circle"></i> Provision Demo Data'
+        : '<i class="fa-solid fa-trash-alt"></i> Clean Up Demo Data';
+    }
+  }
+}
+</script>
+"""
+
+    @expose_web_page(page_id="docs", title="Documentation", icon="fa-book", priority=-100)
+    def docs_page(self, language: str = "en"):
+        return """
+        <div class="grid lg:grid-cols-[300px_1fr] gap-8">
+            <aside class="glass-panel p-4 rounded-xl h-[calc(100vh-200px)] overflow-y-auto" id="docs-sidebar-content"></aside>
+            <article class="glass-panel p-8 rounded-xl prose prose-invert max-w-none" id="docs-content">
+                <p class="text-slate-500">Select a document from the sidebar to begin.</p>
+            </article>
+        </div>
+        """
+
+
+    @expose_web_page(page_id="dashboard", title="Dashboard", icon="fa-gauge-high", priority=-100)
+    def dashboard_page(self, language: str = "en"):
+        return """
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6" id="dashboard-stats">
+            <!-- Stats will be loaded here by custom.js -->
+            <div class="glass-panel p-6 rounded-xl border border-white/5">
+                <p class="text-slate-500 text-[10px] uppercase font-bold tracking-wider mb-1">Total Requests</p>
+                <div class="text-2xl font-bold text-white mb-2" id="stat-total-requests">0</div>
+                <div class="text-emerald-400 text-[10px]"><i class="fa-solid fa-arrow-up mr-1"></i> Live</div>
+            </div>
+            <div class="glass-panel p-6 rounded-xl border border-white/5">
+                <p class="text-slate-500 text-[10px] uppercase font-bold tracking-wider mb-1">Avg Latency</p>
+                <div class="text-2xl font-bold text-white mb-2" id="stat-avg-latency">0ms</div>
+                <div class="text-blue-400 text-[10px]"><i class="fa-solid fa-bolt mr-1"></i> Real-time</div>
+            </div>
+            <div class="glass-panel p-6 rounded-xl border border-white/5">
+                <p class="text-slate-500 text-[10px] uppercase font-bold tracking-wider mb-1">Success Rate</p>
+                <div class="text-2xl font-bold text-white mb-2" id="stat-success-rate">0%</div>
+                <div class="text-blue-400 text-[10px]"><i class="fa-solid fa-check-circle mr-1"></i> Verified</div>
+            </div>
+            <div class="glass-panel p-6 rounded-xl border border-white/5">
+                <p class="text-slate-500 text-[10px] uppercase font-bold tracking-wider mb-1">Active Tasks</p>
+                <div class="text-2xl font-bold text-white mb-2" id="stat-active-tasks">0</div>
+                <div class="text-purple-400 text-[10px]"><i class="fa-solid fa-tasks mr-1"></i> Background</div>
+            </div>
+        </div>
+
+        <div class="grid lg:grid-cols-2 gap-8 mt-8">
+            <div class="glass-panel p-6 rounded-2xl border border-white/5">
+                <div class="flex items-center justify-between mb-6">
+                    <h3 class="text-lg font-bold text-white flex items-center gap-2">
+                        <i class="fa-solid fa-terminal text-blue-400"></i> System Activity
+                    </h3>
+                    <select id="log-filter-level" onchange="fetchDashboardLogs()" class="bg-white/5 border border-white/10 text-slate-300 text-xs rounded-lg px-2 py-1 outline-none">
+                        <option value="INFO">INFO</option>
+                        <option value="WARNING">WARNING</option>
+                        <option value="ERROR">ERROR</option>
+                        <option value="DEBUG">DEBUG</option>
+                    </select>
+                </div>
+                <div id="dashboard-logs" class="h-80 overflow-y-auto space-y-1 font-mono text-[11px]">
+                    <div class="text-slate-500 py-4 text-center">Loading logs...</div>
+                </div>
+            </div>
+
+            <div class="glass-panel p-6 rounded-2xl border border-white/5">
+                 <h3 class="text-lg font-bold text-white mb-6 flex items-center gap-2">
+                    <i class="fa-solid fa-list-check text-purple-400"></i> Background Tasks
+                </h3>
+                <div id="dashboard-tasks" class="h-80 overflow-y-auto space-y-3">
+                    <div class="text-slate-500 py-4 text-center">No active tasks</div>
+                </div>
+            </div>
+        </div>
+        """
+
+    def register_web_page(self, config: Dict[str, Any], provider: Callable[[], Any]):
+        if self.web_module:
+            self.web_module.register_web_page(config, provider)
+        else:
+            logger.error("WebService: Cannot register web page, WebModule not available")
 
     def register_static_provider(self, prefix: str, provider: Callable[[], List[str]]):
-        if prefix in self.static_providers:
-            logger.warning(
-                f"WebService: Overwriting static provider for prefix '{prefix}'"
-            )
-        self.static_providers[prefix] = provider
-        logger.info(f"WebService: Registered static provider for prefix '{prefix}'")
+        if self.web_module:
+            self.web_module.register_static_provider(prefix, provider)
+        else:
+            logger.error("WebService: Cannot register static provider, WebModule not available")
 
     @expose_static("static")
     def _provide_default_static(self) -> List[str]:
@@ -655,64 +952,161 @@ class Web(ExtensionProtocol, WebModuleProtocol):
             return {"status": "ok"}
 
         @self.router.get("/config/pages", response_class=JSONResponse)
-        async def get_web_pages_config(language: str = Query("en")):
-            """Returns the list of registered web pages for the frontend navigation."""
+        async def get_web_pages_config(
+            request: Request,
+            language: str = Query("en"),
+            authorization: Optional[str] = Header(None)
+        ):
+            """Returns the list of registered web pages for the frontend navigation, filtered by role."""
+            if not self.web_module:
+                 return []
+            
+            # Extract roles from Token if provided
+            user_roles: List[str] = []
+            if authorization and authorization.startswith("Bearer "):
+                token = authorization.removeprefix("Bearer ")
+                try:
+                    from dynastore.modules.apikey.interfaces import IdentityProviderProtocol
+                    providers = get_protocols(IdentityProviderProtocol)
+                    for provider in providers:
+                        try:
+                            user_info = await provider.get_user_info(token)
+                            if user_info and "roles" in user_info:
+                                user_roles = [str(r) for r in user_info["roles"]]
+                                break
+                        except Exception:
+                            continue
+                except Exception as e:
+                    logger.debug(f"Failed to extract roles from token: {e}")
+
+            pages = await self.web_module.get_web_pages_config(language)
             results = []
-            for p in self.web_pages.values():
-                title = p["title"]
-                if isinstance(title, dict):
-                    title = title.get(
-                        language, title.get("en", next(iter(title.values())))
-                    )
+            for page in pages:
+                roles = page.get("required_roles")
+                if not roles or "anonymous" in roles:
+                    results.append(page)
+                elif user_roles and "sysadmin" in user_roles:
+                    results.append(page)
+                elif user_roles and any(r in user_roles for r in roles):
+                    results.append(page)
 
-                description = p.get("description", "")
-                if isinstance(description, dict):
-                    description = description.get(
-                        language,
-                        description.get(
-                            "en",
-                            next(iter(description.values())) if description else "",
-                        ),
-                    )
-
-                results.append(
-                    {
-                        "id": p["id"],
-                        "title": title,
-                        "icon": p["icon"],
-                        "description": description,
-                    }
-                )
+            results.sort(key=lambda x: x.get("priority", 0))
             return results
+
 
         @self.router.get("/pages/{page_id}", response_class=HTMLResponse)
         async def get_web_page_content(
             page_id: str, request: Request, language: str = Query("en")
         ):
-            if page_id not in self.web_pages:
+            if not self.web_module:
+                raise HTTPException(status_code=500, detail="Web module not available")
+            
+            content = await self.web_module.get_web_page_content(page_id, request, language)
+            if content is None:
                 raise HTTPException(status_code=404, detail="Page not found")
+            
+            return HTMLResponse(content=content)
 
-            handler = self.web_pages[page_id]["handler"]
+        # ------------------------------------------------------------------ #
+        #  Demo Data Management (sysadmin only)                               #
+        # ------------------------------------------------------------------ #
+
+        DEMO_CATALOG_ID = "demo_catalog"
+        DEMO_COLLECTION_ID = "demo_collection"
+
+        def _require_sysadmin(request: Request):
+            principal = getattr(request.state, "principal", None)
+            if not principal or "sysadmin" not in (principal.roles or []):
+                raise HTTPException(status_code=403, detail="Requires sysadmin role")
+
+        @self.router.post("/admin/demo/populate", response_class=JSONResponse, tags=["Admin"])
+        async def demo_populate(request: Request):
+            """Provision demo catalog, collection and sample items (sysadmin only)."""
+            from dynastore.models.protocols import CatalogsProtocol as _CatProt
+            _require_sysadmin(request)
+            cats = get_protocol(_CatProt)
+            if not cats:
+                raise HTTPException(status_code=500, detail="Catalog service not available")
             try:
-                # Check if handler accepts arguments to avoid TypeError
-                sig = inspect.signature(handler)
-                kwargs = {}
-                if "request" in sig.parameters:
-                    kwargs["request"] = request
-                if "language" in sig.parameters:
-                    kwargs["language"] = language
+                await cats.delete_catalog(DEMO_CATALOG_ID, force=True)
+            except Exception:
+                pass
+            await cats.create_catalog({
+                "id": DEMO_CATALOG_ID,
+                "title": {"en": "Demo Catalog", "it": "Catalogo Demo"},
+                "description": {"en": "Demo catalog for testing purposes.", "it": "Catalogo demo per scopi di test."},
+                "keywords": ["demo", "dynastore", "geospatial"],
+                "license": "CC-BY-4.0",
+            }, lang="*")
+            await cats.create_collection(DEMO_CATALOG_ID, {
+                "id": DEMO_COLLECTION_ID,
+                "title": {"en": "Italy Tile Grid"},
+                "description": {"en": "A 2×3 grid of map-tile polygons covering the Italian peninsula."},
+                "type": "Feature",
+            }, lang="*")
+            # 2 columns × 3 rows covering Italy's bounding box
+            # lon: 6.6 – 18.5  (col width ≈ 5.95°)
+            # lat: 37.9 – 47.1 (row height ≈ 3.07°)
+            def _tile_polygon(col: int, row: int) -> dict:
+                lon0 = 6.6  + col * 5.95
+                lon1 = lon0 + 5.95
+                lat0 = 37.9 + row * 3.07
+                lat1 = lat0 + 3.07
+                return {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [lon0, lat0], [lon1, lat0],
+                        [lon1, lat1], [lon0, lat1],
+                        [lon0, lat0],   # close ring
+                    ]],
+                }
+            _row_labels = ["south", "centre", "north"]
+            _col_labels = ["west", "east"]
+            demo_items = [
+                {
+                    "id": f"tile_{_col_labels[c]}_{_row_labels[r]}",
+                    "type": "Feature",
+                    "geometry": _tile_polygon(c, r),
+                    "properties": {
+                        "name": f"Italy – {_row_labels[r].capitalize()} {_col_labels[c].capitalize()}",
+                        "description": f"Map tile column {c} row {r} over Italy",
+                        "col": c, "row": r,
+                    },
+                }
+                for r in range(3) for c in range(2)
+            ]
+            result = await cats.upsert(DEMO_CATALOG_ID, DEMO_COLLECTION_ID, demo_items)
+            logger.info(f"Demo data provisioned: {len(result)} items in '{DEMO_CATALOG_ID}'")
+            return {"status": "ok", "catalog_id": DEMO_CATALOG_ID,
+                    "collection_id": DEMO_COLLECTION_ID, "items": len(result)}
 
-                if inspect.iscoroutinefunction(handler):
-                    content = await handler(**kwargs)
-                else:
-                    content = handler(**kwargs)
-
-                if isinstance(content, Response):
-                    return content
-                return HTMLResponse(content=str(content))
+        @self.router.post("/admin/demo/cleanup", response_class=JSONResponse, tags=["Admin"])
+        async def demo_cleanup(request: Request):
+            """Delete only the demo collection and catalog, leaving all other data intact (sysadmin only)."""
+            from dynastore.models.protocols import CatalogsProtocol as _CatProt
+            _require_sysadmin(request)
+            cats = get_protocol(_CatProt)
+            if not cats:
+                raise HTTPException(status_code=500, detail="Catalog service not available")
+            deleted = []
+            errors = []
+            # Delete the demo collection (cascades to its items) first
+            try:
+                await cats.delete_collection(DEMO_CATALOG_ID, DEMO_COLLECTION_ID, force=True)
+                deleted.append(f"{DEMO_CATALOG_ID}/{DEMO_COLLECTION_ID}")
+                logger.info(f"Demo collection '{DEMO_COLLECTION_ID}' deleted from '{DEMO_CATALOG_ID}'.")
             except Exception as e:
-                logger.error(f"Error rendering page {page_id}: {e}", exc_info=True)
-                raise HTTPException(status_code=500, detail=str(e))
+                errors.append(f"collection: {e}")
+                logger.warning(f"Demo cleanup — collection: {e}")
+            # Then delete the catalog shell (no force needed; collection is already gone)
+            try:
+                await cats.delete_catalog(DEMO_CATALOG_ID)
+                deleted.append(DEMO_CATALOG_ID)
+                logger.info(f"Demo catalog '{DEMO_CATALOG_ID}' deleted.")
+            except Exception as e:
+                errors.append(f"catalog: {e}")
+                logger.warning(f"Demo cleanup — catalog: {e}")
+            return {"status": "ok" if deleted else "not_found", "deleted": deleted, "errors": errors}
 
         @self.router.get("/docs-manifest", response_class=JSONResponse)
         async def get_docs_manifest():
@@ -785,21 +1179,81 @@ class Web(ExtensionProtocol, WebModuleProtocol):
 
         @self.router.get("/dashboard/catalogs", response_class=JSONResponse)
         async def get_dashboard_catalogs(
-            limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)
+            request: Request,
+            q: Optional[str] = Query(None, description="Search query"),
+            limit: int = Query(100, ge=1, le=1000),
+            offset: int = Query(0, ge=0),
+            authorization: Optional[str] = Header(None),
         ):
+            """
+            List catalogs visible to the caller.
+
+            - sysadmin  → all catalogs
+            - authenticated non-sysadmin → only catalogs where the principal
+              holds an admin role (principal_id filter forwarded to the
+              CatalogsProtocol when supported)
+            - anonymous → empty list
+            """
             from dynastore.models.protocols import CatalogsProtocol
 
+            # Resolve caller identity
+            user_roles: List[str] = []
+            principal_id: Optional[str] = None
+            if authorization and authorization.startswith("Bearer "):
+                token = authorization[7:]
+                # Fast path: system admin key (env var or DB-stored key)
+                try:
+                    from dynastore.models.protocols.apikey import ApiKeyProtocol
+                    apikey_svc = get_protocol(ApiKeyProtocol)
+                    if apikey_svc:
+                        system_key = await apikey_svc.get_system_admin_key()
+                        if token == system_key:
+                            user_roles = ["sysadmin"]
+                except Exception:
+                    pass
+                if "sysadmin" not in user_roles:
+                    try:
+                        from dynastore.modules.apikey.interfaces import IdentityProviderProtocol
+                        for idp in get_protocols(IdentityProviderProtocol):
+                            try:
+                                info = await idp.get_user_info(token)
+                                if info:
+                                    user_roles = info.get("roles", [])
+                                    principal_id = info.get("subject_id") or info.get("principal_id")
+                                    break
+                            except Exception:
+                                continue
+                    except Exception as e:
+                        logger.debug(f"Dashboard catalogs: could not resolve identity: {e}")
+
             catalogs_provider: CatalogsProtocol = get_protocol(CatalogsProtocol)
-            if catalogs_provider:
-                cats = await catalogs_provider.list_catalogs(limit=limit, offset=offset)
-                return [c.model_dump() for c in cats]
-            return []
+            if not catalogs_provider:
+                return []
+
+            if "sysadmin" in user_roles:
+                # Sysadmin sees every catalog
+                cats = await catalogs_provider.list_catalogs(limit=limit, offset=offset, q=q)
+            elif principal_id:
+                # Authenticated non-sysadmin: forward principal filter so the
+                # protocol can restrict to catalogs the caller administers.
+                try:
+                    cats = await catalogs_provider.list_catalogs(
+                        limit=limit, offset=offset, q=q, principal_id=principal_id
+                    )
+                except TypeError:
+                    # Protocol implementation does not support principal_id filter yet
+                    cats = await catalogs_provider.list_catalogs(limit=limit, offset=offset, q=q)
+            else:
+                return []
+
+            return [c.model_dump() for c in cats]
 
         @self.router.get(
             "/dashboard/catalogs/{catalog_id}/collections", response_class=JSONResponse
         )
         async def get_dashboard_collections(
             catalog_id: str,
+            q: Optional[str] = Query(None, description="Search query"),
             limit: int = Query(100, ge=1, le=1000),
             offset: int = Query(0, ge=0),
         ):
@@ -810,16 +1264,22 @@ class Web(ExtensionProtocol, WebModuleProtocol):
                 CollectionsProtocol
             )
             if collections_provider:
-                cols = await collections_provider.list_collections(
-                    catalog_id=catalog_id, limit=limit, offset=offset
-                )
-                return [c.model_dump() for c in cols]
+                try:
+                    cols = await collections_provider.list_collections(
+                        catalog_id=catalog_id, limit=limit, offset=offset, q=q
+                    )
+                    return [c.model_dump() for c in cols]
+                except (ValueError, KeyError):
+                    return []
             return []
 
         @self.router.get("/dashboard/stats", response_class=JSONResponse)
         async def get_dashboard_stats(
             catalog_id: str = Query(
                 "_system_", description="Catalog ID to filter stats for."
+            ),
+            collection_id: Optional[str] = Query(
+                None, description="Optional collection ID to filter stats for."
             ),
             principal_id: Optional[str] = Query(
                 None, description="Filter by Principal ID."
@@ -861,6 +1321,7 @@ class Web(ExtensionProtocol, WebModuleProtocol):
                 summary = await stats_service.get_summary(
                     schema=schema,
                     catalog_id=catalog_id if catalog_id != "_system_" else None,
+                    collection_id=collection_id,
                     principal_id=principal_id,
                     api_key_hash=api_key_hash,
                     start_date=start_date,
@@ -957,38 +1418,54 @@ class Web(ExtensionProtocol, WebModuleProtocol):
 
         @self.router.get("/{prefix}/{filename:path}", include_in_schema=False)
         async def serve_static_content(prefix: str, filename: str):
-            if prefix not in self.static_providers:
+            # Resolve the provider callable for this prefix
+            provider_callable = None
+
+            if self.web_module and prefix in self.web_module.static_providers:
+                provider_callable = self.web_module.static_providers[prefix]
+            elif prefix == "static":
+                # Fallback: serve directly from the static directory if not registered
+                provider_callable = self._provide_default_static
+            
+            if provider_callable is None:
                 raise HTTPException(
                     status_code=404, detail=f"No provider found for prefix '{prefix}'"
                 )
 
-            provider = self.static_providers[prefix]
             try:
-                allowed_files = provider()
+                if isinstance(provider_callable, StaticFilesProtocol):
+                    allowed_files = await provider_callable.list_static_files()
+                else:
+                    # Legacy: provider is a callable returning absolute paths
+                    allowed_files = provider_callable()
             except Exception as e:
-                logger.error(f"Provider for '{prefix}' failed: {e}")
-                raise HTTPException(status_code=500, detail="Provider error")
+                logger.error(f"Static provider for '{prefix}' raised an error: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Provider error: {e}")
 
-            # Determine base directory for provider by finding the common prefix
-            # This assumes the provider returns files from a single root (common for expose_static)
             if not allowed_files:
-                raise HTTPException(status_code=404, detail="No files available")
+                # If the provider returned an empty list, the file doesn't exist under this prefix
+                raise HTTPException(status_code=404, detail="File not found")
             
-            # Find the common base directory for the allowed files to calculate relative paths correctly
-            common_root = os.path.commonpath([os.path.dirname(f) for f in allowed_files])
-            
+            # Build a relative-path -> absolute-path map using the common root of all files
+            try:
+                dirs = [os.path.dirname(f) for f in allowed_files]
+                common_root = os.path.commonpath(dirs) if len(dirs) > 1 else dirs[0]
+            except ValueError as e:
+                logger.error(f"commonpath failed for prefix '{prefix}': {e}")
+                raise HTTPException(status_code=500, detail="Static file layout error")
+
             allowed_map = {
                 os.path.relpath(f, common_root).replace(os.sep, "/"): f 
                 for f in allowed_files
             }
             
-            # Normalize requested filename for lookup
             lookup_key = filename.replace(os.sep, "/")
             target_file = allowed_map.get(lookup_key)
 
             if not target_file:
                 logger.warning(
-                    f"Access denied or file not found in provider allowlist: {filename} for prefix {prefix}"
+                    f"File '{filename}' not found in allowlist for prefix '{prefix}'. "
+                    f"Available: {list(itertools.islice(allowed_map.keys(), 10))}"
                 )
                 raise HTTPException(status_code=404, detail="File not found")
 

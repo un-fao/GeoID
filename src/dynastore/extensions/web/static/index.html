@@ -51,10 +51,10 @@
                     <img src="/web/static/dynastore.png" alt="DynaStore"
                         class="w-10 h-10 rounded-lg shadow-lg shadow-blue-500/20 group-hover:scale-110 transition-transform">
                     <div>
-                        <span class="font-bold text-xl tracking-tight text-white block leading-none">DYNASTORE</span>
+                        <span class="font-bold text-xl tracking-tight text-white block leading-none">Agro-Informatics Platform</span>
                         <span
-                            class="text-[10px] text-slate-400 uppercase tracking-widest group-hover:text-blue-400 transition-colors">Geospatial
-                            Engine</span>
+                            class="text-[10px] text-slate-400 uppercase tracking-widest group-hover:text-blue-400 transition-colors">Catalog
+                            Services</span>
                     </div>
                 </div>
                 <div class="hidden md:block">
@@ -74,11 +74,49 @@
                         </button>
                     </div>
                 </div>
-                <div>
+                <div class="flex items-center gap-4">
                     <a href="https://github.com/un-fao/dynastore" target="_blank"
-                        class="text-slate-400 hover:text-white transition-colors"><i
+                        class="text-slate-400 hover:text-white transition-colors hidden sm:block"><i
                             class="fa-brands fa-github text-xl"></i></a>
+                    
+                    <!-- User Profile Widget -->
+                    <div id="user-widget" class="relative hidden">
+                        <button id="user-menu-btn" onclick="toggleUserDropdown()"
+                            class="flex items-center gap-2 pl-2 pr-1 py-1 rounded-full bg-slate-800/50 border border-white/10 hover:bg-slate-700/50 transition-colors group">
+                            <span id="user-display-name" class="text-xs font-semibold text-slate-300 group-hover:text-white px-2">User</span>
+                            <div id="user-avatar" class="w-8 h-8 rounded-full bg-dyna-primary flex items-center justify-center text-white text-xs font-bold shadow-lg shadow-blue-500/20">
+                                U
+                            </div>
+                        </button>
+                        
+                        <!-- User Dropdown Menu -->
+                        <div id="user-dropdown" class="absolute right-0 mt-2 w-56 glass-panel border border-white/10 rounded-xl py-2 shadow-2xl scale-95 opacity-0 pointer-events-none transition-all duration-200 z-[100]">
+                            <div class="px-4 py-3 border-b border-white/5 mb-2">
+                                <p class="text-xs text-slate-500 uppercase tracking-widest font-bold">Logged in as</p>
+                                <p id="user-email" class="text-sm font-medium text-white truncate">user@example.com</p>
+                            </div>
+                            <button onclick="showProfileModal()" class="w-full text-left px-4 py-2 text-sm text-slate-300 hover:text-white hover:bg-white/5 flex items-center gap-3 transition-colors">
+                                <i class="fa-solid fa-user-circle w-5"></i> My Profile
+                            </button>
+                            <button id="admin-panel-link" onclick="switchTab('extensions')" class="w-full text-left px-4 py-2 text-sm text-slate-300 hover:text-white hover:bg-white/5 hidden items-center gap-3 transition-colors">
+                                <i class="fa-solid fa-shield-halved w-5"></i> Admin Panel
+                            </button>
+                            <div class="h-px bg-white/5 my-2"></div>
+                            <button onclick="handleLogout()" class="w-full text-left px-4 py-2 text-sm text-red-400 hover:text-red-300 hover:bg-red-400/5 flex items-center gap-3 transition-colors">
+                                <i class="fa-solid fa-right-from-bracket w-5"></i> Sign Out
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Login Button (shown when logged out) -->
+                    <div id="auth-buttons">
+                        <a href="/auth/authorize?response_type=code&client_id=dynastore&redirect_uri=/web/&state=init" 
+                            class="px-4 py-2 rounded-lg bg-dyna-primary hover:bg-blue-600 text-white text-sm font-bold transition-all shadow-lg shadow-blue-500/20">
+                            Sign In
+                        </a>
+                    </div>
                 </div>
+
             </div>
         </div>
     </nav>
@@ -97,27 +135,39 @@
                 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10 text-center">
                     <div
                         class="inline-block px-4 py-1.5 rounded-full border border-blue-500/30 bg-blue-500/10 text-blue-300 text-sm font-medium mb-8">
-                        v6.0 Enterprise Release
+                        v0.8.0-beta Enterprise Preview
                     </div>
                     <h1 class="text-5xl md:text-7xl font-bold text-white mb-8 tracking-tight leading-tight">
-                        The Cloud-Native<br>
+                        The Core Catalyst for<br>
                         <span
-                            class="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400">Geospatial
-                            Infrastructure</span>
+                            class="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400">Agro-Informatics
+                            Services</span>
                     </h1>
                     <p class="mt-4 max-w-3xl mx-auto text-xl md:text-2xl text-slate-400 leading-relaxed">
-                        A modular, high-performance platform engineered for OGC compliance and infinite horizontal
-                        scalability. Deploy anywhere—on-premise or cloud.
+                        An enterprise-grade, cloud-native geospatial platform built on OGC standards. 
+                        Engineered for high-performance data management and seamless interoperability.
                     </p>
-                    <div class="mt-12 flex flex-col sm:flex-row justify-center gap-4">
-                        <button onclick="switchTab('architecture')"
-                            class="px-8 py-4 rounded-xl bg-dyna-primary hover:bg-blue-600 text-white font-semibold shadow-xl shadow-blue-500/20 transition-all transform hover:-translate-y-1">
-                            Architecture & APIs
-                        </button>
-                        <button onclick="switchTab('platform')"
-                            class="px-8 py-4 rounded-xl glass-panel hover:bg-white/5 text-white font-semibold transition-all border border-white/10">
-                            Enterprise Capabilities
-                        </button>
+                    <div class="mt-12 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 max-w-5xl mx-auto">
+                        <a href="#ext:stac" class="glass-card p-6 rounded-xl hover:bg-white/5 transition-all transform hover:-translate-y-1 border border-white/10 group">
+                            <i class="fa-solid fa-layer-group text-3xl text-blue-400 mb-4 group-hover:scale-110 transition-transform"></i>
+                            <h3 class="text-lg font-bold text-white mb-1">STAC Browser</h3>
+                            <p class="text-xs text-slate-400">Discover and explore geospatial assets.</p>
+                        </a>
+                        <a href="#ext:maps" class="glass-card p-6 rounded-xl hover:bg-white/5 transition-all transform hover:-translate-y-1 border border-white/10 group">
+                            <i class="fa-solid fa-map text-3xl text-emerald-400 mb-4 group-hover:scale-110 transition-transform"></i>
+                            <h3 class="text-lg font-bold text-white mb-1">Map Viewer</h3>
+                            <p class="text-xs text-slate-400">Interactive data visualization.</p>
+                        </a>
+                        <a href="#ext:admin" class="glass-card p-6 rounded-xl hover:bg-white/5 transition-all transform hover:-translate-y-1 border border-white/10 group">
+                            <i class="fa-solid fa-toolbox text-3xl text-dyna-accent mb-4 group-hover:rotate-12 transition-transform"></i>
+                            <h3 class="text-lg font-bold text-white mb-1">Admin Panel</h3>
+                            <p class="text-xs text-slate-400">Manage catalogs, users, and roles.</p>
+                        </a>
+                        <a href="#docs:platform_manual" class="glass-card p-6 rounded-xl hover:bg-white/5 transition-all transform hover:-translate-y-1 border border-white/10 group">
+                            <i class="fa-solid fa-book text-3xl text-purple-400 mb-4 group-hover:translate-x-1 transition-transform"></i>
+                            <h3 class="text-lg font-bold text-white mb-1">Documentation</h3>
+                            <p class="text-xs text-slate-400">Guides and technical specifications.</p>
+                        </a>
                     </div>
                 </div>
             </header>
@@ -172,14 +222,17 @@
                     <div class="mb-16">
                         <h2 class="text-4xl font-bold text-white mb-6">Enterprise Capabilities</h2>
                         <p class="text-xl text-slate-400 max-w-3xl">
-                            Dynastore transforms how organizations manage geospatial data. It replaces brittle monoliths
+                            The platform transforms how organizations manage geospatial data. It replaces brittle monoliths
                             with a flexible, modular ecosystem that adapts to your needs.
                         </p>
                     </div>
 
                     <!-- Feature Grid -->
                     <div class="grid md:grid-cols-2 gap-8 mb-20">
-                        <div class="glass-card p-8 rounded-2xl">
+                        <div class="glass-card p-8 rounded-2xl relative overflow-hidden group">
+                            <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                                <i class="fa-solid fa-users-viewfinder text-8xl"></i>
+                            </div>
                             <h3 class="text-2xl font-bold text-white mb-4 flex items-center gap-3">
                                 <i class="fa-solid fa-users-viewfinder text-dyna-accent"></i> True Multi-Tenancy
                             </h3>
@@ -187,34 +240,51 @@
                                 Create isolated environments for departments or clients instantly. Each
                                 <code>catalog_id</code> maps to a distinct, physically isolated database schema.
                             </p>
-                            <ul class="space-y-2 text-sm text-slate-300">
-                                <li class="flex items-center gap-2"><i class="fa-solid fa-check text-dyna-success"></i>
+                            <ul class="space-y-4 text-sm text-slate-300">
+                                <li class="flex items-center gap-3"><i class="fa-solid fa-check text-dyna-success"></i>
                                     Data Isolation via Physical Schemas</li>
-                                <li class="flex items-center gap-2"><i class="fa-solid fa-check text-dyna-success"></i>
+                                <li class="flex items-center gap-3"><i class="fa-solid fa-check text-dyna-success"></i>
                                     Performance Isolation</li>
-                                <li class="flex items-center gap-2"><i class="fa-solid fa-check text-dyna-success"></i>
+                                <li class="flex items-center gap-3"><i class="fa-solid fa-check text-dyna-success"></i>
                                     Cloud & On-Premise Support</li>
                             </ul>
+                            <div class="mt-8">
+                                <a href="#ext:admin" class="inline-flex items-center gap-2 text-dyna-accent hover:underline font-semibold">
+                                    Manage Tenancy in Admin Panel <i class="fa-solid fa-arrow-right text-xs"></i>
+                                </a>
+                            </div>
                         </div>
 
-                        <div class="glass-card p-8 rounded-2xl">
+                        <div class="glass-card p-8 rounded-2xl relative overflow-hidden group">
+                            <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                                <i class="fa-solid fa-globe text-8xl"></i>
+                            </div>
                             <h3 class="text-2xl font-bold text-white mb-4 flex items-center gap-3">
                                 <i class="fa-solid fa-globe text-dyna-accent"></i> Comprehensive OGC Support
                             </h3>
                             <p class="text-slate-400 mb-6">
-                                Stop building custom APIs. Dynastore exposes your data through standardized,
+                                Stop building custom APIs. The platform exposes your data through standardized,
                                 interoperable interfaces compatible with QGIS, ArcGIS, and web maps.
                             </p>
-                            <ul class="space-y-2 text-sm text-slate-300">
-                                <li class="flex items-center gap-2"><i class="fa-solid fa-check text-dyna-success"></i>
+                            <ul class="space-y-4 text-sm text-slate-300">
+                                <li class="flex items-center gap-3"><i class="fa-solid fa-check text-dyna-success"></i>
                                     OGC API - Features (Part 1 & 2)</li>
-                                <li class="flex items-center gap-2"><i class="fa-solid fa-check text-dyna-success"></i>
+                                <li class="flex items-center gap-3"><i class="fa-solid fa-check text-dyna-success"></i>
                                     SpatioTemporal Asset Catalog (STAC)</li>
-                                <li class="flex items-center gap-2"><i class="fa-solid fa-check text-dyna-success"></i>
+                                <li class="flex items-center gap-3"><i class="fa-solid fa-check text-dyna-success"></i>
                                     OGC API - Tiles & Processes</li>
                             </ul>
+                            <div class="mt-8 flex gap-6">
+                                <a href="#ext:stac" class="inline-flex items-center gap-2 text-emerald-400 hover:underline font-semibold">
+                                    Launch STAC Browser <i class="fa-solid fa-arrow-right text-xs"></i>
+                                </a>
+                                <a href="#ext:maps" class="inline-flex items-center gap-2 text-blue-400 hover:underline font-semibold">
+                                    Launch Map Viewer <i class="fa-solid fa-arrow-right text-xs"></i>
+                                </a>
+                            </div>
                         </div>
                     </div>
+
 
                     <!-- Deployment & Scalability -->
                     <div class="bg-slate-900 rounded-2xl p-8 border border-white/10 mb-20">
@@ -577,7 +647,7 @@
                             <div class="glass-card p-6 rounded-xl border-l-4 border-emerald-500">
                                 <h3 class="text-lg font-bold text-white mb-2">3. "Lazy" Partitions</h3>
                                 <p class="text-sm text-slate-400 mb-2">
-                                    Dynastore creates partitions <strong>Just-In-Time</strong> (JIT) using Database
+                                    The platform creates partitions <strong>Just-In-Time</strong> (JIT) using Database
                                     Triggers.
                                     When a row is inserted, the DB checks if a partition exists. If not, it creates it
                                     instantly.
@@ -666,10 +736,10 @@
                         <span
                             class="text-dyna-warning font-mono text-sm font-semibold tracking-wider uppercase">Strategic
                             Value</span>
-                        <h2 class="text-4xl font-bold text-white mt-2">Why Dynastore?</h2>
+                        <h2 class="text-4xl font-bold text-white mt-2">The Platform Value</h2>
                         <p class="mt-4 text-xl text-slate-400 max-w-2xl mx-auto">
-                            Dynastore is not just code; it's a strategic asset designed to lower TCO, mitigate risk, and
-                            capture the explosive growth of the geospatial market.
+                            The Agro-Informatics Platform (AIP) is a strategic asset designed to lower TCO, mitigate risk, and
+                            enable high-scale geospatial analysis across the enterprise.
                         </p>
                     </div>
 
@@ -678,7 +748,7 @@
                         <div class="glass-card p-8 rounded-2xl border-l-4 border-dyna-warning">
                             <h3 class="text-2xl font-bold text-white mb-4">Total Cost of Ownership (TCO)</h3>
                             <p class="text-slate-400 mb-6 leading-relaxed">
-                                Traditional GIS systems are monolithic license-heavy beasts. Dynastore's modularity
+                                Traditional GIS systems are monolithic license-heavy beasts. Our modularity
                                 means you deploy <em>only</em> what you need.
                                 By leveraging <strong>PostgreSQL</strong> capabilities (Partitioning, JSONB) instead of
                                 expensive external orchestrators, infrastructure costs are slashed by up to 60%.
@@ -698,10 +768,10 @@
 
                         <!-- Strategy Card 3 -->
                         <div class="glass-card p-8 rounded-2xl border-l-4 border-dyna-primary">
-                            <h3 class="text-2xl font-bold text-white mb-4">Market Agility</h3>
+                            <h3 class="text-2xl font-bold text-white mb-4">Ecosystem Agility</h3>
                             <p class="text-slate-400 mb-6 leading-relaxed">
-                                The geospatial market moves fast. New standards (like OGC API) emerge yearly.
-                                Dynastore's API-agnostic core allows us to adopt new standards via plug-and-play
+                                The geospatial landscape moves fast. New standards (like OGC API) emerge yearly.
+                                Our API-agnostic core allows adoption of new standards via plug-and-play
                                 <strong>Extensions</strong> without refactoring the engine.
                                 We are future-proof by design.
                             </p>
@@ -711,8 +781,8 @@
                         <div class="glass-card p-8 rounded-2xl border-l-4 border-dyna-purple">
                             <h3 class="text-2xl font-bold text-white mb-4">The Trillion-Row Scale</h3>
                             <p class="text-slate-400 mb-6 leading-relaxed">
-                                With the new <strong>Physical vs. Logical</strong> abstraction layer, Dynastore handles
-                                data at a scale competitors crumble under.
+                                With the physical vs. logical abstraction layer, the platform handles
+                                data at a scale where competitors crumble.
                                 "Lazy" partitioning and base62-encoded physical schemas allow for infinite horizontal
                                 scaling of tenant data.
                             </p>
@@ -783,7 +853,70 @@
         </div>
     </footer>
 
+    <!-- Profiles Modal -->
+    <div id="profile-modal" class="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm hidden opacity-0 transition-opacity duration-300">
+        <div class="glass-panel w-full max-w-lg border border-white/10 rounded-2xl overflow-hidden shadow-2xl scale-95 transition-transform duration-300">
+            <div class="px-6 py-4 border-b border-white/10 flex items-center justify-between bg-dyna-dark">
+                <h3 class="text-xl font-bold text-white flex items-center gap-3">
+                    <i class="fa-solid fa-user-gear text-dyna-primary"></i> User Profile
+                </h3>
+                <button onclick="hideProfileModal()" class="text-slate-400 hover:text-white transition-colors">
+                    <i class="fa-solid fa-times text-xl"></i>
+                </button>
+            </div>
+            <div class="p-8 space-y-6">
+                <!-- User basic info (read only for now) -->
+                <div class="flex items-center gap-6 pb-6 border-b border-white/5">
+                    <div class="w-20 h-20 rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-3xl font-bold shadow-xl shadow-blue-500/20">
+                        <span id="modal-avatar-init">?</span>
+                    </div>
+                    <div>
+                        <h4 id="modal-display-name" class="text-2xl font-bold text-white">Guest User</h4>
+                        <p id="modal-email" class="text-slate-400 text-sm">user@example.com</p>
+                        <div class="mt-2 flex gap-2">
+                             <span id="user-role-badge" class="px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 text-[10px] font-bold uppercase tracking-wider border border-blue-500/20">User</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Editable Fields -->
+                <form id="profile-form" class="space-y-4 pt-4">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Display Name</label>
+                        <input type="text" id="profile-name-input" class="w-full bg-slate-900/50 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-dyna-primary transition-colors transition-shadow focus:shadow-[0_0_15px_rgba(59,130,246,0.2)]">
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Preferred Language</label>
+                            <select id="profile-lang-input" class="w-full bg-slate-900/50 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-dyna-primary transition-colors appearance-none">
+                                <option value="en">English</option>
+                                <option value="es">Español</option>
+                                <option value="fr">Français</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Account Type</label>
+                            <div class="w-full bg-slate-900/20 border border-white/5 rounded-xl px-4 py-3 text-slate-500 text-sm select-none">
+                                Enterprise Standard
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="pt-2">
+                        <button type="button" onclick="alert('Password reset link sent to your email!')" class="text-sm text-dyna-primary hover:underline font-medium">Change Password?</button>
+                    </div>
+                </form>
+            </div>
+            <div class="px-8 py-6 bg-slate-900/50 border-t border-white/10 flex justify-end gap-3">
+                <button onclick="hideProfileModal()" class="px-6 py-2.5 rounded-xl text-slate-400 hover:text-white transition-colors text-sm font-bold">Cancel</button>
+                <button type="submit" form="profile-form" class="px-8 py-2.5 rounded-xl bg-dyna-primary hover:bg-blue-600 text-white text-sm font-bold transition-all shadow-lg shadow-blue-500/20">Save Changes</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Interactive Script -->
+
     <script>
         let docsInitialized = false;
 

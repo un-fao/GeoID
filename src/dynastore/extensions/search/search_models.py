@@ -88,3 +88,24 @@ class GenericCollection(BaseModel):
     entities: List[Dict[str, Any]] = Field(default_factory=list)
     links: List[SearchLink] = Field(default_factory=list)
     numberReturned: Optional[int] = None
+
+
+class GeoidSearchBody(BaseModel):
+    """Body for batch geoid lookup against the obfuscated index."""
+    geoids: List[str] = Field(..., min_length=1, description="One or more geoid values to look up.")
+    catalog_id: Optional[str] = Field(None, description="Restrict search to a single catalog's obfuscated index.")
+    limit: int = Field(100, ge=1, le=10_000, description="Maximum number of results to return.")
+
+
+class GeoidResult(BaseModel):
+    """A single geoid lookup result from the obfuscated index."""
+    geoid: str
+    catalog_id: str
+    collection_id: str
+
+
+class GeoidCollection(BaseModel):
+    """Collection of geoid lookup results."""
+    type: str = "GeoidCollection"
+    results: List[GeoidResult] = Field(default_factory=list)
+    numberReturned: Optional[int] = None

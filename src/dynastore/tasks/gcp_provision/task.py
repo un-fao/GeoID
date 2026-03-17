@@ -24,6 +24,7 @@ from dynastore.tasks.protocols import TaskProtocol
 from dynastore.modules.tasks.models import (
     RunnerContext,
     TaskPayload,
+    PermanentTaskFailure,
 )
 
 from dynastore.modules import get_protocol
@@ -44,12 +45,11 @@ def _get_catalog_protocol() -> CatalogsProtocol:
 def _get_storage_protocol() -> StorageProtocol:
     protocol = get_protocol(StorageProtocol)
     if not protocol:
-        raise RuntimeError("StorageProtocol not available - GCP module not loaded")
+        raise PermanentTaskFailure("StorageProtocol not available - GCP module not loaded")
     return protocol
 
 class GcpProvisionInputs(BaseModel):
     catalog_id: str
-
 class ProvisioningTask(TaskProtocol):
     priority: int = 100
     """
@@ -63,7 +63,8 @@ class ProvisioningTask(TaskProtocol):
 
     async def run(self, payload: TaskPayload[GcpProvisionInputs]) -> Dict[str, Any]:
         try:
-            catalog_id = payload.inputs.catalog_id
+            inputs = payload.inputs
+            catalog_id = inputs.catalog_id if hasattr(inputs, 'catalog_id') else inputs.get('catalog_id')
             if not catalog_id:
                 raise ValueError("Missing 'catalog_id' in task inputs")
 
@@ -96,8 +97,22 @@ class ProvisioningTask(TaskProtocol):
                 "bucket_name": bucket_name,
                 "status": "ready"
             }
+        except PermanentTaskFailure:
+            raise
+        except RuntimeError as e:
+            msg = str(e)
+            _permanent_indicators = (
+                "not been initialized",
+                "failed to create a storage client",
+                "bucket name returned as none",
+                "credentials",
+            )
+            if any(indicator in msg.lower() for indicator in _permanent_indicators):
+                raise PermanentTaskFailure(f"GCP unavailable, cannot provision '{catalog_id}': {msg}") from e
+            logger.error(f"CRITICAL: GcpProvisionCatalogTask FAILED for {catalog_id}: {e}", exc_info=True)
+            raise
         except Exception as e:
-            logger.error(f"CRITICAL: GcpProvisionCatalogTask FAILED for {payload.inputs.catalog_id}: {e}", exc_info=True)
+            logger.error(f"CRITICAL: GcpProvisionCatalogTask FAILED for {catalog_id}: {e}", exc_info=True)
             raise
 
 class GcpDestroyCatalogTask(TaskProtocol):
@@ -110,7 +125,8 @@ class GcpDestroyCatalogTask(TaskProtocol):
     task_type = "gcp_destroy_catalog"
 
     async def run(self, payload: TaskPayload[GcpProvisionInputs]) -> Dict[str, Any]:
-        catalog_id = payload.inputs.catalog_id
+        inputs = payload.inputs
+        catalog_id = inputs.catalog_id if hasattr(inputs, 'catalog_id') else inputs.get('catalog_id')
         if not catalog_id:
             raise ValueError("Missing 'catalog_id' in task inputs")
 

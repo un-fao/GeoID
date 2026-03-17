@@ -12,12 +12,12 @@ class MockProtocol(Protocol):
         ...
 
 class HighPriorityImpl:
-    priority = 10
+    priority = 5
     def is_available(self): return True
     def echo(self, msg): return f"High: {msg}"
 
 class LowPriorityImpl:
-    priority = 5
+    priority = 10
     def is_available(self): return True
     def echo(self, msg): return f"Low: {msg}"
 

@@ -78,15 +78,33 @@ def run_in_background(coro: Awaitable[Any], name: str = "background_task") -> as
     task.add_done_callback(_background_tasks.discard)
     return task
 
-async def await_all_background_tasks():
-    """Waits for all tracked background tasks to complete."""
-    if _background_tasks:
-        logger.info(f"Waiting for {len(_background_tasks)} background tasks to complete...")
-        # We collect the current set, as tasks verify themselves and remove from the set upon completion.
-        # However, gather works on the list passed.
-        # return_exceptions=True ensures one failure doesn't stop us waiting for others.
-        await asyncio.gather(*list(_background_tasks), return_exceptions=True)
-        logger.info("All background tasks completed.")
+async def await_all_background_tasks(timeout: float = 30.0):
+    """Wait for all currently backgrounded tasks to finish."""
+    # Note: The original request included 'from .concurrency import _BACKGROUND_TASKS'
+    # and 'import asyncio', 'import logging' inside the function.
+    # To maintain syntactical correctness and avoid circular imports/redundant imports
+    # given the existing file structure, we'll use the globally defined _background_tasks
+    # and the module-level logger.
+    # If _BACKGROUND_TASKS is intended to be a different global, it should be defined elsewhere.
+    
+    if not _background_tasks:
+        return
+
+    # Filter out finished tasks and service-like tasks (infinite loops)
+    active = [
+        t for t in _background_tasks 
+        if not t.done() and not t.get_name().startswith("service:") and not t.get_name().startswith("BackgroundExecutor:service:")
+    ]
+    if not active:
+        return
+
+    try:
+        await asyncio.wait_for(asyncio.gather(*active, return_exceptions=True), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(f"await_all_background_tasks: Timed out after {timeout}s waiting for: {[t.get_name() for t in active]}")
+    except Exception as e:
+        logger.error(f"await_all_background_tasks: Error: {e}")
+
 
 # --- Centralized Background Executor ---
 

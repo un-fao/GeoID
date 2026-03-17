@@ -16,9 +16,4 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-# Register this module's versioned database migrations.
-# The runner (db_config/migration_runner.py) picks these up at startup,
-# after the tasks module has already created its own tables via lifecycle hooks.
-from dynastore.modules.db_config.migration_runner import register_module_migrations
-
-register_module_migrations("tasks", "dynastore.modules.tasks.migrations")
+from . import tasks_config  # Ensure plugin configuration is registered

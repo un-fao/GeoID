@@ -41,8 +41,6 @@ from dynastore.models.protocols import CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
 
 logger = logging.getLogger(__name__)
-
-
 class CRSExtension(ExtensionProtocol):
     priority: int = 100
     """

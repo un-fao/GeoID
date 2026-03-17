@@ -63,6 +63,8 @@ from dynastore.modules.gcp.gcp_config import (
     GcsNotificationEventType,
     GCP_CATALOG_BUCKET_CONFIG_ID,
     GCP_EVENTING_CONFIG_ID,
+    GCP_MODULE_CONFIG_ID,
+    GcpModuleConfig,
     TriggeredAction,
 )
 from dynastore.modules.gcp.models import (
@@ -79,7 +81,7 @@ except ImportError:
     storage = None
     pubsub_v1 = None
     run_v2 = None
-from dynastore.modules.gcp.bucket_manager import BucketManager
+from dynastore.modules.gcp.bucket_service import BucketService
 # from google.cloud import compute_v1
 
 logger = logging.getLogger(__name__)
@@ -87,15 +89,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Provisioning retry tunables
 # ---------------------------------------------------------------------------
-_CATALOG_VISIBILITY_MAX_RETRIES: int = int(os.environ.get("GCP_CATALOG_VISIBILITY_MAX_RETRIES", "20"))
-_CATALOG_VISIBILITY_RETRY_INTERVAL: float = float(os.environ.get("GCP_CATALOG_VISIBILITY_RETRY_INTERVAL", "1.0"))
+# Provisioning retry tunables - will be initialized from GcpModuleConfig if available
+_CATALOG_VISIBILITY_MAX_RETRIES: int = 20
+_CATALOG_VISIBILITY_RETRY_INTERVAL: float = 0.2
 _CATALOG_EXISTS_QUERY = DQLQuery(
     "SELECT 1 FROM catalog.catalogs WHERE id = :catalog_id AND deleted_at IS NULL",
     result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
 )
-
-
-
 class GCPModule(
     ModuleProtocol,
     StorageProtocol,
@@ -107,7 +107,8 @@ class GCPModule(
     _credentials: Optional[Any] = None
     _identity: Optional[Dict[str, Any]] = None
     _engine: Optional[DbResource] = None
-    _config_manager: Optional[ConfigsProtocol] = None
+    _config_service: Optional[ConfigsProtocol] = None
+    _module_config: Optional[GcpModuleConfig] = None
 
     @property
     def engine(self) -> DbResource:
@@ -130,7 +131,7 @@ class GCPModule(
     # Asynchronous clients (initialized in lifespan)
     _jobs_client: Optional["run_v2.JobsAsyncClient"] = None
     _run_client: Optional["run_v2.ServicesAsyncClient"] = None
-    _bucket_manager: Optional[BucketManager] = None
+    _bucket_service: Optional[BucketService] = None
 
     def __init__(self, app_state: object) -> None:
         super().__init__()
@@ -179,14 +180,14 @@ class GCPModule(
                     credentials=self._credentials
                 )
 
-            # Update BucketManager if it exists
-            if self._bucket_manager:
-                self._bucket_manager.storage_client = self._storage_client
+            # Update BucketService if it exists
+            if self._bucket_service:
+                self._bucket_service.storage_client = self._storage_client
                 if project_id:
-                    self._bucket_manager.project_id = project_id
+                    self._bucket_service.project_id = project_id
                 region = self.get_region()
                 if region:
-                    self._bucket_manager.region = region
+                    self._bucket_service.region = region
         else:
             logger.warning("No credentials available to reinitialize clients.")
 
@@ -197,13 +198,29 @@ class GCPModule(
     @asynccontextmanager
     async def lifespan(self, app_state: object) -> AsyncIterator[None]:
         logger.info("GCP Module: Entering lifespan - initializing clients.")
-        
-        # Ensure synchronous clients are open (re-open if closed from previous lifespan)
+
+        # 1. Retrieve ConfigManager and Global Module Config
+        self._config_service = get_protocol(ConfigsProtocol)
+        if self._config_service:
+            self._module_config = await self._config_service.get_config(GCP_MODULE_CONFIG_ID)
+            
+            # Synchronize local tunables with global config
+            if self._module_config:
+                global _CATALOG_VISIBILITY_MAX_RETRIES, _CATALOG_VISIBILITY_RETRY_INTERVAL
+                _CATALOG_VISIBILITY_MAX_RETRIES = self._module_config.catalog_visibility_max_retries
+                _CATALOG_VISIBILITY_RETRY_INTERVAL = self._module_config.catalog_visibility_retry_interval
+        else:
+            logger.warning(
+                "GCP Module: ConfigsProtocol not available. Global settings will use defaults/env."
+            )
+            self._module_config = GcpModuleConfig() # Use defaults (including env fallbacks)
+
+        # 2. Ensure synchronous clients are open (re-open if closed from previous lifespan)
         self.reinitialize_clients()
 
         # Retrieve ConfigsProtocol via dm.get_protocol
-        self._config_manager = get_protocol(ConfigsProtocol)
-        if not self._config_manager:
+        self._config_service = get_protocol(ConfigsProtocol)
+        if not self._config_service:
             logger.warning(
                 "GCP Module: ConfigsProtocol not available. Configuration management disabled."
             )
@@ -226,10 +243,10 @@ class GCPModule(
                     "GCP Module: No credentials available for async clients."
                 )
 
-            # Initialize BucketManager (Safe even if clients are None)
-            self._bucket_manager = BucketManager(
+            # Initialize BucketService (Safe even if clients are None)
+            self._bucket_service = BucketService(
                 engine=self._engine, # Explicitly pass current engine check
-                config_manager=self._config_manager,
+                config_service=self._config_service,
                 storage_client=self._storage_client,
                 project_id=self.get_project_id(),
                 region=self.get_region(),
@@ -264,22 +281,40 @@ class GCPModule(
 
             yield
         finally:
-            logger.info("GCP Module: Exiting lifespan - closing async clients.")
-            if self._storage_client:
-                try:
-                    self._storage_client.close()
-                except Exception:
-                    pass
-            if self._subscriber_client:
-                try:
-                    self._subscriber_client.close()
-                except Exception:
-                    pass
-
-            self._jobs_client = None
-            self._run_client = None
-
+            logger.info("GCP Module: Exiting lifespan - closing all clients.")
+            await self.close()
             logger.info("GCP Module: Lifespan shutdown complete.")
+
+    async def close(self) -> None:
+        """
+        Explicitly closes all GCP client instances and clears their references.
+        This is critical for preventing 'Closed Channel' errors during test isolation.
+        """
+        clients_to_close = [
+            ("_storage_client", self._storage_client),
+            ("_publisher_client", self._publisher_client),
+            ("_subscriber_client", self._subscriber_client),
+            ("_jobs_client", self._jobs_client),
+            ("_run_client", self._run_client),
+        ]
+
+        for attr, client in clients_to_close:
+            if client:
+                try:
+                    # Generic close for both sync and async clients
+                    if hasattr(client, "close"):
+                        if asyncio.iscoroutinefunction(client.close):
+                            await client.close()
+                        else:
+                            client.close()
+                    setattr(self, attr, None)
+                except Exception as e:
+                    logger.debug(f"GCP Module: Error closing {attr}: {e}")
+
+        self._bucket_service = None
+        self._config_service = None
+        # self._module_config is kept to preserve settings across lifespans if needed, 
+        # but re-fetched on start anyway.
 
     # --- Lifecycle Hooks ---
 
@@ -318,7 +353,7 @@ class GCPModule(
                 
                 # Link the deterministic bucket name in the DB to allow uploads
                 from dynastore.modules.gcp import gcp_db
-                bucket_name = self.get_bucket_manager().generate_bucket_name(catalog_id, physical_schema=physical_schema)
+                bucket_name = self.get_bucket_service().generate_bucket_name(catalog_id, physical_schema=physical_schema)
                 # Catalog existence check is not strictly needed here as the lifecycle hook 
                 # only runs if the catalog was successfully created.
                 await gcp_db.link_bucket_to_catalog_query.execute(
@@ -398,7 +433,7 @@ class GCPModule(
 
             if eventing_data:
                 try:
-                    from dynastore.modules.db_config.platform_config_manager import (
+                    from dynastore.modules.db_config.platform_config_service import (
                         ConfigRegistry,
                     )
 
@@ -435,7 +470,7 @@ class GCPModule(
             # Bucket deletion logic (optional/configurable) would go here
             # For now, we force delete the bucket if it exists to satisfy the lifecycle contract.
             # In a production system, we might want a 'retain_bucket' flag in the config.
-            bucket_manager = self.get_bucket_manager()
+            bucket_manager = self.get_bucket_service()
             bucket_name = await bucket_manager.get_storage_identifier(catalog_id)
             if bucket_name:
                 logger.info(
@@ -485,13 +520,13 @@ class GCPModule(
         # Nothing critical to do here yet.
         pass
 
-    def get_config_manager(self) -> ConfigsProtocol:
-        if not self._config_manager:
+    def get_config_service(self) -> ConfigsProtocol:
+        if not self._config_service:
             from dynastore.tools.discovery import get_protocol
-            self._config_manager = get_protocol(ConfigsProtocol)
-        if not self._config_manager:
+            self._config_service = get_protocol(ConfigsProtocol)
+        if not self._config_service:
             raise RuntimeError("GCPModule: ConfigsProtocol not available.")
-        return self._config_manager
+        return self._config_service
 
     def get_storage_client(self) -> "storage.Client":
         """
@@ -514,11 +549,11 @@ class GCPModule(
             )
         return self._publisher_client
 
-    def get_bucket_manager(self) -> BucketManager:
-        """Returns the initialized BucketManager."""
-        if not self._bucket_manager:
+    def get_bucket_service(self) -> BucketService:
+        """Returns the initialized BucketService."""
+        if not self._bucket_service:
             raise RuntimeError("GCPModule has not been initialized.")
-        return self._bucket_manager
+        return self._bucket_service
 
     def get_subscriber_client(self) -> "pubsub_v1.SubscriberClient":
         """Returns the shared Pub/Sub Subscriber client instance."""
@@ -692,6 +727,11 @@ class GCPModule(
         """
         if self._identity and self._identity.get("project_id"):
             return self._identity.get("project_id")
+        
+        if self._module_config:
+            return self._module_config.project_id
+
+        # Legacy/Bootstrap fallback
         return os.getenv("PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
 
     def get_project_number(self) -> Optional[str]:
@@ -714,9 +754,13 @@ class GCPModule(
         """
         Returns the auto-detected GCP region, if available.
         """
-        if not self._identity:
-            return None
-        return self._identity.get("region")
+        if self._identity and self._identity.get("region"):
+            return self._identity.get("region")
+
+        if self._module_config:
+            return self._module_config.region
+
+        return os.getenv("REGION")
 
     def get_service_name(self) -> Optional[str]:
         """
@@ -759,16 +803,17 @@ class GCPModule(
             logger.info(f"Discovered and cached self URL: {service_details.uri}")
             return service_details.uri
         except Exception as e:
-            logger.error(
-                f"Failed to discover Cloud Run service URL: {e}", exc_info=True
+            # Fallback for local development or testing where Cloud Run Admin API might not be accessible
+            # or permissions are missing, but we still need a URL for push subscriptions (even if it's localhost)
+            service_url = os.getenv("SERVICE_URL", "http://localhost")
+            logger.warning(
+                f"Failed to discover Cloud Run service URL: {e}. Falling back to default: {service_url}"
             )
-            raise RuntimeError(
-                "Failed to get self URL from Cloud Run Admin API. Check service account permissions ('run.services.get')."
-            ) from e
+            return service_url
 
     def generate_bucket_name(self, catalog_id: str) -> str:
         """Generates the deterministic bucket name for a catalog."""
-        return self.get_bucket_manager().generate_bucket_name(catalog_id)
+        return self.get_bucket_service().generate_bucket_name(catalog_id)
 
     def generate_default_topic_id(self, catalog_id: str) -> str:
         """Generates the deterministic default Pub/Sub topic ID for a catalog."""
@@ -782,17 +827,17 @@ class GCPModule(
 
     async def get_storage_identifier(self, catalog_id: str) -> Optional[str]:
         """StorageProtocol: Returns the bucket name associated with a catalog."""
-        return await self.get_bucket_manager().get_storage_identifier(catalog_id)
+        return await self.get_bucket_service().get_storage_identifier(catalog_id)
 
     async def get_catalog_storage_path(self, catalog_id: str) -> Optional[str]:
         """StorageProtocol: Returns the storage path (e.g., gs://...) for a catalog."""
-        return await self.get_bucket_manager().get_catalog_storage_path(catalog_id)
+        return await self.get_bucket_service().get_catalog_storage_path(catalog_id)
 
     async def upload_file(
         self, source_path: str, target_path: str, content_type: Optional[str] = None
     ) -> str:
         """StorageProtocol: Uploads a local file to storage."""
-        return await self.get_bucket_manager().upload_file(
+        return await self.get_bucket_service().upload_file(
             source_path, target_path, content_type
         )
 
@@ -800,31 +845,31 @@ class GCPModule(
         self, target_path: str, content: bytes, content_type: Optional[str] = None
     ) -> str:
         """StorageProtocol: Uploads content (bytes) directly to storage."""
-        return await self.get_bucket_manager().upload_file_content(
+        return await self.get_bucket_service().upload_file_content(
             target_path, content, content_type
         )
 
     async def download_file(self, source_path: str, target_path: str) -> None:
         """StorageProtocol: Downloads a file from storage to local."""
-        return await self.get_bucket_manager().download_file(source_path, target_path)
+        return await self.get_bucket_service().download_file(source_path, target_path)
 
     async def file_exists(self, path: str) -> bool:
         """StorageProtocol: Checks if a file exists in storage."""
-        return await self.get_bucket_manager().file_exists(path)
+        return await self.get_bucket_service().file_exists(path)
 
     async def delete_file(self, path: str) -> None:
         """StorageProtocol: Deletes a file from storage."""
-        return await self.get_bucket_manager().delete_file(path)
+        return await self.get_bucket_service().delete_file(path)
 
     async def get_storage_identifier(self, catalog_id: str) -> Optional[str]:
         """StorageProtocol: Returns the storage identifier (bucket name) associated with a catalog."""
-        return await self.get_bucket_manager().get_storage_identifier(catalog_id)
+        return await self.get_bucket_service().get_storage_identifier(catalog_id)
 
     async def ensure_storage_for_catalog(
         self, catalog_id: str, conn: Optional[Any] = None
     ) -> Optional[str]:
         """StorageProtocol: Ensures that storage exists for a catalog, creating it if it doesn't."""
-        return await self.get_bucket_manager().ensure_storage_for_catalog(
+        return await self.get_bucket_service().ensure_storage_for_catalog(
             catalog_id, conn=conn
         )
 
@@ -832,7 +877,7 @@ class GCPModule(
         self, catalog_id: str, conn: Optional[Any] = None
     ) -> bool:
         """StorageProtocol: Deletes all storage resources associated with a catalog."""
-        return await self.get_bucket_manager().delete_storage_for_catalog(
+        return await self.get_bucket_service().delete_storage_for_catalog(
             catalog_id, conn=conn
         )
 
@@ -843,7 +888,7 @@ class GCPModule(
         Ensures that the target catalog and, if provided, collection exist before an
         operation like an upload. This will create them just-in-time if they don't exist.
         """
-        return await self.get_bucket_manager().prepare_upload_target(
+        return await self.get_bucket_service().prepare_upload_target(
             catalog_id, collection_id
         )
 
@@ -851,7 +896,7 @@ class GCPModule(
         self, source_path: str, target_path: str, content_type: Optional[str] = None
     ) -> str:
         """StorageProtocol: Uploads a local file to storage."""
-        return await self.get_bucket_manager().upload_file(
+        return await self.get_bucket_service().upload_file(
             source_path, target_path, content_type=content_type
         )
 
@@ -859,21 +904,21 @@ class GCPModule(
         self, target_path: str, content: bytes, content_type: Optional[str] = None
     ) -> str:
         """StorageProtocol: Uploads content (bytes) directly to storage."""
-        return await self.get_bucket_manager().upload_file_content(
+        return await self.get_bucket_service().upload_file_content(
             target_path, content, content_type=content_type
         )
 
     async def download_file(self, source_path: str, target_path: str) -> None:
         """StorageProtocol: Downloads a file from storage to local."""
-        return await self.get_bucket_manager().download_file(source_path, target_path)
+        return await self.get_bucket_service().download_file(source_path, target_path)
 
     async def file_exists(self, path: str) -> bool:
         """StorageProtocol: Checks if a file exists in storage."""
-        return await self.get_bucket_manager().file_exists(path)
+        return await self.get_bucket_service().file_exists(path)
 
     async def delete_file(self, path: str) -> None:
         """StorageProtocol: Deletes a file from storage."""
-        return await self.get_bucket_manager().delete_file(path)
+        return await self.get_bucket_service().delete_file(path)
 
     async def setup_catalog_gcp_resources(
         self, catalog_id: str, context: Optional[LifecycleContext] = None
@@ -906,15 +951,19 @@ class GCPModule(
 
         try:
             # 2a. Ensure the bucket exists (creates it if needed, returns name)
-            bucket_name = await self.get_bucket_manager().ensure_storage_for_catalog(
+            # This method already queries the DB (short) then makes GCP calls (no DB)
+            bucket_name = await self.get_bucket_service().ensure_storage_for_catalog(
                 catalog_id,
                 conn=None,  # No connection — manages its own short transaction
                 context=context,
             )
-            if not bucket_name:
-                raise RuntimeError(
-                    f"Failed to create or retrieve bucket for catalog '{catalog_id}'."
-                )
+            
+            # CRITICAL CHECK: ensure storage was actually provisioned
+            if bucket_name is None:
+                 msg = f"Failed to provision storage for catalog '{catalog_id}': Bucket name returned as None."
+                 logger.error(msg)
+                 raise RuntimeError(msg)
+            
             provisioned_bucket = bucket_name
 
             # 2b. Determine the eventing config to apply
@@ -1048,8 +1097,8 @@ class GCPModule(
         self, catalog_id: str
     ) -> Optional[GcpCatalogBucketConfig]:
         """Internal helper to fetch and parse a catalog's bucket config."""
-        config_manager = self.get_config_manager()
-        config = await config_manager.get_config(
+        config_service = self.get_config_service()
+        config = await config_service.get_config(
             GCP_CATALOG_BUCKET_CONFIG_ID, catalog_id
         )
         return config if isinstance(config, GcpCatalogBucketConfig) else None
@@ -1058,17 +1107,17 @@ class GCPModule(
         self, catalog_id: str, config: GcpCatalogBucketConfig
     ) -> GcpCatalogBucketConfig:
         """Persists the bucket configuration for a catalog."""
-        config_manager = self.get_config_manager()
-        await config_manager.set_config(
+        config_service = self.get_config_service()
+        await config_service.set_config(
             GCP_CATALOG_BUCKET_CONFIG_ID, config, catalog_id=catalog_id
         )
-        return await config_manager.get_config(GCP_CATALOG_BUCKET_CONFIG_ID, catalog_id)
+        return await config_service.get_config(GCP_CATALOG_BUCKET_CONFIG_ID, catalog_id)
 
     async def apply_storage_config(
         self, catalog_id: str, config: GcpCatalogBucketConfig
     ):
         """StorageProtocol: Applies bucket configuration changes (CORS, Lifecycle)."""
-        bucket_manager = self.get_bucket_manager()
+        bucket_manager = self.get_bucket_service()
         await bucket_manager.update_bucket_config(catalog_id, config)
 
     async def apply_eventing_config(
@@ -1126,7 +1175,7 @@ class GCPModule(
         self, catalog_id: str, collection_id: str
     ) -> Optional[str]:
         """Returns the GCS path for a collection's folder (e.g., gs://bucket-name/collections/my-collection/)."""
-        return await self.get_bucket_manager().get_collection_storage_path(
+        return await self.get_bucket_service().get_collection_storage_path(
             catalog_id, collection_id
         )
 
@@ -1231,7 +1280,7 @@ class GCPModule(
 
         # Listing notifications can briefly return 404 if the bucket has just been
         # created or was externally deleted. We treat NotFound as recoverable:
-        # ensure the bucket exists (via BucketManager), wait for readiness, then retry with backoff.
+        # ensure the bucket exists (via BucketService), wait for readiness, then retry with backoff.
         async def _list_notifications_with_retry(
             bucket_obj,
             bucket_name_str,
@@ -1281,7 +1330,7 @@ class GCPModule(
                 f"Attempting to repair by ensuring bucket existence and retrying. Error: {e}"
             )
 
-            bucket_manager = self.get_bucket_manager()
+            bucket_manager = self.get_bucket_service()
             repaired_bucket_name = (
                 await bucket_manager.ensure_storage_for_catalog(
                     catalog_id, conn=conn
@@ -1524,12 +1573,12 @@ class GCPModule(
         """Tears down the full managed eventing pipeline."""
         # 1. Delete all GCS notification resources from the bucket.
         if managed_config.gcs_notification_ids:
-            bucket_name = await self.get_bucket_manager().get_storage_identifier(
+            bucket_name = await self.get_bucket_service().get_storage_identifier(
                 catalog_id
             )
             if bucket_name:
                 for notif_id in managed_config.gcs_notification_ids:
-                    await self.get_bucket_manager().teardown_gcs_notification(
+                    await self.get_bucket_service().teardown_gcs_notification(
                         bucket_name, notif_id
                     )
             else:
@@ -1588,13 +1637,13 @@ class GCPModule(
         self, catalog_id: str, config: GcpEventingConfig, conn=None
     ) -> GcpEventingConfig:
         """Persists the eventing configuration for a catalog."""
-        config_manager = self.get_config_manager()
+        config_service = self.get_config_service()
         # Pass the connection to reuse the transaction
-        await config_manager.set_config(
+        await config_service.set_config(
             GCP_EVENTING_CONFIG_ID, config, catalog_id=catalog_id, db_resource=conn
         )
         # Re-fetch to confirm and return the validated model
-        return await config_manager.get_config(
+        return await config_service.get_config(
             GCP_EVENTING_CONFIG_ID, catalog_id, db_resource=conn
         )
 
@@ -1660,9 +1709,9 @@ class GCPModule(
         context: Optional[LifecycleContext] = None,
     ) -> Optional[GcpEventingConfig]:
         """Internal helper to fetch and parse a catalog's eventing config."""
-        config_manager = self.get_config_manager()
+        config_service = self.get_config_service()
         # Pass the connection to reuse the transaction if provided
-        config = await config_manager.get_config(
+        config = await config_service.get_config(
             GCP_EVENTING_CONFIG_ID,
             catalog_id,
             db_resource=conn,

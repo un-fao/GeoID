@@ -246,7 +246,8 @@ class StacItemsSidecar(SidecarProtocol):
             errors.append("stac_extensions must be an array")
 
         return ValidationResult(
-            is_valid=len(errors) == 0, errors=errors, warnings=warnings
+            valid=len(errors) == 0,
+            error="; ".join(errors) if errors else None,
         )
 
     async def setup_lifecycle_hooks(

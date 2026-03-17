@@ -39,7 +39,6 @@ DWH_JOIN_EXPORT_PROCESS_DEFINITION = Process(
     jobControlOptions=["async-execute"],
     outputTransmission=["value"]
 )
-
 class DwhJoinExportTask(TaskProtocol[Process, TaskPayload[ExecuteRequest], Optional[StatusInfo]]):
     priority: int = 100
     @staticmethod

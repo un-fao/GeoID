@@ -56,7 +56,7 @@ def register_policy(policy: Policy):
     else:
         _REGISTERED_POLICIES[policy.id] = policy
         logger.debug(f"Registered policy '{policy.id}'")
-    return policy
+    return _REGISTERED_POLICIES[policy.id]
 
 
 def get_registered_policy(policy_id: str) -> Optional[Policy]:
@@ -83,7 +83,7 @@ def register_role(role: Role):
     else:
         _REGISTERED_ROLES[role_id] = role
         logger.debug(f"Registered role '{role_id}'")
-    return role
+    return _REGISTERED_ROLES[role_id]
 
 
 def register_principal(principal: Principal):
@@ -95,7 +95,7 @@ def register_principal(principal: Principal):
     return principal
 
 
-class PolicyManager:
+class PolicyService:
     _instance = None
     storage: AbstractPolicyStorage
     apikey_storage: Optional[AbstractApiKeyStorage]
@@ -169,7 +169,7 @@ class PolicyManager:
 
     def get_storage(self) -> AbstractPolicyStorage:
         if not self.storage:
-            raise RuntimeError("AccessControlManager not initialized.")
+            raise RuntimeError("PolicyService not initialized.")
         return self.storage
 
     def _derive_partition_key(self, path: str) -> str:
@@ -312,11 +312,7 @@ class PolicyManager:
                         "/apikey/auth/login",
                         "/apikey/auth/validate",
                         "/apikey/auth/jwks.json",
-                        "/auth/login",
-                        "/auth/logout",
-                        "/auth/authorize",
-                        "/auth/token",
-                        "/auth/debug",
+                        "/auth/.*",
                     ],
                     effect="ALLOW",
                     partition_key=pk,

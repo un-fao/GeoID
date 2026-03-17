@@ -71,44 +71,44 @@ def get_credentials() -> tuple:
         resolve_gcp_credentials()
         logger.debug(f"GCP GOOGLE_APPLICATION_CREDENTIALS: {os.getenv('GOOGLE_APPLICATION_CREDENTIALS','Not Set')}")
         credentials, project_id = default()
+        
+        # Initialize defaults to avoid UnboundLocalError
+        project_id_meta = project_id
+        account_email = getattr(credentials, 'service_account_email', 'N/A (user credentials)')
+        account_type = "Service Account" if hasattr(credentials, 'service_account_email') else "User Account"
+        region = os.getenv("REGION")
+        project_number = os.getenv("GCP_PROJECT_NUMBER")
 
         metadata_url = "http://metadata.google.internal/computeMetadata/v1/"
         headers = {"Metadata-Flavor": "Google"}
-        timeout = 60
+        timeout = 1.0 # Significant reduction from 60s
 
         try:
             # Fetch project ID from metadata server for consistency.
             project_id_meta_response = requests.get(f"{metadata_url}project/project-id", headers=headers, timeout=timeout)
-            project_id_meta_response.raise_for_status()
-            project_id_meta = project_id_meta_response.text
+            if project_id_meta_response.status_code == 200:
+                project_id_meta = project_id_meta_response.text
 
             # Fetch service account email.
             email_response = requests.get(f"{metadata_url}instance/service-accounts/default/email", headers=headers, timeout=timeout)
-            email_response.raise_for_status()
-            account_email = email_response.text
-            account_type = "Service Account"
+            if email_response.status_code == 200:
+                account_email = email_response.text
+                account_type = "Service Account"
 
             project_number_resp = requests.get(f"{metadata_url}project/numeric-project-id", headers=headers, timeout=timeout)
-            project_number_resp.raise_for_status()
-            project_number = project_number_resp.text
+            if project_number_resp.status_code == 200:
+                project_number = project_number_resp.text
 
             # Fetch region from zone.
             zone_response = requests.get(f"{metadata_url}instance/zone", headers=headers, timeout=timeout)
-            zone_response.raise_for_status()
-            zone = zone_response.text.split('/')[-1]
-            region = '-'.join(zone.split('-')[:-1])
+            if zone_response.status_code == 200:
+                zone = zone_response.text.split('/')[-1]
+                region = '-'.join(zone.split('-')[:-1])
 
         except (requests.exceptions.RequestException, IndexError) as e:
             # Fallback for environments without a metadata server (e.g., local dev with user creds)
             # or if metadata server is not reachable.
-            logging.warning(f"Could not contact GCP metadata server. Falling back to ADC properties for identity: {str(e)}")
-            account_email = getattr(credentials, 'service_account_email', 'N/A (user credentials)')
-            account_type = "Service Account" if hasattr(credentials, 'service_account_email') else "User Account"
-            region = os.getenv("REGION")
-            project_id_meta = project_id
-            # Project Number is not usually available in local ADC credentials
-            # We can try to grab it from an environment variable if the user set one
-            project_number = os.getenv("GCP_PROJECT_NUMBER")
+            logger.debug(f"Metadata server not available: {e}")
 
         # Use project_id_meta in the log message for consistency.
         logging.info(f"Successfully identified GCP identity. Account email: {account_email}, Project: {project_id_meta}, Region: {region or 'Not Detected'}")

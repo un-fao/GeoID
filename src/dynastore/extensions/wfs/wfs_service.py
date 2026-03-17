@@ -33,7 +33,7 @@ from contextlib import asynccontextmanager
 from dynastore.modules.db_config import shared_queries
 from dynastore.modules.db_config.query_executor import managed_transaction
 
-from dynastore.extensions import dynastore_extension, get_extension_instance
+from dynastore.extensions import get_extension_instance
 from dynastore.extensions.tools.db import get_async_connection, get_async_engine
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.protocols import (
@@ -110,9 +110,6 @@ format_map = {
     "application/gml+xml": OutputFormatEnum.GML,
     "application/gml+xml; version=3.2": OutputFormatEnum.GML,
 }
-
-
-
 class WFSService(ExtensionProtocol):
     priority: int = 100
     """

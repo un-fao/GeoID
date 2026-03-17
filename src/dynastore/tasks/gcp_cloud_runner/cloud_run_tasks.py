@@ -52,7 +52,7 @@ async def register_cloud_run_jobs_as_tasks():
     #    into the central registry.
     #    The new Clean Discovery Protocol ensures that even if strict dependencies are missing,
     #    we get the Process definition from `definition.py` and a Placeholder task.
-    discover_tasks(enabled_tasks=local_task_types)
+    discover_tasks(include_only=local_task_types)
 
     # 2. Get the now-populated registry.
     all_configs = get_all_task_configs()

@@ -14,7 +14,7 @@
 
 from typing import Protocol, Optional, Any, Dict, List, runtime_checkable
 from uuid import UUID
-from .policies import PolicyProtocol
+from .policies import PermissionProtocol
 
 
 from datetime import datetime
@@ -214,6 +214,6 @@ class ApiKeyProtocol(Protocol):
         """Extracts Bearer/ApiKey token from HTTP request."""
         ...
 
-    def get_policy_manager(self) -> PolicyProtocol:
-        """Returns the policy manager for checking permissions."""
+    def get_policy_service(self) -> PermissionProtocol:
+        """Returns the policy service for checking permissions."""
         ...

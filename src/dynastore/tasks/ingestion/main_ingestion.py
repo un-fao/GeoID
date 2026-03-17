@@ -24,7 +24,7 @@ import itertools
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Type
 
-from dynastore.modules.catalog.asset_manager import Asset, AssetBase
+from dynastore.modules.catalog.asset_service import Asset, AssetBase
 from pydantic import BaseModel
 
 from dynastore.modules.catalog.catalog_config import CollectionPluginConfig

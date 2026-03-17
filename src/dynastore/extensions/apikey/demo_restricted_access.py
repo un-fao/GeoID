@@ -81,11 +81,11 @@ async def setup_catalog_and_collection():
     In a real scenario, this would be done by an administrator.
     For this demo, we'll use a temporary admin key.
     """
-    # This is a simplified setup - in production, you'd use the ApiKeyManager
+    # This is a simplified setup - in production, you'd use the ApiKeyService
     # For demo purposes, we'll create a mock API key
     
     # In a real implementation, you would:
-    # 1. Initialize ApiKeyManager
+    # 1. Initialize ApiKeyService
     # 2. Create principal with restricted policies
     # 3. Create API key with rate/quota limits
     

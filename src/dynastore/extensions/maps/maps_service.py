@@ -114,11 +114,25 @@ def _return_empty_tile(width, height):
     # return Response(content=buffer.getvalue(), media_type="image/png")
     return Response(content=empty_png, media_type="image/png")
 
+from .policies import register_maps_policies
 class MapsService(ExtensionProtocol):
     priority: int = 100
     """Provides OGC API - Maps (WMS-like) functionality with filtering and Tiling."""
     router:APIRouter = APIRouter(tags=["OGC API - Maps (WMS)"], prefix="/maps")
     process_pool: Optional[ProcessPoolExecutor] = None
+
+    def configure_app(self, app: FastAPI):
+        """Early configuration: inject Maps public-access policy into global registry."""
+        register_maps_policies()
+        logger.info("MapsService: Policies registered.")
+
+        # Register @expose_web_page methods via WebModuleProtocol
+        from dynastore.modules import get_protocol
+        from dynastore.models.protocols import WebModuleProtocol
+        web = get_protocol(WebModuleProtocol)
+        if web:
+            web.scan_and_register_providers(self)
+            logger.info("MapsService: Web pages registered via WebModuleProtocol.")
 
     @staticmethod
     @asynccontextmanager
@@ -144,10 +158,10 @@ class MapsService(ExtensionProtocol):
         return MapsLandingPage(links=links)
 
     @expose_web_page(
-        page_id="map_viewer", 
-        title="Map Viewer", 
+        page_id="map_viewer",
+        title="Map Viewer",
         icon="fa-map",
-        description="Visualize geospatial data on an interactive map."
+        description="Visualize geospatial data on an interactive map.",
     )
     async def provide_map_viewer(self, request: Request):
         return await self._serve_page_template("map_viewer.html")

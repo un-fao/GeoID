@@ -29,13 +29,14 @@ It implements multiple protocols (CatalogsProtocol, AssetsProtocol, ConfigsProto
 by delegating to its internal services.
 """
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
 from typing import List, Optional, Any, Dict, Union, Set, AsyncIterator
 
 import dynastore.modules as dm
-from dynastore.modules.protocols import ModuleProtocol
+from dynastore.modules import ModuleProtocol
 from dynastore.modules.db_config.query_executor import (
     DbResource,
     managed_transaction,
@@ -70,12 +71,11 @@ from dynastore.modules.catalog.catalog_service import CatalogService
 from dynastore.modules.catalog.collection_service import CollectionService
 from dynastore.modules.catalog.item_service import ItemService
 from dynastore.models.query_builder import QueryRequest
-from dynastore.modules.catalog.config_manager import ConfigManager
-from dynastore.modules.catalog.asset_manager import AssetManager
+from dynastore.modules.catalog.config_service import ConfigService
+from dynastore.modules.catalog.asset_service import AssetService
 from dynastore.modules.catalog.properties_service import PropertiesService
 from dynastore.modules.catalog.localization_service import LocalizationService
 from dynastore.modules.catalog.event_service import (
-    process_queued_event as _process_queued_event,
     EventService,
     CatalogEventType,
     register_event_listener,
@@ -98,7 +98,10 @@ CREATE TABLE IF NOT EXISTS catalog.catalogs (
     conforms_to JSONB,
     links JSONB,
     assets JSONB,
+    stac_version VARCHAR(20) DEFAULT '1.0.0',
+    stac_extensions JSONB DEFAULT '[]'::jsonb,
     extra_metadata JSONB,
+    provisioning_status VARCHAR(50) NOT NULL DEFAULT 'ready',
     deleted_at TIMESTAMPTZ DEFAULT NULL
 );
 """
@@ -113,12 +116,9 @@ CREATE TABLE IF NOT EXISTS catalog.shared_properties (
 );
 """
 
-from dynastore.modules.protocols import ModuleProtocol
+from dynastore.modules import ModuleProtocol
 
 _module_instance: Optional[ModuleProtocol] = None
-
-
-
 class CatalogModule(ModuleProtocol):
     priority: int = 20
     """
@@ -136,8 +136,8 @@ class CatalogModule(ModuleProtocol):
         self.catalog_service: Optional[CatalogService] = None
         self.collection_service: Optional[CollectionService] = None
         self.items_service: Optional[ItemService] = None
-        self.config_manager: Optional[ConfigManager] = None
-        self.asset_manager: Optional[AssetManager] = None
+        self.config_service: Optional[ConfigService] = None
+        self.asset_service: Optional[AssetService] = None
         self.properties_service: Optional[PropertiesService] = None
         self.localization_service: Optional[LocalizationService] = None
         self.event_service: Optional[EventService] = None
@@ -162,8 +162,8 @@ class CatalogModule(ModuleProtocol):
         self.catalog_service = CatalogService(engine=engine)
         self.collection_service = CollectionService(engine=engine)
         self.items_service = ItemService(engine=engine)
-        self.config_manager = ConfigManager(engine=engine)
-        self.asset_manager = AssetManager(engine=engine)
+        self.config_service = ConfigService(engine=engine)
+        self.asset_service = AssetService(engine=engine)
         self.properties_service = PropertiesService(engine=engine)
         self.localization_service = LocalizationService()
         self.event_service = EventService()
@@ -175,8 +175,8 @@ class CatalogModule(ModuleProtocol):
                 self.catalog_service,
                 self.collection_service,
                 self.items_service,
-                self.config_manager,
-                self.asset_manager,
+                self.config_service,
+                self.asset_service,
                 self.properties_service,
                 self.localization_service,
                 self.event_service,
@@ -238,25 +238,27 @@ class CatalogModule(ModuleProtocol):
                 await self._on_task_failed(**kwargs)
 
 
-            # 6. Start Background Tasks
-            ENABLE_EVENT_CONSUMER = (
-                os.environ.get("DYNASTORE_ENABLE_EVENT_CONSUMER", "false").lower() == "true"
-            )
-            event_consumer = None
-            if self.event_service.storage and ENABLE_EVENT_CONSUMER:
-                event_consumer = self.event_service.create_consumer(
-                    engine=engine,
-                    handler=_process_queued_event,
-                    batch_size=50,
-                    poll_interval=2.0,
+            # 6. Start Background Event Consumer (automatic)
+            # If any module registered async event listeners, start the
+            # durable event consumer automatically — no env var needed.
+            _consumer_shutdown = asyncio.Event()
+            if self.event_service.has_listeners():
+                logger.info(
+                    "CatalogModule: Async event listeners detected — "
+                    "starting durable event consumer automatically."
                 )
-                await event_consumer.start()
+                await self.event_service.start_consumer(_consumer_shutdown)
+            else:
+                logger.info(
+                    "CatalogModule: No async event listeners registered — "
+                    "event consumer not started."
+                )
 
             try:
                 yield
             finally:
-                if event_consumer:
-                    await event_consumer.stop()
+                _consumer_shutdown.set()
+                await self.event_service.stop_consumer()
                 # Services cleanup handled by AsyncExitStack (stack.close() via __aexit__)
 
     # === Unified Protocol Properties (Delegation) ===
@@ -338,9 +340,10 @@ class CatalogModule(ModuleProtocol):
         offset: int = 0,
         lang: str = "en",
         db_resource: Optional[Any] = None,
+        q: Optional[str] = None,
     ) -> List[Catalog]:
         return await self.catalog_service.list_catalogs(
-            limit=limit, offset=offset, lang=lang, db_resource=db_resource
+            limit=limit, offset=offset, lang=lang, db_resource=db_resource, q=q
         )
 
     async def search_catalogs(
@@ -420,9 +423,10 @@ class CatalogModule(ModuleProtocol):
         offset: int = 0,
         lang: str = "en",
         db_resource: Optional[Any] = None,
+        q: Optional[str] = None,
     ) -> List[Any]:
         return await self.collection_service.list_collections(
-            catalog_id, limit=limit, offset=offset, lang=lang, db_resource=db_resource
+            catalog_id, limit=limit, offset=offset, lang=lang, db_resource=db_resource, q=q
         )
 
     # === Item Operations ===
@@ -564,33 +568,27 @@ class CatalogModule(ModuleProtocol):
 
     @property
     def assets(self) -> AssetsProtocol:
-        return self.asset_manager
+        return self.asset_service
 
     @property
     def configs(self) -> ConfigsProtocol:
-        return self.config_manager
+        return self.config_service
 
-    def get_config_manager(self) -> ConfigManager:
-        """Deprecated: use self.configs instead."""
-        import warnings
-
-        warnings.warn(
-            "get_config_manager is deprecated, use the 'configs' protocol property instead.",
-            DeprecationWarning,
-            stacklevel=2,
+    def get_config_service(self) -> ConfigService:
+        # DEPRECATED: use .configs or get_protocol(ConfigsProtocol)
+        logger.warning(
+            "get_config_service is deprecated, use the 'configs' protocol property instead.",
+            stack_info=True,
         )
-        return self.config_manager
+        return self.config_service
 
-    def get_asset_manager(self) -> AssetManager:
-        """Deprecated: use self.assets instead."""
-        import warnings
-
-        warnings.warn(
-            "get_asset_manager is deprecated, use the 'assets' protocol property instead.",
-            DeprecationWarning,
-            stacklevel=2,
+    def get_asset_service(self) -> AssetService:
+        # DEPRECATED: use .assets or get_protocol(AssetsProtocol)
+        logger.warning(
+            "get_asset_service is deprecated, use the 'assets' protocol property instead.",
+            stack_info=True,
         )
-        return self.asset_manager
+        return self.asset_service
 
     @property
     def count_items_by_asset_id_query(self) -> Any:

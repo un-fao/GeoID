@@ -210,8 +210,6 @@ async def _resolve_crs_uri_to_srid(
     raise HTTPException(
         status_code=400, detail=f"Unsupported or unknown CRS URI: {crs_uri}"
     )
-
-
 class OGCFeaturesService(ExtensionProtocol):
     priority: int = 100
     router: APIRouter

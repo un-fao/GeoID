@@ -16,8 +16,6 @@ try:
 except ImportError:
     class EventsProtocol:
         pass
-
-
 class EventsExtension(ExtensionProtocol, EventsProtocol):
     priority: int = 100
     router = APIRouter(prefix="/events", tags=["Events"])

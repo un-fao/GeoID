@@ -35,10 +35,10 @@ class ApiKeyIdentityProvider(IdentityProviderProtocol):
 
     def __init__(self, apikey_manager=None):
         """
-        Initialize with ApiKeyManager instance.
+        Initialize with ApiKeyService instance.
 
         Args:
-            apikey_manager: ApiKeyManager instance for key validation
+            apikey_manager: ApiKeyService instance for key validation
         """
         self.manager = apikey_manager
 
@@ -57,7 +57,7 @@ class ApiKeyIdentityProvider(IdentityProviderProtocol):
             Identity dict with provider, sub (principal_id), email, or None if invalid
         """
         if not self.manager:
-            logger.warning("ApiKeyIdentitySPI: No ApiKeyManager configured")
+            logger.warning("ApiKeyIdentitySPI: No ApiKeyService configured")
             return None
 
         if not token or not token.startswith("sk_"):
@@ -67,7 +67,7 @@ class ApiKeyIdentityProvider(IdentityProviderProtocol):
             # Hash the key for lookup
             key_hash = hashlib.sha256(token.encode()).hexdigest()
 
-            # Validate via ApiKeyManager (checks expiration, status, etc.)
+            # Validate via ApiKeyService (checks expiration, status, etc.)
             principal, metadata, error = await self.manager.authenticate_apikey(token)
 
             if error or not principal:

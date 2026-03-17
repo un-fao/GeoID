@@ -23,10 +23,9 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
-from typing import List, Optional
-from typing import AsyncGenerator
+from typing import List, Optional, Any, Dict, AsyncGenerator
 from async_lru import alru_cache
 from dynastore.modules import ModuleProtocol
 from dynastore.modules.db_config.query_executor import (
@@ -38,7 +37,6 @@ from dynastore.modules.db_config.query_executor import (
     run_in_event_loop,
 )
 from dynastore.modules.db_config.locking_tools import check_table_exists
-from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
 from dynastore.modules.db_config.partition_tools import (
     ensure_hierarchical_partitions_exist,
     PartitionDefinition,
@@ -64,22 +62,27 @@ def get_task_schema() -> str:
 
 # --- DDL Definitions ---
 
-TENANT_TASKS_DDL = """
-CREATE TABLE IF NOT EXISTS \"{schema}\".tasks (
+# --- Step 1: Table creation only (IF NOT EXISTS safe) ---
+
+GLOBAL_TASKS_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS {schema}.tasks (
     task_id           UUID          NOT NULL,
+    schema_name       VARCHAR(255)  NOT NULL,
+    scope             VARCHAR(50)   NOT NULL DEFAULT 'CATALOG',
     caller_id         VARCHAR(255),
     task_type         VARCHAR       NOT NULL,
     type              VARCHAR       NOT NULL DEFAULT 'task',
+    execution_mode    VARCHAR       NOT NULL DEFAULT 'ASYNCHRONOUS',
     status            VARCHAR       NOT NULL DEFAULT 'PENDING',
     progress          INT           DEFAULT 0 CHECK (progress >= 0 AND progress <= 100),
     inputs            JSONB,
     outputs           JSONB,
     error_message     TEXT,
+    dedup_key         VARCHAR(512),
     timestamp         TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     started_at        TIMESTAMPTZ,
     finished_at       TIMESTAMPTZ,
     collection_id     VARCHAR(255),
-    -- Durable queue fields (populated by dispatcher / heartbeat manager)
     locked_until      TIMESTAMPTZ,
     last_heartbeat_at TIMESTAMPTZ,
     owner_id          VARCHAR(255),
@@ -87,42 +90,267 @@ CREATE TABLE IF NOT EXISTS \"{schema}\".tasks (
     max_retries       INT           NOT NULL DEFAULT 3,
     PRIMARY KEY (timestamp, task_id)
 ) PARTITION BY RANGE (timestamp);
-CREATE INDEX IF NOT EXISTS idx_tasks_caller    ON \"{schema}\".tasks (caller_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_timestamp ON \"{schema}\".tasks (timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_tasks_queue     ON \"{schema}\".tasks (status, locked_until)
-    WHERE status IN ('PENDING', 'ACTIVE');
+"""
 
-CREATE OR REPLACE FUNCTION "{schema}".notify_task_ready()
+GLOBAL_EVENTS_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS {schema}.events (
+    event_id      UUID          NOT NULL DEFAULT gen_random_uuid(),
+    event_type    VARCHAR       NOT NULL,
+    scope         VARCHAR(50)   NOT NULL DEFAULT 'PLATFORM',
+    schema_name   VARCHAR(255),
+    collection_id VARCHAR(255),
+    payload       JSONB         NOT NULL DEFAULT '{{}}',
+    status        VARCHAR       NOT NULL DEFAULT 'PENDING',
+    dedup_key     VARCHAR(512),
+    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    processed_at  TIMESTAMPTZ,
+    error_message TEXT,
+    retry_count   INT           NOT NULL DEFAULT 0,
+    PRIMARY KEY (created_at, event_id)
+) PARTITION BY RANGE (created_at);
+"""
+
+# --- Step 2: Indexes and triggers (run AFTER migration so all columns exist) ---
+
+GLOBAL_TASKS_INDEXES_DDL = """
+-- Queue claim index: optimizes claim_next() SKIP LOCKED query
+CREATE INDEX IF NOT EXISTS idx_tasks_queue
+    ON {schema}.tasks (status, task_type, execution_mode, locked_until)
+    WHERE status IN ('PENDING', 'ACTIVE');
+CREATE INDEX IF NOT EXISTS idx_tasks_schema_status
+    ON {schema}.tasks (schema_name, status);
+-- Dedup index: includes timestamp (partition key) as PG requires it for
+-- unique indexes on partitioned tables. Per-partition uniqueness;
+-- cross-partition dedup enforced at the application layer in enqueue().
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_dedup
+    ON {schema}.tasks (dedup_key, timestamp)
+    WHERE dedup_key IS NOT NULL AND status NOT IN ('COMPLETED', 'FAILED', 'DEAD_LETTER');
+CREATE INDEX IF NOT EXISTS idx_tasks_caller
+    ON {schema}.tasks (caller_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_timestamp
+    ON {schema}.tasks (timestamp DESC);
+-- task_id lookup index: enables complete/fail/heartbeat without full partition scan
+CREATE INDEX IF NOT EXISTS idx_tasks_task_id
+    ON {schema}.tasks (task_id);
+
+CREATE OR REPLACE FUNCTION {schema}.notify_task_ready()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-    PERFORM pg_notify('new_task_queued', '{schema}');
+    PERFORM pg_notify('new_task_queued', NEW.task_type);
     RETURN NEW;
 END;
 $$;
 
-DROP TRIGGER IF EXISTS on_task_insert ON "{schema}".tasks;
+DROP TRIGGER IF EXISTS on_task_insert ON {schema}.tasks;
 CREATE TRIGGER on_task_insert
-    AFTER INSERT ON "{schema}".tasks
-    FOR EACH ROW EXECUTE FUNCTION "{schema}".notify_task_ready();
+    AFTER INSERT ON {schema}.tasks
+    FOR EACH ROW
+    WHEN (NEW.status = 'PENDING')
+    EXECUTE FUNCTION {schema}.notify_task_ready();
+
+CREATE OR REPLACE FUNCTION {schema}.notify_task_status_changed()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_notify('task_status_changed', NEW.task_type || ':' || NEW.status);
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_task_status_update ON {schema}.tasks;
+CREATE TRIGGER on_task_status_update
+    AFTER UPDATE ON {schema}.tasks
+    FOR EACH ROW
+    WHEN (OLD.status IS DISTINCT FROM NEW.status)
+    EXECUTE FUNCTION {schema}.notify_task_status_changed();
+"""
+
+GLOBAL_EVENTS_INDEXES_DDL = """
+CREATE INDEX IF NOT EXISTS idx_events_queue
+    ON {schema}.events (status, created_at)
+    WHERE status = 'PENDING';
+-- Dedup index: includes created_at (partition key) as PG requires for
+-- unique indexes on partitioned tables. Cross-partition dedup enforced
+-- at application layer.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedup
+    ON {schema}.events (dedup_key, created_at)
+    WHERE dedup_key IS NOT NULL AND status NOT IN ('DEAD_LETTER');
+CREATE INDEX IF NOT EXISTS idx_events_schema
+    ON {schema}.events (schema_name, event_type);
+-- event_id lookup index: enables ack/nack without full partition scan
+CREATE INDEX IF NOT EXISTS idx_events_event_id
+    ON {schema}.events (event_id);
+
+CREATE OR REPLACE FUNCTION {schema}.notify_event_ready()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_notify('dynastore_events_channel', NEW.event_type);
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_event_insert ON {schema}.events;
+CREATE TRIGGER on_event_insert
+    AFTER INSERT ON {schema}.events
+    FOR EACH ROW
+    WHEN (NEW.status = 'PENDING')
+    EXECUTE FUNCTION {schema}.notify_event_ready();
+"""
+
+# --- Migration DDL for existing tables ---
+# These ALTER TABLE statements add columns introduced by the global table
+# restructuring. They are idempotent (IF NOT EXISTS) and safe to run on
+# tables that already have the columns.
+
+GLOBAL_TASKS_MIGRATION = """
+ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS schema_name VARCHAR(255);
+ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS scope VARCHAR(50) DEFAULT 'CATALOG';
+ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS execution_mode VARCHAR DEFAULT 'ASYNCHRONOUS';
+ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS dedup_key VARCHAR(512);
+ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
+ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ;
+ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS owner_id VARCHAR(255);
+ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS retry_count INT DEFAULT 0;
+ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS max_retries INT DEFAULT 3;
+ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ;
+ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS collection_id VARCHAR(255);
+
+-- Ensure new indexes exist (IF NOT EXISTS is idempotent)
+CREATE INDEX IF NOT EXISTS idx_tasks_task_id
+    ON {schema}.tasks (task_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_queue
+    ON {schema}.tasks (status, task_type, execution_mode, locked_until)
+    WHERE status IN ('PENDING', 'ACTIVE');
+"""
+
+GLOBAL_EVENTS_MIGRATION = """
+ALTER TABLE {schema}.events ADD COLUMN IF NOT EXISTS scope VARCHAR(50) DEFAULT 'PLATFORM';
+ALTER TABLE {schema}.events ADD COLUMN IF NOT EXISTS schema_name VARCHAR(255);
+ALTER TABLE {schema}.events ADD COLUMN IF NOT EXISTS collection_id VARCHAR(255);
+ALTER TABLE {schema}.events ADD COLUMN IF NOT EXISTS dedup_key VARCHAR(512);
+ALTER TABLE {schema}.events ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ;
+ALTER TABLE {schema}.events ADD COLUMN IF NOT EXISTS error_message TEXT;
+ALTER TABLE {schema}.events ADD COLUMN IF NOT EXISTS retry_count INT DEFAULT 0;
+
+-- Ensure new indexes exist
+CREATE INDEX IF NOT EXISTS idx_events_event_id
+    ON {schema}.events (event_id);
 """
 
 
-@lifecycle_registry.sync_catalog_initializer(priority=100)
-async def _initialize_tasks_tenant_slice(
-    conn: DbResource, schema: str, catalog_id: str
-):
-    """Initializes the tasks module's slice of the tenant schema."""
-    try:
-        await ensure_task_storage_exists(conn, schema)
-    except Exception:
-        import traceback
-
-        traceback.print_exc()
-        raise
+from dynastore.modules import ModuleProtocol
+from dynastore.models.protocols import TasksProtocol
+from dynastore.models.protocols.task_queue import TaskQueueProtocol
 
 
-class TasksModule(ModuleProtocol):
-    priority: int = 100
+class TasksModule(TaskQueueProtocol, ModuleProtocol):
+    priority: int = 15  # Must start before CatalogModule (20) to create global tables
+
+    # --- TasksProtocol CRUD (backward compat) ---
+
+    async def create_task(
+        self, engine: DbResource, task_data: Any, schema: str, initial_status: str = "PENDING"
+    ) -> Any:
+        return await create_task(engine, task_data, schema, initial_status=initial_status)
+
+    async def update_task(
+        self, conn: DbResource, task_id: uuid.UUID, update_data: Any, schema: str
+    ) -> Optional[Any]:
+        return await update_task(conn, task_id, update_data, schema)
+
+    async def get_task(
+        self, conn: DbResource, task_id: uuid.UUID, schema: str
+    ) -> Optional[Any]:
+        return await get_task(conn, task_id, schema)
+
+    async def list_tasks(
+        self, conn: DbResource, schema: str, limit: int = 20, offset: int = 0
+    ) -> List[Any]:
+        return await list_tasks(conn, schema, limit, offset)
+
+    # Catalog-aware versions
+    async def create_task_for_catalog(
+        self, engine: DbResource, task_data: Any, catalog_id: str
+    ) -> Any:
+        return await create_task_for_catalog(engine, task_data, catalog_id)
+
+    async def get_task_for_catalog(
+        self, conn: DbResource, task_id: uuid.UUID, catalog_id: str
+    ) -> Optional[Any]:
+        return await get_task_for_catalog(conn, task_id, catalog_id)
+
+    async def list_tasks_for_catalog(
+        self, conn: DbResource, catalog_id: str, limit: int = 20, offset: int = 0
+    ) -> List[Any]:
+        return await list_tasks_for_catalog(conn, catalog_id, limit, offset)
+
+    # --- TaskQueueProtocol queue operations ---
+
+    async def enqueue(
+        self,
+        engine: Any,
+        task_data: Any,
+        schema_name: str,
+        dedup_key: Optional[str] = None,
+        execution_mode: str = "ASYNCHRONOUS",
+        scope: str = "CATALOG",
+    ) -> Optional[Any]:
+        return await enqueue(engine, task_data, schema_name, dedup_key, execution_mode, scope)
+
+    async def claim_next(
+        self,
+        engine: Any,
+        async_task_types: List[str],
+        sync_task_types: List[str],
+        visibility_timeout: timedelta,
+        owner_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        return await claim_next(engine, async_task_types, sync_task_types, visibility_timeout, owner_id)
+
+    async def complete(
+        self,
+        engine: Any,
+        task_id: uuid.UUID,
+        timestamp: Any,
+        outputs: Optional[Any] = None,
+    ) -> None:
+        return await complete_task(engine, task_id, timestamp, outputs)
+
+    async def fail(
+        self,
+        engine: Any,
+        task_id: uuid.UUID,
+        timestamp: Any,
+        error_message: str,
+        retry: bool = True,
+    ) -> None:
+        return await fail_task(engine, task_id, timestamp, error_message, retry)
+
+    async def heartbeat(
+        self,
+        engine: Any,
+        task_ids: List[uuid.UUID],
+        visibility_timeout: timedelta,
+    ) -> None:
+        return await heartbeat_tasks(engine, task_ids, visibility_timeout)
+
+    async def find_stale(
+        self,
+        engine: Any,
+        stale_threshold: timedelta,
+        schema_name: Optional[str] = None,
+    ) -> List[Any]:
+        return await find_stale_tasks(engine, stale_threshold, schema_name)
+
+    async def cleanup_orphans(self, engine: Any, grace_period: timedelta) -> int:
+        return await cleanup_orphan_tasks(engine, grace_period)
+
+    async def get_capable_task_types(self) -> Dict[str, List[str]]:
+        from dynastore.modules.tasks.runners import capability_map
+        return {
+            "ASYNCHRONOUS": capability_map.async_types,
+            "SYNCHRONOUS": capability_map.sync_types,
+        }
     @asynccontextmanager
     async def lifespan(self, app_state: object) -> AsyncGenerator[None, None]:
         """
@@ -146,31 +374,46 @@ class TasksModule(ModuleProtocol):
 
         shutdown_event = asyncio.Event()
 
-        logger.info("TasksModule: Entering lifespan...")
-
         try:
             db = resolve(DatabaseProtocol)
             engine = db.get_any_engine()
-            logger.warning(f"DEBUG: TasksModule: Resolved engine: {engine}")
+            logger.debug(f"TasksModule: Resolved engine: {engine}")
         except (RuntimeError, AttributeError) as e:
-            logger.warning(f"DEBUG: TasksModule: Failed to resolve engine: {e}")
+            logger.warning(f"TasksModule: Failed to resolve engine: {e}")
             engine = None
 
-        logger.warning("DEBUG: TasksModule: Entering manage_tasks context...")
         async with manage_tasks(app_state):
-            logger.warning("DEBUG: TasksModule: Task singletons active.")
+            logger.info("TasksModule: Task singletons active.")
 
             if engine is not None:
                 executor = get_background_executor()
                 schema = get_task_schema()
 
                 # Ensure the tasks table exists before the dispatcher starts
-                async with managed_transaction(engine) as conn:
-                    await ensure_task_storage_exists(conn, schema)
+                # We use an advisory lock to prevent DDL deadlocks in parallel tests
+                from dynastore.modules.db_config.locking_tools import acquire_startup_lock
+                async with acquire_startup_lock(engine, f"tasks_storage_init.{schema}"):
+                    async with managed_transaction(engine) as conn:
+                        await ensure_task_storage_exists(conn, schema)
 
-                executor.submit(start_queue_listener(engine, shutdown_event))
-                executor.submit(run_dispatcher(engine, None, shutdown_event))
-                logger.info("TasksModule: QueueListener and Multi-Tenant Dispatcher launched.")
+                from dynastore.tools.discovery import get_protocol
+                from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
+                from dynastore.modules.tasks.tasks_config import TASKS_PLUGIN_CONFIG_ID, TasksPluginConfig
+                
+                poll_interval = 30.0
+                config_mgr = get_protocol(PlatformConfigsProtocol)
+                if config_mgr:
+                    try:
+                        # get_config can fetch from cache or DB; since we have an engine inside manage_tasks, we pass it safely
+                        tasks_config = await config_mgr.get_config(TASKS_PLUGIN_CONFIG_ID, db_resource=engine)
+                        if isinstance(tasks_config, TasksPluginConfig):
+                            poll_interval = tasks_config.queue_poll_interval
+                    except Exception as e:
+                        logger.warning(f"TasksModule: Failed to load TasksPluginConfig, defaulting to {poll_interval}s: {e}")
+
+                executor.submit(start_queue_listener(engine, shutdown_event, poll_timeout=poll_interval), task_name="service:queue_listener")
+                executor.submit(run_dispatcher(engine, None, shutdown_event), task_name="service:dispatcher")
+                logger.info(f"TasksModule: QueueListener (poll_interval={poll_interval}s) and Multi-Tenant Dispatcher launched.")
             else:
                 logger.warning(
                     "TasksModule: No database engine available — "
@@ -185,65 +428,77 @@ class TasksModule(ModuleProtocol):
 
 
 # --- Internal Query Objects ---
-# These are for the default 'tasks' schema.
-# For dynamic schemas, we will construct queries on the fly or use a dynamic builder.
-# We keep these for backward compatibility and default usage.
-_create_task_query = DQLQuery(
-    "INSERT INTO {schema}.tasks (task_id, caller_id, task_type, inputs, timestamp) VALUES (:task_id, :caller_id, :task_type, :inputs, :timestamp) RETURNING *;",
-    result_handler=ResultHandler.ONE_DICT,
-)
-_get_task_query = DQLQuery(
-    "SELECT * FROM {schema}.tasks WHERE task_id = :task_id;",
-    result_handler=ResultHandler.ONE_DICT,
-)
-_list_tasks_query = DQLQuery(
-    "SELECT * FROM {schema}.tasks ORDER BY timestamp DESC LIMIT :limit OFFSET :offset;",
-    result_handler=ResultHandler.ALL_DICTS,
-)
+# All queries target the global tasks table. The `schema_name` column
+# distinguishes tenants; `get_task_schema()` returns the PostgreSQL schema
+# that hosts the global table (default: "tasks").
 
 
 async def ensure_task_storage_exists(conn: DbResource, schema: str):
     """
-    Ensures that the task table exists in the specified schema.
-    Uses centralized DDL checking to avoid unnecessary logging during JIT calls.
+    Ensures that the global tasks and events tables exist in the specified schema.
+    Called once at startup. The schema is typically 'tasks' (configurable via
+    DYNASTORE_TASK_SCHEMA env var).
     """
-    from dynastore.modules.db_config.locking_tools import execute_safe_ddl
     from dynastore.modules.db_config import maintenance_tools
-    
+
     # Ensure schema exists first
     await ensure_schema_exists(conn, schema)
-    
-    async def table_exists_check():
-        from dynastore.modules.db_config.locking_tools import check_table_exists
+
+    async def tasks_table_exists():
         return await check_table_exists(conn, "tasks", schema)
 
-    # Create table formatted with the schema name securely.
-    from dynastore.modules.db_config.query_executor import DDLQuery
-    await DDLQuery(TENANT_TASKS_DDL).execute(
+    async def events_table_exists():
+        return await check_table_exists(conn, "events", schema)
+
+    # Step 1: Create tables (IF NOT EXISTS — safe for existing DBs)
+    await DDLQuery(GLOBAL_TASKS_TABLE_DDL).execute(
         conn,
         schema=schema,
         lock_key=f"{schema}_tasks",
-        existence_check=table_exists_check,
+        existence_check=tasks_table_exists,
+    )
+    await DDLQuery(GLOBAL_EVENTS_TABLE_DDL).execute(
+        conn,
+        schema=schema,
+        lock_key=f"{schema}_events",
+        existence_check=events_table_exists,
     )
 
-    # Ensure partitions for the task table in this schema
-    await maintenance_tools.ensure_future_partitions(
-        conn,
-        schema=schema,
-        table="tasks",
-        interval="monthly",
-        periods_ahead=12,
-        column="timestamp",
-    )
-    await maintenance_tools.register_retention_policy(
-        conn,
-        schema=schema,
-        table="tasks",
-        policy="prune",
-        interval="daily",
-        retention_period="1 month",
-        column="timestamp",
-    )
+    # Step 2: Migrate existing tables — add columns from the global table
+    # restructuring. IF NOT EXISTS ensures idempotency.
+    await DDLQuery(GLOBAL_TASKS_MIGRATION).execute(conn, schema=schema)
+    await DDLQuery(GLOBAL_EVENTS_MIGRATION).execute(conn, schema=schema)
+
+    # Step 3: Create indexes and triggers (runs AFTER migration so all columns exist)
+    await DDLQuery(GLOBAL_TASKS_INDEXES_DDL).execute(conn, schema=schema)
+    await DDLQuery(GLOBAL_EVENTS_INDEXES_DDL).execute(conn, schema=schema)
+
+    # Ensure partitions for both tables
+    for table, column in [("tasks", "timestamp"), ("events", "created_at")]:
+        await maintenance_tools.ensure_future_partitions(
+            conn,
+            schema=schema,
+            table=table,
+            interval="monthly",
+            periods_ahead=12,
+            column=column,
+        )
+        await maintenance_tools.register_retention_policy(
+            conn,
+            schema=schema,
+            table=table,
+            policy="prune",
+            interval="daily",
+            retention_period="1 month",
+            column=column,
+        )
+        await maintenance_tools.register_partition_creation_policy(
+            conn,
+            schema=schema,
+            table=table,
+            interval="monthly",
+            periods_ahead=3,
+        )
 
 
 # --- Public API Functions ---
@@ -317,90 +572,87 @@ async def update_task_for_catalog(
     return await update_task(conn, task_id, update_data, schema)
 
 
-# --- Low-level schema-based functions (for internal use) ---
-async def create_task(engine: DbResource, task_data: TaskCreate, schema: str) -> Task:
+# --- Low-level functions ---
+# The `schema` parameter in these functions refers to the `schema_name` column
+# value (e.g. tenant schema "s_abc123" or "system"), NOT the PostgreSQL schema
+# that hosts the table.  The actual table lives in `get_task_schema()`.tasks.
+
+async def create_task(
+    engine: DbResource,
+    task_data: TaskCreate,
+    schema: str,
+    initial_status: str = "PENDING",
+) -> Task:
     """
-    Creates a new task within a specific physical schema.
+    Creates a new task in the global tasks table with schema_name = `schema`.
+
+    Pass initial_status='RUNNING' to bypass the dispatcher queue (e.g. for
+    audit tasks created by BackgroundRunner that are already being executed
+    in-process and must not be re-claimed by the dispatcher).
     """
     from dynastore.tools.identifiers import generate_uuidv7
 
     task_id = generate_uuidv7()
     creation_time = datetime.now(timezone.utc)
+    task_schema = get_task_schema()
 
     async with managed_transaction(engine) as conn:
-        # Storage existence is ensured during module lifespan or tenant creation, 
-        # not on every task submission to avoid excessive DDL overhead and logs.
-
-        # Dynamic Insert - catalog_id is no longer needed in the table as it's isolated by schema
         sql = f"""
-            INSERT INTO "{schema}".tasks (task_id, caller_id, task_type, type, inputs, timestamp, collection_id) 
-            VALUES (:task_id, :caller_id, :task_type, :type, :inputs, :timestamp, :collection_id) 
+            INSERT INTO {task_schema}.tasks
+                (task_id, schema_name, scope, caller_id, task_type, type,
+                 execution_mode, inputs, timestamp, collection_id, dedup_key,
+                 status)
+            VALUES
+                (:task_id, :schema_name, :scope, :caller_id, :task_type, :type,
+                 :execution_mode, :inputs, :timestamp, :collection_id, :dedup_key,
+                 :status)
             RETURNING *;
         """
 
         task_dict = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
             conn,
             task_id=task_id,
+            schema_name=schema,
+            scope=task_data.scope,
             caller_id=task_data.caller_id,
             task_type=task_data.task_type,
             type=task_data.type,
+            execution_mode=task_data.execution_mode,
             inputs=json.dumps(task_data.inputs) if task_data.inputs else None,
             timestamp=creation_time,
             collection_id=task_data.collection_id,
+            dedup_key=task_data.dedup_key,
+            status=initial_status,
         )
         get_task.cache_invalidate(conn, task_id, schema)
         task = Task.model_validate(task_dict)
 
-        # Wake the dispatcher ONLY after the transaction actually commits.
-        # If this is a nested transaction, it will wait for the outermost commit.
-        from sqlalchemy import event
-        from dynastore.modules.tasks.queue import NEW_TASK_QUEUED
-        from dynastore.tools.async_utils import signal_bus
-        
-        # We need the sync connection from the async connection
-        sync_conn = conn.sync_connection
-
-        @event.listens_for(sync_conn, "commit")
-        def _on_commit(connection):
-            try:
-                from dynastore.modules.tasks.queue import mark_schema_dirty
-                mark_schema_dirty(schema)
-                loop = asyncio.get_running_loop()
-                loop.create_task(signal_bus.emit(NEW_TASK_QUEUED))
-            except RuntimeError:
-                pass 
-
     return task
-
 
 
 async def update_task(
     conn: DbResource, task_id: uuid.UUID, update_data: TaskUpdate, schema: str
 ) -> Optional[Task]:
     """
-    Updates the status and other fields of an existing task within a tenant schema.
+    Updates fields of an existing task in the global tasks table.
     """
-    # Get only the fields that were explicitly set in the update request.
+    task_schema = get_task_schema()
     update_fields = update_data.model_dump(exclude_unset=True)
 
-    # The 'outputs' field needs to be explicitly serialized to a JSON string
     if "outputs" in update_fields and update_fields["outputs"] is not None:
         from dynastore.tools.json import CustomJSONEncoder
         update_fields["outputs"] = json.dumps(update_fields["outputs"], cls=CustomJSONEncoder)
 
-    # Dynamically build the SET clause
     set_clauses = [f"{key} = :{key}" for key in update_fields.keys()]
     if not set_clauses:
         return await get_task(conn, task_id, schema)
 
     set_sql = ", ".join(set_clauses)
 
-    sql = f'UPDATE "{schema}".tasks SET {set_sql} WHERE task_id = :task_id RETURNING *;'
+    sql = f'UPDATE {task_schema}.tasks SET {set_sql} WHERE task_id = :task_id RETURNING *;'
 
-    # Add the task_id to the parameters
     query_params = {**update_fields, "task_id": task_id}
 
-    # Execute
     updated_task_dict = await DQLQuery(
         sql, result_handler=ResultHandler.ONE_DICT
     ).execute(conn, **query_params)
@@ -411,24 +663,24 @@ async def update_task(
 
 @alru_cache(maxsize=256)
 async def get_task(conn: DbResource, task_id: uuid.UUID, schema: str) -> Optional[Task]:
-    """Retrieves a single task by its ID from a tenant schema."""
-    sql = f'SELECT * FROM "{schema}".tasks WHERE task_id = :task_id;'
+    """Retrieves a single task by its ID from the global tasks table."""
+    task_schema = get_task_schema()
+    sql = f'SELECT * FROM {task_schema}.tasks WHERE task_id = :task_id;'
     task_dict = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
         conn, task_id=task_id
     )
-
     return Task.model_validate(task_dict) if task_dict else None
 
 
 async def list_tasks(
     conn: DbResource, schema: str, limit: int = 20, offset: int = 0
 ) -> List[Task]:
-    """Lists all tasks for a tenant, ordered by creation date."""
-    sql = f'SELECT * FROM "{schema}".tasks ORDER BY timestamp DESC LIMIT :limit OFFSET :offset;'
+    """Lists tasks filtered by schema_name, ordered by creation date."""
+    task_schema = get_task_schema()
+    sql = f'SELECT * FROM {task_schema}.tasks WHERE schema_name = :schema_name ORDER BY timestamp DESC LIMIT :limit OFFSET :offset;'
     task_dicts = await DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS).execute(
-        conn, limit=limit, offset=offset
+        conn, schema_name=schema, limit=limit, offset=offset
     )
-
     return [Task.model_validate(t) for t in task_dicts]
 
 
@@ -438,3 +690,353 @@ def update_task_sync(
 ) -> Optional[Task]:
     """Synchronous wrapper for updating a task."""
     return run_in_event_loop(update_task(conn, task_id, update_data, schema))
+
+
+# --- TaskQueueProtocol implementation functions ---
+
+async def enqueue(
+    engine: DbResource,
+    task_data: TaskCreate,
+    schema_name: str,
+    dedup_key: Optional[str] = None,
+    execution_mode: str = "ASYNCHRONOUS",
+    scope: str = "CATALOG",
+) -> Optional[Task]:
+    """
+    Enqueue a task into the global task queue.
+
+    If dedup_key is provided and already exists (for a non-terminal task),
+    returns None instead of creating a duplicate.
+    """
+    # Override task_data fields with explicit parameters
+    task_data.execution_mode = execution_mode
+    task_data.scope = scope
+    if dedup_key is not None:
+        task_data.dedup_key = dedup_key
+
+    from dynastore.tools.identifiers import generate_uuidv7
+
+    task_id = generate_uuidv7()
+    creation_time = datetime.now(timezone.utc)
+    task_schema = get_task_schema()
+
+    async with managed_transaction(engine) as conn:
+        if dedup_key is not None:
+            # Cross-partition dedup check: the UNIQUE index is per-partition
+            # (PG requires partition key in unique indexes), so we do an
+            # explicit check across all partitions before inserting.
+            check_sql = f"""
+                SELECT task_id FROM {task_schema}.tasks
+                WHERE dedup_key = :dedup_key
+                  AND status NOT IN ('COMPLETED', 'FAILED', 'DEAD_LETTER')
+                LIMIT 1;
+            """
+            existing = await DQLQuery(
+                check_sql, result_handler=ResultHandler.ONE_DICT
+            ).execute(conn, dedup_key=dedup_key)
+            if existing:
+                return None
+
+            sql = f"""
+                INSERT INTO {task_schema}.tasks
+                    (task_id, schema_name, scope, caller_id, task_type, type,
+                     execution_mode, inputs, timestamp, collection_id, dedup_key)
+                VALUES
+                    (:task_id, :schema_name, :scope, :caller_id, :task_type, :type,
+                     :execution_mode, :inputs, :timestamp, :collection_id, :dedup_key)
+                ON CONFLICT (dedup_key, timestamp)
+                    WHERE dedup_key IS NOT NULL
+                    AND status NOT IN ('COMPLETED', 'FAILED', 'DEAD_LETTER')
+                DO NOTHING
+                RETURNING *;
+            """
+        else:
+            sql = f"""
+                INSERT INTO {task_schema}.tasks
+                    (task_id, schema_name, scope, caller_id, task_type, type,
+                     execution_mode, inputs, timestamp, collection_id)
+                VALUES
+                    (:task_id, :schema_name, :scope, :caller_id, :task_type, :type,
+                     :execution_mode, :inputs, :timestamp, :collection_id)
+                RETURNING *;
+            """
+
+        task_dict = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
+            conn,
+            task_id=task_id,
+            schema_name=schema_name,
+            scope=scope,
+            caller_id=task_data.caller_id,
+            task_type=task_data.task_type,
+            type=task_data.type,
+            execution_mode=execution_mode,
+            inputs=json.dumps(task_data.inputs) if task_data.inputs else None,
+            timestamp=creation_time,
+            collection_id=task_data.collection_id,
+            dedup_key=dedup_key,
+        )
+
+        if task_dict is None:
+            # Dedup conflict — task already exists
+            return None
+
+        get_task.cache_invalidate(conn, task_id, schema_name)
+        return Task.model_validate(task_dict)
+
+
+async def claim_next(
+    engine: DbResource,
+    async_task_types: List[str],
+    sync_task_types: List[str],
+    visibility_timeout: timedelta,
+    owner_id: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Atomically claim the next available task matching the given types and
+    execution modes using FOR UPDATE SKIP LOCKED.
+    """
+    if not async_task_types and not sync_task_types:
+        return None
+
+    task_schema = get_task_schema()
+    locked_until = datetime.now(timezone.utc) + visibility_timeout
+
+    # Build WHERE conditions for execution mode + task type pairs
+    conditions = []
+    now = datetime.now(timezone.utc)
+    # Partition pruning hint: only scan recent partitions for PENDING tasks.
+    # Tasks older than 30 days should have been completed or dead-lettered.
+    lookback = now - timedelta(days=30)
+    params: Dict[str, Any] = {
+        "locked_until": locked_until,
+        "owner_id": owner_id,
+        "now": now,
+        "lookback": lookback,
+    }
+
+    if async_task_types:
+        conditions.append(
+            "(execution_mode = 'ASYNCHRONOUS' AND task_type = ANY(:async_types))"
+        )
+        params["async_types"] = async_task_types
+
+    if sync_task_types:
+        conditions.append(
+            "(execution_mode = 'SYNCHRONOUS' AND task_type = ANY(:sync_types))"
+        )
+        params["sync_types"] = sync_task_types
+
+    mode_filter = " OR ".join(conditions)
+
+    sql = f"""
+        UPDATE {task_schema}.tasks
+        SET status = 'ACTIVE',
+            locked_until = :locked_until,
+            owner_id = :owner_id,
+            started_at = COALESCE(started_at, NOW()),
+            last_heartbeat_at = NOW()
+        WHERE (timestamp, task_id) = (
+            SELECT timestamp, task_id FROM {task_schema}.tasks
+            WHERE status = 'PENDING'
+              AND timestamp >= :lookback
+              AND (locked_until IS NULL OR locked_until <= :now)
+              AND ({mode_filter})
+            ORDER BY timestamp ASC
+            LIMIT 1
+            FOR UPDATE SKIP LOCKED
+        )
+        RETURNING task_id, schema_name, scope, task_type, execution_mode,
+                  caller_id, inputs, collection_id, retry_count, max_retries,
+                  timestamp, dedup_key;
+    """
+
+    async with managed_transaction(engine) as conn:
+        result = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
+            conn, **params
+        )
+
+    return result
+
+
+async def complete_task(
+    engine: DbResource,
+    task_id: uuid.UUID,
+    timestamp: Any,
+    outputs: Optional[Any] = None,
+) -> None:
+    """Mark a claimed task as COMPLETED."""
+    task_schema = get_task_schema()
+    serialized_outputs = None
+    if outputs is not None:
+        from dynastore.tools.json import CustomJSONEncoder
+        serialized_outputs = json.dumps(outputs, cls=CustomJSONEncoder)
+
+    sql = f"""
+        UPDATE {task_schema}.tasks
+        SET status = 'COMPLETED',
+            finished_at = :finished_at,
+            outputs = :outputs,
+            locked_until = NULL,
+            owner_id = NULL
+        WHERE task_id = :task_id;
+    """
+    async with managed_transaction(engine) as conn:
+        await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
+            conn, task_id=task_id, finished_at=timestamp, outputs=serialized_outputs
+        )
+
+
+async def fail_task(
+    engine: DbResource,
+    task_id: uuid.UUID,
+    timestamp: Any,
+    error_message: str,
+    retry: bool = True,
+) -> None:
+    """
+    Mark a claimed task as failed. If retry=True and retries remain,
+    requeue with exponential backoff. Otherwise move to DEAD_LETTER.
+    """
+    task_schema = get_task_schema()
+
+    if retry:
+        # Attempt retry: increment retry_count, reset to PENDING with backoff
+        sql = f"""
+            UPDATE {task_schema}.tasks
+            SET status = CASE
+                    WHEN retry_count + 1 < max_retries THEN 'PENDING'
+                    ELSE 'DEAD_LETTER'
+                END,
+                error_message = :error_message,
+                retry_count = retry_count + 1,
+                locked_until = CASE
+                    WHEN retry_count + 1 < max_retries
+                    THEN NOW() + (POWER(2, retry_count + 1) || ' seconds')::INTERVAL
+                    ELSE NULL
+                END,
+                finished_at = CASE
+                    WHEN retry_count + 1 >= max_retries THEN :finished_at
+                    ELSE finished_at
+                END,
+                owner_id = CASE
+                    WHEN retry_count + 1 < max_retries THEN NULL
+                    ELSE owner_id
+                END
+            WHERE task_id = :task_id;
+        """
+    else:
+        sql = f"""
+            UPDATE {task_schema}.tasks
+            SET status = 'FAILED',
+                error_message = :error_message,
+                finished_at = :finished_at,
+                locked_until = NULL,
+                owner_id = NULL
+            WHERE task_id = :task_id;
+        """
+
+    async with managed_transaction(engine) as conn:
+        await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
+            conn, task_id=task_id, error_message=error_message, finished_at=timestamp
+        )
+
+
+async def heartbeat_tasks(
+    engine: DbResource,
+    task_ids: List[uuid.UUID],
+    visibility_timeout: timedelta,
+) -> None:
+    """Extend locked_until for active tasks (batched heartbeat)."""
+    if not task_ids:
+        return
+
+    task_schema = get_task_schema()
+    new_locked_until = datetime.now(timezone.utc) + visibility_timeout
+
+    sql = f"""
+        UPDATE {task_schema}.tasks
+        SET locked_until = :locked_until,
+            last_heartbeat_at = NOW()
+        WHERE task_id = ANY(:task_ids)
+          AND status = 'ACTIVE';
+    """
+    async with managed_transaction(engine) as conn:
+        await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
+            conn, locked_until=new_locked_until, task_ids=list(task_ids)
+        )
+
+
+async def find_stale_tasks(
+    engine: DbResource,
+    stale_threshold: timedelta,
+    schema_name: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Find active tasks with expired locks (janitor use).
+    If schema_name is provided, scopes to that tenant.
+    """
+    task_schema = get_task_schema()
+    cutoff = datetime.now(timezone.utc) - stale_threshold
+
+    schema_filter = ""
+    params: Dict[str, Any] = {"cutoff": cutoff}
+    if schema_name is not None:
+        schema_filter = "AND schema_name = :schema_name"
+        params["schema_name"] = schema_name
+
+    sql = f"""
+        SELECT task_id, schema_name, task_type, execution_mode, retry_count, max_retries,
+               owner_id, locked_until, last_heartbeat_at
+        FROM {task_schema}.tasks
+        WHERE status = 'ACTIVE'
+          AND locked_until < :cutoff
+          {schema_filter}
+        ORDER BY locked_until ASC
+        LIMIT 500;
+    """
+    async with managed_transaction(engine) as conn:
+        rows = await DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS).execute(
+            conn, **params
+        )
+    return rows or []
+
+
+async def cleanup_orphan_tasks(
+    engine: DbResource,
+    grace_period: timedelta,
+) -> int:
+    """
+    Move tasks for deleted catalogs to DEAD_LETTER.
+
+    Checks schema_name against existing catalog schemas. Tasks whose
+    schema_name no longer exists and whose creation timestamp is older
+    than grace_period are dead-lettered.
+    """
+    task_schema = get_task_schema()
+    cutoff = datetime.now(timezone.utc) - grace_period
+
+    # Find orphaned tasks: schema_name not in any active catalog schema
+    # and task is not already in a terminal state
+    sql = f"""
+        WITH active_schemas AS (
+            SELECT DISTINCT physical_schema
+            FROM catalog.catalogs
+            WHERE deleted_at IS NULL
+        )
+        UPDATE {task_schema}.tasks t
+        SET status = 'DEAD_LETTER',
+            error_message = 'Orphaned: catalog schema no longer exists',
+            finished_at = NOW(),
+            locked_until = NULL
+        WHERE t.status IN ('PENDING', 'ACTIVE')
+          AND t.scope = 'CATALOG'
+          AND t.timestamp < :cutoff
+          AND t.schema_name NOT IN (SELECT physical_schema FROM active_schemas)
+          AND t.schema_name != 'system';
+    """
+
+    async with managed_transaction(engine) as conn:
+        result = await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
+            conn, cutoff=cutoff
+        )
+    return result or 0

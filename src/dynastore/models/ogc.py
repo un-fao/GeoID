@@ -18,8 +18,23 @@
 
 from typing import List, Optional, Dict, Any, Union
 from pydantic import ConfigDict
-from geojson_pydantic import Feature as _Feature, FeatureCollection as _FeatureCollection
-from geojson_pydantic.geometries import Geometry as GeoJSONGeometry
+
+try:
+    from geojson_pydantic import Feature as _Feature, FeatureCollection as _FeatureCollection
+    from geojson_pydantic.geometries import Geometry as GeoJSONGeometry
+except ImportError:
+    # Minimal fallbacks for core isolation
+    from pydantic import BaseModel
+    class _Feature(BaseModel):
+        type: str = "Feature"
+        geometry: Any = None
+        properties: Optional[Dict[str, Any]] = None
+        id: Optional[Union[str, int]] = None
+    class _FeatureCollection(BaseModel):
+        type: str = "FeatureCollection"
+        features: List[Any] = []
+    GeoJSONGeometry = Any
+
 from dynastore.models.shared_models import Link
 
 class Feature(_Feature):
