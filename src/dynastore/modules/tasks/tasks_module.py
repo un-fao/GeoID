@@ -120,7 +120,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_queue
 CREATE INDEX IF NOT EXISTS idx_tasks_schema_status
     ON {schema}.tasks (schema_name, status);
 -- Dedup index: includes timestamp (partition key) as PG requires it for
--- unique indexes on partitioned tables. Per-partition uniqueness;
+-- unique indexes on partitioned tables. Per-partition uniqueness.
 -- cross-partition dedup enforced at the application layer in enqueue().
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_dedup
     ON {schema}.tasks (dedup_key, timestamp)
