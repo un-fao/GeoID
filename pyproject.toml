@@ -35,7 +35,7 @@ module-catalog = ["dynastore[geospatial-core]", "sqlalchemy>=2.0.0", "async-lru>
 module-gcp = ["gcloud-aio-storage==9.6.0", "google-cloud-bigquery==3.24.0", "google-cloud-run", "google-cloud-storage>=3.1.0", "google-cloud-pubsub", "gcsfs>=2024.5.0", "charset-normalizer", "httpx"]
 module-datastore = ["dynastore[db-sync]", "psycopg2-binary>=2.9.7"]
 module-db-config = ["async-lru", "psycopg2-binary>=2.9.7", "sqlalchemy", "geoalchemy2", "h3>=4.4.2", "s2sphere>=0.2.5", "python-dateutil"]
-module-apikey = ["pydantic[email]", "argon2-cffi", "bcrypt"]
+module-apikey = ["pydantic[email]", "argon2-cffi", "bcrypt", "PyJWT>=2.0.0"]
 module-db = ["dynastore[db-async]", "sqlalchemy[asyncio]", "asyncpg"]
 module-crs = ["dynastore[geospatial-core]", "pyproj>=3.0.0"]
 module-events = ["psycopg[binary,pool]"]
