@@ -7,8 +7,6 @@ from contextlib import asynccontextmanager
 from dynastore.modules import ModuleProtocol
 from dynastore.models.protocols.events import EventsProtocol
 from dynastore.tools.discovery import get_protocol
-from dynastore.modules.tasks import tasks_module
-from dynastore.modules.tasks.models import TaskCreate
 from dynastore.modules.catalog.event_service import CatalogEventType
 from dynastore.modules.elasticsearch.es_catalog_config import ES_CATALOG_CONFIG_ID
 
@@ -193,6 +191,8 @@ class ElasticsearchModule(ModuleProtocol):
             )
             return
         try:
+            from dynastore.modules.tasks import tasks_module
+            from dynastore.modules.tasks.models import TaskCreate
             await tasks_module.create_task(
                 engine=db,
                 task_data=TaskCreate(
