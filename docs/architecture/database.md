@@ -1,0 +1,171 @@
+# The Database Layer
+
+This document describes the database architecture of Agro-Informatics Platform (AIP) - Catalog Services. The database is an active, integral component leveraging native PostgreSQL features to provide massive multi-tenancy scales out-of-the-box.
+
+## PostgreSQL as a Geospatial Engine
+
+The choice of PostgreSQL + PostGIS provides a fast, standard-compliant geospatial engine capable of operations ranging from B-Tree string indexing to spatial R-Tree spatial joins (`GIST`).
+
+A significant component is the usage of the `JSONB` data type, allowing for unstructured/semi-structured attributes attached to feature data that can be indexed efficiently by the `GIN` (Generalized Inverted Index) format.
+
+### Connection Pooling
+
+- **Asynchronous Pool**: The API application (`main.py`) uses `asyncpg`. This allows high-concurrency without blocking the primary event loop. 
+- **Synchronous Pool**: Background task workers use `psycopg2`. Single-threaded ingestion jobs do not benefit from async/await loops, and this separates resource pools completely from the high-throughput front-end application.
+
+## Partitioning and Multi-Tenancy
+
+Agro-Informatics Platform (AIP) - Catalog Services supports true multi-tenancy at massive scale without index bloat or the "noisy neighbor" problem by leveraging PostgreSQL Declarative Table Partitioning. A single tenant executing a massive query is hardware-isolated out to their specific partition boundary.
+
+### The "Lazy" On-Demand Trigger Strategy
+
+Agro-Informatics Platform (AIP) - Catalog Services delegates partition orchestration to the database via triggers, not complex Python logic locking statements.
+
+An intercepting trigger `create_partition_if_not_exists()` is bound to large unified tables (like `collections` or `styles`).
+1. When an application `INSERT` is triggered.
+2. The trigger executes in PG, sniffing the `catalog_id` partition key. 
+3. If the partition exists, it routes the insert.
+4. If it doesn't, it atomically generates a `CREATE TABLE ... PARTITION OF` statement instantly safely blocking concurrent attempts, and applies the insert. 
+
+### Partition Types
+- **LIST Partitioning**: Used for multi-tenant metadata (`collections`, `styles`, `assets`). The key is `catalog_id`.
+- **RANGE Partitioning**: Used for time-series infrastructure logs (`tasks`). A worker ensures a partition exists for a specific Month. Drop a partition, and years of data vanishes cleanly.
+
+## Core Schema Models
+
+Our architecture defines explicit Pydantic information models in `dynastore.models.shared_models` mapping directly to the DB Schema.
+
+### Catalog and Collections
+- `catalogs`: Root entity for data isolation (`id VARCHAR PRIMARY KEY`).
+- `collections`: Metadata for data groups (`id`, `catalog_id` as keys for list partitioning). 
+
+### The `LayerConfig` pattern
+The distinguishing factor between a **Logical** and **Physical** Collection is the `layer_config` JSONB column. 
+- **Logical** (Metadata Grouping): `layer_config` is `NULL`. They cannot store vector data. 
+- **Physical** (Database Layered): `layer_config` is active. This config handles parameters for how data gets written (e.g., `versioning_behavior`, `geometry_storage`, `indexing`). The catalog spins up actual separate PostGIS tables for these.
+
+### Standard Vector Feature Table
+A blueprint `layer_config` dictates that physical table collections are spawned in matching schemas (`"tenant_id"."layer_name"`).
+Rows within physical collections store standard meta like `id`, `external_id`, `geoid` (primary UUID version marker), `valid_from`/`valid_to` (for versioning support), generic `attributes` (JSONB) and `geom` (PostGIS `GEOMETRY` objects).
+
+## Global Task & Event Tables
+
+The task and event infrastructure uses a **single global schema** (`tasks`) rather than per-tenant tables. This design scales to hundreds of thousands of catalogs without requiring expensive schema discovery on every dispatcher cycle.
+
+### `tasks.tasks` — Global Task Queue
+
+All tasks across all tenants live in one table, partitioned by `timestamp` (monthly RANGE partitions).
+
+```
+tasks.tasks
+├── task_id           UUID          (PK with timestamp)
+├── schema_name       VARCHAR(255)  -- tenant identifier ("s_abc123" or "system")
+├── scope             VARCHAR(50)   -- CATALOG | SYSTEM | ASSET
+├── execution_mode    VARCHAR       -- SYNCHRONOUS | ASYNCHRONOUS
+├── task_type         VARCHAR       -- e.g. "ingestion", "gcp_provision"
+├── status            VARCHAR       -- PENDING → ACTIVE → COMPLETED/FAILED/DEAD_LETTER
+├── dedup_key         VARCHAR(512)  -- optional, UNIQUE partial index
+├── inputs/outputs    JSONB
+├── locked_until      TIMESTAMPTZ   -- visibility timeout for heartbeat
+├── last_heartbeat_at TIMESTAMPTZ   -- batched heartbeat timestamp
+├── owner_id          VARCHAR(255)  -- which instance claimed it
+├── retry_count       INT           -- current retry count
+├── max_retries       INT           -- maximum retries before dead-letter
+└── timestamp         TIMESTAMPTZ   -- creation time, partition key
+```
+
+The `schema_name` column identifies the tenant; `scope` distinguishes CATALOG / SYSTEM / ASSET tasks. The composite primary key `(timestamp, task_id)` aligns with the RANGE partition key.
+
+**Key indexes:**
+- `idx_tasks_queue` on `(status, task_type, execution_mode, locked_until)` WHERE status IN ('PENDING', 'ACTIVE') — optimizes the claim query
+- `idx_tasks_dedup` UNIQUE on `(dedup_key, timestamp)` WHERE dedup_key IS NOT NULL AND status NOT IN ('COMPLETED', 'FAILED', 'DEAD_LETTER') — per-partition dedup; cross-partition dedup enforced at application layer
+- `idx_tasks_task_id` on `(task_id)` — enables complete/fail/heartbeat lookups without full partition scan
+
+**Table options:** `fillfactor = 70` to enable HOT (Heap-Only Tuple) updates for heartbeat and status transitions.
+
+**Trigger:** On INSERT with status='PENDING', fires `pg_notify('new_task_queued', task_type)` to wake the dispatcher.
+
+### `tasks.events` — Global Event Outbox
+
+A durable outbox for domain events, also monthly RANGE-partitioned by `created_at`.
+
+```
+tasks.events
+├── event_id          UUID          (PK with created_at)
+├── event_type        VARCHAR       -- e.g. "task.failed", "catalog.deleted"
+├── scope             VARCHAR(50)   -- PLATFORM | CATALOG | COLLECTION | ASSET
+├── schema_name       VARCHAR(255)
+├── collection_id     VARCHAR(255)
+├── payload           JSONB
+├── status            VARCHAR       -- PENDING → PROCESSING → (deleted on ack)
+├── dedup_key         VARCHAR(512)
+├── retry_count       INT
+└── created_at        TIMESTAMPTZ   -- partition key
+```
+
+Consumed events are **deleted** after successful processing. Failed events are retried up to 5 times before being moved to `DEAD_LETTER`.
+
+**Key indexes:**
+- `idx_events_queue` on `(status, created_at)` WHERE status = 'PENDING' — consumer claim
+- `idx_events_dedup` UNIQUE on `(dedup_key, created_at)` WHERE dedup_key IS NOT NULL AND status NOT IN ('DEAD_LETTER')
+- `idx_events_event_id` on `(event_id)` — enables ack/nack lookups without full partition scan
+
+**Trigger:** On INSERT fires `pg_notify('dynastore_events_channel', event_type)` to wake the event consumer.
+
+### Partition Management
+
+Partition lifecycle is managed by two complementary mechanisms:
+
+1. **Startup creation** (`ensure_future_partitions`): On every application startup, partitions are created 12 months ahead (monthly) or 5-10 years ahead (yearly). This covers normal operations where services restart periodically.
+
+2. **pg_cron creation** (`register_partition_creation_policy`): A `pg_cron` job (`partcreate_{schema}_{table}`) runs on the 1st of each month at 2 AM (monthly tables) or January 1st at 2 AM (yearly tables), creating 3 future partitions. This is the safety net for long-running services that may not restart within the initial window.
+
+3. **pg_cron retention** (`register_retention_policy`): A `pg_cron` job (`prune_{schema}_{table}`) runs weekly and drops partitions older than the retention period.
+
+4. **Orphan cleanup** (`ensure_global_cron_cleanup`): A daily job removes `prune_*` and `partcreate_*` cron jobs for schemas that no longer exist (deleted tenants).
+
+**Locking:** Partition creation uses `CREATE TABLE IF NOT EXISTS` — metadata-only DDL with no lock on the parent table or sibling partitions. Partition drops take `ACCESS EXCLUSIVE` on the child partition only; queries on other partitions are unaffected.
+
+| Data | Default Retention | Mechanism |
+|---|---|---|
+| COMPLETED/FAILED tasks | 30 days | Monthly partition DROP |
+| DEAD_LETTER tasks | 90 days | Separate retention window |
+| Consumed events | Immediate | DELETE after processing |
+| Dead letter events | 30 days | pg_cron cleanup |
+
+### All Time-Partitioned Tables
+
+| Module | Schema | Table | Column | Interval | Startup Ahead | Cron Ahead | Retention |
+|---|---|---|---|---|---|---|---|
+| Tasks | tasks | tasks | timestamp | monthly | 12 months | 3 months | 1 month |
+| Tasks | tasks | events | created_at | monthly | 12 months | 3 months | 1 month |
+| Stats | catalog | access_logs | timestamp | monthly | 12 months | 3 months | 3 months |
+| Stats | catalog | stats_aggregates | period_start | yearly | 5 years | 2 years | 5 years |
+| Stats | tenant | access_logs | timestamp | monthly | 12 months | 3 months | 3 months |
+| Stats | tenant | stats_aggregates | period_start | yearly | 10 years | 2 years | 10 years |
+| Proxy | tenant | url_analytics | timestamp | monthly | 12 months | 3 months | 1 month |
+| Proxy | proxy | url_analytics | timestamp | monthly | 1 month | 3 months | 6 months |
+
+### Atomic Claiming with SKIP LOCKED
+
+Task claiming uses `SELECT FOR UPDATE SKIP LOCKED` to ensure exactly-once delivery across all instances:
+
+```sql
+UPDATE tasks.tasks
+SET status = 'ACTIVE', locked_until = :locked_until, owner_id = :owner_id
+WHERE (timestamp, task_id) = (
+    SELECT timestamp, task_id FROM tasks.tasks
+    WHERE status = 'PENDING'
+      AND (locked_until IS NULL OR locked_until <= NOW())
+      AND (
+          (execution_mode = 'ASYNCHRONOUS' AND task_type = ANY(:async_types))
+          OR
+          (execution_mode = 'SYNCHRONOUS' AND task_type = ANY(:sync_types))
+      )
+    ORDER BY timestamp ASC LIMIT 1
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING *;
+```
+
+The `:async_types` and `:sync_types` parameters come from the runner capability map, so each service only claims tasks it can actually execute.

@@ -1,0 +1,85 @@
+import pytest
+import uuid
+
+
+@pytest.fixture
+def catalog_id(data_id):
+    # Use unique ID per test to avoid partition overlapping issues during rapid create/delete
+    return f"cat_{uuid.uuid4().hex}"
+
+
+@pytest.fixture
+def collection_id():
+    return "region"
+
+
+@pytest.fixture
+def catalog_data(catalog_id):
+    return {
+        "id": catalog_id,
+        "title": f"Title for {catalog_id}",
+        "description": "Test Catalog for WFS",
+    }
+
+
+@pytest.fixture
+def collection_data(collection_id):
+    return {
+        "id": collection_id,
+        "title": f"Title for {collection_id}",
+        "description": "Test Collection for WFS",
+        "extent": {
+            "spatial": {"bbox": [[-180.0, -90.0, 180.0, 90.0]]},
+            "temporal": {"interval": [[None, None]]},
+        },
+        "links": [],
+    }
+
+
+@pytest.fixture
+def config_data():
+    return {
+        "collection_type": "VECTOR",
+        "sidecars": [
+            {
+                "sidecar_type": "geometries",
+                "target_srid": 4326,
+            },
+            {
+                "sidecar_type": "attributes",
+            },
+        ],
+    }
+
+
+@pytest.fixture
+async def setup_catalog(in_process_client, catalog_data, catalog_id):
+    # Cleanup with hard delete to avoid duplicate key constraints
+    # await in_process_client.delete(f"/features/catalogs/{catalog_id}?force=true")
+    # Create
+    r = await in_process_client.post("/features/catalogs", json=catalog_data)
+    assert r.status_code == 201
+    yield catalog_id
+    await in_process_client.delete(f"/features/catalogs/{catalog_id}?force=true")
+
+
+@pytest.fixture
+async def setup_collection(
+    in_process_client, setup_catalog, collection_data, collection_id, config_data
+):
+    catalog_id = setup_catalog
+    # Create
+    r = await in_process_client.post(
+        f"/features/catalogs/{catalog_id}/collections", json=collection_data
+    )
+    assert r.status_code == 201
+
+    # Configure
+    r = await in_process_client.put(
+        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/configs/collection",
+        json=config_data,
+    )
+    assert r.status_code in [200, 204]
+
+    yield collection_id
+    # Cleanup is handled by setup_catalog (delete catalog deletes collections)

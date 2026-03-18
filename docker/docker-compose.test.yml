@@ -23,7 +23,7 @@ services:
       target: builder
       args:
         SCOPE: ${API_SCOPE:-all}
-    container_name: dynastore_api_test
+    container_name: geoid_api_test
     env_file: .env
     depends_on:
       db:
@@ -54,7 +54,7 @@ services:
       target: builder
       args:
         SCOPE: ${WORKER_SCOPE:-all}
-    container_name: dynastore_worker_test
+    container_name: geoid_worker_test
     env_file: .env
     depends_on:
       db:
@@ -81,7 +81,7 @@ services:
       target: tester
       args:
         SCOPE: ${TEST_SCOPE:-all}
-    container_name: dynastore_test_runner
+    container_name: geoid_test_runner
     env_file: .env
     environment:
       - LOG_LEVEL=INFO

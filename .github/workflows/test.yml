@@ -1,0 +1,134 @@
+name: Test
+
+# ── Triggers ──────────────────────────────────────────────────────────────────
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_integration:
+        type: boolean
+        default: true
+
+  # Reusable — called by deployment repos (dynastore, catalog, etc.) to gate deploys
+  workflow_call:
+    inputs:
+      run_integration:
+        type: boolean
+        default: true
+    outputs:
+      tests_passed:
+        description: "'true' if all tests passed"
+        value: ${{ jobs.test.outputs.tests_passed }}
+      artifact_name:
+        description: "Name of the uploaded test badge artifact"
+        value: ${{ jobs.test.outputs.artifact_name }}
+
+# ── Jobs ──────────────────────────────────────────────────────────────────────
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+
+    outputs:
+      tests_passed: ${{ steps.set-result.outputs.tests_passed }}
+      artifact_name: ${{ steps.set-artifact.outputs.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build test infrastructure
+        run: docker compose -f docker/docker-compose.test.yml build
+
+      - name: Run unit tests
+        id: unit
+        run: |
+          docker compose -f docker/docker-compose.test.yml run --rm test-runner \
+            /opt/venv/bin/pytest tests/ --ignore-glob="**/integration/*" \
+            --junitxml=/dynastore/workspace/unit-test-results.xml
+
+      - name: Report unit tests
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Unit Tests
+          path: './unit-test-results.xml'
+          reporter: java-junit
+
+      - name: Generate unit badge
+        if: always()
+        uses: ./.github/actions/test-badge
+        with:
+          junit-xml-path: './unit-test-results.xml'
+          output-path: 'unit-badge.svg'
+          label: 'Unit Tests'
+
+      - name: Run integration tests
+        id: integration
+        if: ${{ inputs.run_integration != false }}
+        run: |
+          docker compose -f docker/docker-compose.test.yml run --rm test-runner \
+            /opt/venv/bin/pytest tests/ \
+            --junitxml=/dynastore/workspace/test-results.xml
+
+      - name: Display Docker logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker/docker-compose.test.yml logs api
+          docker compose -f docker/docker-compose.test.yml logs test-runner
+
+      - name: Report integration tests
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Integration Tests
+          path: './test-results.xml'
+          reporter: java-junit
+
+      - name: Generate integration badge
+        if: always()
+        uses: ./.github/actions/test-badge
+        with:
+          junit-xml-path: './test-results.xml'
+          output-path: 'integration-badge.svg'
+          label: 'Integration Tests'
+
+      - name: Generate test report JSON
+        if: always()
+        run: |
+          python3 .github/actions/test-badge/generate_test_report.py \
+            --unit-xml './unit-test-results.xml' \
+            --integration-xml './test-results.xml' \
+            --output 'test-results.json'
+
+      - name: Set artifact name
+        id: set-artifact
+        if: always()
+        run: echo "name=test-badges-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload badges
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-badges-${{ github.run_id }}
+          path: |
+            unit-badge.svg
+            integration-badge.svg
+            test-results.json
+
+      - name: Set result
+        id: set-result
+        if: always()
+        run: |
+          if [[ "${{ steps.unit.outcome }}" == "success" && \
+                ("${{ steps.integration.outcome }}" == "success" || \
+                 "${{ steps.integration.outcome }}" == "skipped") ]]; then
+            echo "tests_passed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tests_passed=false" >> "$GITHUB_OUTPUT"
+          fi

@@ -24,7 +24,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.db
-    container_name: postgresql_db
+    container_name: geoid_db
     restart: always
     # CHANGED: Now looks for .env in the same folder (docker/)
     env_file: .env
@@ -40,7 +40,7 @@ services:
       dockerfile: docker/Dockerfile
       args:
         SCOPE: ${API_SCOPE:-all}
-    container_name: dynastore_api
+    container_name: geoid_api
     restart: always
     env_file: .env
     environment:
@@ -62,7 +62,7 @@ services:
       dockerfile: docker/Dockerfile
       args:
         SCOPE: ${GEOID_SCOPE:-all}
-    container_name: dynastore_geoid
+    container_name: geoid_web
     restart: always
     env_file: .env
     environment:
@@ -83,7 +83,7 @@ services:
       dockerfile: docker/Dockerfile
       args:
         SCOPE: ${WORKER_SCOPE:-all}
-    container_name: dynastore_worker
+    container_name: geoid_worker
     restart: always
     env_file: .env
     # Run in worker mode (same image as API, different modules + CMD)
@@ -104,7 +104,7 @@ services:
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
-    container_name: dynastore_elasticsearch
+    container_name: geoid_elasticsearch
     restart: always
     environment:
       - discovery.type=single-node
@@ -119,7 +119,7 @@ services:
 
   kibana:
     image: docker.elastic.co/kibana/kibana:8.15.0
-    container_name: dynastore_kibana
+    container_name: geoid_kibana
     restart: always
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200

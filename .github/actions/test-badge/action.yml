@@ -1,0 +1,26 @@
+name: 'Generate Test Badge'
+description: 'Parses JUnit XML and generates a static SVG badge'
+inputs:
+  junit-xml-path:
+    description: 'Path to the JUnit XML file'
+    required: true
+    default: './web/static/reports/unit-test-results.xml'
+  output-path:
+    description: 'Path where the SVG badge should be saved'
+    required: true
+    default: './web/static/test-badge.svg'
+  label:
+    description: 'Label for the badge'
+    required: false
+    default: 'tests'
+
+runs:
+  using: "composite"
+  steps:
+    - name: Run Badge Generator
+      shell: bash
+      run: |
+        python3 ${{ github.action_path }}/generate_badge.py \
+          --input "${{ inputs.junit-xml-path }}" \
+          --output "${{ inputs.output-path }}" \
+          --label "${{ inputs.label }}"
