@@ -15,6 +15,19 @@ from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
+_NORMALIZE_RE = re.compile(r"[-_.]+")
+
+
+def _normalize(name: str) -> str:
+    """Normalize a Python package/extras/entry-point name for comparison.
+
+    PEP 685 specifies that runs of ``[-_.]`` are equivalent and should be
+    collapsed to a single hyphen for canonical comparison.  We apply the same
+    rule so that ``extension_catalog_events``, ``extension-catalog-events``,
+    and ``extension.catalog.events`` all match each other.
+    """
+    return _NORMALIZE_RE.sub("-", name).lower()
+
 
 # ---------------------------------------------------------------------------
 # Scope resolution: pip extras name → entry-point names
@@ -31,11 +44,12 @@ def _build_extras_graph() -> Dict[str, Set[str]]:
 
         # my-project pyproject.toml
         [project.optional-dependencies]
-        my-app = ["my-project[module-foo,extension-bar]"]
-        module-foo = []
-        extension-bar = []
+        module_foo = []
+        extension_bar = []
+        my_app = ["my-project[module_foo,extension_bar]"]
 
-    With this, ``SCOPE=my-app`` resolves to ``foo``, ``bar``, etc.
+    With this, ``SCOPE=my_app`` resolves to ``foo``, ``bar``, etc.
+    Names are compared using PEP 685 normalization (``_`` ≡ ``-``).
     """
     # Discover all packages contributing to dynastore entry-point groups
     package_names: Set[str] = {"DynaStore"}
@@ -66,26 +80,28 @@ def _build_extras_graph() -> Dict[str, Set[str]]:
             m_extra = extra_re.search(line)
             if not m_extra:
                 continue
-            parent = m_extra.group(1).lower().replace("_", "-")
+            parent = _normalize(m_extra.group(1))
             graph.setdefault(parent, set())
 
             m_ref = self_ref_re.match(line.strip())
             if m_ref:
-                child = m_ref.group(1).lower().replace("_", "-")
-                graph[parent].add(child)
+                for child in m_ref.group(1).split(","):
+                    child = _normalize(child.strip())
+                    if child:
+                        graph[parent].add(child)
 
     return graph
 
 
 def resolve_scope(scope_csv: str) -> Set[str]:
     """
-    Resolve a comma-separated SCOPE string (e.g. ``"api-catalog"``) into the
+    Resolve a comma-separated SCOPE string (e.g. ``"api_catalog"``) into the
     full set of names that should be matched against entry-point names.
 
     The resolution works in two steps:
 
     1. **Transitive closure** – walk the extras dependency graph so that
-       ``api-catalog`` expands to every extras it (transitively) pulls in.
+       ``api_catalog`` expands to every extras it (transitively) pulls in.
     2. **Prefix stripping** – for every resolved extras whose name starts with
        ``module-``, ``extension-``, or ``task-``, add the base name as well
        (e.g. ``extension-admin`` → ``admin``).  This ensures the result can be
@@ -93,7 +109,7 @@ def resolve_scope(scope_csv: str) -> Set[str]:
     """
     graph = _build_extras_graph()
 
-    seeds = {s.strip().lower().replace("_", "-") for s in scope_csv.split(",")}
+    seeds = {_normalize(s.strip()) for s in scope_csv.split(",")}
     resolved: Set[str] = set()
     stack = list(seeds)
 
@@ -194,9 +210,9 @@ def discover_and_load_plugins(group: str, include_only: Optional[List[str]] = No
         group: The entry point group (e.g., 'dynastore.modules').
         include_only: If provided, only entry points with names in this list will be loaded.
                       Names can be direct entry-point names **or** pip extras names
-                      (e.g. ``"api-catalog"``).  Extras names are recursively resolved
+                      (e.g. ``"api_catalog"``).  Extras names are recursively resolved
                       to the full set of constituent entry-point names.
-                      Normalization (lowercase, _ -> -) is applied for matching.
+                      PEP 685 normalization is applied for matching.
 
     Returns:
         A dictionary mapping the entry point name to the uninstantiated plugin class.
@@ -204,7 +220,7 @@ def discover_and_load_plugins(group: str, include_only: Optional[List[str]] = No
     loaded_plugins = {}
 
     # 1. Resolve include_only through the extras dependency graph so that
-    #    high-level scope names like "api-catalog" expand to concrete
+    #    high-level scope names like "api_catalog" expand to concrete
     #    entry-point names like "catalog", "web", "db", etc.
     target_names: Optional[Set[str]] = None
     if include_only is not None:
@@ -219,7 +235,7 @@ def discover_and_load_plugins(group: str, include_only: Optional[List[str]] = No
 
     for entry_point in eps:
         # 3. Filtering logic
-        ep_name_normalized = entry_point.name.lower().replace("_", "-")
+        ep_name_normalized = _normalize(entry_point.name)
         if target_names is not None and ep_name_normalized not in target_names:
             logger.debug(f"Skipping {group}: {entry_point.name} (not in include_only)")
             continue

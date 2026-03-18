@@ -1,0 +1,54 @@
+# apps.yml — Deployment matrix for my-project
+#
+# Each entry defines a Cloud Run app to deploy.
+# Supported types: service, worker, job
+#
+# The 'triggers' field lists file patterns that, when changed, will trigger
+# a deployment of this app. Use 'FORCE_DEPLOY_ALL' to always deploy.
+#
+# The 'env' block defines environment variables injected into the build
+# and deployment steps. These are substituted into iac.yml / iac-job.yml.
+
+apps:
+  - id: my-project-api
+    type: service
+    triggers:
+      - src/**
+      - docker/Dockerfile
+      - docker/scripts/start.sh
+    env:
+      NAME: my-project-api
+      CPU: "2"
+      RAM: "2Gi"
+      MIN_INSTANCES: "1"
+      MAX_INSTANCES: "10"
+      SCOPE: api_full
+
+  - id: my-project-worker
+    type: worker
+    triggers:
+      - src/**
+      - docker/Dockerfile
+      - docker/scripts/start.sh
+    env:
+      NAME: my-project-worker
+      CPU: "2"
+      RAM: "4Gi"
+      MIN_INSTANCES: "1"
+      MAX_INSTANCES: "5"
+      WORKER_CONCURRENCY: "4"
+      SCOPE: worker_service
+
+  - id: my-project-ingestion-job
+    type: job
+    triggers:
+      - src/**
+      - docker/Dockerfile
+      - docker/scripts/start-task.sh
+    env:
+      NAME: my-project-ingestion-job
+      CPU: "4"
+      RAM: "8Gi"
+      TASK_TIMEOUT: "3600"
+      MAX_RETRIES: "3"
+      SCOPE: worker_service

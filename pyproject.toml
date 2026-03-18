@@ -30,157 +30,158 @@ build-backend = "setuptools.build_meta"
 # Features (Modules & Extensions)
 # --- Base Dependencies (Modules/Extensions/Tasks) ---
 
-# Granular Modules
-module-catalog = ["dynastore[geospatial-core]", "sqlalchemy>=2.0.0", "async-lru>=2.0.0"]
-module-gcp = ["gcloud-aio-storage==9.6.0", "google-cloud-bigquery==3.24.0", "google-cloud-run", "google-cloud-storage>=3.1.0", "google-cloud-pubsub", "gcsfs>=2024.5.0", "charset-normalizer", "httpx"]
-module-datastore = ["dynastore[db-sync]", "psycopg2-binary>=2.9.7"]
-module-db-config = ["async-lru", "psycopg2-binary>=2.9.7", "sqlalchemy", "geoalchemy2", "h3>=4.4.2", "s2sphere>=0.2.5", "python-dateutil"]
-module-apikey = ["pydantic[email]", "argon2-cffi", "bcrypt", "PyJWT>=2.0.0"]
-module-db = ["dynastore[db-async]", "sqlalchemy[asyncio]", "asyncpg"]
-module-crs = ["dynastore[geospatial-core]", "pyproj>=3.0.0"]
-module-events = ["psycopg[binary,pool]"]
-module-elasticsearch = ["elasticsearch[async]"]
-module-gdal = ["dynastore[geospatial-core]", "GDAL==3.11.4"]
-module-tiles = ["dynastore[geospatial-core]"]
-module-tasks = []
-module-proxy = []
-module-styles = []
-module-stats = []
-module-notebooks = []
+# Granular Modules — use underscores to match entry-point names and folder names.
+# pip normalizes _ to - internally (PEP 685); no effect on resolution.
+module_catalog = ["dynastore[geospatial_core]", "sqlalchemy>=2.0.0", "async-lru>=2.0.0"]
+module_gcp = ["gcloud-aio-storage==9.6.0", "google-cloud-bigquery==3.24.0", "google-cloud-run", "google-cloud-storage>=3.1.0", "google-cloud-pubsub", "gcsfs>=2024.5.0", "charset-normalizer", "httpx"]
+module_datastore = ["dynastore[db_sync]", "psycopg2-binary>=2.9.7"]
+module_db_config = ["async-lru", "psycopg2-binary>=2.9.7", "sqlalchemy", "geoalchemy2", "h3>=4.4.2", "s2sphere>=0.2.5", "python-dateutil"]
+module_apikey = ["pydantic[email]", "argon2-cffi", "bcrypt", "PyJWT>=2.0.0"]
+module_db = ["dynastore[db_async]", "sqlalchemy[asyncio]", "asyncpg"]
+module_crs = ["dynastore[geospatial_core]", "pyproj>=3.0.0"]
+module_events = ["psycopg[binary,pool]"]
+module_elasticsearch = ["elasticsearch[async]"]
+module_gdal = ["dynastore[geospatial_core]", "GDAL==3.11.4"]
+module_tiles = ["dynastore[geospatial_core]"]
+module_tasks = []
+module_proxy = []
+module_styles = []
+module_stats = []
+module_notebooks = []
 
 # Extension Base
-extension-base = ["fastapi>=0.100"]
+extension_base = ["fastapi>=0.100"]
 
 # Granular Extensions (Depends on corresponding module if it exists)
-extension-web = ["dynastore[extension-base]", "markdown>=3.3.7"]
-extension-httpx = ["dynastore[extension-base]", "httpx"]
-extension-catalog = ["dynastore[extension-base]", "dynastore[module-catalog]"]
-extension-stac = ["dynastore[extension-base]", "pystac[validation]>=1.13.0"]
-extension-auth = ["dynastore[extension-base]", "identify_middleware[google,fastapi] @ git+https://github.com/un-fao/identify-middleware.git@ref", "python-multipart>=0.0.9"]
-extension-template = ["dynastore[extension-base]", "attrs>=25.3.0", "aiohttp>=3.12.15", "jinja2>=3.1.6", "xmltodict>=0.13.0", "httpx>=0.24.1"]
-extension-processes = ["dynastore[extension-base]", "jsonschema"]
-extension-features = ["dynastore[extension-base]", "dynastore[geospatial-core]"]
-extension-tiles = ["dynastore[extension-base]", "dynastore[module-tiles]"]
-extension-tasks = ["dynastore[extension-base]", "dynastore[module-tasks]"]
-extension-proxy = ["dynastore[extension-base]", "dynastore[module-proxy]"]
-extension-gdal = ["dynastore[extension-base]", "dynastore[module-gdal]"]
-extension-styles = ["dynastore[extension-base]", "dynastore[module-styles]"]
-extension-apikey = ["dynastore[extension-base]", "dynastore[module-apikey]"]
-extension-logs = ["dynastore[extension-base]"]
-extension-configs = ["dynastore[extension-base]"]
-extension-stats = ["dynastore[extension-base]", "dynastore[module-stats]"]
-extension-crs = ["dynastore[extension-base]", "dynastore[module-crs]"]
-extension-events = ["dynastore[extension-base]", "dynastore[module-events]"]
-extension-wfs = ["dynastore[extension-base]", "dynastore[geospatial-core]"]
-extension-admin = ["dynastore[extension-base]", "dynastore[extension-apikey]"]
-extension-assets = ["dynastore[extension-base]"]
-extension-notebooks = ["dynastore[extension-base]", "dynastore[module-notebooks]"]
-extension-search = ["dynastore[extension-base]"]
-extension-gcp-bucket = ["dynastore[extension-base]", "dynastore[module-gcp]"]
-extension-geoid = ["dynastore[extension-base]", "dynastore[extension-web]", "user-agents>=2.2.0"]
-extension-maps = ["dynastore[extension-base]", "dynastore[geospatial-core]", "dynastore[mvt]", "GDAL==3.11.4"]
-extension-dwh = ["dynastore[extension-base]", "dynastore[dwh]"]
+extension_web = ["dynastore[extension_base]", "markdown>=3.3.7"]
+extension_httpx = ["dynastore[extension_base]", "httpx"]
+extension_catalog = ["dynastore[extension_base]", "dynastore[module_catalog]"]
+extension_stac = ["dynastore[extension_base]", "pystac[validation]>=1.13.0"]
+extension_auth = ["dynastore[extension_base]", "identify_middleware[google,fastapi] @ git+https://github.com/un-fao/identify-middleware.git@ref", "python-multipart>=0.0.9"]
+extension_template = ["dynastore[extension_base]", "attrs>=25.3.0", "aiohttp>=3.12.15", "jinja2>=3.1.6", "xmltodict>=0.13.0", "httpx>=0.24.1"]
+extension_processes = ["dynastore[extension_base]", "jsonschema"]
+extension_features = ["dynastore[extension_base]", "dynastore[geospatial_core]"]
+extension_tiles = ["dynastore[extension_base]", "dynastore[module_tiles]"]
+extension_tasks = ["dynastore[extension_base]", "dynastore[module_tasks]"]
+extension_proxy = ["dynastore[extension_base]", "dynastore[module_proxy]"]
+extension_gdal = ["dynastore[extension_base]", "dynastore[module_gdal]"]
+extension_styles = ["dynastore[extension_base]", "dynastore[module_styles]"]
+extension_apikey = ["dynastore[extension_base]", "dynastore[module_apikey]"]
+extension_logs = ["dynastore[extension_base]"]
+extension_configs = ["dynastore[extension_base]"]
+extension_stats = ["dynastore[extension_base]", "dynastore[module_stats]"]
+extension_crs = ["dynastore[extension_base]", "dynastore[module_crs]"]
+extension_events = ["dynastore[extension_base]", "dynastore[module_events]"]
+extension_wfs = ["dynastore[extension_base]", "dynastore[geospatial_core]"]
+extension_admin = ["dynastore[extension_base]", "dynastore[extension_apikey]"]
+extension_assets = ["dynastore[extension_base]"]
+extension_notebooks = ["dynastore[extension_base]", "dynastore[module_notebooks]"]
+extension_search = ["dynastore[extension_base]"]
+extension_gcp_bucket = ["dynastore[extension_base]", "dynastore[module_gcp]"]
+extension_geoid = ["dynastore[extension_base]", "dynastore[extension_web]", "user-agents>=2.2.0"]
+extension_maps = ["dynastore[extension_base]", "dynastore[geospatial_core]", "dynastore[mvt]", "GDAL==3.11.4"]
+extension_dwh = ["dynastore[extension_base]", "dynastore[dwh]"]
 
 # Granular Tasks
-task-gdal = ["dynastore[module-gdal]"]
-task-gcp-provision = ["dynastore[module-gcp]"]
-task-elasticsearch = ["dynastore[module-elasticsearch]"]
-task-ingestion = ["dynastore[geospatial]", "dynastore[module-gcp]"]
-task-dwh-join = ["dynastore[dwh]"]
-task-export_features = ["dynastore[geospatial-core]", "dynastore[stac]"]
-task-tiles-preseed = ["dynastore[geospatial-core]", "morecantile==7.0.2"]
+task_gdal = ["dynastore[module_gdal]"]
+task_gcp_provision = ["dynastore[module_gcp]"]
+task_elasticsearch = ["dynastore[module_elasticsearch]"]
+task_ingestion = ["dynastore[geospatial]", "dynastore[module_gcp]"]
+task_dwh_join = ["dynastore[dwh]"]
+task_export_features = ["dynastore[geospatial_core]", "dynastore[stac]"]
+task_tiles_preseed = ["dynastore[geospatial_core]", "morecantile==7.0.2"]
 
 # --- Features (Public Aliases composing Module + Extension) ---
-catalog = ["dynastore[module-catalog]", "dynastore[extension-catalog]"]
-gcp = ["dynastore[module-gcp]", "dynastore[extension-gcp-bucket]"]
-datastore = ["dynastore[module-datastore]"]
-db_config = ["dynastore[module-db-config]"]
-apikey = ["dynastore[module-apikey]", "dynastore[extension-apikey]"]
-db = ["dynastore[module-db]"]
-crs = ["dynastore[module-crs]", "dynastore[extension-crs]"]
-events = ["dynastore[module-events]", "dynastore[extension-events]"]
-elasticsearch = ["dynastore[module-elasticsearch]", "dynastore[task-elasticsearch]"]
-gdal = ["dynastore[module-gdal]", "dynastore[extension-gdal]", "dynastore[task-gdal]"]
-maps = ["dynastore[extension-maps]"]
-stac = ["dynastore[extension-stac]"]
-stats = ["dynastore[module-stats]", "dynastore[extension-stats]"]
-web = ["dynastore[extension-web]"]
-geoid = ["dynastore[web-core]", "dynastore[extension-geoid]"]
-processes = ["dynastore[extension-processes]"]
-features = ["dynastore[extension-features]"]
-styles = ["dynastore[module-styles]", "dynastore[extension-styles]"]
-tiles = ["dynastore[module-tiles]", "dynastore[extension-tiles]"]
-tasks = ["dynastore[module-tasks]", "dynastore[extension-tasks]"]
-proxy = ["dynastore[module-proxy]", "dynastore[extension-proxy]"]
-logs = ["dynastore[extension-logs]"]
-assets = ["dynastore[extension-assets]"]
-configs = ["dynastore[extension-configs]"]
-search = ["dynastore[extension-search]"]
-auth = ["dynastore[extension-auth]"]
-template = ["dynastore[extension-template]"]
+catalog = ["dynastore[module_catalog]", "dynastore[extension_catalog]"]
+gcp = ["dynastore[module_gcp]", "dynastore[extension_gcp_bucket]"]
+datastore = ["dynastore[module_datastore]"]
+db_config = ["dynastore[module_db_config]"]
+apikey = ["dynastore[module_apikey]", "dynastore[extension_apikey]"]
+db = ["dynastore[module_db]"]
+crs = ["dynastore[module_crs]", "dynastore[extension_crs]"]
+events = ["dynastore[module_events]", "dynastore[extension_events]"]
+elasticsearch = ["dynastore[module_elasticsearch]", "dynastore[task_elasticsearch]"]
+gdal = ["dynastore[module_gdal]", "dynastore[extension_gdal]", "dynastore[task_gdal]"]
+maps = ["dynastore[extension_maps]"]
+stac = ["dynastore[extension_stac]"]
+stats = ["dynastore[module_stats]", "dynastore[extension_stats]"]
+web = ["dynastore[extension_web]"]
+geoid = ["dynastore[web_core]", "dynastore[extension_geoid]"]
+processes = ["dynastore[extension_processes]"]
+features = ["dynastore[extension_features]"]
+styles = ["dynastore[module_styles]", "dynastore[extension_styles]"]
+tiles = ["dynastore[module_tiles]", "dynastore[extension_tiles]"]
+tasks = ["dynastore[module_tasks]", "dynastore[extension_tasks]"]
+proxy = ["dynastore[module_proxy]", "dynastore[extension_proxy]"]
+logs = ["dynastore[extension_logs]"]
+assets = ["dynastore[extension_assets]"]
+configs = ["dynastore[extension_configs]"]
+search = ["dynastore[extension_search]"]
+auth = ["dynastore[extension_auth]"]
+template = ["dynastore[extension_template]"]
 
 # --- Logical Groupings (Primitives) ---
-geospatial-core = [
+geospatial_core = [
     "shapely>=2.1.1",
     "geojson-pydantic>=1.0.0",
 ]
-geospatial-io = [
-    "dynastore[geospatial-core]",
+geospatial_io = [
+    "dynastore[geospatial_core]",
     "lxml==6.0.2",
     "pyarrow<19,>=16",
     "numpy==1.26.4",
     "geopandas>=0.14.0",
     "fiona>=1.9.4",
 ]
-geospatial = ["dynastore[geospatial-io]"]
-geometries = ["dynastore[geospatial-core]", "dynastore[extension-wfs]", "dynastore[features]", "dynastore[tiles]"]
-maps-group = ["dynastore[styles]", "dynastore[maps]"]
-google = ["dynastore[module-gcp]", "dynastore[dwh]"]
-db-async = ["dynastore[db_config]", "dynastore[db]"]
-db-sync = ["dynastore[db_config]", "dynastore[datastore]"]
+geospatial = ["dynastore[geospatial_io]"]
+geometries = ["dynastore[geospatial_core]", "dynastore[extension_wfs]", "dynastore[features]", "dynastore[tiles]"]
+maps_group = ["dynastore[styles]", "dynastore[maps]"]
+google = ["dynastore[module_gcp]", "dynastore[dwh]"]
+db_async = ["dynastore[db_config]", "dynastore[db]"]
+db_sync = ["dynastore[db_config]", "dynastore[datastore]"]
 
 # --- Catalog Groupings ---
-catalog-group = ["dynastore[geospatial-core]", "dynastore[db-async]", "dynastore[catalog]", "dynastore[events]", "dynastore[stats]", "dynastore[extension-search]", "dynastore[assets]", "dynastore[configs]"]
-g-catalog = ["dynastore[catalog-group]", "dynastore[gdal]", "dynastore[google]"]
+catalog_group = ["dynastore[geospatial_core]", "dynastore[db_async]", "dynastore[catalog]", "dynastore[events]", "dynastore[stats]", "dynastore[extension_search]", "dynastore[assets]", "dynastore[configs]"]
+g_catalog = ["dynastore[catalog_group]", "dynastore[gdal]", "dynastore[google]"]
 
 # --- Task Groupings (sync-db) ---
-task-base = ["dynastore[db-sync]", "dynastore[module-tasks]", "dynastore[extension-processes]"]
-ingestion = ["dynastore[task-base]", "dynastore[module-gcp]", "dynastore[task-ingestion]"]
+task_base = ["dynastore[db_sync]", "dynastore[module_tasks]", "dynastore[extension_processes]"]
+ingestion = ["dynastore[task_base]", "dynastore[module_gcp]", "dynastore[task_ingestion]"]
 
 # Per Cloud Run Job extras (all use db-sync via task-base)
-task-dwh-join-job = ["dynastore[task-base]", "dynastore[dwh]"]
-task-ingestion-job = ["dynastore[ingestion]", "dynastore[g-catalog]"]
-task-export-features-job = ["dynastore[task-base]", "dynastore[stac]", "dynastore[geospatial-core]"]
-task-tiles-preseed-job = ["dynastore[task-base]", "dynastore[tiles]", "dynastore[crs]"]
-task-gdal-job = ["dynastore[task-base]", "dynastore[gdal]"]
+task_dwh_join_job = ["dynastore[task_base]", "dynastore[dwh]"]
+task_ingestion_job = ["dynastore[ingestion]", "dynastore[g_catalog]"]
+task_export_features_job = ["dynastore[task_base]", "dynastore[stac]", "dynastore[geospatial_core]"]
+task_tiles_preseed_job = ["dynastore[task_base]", "dynastore[tiles]", "dynastore[crs]"]
+task_gdal_job = ["dynastore[task_base]", "dynastore[gdal]"]
 
 # --- Service Compositions (async-db) ---
-# api-core: minimal HTTP service with auth, logging, async DB
-api-core = ["dynastore[db-async]", "dynastore[web]", "dynastore[extension-httpx]", "dynastore[logs]", "dynastore[apikey]", "dynastore[stats]"]
-# api-auth: core + authentication layer
-api-auth = ["dynastore[api-core]", "dynastore[auth]", "dynastore[template]"]
-# api-catalog: full catalog service (most common deployment)
-api-catalog = ["dynastore[api-core]", "dynastore[catalog-group]", "dynastore[gdal]", "dynastore[google]", "dynastore[processes]", "dynastore[proxy]", "dynastore[elasticsearch]", "dynastore[features]", "dynastore[auth]", "dynastore[template]", "dynastore[extension-admin]"]
-# api-maps: maps/tiles/styles service
-api-maps = ["dynastore[api-core]", "dynastore[db-async]", "dynastore[g-catalog]", "dynastore[geometries]", "dynastore[maps-group]", "dynastore[dwh]"]
-# api-full: all features (for local dev or monolithic deployments)
-api-full = ["dynastore[api-catalog]", "dynastore[api-maps]"]
-# geoid-service: api-catalog + geoid extension (geoid IS api + geoid module)
-geoid-service = ["dynastore[api-catalog]", "dynastore[extension-geoid]"]
-# worker-service: background task processor (long-running, async-db + task modules)
-worker-service = ["dynastore[g-catalog]", "dynastore[tasks]", "dynastore[processes]", "dynastore[events]", "dynastore[elasticsearch]", "dynastore[tiles]", "dynastore[ingestion]", "dynastore[task-export-features-job]", "dynastore[task-dwh-join-job]", "dynastore[task-tiles-preseed-job]", "dynastore[task-gdal-job]", "dynastore[apikey]"]
-# worker-local: dev-only — worker-service + FastAPI to simulate Cloud Run Jobs via BackgroundTasks
-worker-local = ["dynastore[worker-service]"]
+# api_core: minimal HTTP service with auth, logging, async DB
+api_core = ["dynastore[db_async]", "dynastore[web]", "dynastore[extension_httpx]", "dynastore[logs]", "dynastore[apikey]", "dynastore[stats]"]
+# api_auth: core + authentication layer
+api_auth = ["dynastore[api_core]", "dynastore[auth]", "dynastore[template]"]
+# api_catalog: full catalog service (most common deployment)
+api_catalog = ["dynastore[api_core]", "dynastore[catalog_group]", "dynastore[gdal]", "dynastore[google]", "dynastore[processes]", "dynastore[proxy]", "dynastore[elasticsearch]", "dynastore[features]", "dynastore[auth]", "dynastore[template]", "dynastore[extension_admin]"]
+# api_maps: maps/tiles/styles service
+api_maps = ["dynastore[api_core]", "dynastore[db_async]", "dynastore[g_catalog]", "dynastore[geometries]", "dynastore[maps_group]", "dynastore[dwh]"]
+# api_full: all features (for local dev or monolithic deployments)
+api_full = ["dynastore[api_catalog]", "dynastore[api_maps]"]
+# geoid_service: api_catalog + geoid extension (geoid IS api + geoid module)
+geoid_service = ["dynastore[api_catalog]", "dynastore[extension_geoid]"]
+# worker_service: background task processor (long-running, async-db + task modules)
+worker_service = ["dynastore[g_catalog]", "dynastore[tasks]", "dynastore[processes]", "dynastore[events]", "dynastore[elasticsearch]", "dynastore[tiles]", "dynastore[ingestion]", "dynastore[task_export_features_job]", "dynastore[task_dwh_join_job]", "dynastore[task_tiles_preseed_job]", "dynastore[task_gdal_job]", "dynastore[apikey]"]
+# worker_local: dev-only — worker_service + FastAPI to simulate Cloud Run Jobs via BackgroundTasks
+worker_local = ["dynastore[worker_service]"]
 
 # --- Development & Legacy ---
-all = ["dynastore[api-full]", "dynastore[geoid-service]", "dynastore[worker-service]"]
+all = ["dynastore[api_full]", "dynastore[geoid_service]", "dynastore[worker_service]"]
 test = ["pytest>=8.0.0", "pytest-asyncio>=0.23.5", "pytest-cov>=4.1.0", "pytest-xdist>=3.5.0", "requests>=2.31.0", "orjson>=3.9.15"]
 dev = ["ruff", "black", "mypy", "debugpy", "dynastore[test]"]
 
 # Internals/Aliases
 mvt = []
 dwh = ["google-cloud-bigquery", "db-dtypes", "pandas"]
-"psycopg-pool" = ["psycopg[binary,pool]"]
+psycopg_pool = ["psycopg[binary,pool]"]
 
 [project.entry-points."dynastore.modules"]
 tasks = "dynastore.modules.tasks.tasks_module:TasksModule"

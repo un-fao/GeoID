@@ -4,10 +4,10 @@ The `admin` extension exposes management endpoints and a web dashboard for opera
 
 ## Activation
 
-The extension is loaded when `SCOPE` includes `api-catalog`:
+The extension is loaded when `SCOPE` includes `api_catalog`:
 
 ```yaml
-SCOPE: "api-catalog"
+SCOPE: "api_catalog"
 ```
 
 It registers under the `/admin` prefix via `AdminService.configure_app()`.

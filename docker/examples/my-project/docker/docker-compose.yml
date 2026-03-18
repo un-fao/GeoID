@@ -1,0 +1,63 @@
+services:
+  db:
+    # Reuse dynastore's postgres image
+    image: ghcr.io/un-fao/dynastore-db:latest
+    container_name: my_project_db
+    restart: always
+    env_file: .env
+    command: postgres -c max_locks_per_transaction=256 -c shared_preload_libraries='pg_cron' -c cron.database_name='${POSTGRES_DB:-gis_dev}'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - my_project_net
+
+  api:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+      args:
+        APP: my_project
+        SCOPE: ${API_SCOPE:-api_full}
+    container_name: my_project_api
+    restart: always
+    env_file: .env
+    environment:
+      APP: my_project
+      TCP_PORT: 80
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-4}
+    ports:
+      - "${HOST_PORT_API:-80}:80"
+    depends_on:
+      - db
+    networks:
+      - my_project_net
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+      args:
+        APP: my_project
+        SCOPE: ${WORKER_SCOPE:-worker_service}
+    container_name: my_project_worker
+    restart: always
+    env_file: .env
+    # Run in worker mode (same image as API, different modules + CMD)
+    command: ["worker"]
+    environment:
+      APP: my_project
+      TCP_PORT: 81
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+    ports:
+      - "${HOST_PORT_WORKER:-81}:81"
+    depends_on:
+      - db
+    networks:
+      - my_project_net
+
+volumes:
+  postgres_data:
+
+networks:
+  my_project_net:
+    driver: bridge
