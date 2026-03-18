@@ -22,31 +22,57 @@ logger = logging.getLogger(__name__)
 
 def _build_extras_graph() -> Dict[str, Set[str]]:
     """
-    Build a directed graph of extras from the DynaStore package metadata.
+    Build a directed graph of extras from all packages that contribute to
+    dynastore entry-point groups (dynastore.modules, dynastore.extensions,
+    dynastore.tasks).
 
-    Returns a dict mapping each extras name to the set of *other* DynaStore
-    extras it depends on (self-referential deps like ``dynastore[catalog]``).
+    This allows downstream packages to define their own self-referencing
+    extras that resolve through the same SCOPE mechanism::
+
+        # my-project pyproject.toml
+        [project.optional-dependencies]
+        my-app = ["my-project[module-foo,extension-bar]"]
+        module-foo = []
+        extension-bar = []
+
+    With this, ``SCOPE=my-app`` resolves to ``foo``, ``bar``, etc.
     """
-    try:
-        requires = importlib.metadata.requires("DynaStore") or []
-    except importlib.metadata.PackageNotFoundError:
-        return {}
+    # Discover all packages contributing to dynastore entry-point groups
+    package_names: Set[str] = {"DynaStore"}
+    for group in ("dynastore.modules", "dynastore.extensions", "dynastore.tasks"):
+        try:
+            eps = importlib.metadata.entry_points(group=group)
+        except TypeError:
+            eps = importlib.metadata.entry_points().get(group, [])
+        for ep in eps:
+            if hasattr(ep, "dist") and ep.dist:
+                package_names.add(ep.dist.metadata["Name"])
 
     graph: Dict[str, Set[str]] = {}
     extra_re = re.compile(r'extra\s*==\s*"([^"]+)"')
-    self_ref_re = re.compile(r"^dynastore\[([^\]]+)\]", re.IGNORECASE)
 
-    for line in requires:
-        m_extra = extra_re.search(line)
-        if not m_extra:
+    for pkg_name in package_names:
+        try:
+            requires = importlib.metadata.requires(pkg_name) or []
+        except importlib.metadata.PackageNotFoundError:
             continue
-        parent = m_extra.group(1).lower().replace("_", "-")
-        graph.setdefault(parent, set())
 
-        m_ref = self_ref_re.match(line.strip())
-        if m_ref:
-            child = m_ref.group(1).lower().replace("_", "-")
-            graph[parent].add(child)
+        # Match self-referencing deps like  pkg[extra]
+        self_ref_re = re.compile(
+            rf"^{re.escape(pkg_name)}\[([^\]]+)\]", re.IGNORECASE
+        )
+
+        for line in requires:
+            m_extra = extra_re.search(line)
+            if not m_extra:
+                continue
+            parent = m_extra.group(1).lower().replace("_", "-")
+            graph.setdefault(parent, set())
+
+            m_ref = self_ref_re.match(line.strip())
+            if m_ref:
+                child = m_ref.group(1).lower().replace("_", "-")
+                graph[parent].add(child)
 
     return graph
 
