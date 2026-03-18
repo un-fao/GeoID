@@ -14,11 +14,12 @@ def load_component_dotenv(cls: "type[Any]") -> None:
     extension, or task) **without overriding** environment variables that are
     already set.
 
-    Convention: place a ``.env`` file in the same directory as the component's
-    Python package (next to ``__init__.py`` or the main module file).  The
-    framework discovers and loads it automatically before the component is
-    instantiated, so any secrets or local-dev overrides declared there are
-    available from the very first line of ``__init__``.
+    Convention: place a ``.env`` file in the same directory as the file that
+    contains the class implementing the plugin protocol (``ModuleProtocol``,
+    ``ExtensionProtocol``, or ``TaskProtocol``).  The framework discovers and
+    loads it automatically before the component is instantiated, so any secrets
+    or local-dev overrides declared there are available from the very first line
+    of ``__init__``.
 
     Existing environment variables always take precedence (``override=False``),
     so production/CI values set via Docker or CI secrets are never clobbered.
