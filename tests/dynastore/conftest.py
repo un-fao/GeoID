@@ -10,7 +10,7 @@ from dynastore.modules.catalog.models import Catalog, Collection, ItemDataForDB
 import sys
 from pathlib import Path
 
-# Add the tests directory to sys.path to allow importing cleanup_db and reinit_db
+# Add the tests directory to sys.path to allow importing cleanup_db
 tests_root = str(Path(__file__).parent.parent.parent)
 if tests_root not in sys.path:
     sys.path.append(tests_root)
@@ -19,26 +19,14 @@ if tests_root not in sys.path:
 @pytest_asyncio.fixture(scope="session", loop_scope="session", autouse=True)
 async def db_reset_session():
     """
-    Physically drops and recreates the database schemas at the start of the test session.
-    Ensures a consistent 'clean' state for all tests.
+    Drops database schemas at the start of the test session to ensure a clean state.
+    Schema recreation is handled by module lifespans in app_lifespan / task_app_state.
     """
-    # Assuming tests.cleanup_db was moved to src/dynastore/test_utils/cleanup_db.py
-    # We should update the import.
-    # However, tests/reinit_db.py might still be in tests/
-
-    # Try importing from new location first
     try:
         from tests.dynastore.test_utils.cleanup_db import cleanup_db as cleanup
     except ImportError:
-        # Skip if not found (might be running unit tests only)
         print("[DB RESET] Warning: cleanup_db not found, skipping reset.")
         cleanup = None
-
-    try:
-        from tests.reinit_db import reinit
-    except ImportError:
-        print("[DB RESET] Warning: reinit_db not found, skipping reinit.")
-        reinit = None
 
     if os.environ.get("PYTEST_XDIST_WORKER"):
         print(
@@ -49,10 +37,6 @@ async def db_reset_session():
     if cleanup:
         print("\n[DB RESET] Dropping existing schemas...")
         await cleanup()
-
-    if reinit:
-        print("[DB RESET] Re-initializing core schemas...")
-        await reinit()
 
     print("[DB RESET] Complete.\n")
 

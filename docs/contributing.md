@@ -223,6 +223,73 @@ test: Add integration tests for catalog API
 refactor: Simplify event handling logic
 ```
 
+## CI/CD & Multi-Repository Architecture
+
+GeoID uses a multi-repository architecture separating the public framework from
+private deployment configurations.
+
+### Repository Roles
+
+| Repository | Visibility | Role |
+|---|---|---|
+| **GeoID** (this repo) | Public | Framework source code, tests, reusable test workflow |
+| **Deployment repos** (e.g. dynastore) | Private | Service configs, deployment workflows, GCP infrastructure |
+| **Extension repos** (e.g. fao-aip-catalog) | Private | Custom modules/extensions + own deployment configs |
+
+### Test Workflow (`test.yml`)
+
+GeoID's test workflow is **reusable** via `workflow_call`. Downstream repos call
+it as a test gate before deployment:
+
+```
+Extension repo (deploy) ──► Dynastore deploy.yml ──► GeoID test.yml
+                                                        │
+                                                        ├─ Unit tests
+                                                        └─ Integration tests
+```
+
+The workflow:
+1. Builds Docker test infrastructure via `docker-compose.test.yml`
+2. Runs unit tests (ignoring `**/integration/*`)
+3. Runs full integration tests (optional via `run_integration` input)
+4. Generates JUnit XML reports, SVG badges, and JSON test summaries
+5. Uploads artifacts for downstream deployment workflows
+
+### Running Tests Locally
+
+```bash
+# Full Docker-based test run (mirrors CI)
+docker compose -f docker/docker-compose.test.yml run --rm test-runner
+
+# Unit tests only
+docker compose -f docker/docker-compose.test.yml run --rm test-runner \
+  /opt/venv/bin/pytest tests/ --ignore-glob="**/integration/*"
+
+# Direct pytest (requires local DB on port 54320)
+pytest tests/
+```
+
+### Test Configuration
+
+- `pytest.ini` — root config with xdist parallel execution, custom markers
+- `tests/conftest.py` — shared fixtures (`app_lifespan`, `db_engine`, clients)
+- `tests/dynastore/conftest.py` — session-scoped DB cleanup, model fixtures
+- Custom markers: `@pytest.mark.enable_modules(...)`, `@pytest.mark.gcp`, `@pytest.mark.local_only`
+
+### Creating a Downstream Deployment Repository
+
+See the [Deployment Repository Guide](DEPLOYMENT_REPOSITORY.md) for step-by-step
+instructions on setting up a private repo that deploys GeoID-based services.
+
+The `setup-workspace` composite action in the infrastructure repo automatically
+injects shared scripts and default IaC templates into the caller's workspace,
+so downstream projects only need to provide:
+
+- `.github/config/apps.base.yml` — service definitions
+- `.github/config/cloudbuild.yml` — Cloud Build configuration
+- `docker/Dockerfile` — container image build
+- Optionally: `.github/config/iac.yml` to override the default Cloud Run template
+
 ## Questions or Issues?
 
 - Check existing issues and discussions
