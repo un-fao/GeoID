@@ -117,7 +117,6 @@ web_service.py
 *.md
 !README.md
 !README_detailed.md
-!CONTRIBUTING.md
 !src/dynastore/examples/README.database_manager.md
 !src/dynastore/extensions/apikey/readme.md
 !src/dynastore/extensions/apikey/usage_example.md

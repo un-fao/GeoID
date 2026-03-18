@@ -29,7 +29,9 @@ A key innovation is the database architecture, which leverages advanced features
 - [The Legacy WFS Extension](docs/components/wfs.md)
 - [Elasticsearch Integration](docs/components/elasticsearch.md)
 
-**Part 3: Future Directions**
+**Part 3: Extending & Contributing**
+- [Contributing & Plugin Naming Convention](docs/contributing.md)
+- [Example Project Template](examples/my-project/) — starter kit for downstream projects
 - [Roadmap](docs/roadmap.md)
 
 ---

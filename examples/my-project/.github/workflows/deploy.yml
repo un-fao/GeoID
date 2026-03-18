@@ -1,0 +1,110 @@
+name: Deploy My Project
+
+on:
+  push:
+    branches: [main]
+    tags: ["my-project-prod-*"]
+
+jobs:
+  # JOB 1: Determine which apps changed and build deployment matrix
+  determine-changes:
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.build-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        if: github.ref_type != 'tag'
+        id: changed-files
+        uses: tj-actions/changed-files@v47.0.0
+        with:
+          base_sha: ${{ github.event.before }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Build deployment matrix
+        id: build-matrix
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            CHANGED_FILES_INPUT="FORCE_DEPLOY_ALL"
+          else
+            CHANGED_FILES_INPUT="${{ steps.changed-files.outputs.all_changed_files }}"
+          fi
+          # Reuse dynastore's build_matrix.py script
+          pip install PyYAML && \
+          python .github/scripts/build_matrix.py .github/config/apps.yml "$CHANGED_FILES_INPUT"
+
+  # JOB 2: Deploy all apps in the matrix
+  deploy-apps:
+    needs: [determine-changes]
+    if: needs.determine-changes.outputs.matrix != '[]'
+    name: Deploy ${{ matrix.id }} (Type ${{ matrix.type }})
+    runs-on: ubuntu-22.04
+    environment: ${{ matrix.env.ENVIRONMENT || 'review' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.determine-changes.outputs.matrix) }}
+
+    env:
+      TAG: ${{ vars.REGION }}-docker.pkg.dev/${{ vars.PROJECT_ID }}/${{ vars.ARTIFACT_REGISTRY }}/${{ matrix.env.NAME }}:${{ github.run_number }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WORKLOAD_ID_PROVIDER }}
+          service_account: ${{ vars.SERVICE_ACCOUNT }}
+
+      - name: Setup Environment
+        uses: un-fao/dynastore/.github/actions/setup-env@main
+        with:
+          env-name: ${{ matrix.env.ENVIRONMENT || 'review' }}
+          app-matrix-json: ${{ toJson(matrix) }}
+          vars-json: ${{ toJson(vars) }}
+          secrets-json: ${{ toJson(secrets) }}
+
+      - name: Inject TAG into .env
+        run: echo "export TAG=$TAG" >> .env
+
+      - name: Substitute Variables
+        uses: un-fao/fao-ga-substitute-action@v2
+        with:
+          env-files: .env
+          input-files: |
+            .github/config/iac.yml
+            .github/config/iac-job.yml
+            .github/config/iac-worker.yml
+            .github/config/cloudbuild.yml
+
+      - name: Build via GCB
+        run: |
+          set -a && source .env && set +a
+          gcloud config set project ${{ vars.PROJECT_ID }}
+          gcloud builds submit . \
+            --config .github/config/cloudbuild.yml \
+            --substitutions=_DOCKERFILE_PATH="docker/Dockerfile"
+
+      - name: Deploy as Cloud Run Service
+        if: matrix.type == 'service'
+        run: gcloud run services replace .github/config/iac.yml --platform=managed --region=${{ vars.REGION }}
+
+      - name: Deploy as Cloud Run Worker
+        if: matrix.type == 'worker'
+        run: gcloud run services replace .github/config/iac-worker.yml --platform=managed --region=${{ vars.REGION }}
+
+      - name: Deploy as Cloud Run Job
+        if: matrix.type == 'job'
+        run: gcloud run jobs replace .github/config/iac-job.yml --region=${{ vars.REGION }}

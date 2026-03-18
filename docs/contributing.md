@@ -201,7 +201,8 @@ catalog_events = "my_project.extensions.catalog_events:CatalogEventHandler"
 
 ## Creating External Modules
 
-See the [External Module Development Guide](examples/external-module-template/README.md) for creating modules, extensions, or tasks in separate repositories.
+See the [example project template](../examples/my-project/) for a ready-to-use
+starting point when creating modules, extensions, or tasks in a separate repository.
 
 ## Documentation
 
