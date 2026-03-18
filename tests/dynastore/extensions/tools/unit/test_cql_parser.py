@@ -1,5 +1,8 @@
 
 import pytest
+
+pytest.importorskip("pygeofilter", reason="pygeofilter required for CQL tests")
+
 from sqlalchemy.sql import column
 from dynastore.modules.tools.cql import parse_cql_filter
 

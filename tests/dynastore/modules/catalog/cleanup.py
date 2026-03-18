@@ -35,9 +35,8 @@ async def cleanup_catalog(engine):
         schemas: list[str] = list(schemas)
         if not schemas:
             logger.debug("No tenant schemas found to clean up.")
-            return
-
-        logger.info(f"Found {len(schemas)} tenant schemas to drop. Terminating access and dropping in batches...")
+        else:
+            logger.info(f"Found {len(schemas)} tenant schemas to drop. Terminating access and dropping in batches...")
 
         # Step 1: Force terminate backend access sequentially
         # We use a dedicated connection and the imported `force_drop_schema` 
@@ -86,8 +85,9 @@ async def cleanup_catalog(engine):
             except Exception as inner_e:
                 logger.debug(f"Error dropping schema {schema}: {inner_e}")
 
-        logger.info(f"Finished dropping {len(schemas)} tenant schemas ({len(failed)} fell back to individual drops).")
-        # Step 3: Truncate catalog metadata tables
+        if schemas:
+            logger.info(f"Finished dropping {len(schemas)} tenant schemas ({len(failed)} fell back to individual drops).")
+        # Step 3: Truncate catalog metadata tables (always runs, even if no tenant schemas were found)
         metadata_tables = ["catalogs", "collections"]
         for table in metadata_tables:
             try:

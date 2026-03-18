@@ -23,8 +23,6 @@ Tests validate:
 """
 
 import pytest
-from dynastore.tools.discovery import get_protocol
-from dynastore.models.protocols.apikey import ApiKeyProtocol
 
 
 @pytest.mark.enable_modules("db_config", "db", "catalog", "stats", "apikey")
@@ -33,32 +31,18 @@ from dynastore.models.protocols.apikey import ApiKeyProtocol
 )
 @pytest.mark.asyncio
 @pytest.mark.xdist_group(name="serial")
-async def test_landing_page_respects_language_param(in_process_client):
+async def test_landing_page_respects_language_param(sysadmin_in_process_client):
     """Test that the landing page respects language parameter."""
-    # --- Ad-hoc Test Setup for Anonymous Access ---
-    # The anonymous user needs access to the /features/ endpoint for this test.
-    # Instead of modifying the core policy, we update it dynamically for this test run.
-    apikey_protocol = get_protocol(ApiKeyProtocol)
-    if not apikey_protocol:
-        pytest.skip("ApiKeyProtocol not available")
-
-    # Get the existing 'public_access' policy
-    public_policy = await apikey_protocol.get_policy("public_access")
-
-    # Add the required resource pattern and update the policy in the database
-    if public_policy and "/features/.*" not in public_policy.resources:
-        public_policy.resources.append("/features/.*")
-        await apikey_protocol.update_policy(public_policy)
-    # --- End of Ad-hoc Setup ---
-
-    # Test with default language
-    resp_en = await in_process_client.get("/features/", params={"lang": "en"})
+    # Use authenticated client — the default public_access policy doesn't
+    # cover /features/ and dynamic policy updates may not propagate through
+    # the evaluation cache within a single test.
+    resp_en = await sysadmin_in_process_client.get("/features/", params={"lang": "en"})
     assert resp_en.status_code == 200
     data_en = resp_en.json()
     assert "title" in data_en or "description" in data_en
 
     # Test with French
-    resp_fr = await in_process_client.get("/features/", params={"lang": "fr"})
+    resp_fr = await sysadmin_in_process_client.get("/features/", params={"lang": "fr"})
     assert resp_fr.status_code == 200
     data_fr = resp_fr.json()
     assert "title" in data_fr or "description" in data_fr

@@ -26,6 +26,11 @@ async def test_gcp_resource_lifecycle(app_lifespan, catalog_obj, catalog_id, mon
 
     if not getattr(app_lifespan, "engine", None):
         pytest.skip("app_state.engine not initialized.")
+        
+    try:
+        gcp_module.get_storage_client()
+    except RuntimeError:
+        pytest.skip("GCP storage client not available (no credentials).")
 
     # Override catalog_id with a shorter one to respect GCS bucket name limits (63 chars)
     short_catalog_id = f"it_{uuid.uuid4().hex[:12]}"

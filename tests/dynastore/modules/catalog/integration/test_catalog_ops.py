@@ -39,8 +39,8 @@ async def test_catalog_ops(app_lifespan, catalogs_svc, catalog_obj, catalog_id):
         assert retrieved is not None
         assert retrieved.id == catalog_id
 
-        # 3. List
-        catalogs = await catalogs_svc.list_catalogs(limit=1000)
+        # 3. List - use q= so the check is independent of total catalog count in the DB
+        catalogs = await catalogs_svc.list_catalogs(q=catalog_id)
         assert any(c.id == catalog_id for c in catalogs)
     finally:
         # 4. Delete

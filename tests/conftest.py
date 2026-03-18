@@ -475,6 +475,12 @@ async def reset_dynastore_state(engine=None):
         if target and hasattr(target, "cache_clear"):
             try:
                 target.cache_clear()
+                # Reset alru_cache event loop binding so it works across
+                # function-scoped event loops in pytest.
+                # async_lru stores the first loop as a mangled attribute.
+                _ALRU_LOOP_ATTR = "_LRUCacheWrapper__first_loop"
+                if hasattr(target, _ALRU_LOOP_ATTR):
+                    setattr(target, _ALRU_LOOP_ATTR, None)
             except Exception as e:
                 logger.debug(f"Failed to clear cache for {attr_name}: {e}")
 
@@ -497,6 +503,11 @@ async def reset_dynastore_state(engine=None):
     # Config service caches
     clear_if_cached(config_service, "_catalog_config_cache")
     clear_if_cached(config_service, "_collection_config_cache")
+
+    # Config manager caches (separate module-level alru_cache instances)
+    from dynastore.modules.catalog import config_manager
+    clear_if_cached(config_manager, "_catalog_config_cache")
+    clear_if_cached(config_manager, "_collection_config_cache")
 
     # Tiles module cleanup (clear_registry resets _active_storage_provider too)
     clear_if_cached(tiles_module, "get_tile_resolution_params")

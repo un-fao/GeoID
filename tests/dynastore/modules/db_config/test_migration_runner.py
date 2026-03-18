@@ -203,9 +203,10 @@ class TestDiscoverScripts:
     """Tests for _discover_scripts_for_module."""
 
     def test_empty_package_returns_empty(self):
-        """A migrations package with no SQL files returns no scripts."""
+        """A package with no SQL migration files returns no scripts."""
+        # Use a real package that exists but contains no SQL files
         scripts = _discover_scripts_for_module(
-            "core", "dynastore.modules.db_config.migrations"
+            "core", "dynastore.modules.db_config"
         )
         assert scripts == []
 
@@ -229,7 +230,7 @@ class TestDiscoverScripts:
         """Tenant flag should be set on discovered scripts when is_tenant=True."""
         # With empty package, no scripts to check — just verify no error
         scripts = _discover_scripts_for_module(
-            "core", "dynastore.modules.db_config.migrations", is_tenant=True
+            "core", "dynastore.modules.db_config", is_tenant=True
         )
         assert scripts == []
         # Verify flag works on manually created scripts
