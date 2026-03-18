@@ -250,12 +250,15 @@ class ProxyModule(ModuleProtocol, ProxyProtocol):
             yield; return
 
         async with AsyncExitStack() as stack:
+            # Ensure the schema exists before the storage driver tries to use it.
+            async with managed_transaction(engine) as conn:
+                await maintenance_tools.ensure_schema_exists(conn, "proxy")
+
             # Let the driver initialise its schema/tables via its own lifespan
             await stack.enter_async_context(self.storage_driver.lifespan(app_state))
 
             async with managed_transaction(engine) as conn:
                 async with maintenance_tools.acquire_startup_lock(conn, "proxy_module"):
-                    await maintenance_tools.ensure_schema_exists(conn, "proxy")
                     await maintenance_tools.ensure_future_partitions(
                         conn, schema="proxy", table="url_analytics", interval="monthly", periods_ahead=1
                     )

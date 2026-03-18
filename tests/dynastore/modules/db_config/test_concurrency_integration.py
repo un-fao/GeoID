@@ -2,13 +2,14 @@ import asyncio
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import StaticPool, NullPool
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     DDLQuery,
     managed_transaction,
     ResultHandler,
 )
+from dynastore.modules.db_config.locking_tools import check_schema_exists, check_table_exists
 
 
 @pytest_asyncio.fixture
@@ -153,3 +154,72 @@ async def test_managed_transaction_serialization(shared_engine):
     tasks = [concurrent_begin(i) for i in range(10)]
     results = await asyncio.gather(*tasks)
     assert len(results) == 10
+
+
+@pytest_asyncio.fixture
+async def null_pool_engine(db_url):
+    """
+    Engine with NullPool: each acquire() creates a fresh connection, simulating
+    two separate processes (e.g., api + worker containers) using the same DB.
+    """
+    url = db_url.replace("postgresql://", "postgresql+asyncpg://")
+    engine = create_async_engine(url, poolclass=NullPool)
+    yield engine
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_schema_table_creation_no_race(null_pool_engine):
+    """
+    Regression test for the DDLExecutor advisory-lock race condition.
+
+    Scenario: two containers start simultaneously and both try to initialize
+    the same schema + table via DDLQuery.  With the old 'skip-on-lock-fail'
+    behaviour the second container would:
+      1. skip schema creation (another worker holds the advisory lock)
+      2. immediately attempt CREATE TABLE
+      3. fail with "schema does not exist" (first container hasn't committed yet)
+
+    With the fix the second container blocks on pg_advisory_xact_lock, waits
+    for the first to commit, re-checks existence, and proceeds cleanly.
+    """
+    schema_name = "test_ddl_race_fix"
+    table_name = "items"
+
+    # Ensure clean state
+    async with managed_transaction(null_pool_engine) as conn:
+        await DDLQuery(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE').execute(conn)
+
+    async def init_worker():
+        """Mimics one container's module-initialization sequence."""
+        async with managed_transaction(null_pool_engine) as conn:
+            # Step 1 — ensure schema (may be contested by the other worker)
+            await DDLQuery(
+                f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"',
+                check_query=f"SELECT 1 FROM pg_namespace WHERE nspname = '{schema_name}'",
+            ).execute(conn)
+            # Tiny yield to maximise interleaving probability
+            await asyncio.sleep(0)
+            # Step 2 — create table (requires schema to be committed/visible)
+            await DDLQuery(
+                f"""CREATE TABLE IF NOT EXISTS "{schema_name}"."{table_name}" (
+                    id   serial PRIMARY KEY,
+                    val  text
+                )""",
+                check_query=(
+                    f"SELECT 1 FROM pg_tables "
+                    f"WHERE schemaname = '{schema_name}' AND tablename = '{table_name}'"
+                ),
+            ).execute(conn)
+
+    # Two workers racing — must both complete without exceptions
+    await asyncio.gather(init_worker(), init_worker())
+
+    # Verify the schema and table actually exist
+    async with managed_transaction(null_pool_engine) as conn:
+        assert await check_schema_exists(conn, schema_name), "schema missing after concurrent init"
+        assert await check_table_exists(conn, table_name, schema=schema_name), "table missing after concurrent init"
+
+    # Cleanup
+    async with managed_transaction(null_pool_engine) as conn:
+        await DDLQuery(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE').execute(conn)

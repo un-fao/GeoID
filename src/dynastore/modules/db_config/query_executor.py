@@ -704,10 +704,21 @@ class DDLExecutor(BaseExecutor):
                 acquired = result.scalar()
 
                 if not acquired:
-                    # Another worker holds the lock — they are creating the same object.
-                    # Skip and let them finish. The existence check after the transaction
-                    # will confirm the object was created by the other worker.
-                    return await self._apply_post_processing_async(None)
+                    # Another worker holds the lock. Wait for them to finish so that
+                    # their transaction is committed before we re-check existence.
+                    await tx_conn.execute(text("SET LOCAL lock_timeout = '30s'"))
+                    await tx_conn.execute(
+                        text("SELECT pg_advisory_xact_lock(:lock_id)"),
+                        {"lock_id": lock_id},
+                    )
+                    # Re-check: the other worker should have committed the object by now.
+                    if self.existence_check:
+                        res_post = self.existence_check(tx_conn, params)
+                        if inspect.isawaitable(res_post):
+                            res_post = await res_post
+                        if res_post:
+                            return await self._apply_post_processing_async(None)
+                    # Object still doesn't exist — fall through and create it.
 
                 # Timeout guard to prevent DDL hangs
                 await tx_conn.execute(text("SET LOCAL statement_timeout = '30s'"))
