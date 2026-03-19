@@ -85,15 +85,24 @@ class Policy(BaseModel):
             return [".*" if item == "*" else item for item in v]
         return v
 
-    @field_validator("resources")
+    @field_validator("resources", "actions")
     @classmethod
     def validate_regex(cls, v: List[str]) -> List[str]:
-        """Performance optimization: Pre-validate regexes to prevent runtime crashes."""
+        """Pre-validate regexes and reject patterns vulnerable to ReDoS."""
+        _REDOS_PATTERN = re.compile(r"(\(.+\+\)\+|\(.+\*\)\*|\(.+\+\)\*|\(.+\*\)\+)")
         for pattern in v:
             try:
-                re.compile(pattern)
+                compiled = re.compile(pattern)
             except re.error:
-                raise ValueError(f"Invalid regex in policy resource: {pattern}")
+                raise ValueError(f"Invalid regex in policy pattern: {pattern}")
+            if _REDOS_PATTERN.search(pattern):
+                raise ValueError(
+                    f"Potentially unsafe regex pattern (nested quantifiers): {pattern}"
+                )
+            if len(pattern) > 512:
+                raise ValueError(
+                    f"Regex pattern too long ({len(pattern)} chars, max 512): {pattern[:50]}..."
+                )
         return v
 
 # --- Protocols ---

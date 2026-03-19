@@ -149,7 +149,6 @@ CREATE_ROLES_TABLE = DDLQuery("""
         level INTEGER DEFAULT 0, -- Legacy support
         parent_roles JSONB DEFAULT '[]'::jsonb, -- V2 Inheritance
         policies JSONB DEFAULT '[]'::jsonb, -- V2 Policy Links
-        is_system BOOLEAN DEFAULT FALSE,
         metadata JSONB DEFAULT '{{}}'::jsonb, -- Legacy support
         created_at TIMESTAMPTZ DEFAULT NOW()
     );
@@ -2328,11 +2327,16 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             valid_schemas = set(await valid_schemas_query.execute(conn=db, schemas=schema_names))
 
             # Step 2: Query only the valid ones
+            import re as _re
+            _safe_schema = _re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,62}$")
             for cat in catalogs_res:
                 cat_id = cat["id"]
                 schema = cat["physical_schema"]
-                
+
                 if schema not in valid_schemas:
+                    continue
+                if not _safe_schema.match(schema):
+                    logger.warning(f"get_catalogs_for_identity: skipping catalog {cat_id} with unsafe schema name: {schema!r}")
                     continue
 
                 try:
@@ -2340,7 +2344,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
                     # against concurrent drops (rare but possible in tests)
                     async with managed_nested_transaction(db) as nested:
                         exists = await DQLQuery(
-                            f"SELECT 1 FROM {schema}.identity_roles WHERE provider = :provider AND subject_id = :subject_id LIMIT 1;",
+                            f'SELECT 1 FROM "{schema}".identity_roles WHERE provider = :provider AND subject_id = :subject_id LIMIT 1;',
                             result_handler=ResultHandler.SCALAR_ONE_OR_NONE
                         ).execute(conn=nested, provider=provider, subject_id=subject_id)
                         

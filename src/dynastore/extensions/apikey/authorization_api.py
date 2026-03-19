@@ -29,8 +29,25 @@ from datetime import datetime
 
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import ApiKeyProtocol, CatalogsProtocol
+from dynastore.models.auth import Principal
 
-router = APIRouter(prefix="/admin", tags=["Authorization Management"])
+
+def _require_admin_role(request: Request) -> Principal:
+    """Defense-in-depth: verify admin/sysadmin role even though middleware enforces policies."""
+    principal: Principal | None = getattr(request.state, "principal", None)
+    if not principal:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    admin_roles = {"sysadmin", "admin"}
+    if not admin_roles.intersection(set(principal.roles or [])):
+        raise HTTPException(status_code=403, detail="Admin role required.")
+    return principal
+
+
+router = APIRouter(
+    prefix="/admin",
+    tags=["Authorization Management"],
+    dependencies=[Depends(_require_admin_role)],
+)
 me_router = APIRouter(prefix="/me", tags=["Self-Service Authorization"])
 
 # --- DTOs ---
@@ -130,6 +147,29 @@ async def resolve_catalog_schema(catalog_id: str) -> str:
 
 
 # --- Self-Service Endpoints ---
+
+
+@me_router.get("/available-roles")
+async def get_available_roles(
+    request: Request,
+    catalog_id: Optional[str] = None,
+):
+    """List roles available in the system (self-service discovery)."""
+    storage = await get_storage()
+    await get_current_identity(request)  # Require authentication
+
+    schema = "apikey"
+    if catalog_id:
+        schema = await resolve_catalog_schema(catalog_id)
+
+    roles = await storage.list_roles(schema=schema)
+    return [
+        {
+            "name": r.name,
+            "description": r.description,
+        }
+        for r in roles
+    ]
 
 
 @me_router.get("/roles/global", response_model=List[str])

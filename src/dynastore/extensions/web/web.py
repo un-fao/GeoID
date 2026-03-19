@@ -23,6 +23,7 @@ import inspect
 import itertools
 import logging
 import re
+from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime
 from typing import List, Any, Dict, Optional, Callable
@@ -48,17 +49,11 @@ from dynastore.tools.discovery import get_protocol, get_protocols, register_plug
 logger = logging.getLogger(__name__)
 
 def register_web_policies():
-    """Register the web extension's public-access policy and anonymous role.
-
-    Always registers into the module-level in-memory registry so that
-    `provision_default_policies()` picks them up at lifespan startup, even
-    when this is called before the `PermissionProtocol` (ApiKeyModule) is
-    fully initialised.
-    """
-    from dynastore.modules.apikey.policies import (
-        register_policy as _reg_policy,
-        register_role as _reg_role,
-    )
+    """Register web extension policies and anonymous role via PermissionProtocol."""
+    pm = get_protocol(PermissionProtocol)
+    if not pm:
+        logger.warning("PermissionProtocol not available; web policies not registered.")
+        return
 
     web_policy = Policy(
         id="web_public_access",
@@ -87,8 +82,8 @@ def register_web_policies():
         ],
         effect="ALLOW",
     )
-    _reg_policy(web_policy)
-    _reg_role(Role(name="anonymous", policies=["web_public_access"], is_system=True))
+    pm.register_policy(web_policy)
+    pm.register_role(Role(name="anonymous", policies=["web_public_access"]))
 
     # Sysadmin-only: POST/DELETE actions on /web/admin/* (demo populate/cleanup, etc.)
     web_sysadmin_policy = Policy(
@@ -103,20 +98,10 @@ def register_web_policies():
         ],
         effect="ALLOW",
     )
-    _reg_policy(web_sysadmin_policy)
-    _reg_role(Role(name="sysadmin", policies=["web_sysadmin_access"], is_system=True))
+    pm.register_policy(web_sysadmin_policy)
+    pm.register_role(Role(name="sysadmin", policies=["web_sysadmin_access"]))
 
-    logger.debug("Web policies pre-registered into in-memory registry.")
-
-    # If the PermissionProtocol is already live (e.g. on a hot-reload path), push
-    # the changes immediately so they take effect without waiting for lifespan.
-    policy_manager = get_protocol(PermissionProtocol)
-    if policy_manager:
-        policy_manager.register_policy(web_policy)
-        policy_manager.register_role(
-            Role(name="anonymous", policies=["web_public_access"], is_system=True)
-        )
-        logger.debug("Web policies also applied to live PermissionProtocol.")
+    logger.debug("Web policies registered via PermissionProtocol.")
 
     # Register Anonymous Principal as a plugin for discovery
     register_plugin(
@@ -128,10 +113,6 @@ def register_web_policies():
             is_active=True,
         )
     )
-
-# Auto-register policies on import so that modular loaders (like ApiKeyModule)
-# pick them up during foundational lifespan before extension instantiation.
-register_web_policies()
 
 def _find_project_root(start_path: str, markers: List[str]) -> Optional[str]:
     """Walks up from start_path to find a directory containing one of the marker files.
@@ -305,6 +286,12 @@ class Web(ExtensionProtocol):
         #     # This is a common pattern when dynamically adding routes to a FastAPI app instance.
         #     app.router.routes.insert(0, app.router.routes.pop())
         #     logger.info("WebService: No root ('/') endpoint found. Added redirect to '/web'.")
+
+    @asynccontextmanager
+    async def lifespan(self, app: FastAPI):
+        register_web_policies()
+        logger.info("WebService: Policies registered.")
+        yield
 
     def __init__(self, app: Optional[FastAPI] = None):
         self.app = app

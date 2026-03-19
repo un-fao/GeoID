@@ -48,7 +48,6 @@ class RoleResponse(BaseModel):
     description: Optional[str] = None
     policies: List[str] = Field(default_factory=list)
     parent_roles: List[str] = Field(default_factory=list)
-    is_system: bool = False
 
 
 # --- Policy models ---

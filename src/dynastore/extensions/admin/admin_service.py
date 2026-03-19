@@ -40,6 +40,9 @@ from dynastore.extensions.web.decorators import expose_web_page
 
 logger = logging.getLogger(__name__)
 
+# Default role names that can only be modified/deleted by sysadmin
+DEFAULT_ROLE_NAMES = frozenset({"sysadmin", "admin", "anonymous", "user"})
+
 
 # --- Auth dependency ---
 
@@ -67,9 +70,6 @@ class AdminService(ExtensionProtocol):
     router: APIRouter = APIRouter(tags=["Admin"], prefix="/admin")
 
     def configure_app(self, app: FastAPI):
-        register_admin_policies()
-        logger.info("AdminService: Policies registered.")
-
         # Include migration admin sub-routers
         from .migration_routes import router as migration_router, schema_router, configs_router
         self.router.include_router(migration_router, prefix="")
@@ -83,6 +83,12 @@ class AdminService(ExtensionProtocol):
             logger.info("AdminService: Web page registered via WebModuleProtocol.")
         else:
             logger.debug("WebModuleProtocol not available yet; admin page will be registered at Web lifespan scan.")
+
+    @asynccontextmanager
+    async def lifespan(self, app: FastAPI):
+        register_admin_policies()
+        logger.info("AdminService: Policies registered.")
+        yield
 
     # -------------------------------------------------------------------------
     # User Management (/admin/users)
@@ -314,7 +320,6 @@ class AdminService(ExtensionProtocol):
                 description=r.description,
                 policies=r.policies or [],
                 parent_roles=r.parent_roles or [],
-                is_system=r.is_system or False,
             )
             for r in roles
         ]
@@ -331,13 +336,11 @@ class AdminService(ExtensionProtocol):
             description=body.description,
             policies=body.policies,
             parent_roles=body.parent_roles,
-            is_system=False,
         )
         created = await mgr.create_role(role, catalog_id=catalog_id)
         return RoleResponse(
             name=created.name, description=created.description,
             policies=created.policies or [], parent_roles=created.parent_roles or [],
-            is_system=created.is_system or False,
         )
 
     @router.put("/roles/{role_name}", summary="Update a role")
@@ -352,8 +355,8 @@ class AdminService(ExtensionProtocol):
         existing = next((r for r in roles if r.name == role_name), None)
         if not existing:
             raise HTTPException(status_code=404, detail=f"Role '{role_name}' not found.")
-        if existing.is_system:
-            raise HTTPException(status_code=403, detail="System roles cannot be modified.")
+        if role_name in DEFAULT_ROLE_NAMES and "sysadmin" not in (principal.roles or []):
+            raise HTTPException(status_code=403, detail="Only sysadmin can modify default roles.")
         if body.description is not None:
             existing.description = body.description
         if body.policies is not None:
@@ -364,7 +367,6 @@ class AdminService(ExtensionProtocol):
         return RoleResponse(
             name=updated.name, description=updated.description,
             policies=updated.policies or [], parent_roles=updated.parent_roles or [],
-            is_system=updated.is_system or False,
         )
 
     @router.delete("/roles/{role_name}", status_code=204, summary="Delete a role")
@@ -378,8 +380,8 @@ class AdminService(ExtensionProtocol):
         existing = next((r for r in roles if r.name == role_name), None)
         if not existing:
             raise HTTPException(status_code=404, detail=f"Role '{role_name}' not found.")
-        if existing.is_system:
-            raise HTTPException(status_code=403, detail="System roles cannot be deleted.")
+        if role_name in DEFAULT_ROLE_NAMES and "sysadmin" not in (principal.roles or []):
+            raise HTTPException(status_code=403, detail="Only sysadmin can delete default roles.")
         await mgr.delete_role(role_name, catalog_id=catalog_id)
 
     # -------------------------------------------------------------------------
@@ -444,10 +446,6 @@ class AdminService(ExtensionProtocol):
         existing = await pm.get_policy(policy_id, catalog_id=catalog_id)
         if not existing:
             raise HTTPException(status_code=404, detail=f"Policy '{policy_id}' not found.")
-        # System policies are read-only
-        system_ids = {"public_access", "self_service_access", "sysadmin_full_access"}
-        if policy_id in system_ids:
-            raise HTTPException(status_code=403, detail="System policies are read-only.")
         if body.description is not None:
             existing.description = body.description
         if body.actions is not None:
@@ -472,12 +470,27 @@ class AdminService(ExtensionProtocol):
         pm = mgr.get_policy_service()
         if not pm:
             raise HTTPException(status_code=503, detail="Policy manager not available.")
-        system_ids = {"public_access", "self_service_access", "sysadmin_full_access"}
-        if policy_id in system_ids:
-            raise HTTPException(status_code=403, detail="System policies cannot be deleted.")
         deleted = await pm.delete_policy(policy_id, catalog_id=catalog_id)
         if not deleted:
             raise HTTPException(status_code=404, detail=f"Policy '{policy_id}' not found.")
+
+    # -------------------------------------------------------------------------
+    # System Defaults (/admin/reset-defaults)
+    # -------------------------------------------------------------------------
+
+    @router.post("/reset-defaults", summary="Reset default policies and roles")
+    async def reset_defaults(
+        catalog_id: Optional[str] = Query(None, description="Catalog ID for tenant-scoped reset, or None for global"),
+        principal: Principal = Depends(_require_admin),
+        mgr=Depends(_get_apikey_manager),
+    ):
+        if "sysadmin" not in (principal.roles or []):
+            raise HTTPException(status_code=403, detail="Only sysadmin can reset defaults.")
+        pm = mgr.get_policy_service()
+        if not pm:
+            raise HTTPException(status_code=503, detail="Policy manager not available.")
+        await pm.provision_default_policies(catalog_id=catalog_id, force=True)
+        return {"message": "Default policies and roles have been reset.", "catalog_id": catalog_id or "global"}
 
     # -------------------------------------------------------------------------
     # API Key Management (/admin/apikeys)

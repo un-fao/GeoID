@@ -284,7 +284,7 @@ class ElasticsearchModule(ModuleProtocol):
 
         # In-memory: immediate effect in this process.
         perm.register_policy(deny_policy)
-        perm.register_role(Role(name="all_users", policies=[policy_id], is_system=True))
+        perm.register_role(Role(name="all_users", policies=[policy_id]))
 
         # Persistent: survives restarts and propagates to other processes.
         try:
@@ -416,7 +416,7 @@ class ElasticsearchModule(ModuleProtocol):
                         )
                         perm.register_policy(deny_policy)
                         perm.register_role(
-                            Role(name="all_users", policies=[policy_id], is_system=True)
+                            Role(name="all_users", policies=[policy_id])
                         )
                         logger.info(
                             "ElasticsearchModule: Restored DENY policy for obfuscated catalog '%s'.",

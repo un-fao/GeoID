@@ -25,6 +25,15 @@ from uuid import UUID
 from async_lru import alru_cache
 import json
 
+_SAFE_SCHEMA_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,62}$")
+
+
+def _validate_schema_name(schema: str) -> str:
+    """Validate a schema name to prevent SQL injection via identifier interpolation."""
+    if not _SAFE_SCHEMA_RE.match(schema):
+        raise ValueError(f"Invalid schema name: {schema!r}")
+    return schema
+
 from .models import ApiKeyPolicy, Policy, Condition, Role, Principal
 from .policy_storage import AbstractPolicyStorage
 from .apikey_storage import AbstractApiKeyStorage
@@ -35,64 +44,6 @@ from dynastore.models.protocols import DatabaseProtocol
 
 logger = logging.getLogger(__name__)
 
-# --- Registry ---
-_REGISTERED_POLICIES: Dict[str, Policy] = {}
-_REGISTERED_ROLES: Dict[str, Role] = {}
-_REGISTERED_PRINCIPALS: List[Principal] = []
-
-
-def register_policy(policy: Policy):
-    """
-    Register a policy to be provisioned.
-    If a policy with the same ID exists, actions and resources are merged.
-    """
-    if policy.id in _REGISTERED_POLICIES:
-        existing = _REGISTERED_POLICIES[policy.id]
-        # Merge actions
-        existing.actions = list(set(existing.actions + policy.actions))
-        # Merge resources
-        existing.resources = list(set(existing.resources + policy.resources))
-        logger.debug(f"Merged policy '{policy.id}'")
-    else:
-        _REGISTERED_POLICIES[policy.id] = policy
-        logger.debug(f"Registered policy '{policy.id}'")
-    return _REGISTERED_POLICIES[policy.id]
-
-
-def get_registered_policy(policy_id: str) -> Optional[Policy]:
-    """Retrieves a registered policy definition."""
-    return _REGISTERED_POLICIES.get(policy_id)
-
-
-def get_all_registered_policies() -> List[Policy]:
-    """Retrieves all registered policy definitions."""
-    return list(_REGISTERED_POLICIES.values())
-
-
-def register_role(role: Role):
-    """
-    Register a role to be provisioned.
-    If a role with the same ID/name exists, policies are merged.
-    """
-    role_id = role.id or role.name
-    if role_id in _REGISTERED_ROLES:
-        existing = _REGISTERED_ROLES[role_id]
-        # Merge policies
-        existing.policies = list(set(existing.policies + role.policies))
-        logger.debug(f"Merged role '{role_id}'")
-    else:
-        _REGISTERED_ROLES[role_id] = role
-        logger.debug(f"Registered role '{role_id}'")
-    return _REGISTERED_ROLES[role_id]
-
-
-def register_principal(principal: Principal):
-    """
-    Register a system principal (user) to be provisioned.
-    """
-    _REGISTERED_PRINCIPALS.append(principal)
-    logger.debug(f"Registered principal '{principal.display_name}'")
-    return principal
 
 
 class PolicyService:
@@ -130,7 +81,8 @@ class PolicyService:
         res = await catalogs.resolve_physical_schema(
             catalog_id, db_resource=db_resource, allow_missing=True
         )
-        return res if res else "apikey"
+        schema = res if res else "apikey"
+        return _validate_schema_name(schema)
 
     async def initialize(
         self, catalog_id: Optional[str] = None, conn: Optional[Any] = None
@@ -163,7 +115,8 @@ class PolicyService:
             principals=identities,
             path=resource,
             method=action,
-            catalog_id=catalog_id
+            catalog_id=catalog_id,
+            custom_policies=principal.custom_policies or None,
         )
         return allowed
 
@@ -271,155 +224,120 @@ class PolicyService:
 
     # --- Provisioning & Defaults ---
 
+    def _get_default_policies(self, partition_key: str = "global") -> List[Policy]:
+        """Returns the core default policies for the platform."""
+        return [
+            Policy(
+                id="sysadmin_full_access",
+                description="Unrestricted access for system administrators.",
+                actions=["*"],
+                resources=[".*"],
+                effect="ALLOW",
+                partition_key=partition_key,
+            ),
+            Policy(
+                id="public_access",
+                description="Allows anonymous access to public endpoints.",
+                actions=["GET", "POST", "OPTIONS", "HEAD"],
+                resources=[
+                    "/$",
+                    "/health",
+                    "/docs.*",
+                    "/openapi.json",
+                    "/redoc",
+                    "/apikey/auth/login",
+                    "/apikey/auth/validate",
+                    "/apikey/auth/jwks.json",
+                    "/auth/.*",
+                ],
+                effect="ALLOW",
+                partition_key=partition_key,
+            ),
+            Policy(
+                id="self_service_access",
+                description="Allows authenticated users to access their own /me endpoints.",
+                actions=["GET"],
+                resources=["/apikey/me/.*"],
+                effect="ALLOW",
+                partition_key=partition_key,
+            ),
+        ]
+
+    def _get_default_roles(self) -> List[Role]:
+        """Returns the core default roles for the platform."""
+        return [
+            Role(
+                name="sysadmin",
+                description="System Administrator with full access.",
+                policies=["sysadmin_full_access"],
+            ),
+            Role(
+                name="admin",
+                description="Administrator with full access.",
+                policies=["sysadmin_full_access"],
+            ),
+            Role(
+                name="anonymous",
+                description="Anonymous user with limited access.",
+                policies=["public_access"],
+            ),
+            Role(
+                name="user",
+                description="Default role for any authenticated user.",
+                policies=["self_service_access"],
+            ),
+        ]
+
     async def provision_default_policies(
         self,
         catalog_id: Optional[str] = None,
         conn: Optional[Any] = None,
         schema: Optional[str] = None,
+        force: bool = False,
     ):
-        """Provisions a set of base 'secure-by-default' policies."""
+        """Provisions core default policies and roles.
+
+        Args:
+            catalog_id: Optional catalog for tenant-scoped provisioning.
+            conn: Optional existing DB connection.
+            schema: Optional explicit schema name.
+            force: If True, upsert all defaults (reset). If False, only create missing ones.
+        """
         if not schema:
             schema = await self._resolve_schema(catalog_id, conn=conn)
         pk = catalog_id or "global"
 
         async with managed_transaction(conn or self._engine) as db:
-            # 1. Ensure partition exists if catalog-scoped
+            # Ensure partition exists if catalog-scoped
             if catalog_id:
                 await self.storage.ensure_policy_partition(
                     db, partition_key=catalog_id, schema=schema
                 )
 
-            # Core defaults
-            defaults = [
-                Policy(
-                    id="sysadmin_full_access",
-                    description="Unrestricted access for system administrators.",
-                    actions=["*"],
-                    resources=[".*"],
-                    effect="ALLOW",
-                    partition_key=pk,
-                ),
-                Policy(
-                    id="public_access",
-                    description="Allows anonymous access to public endpoints.",
-                    actions=["GET", "POST", "OPTIONS", "HEAD"],
-                    resources=[
-                        "/$",
-                        "/health",
-                        "/docs.*",
-                        "/openapi.json",
-                        "/redoc",
-                        "/apikey/auth/login",
-                        "/apikey/auth/validate",
-                        "/apikey/auth/jwks.json",
-                        "/auth/.*",
-                    ],
-                    effect="ALLOW",
-                    partition_key=pk,
-                ),
-                Policy(
-                    id="self_service_access",
-                    description="Allows authenticated users to access their own /me endpoints.",
-                    actions=["GET"],
-                    resources=["/apikey/me/.*"],
-                    effect="ALLOW",
-                    partition_key=pk,
-                ),
-            ]
+            # Provision default policies
+            for policy_def in self._get_default_policies(partition_key=pk):
+                if force:
+                    await self.storage.update_policy(policy_def, schema=schema, conn=db)
+                else:
+                    existing = await self.storage.get_policy(policy_def.id, schema=schema, conn=db)
+                    if not existing:
+                        await self.storage.update_policy(policy_def, schema=schema, conn=db)
 
-            # Register core defaults (merging if needed)
-            for p in defaults:
-                register_policy(p)
-
-            # Also register core roles
-            register_role(
-                Role(
-                    name="sysadmin",
-                    description="System Administrator with full access.",
-                    policies=["sysadmin_full_access"],
-                    is_system=True,
-                )
-            )
-
-            register_role(
-                Role(
-                    name="admin",
-                    description="Administrator with full access.",
-                    policies=["sysadmin_full_access"],
-                    is_system=True,
-                )
-            )
-
-            register_role(
-                Role(
-                    name="anonymous",
-                    description="Anonymous user with limited access.",
-                    policies=["public_access"],
-                    is_system=True,
-                )
-            )
-
-            register_role(
-                Role(
-                    name="user",
-                    description="Default role for any authenticated user.",
-                    policies=["self_service_access"],
-                    is_system=True,
-                )
-            )
-
-            # Get all registered policies (including those from extensions)
-            all_policies = get_all_registered_policies()
-
-            for policy_template in all_policies:
-                # Create a copy with the correct partition key
-                policy_def = policy_template.model_copy(update={"partition_key": pk})
-
-                # Use update_policy which now uses upsert internally
-                # This handles both insert and update cases atomically
-                await self.storage.update_policy(policy_def, schema=schema, conn=db)
-
-            # 2. Provision registered roles
-            for role_def in _REGISTERED_ROLES.values():
-                # Link existing roles to the new schema
-                if self.apikey_storage:
-                    if not await self.apikey_storage.get_role(
+            # Provision default roles
+            if self.apikey_storage:
+                for role_def in self._get_default_roles():
+                    existing = await self.apikey_storage.get_role(
                         role_def.name, schema=schema, conn=db
-                    ):
-                        await self.apikey_storage.create_role(
-                            role_def, schema=schema, conn=db
-                        )
-                    else:
-                        # Sync updates from extensions to the database
-                        await self.apikey_storage.update_role(
-                            role_def, schema=schema, conn=db
-                        )
-
-            # 3. Provision registered principals
-            for p in _REGISTERED_PRINCIPALS:
-                if self.apikey_storage:
-                    # Check if principal already exists by identity
-                    if p.provider and p.subject_id:
-                        if await self.apikey_storage.get_principal_by_identity(
-                            provider=p.provider,
-                            subject_id=p.subject_id,
-                            schema=schema,
-                            conn=db,
-                        ):
-                            continue
-
-                        # Create principal and link identity
-                        await self.apikey_storage.create_principal(
-                            p, schema=schema, conn=db
-                        )
-                        await self.apikey_storage.create_identity_link(
-                            principal_id=p.id,
-                            provider=p.provider,
-                            subject_id=p.subject_id,
-                            email=getattr(p, "email", p.display_name),
-                            schema=schema,
-                            conn=db,
-                        )
+                    )
+                    if force or not existing:
+                        if existing:
+                            await self.apikey_storage.update_role(
+                                role_def, schema=schema, conn=db
+                            )
+                        else:
+                            await self.apikey_storage.create_role(
+                                role_def, schema=schema, conn=db
+                            )
 
     # --- Evaluation ---
 
@@ -474,6 +392,7 @@ class PolicyService:
         method: str,
         request_context: Any = None,
         catalog_id: Optional[str] = None,
+        custom_policies: Optional[List[Policy]] = None,
     ) -> Tuple[bool, str]:
         """
         The central Zero-Trust evaluation engine.
@@ -523,6 +442,10 @@ class PolicyService:
                 pol = await self.get_policy(pid, catalog_id=None)
             if pol:
                 effective_policies.append(pol)
+
+        # 3. Include custom policies directly attached to the principal
+        if custom_policies:
+            effective_policies.extend(custom_policies)
 
         logger.debug(
             f"EVAL: Total effective policies to check: {len(effective_policies)}"

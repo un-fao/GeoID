@@ -442,9 +442,8 @@ function renderRoles(list) {
       <td><strong>${r.name}</strong></td>
       <td style="color:var(--text-dim)">${r.description || '—'}</td>
       <td><div class="chip-list">${(r.policies||[]).map(p=>`<span class="badge badge-role">${p}</span>`).join('')}</div></td>
-      <td>${r.is_system ? '<span class="badge badge-sys">System</span>' : ''}</td>
-      <td>${r.is_system ? '' : `
-        <button class="btn btn-sm btn-danger" onclick="deleteRole('${r.name}')"><i class="fa-solid fa-trash"></i></button>`}
+      <td>
+        <button class="btn btn-sm btn-danger" onclick="deleteRole('${r.name}')"><i class="fa-solid fa-trash"></i></button>
       </td>
     </tr>`).join('');
 }

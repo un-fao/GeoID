@@ -11,17 +11,13 @@ _ADMIN_ROLES = ["sysadmin", "admin"]
 
 
 def register_admin_policies():
-    """Register admin-access policy (sysadmin/admin only).
-
-    Always registers into the module-level in-memory registry so that
-    provision_default_policies() picks it up at lifespan startup,
-    regardless of whether PermissionProtocol is already available.
-    """
-    from dynastore.modules.apikey.policies import (
-        register_policy as _reg_policy,
-        register_role as _reg_role,
-    )
+    """Register admin-access policy (sysadmin/admin only) via PermissionProtocol."""
     from dynastore.models.protocols.policies import PermissionProtocol
+
+    pm = get_protocol(PermissionProtocol)
+    if not pm:
+        logger.warning("PermissionProtocol not available; admin policies not registered.")
+        return
 
     admin_policy = Policy(
         id="admin_access",
@@ -36,20 +32,9 @@ def register_admin_policies():
         ],
         effect="ALLOW",
     )
-    _reg_policy(admin_policy)
+    pm.register_policy(admin_policy)
 
-    # Attach to sysadmin and admin roles only — anonymous and 'user' are NOT granted this
     for role_name in _ADMIN_ROLES:
-        _reg_role(Role(name=role_name, policies=["admin_access"], is_system=True))
+        pm.register_role(Role(name=role_name, policies=["admin_access"]))
 
-    logger.debug("Admin policies pre-registered into in-memory registry.")
-
-    # If PermissionProtocol is already live, push immediately.
-    policy_manager = get_protocol(PermissionProtocol)
-    if policy_manager:
-        policy_manager.register_policy(admin_policy)
-        for role_name in _ADMIN_ROLES:
-            policy_manager.register_role(
-                Role(name=role_name, policies=["admin_access"], is_system=True)
-            )
-        logger.debug("Admin policies also applied to live PermissionProtocol.")
+    logger.debug("Admin policies registered via PermissionProtocol.")

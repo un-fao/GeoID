@@ -44,9 +44,11 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
     _apikey_manager: Optional[ApiKeyService] = None
     _policy_service: Optional[PolicyService] = None
     storage: Optional[AbstractApiKeyStorage] = None
+    _pending_tasks: list = []
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._pending_tasks = []
         # Register as early as possible to be discoverable during extension configuration
         register_plugin(self)
 
@@ -161,66 +163,79 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
 
         return await self._policy_service.check_permission(principal, action, resource)
 
-    async def _provision_late_item(self, item: Any, is_policy: bool = True):
-        """Helper to provision a late-registered item."""
-        if not self._policy_service:
-            return
-
+    async def _persist_policy(self, policy: Any):
+        """Persist a policy to the database via storage upsert."""
         try:
-            # We use the background task system or a direct call if safe
             from dynastore.modules.db_config.query_executor import managed_transaction
             from dynastore.models.protocols import DatabaseProtocol
             db = get_protocol(DatabaseProtocol)
             engine = db.engine if db else None
-            
+
             async with managed_transaction(engine) as conn:
-                if is_policy:
-                    await self._policy_service.storage.update_policy(item, schema="apikey", conn=conn)
-                    logger.debug(f"Late-provisioned policy: {item.id}")
-                else:
-                    await self.storage.update_role(item, schema="apikey", conn=conn)
-                    logger.debug(f"Late-provisioned role: {item.name}")
-                    
-                # Invalidate cache to ensure changes take effect
+                await self._policy_service.storage.update_policy(policy, schema="apikey", conn=conn)
+                logger.debug(f"Persisted policy: {policy.id}")
                 self._policy_service._invalidate_cache()
         except Exception as e:
-            logger.debug(f"Proactive provisioning of {item} failed: {e}")
+            logger.warning(f"Failed to persist policy {policy.id}: {e}")
+
+    async def _persist_role(self, role: Any):
+        """Persist a role to the database via storage upsert."""
+        try:
+            from dynastore.modules.db_config.query_executor import managed_transaction
+            from dynastore.models.protocols import DatabaseProtocol
+            db = get_protocol(DatabaseProtocol)
+            engine = db.engine if db else None
+
+            async with managed_transaction(engine) as conn:
+                existing = await self.storage.get_role(role.name, schema="apikey", conn=conn)
+                if existing:
+                    # Merge policies
+                    merged_policies = list(set(existing.policies + role.policies))
+                    role = role.model_copy(update={"policies": merged_policies})
+                    await self.storage.update_role(role, schema="apikey", conn=conn)
+                else:
+                    await self.storage.create_role(role, schema="apikey", conn=conn)
+                logger.debug(f"Persisted role: {role.name}")
+                self._policy_service._invalidate_cache()
+        except Exception as e:
+            logger.warning(f"Failed to persist role {role.name}: {e}")
 
     def register_policy(self, policy: Any) -> Any:
-        """
-        Implementation of AuthorizationProtocol and PermissionProtocol.
-        Registers a policy for late provisioning.
-        """
-        from .policies import register_policy as _reg
-        res = _reg(policy)
-        
-        # Proactively attempt provisioning if modules are up
-        if self._policy_service:
-            import asyncio
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(self._provision_late_item(res, is_policy=True))
-            except RuntimeError:
-                pass # No loop running
-        return res
+        """Persist policy to database. Called by extensions during lifespan."""
+        if not self._policy_service:
+            logger.warning(f"PolicyService not ready; cannot register policy {policy.id}")
+            return policy
+
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(self._persist_policy(policy))
+            self._pending_tasks.append(task)
+        except RuntimeError:
+            pass
+        return policy
 
     def register_role(self, role: Any) -> Any:
-        """
-        Implementation of PermissionProtocol.
-        Registers a role for late provisioning.
-        """
-        from .policies import register_role as _reg
-        res = _reg(role)
+        """Persist role to database. Called by extensions during lifespan."""
+        if not self._policy_service:
+            logger.warning(f"PolicyService not ready; cannot register role {getattr(role, 'name', role)}")
+            return role
 
-        # Proactively attempt provisioning if modules are up
-        if self._policy_service:
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(self._persist_role(role))
+            self._pending_tasks.append(task)
+        except RuntimeError:
+            pass
+        return role
+
+    async def flush_pending_registrations(self):
+        """Await all pending policy/role registration tasks. Call after extensions register."""
+        if self._pending_tasks:
             import asyncio
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(self._provision_late_item(res, is_policy=False))
-            except RuntimeError:
-                pass # No loop running
-        return res
+            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+            self._pending_tasks.clear()
 
 
 

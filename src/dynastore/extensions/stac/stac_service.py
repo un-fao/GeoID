@@ -20,6 +20,7 @@
 
 import logging
 import asyncio
+from contextlib import asynccontextmanager
 from typing import Optional, cast, Dict, Any, Tuple, List, Union
 
 import pystac
@@ -118,9 +119,6 @@ class STACService(ExtensionProtocol, StaticFilesProtocol):
         SidecarRegistry.register("stac_metadata", StacItemsSidecar)
         logger.info("STACService: STAC metadata sidecar registered.")
 
-        register_stac_policies()
-        logger.info("STACService: Policies registered.")
-
         # Register @expose_web_page methods via WebModuleProtocol
         from dynastore.modules import get_protocol
         from dynastore.models.protocols import WebModuleProtocol
@@ -128,6 +126,12 @@ class STACService(ExtensionProtocol, StaticFilesProtocol):
         if web:
             web.scan_and_register_providers(self)
             logger.info("STACService: Web pages registered via WebModuleProtocol.")
+
+    @asynccontextmanager
+    async def lifespan(self, app: FastAPI):
+        register_stac_policies()
+        logger.info("STACService: Policies registered.")
+        yield
 
     def get_static_prefix(self) -> str:
         """Returns the static prefix for STAC."""

@@ -122,10 +122,7 @@ class MapsService(ExtensionProtocol):
     process_pool: Optional[ProcessPoolExecutor] = None
 
     def configure_app(self, app: FastAPI):
-        """Early configuration: inject Maps public-access policy into global registry."""
-        register_maps_policies()
-        logger.info("MapsService: Policies registered.")
-
+        """Early configuration for the Maps extension."""
         # Register @expose_web_page methods via WebModuleProtocol
         from dynastore.modules import get_protocol
         from dynastore.models.protocols import WebModuleProtocol
@@ -134,9 +131,9 @@ class MapsService(ExtensionProtocol):
             web.scan_and_register_providers(self)
             logger.info("MapsService: Web pages registered via WebModuleProtocol.")
 
-    @staticmethod
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(self, app: FastAPI):
+        register_maps_policies()
         logger.info("Maps Service startup: creating process pool...")
         MapsService.process_pool = ProcessPoolExecutor()
         app.state.maps_config = MapsConfig()

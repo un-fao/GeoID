@@ -18,6 +18,7 @@
 
 import logging
 import os
+from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional, List
 
 from fastapi import APIRouter, HTTPException, status, Request, Query, FastAPI
@@ -71,13 +72,17 @@ class ConfigsService(ExtensionProtocol):
 
     def configure_app(self, app: FastAPI):
         """Register the Configuration Editor as a web page via WebModuleProtocol."""
-        register_configs_policies()
-        logger.info("ConfigsService: Policies registered.")
-
         web = get_protocol(WebModuleProtocol)
         if web:
             web.scan_and_register_providers(self)
             logger.info("ConfigsService: Web page registered via WebModuleProtocol.")
+
+    @asynccontextmanager
+    async def lifespan(self, app: FastAPI):
+        register_configs_policies()
+        logger.info("ConfigsService: Policies registered.")
+        yield
+
     @expose_web_page(
         page_id="configs_editor",
         title="Configurations",

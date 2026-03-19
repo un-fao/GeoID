@@ -74,7 +74,6 @@ class Role(BaseModel):
     # Composition: Direct links to policies defined in the system
     policies: List[str] = Field(default_factory=list, description="List of Policy IDs directly assigned")
     
-    is_system: bool = Field(default=False, description="If True, cannot be deleted/modified by tenant admins")
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

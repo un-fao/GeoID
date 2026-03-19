@@ -76,6 +76,7 @@ class PermissionProtocol(Protocol):
         method: str,
         request_context: Any = None,
         catalog_id: Optional[str] = None,
+        custom_policies: Optional[List["Policy"]] = None,
     ) -> Tuple[bool, str]: ...
 
     # --- Extension injection points ---

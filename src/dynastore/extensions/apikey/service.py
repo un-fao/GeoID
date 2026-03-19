@@ -80,32 +80,46 @@ from dynastore.modules.apikey.exceptions import (
     PrincipalNotFoundError,
 )
 from dynastore.extensions.apikey.middleware import ApiKeyMiddleware
-from dynastore.modules.apikey.policies import register_policy
-
 logger = logging.getLogger(__name__)
 
-# Register policies for authorization API endpoints
-register_policy(
-    Policy(
-        id="admin_authorization_api",
-        description="Allows admin users to manage user roles and permissions",
-        actions=["GET", "POST", "PUT", "DELETE", "PATCH"],
-        resources=["/admin/users/.*", "/admin/roles/.*", "/admin/policies/.*"],
-        effect="ALLOW",
-        partition_key="global",
-    )
-)
 
-register_policy(
-    Policy(
-        id="self_service_authorization_api",
-        description="Allows authenticated users to view their own roles and catalog access",
-        actions=["GET"],
-        resources=["/me/roles/.*", "/me/catalogs.*"],
-        effect="ALLOW",
-        partition_key="global",
+def register_apikey_service_policies():
+    """Register policies for authorization API endpoints via PermissionProtocol."""
+    from dynastore.models.protocols.policies import PermissionProtocol
+    from dynastore.tools.discovery import get_protocol as _get_protocol
+
+    pm = _get_protocol(PermissionProtocol)
+    if not pm:
+        logger.warning("PermissionProtocol not available; apikey service policies not registered.")
+        return
+
+    pm.register_policy(
+        Policy(
+            id="admin_authorization_api",
+            description="Allows admin users to manage user roles and permissions",
+            actions=["GET", "POST", "PUT", "DELETE", "PATCH"],
+            resources=["/admin/users/.*", "/admin/roles/.*", "/admin/policies/.*"],
+            effect="ALLOW",
+            partition_key="global",
+        )
     )
-)
+
+    pm.register_policy(
+        Policy(
+            id="self_service_authorization_api",
+            description="Allows authenticated users to view their own roles and catalog access",
+            actions=["GET"],
+            resources=["/me/roles/.*", "/me/catalogs.*"],
+            effect="ALLOW",
+            partition_key="global",
+        )
+    )
+
+    pm.register_role(Role(name="admin", policies=["admin_authorization_api"]))
+    pm.register_role(Role(name="sysadmin", policies=["admin_authorization_api"]))
+    pm.register_role(Role(name="user", policies=["self_service_authorization_api"]))
+
+    logger.debug("ApiKey service policies registered via PermissionProtocol.")
 
 
 # Security Schemes
@@ -644,6 +658,9 @@ class ApiKeyExtension(ExtensionProtocol):
             await self._policy_service.provision_default_policies(catalog_id="_system_")
         except Exception as e:
             logger.error(f"Failed to seed default policies: {e}")
+
+        # Register apikey service policies via protocol
+        register_apikey_service_policies()
 
         yield
 

@@ -39,11 +39,6 @@ class Geoid(ExtensionProtocol, WebOverrideProtocol, WebPageProtocol, StaticFiles
     def __init__(self, app: FastAPI):
         self.app = app
 
-        # Pre-register anonymous-access policies so the apikey module
-        # picks them up before it starts, even if this extension loads first.
-        from dynastore.extensions.web.web import register_web_policies
-        register_web_policies()
-
         self.static_dir = os.path.join(os.path.dirname(__file__), "static")
 
     # ------------------------------------------------------------------ #

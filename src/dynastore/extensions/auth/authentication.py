@@ -628,34 +628,26 @@ class Authentication(ExtensionProtocol):
         self._setup_routes()
         logger.info("✓ Authentication routes configured")
 
-        # Register and provision policies
+        # Register authentication policies via PermissionProtocol
         try:
-            from dynastore.modules.apikey.models import Policy, Role
-            from dynastore.modules.apikey.policies import register_policy, register_role
-            from dynastore.modules.apikey.module import ApiKeyModule
+            from dynastore.models.protocols.policies import PermissionProtocol, Policy, Role
 
-            # Define policy for public auth access
-            auth_policy = Policy(
-                id="auth_extension_public",
-                description="Public access to authentication endpoints.",
-                actions=["GET", "POST"],
-                resources=[r"/auth/.*", r"/web/auth/.*"],
-                effect="ALLOW",
-            )
-            register_policy(auth_policy)
-
-            # Add to anonymous role
-            register_role(Role(name="anonymous", policies=["auth_extension_public"]))
-
-            # Trigger provisioning
-            from dynastore.models.protocols import ApiKeyProtocol
-
-            apikey_protocol = get_protocol(ApiKeyProtocol)
-            if apikey_protocol:
-                await apikey_protocol.get_policy_service().provision_default_policies()
-                logger.info("✓ Authentication policies registered and provisioned")
+            pm = get_protocol(PermissionProtocol)
+            if pm:
+                auth_policy = Policy(
+                    id="auth_extension_public",
+                    description="Public access to authentication endpoints.",
+                    actions=["GET", "POST"],
+                    resources=[r"/auth/.*", r"/web/auth/.*"],
+                    effect="ALLOW",
+                )
+                pm.register_policy(auth_policy)
+                pm.register_role(Role(name="anonymous", policies=["auth_extension_public"]))
+                logger.info("Authentication policies registered via PermissionProtocol.")
+            else:
+                logger.warning("PermissionProtocol not available; auth policies not registered.")
         except Exception as e:
-            logger.error(f"Failed to provision authentication policies: {e}")
+            logger.error(f"Failed to register authentication policies: {e}")
 
         try:
             yield

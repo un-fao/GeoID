@@ -1335,19 +1335,18 @@ class ItemService(ItemsProtocol):
                 except Exception as e:
                     logger.warning(f"Place stats upsert skipped for geoid {geoid}: {e}")
 
-        feature_id_provider = next(
-            (sc for sc in sidecars if sc.provides_feature_id), None
+        optimizer = QueryOptimizer(col_config)
+        fetch_req = QueryRequest(
+            raw_where="h.geoid = :target_geoid",
+            raw_params={"target_geoid": geoid},
+            limit=1,
         )
-        res = await get_item_query.execute(
-            conn,
-            catalog_id=schema,
-            collection_id=hub_table,
-            where="h.geoid = :target_geoid",
-            target_geoid=geoid,
-            include_deleted=True,
-            col_config=col_config,
-            feature_id_provider=feature_id_provider,
-        )
+        sql, params = optimizer.build_optimized_query(fetch_req, schema, hub_table)
+        result = await conn.execute(text(sql), params)
+        row = result.mappings().first()
+        if row is None:
+            return None
+        res = self.map_row_to_feature(dict(row), col_config)
         logger.debug(f"FINAL RESULT FROM EXECUTOR: {res}")
         return res
 
@@ -1398,20 +1397,18 @@ class ItemService(ItemsProtocol):
             await self._upsert_sidecar_table_raw(
                 conn, schema, sc_table, full_payload, conflict_cols=conflict_cols
             )
-        # Determine feature ID provider to ensure correct alias mapping
-        feature_id_provider = next(
-            (sc for sc in sidecars if sc.provides_feature_id), None
+        optimizer = QueryOptimizer(col_config)
+        fetch_req = QueryRequest(
+            raw_where="h.geoid = :lookup_geoid",
+            raw_params={"lookup_geoid": str(geoid)},
+            limit=1,
         )
-
-        return await get_item_query.execute(
-            conn,
-            catalog_id=schema,
-            collection_id=hub_table,
-            where="h.geoid = :lookup_geoid",
-            lookup_geoid=str(geoid),
-            col_config=col_config,
-            feature_id_provider=feature_id_provider,
-        )
+        sql, params = optimizer.build_optimized_query(fetch_req, schema, hub_table)
+        result = await conn.execute(text(sql), params)
+        row = result.mappings().first()
+        if row is None:
+            return None
+        return self.map_row_to_feature(dict(row), col_config)
 
     async def _insert_table_raw(self, conn, schema, table, data) -> Dict[str, Any]:
         """Generic table insert (No special geometry handling here, already processed by sidecars)."""

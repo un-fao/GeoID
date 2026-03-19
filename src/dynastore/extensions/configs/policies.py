@@ -11,17 +11,13 @@ _ADMIN_ROLES = ["sysadmin"]
 
 
 def register_configs_policies():
-    """Register configs-access policy (sysadmin only).
-
-    Always registers into the module-level in-memory registry so that
-    provision_default_policies() picks it up at lifespan startup,
-    regardless of whether PermissionProtocol is already available.
-    """
-    from dynastore.modules.apikey.policies import (
-        register_policy as _reg_policy,
-        register_role as _reg_role,
-    )
+    """Register configs-access policy (sysadmin only) via PermissionProtocol."""
     from dynastore.models.protocols.policies import PermissionProtocol
+
+    pm = get_protocol(PermissionProtocol)
+    if not pm:
+        logger.warning("PermissionProtocol not available; configs policies not registered.")
+        return
 
     configs_policy = Policy(
         id="configs_access",
@@ -35,20 +31,9 @@ def register_configs_policies():
         ],
         effect="ALLOW",
     )
-    _reg_policy(configs_policy)
+    pm.register_policy(configs_policy)
 
-    # Attach to sysadmin only — admins see catalog-level configs only via admin_panel
     for role_name in _ADMIN_ROLES:
-        _reg_role(Role(name=role_name, policies=["configs_access"], is_system=True))
+        pm.register_role(Role(name=role_name, policies=["configs_access"]))
 
-    logger.debug("Configs policies pre-registered into in-memory registry.")
-
-    # If PermissionProtocol is already live, push immediately.
-    policy_manager = get_protocol(PermissionProtocol)
-    if policy_manager:
-        policy_manager.register_policy(configs_policy)
-        for role_name in _ADMIN_ROLES:
-            policy_manager.register_role(
-                Role(name=role_name, policies=["configs_access"], is_system=True)
-            )
-        logger.debug("Configs policies also applied to live PermissionProtocol.")
+    logger.debug("Configs policies registered via PermissionProtocol.")

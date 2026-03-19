@@ -85,8 +85,7 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
 
     def configure_app(self, app: FastAPI):
         """Early configuration for the Tiles extension."""
-        register_tiles_policies()
-        logger.info("Tiles Service: Policies registered.")
+        pass
 
     def __init__(self, app: Optional[FastAPI] = None):
         super().__init__()
@@ -168,11 +167,11 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
                     files.append(full_path)
         return sorted(files)[offset : offset + limit]
 
-    @staticmethod
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(self, app: FastAPI):
         """Manages the Tiles Service configuration."""
-        logger.info("Tiles Service startup: Injecting concurrency backend.")
+        register_tiles_policies()
+        logger.info("Tiles Service startup: Policies registered.")
         yield
         logger.info("Tiles Service shutdown.")
 

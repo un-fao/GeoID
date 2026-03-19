@@ -61,6 +61,11 @@ async def lifespan(app: FastAPI):
         logger.info("--- [main.py] Modules are active. ---")
         # Extensions can now reliably access services from modules and task instances.
         async with extensions.lifespan(app):
+            # Flush any pending policy/role registrations from extensions
+            from dynastore.models.protocols.policies import PermissionProtocol
+            pm = modules.get_protocol(PermissionProtocol)
+            if pm and hasattr(pm, "flush_pending_registrations"):
+                await pm.flush_pending_registrations()
             logger.info("--- [main.py] Web Extensions are active. Application is running. ---")
             yield
 

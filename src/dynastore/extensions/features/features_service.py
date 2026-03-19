@@ -216,9 +216,7 @@ class OGCFeaturesService(ExtensionProtocol):
 
     def configure_app(self, app: FastAPI):
         """Early configuration for the Features extension."""
-        # Register OGC API - Features specific policies
-        register_features_policies()
-        logger.info("OGCFeaturesService: Policies registered.")
+        pass
 
     def __init__(self, app: Optional[FastAPI] = None):
         """Initializes the service and registers its routes."""
