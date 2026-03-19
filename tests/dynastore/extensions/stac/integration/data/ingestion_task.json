@@ -1,0 +1,36 @@
+{
+    "catalog_id": "to_be_replaced",
+    "collection_id": "to_be_replaced",
+    "ingestion_request": {
+        "asset": {
+            "asset_id": null,
+            "uri": "tests/dynastore/extensions/stac/integration/data/feature_item.json",
+            "metadata": {}
+        },
+        "column_mapping": {
+            "external_id": "id",
+            "attribute_mapping": [
+                {"source": "prop", "map_to": "prop"},
+                {"source": "datetime", "map_to": "datetime"}
+            ],
+            "attributes_source_type": "explicit_list",
+            "geometry_wkb": null,
+            "csv_wkt_column": null,
+            "csv_lat_column": null,
+            "csv_lon_column": null,
+            "csv_elevation_column": null,
+            "csv_elevation_unit_column": null
+        },
+        "time_validity_start_column": "datetime",
+        "time_validity_end_column": null,
+        "limit": null,
+        "offset": 0,
+        "read_batch_size": 1000,
+        "database_batch_size": 1000,
+        "source_srid": 4326,
+        "encoding": "utf-8",
+        "pre_operations": {},
+        "post_operations": {},
+        "reporting": {}
+    }
+}

@@ -1,0 +1,8 @@
+{
+  "id": "test_catalog_upload",
+  "type": "Catalog",
+  "title": "Test Catalog for Upload",
+  "description": "Test Catalog",
+  "stac_version": "1.0.0",
+  "links": []
+}

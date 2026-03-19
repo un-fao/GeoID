@@ -1,0 +1,34 @@
+{
+  "versioning_behavior": "create_new_version",
+  "collection_type": "VECTOR",
+  "attribute_ex": "",
+  "partitioning": {
+    "enabled": false,
+    "strategy": "LIST",
+    "partition_column": "string",
+    "interval": "monthly",
+    "pre_create_intervals": 3,
+    "retention": {
+      "enabled": false,
+      "interval": "12 months",
+      "schedule": "0 3 * * 0"
+    }
+  },
+  "geometry_storage": {
+    "invalid_geom_policy": "attempt_fix",
+    "allowed_geometry_types": [],
+    "target_srid": 4326,
+    "srid_mismatch_policy": "transform",
+    "target_dimension": "force_2d",
+    "remove_redundant_vertices": false,
+    "write_bbox": true
+  },
+  "h3_resolutions": [],
+  "s2_resolutions": [],
+  "indexing": {
+    "spatial_index_method": "GIST",
+    "temporal_index_method": "GIST",
+    "column_indices": [],
+    "attribute_indices": []
+  }
+}

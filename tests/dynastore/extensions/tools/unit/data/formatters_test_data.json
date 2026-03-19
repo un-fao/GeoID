@@ -1,0 +1,35 @@
+{
+    "sample_features": [
+        {
+            "type": "Feature",
+            "id": "feature_1",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [
+                    12.4924,
+                    41.8902
+                ]
+            },
+            "properties": {
+                "name": "Rome",
+                "population": 2873000
+            }
+        },
+        {
+            "type": "Feature",
+            "id": "feature_2",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [
+                    11.2558,
+                    43.7696
+                ]
+            },
+            "properties": {
+                "name": "Florence",
+                "population": 382258
+            }
+        }
+    ],
+    "empty_features": []
+}

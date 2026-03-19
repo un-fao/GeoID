@@ -80,6 +80,7 @@ pytype
 
 # Logs and Debug Output
 logs/
+!src/dynastore/extensions/logs/
 *.log
 test_output*
 test_out.txt
@@ -100,6 +101,7 @@ fix_stats_db.py
 
 # Local Data
 data/
+!tests/**/data/
 
 # Secrets and Credentials
 *.env

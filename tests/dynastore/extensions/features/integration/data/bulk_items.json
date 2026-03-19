@@ -1,0 +1,32 @@
+{
+    "type": "FeatureCollection",
+    "features": [
+        {
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [
+                    10,
+                    10
+                ]
+            },
+            "properties": {
+                "name": "Item 1",
+                "ingestion_id": "WILL_BE_IGNORED"
+            }
+        },
+        {
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [
+                    20,
+                    20
+                ]
+            },
+            "properties": {
+                "name": "Item 2"
+            }
+        }
+    ]
+}

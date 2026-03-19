@@ -1,0 +1,14 @@
+{
+    "type": "Feature",
+    "geometry": {
+        "type": "Point",
+        "coordinates": [
+            10,
+            10
+        ]
+    },
+    "properties": {
+        "name": "Item with extra",
+        "ingestion_id": "SHOULD_BE_IGNORED"
+    }
+}

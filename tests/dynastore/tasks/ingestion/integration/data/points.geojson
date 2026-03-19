@@ -1,0 +1,35 @@
+{
+    "type": "FeatureCollection",
+    "features": [
+        {
+            "type": "Feature",
+            "properties": {
+                "id": "point_1",
+                "name": "Rome",
+                "value": 100
+            },
+            "geometry": {
+                "type": "Point",
+                "coordinates": [
+                    12.4964,
+                    41.9028
+                ]
+            }
+        },
+        {
+            "type": "Feature",
+            "properties": {
+                "id": "point_2",
+                "name": "Milan",
+                "value": 200
+            },
+            "geometry": {
+                "type": "Point",
+                "coordinates": [
+                    9.1900,
+                    45.4642
+                ]
+            }
+        }
+    ]
+}

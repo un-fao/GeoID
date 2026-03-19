@@ -1138,6 +1138,50 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
                 schedule_cron="15 3 * * 0",
             )
 
+            # 6. Register nightly pruning of expired rows in flat tables
+            _prune_job_name = f"prune_expired_{schema}"
+            _prune_func_name = f"prune_expired_rows_{schema}"
+
+            async def _check_prune_job_exists():
+                from dynastore.modules.db_config.locking_tools import check_cron_job_exists
+                return await check_cron_job_exists(conn, _prune_job_name)
+
+            _prune_ddl = f"""
+            CREATE OR REPLACE FUNCTION "{schema}"."{_prune_func_name}"() RETURNS void AS $$
+            BEGIN
+                -- Expired + deactivated API keys
+                DELETE FROM "{schema}".api_keys
+                WHERE expires_at IS NOT NULL AND expires_at < NOW() AND is_active = FALSE;
+
+                -- Expired refresh tokens
+                DELETE FROM "{schema}".refresh_tokens WHERE expires_at < NOW();
+
+                -- Expired OAuth2 authorisation codes (short-lived, ~10 min)
+                DELETE FROM "{schema}".oauth_codes WHERE expires_at < NOW();
+
+                -- Expired OAuth2 access/bearer tokens
+                DELETE FROM "{schema}".oauth_tokens WHERE expires_at < NOW();
+            END;
+            $$ LANGUAGE plpgsql;
+
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM cron.job WHERE jobname = '{_prune_job_name}') THEN
+                    PERFORM cron.unschedule('{_prune_job_name}');
+                END IF;
+            END;
+            $$;
+
+            SELECT cron.schedule('{_prune_job_name}', '0 4 * * *',
+                $CMD$SELECT "{schema}"."{_prune_func_name}"()$CMD$);
+            """
+
+            await DDLQuery(
+                _prune_ddl,
+                check_query=_check_prune_job_exists,
+                lock_key=f"prune_expired_rows_{schema}",
+            ).execute(conn)
+
         logger.info(f"PostgresApiKeyStorage initialization complete for '{schema}'.")
 
     async def initialize_partitions(

@@ -1,0 +1,29 @@
+{
+  "id": "test_collection_placeholder",
+  "title": "Test Collection",
+  "description": "A collection for integration testing.",
+  "license": {
+    "license_id": "MIT"
+  },
+  "extent": {
+    "spatial": {
+      "bbox": [
+        [
+          -180,
+          -90,
+          180,
+          90
+        ]
+      ]
+    },
+    "temporal": {
+      "interval": [
+        [
+          null,
+          null
+        ]
+      ]
+    }
+  },
+  "links": []
+}

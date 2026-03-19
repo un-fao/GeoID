@@ -1,0 +1,147 @@
+#    Copyright 2025 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
+import logging
+import asyncio
+import traceback
+from typing import Optional, Dict, Any, Union
+from fastapi import HTTPException
+from dynastore.extensions.tools.exception_handlers import ExceptionHandler, ExceptionHandlerRegistry
+from dynastore.models.protocols.logs import LogsProtocol
+from dynastore.tools.discovery import get_protocol
+from dynastore.modules.concurrency import run_in_background
+
+logger = logging.getLogger(__name__)
+
+class CatalogLoggingExceptionHandler(ExceptionHandler):
+    """
+    Handler that logs server errors (5xx) to the catalog/system log service.
+    
+    This handler DOES NOT produce an HTTP response (returns None).
+    It is intended to be registered FIRST (or early) in the chain, effectively acting
+    as middleware to side-effect (log) the error before a subsequent handler
+    converts it to a response.
+    
+    Only logs 5xx errors (server errors), not 4xx (user errors).
+    """
+    
+    def can_handle(self, exception: Exception) -> bool:
+        # Only handle exceptions that will result in 5xx errors
+        # Skip HTTPException with 4xx status codes (user errors)
+        if isinstance(exception, HTTPException):
+            return exception.status_code >= 500
+        
+        # All other exceptions are assumed to be server errors
+        return True
+    
+    def handle(self, exception: Exception, context: Optional[Dict[str, Any]] = None) -> Optional[HTTPException]:
+        context = context or {}
+        
+        # Extract context
+        catalog_id = context.get('catalog_id') or context.get('resource_id')
+        collection_id = context.get('collection_id')
+        operation = context.get('operation', 'Unknown Operation')
+        resource_name = context.get('resource_name', 'System')
+        
+        # Determine target catalog
+        target_catalog = catalog_id
+        if not target_catalog:
+             # Try to guess based on context signals or fallback to system
+             if resource_name == "Catalog" and context.get('resource_id'):
+                  target_catalog = context.get('resource_id')
+             else:
+                  target_catalog = "_system_"
+        
+        # Capture full stacktrace
+        stack_trace = ''.join(traceback.format_exception(type(exception), exception, exception.__traceback__))
+        logger.debug(f"EXCEPTION: {stack_trace}")
+        
+        message = f"Error during {operation}: {str(exception)}"
+        
+        # Prepare details with stacktrace and request context
+        details = {
+            "error_type": exception.__class__.__name__,
+            "resource_name": resource_name,
+            "operation": operation,
+            "original_exception_args": [str(arg) for arg in exception.args],
+            "stacktrace": stack_trace,  # Will be extracted to separate column
+        }
+        
+        # Add request context if available
+        if 'request_context' in context:
+            details['request_context'] = context['request_context']
+        
+        if collection_id:
+            details['collection_id'] = collection_id
+            
+        # Fire-and-forget async logging via concurrency module to ensure task tracking
+        # and prevent garbage collection.
+        
+        async def _do_log():
+            try:
+                # Use LOG_SERVICE directly with db_resource to get log ID synchronously
+                from dynastore.tools.protocol_helpers import get_engine
+                from dynastore.modules.db_config.query_executor import managed_transaction
+                
+                app_state = context.get('app_state')
+                if not app_state and 'request' in context:
+                    app_state = getattr(context['request'].app, 'state', None)
+
+                    logs_service = get_protocol(LogsProtocol)
+                    if engine and logs_service:
+                        async with managed_transaction(engine) as conn:
+                            log_id = await logs_service.log_event(
+                                catalog_id=target_catalog,
+                                event_type="exception",
+                                level="ERROR",
+                                message=message,
+                                collection_id=collection_id,
+                                details=details,
+                                db_resource=conn
+                            )
+                        # Store log ID in context for global exception handler to use
+                        if log_id:
+                            context['log_id'] = log_id
+                            context['log_catalog'] = target_catalog
+                            context['log_collection'] = collection_id
+                else:
+                    # Fallback if no engine available
+                    logs_service = get_protocol(LogsProtocol)
+                    if logs_service:
+                        await logs_service.log_event(
+                            catalog_id=target_catalog,
+                            event_type="exception",
+                            level="ERROR",
+                            message=message,
+                            collection_id=collection_id,
+                            details=details
+                        )
+            except Exception as e:
+                # Fallback to standard logger if remote logging fails
+                logger.error(f"Failed to send exception to LogService: {e}")
+                
+        # Use centralized background runner
+        try:
+             # run_in_background expects a coroutine
+             run_in_background(_do_log(), name=f"log_exception_{operation}")
+        except Exception:
+            # Fallback if loop issues or other conflicts
+            logger.error(f"Failed to schedule async logging. Original error: {message}")
+
+        # RETURN NONE to allow other handlers to process the exception into a response
+        return None

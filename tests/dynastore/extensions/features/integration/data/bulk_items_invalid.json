@@ -1,0 +1,31 @@
+{
+    "type": "FeatureCollection",
+    "features": [
+        {
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [
+                    10,
+                    10
+                ]
+            },
+            "properties": {
+                "name": "Good Item"
+            }
+        },
+        {
+            "type": "Feature",
+            "geometry": {
+                "type": "InvalidType",
+                "coordinates": [
+                    0,
+                    0
+                ]
+            },
+            "properties": {
+                "name": "Bad Item"
+            }
+        }
+    ]
+}

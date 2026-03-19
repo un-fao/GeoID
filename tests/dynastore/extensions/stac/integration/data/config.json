@@ -1,0 +1,6 @@
+{
+    "asset_tracking": {
+        "enabled": true,
+        "access_mode": "proxy"
+    }
+}

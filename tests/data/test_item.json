@@ -1,0 +1,25 @@
+{
+  "type": "Feature",
+  "stac_version": "1.0.0",
+  "id": "test_item_placeholder",
+  "geometry": {
+    "type": "Point",
+    "coordinates": [
+      12.4964,
+      41.9028
+    ]
+  },
+  "bbox": [
+    12.4964,
+    41.9028,
+    12.4964,
+    41.9028
+  ],
+  "properties": {
+    "datetime": "2024-01-01T00:00:00Z",
+    "name": "Rome",
+    "asset_code": "test_asset"
+  },
+  "assets": {},
+  "links": []
+}
