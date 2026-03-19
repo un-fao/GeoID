@@ -27,3 +27,47 @@ A fundamental concept in Agro-Informatics Platform (AIP) - Catalog Services's de
 - **Definition:** A collection created with a valid `LayerConfig` object defining physical parameters (SRID, indexing, versioning behavior).
 - **Purpose:** To store, manage, and serve geospatial feature data. Sits on top of real PostgreSQL tables.
 - **Behavior:** Physical collections expose the full suite of CRUD functionality. Valid targets for bulk ingestion or feature manipulation.
+
+## Item Deletion Semantics
+
+Item deletion is a **soft delete**: the hub row's `deleted_at` column is set to `NOW()` rather than the row being physically removed. All read queries filter `WHERE h.deleted_at IS NULL`, making the item immediately invisible without destroying history.
+
+### Delete-by-external-id (default)
+
+When a collection has the `FeatureAttributeSidecar` enabled (the default), `DELETE /items/{item_id}` resolves `item_id` as an **external id**. The implementation joins the hub with the sidecar table and soft-deletes **all** active hub rows that share that external id:
+
+```sql
+UPDATE "<schema>"."<table>" h
+SET    deleted_at = NOW()
+FROM   "<schema>"."<table>_attributes" s
+WHERE  s.external_id = :ext_id
+  AND  h.deleted_at IS NULL
+  AND  h.geoid = s.geoid
+```
+
+This is important when a collection uses `ALWAYS_ADD_NEW` versioning: a `PUT /items/{id}` inserts a new hub row instead of updating the existing one. Without deleting by external id, a subsequent `DELETE` would only remove the newest version, leaving older versions visible.
+
+### Fallback: delete-by-geoid
+
+If no sidecar exposes a `feature_id_field_name` (e.g. the sidecar has `enable_external_id = False`), the implementation falls back to a direct geoid match:
+
+```sql
+UPDATE "<schema>"."<table>"
+SET    deleted_at = NOW()
+WHERE  geoid = :geoid AND deleted_at IS NULL
+```
+
+In this mode `item_id` must be the raw geoid of the hub row.
+
+## Item ID Resolution (`feature_id_expr`)
+
+The `QueryOptimizer` exposes each item's public `id` via the expression:
+
+```sql
+COALESCE(<sidecar>.external_id, h.geoid::text) AS id
+```
+
+- When `external_id` is set (item was created with a client-supplied `id`), the external id is returned.
+- When `external_id` is `NULL` (item was created without an explicit `id`), the system falls back to the hub's `geoid`, ensuring every item always has a stable, non-null public identifier.
+
+The same expression is used in the `WHERE` clause of `GET /items/{item_id}`, so a `GET` by either the external id or the geoid always finds the correct item.
