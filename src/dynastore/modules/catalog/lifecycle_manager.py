@@ -733,7 +733,7 @@ class LifecycleRegistry:
                                 catalog_id=catalog_id,
                                 payload={
                                     "error": str(e),
-                                    "schema": schema,
+                                    "schema": context.physical_schema,
                                     "component": f"{destroyer.__module__}.{destroyer.__name__}",
                                 },
                                 db_resource=db_proto.engine,
