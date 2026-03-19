@@ -106,7 +106,15 @@ def _get_simplification_sql(config: Optional[StacPluginConfig]) -> str:
     return f"({case_sql})"
 
 
+_SAFE_ATTRIBUTE_FIELD_RE = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+
+
 def _build_attribute_filter_sql(filt: AttributeFilter, params: dict) -> str:
+    if not _SAFE_ATTRIBUTE_FIELD_RE.match(filt.field):
+        raise ValueError(
+            f"Invalid attribute field name '{filt.field}': "
+            "must start with a letter or underscore and contain only alphanumeric characters and underscores."
+        )
     op: FilterOperator = (
         filt.operator if isinstance(filt.operator, FilterOperator)
         else FilterOperator.from_str(str(filt.operator))

@@ -34,6 +34,9 @@ This package contains protocol definitions organized by domain:
 """
 
 from dynastore.models.protocols.catalogs import CatalogsProtocol
+from dynastore.models.protocols.item_crud import ItemCrudProtocol
+from dynastore.models.protocols.item_query import ItemQueryProtocol
+from dynastore.models.protocols.item_introspection import ItemIntrospectionProtocol
 from dynastore.models.protocols.items import ItemsProtocol
 from dynastore.models.protocols.collections import CollectionsProtocol
 from dynastore.models.protocols.assets import AssetsProtocol
@@ -80,6 +83,9 @@ from dynastore.models.auth_models import (
 
 __all__ = [
     "CatalogsProtocol",
+    "ItemCrudProtocol",
+    "ItemQueryProtocol",
+    "ItemIntrospectionProtocol",
     "ItemsProtocol",
     "CollectionsProtocol",
     "AssetsProtocol",

@@ -29,7 +29,7 @@ This service implements CatalogsProtocol and provides:
 import logging
 import json
 import uuid
-from typing import List, Optional, Any, Dict, Union, Set, Callable, AsyncIterator, Tuple
+from typing import List, Optional, Any, Dict, Union, Set, Callable, Tuple
 from async_lru import alru_cache
 from sqlalchemy import text
 
@@ -1331,32 +1331,6 @@ class CatalogService(CatalogsProtocol):
             conn, catalog_id, collection_id, col_config, params, param_suffix
         )
 
-    async def get_features_count(
-        self,
-        conn: Any,
-        catalog_id: str,
-        collection_id: str,
-        col_config: Optional[Any] = None,
-        item_ids: Optional[List[str]] = None,
-        bbox: Optional[Tuple[float, float, float, float]] = None,
-        geometry: Optional[Any] = None,
-        where: Optional[str] = None,
-        params: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ) -> int:
-        return await self._item_service.get_features_count(
-            conn,
-            catalog_id,
-            collection_id,
-            col_config=col_config,
-            item_ids=item_ids,
-            bbox=bbox,
-            geometry=geometry,
-            where=where,
-            params=params,
-            **kwargs,
-        )
-
     async def search_items(
         self,
         catalog_id: str,
@@ -1368,41 +1342,6 @@ class CatalogService(CatalogsProtocol):
         """Search and retrieve items using optimized query generation."""
         return await self._item_service.search_items(
             catalog_id, collection_id, request, config=config, db_resource=db_resource
-        )
-
-    async def stream_features(
-        self,
-        conn: Any,
-        catalog_id: str,
-        collection_id: str,
-        col_config: Optional[Any] = None,
-        item_ids: Optional[List[str]] = None,
-        asset_id: Optional[str] = None,
-        bbox: Optional[Tuple[float, float, float, float]] = None,
-        geometry: Optional[Any] = None,
-        where: Optional[str] = None,
-        limit: Optional[int] = None,
-        offset: Optional[int] = 0,
-        sort_by: Optional[str] = None,
-        params: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ) -> AsyncIterator[Dict[str, Any]]:
-        """Streams features using unified logic via ItemService."""
-        return self._item_service.stream_features(
-            conn,
-            catalog_id,
-            collection_id,
-            col_config=col_config,
-            item_ids=item_ids,
-            asset_id=asset_id,
-            bbox=bbox,
-            geometry=geometry,
-            where=where,
-            limit=limit,
-            offset=offset,
-            sort_by=sort_by,
-            params=params,
-            **kwargs,
         )
 
     async def stream_items(

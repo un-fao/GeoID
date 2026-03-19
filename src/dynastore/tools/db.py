@@ -75,7 +75,7 @@ def validate_sql_identifier(identifier: str) -> str:
         
     # 3. Check character constraints
     #    Authorized chars: a-z, 0-9, _, ., -, > (for JSON paths like 'data->key' or 'schema.table')
-    if not re.match(r"^[a-z_][a-z0-9_\.\->]*$", identifier_lower):
+    if not re.match(r"^[a-z_][a-z0-9_.>-]*$", identifier_lower):
         raise InvalidIdentifierError(
             "Identifier must start with a letter or underscore, and contain only "
             "lowercase letters, numbers, underscores, dots, or JSON operators (->)."

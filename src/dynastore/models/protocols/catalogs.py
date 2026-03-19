@@ -32,7 +32,10 @@ from typing import (
     TYPE_CHECKING,
 )
 
-from dynastore.models.protocols.items import ItemsProtocol
+from dynastore.models.protocols.item_crud import ItemCrudProtocol
+from dynastore.models.protocols.item_query import ItemQueryProtocol
+from dynastore.models.protocols.item_introspection import ItemIntrospectionProtocol
+from dynastore.models.protocols.items import ItemsProtocol  # backward-compat composite
 from dynastore.models.protocols.collections import CollectionsProtocol
 
 if TYPE_CHECKING:
@@ -43,7 +46,7 @@ if TYPE_CHECKING:
 
 
 @runtime_checkable
-class CatalogsProtocol(ItemsProtocol, CollectionsProtocol, Protocol):
+class CatalogsProtocol(ItemCrudProtocol, ItemQueryProtocol, ItemIntrospectionProtocol, CollectionsProtocol, Protocol):
     """
     Unified protocol for catalog ecosystem operations.
 

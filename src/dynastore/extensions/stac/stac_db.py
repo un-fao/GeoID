@@ -17,13 +17,14 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 from dynastore.models.protocols import ItemsProtocol
+from dynastore.models.query_builder import QueryRequest
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.stac.stac_config import StacPluginConfig
 import logging
 
 logger = logging.getLogger(__name__)
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 
 async def get_stac_items_paginated(
@@ -35,59 +36,42 @@ async def get_stac_items_paginated(
     stac_config: Optional[StacPluginConfig] = None,
 ) -> Tuple[list, int]:
     """
-    Fetches a paginated list of items for STAC using the optimized CatalogsProtocol.
+    Fetches a paginated list of items for STAC using the optimised QueryOptimizer path.
+
     Geometries are simplified at the database level based on the StacPluginConfig.
+    The total count is derived from COUNT(*) OVER() embedded in the same query,
+    so no separate count query is needed.
     """
-    # 1. Resolve Items Service
     items_svc = get_protocol(ItemsProtocol)
     if not items_svc:
         raise RuntimeError("ItemsProtocol not available")
 
-    # 2. Determine Simplification
-    # Note: GeometrySidecar now handles simplification via 'simplification' param
-    simplification = 0.0001
+    simplification: float = 0.0001
     if stac_config and stac_config.simplification:
         simplification = stac_config.simplification.default_tolerance
-        # We use a single tolerance for the whole request for consistency with unified builder
 
-    # 3. Request Features via unified ItemService (using stream for raw rows)
-    # We use stream_features with as_geojson=False to get raw dictionaries.
-    # This preserves 'validity' range objects and sidecar columns needed for STAC processing.
+    request = QueryRequest(
+        limit=limit,
+        offset=offset,
+        include_total_count=True,
+        raw_params={
+            "geom_format": "WKB",
+            "simplification": simplification,
+            "lang": "*",  # stac_generator handles specific language selection
+        },
+    )
 
-    params = {
-        "limit": limit,
-        "offset": offset,
-        "include_total_count": True,
-        "simplification": simplification,
-        "geom_format": "WKB",  # pystac expect WKB or GeoJSON
-        "select_columns": [
-            "transaction_time",  # Exposed by AttributesSidecar as h.transaction_time
-            "bbox_xmin",
-            "bbox_ymin",
-            "bbox_xmax",
-            "bbox_ymax",  # Delegated to GeometrySidecar
-        ],
-    }
-
-    stream = await items_svc.stream_features(
-        conn,
+    query_response = await items_svc.stream_items(
         catalog_id=catalog_id,
         collection_id=collection_id,
-        col_config=None,  # Will be resolved by service if None
-        params=params,
-        as_geojson=True, # RETURN FEATURE MODELS
-        lang="*", # Let stac_generator handle specific language selection
+        request=request,
+        db_resource=conn,
     )
 
-    if stream is None:
+    if query_response is None:
         return [], 0
 
-    processed_result = [feature async for feature in stream]
-
-    # 4. Get Total Count
-    # We'll use get_features_count for total_count
-    total_count = await items_svc.get_features_count(
-        conn, catalog_id=catalog_id, collection_id=collection_id, params=params
-    )
+    processed_result = [feature async for feature in query_response]
+    total_count: int = query_response.total_count or 0
 
     return processed_result, total_count

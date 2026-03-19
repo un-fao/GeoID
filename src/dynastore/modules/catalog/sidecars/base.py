@@ -111,13 +111,19 @@ class SidecarDataEntry:
 # ────────────────────────────────────────────────────────────────────────────
 
 
-class SidecarPipelineContext(dict):
+class SidecarPipelineContext:
     """
     Typed pipeline context passed through ``map_row_to_feature``.
 
-    Extends ``dict`` so all existing ``context.get(…)`` and
-    ``context["key"]`` access patterns continue to work unchanged.
-    The added API provides structured, namespace-safe sidecar access:
+    Does **not** inherit from ``dict``.  All state is held in typed slots:
+
+    - ``lang`` / ``include_internal`` — construction-time configuration.
+    - ``_all_internal_cols`` — populated by ``ItemService`` before the
+      pipeline starts; use the ``all_internal_columns`` property to read.
+    - ``_sidecar_store`` — namespace-safe sidecar data published via
+      :meth:`publish` and read back via :meth:`get_sidecar`.
+    - ``_store`` — backward-compat flat key storage for sidecars that
+      still write ``context["asset_id"] = …`` style entries.
 
     **Writing** (inside a sidecar's ``map_row_to_feature``)::
 
@@ -129,14 +135,7 @@ class SidecarPipelineContext(dict):
         if attributes:
             asset_id = attributes.get("asset_id")
 
-    **Full context_values** example::
-
-        geometry = context.get_sidecar("geometry")
-        if geometry:
-            values = geometry.get_context_values()
-            bbox = values.get("bbox_geom")
-
-    **Typed shortcuts** (preferred over raw dict access)::
+    **Typed shortcuts** (preferred over raw ``_store`` access)::
 
         context.lang        # requested language, default "en"
         context.asset_id    # asset_id from attributes sidecar (or None)
@@ -144,6 +143,15 @@ class SidecarPipelineContext(dict):
         context.valid_from  # validity start from attributes sidecar (or None)
         context.valid_to    # validity end from attributes sidecar (or None)
     """
+
+    __slots__ = ("lang", "include_internal", "_all_internal_cols", "_sidecar_store", "_store")
+
+    def __init__(self, lang: str = "en", include_internal: bool = False) -> None:
+        self.lang: str = lang
+        self.include_internal: bool = include_internal
+        self._all_internal_cols: Set[str] = set()
+        self._sidecar_store: Dict[str, Dict[str, Any]] = {}
+        self._store: Dict[str, Any] = {}
 
     # ── Sidecar data access ─────────────────────────────────────────────────
 
@@ -154,115 +162,92 @@ class SidecarPipelineContext(dict):
         Call this **first thing** inside ``map_row_to_feature`` with the raw
         row values for this sidecar (whether or not they end up in the Feature).
         """
-        self.setdefault(_SIDECAR_DATA_KEY, {})[sidecar_id] = data
+        self._sidecar_store[sidecar_id] = data
 
     def get_sidecar(self, sidecar_id: str) -> Optional["SidecarDataEntry"]:
         """
         Return the data entry published by *sidecar_id*, or ``None`` if that
         sidecar was not included in the current query.
         """
-        data = self.get(_SIDECAR_DATA_KEY, {}).get(sidecar_id)
+        data = self._sidecar_store.get(sidecar_id)
         return SidecarDataEntry(data) if data is not None else None
 
     def all_sidecars(self) -> Dict[str, "SidecarDataEntry"]:
         """Return all published sidecar entries keyed by sidecar_id."""
-        return {
-            sid: SidecarDataEntry(d)
-            for sid, d in self.get(_SIDECAR_DATA_KEY, {}).items()
-        }
+        return {sid: SidecarDataEntry(d) for sid, d in self._sidecar_store.items()}
 
-    # ── Typed shortcuts for common top-level context values ─────────────────
+    # ── Backward-compat flat key access for sidecars that write context["x"] ─
 
-    @property
-    def include_internal(self) -> bool:
-        """Helper to check the deprecated include_internal flag."""
-        return self.get("include_internal", False)
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._store[key] = value
 
-    @property
-    def lang(self) -> str:
-        """The requested language for localization (default: 'en')."""
-        return self.get("lang", "en")
+    def __getitem__(self, key: str) -> Any:
+        return self._store[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._store.get(key, default)
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        return self._store.setdefault(key, default)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._store
+
+    # ── Typed shortcuts for common pipeline values ───────────────────────────
 
     @property
     def asset_id(self) -> Optional[str]:
         """
         The asset_id associated with the current feature row.
 
-        Dual-path resolution:
-        1. Direct top-level key ``context["asset_id"]`` — written by
-           FeatureAttributeSidecar for backward compatibility.
-        2. Via sidecar data: ``context.get_sidecar("attributes").get("asset_id")``
-           — available after Fix 2 ensures correct context.publish() usage.
-
-        Downstream sidecars (e.g. STAC) should use this property rather than
-        accessing ``context["asset_id"]`` directly.
+        Primary source: sidecar data published by FeatureAttributeSidecar
+        via ``context.publish("attributes", row_data)``.
+        Backward-compat fallback: direct ``context["asset_id"]`` write.
         """
-        v = self.get("asset_id")
-        if v is not None:
-            return str(v)
         attrs = self.get_sidecar("attributes")
         if attrs:
             v = attrs.get("asset_id")
-            return str(v) if v is not None else None
-        return None
+            if v is not None:
+                return str(v)
+        v = self._store.get("asset_id")
+        return str(v) if v is not None else None
 
     @property
     def geoid(self) -> Optional[str]:
-        """Hub geoid for the current row, if set in context."""
-        v = self.get("geoid")
+        """Hub geoid for the current row."""
+        v = self._store.get("geoid")
         return str(v) if v is not None else None
 
     @property
     def valid_from(self) -> Optional[Any]:
-        """
-        Validity start for the current feature version.
-
-        Written by FeatureAttributeSidecar when validity is enabled.
-        Reads from sidecar data first, then falls back to top-level key.
-        """
+        """Validity start; reads from sidecar data then flat store."""
         attrs = self.get_sidecar("attributes")
         if attrs:
             v = attrs.get("valid_from")
             if v is not None:
                 return v
-        return self.get("valid_from")
+        return self._store.get("valid_from")
 
     @property
     def valid_to(self) -> Optional[Any]:
-        """
-        Validity end for the current feature version.
-
-        Written by FeatureAttributeSidecar when validity is enabled.
-        Reads from sidecar data first, then falls back to top-level key.
-        """
+        """Validity end; reads from sidecar data then flat store."""
         attrs = self.get_sidecar("attributes")
         if attrs:
             v = attrs.get("valid_to")
             if v is not None:
                 return v
-        return self.get("valid_to")
+        return self._store.get("valid_to")
 
     @property
     def all_internal_columns(self) -> frozenset:
         """
-        Return the full set of DB column names that must **never** appear
-        in ``Feature.properties``.
+        Full set of DB column names that must never appear in Feature.properties.
 
-        Combines:
-        - ``HUB_INTERNAL_COLUMNS`` — fixed Hub-table columns (geoid, etc.)
-        - ``_all_internal_cols`` — the per-pipeline aggregate computed by
-          ``ItemService.map_row_to_feature`` from every sidecar's
-          ``get_internal_columns()`` before the pipeline starts.
-
-        Usage inside any sidecar's ``map_row_to_feature``::
-
-            excluded = context.all_internal_columns
-            for key, val in row.items():
-                if key not in excluded and key not in props:
-                    props[key] = val
+        Combines ``HUB_INTERNAL_COLUMNS`` with the per-pipeline set populated
+        by ``ItemService.map_row_to_feature`` from every sidecar's
+        ``get_internal_columns()`` before the pipeline starts.
         """
-        pipeline: set = self.get("_all_internal_cols", set())
-        return HUB_INTERNAL_COLUMNS | pipeline
+        return HUB_INTERNAL_COLUMNS | self._all_internal_cols
 
 
 class FieldCapability(str, Enum):

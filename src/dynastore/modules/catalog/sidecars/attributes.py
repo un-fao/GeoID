@@ -448,8 +448,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
 
     def resolve_query_path(self, attr_name: str) -> Optional[Tuple[str, str]]:
         """Resolve attribute access."""
-        # Alias must match what _get_features_builder expects/generates
-        # Builder convention: sc_{sidecar_id} -> sc_attributes
+        # QueryOptimizer alias convention: sc_{sidecar_id} -> sc_attributes
         alias = f"sc_{self.sidecar_id}"
 
         # Hub Columns (Special handling: we return them with 'h' alias but associate with this sidecar?)

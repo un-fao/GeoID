@@ -18,7 +18,22 @@
 
 from enum import Enum
 from pydantic import BaseModel, Field, field_validator, ConfigDict
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Literal, Optional, Dict, Any, Union, Set
+
+ALLOWED_TRANSFORMATIONS: Set[str] = {
+    "ST_Transform", "ST_AsGeoJSON", "ST_AsText", "ST_AsWKB", "ST_AsEWKT",
+    "ST_AsEWKB", "ST_AsGML", "ST_AsMVTGeom", "ST_Simplify", "ST_Buffer",
+    "ST_Centroid", "ST_Envelope", "ST_Area", "ST_Length", "ST_Perimeter",
+    "ST_SetSRID", "ST_GeomFromWKB", "ST_GeomFromText", "ST_MakeValid",
+    "upper", "lower", "trim", "to_char", "to_date", "to_timestamp",
+    "date_trunc", "extract", "coalesce", "nullif", "greatest", "least",
+}
+
+ALLOWED_AGGREGATIONS: Set[str] = {
+    "count", "sum", "avg", "min", "max", "ST_Union", "ST_Collect",
+    "ST_Extent", "array_agg", "json_agg", "jsonb_agg", "string_agg",
+    "bool_and", "bool_or",
+}
 
 class FilterOperator(str, Enum):
     """Enumeration of supported filter operators.
@@ -148,6 +163,26 @@ class FieldSelection(BaseModel):
     transformation: Optional[str] = None  # "ST_AsGeoJSON", "upper", etc.
     transform_args: Dict[str, Any] = {}  # Arguments for transformation
 
+    @field_validator("transformation")
+    @classmethod
+    def validate_transformation(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ALLOWED_TRANSFORMATIONS:
+            raise ValueError(
+                f"Transformation '{v}' is not allowed. "
+                f"Permitted: {sorted(ALLOWED_TRANSFORMATIONS)}"
+            )
+        return v
+
+    @field_validator("aggregation")
+    @classmethod
+    def validate_aggregation(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ALLOWED_AGGREGATIONS:
+            raise ValueError(
+                f"Aggregation '{v}' is not allowed. "
+                f"Permitted: {sorted(ALLOWED_AGGREGATIONS)}"
+            )
+        return v
+
 
 class FilterCondition(BaseModel):
     """Represents a filter condition."""
@@ -162,7 +197,7 @@ class SortOrder(BaseModel):
     """Represents sort order."""
 
     field: str
-    direction: str = "ASC"  # "ASC" or "DESC"
+    direction: Literal["ASC", "DESC"] = "ASC"
 
 
 class QueryRequest(BaseModel):
@@ -177,19 +212,38 @@ class QueryRequest(BaseModel):
     limit: Optional[int] = None
     offset: Optional[int] = None
 
-    # --- Advanced Escape Hatches for OGC / Complex Queries ---
+    # --- Internal escape hatches (server-side use only, never populated from user input) ---
     raw_selects: List[str] = Field(
-        default_factory=list, description="Raw SQL SELECT expressions."
+        default_factory=list,
+        description="[INTERNAL] Raw SQL SELECT expressions. Must only be set by trusted server-side code.",
+        json_schema_extra={"x-internal": True},
+        exclude=True,
     )
-    raw_where: Optional[str] = Field(None, description="Raw SQL WHERE expression.")
+    raw_where: Optional[str] = Field(
+        None,
+        description="[INTERNAL] Raw SQL WHERE expression. Must only be set by trusted server-side code.",
+        json_schema_extra={"x-internal": True},
+        exclude=True,
+    )
     raw_params: Dict[str, Any] = Field(
-        default_factory=dict, description="Parameters for raw_where/raw_selects."
+        default_factory=dict,
+        description="[INTERNAL] Bind parameters for raw_where/raw_selects.",
+        json_schema_extra={"x-internal": True},
+        exclude=True,
     )
     cql_filter: Optional[str] = Field(
         None, description="A raw CQL2 filter string to be parsed and validated."
     )
     include_total_count: bool = Field(
         False, description="If True, includes COUNT(*) OVER() as _total_count."
+    )
+    item_ids: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Filter results to items whose feature-ID (geoid or external_id override) "
+            "matches one of these values. Handled by the QueryOptimizer as "
+            "``feature_id_expr = ANY(:_item_ids)``."
+        ),
     )
 
     @field_validator("select")

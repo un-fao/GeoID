@@ -81,9 +81,9 @@ async def ensure_schema_exists(conn: DbResource, schema_name: str):
     """
     await DDLQuery(
         f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"',
-        check_query=f"SELECT 1 FROM pg_namespace WHERE nspname = '{schema_name}'",
+        check_query="SELECT 1 FROM pg_namespace WHERE nspname = :schema_name",
         lock_key=f"schema_{schema_name}",
-    ).execute(conn)
+    ).execute(conn, schema_name=schema_name)
     logger.info(f"Schema '{schema_name}' verified/ready.")
 
 

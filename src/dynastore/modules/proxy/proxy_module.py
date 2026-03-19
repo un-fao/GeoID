@@ -108,27 +108,35 @@ async def _initialize_proxy_tenant_slice(conn: DbResource, schema: str, catalog_
 
 
 from dynastore.modules.catalog.lifecycle_manager import sync_collection_initializer, sync_collection_destroyer
+from dynastore.tools.db import sanitize_for_sql_identifier
+
 
 @sync_collection_initializer
 async def _initialize_proxy_collection(conn: DbResource, schema: str, catalog_id: str, collection_id: str, **kwargs):
     """Creates a partition for the collection in the proxy table."""
     from dynastore.modules.db_config.query_executor import DDLQuery
-    
+
+    safe_suffix = sanitize_for_sql_identifier(collection_id)
+    # Escape single quotes for the partition value literal (DDL, no bind params available)
+    safe_value = collection_id.replace("'", "''")
+
     # We use {schema} placeholder so DDLQuery quotes it automatically
     ddl = f"""
-    CREATE TABLE IF NOT EXISTS {{schema}}.short_urls_{collection_id.replace("-", "_")} 
+    CREATE TABLE IF NOT EXISTS {{schema}}.short_urls_{safe_suffix}
     PARTITION OF {{schema}}.short_urls
-    FOR VALUES IN ('{collection_id}');
+    FOR VALUES IN ('{safe_value}');
     """
     await DDLQuery(ddl).execute(conn, schema=schema)
     logger.info(f"Created proxy partition for collection '{collection_id}' in schema '{schema}'.")
+
 
 @sync_collection_destroyer
 async def _destroy_proxy_collection(conn: DbResource, schema: str, catalog_id: str, collection_id: str):
     """Drops the partition for the collection in the proxy table."""
     from dynastore.modules.db_config.query_executor import DDLQuery
-    
-    ddl = f"DROP TABLE IF EXISTS {{schema}}.short_urls_{collection_id.replace("-", "_")} CASCADE;"
+
+    safe_suffix = sanitize_for_sql_identifier(collection_id)
+    ddl = f"DROP TABLE IF EXISTS {{schema}}.short_urls_{safe_suffix} CASCADE;"
     await DDLQuery(ddl).execute(conn, schema=schema)
     logger.info(f"Dropped proxy partition for collection '{collection_id}' in schema '{schema}'.")
 

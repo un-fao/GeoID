@@ -135,8 +135,10 @@ class STACService(ExtensionProtocol, StaticFilesProtocol):
 
     async def is_file_provided(self, path: str) -> bool:
         """Checks if a static file is provided."""
-        static_dir = os.path.join(os.path.dirname(__file__), "static")
-        full_path = os.path.join(static_dir, path.lstrip("/"))
+        static_dir = os.path.realpath(os.path.join(os.path.dirname(__file__), "static"))
+        full_path = os.path.realpath(os.path.join(static_dir, path.lstrip("/")))
+        if not full_path.startswith(static_dir + os.sep) and full_path != static_dir:
+            return False
         return os.path.isfile(full_path)
 
     async def list_static_files(self, query: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[str]:

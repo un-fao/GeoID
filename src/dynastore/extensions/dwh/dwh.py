@@ -261,9 +261,19 @@ class DwhService(ExtensionProtocol):
         ] and req.join_column not in [s.alias for s in selects]:
             selects.append(FieldSelection(field=req.join_column))
 
-        # Handle raw_where (req.where is SQL)
+        # Reject user-supplied raw SQL to prevent SQL injection.
+        # Use the structured `filters` mechanism (FilterCondition) instead.
+        if req.where:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "The 'where' field is disabled for security reasons. "
+                    "Use structured FilterCondition filters instead."
+                ),
+            )
+
         query_req = QueryRequest(
-            select=selects, limit=req.limit, offset=req.offset, raw_where=req.where
+            select=selects, limit=req.limit, offset=req.offset
         )
 
         # Stream via ItemService

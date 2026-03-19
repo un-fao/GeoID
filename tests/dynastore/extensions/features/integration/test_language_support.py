@@ -49,7 +49,7 @@ async def test_landing_page_respects_language_param(sysadmin_in_process_client):
 
 
 @pytest.mark.asyncio
-async def test_create_catalog_with_language_parameter(in_process_client):
+async def test_create_catalog_with_language_parameter(sysadmin_in_process_client):
     """Test creating a catalog through OGC Features API with language parameter."""
     catalog_id = "ogc_test_catalog_create"
     payload = {
@@ -58,8 +58,13 @@ async def test_create_catalog_with_language_parameter(in_process_client):
         "description": "A test catalog for OGC API Features",
     }
 
+    # Pre-cleanup: remove any leftover from a prior run
+    await sysadmin_in_process_client.delete(
+        f"/features/catalogs/{catalog_id}", params={"force": "true"}
+    )
+
     try:
-        response = await in_process_client.post(
+        response = await sysadmin_in_process_client.post(
             "/features/catalogs", json=payload, params={"lang": "en"}
         )
 
@@ -67,8 +72,9 @@ async def test_create_catalog_with_language_parameter(in_process_client):
         data = response.json()
         assert data["id"] == catalog_id
     finally:
-        # Cleanup
-        await in_process_client.delete(f"/features/catalogs/{catalog_id}", params={"force": "true"})
+        await sysadmin_in_process_client.delete(
+            f"/features/catalogs/{catalog_id}", params={"force": "true"}
+        )
 
 
 @pytest.mark.asyncio

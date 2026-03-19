@@ -48,15 +48,9 @@ class QueryOptimizer:
     a given ``QueryRequest`` (via ``determine_required_sidecars()``), avoiding
     unnecessary table JOINs and fetching only the columns actually needed.
 
-    The primary path for all ItemService CRUD and streaming operations is the
-    legacy ``_get_features_builder`` in ``item_service.py``, which always joins
-    all sidecars unconditionally.  This optimizer is used when callers explicitly
-    construct a ``QueryRequest`` (e.g. STAC search, virtual collection filters,
-    advanced OGC queries).
-
-    Migration plan: once spatial-filter support and full streaming parity are
-    achieved here, ``_get_features_builder`` should be retired in favour of this
-    optimizer.
+    All ItemService query operations go through this optimizer — it is the
+    sole query path.  Sidecars are joined selectively based on the fields
+    requested in ``QueryRequest``, avoiding unnecessary table JOINs.
     """
 
     def __init__(self, col_config: CollectionPluginConfig):
@@ -385,7 +379,7 @@ class QueryOptimizer:
         # Build SELECT clause
         select_fields = []
 
-        if getattr(query, "include_total_count", False):
+        if query.include_total_count:
             select_fields.append("COUNT(*) OVER() AS _total_count")
 
         if any(sel.field == "*" for sel in query.select):
@@ -453,7 +447,7 @@ class QueryOptimizer:
                 alias = sel.alias or sel.field
                 select_fields.append(f"{expr} as {alias}")
 
-        if getattr(query, "raw_selects", None):
+        if query.raw_selects:
             select_fields.extend(query.raw_selects)
 
         # Build WHERE clause
@@ -509,7 +503,7 @@ class QueryOptimizer:
 
             params[param_name] = filt.value
 
-        if getattr(query, "raw_where", None):
+        if query.raw_where is not None:
             # Apply field mapping to raw_where to support sidecar fields (e.g. 'geom' -> 'sc_geom.geom')
             import re
 
@@ -528,7 +522,7 @@ class QueryOptimizer:
 
             where_conditions.append(f"({processed_where})")
 
-        if getattr(query, "raw_params", None):
+        if query.raw_params:
             params.update(query.raw_params)
 
         # Build JOINs (only for required sidecars)
@@ -584,15 +578,22 @@ class QueryOptimizer:
         # One sidecar at most can be the feature-id provider (validated at config time).
         # Default is h.geoid; a configured sidecar (e.g. attributes with external_id)
         # can override this for all optimizer-generated queries.
+        # Resolve the feature-ID expression once — used for both SELECT alias and item_ids filter.
+        feature_id_expr: str = "h.geoid"
+        for sc_config in required_sidecars:
+            sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
+            if sidecar and sidecar.provides_feature_id and sidecar.feature_id_field_name:
+                sc_alias = f"sc_{sidecar.sidecar_id}"
+                feature_id_expr = f"{sc_alias}.{sidecar.feature_id_field_name}"
+                break
+
         if not any("AS id" in f or f.rstrip().endswith(" id") for f in select_fields):
-            feature_id_expr = "h.geoid"
-            for sc_config in required_sidecars:
-                sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
-                if sidecar and sidecar.provides_feature_id and sidecar.feature_id_field_name:
-                    sc_alias = f"sc_{sidecar.sidecar_id}"
-                    feature_id_expr = f"{sc_alias}.{sidecar.feature_id_field_name}"
-                    break
             select_fields.append(f"{feature_id_expr} AS id")
+
+        # Filter by item_ids using the resolved feature-ID expression.
+        if query.item_ids:
+            params["_item_ids"] = query.item_ids
+            where_conditions.append(f"{feature_id_expr} = ANY(:_item_ids)")
 
         # Build GROUP BY
         group_by_clause = ""
@@ -643,9 +644,15 @@ class QueryOptimizer:
                     order_by_clause = f"ORDER BY {', '.join(order_fields)}"
                     break
 
-        # Build LIMIT/OFFSET
-        limit_clause = f"LIMIT {query.limit}" if query.limit else ""
-        offset_clause = f"OFFSET {query.offset}" if query.offset else ""
+        # Build LIMIT/OFFSET using bind parameters (not direct interpolation)
+        limit_clause = ""
+        offset_clause = ""
+        if query.limit is not None:
+            limit_clause = "LIMIT :_limit"
+            params["_limit"] = query.limit
+        if query.offset is not None:
+            offset_clause = "OFFSET :_offset"
+            params["_offset"] = query.offset
 
         # Assemble final query
         sql = f"""

@@ -30,7 +30,6 @@ from dynastore.modules.db_config.query_executor import (
     DbResource,
     ResultHandler,
     managed_transaction,
-    BuilderResult,
 )
 from dynastore.modules.catalog.models import ItemDataForDB, Collection, Catalog
 from dynastore.modules.catalog.catalog_config import (
@@ -40,6 +39,7 @@ from dynastore.modules.catalog.catalog_config import (
 from dynastore.modules.catalog.sidecars.attributes_config import VersioningBehaviorEnum
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
+from dynastore.models.protocols.items import ItemsProtocol
 from dynastore.modules.catalog.sidecars.base import SidecarProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.tools.db import validate_sql_identifier
@@ -59,312 +59,6 @@ logger = logging.getLogger(__name__)
 # --- Specialized Queries for ItemService ---
 
 
-async def _get_features_builder(
-    conn: DbResource, params: Dict[str, Any]
-) -> BuilderResult:
-    """A unified builder for feature retrieval across STAC, WFS, Tiles, and DWH.
-
-    LEGACY / PRIMARY query path
-    ───────────────────────────
-    This builder is used by all ItemService methods (get_features, stream_features,
-    get_item, get_features_count, etc.).  It always JOINs every configured sidecar
-    unconditionally and supports full spatial filtering (bbox, geometry, WKT).
-
-    The newer path is ``QueryOptimizer.build_optimized_query()``, which selectively
-    JOINs only the sidecars required for a given ``QueryRequest``.  Once that path
-    reaches parity (spatial filters, feature-ID resolution, streaming), this builder
-    should be replaced.  Track parity by comparing the two implementations.
-    """
-    from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
-
-    col_config = params["col_config"]
-    phys_schema = params["catalog_id"]
-    phys_table = params["collection_id"]
-
-    # ID Resolution (Optional)
-    item_ids = params.get("item_ids")
-    item_id = params.get("item_id")  # For backward compatibility with _get_item_builder
-
-    # Spatial Filters (Optional)
-    bbox = params.get("bbox")
-    geometry = params.get("geometry")
-
-    # Custom Filters (Optional)
-    select_fields = params.get("select_columns")
-    from_clause = f'"{phys_schema}"."{phys_table}" h'
-    joins = []
-    where_clauses = []
-    if not params.get("include_deleted", False):
-        where_clauses.append("h.deleted_at IS NULL")
-    ids_to_resolve = (
-        params.get("ids") or params.get("item_ids") or params.get("item_id")
-    )
-    id_conditions = []
-
-    # Identifiers & Select Determination
-    feature_id_column = "h.geoid"
-    feature_id_alias = "id"
-
-    actual_select = []
-    if select_fields:
-        actual_select.extend(select_fields)
-    else:
-        # Default SELECT: Hub core fields
-        actual_select.append("h.deleted_at")
-        actual_select.append("h.transaction_time")
-        actual_select.append("h.geoid")
-
-    query_params = params.copy() if params else {}
-
-    # 2. Delegate query generation to sidecars
-    if col_config.sidecars:
-        for sc_config in col_config.sidecars:
-            sidecar = SidecarRegistry.get_sidecar(sc_config)
-            sc_id = sidecar.sidecar_id
-            sc_alias = f"sc_{sc_id}"
-
-            # A. SELECT fields
-            sc_fields = sidecar.get_select_fields(
-                hub_alias="h", sidecar_alias=sc_alias, include_all=True
-            )
-            for sc_field in sc_fields:
-                if sc_field not in actual_select:
-                    actual_select.append(sc_field)
-
-            # Resolve specific columns if requested in select_columns
-            if select_fields:
-                for idx, field in enumerate(actual_select):
-                    if field in select_fields:
-                        resolved = sidecar.resolve_query_path(field)
-                        if resolved:
-                            sql_expr, _ = resolved
-                            actual_select[idx] = f"{sql_expr} AS {field}"
-
-            # B. Geometry SELECT (if requested and not already added)
-            # We look for a sidecar that provides a formatted geometry
-            # Note: sc_fields loop above adds full expression like 'ST_AsEWKB(...) as geom'.
-            # We check if we already have an aliased 'geom' column to avoid duplication.
-            has_geom_select = any(
-                f.lower().endswith(" as geom") or f == "geom" for f in actual_select
-            )
-            if not has_geom_select and "h.geom" not in actual_select:
-                geom_sql = sidecar.get_geometry_select(params, sidecar_alias=sc_alias)
-                if geom_sql:
-                    actual_select.append(f"{geom_sql} AS geom")
-
-            # C. Spatial Conditions
-            sc_spatial = sidecar.get_spatial_condition(
-                bbox, geometry, sidecar_alias=sc_alias, srid=params.get("srid", 4326)
-            )
-            if sc_spatial:
-                where_clauses.append(sc_spatial)
-                # Update query_params for spatial filters
-                if bbox:
-                    query_params.update(
-                        {
-                            "bbox_minx": bbox[0],
-                            "bbox_miny": bbox[1],
-                            "bbox_maxx": bbox[2],
-                            "bbox_maxy": bbox[3],
-                            "srid": params.get("srid", 4326),
-                        }
-                    )
-                if geometry:
-                    query_params.update({"geometry": geometry})
-
-            # D. Feature ID Override
-            if sidecar.provides_feature_id:
-                id_field = sidecar.feature_id_field_name
-                if id_field:
-                    feature_id_column = f"{sc_alias}.{id_field}"
-
-            # E. Feature ID conditions for filtering
-            if ids_to_resolve is not None:
-                extra_join, feature_where = sidecar.get_feature_id_condition(
-                    ids_to_resolve,
-                    hub_alias="h",
-                    sidecar_alias=sc_alias,
-                    partition_keys=getattr(col_config, "partition_keys", None),
-                )
-                if feature_where:
-                    id_conditions.append(feature_where)
-            else:
-                extra_join = None
-
-            # F. JOIN clause
-            joins.append(
-                sidecar.get_join_clause(
-                    phys_schema,
-                    phys_table,
-                    hub_alias="h",
-                    sidecar_alias=sc_alias,
-                    extra_condition=extra_join,
-                )
-            )
-
-            # G. Sidecar WHERE conditions
-            sc_where = sidecar.get_where_conditions(sidecar_alias=sc_alias, **params)
-            if sc_where:
-                where_clauses.extend(sc_where)
-
-    # 4. Identity Finalization
-    actual_select.append(f"{feature_id_column} AS id")
-
-    # 5. ID Conditions (WHERE)
-    if ids_to_resolve is not None:
-        if id_conditions:
-            where_clauses.append(f"({' OR '.join(id_conditions)})")
-        else:
-            # Hub Geoid search fallback if no sidecar provided a condition
-            if isinstance(ids_to_resolve, list):
-                where_clauses.append("h.geoid::text = ANY(CAST(:item_ids AS TEXT[]))")
-                query_params["item_ids"] = ids_to_resolve
-            else:
-                where_clauses.append("h.geoid::text = CAST(:item_id AS TEXT)")
-                query_params["item_id"] = ids_to_resolve
-
-    # 6. Temporal Filter
-    time_str = params.get("time")
-    if time_str:
-        if "/" in time_str:
-            start_str, end_str = time_str.split("/")
-            start_dt = start_str if start_str != ".." else None
-            end_dt = end_str if end_str != ".." else None
-
-            if start_dt and end_dt:
-                where_clauses.append(
-                    "h.validity && tstzrange(:start_dt, :end_dt, '[]')"
-                )
-                query_params.update(start_dt=start_dt, end_dt=end_dt)
-            elif start_dt:
-                where_clauses.append("upper(h.validity) >= :start_dt")
-                query_params.update(start_dt=start_dt)
-            elif end_dt:
-                where_clauses.append("lower(h.validity) <= :end_dt")
-                query_params.update(end_dt=end_dt)
-        else:
-            where_clauses.append("h.validity @> :time_instant::timestamptz")
-            query_params.update(time_instant=time_str)
-
-    # 6. CQL Filter Integration
-    cql_filter = params.get("cql_filter")
-    if cql_filter:
-        from dynastore.modules.tools.cql import parse_cql_filter
-        from sqlalchemy.sql import column as sql_column
-
-        # Build field mapping for CQL parser
-        # We include hub columns from item_properties and sidecar attributes
-        field_mapping = {}
-        # TODO: Get actual column names from schema or config
-        # For now, we assume standard hub columns and delegate to sidecars for the rest
-
-        # Placeholder for dynamic field mapping logic
-        # For now, we'll try to parse it with a generic mapping if possible,
-        # or more likely, we should pass the mapping from the caller (WFS) for now
-        # until ItemService has its own introspection.
-        external_field_mapping = params.get("field_mapping")
-        if external_field_mapping:
-            cql_where_str, cql_params = parse_cql_filter(
-                cql_filter,
-                field_mapping=external_field_mapping,
-                parser_type=params.get("cql_parser_type", "ecql"),
-            )
-            if cql_where_str:
-                where_clauses.append(f"({cql_where_str})")
-                query_params.update(cql_params)
-
-    # 7. External where clause
-    where = params.get("where")
-    if where:
-        where_clauses.append(f"({where})")
-
-    # 8. Reserved for future extensions via QueryTransformProtocol
-    # Module specific logic (MVT, etc.) has been moved to pluggable transformers.
-
-    # 7. Assemble SQL
-    limit = params.get("limit")
-    offset = params.get("offset")
-    sort_by = params.get("sort_by", "h.transaction_time DESC")
-    is_count = params.get("count", False)
-
-    if is_count:
-        sql = f"""
-            SELECT count(*)
-            FROM {from_clause}
-            {" ".join(joins)}
-            WHERE {" AND ".join(where_clauses)}
-        """
-    else:
-        sql = f"""
-            SELECT {", ".join(actual_select)}
-            FROM {from_clause}
-            {" ".join(joins)}
-            WHERE {" AND ".join(where_clauses)}
-            ORDER BY {sort_by}
-        """
-
-    # if limit:
-    if not is_count:
-        if limit:
-            sql += f" LIMIT {int(limit)}"
-        if offset:
-            sql += f" OFFSET {int(offset)}"
-
-    import re
-
-    used_params = set(re.findall(r":(\w+)", sql))
-    scrubbed_params = {k: v for k, v in query_params.items() if k in used_params}
-
-    if (
-        "item_id" in query_params
-        or "item_ids" in query_params
-        or "lookup_geoid" in query_params
-        or "geoid_val" in query_params
-        or "target_geoid" in query_params
-    ):
-        logger.warning(
-            f"DEBUG: _get_features_builder SQL: {sql} PARAMS: {scrubbed_params}"
-        )
-
-    return text(sql), scrubbed_params
-
-
-async def _get_item_builder(conn: DbResource, params: Dict[str, Any]) -> BuilderResult:
-    params["include_deleted"] = True
-    """Reuses _get_features_builder for single item retrieval."""
-    params["limit"] = 1
-    return await _get_features_builder(conn, params)
-
-
-# Generic querying
-get_item_query = GeoDQLQuery.from_builder(
-    _get_item_builder, result_handler=ResultHandler.ONE_OR_NONE
-)
-
-get_features_query = GeoDQLQuery.from_builder(
-    _get_features_builder, result_handler=ResultHandler.ALL
-)
-
-get_features_count_query = DQLQuery.from_builder(
-    _get_features_builder, result_handler=ResultHandler.SCALAR_ONE
-)
-
-stream_features_query = GeoDQLQuery.from_builder(
-    _get_features_builder,
-    result_handler=lambda r: r,  # Raw stream
-)
-
-
-async def _get_version_at_timestamp_builder(
-    conn: DbResource, params: Dict[str, Any]
-) -> BuilderResult:
-    # This might still be useful if refactored to be geoid-based,
-    # but for now we remove external_id variants.
-    pass
-
-
-# Remove static queries that are now replaced by builders or unused
-# get_active_record_by_external_id_query = ... (Already specific to legacy logic)
 
 soft_delete_item_query = DQLQuery(
     "UPDATE {catalog_id}.{collection_id} SET deleted_at = NOW() WHERE geoid = :geoid AND deleted_at IS NULL;",
@@ -372,8 +66,13 @@ soft_delete_item_query = DQLQuery(
 )
 
 
-class ItemService:
-    """Service for item-level operations."""
+class ItemService(ItemsProtocol):
+    """Service for item-level operations.
+
+    Explicitly declares conformance to ``ItemsProtocol`` so that static
+    analysis tools (mypy) can verify method signatures stay in sync with
+    the protocol definition.
+    """
 
     priority: int = 10
 
@@ -475,17 +174,17 @@ class ItemService:
                 sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
                 if sidecar:
                     all_internal.update(sidecar.get_internal_columns())
-            context["_all_internal_cols"] = all_internal
+            context._all_internal_cols = all_internal
 
             for sc_config in col_config.sidecars:
                 sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
                 if sidecar:
                     sidecar.map_row_to_feature(row_dict, feature, context=context)
-            
+
             # Bridge context to feature model_extra for extension generators (e.g. STAC)
             if context:
                 # model_extra is already initialized by Pydantic 'extra="allow"'
-                sidecar_data = context.get("_sidecar_data", {})
+                sidecar_data = context._sidecar_store
                 for sid, data in sidecar_data.items():
                     if isinstance(data, dict):
                         # Merge dicts if it's a standard sidecar publication
@@ -724,7 +423,7 @@ class ItemService:
         request: Optional[QueryRequest] = None,
         **kwargs,
     ) -> List[Feature]:
-        """Retrieves a list of items using QueryRequest or legacy args."""
+        """Retrieves a list of items via the QueryOptimizer path."""
         if not col_config:
             catalogs_svc = get_protocol(CatalogsProtocol)
             col_config = await catalogs_svc.get_collection_config(
@@ -736,24 +435,13 @@ class ItemService:
             catalog_id, collection_id, db_resource=conn
         )
 
-        if request:
-            optimizer = QueryOptimizer(col_config)
-            sql, params = optimizer.build_optimized_query(
-                request, phys_schema, phys_table
-            )
-        else:
-            # Fallback to existing logic via _get_features_builder (legacy compatible)
-            builder_params = {
-                "catalog_id": catalog_id,
-                "collection_id": collection_id,
-                "col_config": col_config,
-                "item_ids": item_ids,
-                **kwargs,
-            }
-            sql, params = await _get_features_builder(conn, builder_params)
+        if request is None:
+            request = QueryRequest(item_ids=item_ids or None)
 
-        rows = await conn.execute(sql, **params)
-        return [self.map_row_to_feature(row, col_config) for row in rows]
+        optimizer = QueryOptimizer(col_config)
+        sql, params = optimizer.build_optimized_query(request, phys_schema, phys_table)
+        rows = await conn.execute(text(sql), params)
+        return [self.map_row_to_feature(dict(row._mapping), col_config) for row in rows]
 
     async def get_features_query(
         self,
@@ -860,7 +548,7 @@ class ItemService:
                 query_request = transformer.transform_query(query_request, context)
 
         # Apply CQL Filter parsing if present
-        if getattr(query_request, "cql_filter", None):
+        if query_request.cql_filter:
             from dynastore.modules.tools.cql import parse_cql_filter
 
             # Use a temporary optimizer to get all available fields for validation
@@ -936,142 +624,6 @@ class ItemService:
             sql_str = re.sub(f":{key}(?=\\b)", f":{new_key}", sql_str)
         return sql_str, new_params
 
-    async def get_features_count(
-        self,
-        conn: DbResource,
-        catalog_id: str,
-        collection_id: str,
-        col_config: Optional[CollectionPluginConfig] = None,
-        item_ids: Optional[List[str]] = None,
-        bbox: Optional[Tuple[float, float, float, float]] = None,
-        geometry: Optional[Any] = None,
-        where: Optional[str] = None,
-        params: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ) -> int:
-        """Retrieves total count of items matching criteria."""
-        # Clean up kwargs
-        kwargs.pop("phys_schema", None)
-        kwargs.pop("phys_table", None)
-
-        if not col_config:
-            catalogs_svc = get_protocol(CatalogsProtocol)
-            if catalogs_svc:
-                col_config = await catalogs_svc.get_collection_config(
-                    catalog_id, collection_id
-                )
-
-        if not col_config:
-            raise ValueError(
-                f"Collection configuration not found for {catalog_id}.{collection_id}"
-            )
-
-        phys_schema = await self._resolve_physical_schema(catalog_id)
-        phys_table = await self._resolve_physical_table(catalog_id, collection_id)
-
-        if not phys_schema or not phys_table:
-            return 0  # Return 0 if table missing
-
-        exec_params = params.copy() if params else {}
-        exec_params.update(kwargs)
-        exec_params.update(
-            {
-                "catalog_id": phys_schema,
-                "collection_id": phys_table,
-                "col_config": col_config,
-                "count": True,
-            }
-        )
-
-        if item_ids:
-            exec_params["item_ids"] = item_ids
-        if bbox:
-            exec_params["bbox"] = bbox
-        if geometry:
-            exec_params["geometry"] = geometry
-        if where:
-            exec_params["where"] = where
-
-        return await get_features_count_query.execute(conn, **exec_params)
-
-    async def stream_features(
-        self,
-        conn: DbResource,
-        catalog_id: str,
-        collection_id: str,
-        col_config: Optional[CollectionPluginConfig] = None,
-        item_ids: Optional[List[str]] = None,
-        bbox: Optional[Tuple[float, float, float, float]] = None,
-        geometry: Optional[Any] = None,
-        where: Optional[str] = None,
-        limit: Optional[int] = None,
-        offset: Optional[int] = 0,
-        sort_by: Optional[str] = None,
-        params: Optional[Dict[str, Any]] = None,
-        as_geojson: bool = True,
-        **kwargs,
-    ) -> AsyncIterator[Union[Dict[str, Any], Any]]:
-        """
-        Streams features using unified logic.
-
-        Args:
-            as_geojson: If True, yields GeoJSON Feature objects (Pydantic).
-                        If False, yields raw dictionary rows from DB.
-        """
-        # Clean up kwargs
-        kwargs.pop("phys_schema", None)
-        kwargs.pop("phys_table", None)
-
-        if not col_config:
-            catalogs_svc = get_protocol(CatalogsProtocol)
-            if catalogs_svc:
-                col_config = await catalogs_svc.get_collection_config(
-                    catalog_id, collection_id
-                )
-
-        if not col_config:
-            raise ValueError(
-                f"Collection configuration not found for {catalog_id}.{collection_id}"
-            )
-
-        phys_schema = await self._resolve_physical_schema(catalog_id)
-        phys_table = await self._resolve_physical_table(catalog_id, collection_id)
-
-        if not phys_schema or not phys_table:
-            # Yield nothing if table missing
-            return
-
-        exec_params = params.copy() if params else {}
-        exec_params.update(kwargs)
-        exec_params.update(
-            {
-                "catalog_id": phys_schema,
-                "collection_id": phys_table,
-                "col_config": col_config,
-            }
-        )
-
-        if item_ids:
-            exec_params["item_ids"] = item_ids
-        if bbox:
-            exec_params["bbox"] = bbox
-        if geometry:
-            exec_params["geometry"] = geometry
-        if where:
-            exec_params["where"] = where
-        if limit is not None:
-            exec_params["limit"] = limit
-        if offset is not None:
-            exec_params["offset"] = offset
-        if sort_by:
-            exec_params["sort_by"] = sort_by
-
-        async for row in await stream_features_query.stream(conn, **exec_params):
-            if as_geojson:
-                yield self.map_row_to_feature(row, col_config)
-            else:
-                yield dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
-
     async def get_item(
         self,
         catalog_id: str,
@@ -1084,40 +636,33 @@ class ItemService:
         validate_sql_identifier(catalog_id)
         validate_sql_identifier(collection_id)
         async with managed_transaction(db_resource or self.engine) as conn:
-            phys_schema = await self._resolve_physical_schema(catalog_id)
-            phys_table = await self._resolve_physical_table(catalog_id, collection_id)
+            col_config = await self._get_collection_config(
+                catalog_id, collection_id, db_resource=conn
+            )
+            phys_schema = await self._resolve_physical_schema(catalog_id, db_resource=conn)
+            phys_table = await self._resolve_physical_table(
+                catalog_id, collection_id, db_resource=conn
+            )
             if not phys_schema or not phys_table:
                 return None
 
-            configs = get_protocol(ConfigsProtocol)
-            col_config = await configs.get_config(
-                COLLECTION_PLUGIN_CONFIG_ID,
-                catalog_id,
-                collection_id,
+            request = QueryRequest(item_ids=[str(item_id)], limit=1)
+            ctx: Dict[str, Any] = {
+                "catalog_id": catalog_id,
+                "collection_id": collection_id,
+                "col_config": col_config,
+            }
+            sql, params = await self._apply_query_transformations(
+                request, ctx, catalog_id, collection_id, col_config
             )
 
-            # ID Resolution Logic
-            # The item_id parameter can be either a feature ID (external_id, asset_id, etc.) or a geoid.
-            # We delegate resolution to the query builder which integrates sidecar-provided conditions.
-            feature_id_provider = None
-            if col_config and col_config.sidecars:
-                feature_id_provider = next(
-                    (sc for sc in col_config.sidecars if sc.provides_feature_id), None
-                )
+            result = await conn.execute(text(sql), params)
+            row = result.mappings().first()
 
-            item_row = await get_item_query.execute(
-                conn,
-                catalog_id=phys_schema,
-                collection_id=phys_table,
-                item_id=str(item_id),
-                col_config=col_config,
-                feature_id_provider=feature_id_provider,
+            return (
+                self.map_row_to_feature(dict(row), col_config, lang=lang, context=context)
+                if row else None
             )
-
-            if item_row and item_row.get("deleted_at") is not None:
-                return None
-
-            return self.map_row_to_feature(item_row, col_config, lang=lang, context=context) if item_row else None
 
     async def delete_item(
         self,

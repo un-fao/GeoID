@@ -22,6 +22,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_SYSADMIN_PROP_KEY = "auth_sysadmin_password_enc"
+
+
+def _derive_fernet_key(jwt_secret: str) -> bytes:
+    """Derive a 256-bit Fernet-compatible key from the JWT secret via SHA-256."""
+    import base64
+    raw = hashlib.sha256(jwt_secret.encode()).digest()  # 32 bytes
+    return base64.urlsafe_b64encode(raw)
+
+
 # OAuth2 configuration
 # JWT_SECRET will be loaded from shared properties (managed by sysadmin)
 KEYCLOAK_ISSUER_URL = os.getenv("KEYCLOAK_ISSUER_URL")
@@ -162,6 +172,19 @@ class Authentication(ExtensionProtocol):
 
                 return RedirectResponse(url=login_url, status_code=303)
 
+            # Validate redirect_uri: block dangerous schemes before issuing a code.
+            from urllib.parse import urlparse as _urlparse
+            _parsed_redirect = _urlparse(redirect_uri)
+            _allowed_schemes = {"http", "https"}
+            _allowed_schemes_env = os.environ.get("ALLOWED_REDIRECT_SCHEMES", "")
+            if _allowed_schemes_env:
+                _allowed_schemes = {s.strip().lower() for s in _allowed_schemes_env.split(",")}
+            if _parsed_redirect.scheme.lower() not in _allowed_schemes:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"redirect_uri scheme '{_parsed_redirect.scheme}' is not permitted.",
+                )
+
             # Generate authorization code
             code = await self.local_identity_provider.create_authorization_code(
                 user_id=user["id"], redirect_uri=redirect_uri, scope=scope
@@ -246,10 +269,9 @@ class Authentication(ExtensionProtocol):
                 )
 
             except Exception as e:
-                logger.error(f"Registration failed: {e}")
+                logger.error(f"Registration failed: {e}", exc_info=True)
                 from urllib.parse import quote_plus
-                error_msg = quote_plus(str(e))
-                url = f"{request.url.path}?error=Registration+failed:+{error_msg}"
+                url = f"{request.url.path}?error=Registration+failed"
                 if redirect_uri:
                     url += f"&redirect_uri={quote_plus(redirect_uri)}"
                 if state:
@@ -324,8 +346,8 @@ class Authentication(ExtensionProtocol):
                         token
                     )
                     return user_info
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Keycloak userinfo failed: {e}")
 
             raise HTTPException(401, "Invalid access token")
 
@@ -389,7 +411,8 @@ class Authentication(ExtensionProtocol):
                 )
                 return token_response
             except Exception as e:
-                raise HTTPException(401, f"Token refresh failed: {str(e)}")
+                logger.warning(f"Token refresh failed: {e}")
+                raise HTTPException(401, "Token refresh failed")
 
         @self.router.get("/logout")
         async def logout(request: Request, redirect_uri: Optional[str] = None):
@@ -405,23 +428,27 @@ class Authentication(ExtensionProtocol):
             return RedirectResponse(url=redirect_uri)
 
         @self.router.get("/debug")
-        async def debug_auth(request: Request):
-            """Debug endpoint to inspect authentication state."""
+        async def debug_auth(request: Request, authorization: str = Header(None)):
+            """Debug endpoint to inspect authentication state. Requires a valid Bearer token."""
+            if not authorization or not authorization.startswith("Bearer "):
+                raise HTTPException(401, "Missing or invalid Authorization header")
+
+            token = authorization[7:]
+            user_info = None
+            try:
+                user_info = await self.local_identity_provider.get_user_info(token)
+            except Exception:
+                pass
+
+            if not user_info:
+                raise HTTPException(403, "Valid authenticated token required")
+
             return {
                 "identity_providers": {
                     "local": "enabled" if self.local_identity_provider else "disabled",
                     "keycloak": "enabled"
                     if self.keycloak_identity_provider
                     else "disabled",
-                },
-                "session": dict(request.session) if hasattr(request, "session") else {},
-                "headers": {
-                    "authorization": request.headers.get("Authorization", "MISSING")[
-                        :50
-                    ]
-                    + "..."
-                    if request.headers.get("Authorization")
-                    else "MISSING"
                 },
             }
 
@@ -479,14 +506,72 @@ class Authentication(ExtensionProtocol):
         logger.info("✓ LocalDB identity provider initialized")
 
         # --- Auto-provision sysadmin user (on-premise) ---
+        # Password resolution order:
+        #   1. PropertiesProtocol: key=auth_sysadmin_password_enc (Fernet-encrypted,
+        #      key derived from the JWT secret via SHA-256). Update this row to change
+        #      the sysadmin password — it will be applied on next restart.
+        #   2. SYSADMIN_PASSWORD environment variable (plain-text, not persisted).
+        #   3. Generated random (24-char URL-safe), encrypted and stored in properties.
+        # The plaintext password is only used transiently to derive the argon2 hash
+        # stored in users.users; it is never written to disk or logs.
         try:
+            from cryptography.fernet import Fernet as _Fernet
+            from argon2 import PasswordHasher as _PasswordHasher
+            from argon2.exceptions import VerifyMismatchError as _VerifyMismatchError
+
             _sa_user = "sysadmin"
+            _sa_password: Optional[str] = None
+            _password_from_props = False
+
+            # 1. Try PropertiesProtocol (encrypted)
+            _props = get_protocol(PropertiesProtocol)
+            if _props:
+                try:
+                    _enc_val = await _props.get_property(_SYSADMIN_PROP_KEY)
+                    if _enc_val:
+                        _fk = _Fernet(_derive_fernet_key(jwt_secret))
+                        _sa_password = _fk.decrypt(_enc_val.encode()).decode()
+                        _password_from_props = True
+                        logger.info("✓ Loaded sysadmin password from properties (encrypted)")
+                except Exception as _pe:
+                    logger.warning(f"Could not decrypt sysadmin password from properties: {_pe}")
+
+            # 2. Env var fallback
+            if not _sa_password:
+                _sa_password = os.environ.get("SYSADMIN_PASSWORD")
+                if _sa_password:
+                    logger.info("✓ Loaded sysadmin password from SYSADMIN_PASSWORD env var")
+
+            # 3. Generate random, encrypt and store
+            if not _sa_password:
+                _sa_password = secrets.token_urlsafe(24)
+                logger.warning(
+                    "SYSADMIN_PASSWORD not set and no stored password found. "
+                    "Generated a random sysadmin password — stored encrypted in "
+                    f"properties table under key '{_SYSADMIN_PROP_KEY}'. "
+                    "Set SYSADMIN_PASSWORD or update that property to change it."
+                )
+
+            # Persist encrypted password to properties if not already there
+            if _props and not _password_from_props:
+                try:
+                    _fk = _Fernet(_derive_fernet_key(jwt_secret))
+                    _enc_password = _fk.encrypt(_sa_password.encode()).decode()
+                    await _props.set_property(
+                        _SYSADMIN_PROP_KEY, _enc_password, owner_code="system"
+                    )
+                    logger.info("✓ Persisted encrypted sysadmin password to properties table")
+                except Exception as _se:
+                    logger.warning(f"Could not persist encrypted sysadmin password: {_se}")
+
             existing = await self.local_identity_provider.storage.get_local_user_by_username(
                 _sa_user, schema="users"
             )
+
             if not existing:
+                # Create the identity — argon2 hashing is done inside create_user
                 _sa_id = await self.local_identity_provider.create_user(
-                    username=_sa_user, password=_sa_user, email=f"{_sa_user}@localhost"
+                    username=_sa_user, password=_sa_password, email=f"{_sa_user}@localhost"
                 )
                 logger.info(f"✓ Provisioned sysadmin user (id={_sa_id}) in users.users (argon2)")
                 try:
@@ -508,7 +593,23 @@ class Authentication(ExtensionProtocol):
                 except Exception as _le:
                     logger.warning(f"Could not link sysadmin principal (may exist): {_le}")
             else:
-                logger.info(f"✓ sysadmin already exists (id={existing.get('id')})")
+                # User exists: apply password change if the properties table was updated.
+                # Verify current hash; only re-hash and update if it no longer matches.
+                _sa_id = existing.get("id")
+                logger.info(f"✓ sysadmin already exists (id={_sa_id})")
+                if _password_from_props:
+                    try:
+                        _ph = _PasswordHasher()
+                        _ph.verify(existing.get("password_hash", ""), _sa_password)
+                        logger.debug("sysadmin password unchanged — no update needed")
+                    except _VerifyMismatchError:
+                        _new_hash = _PasswordHasher().hash(_sa_password)
+                        await storage.update_local_user(
+                            _sa_id, password_hash=_new_hash, schema="users"
+                        )
+                        logger.info("✓ sysadmin password updated from properties table (argon2)")
+                    except Exception as _ve:
+                        logger.warning(f"Could not verify/update sysadmin password: {_ve}")
         except Exception as _e:
             logger.error(f"Failed to provision sysadmin: {_e}", exc_info=True)
 

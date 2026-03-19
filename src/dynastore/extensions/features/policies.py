@@ -39,7 +39,7 @@ def register_features_policies():
     features_policy = Policy(
         id="features_public_access",
         description="Allows anonymous access to OGC API Features endpoints.",
-        actions=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        actions=["GET", "OPTIONS"],
         resources=[
             "/features.*",
             "/features/.*",

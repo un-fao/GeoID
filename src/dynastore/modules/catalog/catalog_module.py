@@ -677,7 +677,7 @@ class CatalogModule(ModuleProtocol):
             if phys_schema:
                 # If we found schema, assets table exists, so we can try to purge assets first?
                 # Actually dropping schema cascades to assets table.
-                await DDLQuery(f"DROP SCHEMA IF EXISTS {phys_schema} CASCADE;").execute(
+                await DDLQuery(f'DROP SCHEMA IF EXISTS "{phys_schema}" CASCADE;').execute(
                     conn
                 )
 

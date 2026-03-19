@@ -1288,7 +1288,7 @@ class GeometriesSidecar(SidecarProtocol):
                     except Exception as e:
                         logger.warning(f"Failed to parse geometry string: {e}")
             elif isinstance(geom_data, (bytes, bytearray)):
-                # WKB bytes (from legacy _get_features_builder)
+                # WKB bytes (geom_format="WKB" via raw_params)
                 try:
                     import shapely.wkb
                     from shapely.geometry import mapping
