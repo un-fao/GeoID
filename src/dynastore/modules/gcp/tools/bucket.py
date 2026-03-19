@@ -16,6 +16,8 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
+from __future__ import annotations
+
 from enum import Enum, StrEnum
 import os
 import logging

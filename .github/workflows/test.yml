@@ -70,7 +70,12 @@ jobs:
 
       - name: Run integration tests
         id: integration
-        if: ${{ inputs.run_integration != false }}
+        # inputs.run_integration is only set for workflow_dispatch / workflow_call.
+        # For push/pull_request it is undefined (''), which GitHub Actions coerces
+        # to false in a boolean comparison — so `!= false` would evaluate to false
+        # and the step would be silently skipped.  Use a string comparison instead:
+        # 'false' only when the caller explicitly passes run_integration=false.
+        if: ${{ inputs.run_integration != 'false' }}
         run: |
           docker compose -f docker/docker-compose.test.yml run --rm test-runner \
             /opt/venv/bin/pytest tests/ \
@@ -84,14 +89,17 @@ jobs:
 
       - name: Report integration tests
         uses: dorny/test-reporter@v1
-        if: always()
+        # Only report when the integration step actually ran (produced an XML).
+        # When the step is skipped the file does not exist and dorny would fail.
+        if: always() && steps.integration.outcome != 'skipped'
         with:
           name: Integration Tests
           path: './test-results.xml'
           reporter: java-junit
+          fail-on-error: 'false'
 
       - name: Generate integration badge
-        if: always()
+        if: always() && steps.integration.outcome != 'skipped'
         uses: ./.github/actions/test-badge
         with:
           junit-xml-path: './test-results.xml'
