@@ -691,32 +691,41 @@ class ItemService(ItemsProtocol):
                 db_resource=conn,
             )
 
-            # ID Resolution Logic
-            target_geoid = item_id
+            # ID Resolution Logic: delete ALL active rows for this external_id
+            rows = 0
             if col_config and col_config.sidecars:
                 from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+                from sqlalchemy import text as sa_text
 
                 for sc in col_config.sidecars:
                     if sc.feature_id_field_name:
                         sidecar = SidecarRegistry.get_sidecar(sc)
-                        ctx = {sc.feature_id_field_name: item_id}
-                        existing = await sidecar.resolve_existing_item(
-                            conn, phys_schema, phys_table, ctx
+                        sc_table = f"{phys_table}_{sidecar.sidecar_id}"
+                        # Delete ALL hub rows linked to this external_id via the sidecar
+                        delete_sql = sa_text(
+                            f'UPDATE "{phys_schema}"."{phys_table}" h '
+                            f'SET deleted_at = NOW() '
+                            f'FROM "{phys_schema}"."{sc_table}" s '
+                            f'WHERE s.{sc.feature_id_field_name} = :ext_id '
+                            f'AND h.deleted_at IS NULL '
+                            f'AND h.geoid = s.geoid'
                         )
-                        if existing:
-                            target_geoid = str(existing["geoid"])
-                            break
+                        result = await conn.execute(delete_sql, {"ext_id": str(item_id)})
+                        rows = result.rowcount
+                        break
 
-            rows = await soft_delete_item_query.execute(
-                conn,
-                catalog_id=phys_schema,
-                collection_id=phys_table,
-                geoid=target_geoid,
-            )
+            if not rows:
+                # Fallback: try direct geoid match (item_id may already be the geoid)
+                rows = await soft_delete_item_query.execute(
+                    conn,
+                    catalog_id=phys_schema,
+                    collection_id=phys_table,
+                    geoid=item_id,
+                )
 
             if rows > 0:
                 await recalculate_and_update_extents(conn, catalog_id, collection_id)
-                
+
                 try:
                     from dynastore.models.protocols.events import EventsProtocol
                     from dynastore.modules.catalog.event_service import CatalogEventType
@@ -726,8 +735,8 @@ class ItemService(ItemsProtocol):
                             event_type=CatalogEventType.ITEM_DELETION,
                             catalog_id=catalog_id,
                             collection_id=collection_id,
-                            item_id=target_geoid,
-                            payload={"geoid": target_geoid, "original_id": item_id}
+                            item_id=item_id,
+                            payload={"original_id": item_id}
                         )
                 except Exception as e:
                     logger.warning(f"Failed to emit item deletion event: {e}")

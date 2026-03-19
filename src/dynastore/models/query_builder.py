@@ -24,7 +24,7 @@ ALLOWED_TRANSFORMATIONS: Set[str] = {
     "ST_Transform", "ST_AsGeoJSON", "ST_AsText", "ST_AsWKB", "ST_AsEWKT",
     "ST_AsEWKB", "ST_AsGML", "ST_AsMVTGeom", "ST_Simplify", "ST_Buffer",
     "ST_Centroid", "ST_Envelope", "ST_Area", "ST_Length", "ST_Perimeter",
-    "ST_SetSRID", "ST_GeomFromWKB", "ST_GeomFromText", "ST_MakeValid",
+    "ST_SetSRID", "ST_SRID", "ST_GeomFromWKB", "ST_GeomFromText", "ST_MakeValid",
     "upper", "lower", "trim", "to_char", "to_date", "to_timestamp",
     "date_trunc", "extract", "coalesce", "nullif", "greatest", "least",
 }

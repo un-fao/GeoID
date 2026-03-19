@@ -579,12 +579,14 @@ class QueryOptimizer:
         # Default is h.geoid; a configured sidecar (e.g. attributes with external_id)
         # can override this for all optimizer-generated queries.
         # Resolve the feature-ID expression once — used for both SELECT alias and item_ids filter.
+        # Use COALESCE(sidecar_field, h.geoid) so that items without an external_id still
+        # expose their geoid as the public 'id', keeping GET-by-id consistent.
         feature_id_expr: str = "h.geoid"
         for sc_config in required_sidecars:
             sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
             if sidecar and sidecar.provides_feature_id and sidecar.feature_id_field_name:
                 sc_alias = f"sc_{sidecar.sidecar_id}"
-                feature_id_expr = f"{sc_alias}.{sidecar.feature_id_field_name}"
+                feature_id_expr = f"COALESCE({sc_alias}.{sidecar.feature_id_field_name}, h.geoid::text)"
                 break
 
         if not any("AS id" in f or f.rstrip().endswith(" id") for f in select_fields):
@@ -593,7 +595,7 @@ class QueryOptimizer:
         # Filter by item_ids using the resolved feature-ID expression.
         if query.item_ids:
             params["_item_ids"] = query.item_ids
-            where_conditions.append(f"{feature_id_expr} = ANY(:_item_ids)")
+            where_conditions.append(f"({feature_id_expr}) = ANY(:_item_ids)")
 
         # Build GROUP BY
         group_by_clause = ""
