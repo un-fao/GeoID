@@ -127,7 +127,7 @@ CREATE_USAGE_COUNTERS_TABLE = DDLQuery("""
         count BIGINT DEFAULT 0,
         last_accessed_at TIMESTAMPTZ DEFAULT NOW(),
         PRIMARY KEY (period_start, key_hash, shard_id)
-    );
+    ) PARTITION BY RANGE (period_start);
 """)
 
 CREATE_QUOTA_COUNTERS_TABLE = DDLQuery("""
@@ -1119,7 +1119,17 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
                 periods_ahead=2,
             )
 
-            # 4. Register Retention Policy
+            # 4. Register Partition Creation Policy (ongoing, via pg_cron)
+            await maintenance_tools.register_partition_creation_policy(
+                conn,
+                schema=schema,
+                table="usage_counters",
+                interval="monthly",
+                periods_ahead=2,
+                schedule_cron="0 2 1 * *",
+            )
+
+            # 5. Register Retention Policy (prune old partitions)
             await maintenance_tools.register_retention_policy(
                 conn,
                 schema=schema,
