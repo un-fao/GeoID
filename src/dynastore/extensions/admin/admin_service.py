@@ -492,6 +492,18 @@ class AdminService(ExtensionProtocol):
         await pm.provision_default_policies(catalog_id=catalog_id, force=True)
         return {"message": "Default policies and roles have been reset.", "catalog_id": catalog_id or "global"}
 
+    @router.post("/rotate-jwt-secret", summary="Rotate JWT signing secret")
+    async def rotate_jwt_secret(
+        principal: Principal = Depends(_require_admin),
+        mgr=Depends(_get_apikey_manager),
+    ):
+        if "sysadmin" not in (principal.roles or []):
+            raise HTTPException(status_code=403, detail="Only sysadmin can rotate JWT secrets.")
+        if not hasattr(mgr, "rotate_jwt_secret"):
+            raise HTTPException(status_code=503, detail="JWT rotation not supported.")
+        await mgr.rotate_jwt_secret()
+        return {"message": "JWT secret rotated. Previous secret remains valid for existing tokens."}
+
     # -------------------------------------------------------------------------
     # API Key Management (/admin/apikeys)
     # -------------------------------------------------------------------------

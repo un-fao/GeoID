@@ -25,6 +25,50 @@ logger = logging.getLogger(__name__)
 _SYSADMIN_PROP_KEY = "auth_sysadmin_password_enc"
 
 
+class _LoginRateLimiter:
+    """In-memory per-IP/username failed login tracker with lockout."""
+
+    def __init__(self, max_attempts: int = 5, lockout_seconds: int = 300):
+        self.max_attempts = max_attempts
+        self.lockout_seconds = lockout_seconds
+        self._attempts: dict = {}  # key -> (count, first_attempt_time)
+
+    def _key(self, ip: str, username: str) -> str:
+        return f"{ip}:{username}"
+
+    def is_locked(self, ip: str, username: str) -> bool:
+        import time as _time
+        key = self._key(ip, username)
+        entry = self._attempts.get(key)
+        if not entry:
+            return False
+        count, first_ts = entry
+        if _time.monotonic() - first_ts > self.lockout_seconds:
+            del self._attempts[key]
+            return False
+        return count >= self.max_attempts
+
+    def record_failure(self, ip: str, username: str) -> None:
+        import time as _time
+        key = self._key(ip, username)
+        entry = self._attempts.get(key)
+        now = _time.monotonic()
+        if entry:
+            count, first_ts = entry
+            if now - first_ts > self.lockout_seconds:
+                self._attempts[key] = (1, now)
+            else:
+                self._attempts[key] = (count + 1, first_ts)
+        else:
+            self._attempts[key] = (1, now)
+
+    def record_success(self, ip: str, username: str) -> None:
+        self._attempts.pop(self._key(ip, username), None)
+
+
+_login_limiter = _LoginRateLimiter()
+
+
 def _derive_fernet_key(jwt_secret: str) -> bytes:
     """Derive a 256-bit Fernet-compatible key from the JWT secret via SHA-256."""
     import base64
@@ -151,12 +195,23 @@ class Authentication(ExtensionProtocol):
             root_path = request.scope.get("root_path", "").rstrip("/")
             if not redirect_uri:
                 redirect_uri = f"{root_path}/auth/debug"
+
+            client_ip = request.client.host if request.client else "unknown"
+
+            # Rate limit check
+            if _login_limiter.is_locked(client_ip, username):
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many failed login attempts. Please try again later.",
+                )
+
             # Authenticate user
             user = await self.local_identity_provider.authenticate_user(
                 username, password
             )
 
             if not user:
+                _login_limiter.record_failure(client_ip, username)
                 # Redirect back to login with error parameter
                 if "?" in request.url.path: # Should not happen, path has no query
                     login_url = f"{request.url.path}&error=Invalid+credentials"
@@ -171,6 +226,8 @@ class Authentication(ExtensionProtocol):
                     login_url += f"&state={state}"
 
                 return RedirectResponse(url=login_url, status_code=303)
+
+            _login_limiter.record_success(client_ip, username)
 
             # Validate redirect_uri: block dangerous schemes before issuing a code.
             from urllib.parse import urlparse as _urlparse

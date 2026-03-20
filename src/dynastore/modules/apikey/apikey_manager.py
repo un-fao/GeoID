@@ -800,18 +800,17 @@ class ApiKeyManager(ApiKeyProtocol):
             payload["dpol"] = scoped_policy.model_dump()
 
         secret = await self.get_jwt_secret()
-        logger.warning(
-            f"DEBUG: ApiKeyManager.exchange_token [Manager {id(self)}]: Encoding with secret prefix: {secret[:8]}"
-        )
         token = jwt.encode(payload, secret, algorithm="HS256")
 
-        # 4. Generate Refresh Token
+        # 4. Generate Refresh Token (with family_id for rotation tracking)
         refresh_token_val = secrets.token_urlsafe(64)
+        family_id = secrets.token_urlsafe(32)
         rt_model = RefreshToken(
             id=refresh_token_val,
             key_hash=api_key_hash,
             principal_id=key_metadata.principal_id,
             api_key_hash=api_key_hash,
+            family_id=family_id,
             expires_at=now + timedelta(days=7),
         )
         await self.storage.create_refresh_token(rt_model, schema=schema)
@@ -831,26 +830,69 @@ class ApiKeyManager(ApiKeyProtocol):
         ttl_seconds: int = 3600,
         catalog_id: Optional[str] = None,
     ) -> TokenResponse:
-        """Refreshes an access token using a refresh token."""
+        """Refreshes an access token using a refresh token with rotation."""
         schema = await self._resolve_schema(catalog_id)
 
         rt = await self.storage.get_refresh_token(refresh_token, schema=schema)
-        if not rt or not rt.is_active:
-            raise ApiKeyInvalidError("Invalid or revoked refresh token.")
+        if not rt:
+            raise ApiKeyInvalidError("Invalid refresh token.")
+
+        if not rt.is_active:
+            # Reuse detected — invalidate the entire token family
+            if rt.family_id:
+                revoked = await self.storage.invalidate_token_family(
+                    rt.family_id, schema=schema
+                )
+                logger.warning(
+                    "Refresh token reuse detected (family %s), revoked %d tokens",
+                    rt.family_id, revoked,
+                )
+            raise ApiKeyInvalidError(
+                "Refresh token has been revoked (possible token reuse)."
+            )
 
         if rt.expires_at < datetime.now(timezone.utc):
             raise ApiKeyExpiredError("Refresh token has expired.")
 
-        # Generate new Access Token
-        token = secrets.token_urlsafe(32)
+        # Invalidate current refresh token
+        await self.storage.invalidate_refresh_token(refresh_token, schema=schema)
+
+        # Issue new access token (JWT)
+        now = datetime.now(timezone.utc)
+        principal = await self.get_principal(rt.principal_id, catalog_id=catalog_id)
+        secret = await self.get_jwt_secret()
+        access_token = jwt.encode(
+            {
+                "sub": f"{principal.provider}:{principal.subject_id}" if principal else str(rt.principal_id),
+                "pid": str(rt.principal_id),
+                "kid": rt.key_hash,
+                "iat": int(now.timestamp()),
+                "exp": int((now + timedelta(seconds=ttl_seconds)).timestamp()),
+                "token_type": "access",
+            },
+            secret,
+            algorithm="HS256",
+        )
+
+        # Issue rotated refresh token in the same family
+        new_refresh_val = secrets.token_urlsafe(64)
+        new_rt = RefreshToken(
+            id=new_refresh_val,
+            key_hash=rt.key_hash,
+            principal_id=rt.principal_id,
+            api_key_hash=rt.api_key_hash,
+            family_id=rt.family_id or secrets.token_urlsafe(32),
+            expires_at=rt.expires_at,  # keep original family expiry
+        )
+        await self.storage.create_refresh_token(new_rt, schema=schema)
 
         return TokenResponse(
-            access_token=token,
+            access_token=access_token,
             token_type="Bearer",
             expires_in=ttl_seconds,
-            expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
+            expires_at=now + timedelta(seconds=ttl_seconds),
             principal_id=rt.principal_id,
-            refresh_token=refresh_token,
+            refresh_token=new_refresh_val,
         )
 
     async def increment_key_usage(
@@ -1071,10 +1113,8 @@ class ApiKeyManager(ApiKeyProtocol):
         Extracts Bearer Token from request headers (OAuth2 compliant).
         """
         auth_header = getattr(request, "headers", {}).get("Authorization")
-        logger.warning(f"DEBUG: auth_header: {auth_header}")
         if auth_header and auth_header.lower().startswith("bearer "):
             token = auth_header[7:].strip()
-            logger.warning(f"DEBUG: extracted token: {token[:10]}...")
             return token
 
         return None
@@ -1082,7 +1122,6 @@ class ApiKeyManager(ApiKeyProtocol):
     async def authenticate_and_get_role(
         self, request: Any
     ) -> Tuple[List[str], Optional[Principal]]:
-        logger.warning("DEBUG: authenticate_and_get_role started")
         """
         Centrally authenticates a request and resolves the effective roles.
         Adapts between Legacy API Keys and V2 Identity Links.
@@ -1108,16 +1147,14 @@ class ApiKeyManager(ApiKeyProtocol):
 
         # 2. Try V2 Identity Resolution (OAuth2 / OIDC)
         identity_providers = self.get_identity_providers()
-        logger.warning(
-            f"DEBUG: [Manager {id(self)}] Checking {len(identity_providers)} identity providers"
-        )
+        logger.debug("Checking %d identity providers", len(identity_providers))
         for provider in identity_providers:
             provider_id = provider.get_provider_id()
             try:
-                logger.warning(f"DEBUG: Trying provider {provider_id}")
+                logger.debug("Trying provider %s", provider_id)
                 identity = await provider.validate_token(token)
                 if identity:
-                    logger.warning(f"DEBUG: Identity found: {identity.get('sub')}")
+                    logger.debug("Identity found via provider %s", provider_id)
                     # Resolve identity to Principal with contextual roles
                     principal = await self.authenticate_and_get_principal(
                         identity=identity, target_schema=catalog_id or "_system_"
@@ -1131,13 +1168,10 @@ class ApiKeyManager(ApiKeyProtocol):
                         effective_roles = await self.storage.get_role_hierarchy(
                             roles, schema=schema
                         )
-                        logger.warning(
-                            f"DEBUG: Success! Principal {principal.id} with roles {effective_roles}"
-                        )
                         return list(set(effective_roles)), principal
                     else:
-                        logger.warning(
-                            f"DEBUG: Principal not found for identity {identity.get('sub')}"
+                        logger.debug(
+                            "Principal not found for identity via provider %s", provider_id
                         )
             except Exception as e:
                 logger.error(
@@ -1146,13 +1180,13 @@ class ApiKeyManager(ApiKeyProtocol):
                 )
 
         # 3. Authenticate as regular Principal (API Key)
-        logger.warning(f"DEBUG: trying authenticate_apikey with token: {token[:10]}...")
-        principal, _, reason = await self.authenticate_apikey(
+        principal, api_key_meta, reason = await self.authenticate_apikey(
             token, catalog_id=catalog_id
         )
-        logger.warning(
-            f"DEBUG: authenticate_apikey result: principal={principal.id if principal else None}, reason={reason}"
-        )
+
+        # Cache metadata on request.state so middleware doesn't re-authenticate
+        if hasattr(request, "state"):
+            request.state._auth_api_key_metadata = api_key_meta
 
         if principal:
             # 3. Resolve Effective Roles (Hierarchy)

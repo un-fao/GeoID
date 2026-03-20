@@ -31,7 +31,7 @@ from typing import List, Any, Dict, Optional, Callable
 from fastapi import APIRouter, FastAPI, Response, HTTPException, Request, Query, Header
 
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.middleware.cors import CORSMiddleware
+from dynastore.extensions.web.cors_middleware import DynamicCORSMiddleware
 from fastapi.routing import APIRoute
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
@@ -240,13 +240,7 @@ class Web(ExtensionProtocol):
         """Configures global settings like middleware and CORS."""
         app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
         app.add_middleware(GZipMiddleware, minimum_size=1000)
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
+        app.add_middleware(DynamicCORSMiddleware)
 
         # Discover and register static / page providers from other extensions.
         # Skip self — Web.__init__() already called scan_and_register_providers(self).

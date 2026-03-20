@@ -73,17 +73,29 @@ class LocalDBIdentityProvider(IdentityProviderProtocol):
             return None
         
         try:
-            # Decode and validate JWT
-            logger.debug(f"LocalDBIdentityProvider.validate_token: decoding with algorithm {self.jwt_algorithm}, secret prefix: {self.jwt_secret[:8]}")
-            claims = jwt.decode(
-                token,
-                self.jwt_secret,
-                algorithms=[self.jwt_algorithm],
-                options={
-                    "verify_signature": True,
-                    "verify_exp": True,
-                }
-            )
+            # Decode and validate JWT — try current and previous secrets (rotation support)
+            jwt_secrets = [self.jwt_secret]
+            if hasattr(self, "_apikey_service") and self._apikey_service:
+                try:
+                    jwt_secrets = await self._apikey_service.get_jwt_secrets_for_verification()
+                except Exception:
+                    pass
+
+            claims = None
+            for secret in jwt_secrets:
+                try:
+                    claims = jwt.decode(
+                        token, secret, algorithms=[self.jwt_algorithm],
+                        options={"verify_signature": True, "verify_exp": True},
+                    )
+                    break
+                except jwt.InvalidSignatureError:
+                    continue
+            if claims is None:
+                claims = jwt.decode(
+                    token, self.jwt_secret, algorithms=[self.jwt_algorithm],
+                    options={"verify_signature": True, "verify_exp": True},
+                )
             
             logger.debug(f"claims: {claims}")
             
@@ -183,17 +195,18 @@ class LocalDBIdentityProvider(IdentityProviderProtocol):
             Authorization code
         """
         code = secrets.token_urlsafe(32)
+        code_hash = hashlib.sha256(code.encode()).hexdigest()
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=self.auth_code_ttl)
-        
+
         await self.storage.create_oauth_code(
-            code=code,
+            code=code_hash,
             user_id=user_id,
             redirect_uri=redirect_uri,
             scope=scope,
             expires_at=expires_at,
             schema="users"
         )
-        
+
         return code
     
     async def get_authorization_url(self, redirect_uri: str, state: str, scope: str = "openid email profile") -> str:
@@ -231,8 +244,9 @@ class LocalDBIdentityProvider(IdentityProviderProtocol):
             Token response with access_token, refresh_token, expires_in
         """
         try:
-            # Fetch and validate authorization code
-            auth_code = await self.storage.get_oauth_code(code, schema="users")
+            # Fetch and validate authorization code (hash before lookup)
+            code_hash = hashlib.sha256(code.encode()).hexdigest()
+            auth_code = await self.storage.get_oauth_code(code_hash, schema="users")
             
             if not auth_code:
                 raise ValueError("Invalid authorization code")
@@ -244,7 +258,7 @@ class LocalDBIdentityProvider(IdentityProviderProtocol):
                 raise ValueError("Authorization code expired")
             
             # Delete code (one-time use)
-            await self.storage.delete_oauth_code(code, schema="users")
+            await self.storage.delete_oauth_code(code_hash, schema="users")
             
             # Fetch user
             user_id = auth_code.get("user_id")

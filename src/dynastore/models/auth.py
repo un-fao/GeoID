@@ -21,7 +21,7 @@ from enum import Enum
 import re
 from uuid import UUID, uuid4
 from datetime import datetime, timezone
-from pydantic import BaseModel, Field, model_validator, field_validator
+from pydantic import BaseModel, Field, model_validator, field_validator, PrivateAttr
 
 # --- 1. Action Definitions ---
 
@@ -64,8 +64,24 @@ class Policy(BaseModel):
     conditions: List[Condition] = Field(default_factory=list)
     
     partition_key: Optional[str] = Field("global", description="Partitioning key for multi-tenant storage.")
-    
+
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    # Pre-compiled regex caches (not serialized)
+    _compiled_actions: List[re.Pattern] = PrivateAttr(default_factory=list)
+    _compiled_resources: List[re.Pattern] = PrivateAttr(default_factory=list)
+
+    def model_post_init(self, __context: Any) -> None:
+        self._compiled_actions = [re.compile(p) for p in self.actions]
+        self._compiled_resources = [re.compile(p) for p in self.resources]
+
+    def matches_action(self, action: str) -> bool:
+        """Test if an action string matches any of this policy's action patterns."""
+        return any(p.match(action) for p in self._compiled_actions)
+
+    def matches_resource(self, resource: str) -> bool:
+        """Test if a resource path matches any of this policy's resource patterns."""
+        return any(p.match(resource) for p in self._compiled_resources)
 
     @field_validator("effect", mode="before")
     @classmethod

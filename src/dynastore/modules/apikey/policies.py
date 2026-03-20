@@ -365,8 +365,8 @@ class PolicyService:
         has_allow_match = False
         for s in policy.statements:
             # Check method and path
-            method_match = not s.actions or "*" in s.actions or method in s.actions
-            path_match = any(re.match(pattern, path) for pattern in s.resources)
+            method_match = not s.actions or ".*" in s.actions or method in s.actions or s.matches_action(method)
+            path_match = s.matches_resource(path)
 
             if method_match and path_match:
                 # Check conditions
@@ -457,10 +457,11 @@ class PolicyService:
             # Actions are also regex patterns after transformation
             method_match = (
                 not p.actions
-                or "*" in p.actions
-                or any(re.match(pattern, method) for pattern in p.actions)
+                or ".*" in p.actions
+                or method in p.actions
+                or p.matches_action(method)
             )
-            path_match = any(re.match(pattern, path) for pattern in p.resources)
+            path_match = p.matches_resource(path)
 
             logger.debug(
                 f"EVAL: Checking policy '{p.id}': method_match={method_match}, path_match={path_match}"

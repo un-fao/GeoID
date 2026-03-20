@@ -45,6 +45,27 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         self._apikey_manager: Optional[ApiKeyProtocol] = None
         self._policy_service: Optional[PermissionProtocol] = None
 
+    def _emit_audit(
+        self, event_type: str, principal_id: str, ip: str, schema: str,
+        detail: Optional[dict] = None,
+    ) -> None:
+        """Fire-and-forget audit event (non-blocking)."""
+        import asyncio
+        storage = getattr(self._apikey_manager, "storage", None)
+        if storage and hasattr(storage, "log_audit_event"):
+            try:
+                asyncio.get_running_loop().create_task(
+                    storage.log_audit_event(
+                        event_type=event_type,
+                        principal_id=principal_id,
+                        ip_address=ip,
+                        detail=detail,
+                        schema=schema,
+                    )
+                )
+            except RuntimeError:
+                pass
+
     def lazy_init_manager(self):
         if self._apikey_manager is None:
             apikey_protocol = get_protocol(ApiKeyProtocol)
@@ -117,19 +138,9 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         request.state.principal = principal_obj
 
         # 2. Extract Identity Metadata (Hierarchy: Token -> API Key -> Principal)
-        # Avoid double consumption of request body by skipping body extraction if possible
-        # extract_token_from_request is safe as it only checks headers
+        # Reuse metadata cached by authenticate_and_get_role to avoid a duplicate DB call
         token_str = self._apikey_manager.extract_token_from_request(request)
-        origin = request.headers.get("Origin") or request.headers.get("Referer")
-
-        _, api_key_metadata, _ = (
-            await self._apikey_manager.authenticate_apikey(
-                token_str, catalog_id=catalog_id, origin=origin
-            )
-            if token_str
-            else (None, None, None)
-        )
-
+        api_key_metadata = getattr(request.state, "_auth_api_key_metadata", None)
         api_key_hash = api_key_metadata.key_hash if api_key_metadata else None
 
         # STORE HASH IN STATE FOR SERVICE LAYER USAGE (e.g. Token Exchange)
@@ -233,9 +244,11 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
             catalog_id=catalog_id,
         )
         if not allowed_by_global:
-            # If it's a documentation path, we might want to allow it even if no policy matched
-            # but we already bypassed it at the beginning.
             logger.debug(f"Access denied by Global Security policy: {reason}")
+            self._emit_audit(
+                "authz_denied", effective_principal_id, client_ip, schema,
+                {"path": path, "method": method, "reason": reason},
+            )
             return JSONResponse(
                 {"detail": f"Access denied by Global Security policy: {reason}"},
                 status_code=403,

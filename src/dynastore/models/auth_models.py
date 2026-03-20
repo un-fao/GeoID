@@ -238,6 +238,9 @@ class RefreshToken(BaseModel):
     key_hash: str
     principal_id: UUID
     api_key_hash: Optional[str] = None
+    family_id: Optional[str] = Field(
+        None, description="Token family for rotation tracking. All tokens in a chain share the same family_id."
+    )
     is_active: bool = True
     expires_at: datetime
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

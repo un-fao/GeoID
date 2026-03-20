@@ -26,6 +26,7 @@ import secrets
 import hashlib
 import random
 import logging
+import time
 
 from dynastore.modules.db_config.exceptions import ForeignKeyViolationError, TableNotFoundError
 from dynastore.modules.db_config.query_executor import (
@@ -187,11 +188,39 @@ CREATE_REFRESH_TOKENS_TABLE = DDLQuery("""
         key_hash VARCHAR(64) NOT NULL,
         principal_id UUID NOT NULL REFERENCES {schema}.principals(id) ON DELETE CASCADE,
         api_key_hash VARCHAR(64),
+        family_id VARCHAR(128),
         is_active BOOLEAN DEFAULT TRUE,
         expires_at TIMESTAMPTZ NOT NULL,
         created_at TIMESTAMPTZ DEFAULT NOW()
     );
+    CREATE INDEX IF NOT EXISTS idx_refresh_tokens_family
+        ON {schema}.refresh_tokens (family_id) WHERE family_id IS NOT NULL;
 """)
+
+# --- Audit Log Table ---
+
+CREATE_AUDIT_LOG_TABLE = DDLQuery("""
+    CREATE TABLE IF NOT EXISTS {schema}.audit_log (
+        id BIGSERIAL PRIMARY KEY,
+        event_type VARCHAR(64) NOT NULL,
+        principal_id VARCHAR(255),
+        ip_address VARCHAR(45),
+        detail JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_log_event_type
+        ON {schema}.audit_log (event_type, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_audit_log_principal
+        ON {schema}.audit_log (principal_id, created_at DESC)
+        WHERE principal_id IS NOT NULL;
+""")
+
+INSERT_AUDIT_EVENT = DQLQuery(
+    """INSERT INTO {schema}.audit_log (event_type, principal_id, ip_address, detail)
+       VALUES (:event_type, :principal_id, :ip_address, :detail::jsonb)
+       RETURNING id;""",
+    result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
+)
 
 # --- Local Authentication Tables (System Schema) ---
 
@@ -721,7 +750,7 @@ GET_EFFECTIVE_ROLES = DQLQuery(
 )
 
 INSERT_REFRESH_TOKEN = DQLQuery(
-    "INSERT INTO {schema}.refresh_tokens (id, key_hash, principal_id, api_key_hash, expires_at) VALUES (:id, :key_hash, :principal_id, :api_key_hash, :expires_at) RETURNING *;",
+    "INSERT INTO {schema}.refresh_tokens (id, key_hash, principal_id, api_key_hash, family_id, expires_at) VALUES (:id, :key_hash, :principal_id, :api_key_hash, :family_id, :expires_at) RETURNING *;",
     result_handler=ResultHandler.ONE_DICT,
     post_processor=lambda row: RefreshToken(**row) if row else None,
 )
@@ -735,6 +764,11 @@ GET_REFRESH_TOKEN = DQLQuery(
 INVALIDATE_REFRESH_TOKEN = DQLQuery(
     "UPDATE {schema}.refresh_tokens SET is_active = FALSE WHERE id = :id RETURNING is_active;",
     result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
+)
+
+INVALIDATE_REFRESH_TOKEN_FAMILY = DQLQuery(
+    "UPDATE {schema}.refresh_tokens SET is_active = FALSE WHERE family_id = :family_id AND is_active = TRUE RETURNING id;",
+    result_handler=ResultHandler.ALL,
 )
 
 PRUNE_EXPIRED_REFRESH_TOKENS = DQLQuery(
@@ -966,10 +1000,13 @@ def build_search_principals_query(
 class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol):
     engine: Optional[DbResource] = None
 
+    _ROLE_HIERARCHY_TTL = 60  # seconds
+
     def __init__(self, app_state: Optional[object] = None) -> None:
         super().__init__()
         self.engine = get_engine()
         self._known_partitions = set()
+        self._role_hierarchy_cache: Dict[tuple, tuple] = {}  # (roles_key, schema) -> (result, timestamp)
 
     async def initialize(self, conn: DbResource, schema: str = "apikey"):
         """Compatibility alias for _initialize_schema."""
@@ -1076,6 +1113,13 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             CREATE_POLICIES_TABLE.template,
             lock_key=f"{schema}_policies_table",
             check_query=lambda: check_table_exists(conn, "policies", schema=schema),
+        ).execute(conn, schema=schema)
+
+        # Audit Log
+        await DDLQuery(
+            CREATE_AUDIT_LOG_TABLE.template,
+            lock_key=f"{schema}_audit_log_table",
+            check_query=lambda: check_table_exists(conn, "audit_log", schema=schema),
         ).execute(conn, schema=schema)
 
         # Local Authentication Tables (users schema)
@@ -1591,7 +1635,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         self, role: Role, conn: Optional[DbResource] = None, schema: str = "apikey"
     ) -> Role:
         async with managed_transaction(conn or self.engine) as db:
-            return await INSERT_ROLE.execute(
+            result = await INSERT_ROLE.execute(
                 db,
                 schema=schema,
                 id=role.id,
@@ -1604,6 +1648,8 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
                 parent_roles=json.dumps(role.parent_roles),
                 policies=json.dumps(role.policies),
             )
+            self.invalidate_role_hierarchy_cache(schema)
+            return result
 
     async def get_role(
         self, name: str, conn: Optional[DbResource] = None, schema: str = "apikey"
@@ -1624,7 +1670,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         self, role: Role, conn: Optional[DbResource] = None, schema: str = "apikey"
     ) -> Optional[Role]:
         async with managed_transaction(conn or self.engine) as db:
-            return await UPDATE_ROLE.execute(
+            result = await UPDATE_ROLE.execute(
                 db,
                 schema=schema,
                 name=role.name,
@@ -1634,6 +1680,8 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
                 parent_roles=json.dumps(role.parent_roles),
                 policies=json.dumps(role.policies),
             )
+            self.invalidate_role_hierarchy_cache(schema)
+            return result
 
     async def delete_role(
         self,
@@ -1651,6 +1699,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
 
             # The role_hierarchy has ON DELETE CASCADE in DDL, so children entries will be removed automatically.
             count = await DELETE_ROLE.execute(db, schema=schema, name=name)
+            self.invalidate_role_hierarchy_cache(schema)
             return count > 0
 
     async def add_role_hierarchy(
@@ -1664,6 +1713,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             await INSERT_ROLE_HIERARCHY.execute(
                 db, schema=schema, parent_role=parent_role, child_role=child_role
             )
+            self.invalidate_role_hierarchy_cache(schema)
 
     async def remove_role_hierarchy(
         self,
@@ -1676,7 +1726,14 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             count = await DELETE_ROLE_HIERARCHY.execute(
                 db, schema=schema, parent_role=parent_role, child_role=child_role
             )
+            self.invalidate_role_hierarchy_cache(schema)
             return count > 0
+
+    def invalidate_role_hierarchy_cache(self, schema: str = "apikey") -> None:
+        """Clear role hierarchy cache entries for a schema (call on role CRUD)."""
+        self._role_hierarchy_cache = {
+            k: v for k, v in self._role_hierarchy_cache.items() if k[1] != schema
+        }
 
     async def get_role_hierarchy(
         self,
@@ -1686,12 +1743,21 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
     ) -> List[str]:
         if not role_names:
             return []
+
+        cache_key = (tuple(sorted(role_names)), schema)
+        cached = self._role_hierarchy_cache.get(cache_key)
+        if cached:
+            result, ts = cached
+            if time.monotonic() - ts < self._ROLE_HIERARCHY_TTL:
+                return list(result)
+
         async with managed_transaction(conn or self.engine) as db:
             children = await GET_FULL_ROLE_HIERARCHY.execute(
                 db, schema=schema, role_names=role_names
             )
-            # Combine original roles with their descendants
-            return list(set(role_names + children))
+            merged = list(set(role_names + children))
+            self._role_hierarchy_cache[cache_key] = (merged, time.monotonic())
+            return merged
 
     async def create_refresh_token(
         self,
@@ -1707,6 +1773,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
                 key_hash=token.key_hash,
                 principal_id=token.principal_id,
                 api_key_hash=token.api_key_hash,
+                family_id=token.family_id,
                 expires_at=token.expires_at,
             )
 
@@ -1724,6 +1791,39 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
                 db, schema=schema, id=token_id
             )
             return result is not None
+
+    async def invalidate_token_family(
+        self, family_id: str, conn: Optional[DbResource] = None, schema: str = "apikey"
+    ) -> int:
+        """Invalidate all active refresh tokens in a family (reuse detection)."""
+        async with managed_transaction(conn or self.engine) as db:
+            rows = await INVALIDATE_REFRESH_TOKEN_FAMILY.execute(
+                db, schema=schema, family_id=family_id
+            )
+            return len(rows) if rows else 0
+
+    async def log_audit_event(
+        self,
+        event_type: str,
+        principal_id: Optional[str] = None,
+        ip_address: Optional[str] = None,
+        detail: Optional[Dict[str, Any]] = None,
+        conn: Optional[DbResource] = None,
+        schema: str = "apikey",
+    ) -> None:
+        """Write a structured audit log entry."""
+        try:
+            async with managed_transaction(conn or self.engine) as db:
+                await INSERT_AUDIT_EVENT.execute(
+                    db,
+                    schema=schema,
+                    event_type=event_type,
+                    principal_id=principal_id,
+                    ip_address=ip_address,
+                    detail=json.dumps(detail or {}),
+                )
+        except Exception:
+            logger.debug("audit log write failed (table may not exist yet)", exc_info=True)
 
     async def run_maintenance(
         self, conn: Optional[DbResource] = None, schema: str = "apikey"
