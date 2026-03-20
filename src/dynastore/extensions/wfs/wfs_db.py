@@ -50,7 +50,6 @@ from .tools import (
 import uuid
 from pydantic import BaseModel
 from dynastore.modules.tools.cql import parse_cql_filter
-from async_lru import alru_cache
 from ...tools.features import FeatureCollection
 from ...tools.features import FeatureProperties
 from dynastore.tools.discovery import get_protocol

@@ -38,7 +38,7 @@ from dynastore.modules.db_config import maintenance_tools
 from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, JSON
 from sqlalchemy.dialects.postgresql import UUID, TSTZRANGE
 from geoalchemy2 import Geometry
-from async_lru import alru_cache
+from dynastore.tools.cache import cached
 
 
 def normalize_db_url(url: str, is_async: bool = False) -> str:
@@ -202,7 +202,7 @@ def map_pg_to_json_type(pg_type: Union[str, Any]) -> str:
     return "string"
 
 
-@alru_cache(maxsize=128)
+@cached(maxsize=128, namespace="field_mapping", ignore=["conn"])
 async def get_dynamic_field_mapping(
     conn: DbResource, schema: str, table: str
 ) -> Dict[str, Column]:

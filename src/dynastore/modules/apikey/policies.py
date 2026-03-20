@@ -22,7 +22,7 @@ import uuid
 import time
 from typing import List, Optional, Tuple, Any, Dict
 from uuid import UUID
-from async_lru import alru_cache
+from dynastore.tools.cache import cached
 import json
 
 _SAFE_SCHEMA_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,62}$")
@@ -142,7 +142,7 @@ class PolicyService:
     def _invalidate_cache(self):
         """Invalidates the evaluation cache."""
         try:
-            # Clear the alru_cache for get_effective_policies
+            # Clear the @cached cache for get_effective_policies
             self.get_effective_policies.cache_clear()
         except AttributeError:
             # In case the decorator is missing or hasn't finished wrapping
@@ -341,7 +341,7 @@ class PolicyService:
 
     # --- Evaluation ---
 
-    @alru_cache(maxsize=512)
+    @cached(maxsize=512, namespace="policies")
     async def get_effective_policies(
         self, partition_key: str, schema: str
     ) -> List[Policy]:

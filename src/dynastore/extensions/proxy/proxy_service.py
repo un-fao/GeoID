@@ -33,7 +33,7 @@ from fastapi.responses import RedirectResponse, StreamingResponse
 from typing import Optional, List
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from async_lru import alru_cache
+from dynastore.tools.cache import cached
 from dynastore.modules.proxy.proxy_module import (
     create_short_url,
     get_long_url,
@@ -76,7 +76,7 @@ STRIP_HEADERS = [
 FORWARD_HEADER_PREFIX = "x-forward-to-"
 
 
-@alru_cache(maxsize=10000)
+@cached(maxsize=10000, namespace="proxy", ignore=["conn"])
 async def _get_cached_long_url(
     conn: DbResource, catalog_id: str, short_key: str
 ) -> Optional[str]:

@@ -17,9 +17,9 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, Literal, List, Annotated, Dict, Any, Union, TYPE_CHECKING
+from typing import Callable, ClassVar, Optional, Literal, List, Annotated, Dict, Any, Union, TYPE_CHECKING
 from datetime import date
-from dynastore.modules.db_config.platform_config_service import PluginConfig, register_config, Immutable
+from dynastore.modules.db_config.platform_config_service import PluginConfig, Immutable
 import os
 if TYPE_CHECKING:
     from dynastore.modules.gcp.gcp_module import GCPModule
@@ -141,12 +141,13 @@ class GcpCorsRule(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
-@register_config(GCP_CATALOG_BUCKET_CONFIG_ID, on_apply=on_apply_gcp_bucket_config)
 class GcpCatalogBucketConfig(PluginConfig):
     """
     Defines bucket-level configurations for a catalog. These settings are applied
     when the bucket is first created.
     """
+    _plugin_id: ClassVar[Optional[str]] = GCP_CATALOG_BUCKET_CONFIG_ID
+    _on_apply: ClassVar[Optional[Callable]] = on_apply_gcp_bucket_config
     # Immutable fields: Once the bucket is created, these cannot be changed.
     location: Immutable[Optional[GcpLocation]] = Field(os.getenv("REGION", GcpLocation.EUROPE_WEST1), description="The GCP region where the bucket will be created (e.g., 'europe-west1'). If not set, defaults to the application's region.")
     storage_class: Immutable[GcsStorageClass] = Field(GcsStorageClass.STANDARD, description="The default storage class for objects in the bucket.")
@@ -161,11 +162,11 @@ class GcpCatalogBucketConfig(PluginConfig):
     )
 
 
-@register_config(GCP_MODULE_CONFIG_ID)
 class GcpModuleConfig(PluginConfig):
     """
     Defines global configurations for the GCP module.
     """
+    _plugin_id: ClassVar[Optional[str]] = GCP_MODULE_CONFIG_ID
     project_id: str = Field(os.getenv("PROJECT_ID", "local-project"), description="The GCP Project ID.")
     region: str = Field(os.getenv("REGION", "europe-west1"), description="The default GCP region.")
     
@@ -185,12 +186,12 @@ class TriggeredAction(BaseModel):
     execute_request_template: Dict[str, Any] = Field(..., description="A template for the 'inputs' of the OGC Process Execute request. Supports placeholder interpolation (e.g., {bucket}, {name}).")
 
 
-@register_config(GCP_COLLECTION_BUCKET_CONFIG_ID)
 class GcpCollectionBucketConfig(PluginConfig):
     """
     Defines object-level configurations for a specific collection within a bucket.
     These settings can override catalog-level defaults for objects belonging to this collection.
     """
+    _plugin_id: ClassVar[Optional[str]] = GCP_COLLECTION_BUCKET_CONFIG_ID
     custom_metadata_defaults: Optional[Dict[str, str]] = Field(None, description="Default metadata to apply to all objects uploaded to this collection.")
     
     # Updated to allow strings (IDs of templates) or full objects
@@ -235,12 +236,13 @@ class ManagedBucketEventing(BaseModel):
         return self.blob_name_prefixes[0] if self.blob_name_prefixes else None
 
 
-@register_config(GCP_EVENTING_CONFIG_ID, on_apply=on_apply_gcp_eventing_config)
 class GcpEventingConfig(PluginConfig):
     """
     Defines the complete, mutable eventing configuration for a catalog. This is
     stored independently from the bucket configuration.
     """
+    _plugin_id: ClassVar[Optional[str]] = GCP_EVENTING_CONFIG_ID
+    _on_apply: ClassVar[Optional[Callable]] = on_apply_gcp_eventing_config
     managed_eventing: Optional[ManagedBucketEventing] = Field(ManagedBucketEventing(), description="Configuration for the default, system-managed eventing pipeline for the catalog's bucket.")
     custom_subscriptions: List[ExternalTopicSubscription] = Field([], description="A list of additional, custom subscriptions to external (non-managed) Pub/Sub topics.")
     

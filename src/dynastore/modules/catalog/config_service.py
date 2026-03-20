@@ -21,7 +21,7 @@ import json
 import inspect
 import asyncio
 from typing import Optional, Callable, Dict, Any, cast, List, TYPE_CHECKING
-from async_lru import alru_cache
+from dynastore.tools.cache import cached
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     DDLQuery,
@@ -77,7 +77,7 @@ CATALOG_CONFIGS_TABLE = "catalog_configs"
 
 
 # Global caches for shared configuration lookups
-@alru_cache(maxsize=1024)
+@cached(maxsize=8192, ttl=300, namespace="catalog_config", ignore=["engine", "catalog_manager"])
 async def _catalog_config_cache(
     engine: DbResource,
     catalog_manager: "CatalogModule",
@@ -102,7 +102,7 @@ async def _catalog_config_cache(
         ).execute(conn, catalog_id=catalog_id, plugin_id=plugin_id)
 
 
-@alru_cache(maxsize=1024)
+@cached(maxsize=16384, ttl=300, namespace="collection_config", ignore=["engine", "catalog_manager"])
 async def _collection_config_cache(
     engine: DbResource,
     catalog_manager: "CatalogModule",

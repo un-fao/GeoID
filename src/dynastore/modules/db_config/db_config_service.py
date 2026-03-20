@@ -24,7 +24,7 @@ from .db_config import DBConfig
 logger = logging.getLogger(__name__)
 
 from dynastore.tools.discovery import register_plugin, unregister_plugin
-from .platform_config_service import PlatformConfigService
+from .platform_config_service import PlatformConfigService, ConfigRegistry
 class DBConfigModule(ModuleProtocol):
     priority: int = 0
     
@@ -58,6 +58,10 @@ class DBConfigModule(ModuleProtocol):
             await stack.enter_async_context(pcfg.lifespan(app_state))
             register_plugin(pcfg)
             stack.callback(unregister_plugin, pcfg)
+
+            # Register ConfigRegistry for protocol discovery
+            register_plugin(ConfigRegistry)
+            stack.callback(unregister_plugin, ConfigRegistry)
             
             yield
             

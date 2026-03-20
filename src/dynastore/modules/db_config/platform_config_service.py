@@ -56,7 +56,7 @@ except ImportError:
 
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
-from async_lru import alru_cache
+from dynastore.tools.cache import cached
 
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
@@ -162,6 +162,51 @@ def enforce_config_immutability(
                 )
 
 
+# --- Field-level change detection ---
+
+from dataclasses import dataclass, field as dc_field
+from typing import Tuple
+
+
+@dataclass
+class ConfigChange:
+    """Structured diff emitted to on_apply handlers when config changes."""
+
+    plugin_id: str
+    old_config: Optional["PluginConfig"]
+    new_config: "PluginConfig"
+    changed_fields: Dict[str, Tuple[Any, Any]] = dc_field(default_factory=dict)
+    catalog_id: Optional[str] = None
+    collection_id: Optional[str] = None
+    db_resource: Optional[Any] = None
+
+    @property
+    def is_creation(self) -> bool:
+        return self.old_config is None
+
+    def field_changed(self, name: str) -> bool:
+        return name in self.changed_fields
+
+
+def compute_config_diff(
+    old_config: Optional["PluginConfig"], new_config: "PluginConfig"
+) -> Dict[str, Tuple[Any, Any]]:
+    """Compute field-level diff between two configs."""
+    model_cls = type(new_config)
+    if old_config is None:
+        return {
+            name: (None, getattr(new_config, name))
+            for name in model_cls.model_fields
+        }
+    changed: Dict[str, Tuple[Any, Any]] = {}
+    for name in model_cls.model_fields:
+        old_val = getattr(old_config, name, None)
+        new_val = getattr(new_config, name, None)
+        if old_val != new_val:
+            changed[name] = (old_val, new_val)
+    return changed
+
+
 # --- Schema (Platform Level Only) ---
 
 PLATFORM_CONFIGS_SCHEMA = """
@@ -206,9 +251,29 @@ class PluginConfig(BaseModel):
     """
     Base class for all mutable plugin configurations.
     MANDATORY: Subclasses must be instantiable without arguments (all fields must have defaults).
+
+    Autodiscovery: subclasses with ``_plugin_id`` are auto-registered::
+
+        class SecurityPluginConfig(PluginConfig):
+            _plugin_id: ClassVar[Optional[str]] = "security"
+            _on_apply: ClassVar[Optional[Callable]] = None
+            _priority: ClassVar[int] = 100
     """
 
     enabled: bool = True
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        plugin_id = cls.__dict__.get("_plugin_id")
+        if plugin_id:
+            on_apply = cls.__dict__.get("_on_apply")
+            priority = cls.__dict__.get("_priority", 100)
+            # Defer registration to avoid forward-reference issues
+            ConfigRegistry.register(plugin_id, cls, on_apply=on_apply)
+            logger.debug(
+                "PluginConfig autodiscovery: '%s' -> %s (priority=%d)",
+                plugin_id, cls.__name__, priority,
+            )
 
 
 class ConfigRegistry:
@@ -219,9 +284,9 @@ class ConfigRegistry:
     _registry: Dict[str, Type[PluginConfig]] = {}
     _apply_handlers: Dict[
         str,
-        Callable[
+        List[Callable[
             ["PluginConfig", Optional[str], Optional[str], Optional[DbResource]], Any
-        ],
+        ]],
     ] = {}
 
     @classmethod
@@ -247,8 +312,27 @@ class ConfigRegistry:
 
         cls._registry[key] = model
         if on_apply:
-            cls._apply_handlers[key] = on_apply
+            cls._apply_handlers.setdefault(key, []).append(on_apply)
         logger.debug(f"Registered configuration schema for '{key}'")
+
+    @classmethod
+    def register_apply_handler(
+        cls,
+        key: str,
+        handler: Callable[
+            ["PluginConfig", Optional[str], Optional[str], Optional[DbResource]], Any
+        ],
+    ) -> None:
+        """Register an additional on_apply handler for a config key."""
+        cls._apply_handlers.setdefault(key, []).append(handler)
+
+    @classmethod
+    def get_apply_handlers(
+        cls, key: str
+    ) -> List[Callable[
+        ["PluginConfig", Optional[str], Optional[str], Optional[DbResource]], Any
+    ]]:
+        return cls._apply_handlers.get(key, [])
 
     @classmethod
     def get_apply_handler(
@@ -258,7 +342,9 @@ class ConfigRegistry:
             ["PluginConfig", Optional[str], Optional[str], Optional[DbResource]], Any
         ]
     ]:
-        return cls._apply_handlers.get(key)
+        """Backward compat: returns first handler or None."""
+        handlers = cls._apply_handlers.get(key, [])
+        return handlers[0] if handlers else None
 
     @classmethod
     def get_model(cls, key: str) -> Optional[Type[PluginConfig]]:
@@ -284,6 +370,11 @@ class ConfigRegistry:
         if isinstance(config_data, model):
             return config_data
         return model.model_validate(config_data)
+
+    @classmethod
+    def list_registered(cls) -> Dict[str, Type[PluginConfig]]:
+        """List all registered config models."""
+        return dict(cls._registry)
 
 
 def register_config(
@@ -328,7 +419,7 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
         return get_engine()
 
     def _setup_cache(self):
-        self.get_platform_config_internal_cached = alru_cache(maxsize=32)(
+        self.get_platform_config_internal_cached = cached(maxsize=64, ttl=300, namespace="platform_config")(
             self._get_platform_config_internal_db
         )
 
@@ -403,16 +494,14 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
             db_resource: Optional database connection/engine to use.
         """
         async with managed_transaction(db_resource or self.engine) as conn:
-            if check_immutability:
-                current_data = await get_platform_config_query.execute(
-                    conn, plugin_id=plugin_id
-                )
-                if current_data:
-                    # Fix: current_data is just config_data (JSON), we need to validate it into a Model first
-                    current_config = ConfigRegistry.validate_config(
-                        plugin_id, current_data
-                    )
-                    enforce_config_immutability(current_config, config)
+            old_config: Optional[PluginConfig] = None
+            current_data = await get_platform_config_query.execute(
+                conn, plugin_id=plugin_id
+            )
+            if current_data:
+                old_config = ConfigRegistry.validate_config(plugin_id, current_data)
+                if check_immutability:
+                    enforce_config_immutability(old_config, config)
 
             await upsert_platform_config_query.execute(
                 conn,
@@ -420,9 +509,11 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
                 config_data=json.dumps(config.model_dump(), cls=CustomJSONEncoder),
             )
 
-            # Trigger active configuration application (Level 3 - Platform)
-            apply_handler = ConfigRegistry.get_apply_handler(plugin_id)
-            if apply_handler:
+            # Compute field-level diff for handlers
+            changed_fields = compute_config_diff(old_config, config)
+
+            # Trigger ALL registered apply handlers (Level 3 - Platform)
+            for apply_handler in ConfigRegistry.get_apply_handlers(plugin_id):
                 try:
                     res = apply_handler(config, None, None, conn)
                     if inspect.isawaitable(res):

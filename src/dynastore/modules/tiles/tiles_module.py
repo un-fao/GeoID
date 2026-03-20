@@ -21,7 +21,7 @@ import hashlib
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any, Protocol, Type, Tuple, Callable, Awaitable
 from abc import abstractmethod
-from async_lru import alru_cache
+from dynastore.tools.cache import cached
 from dynastore.modules import (
     ModuleProtocol,
     get_protocol,
@@ -444,7 +444,7 @@ class TilePGPreseedStorage(TileStorageSPI):
                 return {"tile_count": 0, "total_size_bytes": 0}
             raise e
 
-    @alru_cache(maxsize=4096)
+    @cached(maxsize=4096, namespace="tiles_check_tile_exists")
     async def check_tile_exists(
         self,
         catalog_id: str,
@@ -665,7 +665,7 @@ async def create_custom_tms(
         return StoredTileMatrixSet.model_validate(result)
 
 
-@alru_cache(maxsize=128)
+@cached(maxsize=128, namespace="tiles_get_custom_tms")
 async def get_custom_tms(catalog_id: str, tms_id: str) -> Optional[TileMatrixSet]:
     """Retrieves a specific custom TileMatrixSet from a catalog."""
     result = await _get_tms_query.execute(
@@ -674,7 +674,7 @@ async def get_custom_tms(catalog_id: str, tms_id: str) -> Optional[TileMatrixSet
     return TileMatrixSet.model_validate(result["definition"]) if result else None
 
 
-@alru_cache(maxsize=32)
+@cached(maxsize=32, namespace="tiles_list_custom_tms")
 async def list_custom_tms(
     catalog_id: str, limit: int = 100, offset: int = 0
 ) -> List[TileMatrixSet]:
@@ -685,7 +685,7 @@ async def list_custom_tms(
     return [TileMatrixSet.model_validate(row["definition"]) for row in results]
 
 
-@alru_cache(maxsize=128)
+@cached(maxsize=128, namespace="tiles_resolve_srid", ignore=["conn"])
 async def resolve_srid(
     conn: DbResource, crs_str: str, catalog_id: Optional[str] = None
 ) -> int:
@@ -844,7 +844,7 @@ async def ensure_custom_crs_in_postgis(
     return next_srid
 
 
-@alru_cache(maxsize=1024)
+@cached(maxsize=1024, namespace="tiles_collection_source_srid")
 async def get_collection_source_srid(
     catalog_id: str, collection_id: str
 ) -> Optional[int]:
@@ -905,7 +905,7 @@ async def get_collection_source_srid(
         return srid
 
 
-@alru_cache(maxsize=1024)
+@cached(maxsize=1024, namespace="tiles_resolution_params")
 async def get_tile_resolution_params(
     catalog_id: str, collection_id: str
 ) -> Dict[str, Any]:
@@ -974,7 +974,7 @@ async def invalidate_collection_tiles(catalog_id: str, collection_id: str):
         f"TilesModule: Invalidating tiles and metadata cache for '{catalog_id}:{collection_id}'."
     )
 
-    # 1. Clear internal metadata caches (alru_cache)
+    # 1. Clear internal metadata caches
     get_collection_source_srid.cache_clear()
     get_tile_resolution_params.cache_clear()
 
@@ -1019,7 +1019,7 @@ async def invalidate_catalog_tiles(catalog_id: str):
         f"TilesModule: Invalidating all tile storage and metadata cache for catalog '{catalog_id}'."
     )
 
-    # 1. Clear internal metadata caches (alru_cache)
+    # 1. Clear internal metadata caches
     get_collection_source_srid.cache_clear()
     get_tile_resolution_params.cache_clear()
 

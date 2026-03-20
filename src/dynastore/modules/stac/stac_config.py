@@ -19,9 +19,9 @@
 # dynastore/modules/stac/stac_config.py
 
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, ClassVar, Dict, List, Optional, Union
 from pydantic import BaseModel, Field, model_validator
-from dynastore.modules.db_config.platform_config_service import PluginConfig, register_config
+from dynastore.modules.db_config.platform_config_service import PluginConfig
 
 # --- Configuration Identifiers ---
 STAC_PLUGIN_CONFIG_ID = "stac"
@@ -178,11 +178,11 @@ class AssetTrackingConfig(BaseModel):
 
 # --- THE PLUGIN DEFINITION ---
 
-@register_config(STAC_PLUGIN_CONFIG_ID)
 class StacPluginConfig(PluginConfig):
     """
     Mutable STAC metadata and behavior configuration.
     """
+    _plugin_id: ClassVar[Optional[str]] = STAC_PLUGIN_CONFIG_ID
     # Extension schemas
     enabled_extensions: List[str] = Field(default_factory=list)
     

@@ -20,7 +20,7 @@ from dynastore.tools.discovery import get_protocol
 import logging
 import os
 from typing import Any, Dict, Generator, List, Iterator, Optional
-from async_lru import alru_cache
+from dynastore.tools.cache import cached
 
 from fastapi import (
     HTTPException,
@@ -84,7 +84,7 @@ class CursorWrapper:
             yield item
 
 
-@alru_cache(maxsize=128)
+@cached(maxsize=128, namespace="dwh")
 async def execute_bigquery_async(
     query: str, join_column: str, project_id: str
 ) -> Dict[Any, Dict[str, Any]]:

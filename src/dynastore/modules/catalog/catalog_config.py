@@ -34,10 +34,9 @@ from pydantic import (
 from datetime import date, datetime
 from dynastore.modules.db_config.platform_config_service import (
     PluginConfig,
-    register_config,
     Immutable,
 )
-from typing import List, Optional, Annotated, Union, Literal, Any, Type, Dict
+from typing import ClassVar, List, Optional, Annotated, Union, Literal, Any, Type, Dict
 from typing_extensions import deprecated
 
 
@@ -60,7 +59,6 @@ from dynastore.modules.catalog.sidecars.attributes_config import (
 )
 from dynastore.modules.db_config.platform_config_service import (
     PluginConfig,
-    register_config,
     Immutable,
 )
 
@@ -98,7 +96,6 @@ class CompositePartitionConfig(BaseModel):
 COLLECTION_PLUGIN_CONFIG_ID = "collection"
 
 
-@register_config(COLLECTION_PLUGIN_CONFIG_ID)
 class CollectionPluginConfig(PluginConfig):
     """
     The Physical Schema Configuration.
@@ -106,6 +103,7 @@ class CollectionPluginConfig(PluginConfig):
     CRITICAL: Modifications to 'geometry_storage' or 'partitioning'
     are FORBIDDEN once the table physically exists.
     """
+    _plugin_id: ClassVar[Optional[str]] = COLLECTION_PLUGIN_CONFIG_ID
 
     model_config = {"extra": "allow"}
 

@@ -13,14 +13,14 @@
 #    limitations under the License.
 
 """
-Dynamic CORS middleware that reads allowed origins from
-PlatformConfigsProtocol at runtime so changes take effect
-without a restart.
+Push-based dynamic CORS middleware.
+
+Rebuilds the inner Starlette CORSMiddleware when SecurityPluginConfig
+changes via the ConfigRegistry on_apply callback -- no polling.
 """
 
 import logging
-import time
-from typing import List, Optional
+from typing import Optional
 
 from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -32,25 +32,20 @@ from dynastore.modules.apikey.security_config import (
 
 logger = logging.getLogger(__name__)
 
-# How often (seconds) to re-read config from the protocol.
-_RELOAD_INTERVAL = 30
+# Module-level reference so the on_apply callback can reach it.
+_cors_instance: Optional["DynamicCORSMiddleware"] = None
 
 
 class DynamicCORSMiddleware:
-    """
-    Wraps Starlette's CORSMiddleware but rebuilds it when the
-    SecurityPluginConfig changes (checked every _RELOAD_INTERVAL seconds).
-    """
+    """Wraps Starlette CORSMiddleware; rebuilt on push from ConfigRegistry."""
 
     def __init__(self, app: ASGIApp):
+        global _cors_instance
         self.app = app
         self._inner: Optional[CORSMiddleware] = None
-        self._last_reload: float = 0.0
-        self._last_config_hash: Optional[int] = None
-        # Build an initial middleware with defaults so the first request works.
+        # Build initial middleware with defaults.
         self._rebuild(SecurityPluginConfig())
-
-    # ------------------------------------------------------------------
+        _cors_instance = self
 
     def _rebuild(self, cfg: SecurityPluginConfig) -> None:
         allow_credentials = cfg.cors_allowed_origins != ["*"]
@@ -62,23 +57,12 @@ class DynamicCORSMiddleware:
             allow_headers=cfg.cors_allow_headers,
             max_age=cfg.cors_max_age,
         )
-        self._last_config_hash = hash(
-            (
-                tuple(cfg.cors_allowed_origins),
-                tuple(cfg.cors_allow_methods),
-                tuple(cfg.cors_allow_headers),
-                cfg.cors_max_age,
-            )
-        )
+        logger.debug("DynamicCORSMiddleware: rebuilt with origins=%s", cfg.cors_allowed_origins)
 
-    async def _maybe_reload(self) -> None:
-        now = time.monotonic()
-        if now - self._last_reload < _RELOAD_INTERVAL:
-            return
-        self._last_reload = now
-
+    async def initialize_from_db(self) -> None:
+        """One-time startup read from PlatformConfigsProtocol."""
         try:
-            from dynastore.modules import get_protocol
+            from dynastore.tools.discovery import get_protocol
             from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
 
             svc = get_protocol(PlatformConfigsProtocol)
@@ -89,25 +73,35 @@ class DynamicCORSMiddleware:
                 cfg = SecurityPluginConfig.model_validate(
                     cfg.model_dump() if hasattr(cfg, "model_dump") else {}
                 )
-        except Exception:
-            logger.debug("DynamicCORSMiddleware: config reload skipped (service not ready)")
-            return
-
-        cfg_hash = hash(
-            (
-                tuple(cfg.cors_allowed_origins),
-                tuple(cfg.cors_allow_methods),
-                tuple(cfg.cors_allow_headers),
-                cfg.cors_max_age,
-            )
-        )
-        if cfg_hash != self._last_config_hash:
-            logger.info("DynamicCORSMiddleware: CORS config changed, rebuilding middleware")
             self._rebuild(cfg)
-
-    # ------------------------------------------------------------------
+            logger.info("DynamicCORSMiddleware: initialized from database")
+        except Exception:
+            logger.debug("DynamicCORSMiddleware: init from DB skipped (service not ready)")
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] in ("http", "websocket"):
-            await self._maybe_reload()
         await self._inner(scope, receive, send)  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+#  Push callback -- registered with ConfigRegistry
+# ---------------------------------------------------------------------------
+
+
+def on_security_config_changed(
+    config: "SecurityPluginConfig",
+    catalog_id: Optional[str],
+    collection_id: Optional[str],
+    db_resource: Optional[object],
+) -> None:
+    """Called by ConfigRegistry when security config is written."""
+    if _cors_instance is None:
+        return
+    if not isinstance(config, SecurityPluginConfig):
+        try:
+            config = SecurityPluginConfig.model_validate(
+                config.model_dump() if hasattr(config, "model_dump") else {}
+            )
+        except Exception:
+            return
+    _cors_instance._rebuild(config)
+    logger.info("DynamicCORSMiddleware: CORS config pushed, middleware rebuilt")

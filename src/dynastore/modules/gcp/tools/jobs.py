@@ -19,7 +19,7 @@
 from google.api_core.operation import Operation
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import JobExecutionProtocol
-from async_lru import alru_cache
+from dynastore.tools.cache import cached
 import logging
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ async def run_cloud_run_job_async(
     return await job_runner.run_job(job_name, args, env_vars)
 
 
-@alru_cache(maxsize=1)
+@cached(maxsize=1, namespace="job_config")
 async def load_job_config():
     """
     Discovers deployed jobs and returns a mapping of task_type to job name.

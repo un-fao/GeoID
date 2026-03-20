@@ -20,7 +20,6 @@
 
 import logging
 from typing import Dict, Any, Optional, Tuple, Set, List
-from async_lru import alru_cache  # type: ignore
 from dynastore.modules.db_config.query_executor import (
     DDLQuery,
     DQLQuery,

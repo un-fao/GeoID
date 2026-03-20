@@ -1,0 +1,129 @@
+# Caching Framework
+
+## Overview
+
+The platform uses a centralized caching framework built around the `@cached` decorator in `dynastore/tools/cache.py`. It provides a two-layer architecture:
+
+- **`CacheBackend` / `SyncCacheBackend`**: Low-level protocols (bytes), for backend implementors
+- **`Cache`**: High-level protocol (typed values), for application code
+- **`@cached`**: Decorator built on top, the primary API for most use cases
+
+## `@cached` Decorator
+
+```python
+from dynastore.tools.cache import cached, CacheIgnore
+
+@cached(
+    maxsize=1024,           # Max entries (LRU eviction)
+    ttl=300,                # Time-to-live in seconds
+    jitter=30,              # Random TTL variance (anti-thundering-herd)
+    namespace="my_cache",   # Key isolation prefix
+    ignore=["conn"],        # Param names excluded from cache key
+    typed=False,            # Cache differently by argument type
+    condition=lambda r: r is not None,  # Only cache if True
+    key_builder=None,       # Custom key function
+)
+async def get_data(item_id: str, conn: DbResource) -> dict:
+    ...
+```
+
+### Excluding Parameters from Cache Key
+
+Two equivalent approaches:
+
+```python
+# 1. ignore parameter
+@cached(maxsize=128, ignore=["conn", "engine"])
+async def fetch(item_id: str, conn: DbResource): ...
+
+# 2. CacheIgnore type annotation
+@cached(maxsize=128)
+async def fetch(item_id: str, conn: CacheIgnore[DbResource] = None): ...
+```
+
+### Cache Management Methods
+
+All decorated functions get these sync methods:
+
+```python
+# Invalidate a specific entry (by matching args)
+get_data.cache_invalidate("item_123", conn=some_conn)
+
+# Clear all entries for this function's namespace
+get_data.cache_clear()
+
+# Get cache statistics
+info = get_data.cache_info()  # CacheStats(hits, misses, size, maxsize, evictions)
+info.currsize  # alias for size (backward compat)
+```
+
+**`cache_invalidate` and `cache_clear` are always synchronous** — they directly manipulate the backend's internal dict. This allows calling from both sync and async contexts without `await`.
+
+### Instance-Bound Caches
+
+For methods that need per-instance caching:
+
+```python
+class MyService:
+    def __init__(self):
+        self._setup_cache()
+
+    def _setup_cache(self):
+        self.get_data_cached = cached(maxsize=64, ttl=300, namespace="my_svc")(
+            self._get_data_db
+        )
+
+    async def _get_data_db(self, item_id: str) -> Optional[dict]:
+        ...  # actual DB fetch
+```
+
+### Sync vs Async Auto-Detection
+
+The decorator auto-detects sync/async functions via `inspect.iscoroutinefunction()`:
+- **Async functions** use `LocalAsyncCacheBackend` with `asyncio.Lock` stampede protection
+- **Sync functions** use `LocalSyncCacheBackend` with `threading.Lock`
+
+## Backends
+
+### LocalAsyncCacheBackend
+
+In-memory async backend using `collections.OrderedDict`:
+- LRU eviction via `move_to_end()` on access
+- TTL checked lazily on `get()`
+- Per-key `asyncio.Lock` for stampede protection
+- Priority-based eviction (`CacheItemPriority`)
+
+### LocalSyncCacheBackend
+
+Same semantics but with `threading.Lock` for sync contexts.
+
+### CacheManager
+
+Central registry of backends, discoverable via `get_protocol(CacheManagerProtocol)`:
+
+```python
+from dynastore.tools.cache import CacheManager
+
+manager = CacheManager()
+manager.register_backend(LocalAsyncCacheBackend(max_size=1024))
+cache = manager.create_cache(CacheConfig(namespace="my_ns", default_ttl=300))
+```
+
+## Protocols
+
+Defined in `dynastore/models/protocols/cache.py`:
+
+| Protocol | Purpose |
+|----------|---------|
+| `CacheBackend` | Async low-level (bytes) interface |
+| `SyncCacheBackend` | Sync variant |
+| `Cache` | High-level typed interface with `get_or_set()` |
+| `CacheManagerProtocol` | Backend registry + cache factory |
+| `CacheSerializer` | Serialization (NullSerializer for in-memory, JsonSerializer for distributed) |
+| `BatchCacheBackend` | Extension for MGET/MSET |
+| `LockingCacheBackend` | Extension for distributed locks |
+| `TaggableCacheBackend` | Extension for tag-based invalidation |
+
+## Important: `discovery.py` Exception
+
+`get_protocol()` and `get_protocols()` in `dynastore/tools/discovery.py` use `functools.lru_cache`, **not** `@cached`. This is intentional — `discovery.py` is a foundational module that cannot depend on the cache framework without creating a circular import.

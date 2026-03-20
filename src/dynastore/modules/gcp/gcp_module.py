@@ -28,7 +28,7 @@ try:
 except ImportError:
     google_exceptions = None
     Aborted = None # Ensure Aborted is defined even if google.api_core is not available
-from async_lru import alru_cache
+from dynastore.tools.cache import cached
 import dynastore.modules as dm
 from dynastore.modules import ModuleProtocol
 from dynastore.modules.concurrency import run_in_thread
@@ -769,7 +769,7 @@ class GCPModule(
         """
         return os.getenv("K_SERVICE")
 
-    @alru_cache(maxsize=1)
+    @cached(maxsize=1)
     async def get_self_url(self) -> str:
         """
         Dynamically discovers and returns the public URL of the running Cloud Run service.

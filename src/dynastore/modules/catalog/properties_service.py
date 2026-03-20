@@ -18,7 +18,7 @@
 
 import logging
 from typing import Optional, Any
-from async_lru import alru_cache
+from dynastore.tools.cache import cached
 from dynastore.modules.db_config.query_executor import (
     DQLQuery, ResultHandler, managed_transaction, DbResource
 )
@@ -57,7 +57,7 @@ class PropertiesService(PropertiesProtocol):
     def __init__(self, engine: Optional[DbResource] = None):
         self.engine = engine
         # Instance-bound cache
-        self._get_property_cached = alru_cache(maxsize=64)(self._get_property_db)
+        self._get_property_cached = cached(maxsize=64, namespace="properties")(self._get_property_db)
 
     def is_available(self) -> bool:
         return self.engine is not None

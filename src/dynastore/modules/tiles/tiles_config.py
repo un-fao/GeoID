@@ -12,20 +12,20 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-from typing import List, Optional, Dict, Tuple
+from typing import ClassVar, List, Optional, Dict, Tuple
 from pydantic import Field, BaseModel
-from dynastore.modules.db_config.platform_config_service import PluginConfig, register_config
+from dynastore.modules.db_config.platform_config_service import PluginConfig
 from dynastore.tools.geospatial import SimplificationAlgorithm
 
 TILES_PLUGIN_CONFIG_ID = "tiles"
 TILES_PRESEED_CONFIG_ID = "tiles_preseed"
 
-@register_config(TILES_PLUGIN_CONFIG_ID)
 class TilesPluginConfig(PluginConfig):
     """
     Runtime configuration for the Tiles extension.
     Controls visibility, bounds, and on-the-fly generation settings.
     """
+    _plugin_id: ClassVar[Optional[str]] = TILES_PLUGIN_CONFIG_ID
     # Enabled by default if this config exists/is loaded.
     enabled: bool = Field(True, description="If False, tile requests will be rejected.")
     
@@ -62,12 +62,12 @@ class TilesPluginConfig(PluginConfig):
     )
 
 
-@register_config(TILES_PRESEED_CONFIG_ID)
 class TilesPreseedConfig(PluginConfig):
     """
     Configuration for the Tiles Pre-seeding Process.
     This configures the background task that generates and stores tiles.
     """
+    _plugin_id: ClassVar[Optional[str]] = TILES_PRESEED_CONFIG_ID
     # Implicitly enabled if this config is present and defaults are acceptable, 
     # but explicit flag allows disabling without deleting config.
     enabled: bool = Field(True, description="If True, the pre-seeding task will process this configuration.")

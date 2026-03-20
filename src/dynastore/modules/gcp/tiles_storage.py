@@ -14,7 +14,7 @@
 
 import logging
 from typing import Optional, Any, Dict
-from async_lru import alru_cache
+from dynastore.tools.cache import cached
 from datetime import timedelta
 from dynastore.modules.tiles.tiles_module import TileStorageSPI, register_named_tile_storage
 from dynastore.modules.concurrency import run_in_thread
@@ -115,7 +115,7 @@ class TileBucketPreseedStorage(TileStorageSPI):
 
         return await run_in_thread(_fetch)
 
-    @alru_cache(maxsize=2048) # Cache existence checks in memory to speed up repeated pans
+    @cached(maxsize=2048, namespace="gcp_tile_exists")
     async def check_tile_exists(self, catalog_id: str, collection_id: str, tms_id: str, z: int, x: int, y: int, format: str) -> bool:
         storage_provider = self._get_storage_provider()
         client_provider = self._get_client_provider()
@@ -191,13 +191,13 @@ class TileBucketPreseedStorage(TileStorageSPI):
                 return 0
             # bucket.delete_blobs handles large lists by chunking internally
             bucket.delete_blobs(blobs)
-            
-            # Clear existence cache for this collection
-            self.check_tile_exists.cache_clear()
-            
             return len(blobs)
-            
-        return await run_in_thread(_delete_all)
+
+        result = await run_in_thread(_delete_all)
+        # Clear existence cache for this collection
+        if result > 0:
+            self.check_tile_exists.cache_clear()
+        return result
 
     async def delete_storage_for_catalog(self, catalog_id: str):
         """Deletes all tile storage for a catalog."""
@@ -215,8 +215,7 @@ class TileBucketPreseedStorage(TileStorageSPI):
             blobs = list(bucket.list_blobs(prefix=prefix))
             if blobs:
                 bucket.delete_blobs(blobs)
-            
-            # Clear existence cache
-            self.check_tile_exists.cache_clear()
-                
+
         await run_in_thread(_delete_all)
+        # Clear existence cache
+        self.check_tile_exists.cache_clear()

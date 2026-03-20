@@ -24,7 +24,6 @@ import asyncio
 import hashlib
 import time
 from typing import Optional, Dict, List, Any
-from async_lru import alru_cache
 from contextlib import asynccontextmanager
 from fastapi import (
     FastAPI,

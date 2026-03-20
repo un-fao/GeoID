@@ -12,7 +12,7 @@ The core of this mechanism is the `get_protocol(Protocol)` utility located in `d
     *   **Modules**: Foundational services (DB, Auth, etc.)
     *   **Extensions**: Web-facing features (STAC, Tiles, etc.)
     *   **Tasks**: Background processing units.
-3.  **Caching**: The results are cached using `@alru_cache` to ensure performance remains high during frequent lookups.
+3.  **Caching**: The results are cached using `@lru_cache` to ensure performance remains high during frequent lookups.
 
 ## Example Use Case: Decentralized Policies
 Previously, extensions like `tiles` and `stac` had to import the `apikey` module directly to register their public access policies. This created a hard dependency and potential circular imports.

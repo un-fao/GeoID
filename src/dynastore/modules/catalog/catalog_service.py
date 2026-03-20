@@ -30,7 +30,7 @@ import logging
 import json
 import uuid
 from typing import List, Optional, Any, Dict, Union, Set, Callable, Tuple
-from async_lru import alru_cache
+from dynastore.tools.cache import cached
 from sqlalchemy import text
 
 from dynastore.modules.db_config.query_executor import (
@@ -278,7 +278,7 @@ class CatalogService(CatalogsProtocol):
                 self._item_service = ItemService(self.engine)
 
         # Instance-bound caches (private)
-        self._get_catalog_model_cached = alru_cache(maxsize=128)(
+        self._get_catalog_model_cached = cached(maxsize=128, namespace="catalog_model")(
             self._get_catalog_model_db
         )
 

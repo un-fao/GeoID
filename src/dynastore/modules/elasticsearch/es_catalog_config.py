@@ -28,11 +28,11 @@ called automatically on restart).
 """
 
 import logging
-from typing import Optional, Any
+from typing import Callable, ClassVar, Optional, Any
 
 from pydantic import Field
 
-from dynastore.modules.db_config.platform_config_service import PluginConfig, register_config
+from dynastore.modules.db_config.platform_config_service import PluginConfig
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,6 @@ async def _on_apply_es_catalog_config(
         await es_module.disable_obfuscated_mode(catalog_id, db_resource=db_resource)
 
 
-@register_config(ES_CATALOG_CONFIG_ID, on_apply=_on_apply_es_catalog_config)
 class ElasticsearchCatalogConfig(PluginConfig):
     """
     Per-catalog Elasticsearch indexing configuration.
@@ -90,6 +89,8 @@ class ElasticsearchCatalogConfig(PluginConfig):
         • A bulk reindex task is dispatched to (re-)populate the STAC items index
           for collections that have search_index=True.
     """
+    _plugin_id: ClassVar[Optional[str]] = ES_CATALOG_CONFIG_ID
+    _on_apply: ClassVar[Optional[Callable]] = _on_apply_es_catalog_config
 
     obfuscated: bool = Field(
         False,

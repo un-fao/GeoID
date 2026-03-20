@@ -26,7 +26,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 from typing import List, Optional, Any, Dict, AsyncGenerator
-from async_lru import alru_cache
+from dynastore.tools.cache import cached
 from dynastore.modules import ModuleProtocol
 from dynastore.modules.db_config.query_executor import (
     DDLQuery,
@@ -661,7 +661,7 @@ async def update_task(
     return Task.model_validate(updated_task_dict) if updated_task_dict else None
 
 
-@alru_cache(maxsize=256)
+@cached(maxsize=256, namespace="tasks", ignore=["conn"])
 async def get_task(conn: DbResource, task_id: uuid.UUID, schema: str) -> Optional[Task]:
     """Retrieves a single task by its ID from the global tasks table."""
     task_schema = get_task_schema()

@@ -16,9 +16,9 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from typing import List, Optional, Any, Literal, Dict, Type
+from typing import ClassVar, List, Optional, Any, Literal, Dict, Type
 from pydantic import BaseModel, Field, model_validator
-from dynastore.modules.db_config.platform_config_service import PluginConfig, register_config
+from dynastore.modules.db_config.platform_config_service import PluginConfig
 from dynastore.modules.catalog.catalog_config import VersioningBehaviorEnum
 
 # --- Configuration Identifier ---
@@ -26,12 +26,12 @@ INGESTION_CONFIG_ID = "ingestion"
 
 # --- Main Ingestion Config ---
 
-@register_config(INGESTION_CONFIG_ID)
 class IngestionPluginConfig(PluginConfig):
     """
     Configuration for the Ingestion Module.
     This can be updated at any time via API.
     """
+    _plugin_id: ClassVar[Optional[str]] = INGESTION_CONFIG_ID
     # 1. Behavior Rules
     versioning_behavior: VersioningBehaviorEnum = Field(
         default=VersioningBehaviorEnum.ALWAYS_ADD_NEW,

@@ -44,7 +44,7 @@ from aiohttp.typedefs import LooseCookies, LooseHeaders
 import xml.etree.ElementTree as ET
 import dynastore.extensions.httpx.httpx_service as httpx_service
 from pydantic import AnyUrl, confloat
-from functools import lru_cache
+from dynastore.tools.cache import cached
 from dynastore.extensions import ExtensionProtocol, get_extension_instance
 
 try:
@@ -405,8 +405,8 @@ MAX_XML_IN_MEMORY_SIZE = 1024 * 1024 * 5  # 5MB
 HTTP_TIMEOUT = 10.0
 ALLOWED_CONTENT_TYPES = {"text/xml", "application/xml"}
 
-# Use lru_cache to memoize parser configurations
-@lru_cache(maxsize=1)
+# Use cached to memoize parser configurations
+@cached(maxsize=1)
 def get_safe_parser_config():
     return {
         "xmltodict": {

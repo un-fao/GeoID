@@ -1,130 +1,958 @@
-import asyncio
-import functools
-import logging
-import inspect
-from typing import Any, Callable, TypeVar, Optional, List, Tuple
+#    Copyright 2025 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
 
-from async_lru import alru_cache as async_lru_cache
+"""
+Centralized caching framework -- decorator, backends, serializers, manager.
+
+Two-layer architecture:
+- ``CacheBackend`` / ``SyncCacheBackend``: low-level (bytes), for implementors
+- ``Cache``: high-level (typed), for application code
+- ``@cached``: decorator built on top, not part of the protocol
+
+Usage::
+
+    from dynastore.tools.cache import cached, CacheIgnore
+
+    @cached(maxsize=1024, ttl=300, namespace="catalog_config", ignore=["conn"])
+    async def get_config(catalog_id: str, conn: DbResource) -> dict:
+        ...
+
+    # or using type annotation:
+    @cached(maxsize=1024, ttl=300, namespace="catalog_config")
+    async def get_config(catalog_id: str, conn: CacheIgnore[DbResource] = None) -> dict:
+        ...
+"""
+
+from __future__ import annotations
+
+import asyncio
+import collections
+import functools
+import hashlib
+import inspect
+import json
+import logging
+import random
+import threading
+import time
+from datetime import timedelta
+from typing import (
+    Annotated,
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    Generic,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
+
+from dynastore.models.protocols.cache import (
+    Cache,
+    CacheBackend,
+    CacheConfig,
+    CacheEvent,
+    CacheEventData,
+    CacheEventListener,
+    CacheItemPriority,
+    CacheManagerProtocol,
+    CacheSerializer,
+    CacheStats,
+    SyncCacheBackend,
+)
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-def alru_cache(
-    maxsize: int = 128,
-    typed: bool = False,
-    exclude_kwargs: Optional[List[str]] = None,
-) -> Callable:
+
+# ---------------------------------------------------------------------------
+#  CacheIgnore type annotation
+# ---------------------------------------------------------------------------
+
+
+class _CacheIgnoreMarker:
+    """Sentinel marker for CacheIgnore[T] annotation."""
+
+
+CacheIgnore = Annotated[T, _CacheIgnoreMarker()]
+"""Type annotation to exclude a parameter from cache key generation.
+
+Usage::
+
+    async def get_config(
+        catalog_id: str,
+        conn: CacheIgnore[DbResource] = None,
+    ) -> dict:
+        ...
+"""
+
+
+def _has_cache_ignore(annotation: Any) -> bool:
+    """Check if an annotation is CacheIgnore[T]."""
+    if get_origin(annotation) is Annotated:
+        for arg in get_args(annotation):
+            if isinstance(arg, _CacheIgnoreMarker):
+                return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+#  Serializers
+# ---------------------------------------------------------------------------
+
+
+class NullSerializer:
+    """Passthrough for in-memory backends -- stores objects directly."""
+
+    def dumps(self, value: Any) -> bytes:
+        return value  # type: ignore[return-value]
+
+    def loads(self, data: bytes) -> Any:
+        return data
+
+
+class JsonSerializer:
+    """JSON serialization -- safe, inspectable, default for distributed."""
+
+    def dumps(self, value: Any) -> bytes:
+        return json.dumps(value, default=str, separators=(",", ":")).encode("utf-8")
+
+    def loads(self, data: bytes) -> Any:
+        return json.loads(data)
+
+
+class PydanticSerializer:
+    """Auto-detects Pydantic models and uses model_dump_json/model_validate_json."""
+
+    def dumps(self, value: Any) -> bytes:
+        if hasattr(value, "model_dump_json"):
+            return value.model_dump_json().encode("utf-8")
+        return json.dumps(value, default=str, separators=(",", ":")).encode("utf-8")
+
+    def loads(self, data: bytes) -> Any:
+        return json.loads(data)
+
+
+class MsgPackSerializer:
+    """Compact binary serialization using msgpack (optional dependency)."""
+
+    def __init__(self) -> None:
+        try:
+            import msgpack  # noqa: F401
+            self._msgpack = msgpack
+        except ImportError:
+            raise ImportError(
+                "msgpack is required for MsgPackSerializer. "
+                "Install it with: pip install msgpack"
+            )
+
+    def dumps(self, value: Any) -> bytes:
+        return self._msgpack.packb(value, use_bin_type=True)
+
+    def loads(self, data: bytes) -> Any:
+        return self._msgpack.unpackb(data, raw=False)
+
+
+# ---------------------------------------------------------------------------
+#  Cache key builder
+# ---------------------------------------------------------------------------
+
+
+def _make_cache_key(
+    func_qualname: str,
+    args: tuple,
+    kwargs: dict,
+    sig: inspect.Signature,
+    ignored_params: Set[str],
+    typed: bool,
+) -> str:
+    """Build a deterministic cache key from function call arguments."""
+    bound = sig.bind(*args, **kwargs)
+    bound.apply_defaults()
+
+    key_parts: list = [func_qualname]
+
+    for param_name, param_value in bound.arguments.items():
+        if param_name in ignored_params:
+            continue
+        if param_name == "self":
+            continue
+        try:
+            key_parts.append(repr(param_value))
+            if typed:
+                key_parts.append(type(param_value).__name__)
+        except Exception:
+            key_parts.append(str(id(param_value)))
+
+    raw = "|".join(key_parts)
+    if len(raw) > 200:
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return raw
+
+
+# ---------------------------------------------------------------------------
+#  _CacheEntry - internal storage record
+# ---------------------------------------------------------------------------
+
+
+class _CacheEntry:
+    """Internal record stored in the local cache backends."""
+    __slots__ = ("value", "expires_at", "priority")
+
+    def __init__(
+        self,
+        value: Any,
+        expires_at: Optional[float],
+        priority: int = CacheItemPriority.NORMAL,
+    ):
+        self.value = value
+        self.expires_at = expires_at
+        self.priority = priority
+
+    def is_expired(self) -> bool:
+        return self.expires_at is not None and time.monotonic() > self.expires_at
+
+
+# ---------------------------------------------------------------------------
+#  LocalAsyncCacheBackend
+# ---------------------------------------------------------------------------
+
+
+class LocalAsyncCacheBackend:
+    """In-memory async cache backend using OrderedDict with LRU eviction.
+
+    - TTL checked on ``get()``, lazy expiration
+    - Thundering-herd protection via per-key ``asyncio.Lock``
+    - ``NullSerializer`` (stores objects directly)
+    - priority = 1000
     """
-    Extensible async LRU cache decorator.
-    Acts as a wrapper around async_lru.alru_cache.
 
-    This permits overriding the behavior (e.g., using Redis or Memorystore
-    for central distributed caching) seamlessly in the future without changing
-    the method signatures of cached functions.
+    def __init__(self, max_size: int = 4096) -> None:
+        self._store: collections.OrderedDict[str, _CacheEntry] = collections.OrderedDict()
+        self._max_size = max_size
+        self._locks: Dict[str, asyncio.Lock] = {}
+        self._global_lock = asyncio.Lock()
+        self._stats = CacheStats(maxsize=max_size)
 
-    It also provides advanced functionality like `exclude_kwargs`, which drops
-    specified arguments (e.g., `db_resource`) from the cache key generation.
+    @property
+    def name(self) -> str:
+        return "local-async"
+
+    @property
+    def priority(self) -> int:
+        return 1000
+
+    async def get(self, key: str) -> Optional[bytes]:
+        entry = self._store.get(key)
+        if entry is None:
+            return None
+        if entry.is_expired():
+            del self._store[key]
+            return None
+        self._store.move_to_end(key)
+        return entry.value  # type: ignore[return-value]
+
+    async def set(
+        self,
+        key: str,
+        value: bytes,
+        *,
+        ttl: Optional[float] = None,
+        exist: Optional[bool] = None,
+    ) -> bool:
+        has_key = key in self._store
+        if exist is True and not has_key:
+            return False
+        if exist is False and has_key:
+            return False
+
+        expires_at = (time.monotonic() + ttl) if ttl is not None else None
+        entry = _CacheEntry(value=value, expires_at=expires_at)
+
+        if has_key:
+            self._store[key] = entry
+            self._store.move_to_end(key)
+        else:
+            self._evict_if_needed()
+            self._store[key] = entry
+
+        self._stats.size = len(self._store)
+        return True
+
+    async def clear(
+        self,
+        *,
+        key: Optional[str] = None,
+        namespace: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ) -> bool:
+        if key is not None:
+            if key in self._store:
+                del self._store[key]
+                self._stats.size = len(self._store)
+                return True
+            return False
+
+        if namespace is not None:
+            prefix = namespace + ":"
+            to_delete = [k for k in self._store if k.startswith(prefix)]
+            for k in to_delete:
+                del self._store[k]
+            self._stats.size = len(self._store)
+            return len(to_delete) > 0
+
+        # tags: not supported in local backend (no tag index)
+        if tags is not None:
+            return False
+
+        # Clear everything
+        had_items = len(self._store) > 0
+        self._store.clear()
+        self._locks.clear()
+        self._stats.size = 0
+        return had_items
+
+    async def exists(self, key: str) -> bool:
+        entry = self._store.get(key)
+        if entry is None:
+            return False
+        if entry.is_expired():
+            del self._store[key]
+            return False
+        return True
+
+    async def close(self) -> None:
+        self._store.clear()
+        self._locks.clear()
+
+    def _evict_if_needed(self) -> None:
+        while len(self._store) >= self._max_size:
+            # Find lowest-priority entry to evict (skip NEVER_REMOVE)
+            evict_key = None
+            for k, entry in self._store.items():
+                if entry.priority < CacheItemPriority.NEVER_REMOVE:
+                    evict_key = k
+                    break
+            if evict_key is None:
+                # All entries are NEVER_REMOVE, evict oldest anyway
+                evict_key = next(iter(self._store))
+            del self._store[evict_key]
+            self._stats.evictions += 1
+
+    async def get_lock(self, key: str) -> asyncio.Lock:
+        async with self._global_lock:
+            if key not in self._locks:
+                self._locks[key] = asyncio.Lock()
+            return self._locks[key]
+
+
+# ---------------------------------------------------------------------------
+#  LocalSyncCacheBackend
+# ---------------------------------------------------------------------------
+
+
+class LocalSyncCacheBackend:
+    """In-memory synchronous cache backend using OrderedDict with LRU eviction.
+
+    - Same semantics as ``LocalAsyncCacheBackend`` but for sync contexts
+    - priority = 1000
+    """
+
+    def __init__(self, max_size: int = 4096) -> None:
+        self._store: collections.OrderedDict[str, _CacheEntry] = collections.OrderedDict()
+        self._max_size = max_size
+        self._lock = threading.Lock()
+        self._stats = CacheStats(maxsize=max_size)
+
+    @property
+    def name(self) -> str:
+        return "local-sync"
+
+    @property
+    def priority(self) -> int:
+        return 1000
+
+    def get(self, key: str) -> Optional[bytes]:
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return None
+            if entry.is_expired():
+                del self._store[key]
+                return None
+            self._store.move_to_end(key)
+            return entry.value  # type: ignore[return-value]
+
+    def set(
+        self,
+        key: str,
+        value: bytes,
+        *,
+        ttl: Optional[float] = None,
+        exist: Optional[bool] = None,
+    ) -> bool:
+        with self._lock:
+            has_key = key in self._store
+            if exist is True and not has_key:
+                return False
+            if exist is False and has_key:
+                return False
+
+            expires_at = (time.monotonic() + ttl) if ttl is not None else None
+            entry = _CacheEntry(value=value, expires_at=expires_at)
+
+            if has_key:
+                self._store[key] = entry
+                self._store.move_to_end(key)
+            else:
+                self._evict_if_needed()
+                self._store[key] = entry
+
+            self._stats.size = len(self._store)
+            return True
+
+    def clear(
+        self,
+        *,
+        key: Optional[str] = None,
+        namespace: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ) -> bool:
+        with self._lock:
+            if key is not None:
+                if key in self._store:
+                    del self._store[key]
+                    self._stats.size = len(self._store)
+                    return True
+                return False
+
+            if namespace is not None:
+                prefix = namespace + ":"
+                to_delete = [k for k in self._store if k.startswith(prefix)]
+                for k in to_delete:
+                    del self._store[k]
+                self._stats.size = len(self._store)
+                return len(to_delete) > 0
+
+            if tags is not None:
+                return False
+
+            had_items = len(self._store) > 0
+            self._store.clear()
+            self._stats.size = 0
+            return had_items
+
+    def exists(self, key: str) -> bool:
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return False
+            if entry.is_expired():
+                del self._store[key]
+                return False
+            return True
+
+    def close(self) -> None:
+        with self._lock:
+            self._store.clear()
+
+    def _evict_if_needed(self) -> None:
+        while len(self._store) >= self._max_size:
+            evict_key = None
+            for k, entry in self._store.items():
+                if entry.priority < CacheItemPriority.NEVER_REMOVE:
+                    evict_key = k
+                    break
+            if evict_key is None:
+                evict_key = next(iter(self._store))
+            del self._store[evict_key]
+            self._stats.evictions += 1
+
+
+# ---------------------------------------------------------------------------
+#  LocalCache -- high-level Cache wrapping local async backend
+# ---------------------------------------------------------------------------
+
+
+class LocalCache:
+    """High-level ``Cache`` implementation wrapping a ``LocalAsyncCacheBackend``.
+
+    Handles namespacing, serialization, events, and stampede protection
+    via ``get_or_set()``.
+    """
+
+    def __init__(
+        self,
+        backend: LocalAsyncCacheBackend,
+        config: CacheConfig,
+        serializer: Optional[CacheSerializer] = None,
+        event_listeners: Optional[List[CacheEventListener]] = None,
+    ):
+        self._backend = backend
+        self._config = config
+        self._serializer = serializer or NullSerializer()
+        self._listeners = event_listeners or []
+        self._stats = CacheStats(maxsize=config.max_size)
+
+    def _full_key(self, key: str, namespace: Optional[str] = None) -> str:
+        ns = namespace or self._config.namespace
+        return f"{ns}:{key}" if ns else key
+
+    def _resolve_ttl(self, ttl: Optional[Union[timedelta, float]]) -> Optional[float]:
+        if ttl is not None:
+            return ttl.total_seconds() if isinstance(ttl, timedelta) else float(ttl)
+        if self._config.default_ttl is not None:
+            return float(self._config.default_ttl)
+        return None
+
+    async def _emit(self, event: CacheEvent, key: Optional[str] = None, **kw: Any) -> None:
+        if not self._listeners:
+            return
+        data = CacheEventData(
+            event=event,
+            key=key,
+            namespace=self._config.namespace,
+            backend_name=self._backend.name,
+            **kw,
+        )
+        for listener in self._listeners:
+            try:
+                result = listener(data)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.debug("Cache event listener error", exc_info=True)
+
+    async def get(
+        self,
+        key: str,
+        *,
+        default: Any = None,
+        namespace: Optional[str] = None,
+    ) -> Any:
+        full_key = self._full_key(key, namespace)
+        t0 = time.monotonic()
+        raw = await self._backend.get(full_key)
+        elapsed = (time.monotonic() - t0) * 1000
+
+        if raw is None:
+            self._stats.misses += 1
+            await self._emit(CacheEvent.GET_MISS, key=full_key, elapsed_ms=elapsed)
+            return default
+
+        self._stats.hits += 1
+        await self._emit(CacheEvent.GET_HIT, key=full_key, elapsed_ms=elapsed)
+        return self._serializer.loads(raw)
+
+    async def set(
+        self,
+        key: str,
+        value: Any,
+        *,
+        ttl: Optional[Union[timedelta, float]] = None,
+        namespace: Optional[str] = None,
+        exist: Optional[bool] = None,
+        priority: CacheItemPriority = CacheItemPriority.NORMAL,
+        tags: Optional[List[str]] = None,
+    ) -> bool:
+        if not self._config.enable:
+            return False
+        full_key = self._full_key(key, namespace)
+        resolved_ttl = self._resolve_ttl(ttl)
+        serialized = self._serializer.dumps(value)
+        ok = await self._backend.set(
+            full_key, serialized, ttl=resolved_ttl, exist=exist
+        )
+        if ok:
+            await self._emit(CacheEvent.SET, key=full_key, ttl=resolved_ttl)
+        return ok
+
+    async def clear(
+        self,
+        *,
+        key: Optional[str] = None,
+        namespace: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ) -> bool:
+        full_key = self._full_key(key) if key else None
+        ns = namespace or (None if key else self._config.namespace or None)
+        result = await self._backend.clear(key=full_key, namespace=ns, tags=tags)
+        if result:
+            await self._emit(CacheEvent.CLEAR, key=full_key)
+        self._stats.size = self._backend._stats.size
+        return result
+
+    async def exists(
+        self,
+        key: str,
+        *,
+        namespace: Optional[str] = None,
+    ) -> bool:
+        return await self._backend.exists(self._full_key(key, namespace))
+
+    async def get_or_set(
+        self,
+        key: str,
+        factory: Callable[[], Awaitable[Any]],
+        *,
+        ttl: Optional[Union[timedelta, float]] = None,
+        namespace: Optional[str] = None,
+    ) -> Any:
+        full_key = self._full_key(key, namespace)
+
+        # Fast path: value in cache
+        raw = await self._backend.get(full_key)
+        if raw is not None:
+            self._stats.hits += 1
+            return self._serializer.loads(raw)
+
+        # Slow path: acquire per-key lock for stampede protection
+        lock = await self._backend.get_lock(full_key)
+        async with lock:
+            # Double-check after acquiring lock
+            raw = await self._backend.get(full_key)
+            if raw is not None:
+                self._stats.hits += 1
+                return self._serializer.loads(raw)
+
+            self._stats.misses += 1
+            value = await factory()
+            resolved_ttl = self._resolve_ttl(ttl)
+            serialized = self._serializer.dumps(value)
+            await self._backend.set(full_key, serialized, ttl=resolved_ttl)
+            await self._emit(CacheEvent.SET, key=full_key, ttl=resolved_ttl)
+            return value
+
+    async def close(self) -> None:
+        pass  # Backend lifecycle managed by CacheManager
+
+
+# ---------------------------------------------------------------------------
+#  CacheManager -- central registry + factory
+# ---------------------------------------------------------------------------
+
+
+class CacheManager:
+    """Central cache backend registry and factory.
+
+    Pre-registers ``LocalAsyncCacheBackend`` (priority=1000) and
+    ``LocalSyncCacheBackend`` (priority=1000).  When Redis/Memcache backends
+    register with lower priority, they transparently take over.
+
+    Discoverable via ``get_protocol(CacheManagerProtocol)``.
+    """
+
+    def __init__(self) -> None:
+        self._async_backends: Dict[str, LocalAsyncCacheBackend] = {}
+        self._sync_backends: Dict[str, LocalSyncCacheBackend] = {}
+        self._event_listeners: List[CacheEventListener] = []
+
+        # Pre-register local backends
+        self._default_async = LocalAsyncCacheBackend()
+        self._default_sync = LocalSyncCacheBackend()
+        self._async_backends[self._default_async.name] = self._default_async
+        self._sync_backends[self._default_sync.name] = self._default_sync
+
+    def register_backend(
+        self, backend: Union[CacheBackend, SyncCacheBackend]
+    ) -> None:
+        if hasattr(backend, "__await__") or inspect.iscoroutinefunction(getattr(backend, "get", None)):
+            self._async_backends[backend.name] = backend  # type: ignore[assignment]
+        else:
+            # Check if it has async get method
+            get_method = getattr(backend, "get", None)
+            if get_method and asyncio.iscoroutinefunction(get_method):
+                self._async_backends[backend.name] = backend  # type: ignore[assignment]
+            else:
+                self._sync_backends[backend.name] = backend  # type: ignore[assignment]
+        logger.info("Registered cache backend: %s (priority=%d)", backend.name, backend.priority)
+
+    def get_async_backend(
+        self, name: Optional[str] = None
+    ) -> CacheBackend:
+        if name is not None:
+            backend = self._async_backends.get(name)
+            if backend is None:
+                raise KeyError(f"No async cache backend named '{name}'")
+            return backend  # type: ignore[return-value]
+        if not self._async_backends:
+            raise RuntimeError("No async cache backends registered")
+        return min(self._async_backends.values(), key=lambda b: b.priority)  # type: ignore[return-value]
+
+    def get_sync_backend(
+        self, name: Optional[str] = None
+    ) -> SyncCacheBackend:
+        if name is not None:
+            backend = self._sync_backends.get(name)
+            if backend is None:
+                raise KeyError(f"No sync cache backend named '{name}'")
+            return backend  # type: ignore[return-value]
+        if not self._sync_backends:
+            raise RuntimeError("No sync cache backends registered")
+        return min(self._sync_backends.values(), key=lambda b: b.priority)  # type: ignore[return-value]
+
+    def create_cache(self, config: CacheConfig) -> Cache:
+        backend = self._default_async
+        if config.max_size:
+            backend = LocalAsyncCacheBackend(max_size=config.max_size)
+            self._async_backends[f"local-async-{config.namespace or id(backend)}"] = backend
+        return LocalCache(
+            backend=backend,
+            config=config,
+            serializer=NullSerializer(),
+            event_listeners=list(self._event_listeners),
+        )  # type: ignore[return-value]
+
+    def add_event_listener(self, listener: CacheEventListener) -> None:
+        self._event_listeners.append(listener)
+
+
+# ---------------------------------------------------------------------------
+#  Module-level singleton
+# ---------------------------------------------------------------------------
+
+_cache_manager: Optional[CacheManager] = None
+
+
+def get_cache_manager() -> CacheManager:
+    """Get or create the global CacheManager singleton."""
+    global _cache_manager
+    if _cache_manager is None:
+        _cache_manager = CacheManager()
+    return _cache_manager
+
+
+def _register_cache_manager_as_plugin() -> None:
+    """Register CacheManager with the plugin discovery system.
+
+    Called lazily on first ``@cached`` usage to avoid circular imports.
+    """
+    try:
+        from dynastore.tools.discovery import register_plugin
+        manager = get_cache_manager()
+        register_plugin(manager)
+    except ImportError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+#  @cached decorator
+# ---------------------------------------------------------------------------
+
+
+def cached(
+    maxsize: int = 1024,
+    ttl: Optional[Union[float, int]] = None,
+    jitter: Optional[Union[float, int]] = None,
+    backend: Optional[str] = None,
+    namespace: Optional[str] = None,
+    ignore: Optional[List[str]] = None,
+    typed: bool = False,
+    condition: Optional[Callable[[Any], bool]] = None,
+    key_builder: Optional[Callable[..., str]] = None,
+) -> Callable:
+    """Centralized caching decorator for sync and async functions.
+
+    Replaces all ``@alru_cache`` / ``@lru_cache`` usage across the codebase.
 
     Args:
-        maxsize: Maximum size of the cache.
-        typed: Whether to cache differently based on argument types.
-        exclude_kwargs: List of argument names to exclude from the cache key computation.
-                        This is critical for excluding DB connections that change
-                        across requests but yield the same deterministic results.
+        maxsize: Maximum number of entries.
+        ttl: Time-to-live in seconds. ``None`` = no expiration.
+        jitter: Random TTL variance in seconds (prevents thundering herd on expiry).
+        backend: Named backend or ``None`` for default local memory.
+        namespace: Cache namespace prefix for key isolation.
+        ignore: Parameter names to exclude from cache key.
+        typed: Cache differently based on argument types.
+        condition: Post-condition -- only cache if ``condition(result)`` is True.
+        key_builder: Custom key builder ``(func, *args, **kwargs) -> str``.
 
-    Returns:
-        A decorated async function that supports caching.
+    The decorated function gets these methods:
+        - ``.cache_invalidate(*args, **kwargs)`` -- invalidate specific entry
+        - ``.cache_clear()`` -- clear all entries for this namespace
+        - ``.cache_info()`` -> ``CacheStats``
     """
 
     def decorator(func: Callable) -> Callable:
-        # We need to inspect the signature to handle positional arguments 
-        # dynamically when creating the cache key if we drop certain params.
         sig = inspect.signature(func)
-        excluded = set(exclude_kwargs) if exclude_kwargs else set()
+        is_async = inspect.iscoroutinefunction(func)
+        func_qualname = func.__qualname__
 
-        @async_lru_cache(maxsize=maxsize, typed=typed)
-        async def _cached_func_wrapper(*args, **kwargs):
-            # This wrapper is used purely to be targeted by async_lru.
-            # The actual execution happens inside the wrapper logic below.
-            return await func(*args, **kwargs)
+        # Determine ignored params: explicit + CacheIgnore[T] annotations
+        ignored_params: Set[str] = set(ignore or [])
+        try:
+            hints = get_type_hints(func, include_extras=True)
+            for param_name, annotation in hints.items():
+                if param_name == "return":
+                    continue
+                if _has_cache_ignore(annotation):
+                    ignored_params.add(param_name)
+        except Exception:
+            pass
 
-        @functools.wraps(func)
-        async def wrapper(*args, **kwargs):
-            if not excluded:
-                return await _cached_func_wrapper(*args, **kwargs)
+        # Detect instance method (first param is 'self')
+        params = list(sig.parameters.keys())
+        is_method = len(params) > 0 and params[0] == "self"
 
-            # Bind the arguments to the function signature
-            bound_args = sig.bind(*args, **kwargs)
-            bound_args.apply_defaults()
+        # Each decorator instance gets its own backend
+        _backend = LocalAsyncCacheBackend(max_size=maxsize) if is_async else None
+        _sync_backend = LocalSyncCacheBackend(max_size=maxsize) if not is_async else None
+        _locks: Dict[str, asyncio.Lock] = {}
+        _global_lock = asyncio.Lock() if is_async else None
 
-            # Create a tuple of arguments excluding the drop_params for the cache
-            cache_args_dict = {
-                k: v for k, v in bound_args.arguments.items() if k not in excluded
-            }
+        ns = namespace or func_qualname
 
-            # We use a secondary function bound to async_lru that only takes the filtered args.
-            # However, `async_lru` needs to call the ORIGINAL function with ALL args (including DB conn).
-            # To achieve this cleanly with async_lru, we cache a factory that wraps the call
-            # or we modify the cache key. async_lru doesn't easily let us change the cache key.
-            # A common approach is to pass the excluded kwargs into an un-cached closure, but
-            # since the DB connection is required to fetch, we MUST pass it to the real function.
-            
-            # Since async_lru uses all passed args for the cache key, we can't easily 
-            # pass `db_resource` to `_cached_func_wrapper` without it becoming part of the key.
-            # Therefore, we use a custom closure cache method:
-            raise NotImplementedError("Exclusion of kwargs in async_lru requires custom key generation, which is complex. Using a custom memory dict for now if exclude_kwargs is used.")
+        def _build_key(args: tuple, kwargs: dict) -> str:
+            if key_builder is not None:
+                return key_builder(func, *args, **kwargs)
+            return _make_cache_key(
+                ns, args, kwargs, sig, ignored_params, typed
+            )
 
-        # If we have excluded kwargs, we implement a custom dictionary cache
-        # until a full Redis/Memorystore backend handles it.
-        # Otherwise, we use the standard async_lru_cache wrapper.
-        
-        if not excluded:
-            return _cached_func_wrapper
+        def _resolve_ttl() -> Optional[float]:
+            if ttl is None:
+                return None
+            base = float(ttl)
+            if jitter:
+                base += random.uniform(-float(jitter), float(jitter))
+                base = max(0.1, base)
+            return base
 
-        # Custom Memory Cache Implementation for Excluded Params
-        cache: dict[tuple, Any] = {}
-        locks: dict[tuple, asyncio.Lock] = {}
+        if is_async:
+            assert _backend is not None
 
-        @functools.wraps(func)
-        async def custom_cache_wrapper(*args, **kwargs):
-            bound_args = sig.bind(*args, **kwargs)
-            bound_args.apply_defaults()
-            
-            # Build cache key
-            cache_key_elements = []
-            for k, v in bound_args.arguments.items():
-                if k not in excluded:
-                    cache_key_elements.append((k, v))
-            cache_key = tuple(cache_key_elements)
+            @functools.wraps(func)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                cache_key = _build_key(args, kwargs)
 
-            if cache_key in cache:
-                return cache[cache_key]
+                # Fast path
+                raw = await _backend.get(cache_key)
+                if raw is not None:
+                    _backend._stats.hits += 1
+                    return raw  # NullSerializer: stored as-is
 
-            # Lock to prevent Thundering Herd
-            if cache_key not in locks:
-                locks[cache_key] = asyncio.Lock()
-            
-            async with locks[cache_key]:
-                # Check again after acquiring lock
-                if cache_key in cache:
-                    return cache[cache_key]
-                
-                result = await func(*args, **kwargs)
-                
-                # Check maxsize
-                if len(cache) >= maxsize:
-                    # Very crude LRU eviction (pops random/oldest)
-                    cache.pop(next(iter(cache)))
-                    
-                cache[cache_key] = result
+                # Stampede protection
+                lock = await _backend.get_lock(cache_key)
+                async with lock:
+                    raw = await _backend.get(cache_key)
+                    if raw is not None:
+                        _backend._stats.hits += 1
+                        return raw
+
+                    _backend._stats.misses += 1
+                    result = await func(*args, **kwargs)
+
+                    if condition is not None and not condition(result):
+                        return result
+
+                    resolved = _resolve_ttl()
+                    await _backend.set(cache_key, result, ttl=resolved)  # type: ignore[arg-type]
+                    return result
+
+            def sync_cache_invalidate_impl(*args: Any, **kwargs: Any) -> None:
+                """Sync invalidation -- works in both sync and async contexts."""
+                cache_key = _build_key(args, kwargs)
+                if cache_key in _backend._store:
+                    del _backend._store[cache_key]
+                    _backend._stats.size = len(_backend._store)
+
+            def sync_cache_clear_impl() -> None:
+                """Sync clear -- works in both sync and async contexts."""
+                prefix = ns + ":"
+                to_delete = [k for k in _backend._store if k.startswith(prefix)]
+                if not to_delete:
+                    # Also clear if no namespace prefix (clear all)
+                    _backend._store.clear()
+                    _backend._locks.clear()
+                else:
+                    for k in to_delete:
+                        del _backend._store[k]
+                _backend._stats.size = len(_backend._store)
+
+            def cache_info() -> CacheStats:
+                return CacheStats(
+                    hits=_backend._stats.hits,
+                    misses=_backend._stats.misses,
+                    size=len(_backend._store),
+                    maxsize=maxsize,
+                    evictions=_backend._stats.evictions,
+                )
+
+            async_wrapper.cache_invalidate = sync_cache_invalidate_impl  # type: ignore[attr-defined]
+            async_wrapper.cache_clear = sync_cache_clear_impl  # type: ignore[attr-defined]
+            async_wrapper.cache_info = cache_info  # type: ignore[attr-defined]
+            async_wrapper._cache_backend = _backend  # type: ignore[attr-defined]
+            async_wrapper._cache_namespace = ns  # type: ignore[attr-defined]
+            return async_wrapper
+
+        else:
+            assert _sync_backend is not None
+
+            @functools.wraps(func)
+            def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+                cache_key = _build_key(args, kwargs)
+
+                raw = _sync_backend.get(cache_key)
+                if raw is not None:
+                    _sync_backend._stats.hits += 1
+                    return raw
+
+                _sync_backend._stats.misses += 1
+                result = func(*args, **kwargs)
+
+                if condition is not None and not condition(result):
+                    return result
+
+                resolved = _resolve_ttl()
+                _sync_backend.set(cache_key, result, ttl=resolved)  # type: ignore[arg-type]
                 return result
 
-        def cache_clear():
-            cache.clear()
-            locks.clear()
+            def sync_cache_invalidate(*args: Any, **kwargs: Any) -> None:
+                cache_key = _build_key(args, kwargs)
+                _sync_backend.clear(key=cache_key)
 
-        custom_cache_wrapper.cache_clear = cache_clear
-        return custom_cache_wrapper
+            def sync_cache_clear() -> None:
+                _sync_backend.clear(namespace=ns)
+
+            def cache_info() -> CacheStats:
+                return CacheStats(
+                    hits=_sync_backend._stats.hits,
+                    misses=_sync_backend._stats.misses,
+                    size=len(_sync_backend._store),
+                    maxsize=maxsize,
+                    evictions=_sync_backend._stats.evictions,
+                )
+
+            sync_wrapper.cache_invalidate = sync_cache_invalidate  # type: ignore[attr-defined]
+            sync_wrapper.cache_clear = sync_cache_clear  # type: ignore[attr-defined]
+            sync_wrapper.cache_info = cache_info  # type: ignore[attr-defined]
+            sync_wrapper._cache_backend = _sync_backend  # type: ignore[attr-defined]
+            sync_wrapper._cache_namespace = ns  # type: ignore[attr-defined]
+            return sync_wrapper
 
     return decorator
+
+
+# ---------------------------------------------------------------------------
+#  Convenience: alru_cache backward-compatible shim (for incremental migration)
+# ---------------------------------------------------------------------------
+# This is intentionally NOT provided. All call sites migrate to @cached.

@@ -285,6 +285,21 @@ class Web(ExtensionProtocol):
     async def lifespan(self, app: FastAPI):
         register_web_policies()
         logger.info("WebService: Policies registered.")
+
+        # Register push-based CORS config handler
+        from dynastore.modules.db_config.platform_config_service import ConfigRegistry
+        from dynastore.extensions.web.cors_middleware import (
+            SECURITY_PLUGIN_CONFIG_ID,
+            on_security_config_changed,
+            _cors_instance,
+        )
+        ConfigRegistry.register_apply_handler(
+            SECURITY_PLUGIN_CONFIG_ID, on_security_config_changed
+        )
+        if _cors_instance is not None:
+            await _cors_instance.initialize_from_db()
+        logger.info("WebService: CORS push handler registered.")
+
         yield
 
     def __init__(self, app: Optional[FastAPI] = None):

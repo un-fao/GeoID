@@ -22,7 +22,7 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any, Union, Callable, Awaitable, Annotated
 from sqlalchemy import text
-from async_lru import alru_cache
+from dynastore.tools.cache import cached
 from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 
 from dynastore.modules.db_config.query_executor import (
@@ -164,7 +164,7 @@ class AssetService(AssetsProtocol):
         self._event_emitter = event_emitter
 
         # Instance-bound cache for assets
-        self.get_asset_cached = alru_cache(maxsize=128)(self._get_asset_db)
+        self.get_asset_cached = cached(maxsize=128, namespace="assets")(self._get_asset_db)
 
     def is_available(self) -> bool:
         """Returns True if the manager is initialized and ready."""

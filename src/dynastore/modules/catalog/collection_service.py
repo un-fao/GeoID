@@ -20,7 +20,7 @@ import logging
 import json
 from typing import List, Optional, Any, Dict, Union, Tuple, Set, Callable
 from sqlalchemy import text
-from async_lru import alru_cache
+from dynastore.tools.cache import cached
 
 from dynastore.modules.db_config.query_executor import (
     DDLQuery,
@@ -55,10 +55,10 @@ class CollectionService:
     def __init__(self, engine: Optional[DbResource] = None):
         self.engine = engine
         # Instance-bound caches (private)
-        self._get_collection_model_cached = alru_cache(maxsize=1024)(
+        self._get_collection_model_cached = cached(maxsize=1024, namespace="collection_model")(
             self._get_collection_model_db
         )
-        self._resolve_physical_table_cached = alru_cache(maxsize=1024)(
+        self._resolve_physical_table_cached = cached(maxsize=1024, namespace="physical_table")(
             self._resolve_physical_table_db
         )
 

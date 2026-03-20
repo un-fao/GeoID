@@ -20,16 +20,16 @@ PlatformConfigsProtocol (REST API at /configs/security).
 Storage is fully pluggable — any PlatformConfigsProtocol implementation works.
 """
 
-from typing import List, Optional
+from typing import ClassVar, List, Optional
 from pydantic import Field
-from dynastore.modules.db_config.platform_config_service import PluginConfig, register_config
+from dynastore.modules.db_config.platform_config_service import PluginConfig
 
 SECURITY_PLUGIN_CONFIG_ID = "security"
 
 
-@register_config(SECURITY_PLUGIN_CONFIG_ID)
 class SecurityPluginConfig(PluginConfig):
     """Platform-level security configuration — changeable at runtime."""
+    _plugin_id: ClassVar[Optional[str]] = SECURITY_PLUGIN_CONFIG_ID
 
     # -- CORS --
     cors_allowed_origins: List[str] = Field(

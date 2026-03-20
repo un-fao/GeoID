@@ -56,7 +56,7 @@ except ImportError:
 
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
-from async_lru import alru_cache
+from dynastore.tools.cache import cached
 
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
@@ -324,7 +324,7 @@ class PlatformConfigManager(ProtocolPlugin[object], PlatformConfigsProtocol):
         return get_engine()
 
     def _setup_cache(self):
-        self.get_platform_config_internal_cached = alru_cache(maxsize=32)(
+        self.get_platform_config_internal_cached = cached(maxsize=64, ttl=300, namespace="platform_config")(
             self._get_platform_config_internal_db
         )
 
