@@ -502,7 +502,7 @@ class AdminService(ExtensionProtocol):
         principal: Principal = Depends(_require_admin),
         mgr=Depends(_get_apikey_manager),
     ):
-        keys = await mgr.list_api_keys(principal_id=principal_id)
+        keys = await mgr.search_keys(principal_id=principal_id)
         return [
             {
                 "key_hash": k.key_hash,
