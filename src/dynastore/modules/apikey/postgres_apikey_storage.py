@@ -490,7 +490,10 @@ GET_PRINCIPAL_ID_BY_IDENTIFIER = DQLQuery(
 )
 
 GET_PRINCIPAL_BY_ID = DQLQuery(
-    "SELECT * FROM {schema}.principals WHERE id = :id;",
+    """SELECT p.*, l.provider, l.subject_id
+    FROM {schema}.principals p
+    LEFT JOIN {schema}.identity_links l ON p.id = l.principal_id
+    WHERE p.id = :id;""",
     result_handler=ResultHandler.ONE_DICT,
     post_processor=lambda row: Principal(**row) if row else None,
 )
@@ -551,7 +554,10 @@ LIST_KEYS_BY_PRINCIPAL = DQLQuery(
 )
 
 LIST_PRINCIPALS = DQLQuery(
-    "SELECT * FROM {schema}.principals ORDER BY created_at DESC LIMIT :limit OFFSET :offset;",
+    """SELECT p.*, l.provider, l.subject_id
+    FROM {schema}.principals p
+    LEFT JOIN {schema}.identity_links l ON p.id = l.principal_id
+    ORDER BY p.created_at DESC LIMIT :limit OFFSET :offset;""",
     result_handler=ResultHandler.ALL_DICTS,
     post_processor=lambda rows: [Principal(**row) for row in rows],
 )

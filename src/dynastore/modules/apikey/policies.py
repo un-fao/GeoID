@@ -257,7 +257,7 @@ class PolicyService:
                 id="self_service_access",
                 description="Allows authenticated users to access their own /me endpoints.",
                 actions=["GET"],
-                resources=["/apikey/me/.*"],
+                resources=["/apikey/me/.*", "/auth/me"],
                 effect="ALLOW",
                 partition_key=partition_key,
             ),

@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import List, Optional, Any, Dict, Union, Tuple, cast, AsyncIterator
 from sqlalchemy import text
 
+import inspect as _inspect
 from dynastore.modules.db_config.query_executor import (
     DDLQuery,
     DQLQuery,
@@ -30,6 +31,7 @@ from dynastore.modules.db_config.query_executor import (
     DbResource,
     ResultHandler,
     managed_transaction,
+    is_async_resource,
 )
 from dynastore.modules.catalog.models import ItemDataForDB, Collection, Catalog
 from dynastore.modules.catalog.catalog_config import (
@@ -55,6 +57,15 @@ from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
 from dynastore.modules.catalog.sidecars.base import SidecarPipelineContext
 
 logger = logging.getLogger(__name__)
+
+
+async def _run_query(conn, stmt, params=None):
+    """Run a statement on either sync or async connection."""
+    result = conn.execute(stmt, params or {})
+    if _inspect.isawaitable(result):
+        result = await result
+    return result
+
 
 # --- Specialized Queries for ItemService ---
 
@@ -440,7 +451,7 @@ class ItemService(ItemsProtocol):
 
         optimizer = QueryOptimizer(col_config)
         sql, params = optimizer.build_optimized_query(request, phys_schema, phys_table)
-        rows = await conn.execute(text(sql), params)
+        rows = await _run_query(conn, text(sql), params)
         return [self.map_row_to_feature(dict(row._mapping), col_config) for row in rows]
 
     async def get_features_query(
@@ -656,7 +667,7 @@ class ItemService(ItemsProtocol):
                 request, ctx, catalog_id, collection_id, col_config
             )
 
-            result = await conn.execute(text(sql), params)
+            result = await _run_query(conn, text(sql), params)
             row = result.mappings().first()
 
             return (
@@ -1351,7 +1362,7 @@ class ItemService(ItemsProtocol):
             limit=1,
         )
         sql, params = optimizer.build_optimized_query(fetch_req, schema, hub_table)
-        result = await conn.execute(text(sql), params)
+        result = await _run_query(conn, text(sql), params)
         row = result.mappings().first()
         if row is None:
             return None
@@ -1413,7 +1424,7 @@ class ItemService(ItemsProtocol):
             limit=1,
         )
         sql, params = optimizer.build_optimized_query(fetch_req, schema, hub_table)
-        result = await conn.execute(text(sql), params)
+        result = await _run_query(conn, text(sql), params)
         row = result.mappings().first()
         if row is None:
             return None
