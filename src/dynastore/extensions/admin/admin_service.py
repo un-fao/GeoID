@@ -60,9 +60,11 @@ def _require_admin(request: Request):
 def _get_apikey_manager():
     """Dependency: returns the ApiKeyService from the protocol registry."""
     mgr = get_protocol(ApiKeyProtocol)
-    if not mgr or not hasattr(mgr, "_apikey_manager"):
+    if not mgr:
         raise HTTPException(status_code=503, detail="Auth service not available.")
-    return mgr._apikey_manager
+    # The protocol instance may be the service directly (registered via register_plugin)
+    # or a module wrapper with _apikey_manager attribute.
+    return getattr(mgr, "_apikey_manager", mgr)
 class AdminService(ExtensionProtocol):
     priority: int = 200
     """Admin REST API — user, role, policy, and catalog assignment management."""
