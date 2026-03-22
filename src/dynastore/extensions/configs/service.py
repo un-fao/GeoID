@@ -44,6 +44,8 @@ from dynastore.modules.db_config.exceptions import (
 
 from .policies import register_configs_policies
 
+logger = logging.getLogger(__name__)
+
 # Ensure core plugins are registered by importing their config modules if available
 try:
     import dynastore.modules.catalog.catalog_config
@@ -55,8 +57,6 @@ try:
     import dynastore.extensions.features.features_config
 except ImportError as e:
     logger.debug(f"ConfigsService: Some core configs not available for pre-registration: {e}")
-
-logger = logging.getLogger(__name__)
 class ConfigsService(ExtensionProtocol):
     priority: int = 100
     """
