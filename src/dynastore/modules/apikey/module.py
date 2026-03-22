@@ -18,6 +18,7 @@
 
 # File: dynastore/modules/apikey/module.py
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from dynastore.modules import ModuleProtocol, get_protocol
@@ -49,6 +50,7 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._pending_tasks = []
+        self._role_lock = asyncio.Lock()
         # Register as early as possible to be discoverable during extension configuration
         register_plugin(self)
 
@@ -179,26 +181,32 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
             logger.warning(f"Failed to persist policy {policy.id}: {e}")
 
     async def _persist_role(self, role: Any):
-        """Persist a role to the database via storage upsert."""
-        try:
-            from dynastore.modules.db_config.query_executor import managed_transaction
-            from dynastore.models.protocols import DatabaseProtocol
-            db = get_protocol(DatabaseProtocol)
-            engine = db.engine if db else None
+        """Persist a role to the database via storage upsert.
 
-            async with managed_transaction(engine) as conn:
-                existing = await self.storage.get_role(role.name, schema="apikey", conn=conn)
-                if existing:
-                    # Merge policies
-                    merged_policies = list(set(existing.policies + role.policies))
-                    role = role.model_copy(update={"policies": merged_policies})
-                    await self.storage.update_role(role, schema="apikey", conn=conn)
-                else:
-                    await self.storage.create_role(role, schema="apikey", conn=conn)
-                logger.debug(f"Persisted role: {role.name}")
-                self._policy_service._invalidate_cache()
-        except Exception as e:
-            logger.warning(f"Failed to persist role {role.name}: {e}")
+        Uses an asyncio lock to serialize concurrent role merges and
+        prevent read-modify-write races when multiple extensions register
+        policies for the same role (e.g. 'anonymous') during startup.
+        """
+        async with self._role_lock:
+            try:
+                from dynastore.modules.db_config.query_executor import managed_transaction
+                from dynastore.models.protocols import DatabaseProtocol
+                db = get_protocol(DatabaseProtocol)
+                engine = db.engine if db else None
+
+                async with managed_transaction(engine) as conn:
+                    existing = await self.storage.get_role(role.name, schema="apikey", conn=conn)
+                    if existing:
+                        # Merge policies
+                        merged_policies = list(set(existing.policies + role.policies))
+                        role = role.model_copy(update={"policies": merged_policies})
+                        await self.storage.update_role(role, schema="apikey", conn=conn)
+                    else:
+                        await self.storage.create_role(role, schema="apikey", conn=conn)
+                    logger.debug(f"Persisted role: {role.name}")
+                    self._policy_service._invalidate_cache()
+            except Exception as e:
+                logger.warning(f"Failed to persist role {role.name}: {e}")
 
     def register_policy(self, policy: Any) -> Any:
         """Persist policy to database. Called by extensions during lifespan."""
