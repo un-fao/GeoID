@@ -165,7 +165,7 @@ api_catalog = ["dynastore[api_core]", "dynastore[catalog_group]", "dynastore[gda
 # api_maps: maps/tiles/styles service
 api_maps = ["dynastore[api_core]", "dynastore[db_async]", "dynastore[g_catalog]", "dynastore[geometries]", "dynastore[maps_group]", "dynastore[dwh]"]
 # api_full: all features (for local dev or monolithic deployments)
-api_full = ["dynastore[api_catalog]", "dynastore[api_maps]"]
+api_full = ["dynastore[api_catalog]", "dynastore[api_maps]", "dynastore[stac]", "dynastore[crs]", "dynastore[geospatial_io]"]
 # geoid_service: api_catalog + geoid extension (geoid IS api + geoid module)
 geoid_service = ["dynastore[api_catalog]", "dynastore[extension_geoid]"]
 # worker_service: background task processor (long-running, async-db + task modules)
