@@ -45,23 +45,17 @@ set -e
 
 # --- Environment Loading ---
 # Load env vars from baked .env file if it exists, respecting existing vars.
+# The .env file uses shell-safe quoting (shlex.quote), so we use eval to let
+# bash handle quote removal natively instead of manual pattern-matching.
 if [ "$IGNORE_BAKED_ENV" != "true" ] && [ -f "${APP_DIR}/env/.env" ]; then
     echo "Loading baked environment variables from ${APP_DIR}/env/.env..."
-    while IFS='=' read -r key value || [ -n "$key" ]; do
-        [[ "$key" =~ ^[[:space:]]*#.*$ ]] && continue
-        [[ -z "${key//[[:space:]]/}" ]] && continue
-        key="${key#export }"
-        # Ensure key is a valid shell identifier
-        if [[ "$key" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
-            # Strip surrounding quotes left by shlex.quote / shell export
-            if [[ "$value" == \'*\' ]]; then
-                value="${value:1:${#value}-2}"
-            elif [[ "$value" == \"*\" ]]; then
-                value="${value:1:${#value}-2}"
-            fi
-            if [ -z "${!key}" ]; then
-                export "$key=$value"
-            fi
+    while IFS= read -r line || [ -n "$line" ]; do
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line//[[:space:]]/}" ]] && continue
+        line="${line#export }"
+        key="${line%%=*}"
+        if [[ "$key" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] && [ -z "${!key}" ]; then
+            eval "export ${line}"
         fi
     done < "${APP_DIR}/env/.env"
 fi
