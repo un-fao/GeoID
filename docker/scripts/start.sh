@@ -51,8 +51,14 @@ if [ "$IGNORE_BAKED_ENV" != "true" ] && [ -f "${APP_DIR}/env/.env" ]; then
         [[ "$key" =~ ^[[:space:]]*#.*$ ]] && continue
         [[ -z "${key//[[:space:]]/}" ]] && continue
         key="${key#export }"
-        # Ensure key is a valid shell identifier and not empty
+        # Ensure key is a valid shell identifier
         if [[ "$key" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+            # Strip surrounding quotes left by shlex.quote / shell export
+            if [[ "$value" == \'*\' ]]; then
+                value="${value:1:${#value}-2}"
+            elif [[ "$value" == \"*\" ]]; then
+                value="${value:1:${#value}-2}"
+            fi
             if [ -z "${!key}" ]; then
                 export "$key=$value"
             fi
