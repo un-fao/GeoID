@@ -80,9 +80,7 @@ app = FastAPI(
     title=os.getenv("TITLE", "Agro-Informatics Platform - Catalog Services API"),
     description=os.getenv(
         "DESCRIPTION", 
-        "Agro-Informatics Platform - Catalog Services is an enterprise-grade, cloud-native platform for geospatial data.\n\n"
-        "### 📚 [Read the Full Documentation via the Web Dashboard](/web/)\n"
-        "*(Includes Architecture overviews, deep-dives on Modules/Extensions, and the Developer Roadmap)*"
+        "Agro-Informatics Platform - Catalog Services is an enterprise-grade, cloud-native platform for geospatial data.",
     ),
     version=os.getenv("VERSION", "0.1.0"),
     docs_url=None, # We will serve custom docs
