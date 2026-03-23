@@ -51,6 +51,9 @@ def normalize_db_url(url: str, is_async: bool = False) -> str:
     if not url:
         return url
 
+    # Strip shell quotes that may leak from .env parsing (shlex.quote wraps in '')
+    url = url.strip("'\"")
+
     # 1. Handle Protocol
     if is_async:
         if url.startswith("postgresql://"):
