@@ -103,7 +103,7 @@ DynaStore supports distributed task execution across multiple application instan
    ```
    [ Cloud Run Service (API + Runner) ] x 10 Replicas
            |
-           +--> [ DB: public.catalogs ]
+           +--> [ DB: catalog.catalogs ]
            +--> [ DB: tasks.tasks     ] (All modules enabled)
    ```
    *   **Pros:** Simpler deployment and infra management.

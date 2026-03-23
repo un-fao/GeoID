@@ -341,7 +341,7 @@ async def execute_safe_ddl(
 
 
 async def check_table_exists(
-    conn: DbResource, table_name: str, schema: str = "public"
+    conn: DbResource, table_name: str, schema: str = "platform"
 ) -> bool:
     """Checks if a table exists in the given schema."""
     from dynastore.modules.db_config.maintenance_tools import DQLQuery, ResultHandler
@@ -386,7 +386,7 @@ async def check_extension_exists(conn: DbResource, extension_name: str) -> bool:
 
 
 async def check_trigger_exists(
-    conn: DbResource, trigger_name: str, schema: str = "public"
+    conn: DbResource, trigger_name: str, schema: str = "platform"
 ) -> bool:
     """Checks if a trigger exists."""
     from dynastore.modules.db_config.maintenance_tools import DQLQuery, ResultHandler
@@ -416,7 +416,7 @@ async def check_cron_job_exists(conn: DbResource, job_name: str) -> bool:
 
 
 async def check_function_exists(
-    conn: DbResource, function_name: str, schema: str = "public"
+    conn: DbResource, function_name: str, schema: str = "platform"
 ) -> bool:
     """Checks if a function exists."""
     from dynastore.modules.db_config.maintenance_tools import DQLQuery, ResultHandler

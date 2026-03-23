@@ -196,46 +196,6 @@ CREATE TRIGGER on_event_insert
     EXECUTE FUNCTION {schema}.notify_event_ready();
 """
 
-# --- Migration DDL for existing tables ---
-# These ALTER TABLE statements add columns introduced by the global table
-# restructuring. They are idempotent (IF NOT EXISTS) and safe to run on
-# tables that already have the columns.
-
-GLOBAL_TASKS_MIGRATION = """
-ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS schema_name VARCHAR(255);
-ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS scope VARCHAR(50) DEFAULT 'CATALOG';
-ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS execution_mode VARCHAR DEFAULT 'ASYNCHRONOUS';
-ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS dedup_key VARCHAR(512);
-ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
-ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ;
-ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS owner_id VARCHAR(255);
-ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS retry_count INT DEFAULT 0;
-ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS max_retries INT DEFAULT 3;
-ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
-ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ;
-ALTER TABLE {schema}.tasks ADD COLUMN IF NOT EXISTS collection_id VARCHAR(255);
-
--- Ensure new indexes exist (IF NOT EXISTS is idempotent)
-CREATE INDEX IF NOT EXISTS idx_tasks_task_id
-    ON {schema}.tasks (task_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_queue
-    ON {schema}.tasks (status, task_type, execution_mode, locked_until)
-    WHERE status IN ('PENDING', 'ACTIVE');
-"""
-
-GLOBAL_EVENTS_MIGRATION = """
-ALTER TABLE {schema}.events ADD COLUMN IF NOT EXISTS scope VARCHAR(50) DEFAULT 'PLATFORM';
-ALTER TABLE {schema}.events ADD COLUMN IF NOT EXISTS schema_name VARCHAR(255);
-ALTER TABLE {schema}.events ADD COLUMN IF NOT EXISTS collection_id VARCHAR(255);
-ALTER TABLE {schema}.events ADD COLUMN IF NOT EXISTS dedup_key VARCHAR(512);
-ALTER TABLE {schema}.events ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ;
-ALTER TABLE {schema}.events ADD COLUMN IF NOT EXISTS error_message TEXT;
-ALTER TABLE {schema}.events ADD COLUMN IF NOT EXISTS retry_count INT DEFAULT 0;
-
--- Ensure new indexes exist
-CREATE INDEX IF NOT EXISTS idx_events_event_id
-    ON {schema}.events (event_id);
-"""
 
 
 from dynastore.modules import ModuleProtocol
@@ -464,12 +424,9 @@ async def ensure_task_storage_exists(conn: DbResource, schema: str):
         existence_check=events_table_exists,
     )
 
-    # Step 2: Migrate existing tables — add columns from the global table
-    # restructuring. IF NOT EXISTS ensures idempotency.
-    await DDLQuery(GLOBAL_TASKS_MIGRATION).execute(conn, schema=schema)
-    await DDLQuery(GLOBAL_EVENTS_MIGRATION).execute(conn, schema=schema)
-
-    # Step 3: Create indexes and triggers (runs AFTER migration so all columns exist)
+    # Step 2: Create indexes and triggers (runs AFTER table creation so all columns exist)
+    # Note: Column evolution for existing tables is handled by migration files
+    # in dynastore.modules.tasks.migrations (v0001–v0003).
     await DDLQuery(GLOBAL_TASKS_INDEXES_DDL).execute(conn, schema=schema)
     await DDLQuery(GLOBAL_EVENTS_INDEXES_DDL).execute(conn, schema=schema)
 

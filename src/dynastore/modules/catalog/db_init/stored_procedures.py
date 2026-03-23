@@ -12,7 +12,7 @@ from dynastore.modules.db_config.locking_tools import (
 logger = logging.getLogger(__name__)
 
 UPDATE_COLLECTION_EXTENTS_SQL = """
-CREATE OR REPLACE FUNCTION public.update_collection_extents()
+CREATE OR REPLACE FUNCTION platform.update_collection_extents()
 RETURNS TRIGGER AS $$
 DECLARE
     master_table_name TEXT := TG_ARGV[0];
@@ -57,7 +57,7 @@ $$ LANGUAGE plpgsql;
 """
 
 ASSET_CLEANUP_SQL = """
-CREATE OR REPLACE FUNCTION public.asset_cleanup() RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION platform.asset_cleanup() RETURNS TRIGGER AS $$
 DECLARE
     hub_physical_table TEXT := TG_ARGV[0];
     asset_id_val TEXT;
@@ -107,13 +107,19 @@ $$ LANGUAGE plpgsql;
 """
 
 
+PLATFORM_SCHEMA_DDL = 'CREATE SCHEMA IF NOT EXISTS "platform";'
+
+
 async def ensure_stored_procedures(conn: DbResource) -> None:
-    """Ensures all required stored procedures exist in the public schema."""
+    """Ensures all required stored procedures exist in the platform schema."""
 
     async def check_all(active_conn=None, params=None):
         target_conn = active_conn or conn
-        return await check_function_exists(target_conn, "update_collection_extents", "public") and \
-               await check_function_exists(target_conn, "asset_cleanup", "public")
+        return await check_function_exists(target_conn, "update_collection_extents", "platform") and \
+               await check_function_exists(target_conn, "asset_cleanup", "platform")
+
+    # Ensure the platform schema exists before creating functions in it
+    await DDLQuery(PLATFORM_SCHEMA_DDL).execute(conn)
 
     # Use a single DDLQuery for all procedures. DDLQuery handles splitting and atomic locking.
     await DDLQuery(

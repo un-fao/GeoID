@@ -52,7 +52,8 @@ from . import catalog_integration
 logger = logging.getLogger(__name__)
 
 SUBSCRIPTIONS_SCHEMA = """
-CREATE TABLE IF NOT EXISTS event_subscriptions (
+CREATE SCHEMA IF NOT EXISTS "platform";
+CREATE TABLE IF NOT EXISTS platform.event_subscriptions (
     subscription_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     subscriber_name VARCHAR(255) NOT NULL,
     event_type VARCHAR(255) NOT NULL,
@@ -64,7 +65,7 @@ CREATE TABLE IF NOT EXISTS event_subscriptions (
 """
 SUBSCRIPTIONS_SCHEMA_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_event_subscriptions_event_type
-ON event_subscriptions (event_type);
+ON platform.event_subscriptions (event_type);
 """
 
 PLATFORM_API_KEY = os.getenv(API_KEY_NAME)
@@ -72,7 +73,7 @@ PLATFORM_API_KEY = os.getenv(API_KEY_NAME)
 # --- Internal Query Objects ---
 _upsert_subscription_query = DQLQuery(
     """
-    INSERT INTO event_subscriptions
+    INSERT INTO platform.event_subscriptions
         (subscriber_name, event_type, webhook_url, auth_config)
     VALUES
         (:subscriber_name, :event_type, :webhook_url, :auth_config)
@@ -84,11 +85,11 @@ _upsert_subscription_query = DQLQuery(
     result_handler=ResultHandler.ONE_DICT
 )
 _get_subscriptions_for_event_query = DQLQuery(
-    "SELECT * FROM event_subscriptions WHERE event_type = :event_type;",
+    "SELECT * FROM platform.event_subscriptions WHERE event_type = :event_type;",
     result_handler=ResultHandler.ALL_DICTS
 )
 _delete_subscription_query = DQLQuery(
-    "DELETE FROM event_subscriptions WHERE subscriber_name = :subscriber_name AND event_type = :event_type RETURNING *;",
+    "DELETE FROM platform.event_subscriptions WHERE subscriber_name = :subscriber_name AND event_type = :event_type RETURNING *;",
     result_handler=ResultHandler.ONE_OR_NONE
 )
 class EventsModule(ModuleProtocol):

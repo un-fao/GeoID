@@ -468,66 +468,20 @@ class OneShotMigrator:
 
 class StacMigrationTool:
     """
-    Tool to apply STAC compliance schema updates to existing catalogs and collections tables.
-    Iterates through all tenant schemas and applies ADD COLUMN IF NOT EXISTS.
+    Tool to apply STAC compliance schema updates to existing catalogs and collections.
+
+    Delegates to the central migration runner which applies:
+      - catalog v0002 (global) — STAC columns on catalog.catalogs
+      - catalog_tenant v0003 (tenant) — STAC columns on {schema}.collections
     """
 
     def __init__(self, engine: DbResource):
         self.engine = engine
 
     async def run_migrations(self):
-        """Applies STAC schema updates to system and tenant tables."""
-        logger.info("Starting STAC schema migrations...")
+        """Applies STAC schema updates via the migration runner."""
+        from dynastore.modules.db_config.migration_runner import run_migrations
 
-        # 1. Update System Catalog table
-        catalog_ddl = """
-        ALTER TABLE catalog.catalogs 
-            ADD COLUMN IF NOT EXISTS conforms_to JSONB,
-            ADD COLUMN IF NOT EXISTS links JSONB,
-            ADD COLUMN IF NOT EXISTS assets JSONB,
-            ADD COLUMN IF NOT EXISTS stac_version VARCHAR,
-            ADD COLUMN IF NOT EXISTS stac_extensions JSONB;
-        """
-        try:
-            async with managed_transaction(self.engine) as conn:
-                await DDLQuery(catalog_ddl).execute(conn)
-            logger.info("Successfully applied STAC migrations to catalog.catalogs.")
-        except Exception as e:
-            logger.error(f"Failed to migrate catalog.catalogs: {e}")
-
-        # 2. Iterate tenants and update their collections tables
-        query_schemas = "SELECT physical_schema FROM catalog.catalogs WHERE physical_schema IS NOT NULL;"
-        
-        try:
-            async with managed_transaction(self.engine) as conn:
-                schemas = await DQLQuery(query_schemas, result_handler=ResultHandler.ALL_DICTS).execute(conn)
-            
-            for schema_row in schemas:
-                schema_name = schema_row["physical_schema"]
-                collections_ddl = f"""
-                ALTER TABLE "{schema_name}".collections 
-                    ADD COLUMN IF NOT EXISTS links JSONB,
-                    ADD COLUMN IF NOT EXISTS assets JSONB,
-                    ADD COLUMN IF NOT EXISTS extent JSONB,
-                    ADD COLUMN IF NOT EXISTS providers JSONB,
-                    ADD COLUMN IF NOT EXISTS summaries JSONB,
-                    ADD COLUMN IF NOT EXISTS item_assets JSONB,
-                    ADD COLUMN IF NOT EXISTS stac_version VARCHAR,
-                    ADD COLUMN IF NOT EXISTS stac_extensions JSONB;
-                """
-                
-                # Check if collections table exists before altering
-                check_table_sql = "SELECT to_regclass(:table_name);"
-                async with managed_transaction(self.engine) as conn:
-                    table_exists = await DQLQuery(check_table_sql, result_handler=ResultHandler.SCALAR_ONE).execute(
-                        conn, table_name=f'"{schema_name}".collections'
-                    )
-                    
-                    if table_exists:
-                        await DDLQuery(collections_ddl).execute(conn)
-                        logger.info(f"Applied STAC migrations to {schema_name}.collections")
-                        
-        except Exception as e:
-            logger.error(f"Failed during tenant collection migrations: {e}")
-            
+        logger.info("Starting STAC schema migrations (via migration runner)...")
+        await run_migrations(self.engine, scope="all")
         logger.info("Finished STAC schema migrations.")

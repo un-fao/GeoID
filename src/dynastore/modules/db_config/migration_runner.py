@@ -30,7 +30,7 @@ by calling ``run_migrations``.
 ### Two migration scopes
 
 1. **Global migrations** — applied once to the shared database (extensions,
-   global tables like ``public.schema_migrations``, ``public.app_state``).
+   global tables like ``platform.schema_migrations``, ``platform.app_state``).
    Registered via ``register_module_migrations()``.
 
 2. **Tenant migrations** — SQL scripts containing ``{schema}`` placeholders,
@@ -43,8 +43,8 @@ On a normal restart the startup path costs a single lightweight DB query.
 No file I/O, no advisory lock, no migration execution.
 
 ### Multiple applications, one database
-* ``public.app_state`` — one row per app instance (keyed by ``app_key``).
-* ``public.schema_migrations`` — authoritative global history.
+* ``platform.app_state`` — one row per app instance (keyed by ``app_key``).
+* ``platform.schema_migrations`` — authoritative global history.
 * ``{schema}.schema_migrations`` — authoritative per-tenant history.
 
 ### Cross-app notifications via pg_notify
@@ -370,8 +370,13 @@ def _get_expected_tenant_manifest() -> Dict[str, str]:
 # DDL for tracking tables
 # ---------------------------------------------------------------------------
 
+# All global tracking tables live in the "platform" schema (never "public").
+PLATFORM_SCHEMA = "platform"
+
+_PLATFORM_SCHEMA_DDL = 'CREATE SCHEMA IF NOT EXISTS "platform";'
+
 _SCHEMA_MIGRATIONS_DDL = """
-CREATE TABLE IF NOT EXISTS public.schema_migrations (
+CREATE TABLE IF NOT EXISTS platform.schema_migrations (
     module       VARCHAR(100) NOT NULL,
     version      VARCHAR(10)  NOT NULL,
     description  VARCHAR(255) NOT NULL,
@@ -384,7 +389,7 @@ CREATE TABLE IF NOT EXISTS public.schema_migrations (
 """
 
 _APP_STATE_DDL = """
-CREATE TABLE IF NOT EXISTS public.app_state (
+CREATE TABLE IF NOT EXISTS platform.app_state (
     app_key            VARCHAR(200) PRIMARY KEY,
     module_manifest    JSONB        NOT NULL DEFAULT '{{}}',
     manifest_hash      VARCHAR(16)  NOT NULL DEFAULT '',
@@ -421,8 +426,60 @@ _NOTIFY_CHANNEL = "dynastore.migrations"
 # ---------------------------------------------------------------------------
 
 
+_MIGRATE_PUBLIC_TO_PLATFORM_DDL = """
+DO $$
+BEGIN
+    -- Move schema_migrations from public to platform if it exists there
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'schema_migrations')
+       AND NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'platform' AND tablename = 'schema_migrations')
+    THEN
+        ALTER TABLE public.schema_migrations SET SCHEMA platform;
+        RAISE NOTICE 'Moved public.schema_migrations -> platform.schema_migrations';
+    END IF;
+
+    -- Move app_state from public to platform if it exists there
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'app_state')
+       AND NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'platform' AND tablename = 'app_state')
+    THEN
+        ALTER TABLE public.app_state SET SCHEMA platform;
+        RAISE NOTICE 'Moved public.app_state -> platform.app_state';
+    END IF;
+
+    -- Move event_subscriptions from public to platform if it exists there
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'event_subscriptions')
+       AND NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'platform' AND tablename = 'event_subscriptions')
+    THEN
+        ALTER TABLE public.event_subscriptions SET SCHEMA platform;
+        RAISE NOTICE 'Moved public.event_subscriptions -> platform.event_subscriptions';
+    END IF;
+
+    -- Move stored procedures from public to platform
+    IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'update_collection_extents') THEN
+        ALTER FUNCTION public.update_collection_extents() SET SCHEMA platform;
+        RAISE NOTICE 'Moved public.update_collection_extents -> platform';
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'asset_cleanup') THEN
+        ALTER FUNCTION public.asset_cleanup() SET SCHEMA platform;
+        RAISE NOTICE 'Moved public.asset_cleanup -> platform';
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'cleanup_orphaned_cron_jobs') THEN
+        ALTER FUNCTION public.cleanup_orphaned_cron_jobs() SET SCHEMA platform;
+        RAISE NOTICE 'Moved public.cleanup_orphaned_cron_jobs -> platform';
+    END IF;
+END;
+$$;
+"""
+
+
 async def _ensure_tracking_tables(engine: DbResource) -> None:
     async with managed_transaction(engine) as conn:
+        # 1. Create the platform schema
+        await DDLQuery(_PLATFORM_SCHEMA_DDL).execute(conn)
+        # 2. Migrate legacy objects from public → platform (one-time, idempotent)
+        await DDLQuery(_MIGRATE_PUBLIC_TO_PLATFORM_DDL).execute(conn)
+        # 3. Ensure tracking tables exist in platform schema
         await DDLQuery(_SCHEMA_MIGRATIONS_DDL).execute(conn)
         await DDLQuery(_APP_STATE_DDL).execute(conn)
 
@@ -441,10 +498,10 @@ async def _get_stored_manifest_hash(
     """
     from .locking_tools import check_table_exists
 
-    if not await check_table_exists(engine, "app_state", "public"):
+    if not await check_table_exists(engine, "app_state", PLATFORM_SCHEMA):
         return None, None
 
-    sql = "SELECT manifest_hash, tenant_hash FROM public.app_state WHERE app_key = :app_key;"
+    sql = "SELECT manifest_hash, tenant_hash FROM platform.app_state WHERE app_key = :app_key;"
     try:
         async with managed_transaction(engine) as conn:
             row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
@@ -461,7 +518,7 @@ async def _get_stored_manifest_hash(
 async def _get_stored_manifest(
     engine: DbResource, app_key: str
 ) -> Optional[Dict[str, str]]:
-    sql = "SELECT module_manifest FROM public.app_state WHERE app_key = :app_key;"
+    sql = "SELECT module_manifest FROM platform.app_state WHERE app_key = :app_key;"
     async with managed_transaction(engine) as conn:
         row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
             conn, app_key=app_key
@@ -482,7 +539,7 @@ async def _upsert_app_state(
     thash = _compute_manifest_hash(tenant_manifest) if tenant_manifest else ""
     tmanifest_json = json.dumps(tenant_manifest) if tenant_manifest else "{}"
     sql = """
-        INSERT INTO public.app_state
+        INSERT INTO platform.app_state
             (app_key, module_manifest, manifest_hash, tenant_manifest, tenant_hash, last_seen_at)
         VALUES (:app_key, CAST(:manifest AS jsonb), :mhash,
                 CAST(:tmanifest AS jsonb), :thash, NOW())
@@ -505,7 +562,7 @@ async def _upsert_app_state(
 
 
 async def _get_applied_versions(
-    engine: DbResource, schema: str = "public"
+    engine: DbResource, schema: str = PLATFORM_SCHEMA
 ) -> Dict[Tuple[str, str], str]:
     sql = f'SELECT module, version, checksum FROM "{schema}".schema_migrations;'
     async with managed_transaction(engine) as conn:
@@ -533,7 +590,7 @@ async def _apply_migration(
     engine: DbResource,
     script: _MigrationScript,
     app_key: str,
-    schema: str = "public",
+    schema: str = PLATFORM_SCHEMA,
 ) -> None:
     scope = "tenant" if script.is_tenant else "global"
     logger.info(
@@ -543,12 +600,12 @@ async def _apply_migration(
     try:
         sql = script.sql
         rollback_sql = script.rollback_sql
-        if script.is_tenant and schema != "public":
+        if script.is_tenant and schema != PLATFORM_SCHEMA:
             sql = sql.replace("{schema}", schema)
             if rollback_sql:
                 rollback_sql = rollback_sql.replace("{schema}", schema)
 
-        tracking_schema = schema if script.is_tenant else "public"
+        tracking_schema = schema if script.is_tenant else PLATFORM_SCHEMA
 
         async with managed_transaction(engine) as conn:
             await DDLQuery(sql).execute(conn)
@@ -721,7 +778,7 @@ async def check_migration_status(
         try:
             async with managed_transaction(engine) as conn:
                 await DQLQuery(
-                    "UPDATE public.app_state SET last_seen_at = NOW() WHERE app_key = :app_key;",
+                    "UPDATE platform.app_state SET last_seen_at = NOW() WHERE app_key = :app_key;",
                     result_handler=ResultHandler.NONE,
                 ).execute(conn, app_key=app_key)
         except Exception:
@@ -794,7 +851,7 @@ async def get_pending_migrations(
 
     # Global pending
     scripts = _discover_all_global_scripts()
-    applied = await _get_applied_versions(engine, "public")
+    applied = await _get_applied_versions(engine, PLATFORM_SCHEMA)
     for script in scripts:
         _verify_checksum(script, applied)
     pending = [s for s in scripts if (s.module, s.version) not in applied]
@@ -834,7 +891,7 @@ async def get_pending_migrations(
 
 
 async def get_migration_history(
-    engine: DbResource, schema: str = "public"
+    engine: DbResource, schema: str = PLATFORM_SCHEMA
 ) -> List[Dict]:
     """Return full migration history from a schema's tracking table."""
     sql = f"""
@@ -950,7 +1007,7 @@ async def _run_global_migrations(
 ) -> List[Dict[str, str]]:
     """Apply pending global migrations. Returns list of applied scripts."""
     scripts = _discover_all_global_scripts()
-    applied = await _get_applied_versions(engine, "public")
+    applied = await _get_applied_versions(engine, PLATFORM_SCHEMA)
 
     # Tamper check
     for script in scripts:
@@ -965,7 +1022,7 @@ async def _run_global_migrations(
             + ", ".join(f"[{s.module}] {s.version}" for s in pending)
         )
         for script in pending:
-            await _apply_migration(engine, script, app_key, schema="public")
+            await _apply_migration(engine, script, app_key, schema=PLATFORM_SCHEMA)
             applied_report.append(
                 {
                     "module": script.module,
@@ -1047,7 +1104,7 @@ async def rollback_migration(
     module: str,
     version: str,
     app_key: Optional[str] = None,
-    schema: str = "public",
+    schema: str = PLATFORM_SCHEMA,
 ) -> Dict[str, str]:
     """
     Rollback a specific migration using its stored rollback_sql.
@@ -1057,7 +1114,7 @@ async def rollback_migration(
         module:  Module name (e.g. "catalog").
         version: Version to rollback (e.g. "v0002").
         app_key: Application identifier.
-        schema:  Schema containing the tracking table ("public" for global).
+        schema:  Schema containing the tracking table ("platform" for global).
 
     Returns:
         Dict with rollback result info.
@@ -1083,7 +1140,7 @@ async def rollback_migration(
         )
 
     rollback_sql = row["rollback_sql"]
-    if schema != "public":
+    if schema != PLATFORM_SCHEMA:
         rollback_sql = rollback_sql.replace("{schema}", schema)
 
     logger.info(

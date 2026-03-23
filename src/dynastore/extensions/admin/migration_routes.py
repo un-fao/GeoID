@@ -81,7 +81,7 @@ class ApplyRequest(BaseModel):
 class RollbackRequest(BaseModel):
     module: str
     version: str
-    schema_name: str = "public"
+    schema_name: str = "platform"
 
 
 class EvolutionRequest(BaseModel):
@@ -161,7 +161,7 @@ async def apply_migrations(
 
 @router.get("/history", summary="Full migration history")
 async def migration_history(
-    schema_name: str = Query("public", alias="schema"),
+    schema_name: str = Query("platform", alias="schema"),
     engine: Any = Depends(_get_engine),
     principal: Principal = Depends(_require_admin),
 ) -> List[Dict[str, Any]]:

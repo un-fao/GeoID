@@ -788,7 +788,9 @@ class ItemService(ItemsProtocol):
             total_count = None
             if request.include_total_count:
                 count_wrapper = f"SELECT count(*) FROM ({sql}) AS sub"
-                total_count = await conn.scalar(text(count_wrapper), params)
+                total_count = await DQLQuery(
+                    count_wrapper, result_handler=ResultHandler.SCALAR
+                ).execute(conn, **(params or {}))
 
         # Stream Generator (O(1) Memory)
         async def feature_stream():

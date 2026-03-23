@@ -380,7 +380,8 @@ async def ensure_global_cron_cleanup(
         return await check_cron_job_exists(conn, job_name)
 
     cleanup_ddl = f"""
-    CREATE OR REPLACE FUNCTION public.cleanup_orphaned_cron_jobs() RETURNS void AS $$
+    CREATE SCHEMA IF NOT EXISTS "platform";
+    CREATE OR REPLACE FUNCTION platform.cleanup_orphaned_cron_jobs() RETURNS void AS $$
     DECLARE
         job_rec RECORD;
         parts TEXT[];
@@ -419,7 +420,7 @@ async def ensure_global_cron_cleanup(
     END;
     $$;
 
-    SELECT cron.schedule('{job_name}', '{schedule_cron}', $CMD$SELECT public.{func_name}()$CMD$);
+    SELECT cron.schedule('{job_name}', '{schedule_cron}', $CMD$SELECT platform.{func_name}()$CMD$);
     """
 
     await DDLQuery(

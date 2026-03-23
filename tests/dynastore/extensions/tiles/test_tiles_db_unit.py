@@ -74,7 +74,7 @@ async def test_get_features_as_mvt_filtered_query_structure():
                         conn=conn,
                         resolved_collections=[
                             {
-                                "phys_schema": "public",
+                                "phys_schema": "s_test",
                                 "phys_table": "my_table",
                                 "source_srid": 4326,
                                 "simplification_by_zoom": {},

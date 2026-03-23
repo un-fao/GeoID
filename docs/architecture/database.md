@@ -169,3 +169,25 @@ RETURNING *;
 ```
 
 The `:async_types` and `:sync_types` parameters come from the runner capability map, so each service only claims tasks it can actually execute.
+
+## PostgreSQL Schema Map
+
+No application table may reside in the `public` schema. All objects are organized into dedicated schemas:
+
+| Schema | Owner | Contents |
+|--------|-------|----------|
+| `platform` | `db_config` | Global tracking: `schema_migrations`, `app_state`, `event_subscriptions`. Shared stored procedures: `update_collection_extents()`, `asset_cleanup()`, `cleanup_orphaned_cron_jobs()`. |
+| `catalog` | `catalog` | `catalogs` (the registry of all tenants), `shared_properties`. |
+| `apikey` | `apikey` | Global auth: `api_keys`, `policies`, `roles`, `users`, `jwt_config`. |
+| `tasks` | `tasks` | Global task queue: `tasks` (RANGE-partitioned), `events` (RANGE-partitioned). |
+| `configs` | `configs` | Platform-level configuration overrides. |
+| `tiles` | `tiles` | Tile cache metadata and statistics. |
+| `proxy` | `proxy` | URL proxy analytics (RANGE-partitioned). |
+| `s_{base62}` | `catalog` (tenant) | Per-tenant schema auto-generated on catalog creation. Contains `collections`, `assets`, physical feature tables, `catalog_configs`, `collection_configs`, sidecars, tenant `access_logs`, `stats_aggregates`, tenant `url_analytics`, tenant `policies`, `roles`, and a per-tenant `schema_migrations` tracking table. |
+
+### Bootstrap Migration
+
+On startup, `_ensure_tracking_tables()` in `migration_runner.py`:
+1. Creates the `platform` schema (`CREATE SCHEMA IF NOT EXISTS`).
+2. Runs a one-time idempotent migration that moves any legacy objects from `public` to `platform` (`ALTER TABLE ... SET SCHEMA`, `ALTER FUNCTION ... SET SCHEMA`).
+3. Creates or verifies the `platform.schema_migrations` and `platform.app_state` tables.

@@ -17,3 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 from . import tasks_config  # Ensure plugin configuration is registered
+
+from dynastore.modules.db_config.migration_runner import register_module_migrations
+
+register_module_migrations("tasks", "dynastore.modules.tasks.migrations")

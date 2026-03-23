@@ -77,7 +77,7 @@ async def ensure_hierarchical_partitions_exist(
 
 async def ensure_partition_exists(
     conn: DbConnection, table_name: str, strategy: str, partition_value: Any,
-    schema: str = "public", interval: Optional[str] = None, parent_table_name: Optional[str] = None, parent_table_schema: Optional[str] = None,
+    schema: str = "platform", interval: Optional[str] = None, parent_table_name: Optional[str] = None, parent_table_schema: Optional[str] = None,
     sub_partition_def: Optional[Tuple[str, str]] = None
 ) -> Tuple[Optional[str], Optional[str]]:
     """ (internal)

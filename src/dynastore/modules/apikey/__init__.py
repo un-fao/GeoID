@@ -15,3 +15,7 @@
 #    Author: Carlo Cancellieri (ccancellieri@gmail.com)
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
+from dynastore.modules.db_config.migration_runner import register_module_migrations
+
+register_module_migrations("apikey", "dynastore.modules.apikey.migrations")
