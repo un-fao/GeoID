@@ -22,8 +22,10 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-# shapely is now conditionally used within the encoder
-from shapely import wkb
+def _wkb_loads(data: bytes):
+    """Lazy import of shapely.wkb.loads to avoid hard dependency."""
+    from shapely import wkb
+    return wkb.loads(data)
 
 
 def orjson_default(obj: Any) -> Any:
@@ -44,7 +46,7 @@ def orjson_default(obj: Any) -> Any:
         return str(obj)
     if isinstance(obj, bytes):
         try:
-            return wkb.loads(obj).wkt
+            return _wkb_loads(obj).wkt
         except Exception:
             try:
                 return obj.decode("utf-8")
@@ -96,7 +98,7 @@ class CustomJSONEncoder(json.JSONEncoder):
             # format for binary geometry from databases like PostGIS.
             try:
                 # If successful, return the WKT representation.
-                return wkb.loads(o).wkt
+                return _wkb_loads(o).wkt
             except Exception:
                 # If it's not a valid WKB, fall back to the original text/hex logic.
                 try:
