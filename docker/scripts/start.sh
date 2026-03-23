@@ -48,11 +48,14 @@ set -e
 if [ "$IGNORE_BAKED_ENV" != "true" ] && [ -f "${APP_DIR}/env/.env" ]; then
     echo "Loading baked environment variables from ${APP_DIR}/env/.env..."
     while IFS='=' read -r key value || [ -n "$key" ]; do
-        [[ "$key" =~ ^#.*$ ]] && continue
-        [[ -z "$key" ]] && continue
+        [[ "$key" =~ ^[[:space:]]*#.*$ ]] && continue
+        [[ -z "${key//[[:space:]]/}" ]] && continue
         key="${key#export }"
-        if [ -z "${!key}" ]; then
-            export "$key=$value"
+        # Ensure key is a valid shell identifier and not empty
+        if [[ "$key" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+            if [ -z "${!key}" ]; then
+                export "$key=$value"
+            fi
         fi
     done < "${APP_DIR}/env/.env"
 fi
