@@ -85,6 +85,7 @@ jobs:
         if: failure()
         run: |
           docker compose -f docker/docker-compose.test.yml logs api
+          docker compose -f docker/docker-compose.test.yml logs worker
           docker compose -f docker/docker-compose.test.yml logs test-runner
 
       - name: Report integration tests
