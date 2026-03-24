@@ -151,9 +151,10 @@ db_sync = ["dynastore[db_config,datastore]"]
 #   2. maps_grp     — rendering: WFS, tiles, CRS, styles, maps
 #   3. google_grp   — GCP storage, BigQuery DWH
 #   4. auth_grp     — apikey + auth + admin  (always the LAST wrapper)
-#   5. tools_grp    — HTTP client, proxy, processes, templating
+#   5. tools_grp    — HTTP client, proxy, templating
 #   6. monitor_grp  — stats, logs
 #   7. index_grp    — Elasticsearch full-text search
+#   *  processes    — standalone; on catalog (cloud) or worker (on-prem)
 #
 # ==========================================================================
 core = ["dynastore[db_async,web,configs,events]"]
@@ -161,7 +162,7 @@ catalog_grp = ["dynastore[geospatial_core,catalog,features,stac,assets,search]"]
 maps_grp = ["dynastore[styles,maps,extension_wfs,tiles,crs,gdal]"]
 google_grp = ["dynastore[gcp,extension_dwh]"]
 auth_grp = ["dynastore[apikey,auth,extension_admin]"]
-tools_grp = ["dynastore[extension_httpx,proxy,processes,template]"]
+tools_grp = ["dynastore[extension_httpx,proxy,template]"]
 monitor_grp = ["dynastore[stats,logs]"]
 index_grp = ["dynastore[elasticsearch]"]
 
@@ -189,9 +190,15 @@ task_gdal_job = ["dynastore[task_base,gdal]"]
 #   │               + assets + search                          │
 #   │  maps_grp    = styles + maps + wfs + tiles + crs + gdal  │
 #   │  google_grp  = gcp + dwh                                 │
-#   │  tools_grp   = httpx + proxy + processes + template      │
+#   │  tools_grp   = httpx + proxy + template                  │
 #   │  monitor_grp = stats + logs                              │
 #   │  index_grp   = elasticsearch                             │
+#   ├──────────────────────────────────────────────────────────┤
+#   │  Standalone (deployment-dependent)                       │
+#   ├──────────────────────────────────────────────────────────┤
+#   │  processes   = task orchestration API                     │
+#   │               cloud  → on catalog (tasks on Cloud Run)   │
+#   │               on-prem → on worker  (tasks run locally)   │
 #   ├──────────────────────────────────────────────────────────┤
 #   │  Auth wrapper (added LAST)                               │
 #   ├──────────────────────────────────────────────────────────┤
@@ -200,15 +207,18 @@ task_gdal_job = ["dynastore[task_base,gdal]"]
 #   │  Deployable services                                     │
 #   ├──────────────────────────────────────────────────────────┤
 #   │  api_open       = core + catalog + google + tools        │
-#   │                   + monitor + index             NO auth  │
-#   │  api_catalog    = api_open + auth_grp          WITH auth │
+#   │                   + monitor + index                      │
+#   │                   + processes               ... NO auth  │
+#   │  api_catalog    = api_open + auth_grp      ... WITH auth │
 #   │  api_maps       = core + catalog + google + maps         │
-#   │                   + tools + monitor + auth_grp WITH auth │
+#   │                   + tools + monitor                      │
+#   │                   + auth_grp               ... WITH auth │
 #   │  api_full       = api_catalog + maps_grp                 │
-#   │                   + geospatial_io              WITH auth │
-#   │  geoid_service  = api_catalog + extension_geoid          │
+#   │                   + geospatial_io          ... WITH auth │
+#   │  geoid_service  = api_catalog + geoid                    │
 #   │  worker_service = core + catalog + google + index        │
-#   │                   + tasks + ingestion + jobs    WITH key │
+#   │                   + tasks + processes                     │
+#   │                   + ingestion + jobs        ... WITH key │
 #   └──────────────────────────────────────────────────────────┘
 #
 # Docker scopes:
@@ -217,7 +227,7 @@ task_gdal_job = ["dynastore[task_base,gdal]"]
 #
 # ==========================================================================
 # api_open: full catalog WITHOUT auth — open for testing
-api_open = ["dynastore[core,catalog_grp,google_grp,tools_grp,monitor_grp,index_grp]"]
+api_open = ["dynastore[core,catalog_grp,google_grp,tools_grp,monitor_grp,index_grp,processes]"]
 # api_catalog: api_open + auth (most common production deployment)
 api_catalog = ["dynastore[api_open,auth_grp]"]
 # api_maps: maps/tiles/styles service
@@ -227,7 +237,7 @@ api_full = ["dynastore[api_catalog,maps_grp,geospatial_io]"]
 # geoid_service: api_catalog + geoid extension
 geoid_service = ["dynastore[api_catalog,extension_geoid]"]
 # worker_service: background task processor (sync-db tasks + async-db catalog reads)
-worker_service = ["dynastore[core,catalog_grp,google_grp,index_grp,tasks,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,apikey]"]
+worker_service = ["dynastore[core,catalog_grp,google_grp,index_grp,tasks,processes,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,apikey]"]
 # worker_local: dev-only — worker_service + FastAPI to simulate Cloud Run Jobs
 worker_local = ["dynastore[worker_service]"]
 
