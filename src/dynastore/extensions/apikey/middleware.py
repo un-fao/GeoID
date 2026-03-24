@@ -90,7 +90,13 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         )
         start_time = time.time()
         method = request.method
-        path = request.url.path
+        raw_path = request.url.path
+        # Strip API_ROOT_PATH so policy patterns are relative to the service root
+        root_path = request.scope.get("root_path", "") or ""
+        if root_path and raw_path.startswith(root_path):
+            path = raw_path[len(root_path):] or "/"
+        else:
+            path = raw_path
 
         query_params = dict(request.query_params)
         query_params_tuple = tuple(sorted(query_params.items()))
