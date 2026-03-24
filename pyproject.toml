@@ -164,29 +164,39 @@ task_gdal_job = ["dynastore[task_base,gdal]"]
 # ==========================================================================
 # SERVICE COMPOSITIONS (async-db)
 #
-# Hierarchy:
+# Each composition = its own extras + everything it inherits from.
+# Read "=" as "is built from". Auth boundary marked explicitly.
 #
-#   api_base  (db_async + web + httpx + logs + stats)  ......  NO auth
-#   |
-#   +-- api_open  (+ catalog_group, gdal, google,      ......  NO auth
-#   |       processes, proxy, elasticsearch, features)
-#   |   |
-#   |   +-- api_catalog  (+ apikey, auth, template,    ......  WITH auth
-#   |       |       extension_admin)
-#   |       |
-#   |       +-- geoid_service  (+ extension_geoid)
-#   |       |
-#   |       +-- api_full  (+ api_maps, stac, crs,
-#   |               geospatial_io)
-#   |
-#   +-- api_core  (+ apikey)  .............................  WITH apikey
-#       |
-#       +-- api_auth  (+ auth, template)
-#       |
-#       +-- api_maps  (+ g_catalog, geometries,
-#               maps_group, dwh)
+#   ┌──────────────────────────────────────────────────────────┐
+#   │                     NO auth / apikey                     │
+#   ├──────────────────────────────────────────────────────────┤
+#   │  api_base    = db_async + web + httpx + logs + stats     │
+#   │  api_open    = api_base + catalog_group + gdal + google  │
+#   │               + processes + proxy + elasticsearch        │
+#   │               + features                                 │
+#   ├──────────────────────────────────────────────────────────┤
+#   │                     WITH apikey + auth                   │
+#   ├──────────────────────────────────────────────────────────┤
+#   │  api_core    = api_base + apikey                         │
+#   │  api_auth    = api_core + auth + template                │
+#   │  api_catalog = api_open + apikey + auth + template       │
+#   │               + extension_admin                          │
+#   │  api_maps    = api_core + g_catalog + geometries         │
+#   │               + maps_group + dwh                         │
+#   ├──────────────────────────────────────────────────────────┤
+#   │                     Deployable services                  │
+#   ├──────────────────────────────────────────────────────────┤
+#   │  api_full       = api_catalog + api_maps + stac + crs    │
+#   │                   + geospatial_io                        │
+#   │  geoid_service  = api_catalog + extension_geoid          │
+#   │  worker_service = g_catalog + tasks + processes + events │
+#   │                   + elasticsearch + tiles + ingestion    │
+#   │                   + job extras + apikey                  │
+#   └──────────────────────────────────────────────────────────┘
 #
-#   worker_service  (g_catalog + tasks + ... + apikey)
+# Docker scopes:
+#   api   service -> API_SCOPE=api_open      (no auth, open testing)
+#   geoid service -> GEOID_SCOPE=geoid_service (full auth + geoid UI)
 #
 # ==========================================================================
 # api_base: minimal HTTP service — NO auth, NO apikey (open for testing)
