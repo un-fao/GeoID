@@ -16,6 +16,11 @@ let TOKEN_KEY = 'ds_token'; // Default fallback
 const REFRESH_KEY = 'ds_refresh_token';
 let _refreshTimer = null;
 
+/** Returns the API root path (e.g. '/geospatial/v2/api/auth') from platform config, or '' for root deployments. */
+function apiRoot() {
+    return (platformConfig && platformConfig.root_path) ? platformConfig.root_path.replace(/\/$/, '') : '';
+}
+
 
 // --- I18n & Interface Logic ---
 function toggleLangDropdown() {
@@ -674,7 +679,7 @@ async function tryRefreshToken() {
     try {
         const form = new URLSearchParams();
         form.append('refresh_token', refreshToken);
-        const res = await fetch('/auth/refresh', {
+        const res = await fetch(`${apiRoot()}/auth/refresh`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: form,
@@ -733,7 +738,7 @@ async function exchangeCodeForToken(code) {
         formData.append('redirect_uri', window.location.pathname);
         formData.append('client_id', 'dynastore');
 
-        const response = await fetch('/auth/token', {
+        const response = await fetch(`${apiRoot()}/auth/token`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: formData
@@ -756,7 +761,7 @@ async function refreshUserProfile() {
     if (!authToken) return;
 
     try {
-        const response = await fetch('/auth/me', {
+        const response = await fetch(`${apiRoot()}/auth/me`, {
             headers: { 'Authorization': `Bearer ${authToken}` }
         });
 
@@ -937,7 +942,7 @@ async function updatePassword() {
     formData.append('new_password', newPassword);
 
     try {
-        const res = await fetch('/auth/password', {
+        const res = await fetch(`${apiRoot()}/auth/password`, {
             method: 'PUT',
             headers: {
                 'Authorization': `Bearer ${authToken || token}`,

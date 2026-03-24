@@ -76,7 +76,8 @@
 
         // Set form action explicitly — always POST to /auth/login
         // Avoid relying on window.location.href which can include hash/fragment
-        document.getElementById('loginForm').action = '/auth/login';
+        // Use relative action so it resolves correctly behind any path-prefix proxy
+        document.getElementById('loginForm').action = 'login';
     </script>
 </body>
 </html>

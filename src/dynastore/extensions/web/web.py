@@ -186,6 +186,7 @@ WEB_CONFORMANCE_URIS = [
     "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/html",
 ]
 
+from pydantic import Field
 from dynastore.models.protocols.web import WebModuleProtocol, WebPageProtocol, StaticFilesProtocol
 from dynastore.modules.db_config.platform_config_service import PluginConfig, ConfigRegistry
 
@@ -197,6 +198,7 @@ class WebConfig(PluginConfig):
     token_key: str = "ds_token"
     default_language: str = "en"
     enterprise_tier: bool = True
+    root_path: str = Field(default_factory=lambda: os.getenv("API_ROOT_PATH", "").rstrip("/"))
 
 
 ConfigRegistry.register("web_config", WebConfig)

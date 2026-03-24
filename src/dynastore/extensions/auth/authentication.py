@@ -212,15 +212,10 @@ class Authentication(ExtensionProtocol):
 
             if not user:
                 _login_limiter.record_failure(client_ip, username)
-                # Redirect back to login with error parameter
-                if "?" in request.url.path: # Should not happen, path has no query
-                    login_url = f"{request.url.path}&error=Invalid+credentials"
-                else:
-                    login_url = f"{request.url.path}?error=Invalid+credentials"
-                
-                # Maintain state and redirect URI if present
+                # Redirect back to login with error parameter, preserving root_path prefix
+                from urllib.parse import quote_plus
+                login_url = f"{root_path}{request.url.path}?error=Invalid+credentials"
                 if redirect_uri:
-                    from urllib.parse import quote_plus
                     login_url += f"&redirect_uri={quote_plus(redirect_uri)}"
                 if state:
                     login_url += f"&state={state}"
@@ -230,17 +225,22 @@ class Authentication(ExtensionProtocol):
             _login_limiter.record_success(client_ip, username)
 
             # Validate redirect_uri: block dangerous schemes before issuing a code.
+            # Relative paths (no scheme, no netloc) are allowed and normalized with root_path.
             from urllib.parse import urlparse as _urlparse
             _parsed_redirect = _urlparse(redirect_uri)
-            _allowed_schemes = {"http", "https"}
-            _allowed_schemes_env = os.environ.get("ALLOWED_REDIRECT_SCHEMES", "")
-            if _allowed_schemes_env:
-                _allowed_schemes = {s.strip().lower() for s in _allowed_schemes_env.split(",")}
-            if _parsed_redirect.scheme.lower() not in _allowed_schemes:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"redirect_uri scheme '{_parsed_redirect.scheme}' is not permitted.",
-                )
+            if _parsed_redirect.scheme:
+                _allowed_schemes = {"http", "https"}
+                _allowed_schemes_env = os.environ.get("ALLOWED_REDIRECT_SCHEMES", "")
+                if _allowed_schemes_env:
+                    _allowed_schemes = {s.strip().lower() for s in _allowed_schemes_env.split(",")}
+                if _parsed_redirect.scheme.lower() not in _allowed_schemes:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"redirect_uri scheme '{_parsed_redirect.scheme}' is not permitted.",
+                    )
+            else:
+                # Relative path — prepend root_path so the redirect lands on the correct prefix
+                redirect_uri = f"{root_path}{redirect_uri}"
 
             # Generate authorization code
             code = await self.local_identity_provider.create_authorization_code(
