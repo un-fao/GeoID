@@ -600,7 +600,7 @@ async function loadTestResults() {
 
 async function bootstrap() {
     try {
-        const resp = await fetch('/configs/web_config');
+        const resp = await fetch('../configs/web_config');
         if (resp.ok) {
             platformConfig = await resp.json();
             if (platformConfig.token_key) {
