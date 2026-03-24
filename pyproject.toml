@@ -163,6 +163,31 @@ task_gdal_job = ["dynastore[task_base,gdal]"]
 
 # ==========================================================================
 # SERVICE COMPOSITIONS (async-db)
+#
+# Hierarchy:
+#
+#   api_base  (db_async + web + httpx + logs + stats)  ......  NO auth
+#   |
+#   +-- api_open  (+ catalog_group, gdal, google,      ......  NO auth
+#   |       processes, proxy, elasticsearch, features)
+#   |   |
+#   |   +-- api_catalog  (+ apikey, auth, template,    ......  WITH auth
+#   |       |       extension_admin)
+#   |       |
+#   |       +-- geoid_service  (+ extension_geoid)
+#   |       |
+#   |       +-- api_full  (+ api_maps, stac, crs,
+#   |               geospatial_io)
+#   |
+#   +-- api_core  (+ apikey)  .............................  WITH apikey
+#       |
+#       +-- api_auth  (+ auth, template)
+#       |
+#       +-- api_maps  (+ g_catalog, geometries,
+#               maps_group, dwh)
+#
+#   worker_service  (g_catalog + tasks + ... + apikey)
+#
 # ==========================================================================
 # api_base: minimal HTTP service — NO auth, NO apikey (open for testing)
 api_base = ["dynastore[db_async,web,extension_httpx,logs,stats]"]
