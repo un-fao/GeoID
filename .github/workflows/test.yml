@@ -4,6 +4,7 @@ name: Test
 on:
   push:
     branches: [main]
+    paths-ignore: ['geoid-refs.json']
   pull_request:
     branches: [main]
   workflow_dispatch:

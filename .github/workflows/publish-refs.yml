@@ -1,0 +1,62 @@
+name: Publish Refs Manifest
+
+# Generates geoid-refs.json with recent commits, tags, and test status.
+# Downstream repos read this file from raw.githubusercontent.com (no auth needed).
+
+on:
+  workflow_run:
+    workflows: ["Test"]
+    types: [completed]
+    branches: [main]
+  push:
+    tags: ['*']
+  workflow_dispatch: {}
+
+concurrency:
+  group: publish-refs
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      github.event.workflow_run.conclusion == 'success' ||
+      github.event.workflow_run.conclusion == 'failure'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+
+      - name: Generate refs manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          WR_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WR_URL: ${{ github.event.workflow_run.html_url }}
+          REPO: ${{ github.repository }}
+        run: |
+          TESTS_PASSED="true"
+          TEST_RUN_URL=""
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            [ "$WR_CONCLUSION" = "success" ] && TESTS_PASSED="true" || TESTS_PASSED="false"
+            TEST_RUN_URL="$WR_URL"
+          fi
+          python3 .github/scripts/generate_refs_manifest.py \
+            --repo "$REPO" \
+            --output geoid-refs.json \
+            --tests-passed "$TESTS_PASSED" \
+            --test-run-url "$TEST_RUN_URL"
+
+      - name: Commit manifest
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add geoid-refs.json
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "ci: update refs manifest [skip ci]"
+          git pull --rebase
+          git push
