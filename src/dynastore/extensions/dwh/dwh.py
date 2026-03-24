@@ -590,8 +590,8 @@ class DwhService(ExtensionProtocol):
             features_db AS ( {geom_sql} ),
             features_val AS (
                 SELECT 
-                    unnest(:ids_input::uuid[]) AS id,
-                    unnest(:attributes_array::jsonb[]) AS attributes
+                    unnest(CAST(:ids_input AS uuid[])) AS id,
+                    unnest(CAST(:attributes_array AS jsonb[])) AS attributes
             ),
             features_final AS (
                 SELECT 

@@ -217,7 +217,7 @@ CREATE_AUDIT_LOG_TABLE = DDLQuery("""
 
 INSERT_AUDIT_EVENT = DQLQuery(
     """INSERT INTO {schema}.audit_log (event_type, principal_id, ip_address, detail)
-       VALUES (:event_type, :principal_id, :ip_address, :detail::jsonb)
+       VALUES (:event_type, :principal_id, :ip_address, CAST(:detail AS jsonb))
        RETURNING id;""",
     result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
 )
@@ -624,8 +624,8 @@ MIGRATE_QUOTA = DQLQuery(
 
 LIST_KEYS_FILTERED = """
     SELECT * FROM {schema}.api_keys 
-    WHERE (:principal_id::UUID IS NULL OR principal_id = :principal_id)
-      AND (:is_active::BOOLEAN IS NULL OR is_active = :is_active)
+    WHERE (CAST(:principal_id AS UUID) IS NULL OR principal_id = :principal_id)
+      AND (CAST(:is_active AS BOOLEAN) IS NULL OR is_active = :is_active)
     ORDER BY created_at DESC 
     LIMIT :limit OFFSET :offset;
 """
@@ -738,7 +738,7 @@ GET_EFFECTIVE_ROLES = DQLQuery(
         SELECT role_id FROM (
             SELECT jsonb_array_elements_text(roles) as role_id 
             FROM {schema}.principals 
-            WHERE id = :principal_id::uuid
+            WHERE id = CAST(:principal_id AS uuid)
         ) initial_roles
         
         UNION

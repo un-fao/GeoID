@@ -729,7 +729,7 @@ async def search_collections(
         params["ids"] = search_request.ids
 
     if search_request.keywords:
-        where_clauses.append("metadata->'keywords' @> :keywords::jsonb")
+        where_clauses.append("metadata->'keywords' @> CAST(:keywords AS jsonb)")
         params["keywords"] = str(search_request.keywords).replace("'", '"')
 
     if search_request.bbox:
