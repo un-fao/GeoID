@@ -194,7 +194,7 @@ class ContextSelector {
             let allCatalogs = [];
             
             while (true) {
-                let url = `/web/dashboard/catalogs?limit=${limit}&offset=${offset}`;
+                let url = `catalogs?limit=${limit}&offset=${offset}`;
                 if (this.state.q) url += `&q=${encodeURIComponent(this.state.q)}`;
                 
                 const res = await fetch(url);
@@ -251,7 +251,7 @@ class ContextSelector {
             let allCollections = [];
             
             while (true) {
-                let url = `/web/dashboard/catalogs/${catalogId}/collections?limit=${limit}&offset=${offset}`;
+                let url = `catalogs/${catalogId}/collections?limit=${limit}&offset=${offset}`;
                 if (this.enableVirtualCollections) {
                     url += '&include_virtual=true'; 
                 }

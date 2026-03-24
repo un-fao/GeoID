@@ -3,6 +3,13 @@
  * Handles Navigation, Documentation System, Dashboard, Extensions, and I18n
  */
 
+// Compute API root from script URL so fetch calls work on any page regardless of depth.
+// custom.js is always served at {root}/web/static/custom.js — strip that suffix to get root.
+const _SCRIPT_ROOT = (function () {
+    const s = document.currentScript;
+    return s ? s.src.replace(/\/web\/static\/custom\.js(\?.*)?$/, '') : '';
+}());
+
 // Global State
 let docsManifest = null;
 let docsLoaded = false;
@@ -605,7 +612,7 @@ async function loadTestResults() {
 
 async function bootstrap() {
     try {
-        const resp = await fetch('../configs/web_config');
+        const resp = await fetch(`${_SCRIPT_ROOT}/configs/web_config`);
         if (resp.ok) {
             platformConfig = await resp.json();
             if (platformConfig.token_key) {

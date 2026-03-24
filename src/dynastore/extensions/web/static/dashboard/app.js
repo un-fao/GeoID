@@ -74,7 +74,7 @@ const app = {
         try {
             const catalogId = this.state.catalogId;
             const collectionId = this.state.collectionId;
-            let url = `/web/dashboard/stats?catalog_id=${catalogId}`;
+            let url = `stats?catalog_id=${catalogId}`;
             if (collectionId) url += `&collection_id=${collectionId}`;
             
             const res = await fetch(url);
@@ -97,7 +97,7 @@ const app = {
             const catalogId = this.state.catalogId;
             const collectionId = this.state.collectionId;
             
-            let url = `/web/dashboard/logs?limit=20&catalog_id=${catalogId}`;
+            let url = `logs?limit=20&catalog_id=${catalogId}`;
             if (collectionId) url += `&collection_id=${collectionId}`;
             
             const levelFilter = document.querySelector('.filter-select').value; // Assuming the first .filter-select is level (if they have unique ids it's better)
@@ -136,7 +136,7 @@ const app = {
     
     async loadTasks() {
         try {
-            const res = await fetch('/web/dashboard/tasks');
+            const res = await fetch('tasks');
             const tasks = await res.json();
             
             const grid = document.getElementById('tasks-grid');
