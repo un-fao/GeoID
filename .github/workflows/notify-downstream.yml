@@ -2,7 +2,7 @@ name: Notify Downstream
 
 # Generic post-push hook — notifies dependent repos so they can react.
 # Repo list is in the DOWNSTREAM_REPOS variable (Settings > Variables), not in code.
-# Uses the org GitHub App for cross-repo authentication.
+# Uses the org GitHub App (AUTOMATION_APP_ID / B64_AUTOMATION_APP_KEY) for auth.
 
 on:
   push:
@@ -14,12 +14,12 @@ jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - name: Authenticate with GitHub App
+      - name: Generate GitHub App token
         id: auth
-        uses: un-fao/fao-github-actions-library/auth/github@1.4.2
+        uses: actions/create-github-app-token@v3
         with:
-          github_app_id: ${{ secrets.AUTOMATION_APP_ID }}
-          b64_github_app_private_key: ${{ secrets.B64_AUTOMATION_APP_KEY }}
+          app-id: ${{ secrets.AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.B64_AUTOMATION_APP_KEY }}
           repositories: ${{ vars.DOWNSTREAM_REPOS }}
 
       - name: Dispatch to downstream repos
