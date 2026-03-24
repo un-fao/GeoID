@@ -19,9 +19,14 @@ jobs:
         env:
           B64_KEY: ${{ secrets.B64_AUTOMATION_APP_KEY }}
         run: |
+          DECODED=$(echo "$B64_KEY" | base64 -d)
+          # Mask every line so the key never appears in logs
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$DECODED"
           {
             echo "private_key<<PRIVATE_KEY_EOF"
-            echo "$B64_KEY" | base64 -d
+            echo "$DECODED"
             echo "PRIVATE_KEY_EOF"
           } >> "$GITHUB_OUTPUT"
 
