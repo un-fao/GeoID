@@ -1,0 +1,14 @@
+{
+  "generated_at": "2026-03-24T13:43:39.087239+00:00",
+  "head_sha": "1289cf8960397835c2b843b6ca13db96df032887",
+  "tests_passed": true,
+  "test_run_url": "https://github.com/un-fao/GeoID/actions/runs/23492076410",
+  "options": [
+    "main",
+    "1289cf896039 - ci: replace cross-repo dispatch with manifest-based pull mod",
+    "270bd48634e5 - fix: replace all hardcoded absolute paths with proxy-safe re",
+    "c1fdb5ed7118 - fix: resolve auth endpoints correctly behind path-prefix pro",
+    "93bea90915b4 - ci: mask decoded private key lines to prevent log exposure",
+    "8a43e9c632ea - ci: decode base64 private key before passing to create-githu"
+  ]
+}
