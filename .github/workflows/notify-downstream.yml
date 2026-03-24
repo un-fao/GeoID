@@ -1,0 +1,38 @@
+name: Notify Downstream
+
+# Generic post-push hook — notifies dependent repos so they can react.
+# Repo list is in the DOWNSTREAM_REPOS variable (Settings > Variables), not in code.
+# Requires a DOWNSTREAM_TOKEN secret (GitHub App installation token or fine-grained PAT).
+
+on:
+  push:
+    branches: [main]
+    tags: ['*']
+  workflow_dispatch: {}   # manual trigger for testing
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch to downstream repos
+        env:
+          GH_TOKEN: ${{ secrets.DOWNSTREAM_TOKEN }}
+          DOWNSTREAM_REPOS: ${{ vars.DOWNSTREAM_REPOS }}
+          PUSH_SHA: ${{ github.sha }}
+          PUSH_REF: ${{ github.ref }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::DOWNSTREAM_TOKEN not configured — skipping"
+            exit 0
+          fi
+          IFS=',' read -ra REPOS <<< "$DOWNSTREAM_REPOS"
+          for repo in "${REPOS[@]}"; do
+            repo=$(echo "$repo" | xargs)
+            [ -z "$repo" ] && continue
+            echo "Notifying $repo..."
+            gh api "repos/${repo}/dispatches" \
+              -f event_type=geoid-refs-updated \
+              -f "client_payload[sha]=${PUSH_SHA}" \
+              -f "client_payload[ref]=${PUSH_REF}" \
+              || echo "::warning::Failed to notify $repo"
+          done
