@@ -14,12 +14,23 @@ jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
+      - name: Decode GitHub App private key
+        id: decode
+        env:
+          B64_KEY: ${{ secrets.B64_AUTOMATION_APP_KEY }}
+        run: |
+          {
+            echo "private_key<<PRIVATE_KEY_EOF"
+            echo "$B64_KEY" | base64 -d
+            echo "PRIVATE_KEY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Generate GitHub App token
         id: auth
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.AUTOMATION_APP_ID }}
-          private-key: ${{ secrets.B64_AUTOMATION_APP_KEY }}
+          private-key: ${{ steps.decode.outputs.private_key }}
           repositories: ${{ vars.DOWNSTREAM_REPOS }}
 
       - name: Dispatch to downstream repos
