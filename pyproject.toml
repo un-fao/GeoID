@@ -125,7 +125,7 @@ auth = ["dynastore[extension_auth]"]
 template = ["dynastore[extension_template]"]
 
 # ==========================================================================
-# LOGICAL GROUPINGS (primitives)
+# PRIMITIVES
 # ==========================================================================
 geospatial_core = [
     "shapely>=2.1.1",
@@ -140,23 +140,40 @@ geospatial_io = [
     "fiona>=1.9.4",
 ]
 geospatial = ["dynastore[geospatial_io]"]
-geometries = ["dynastore[geospatial_core,extension_wfs,features,tiles]"]
-maps_group = ["dynastore[styles,maps]"]
-google = ["dynastore[module_gcp,dwh]"]
 db_async = ["dynastore[db_config,db]"]
 db_sync = ["dynastore[db_config,datastore]"]
 
-# --- Catalog Groupings ---
-catalog_group = ["dynastore[geospatial_core,db_async,catalog,events,stats,extension_search,assets,configs]"]
-g_catalog = ["dynastore[catalog_group,gdal,google]"]
+# ==========================================================================
+# DOMAIN GROUPS — major functional areas, composable independently
+#
+#   0. core         — async DB, web framework, system config & events
+#   1. catalog_grp  — data catalog, features, STAC, assets, search
+#   2. maps_grp     — rendering: WFS, tiles, CRS, styles, maps
+#   3. google_grp   — GCP storage, BigQuery DWH
+#   4. auth_grp     — apikey + auth + admin  (always the LAST wrapper)
+#   5. tools_grp    — HTTP client, proxy, processes, templating
+#   6. monitor_grp  — stats, logs
+#   7. index_grp    — Elasticsearch full-text search
+#
+# ==========================================================================
+core = ["dynastore[db_async,web,configs,events]"]
+catalog_grp = ["dynastore[geospatial_core,catalog,features,stac,assets,search]"]
+maps_grp = ["dynastore[styles,maps,extension_wfs,tiles,crs,gdal]"]
+google_grp = ["dynastore[gcp,extension_dwh]"]
+auth_grp = ["dynastore[apikey,auth,extension_admin]"]
+tools_grp = ["dynastore[extension_httpx,proxy,processes,template]"]
+monitor_grp = ["dynastore[stats,logs]"]
+index_grp = ["dynastore[elasticsearch]"]
 
-# --- Task Groupings (sync-db) ---
+# ==========================================================================
+# TASK GROUPINGS (sync-db)
+# ==========================================================================
 task_base = ["dynastore[db_sync,module_tasks,extension_processes]"]
 ingestion = ["dynastore[task_base,module_gcp,task_ingestion]"]
 
 # Per Cloud Run Job extras (all use db-sync via task-base)
 task_dwh_join_job = ["dynastore[task_base,dwh]"]
-task_ingestion_job = ["dynastore[ingestion,g_catalog]"]
+task_ingestion_job = ["dynastore[ingestion,catalog_grp,google_grp,gdal]"]
 task_export_features_job = ["dynastore[task_base,stac,geospatial_core]"]
 task_tiles_preseed_job = ["dynastore[task_base,tiles,crs]"]
 task_gdal_job = ["dynastore[task_base,gdal]"]
@@ -164,60 +181,54 @@ task_gdal_job = ["dynastore[task_base,gdal]"]
 # ==========================================================================
 # SERVICE COMPOSITIONS (async-db)
 #
-# Each composition = its own extras + everything it inherits from.
-# Read "=" as "is built from". Auth boundary marked explicitly.
-#
 #   ┌──────────────────────────────────────────────────────────┐
-#   │                     NO auth / apikey                     │
+#   │  Domain groups (all WITHOUT auth)                        │
 #   ├──────────────────────────────────────────────────────────┤
-#   │  api_base    = db_async + web + httpx + logs + stats     │
-#   │  api_open    = api_base + catalog_group + gdal + google  │
-#   │               + processes + proxy + elasticsearch        │
-#   │               + features                                 │
+#   │  core        = db_async + web + configs + events         │
+#   │  catalog_grp = geospatial + catalog + features + stac    │
+#   │               + assets + search                          │
+#   │  maps_grp    = styles + maps + wfs + tiles + crs + gdal  │
+#   │  google_grp  = gcp + dwh                                 │
+#   │  tools_grp   = httpx + proxy + processes + template      │
+#   │  monitor_grp = stats + logs                              │
+#   │  index_grp   = elasticsearch                             │
 #   ├──────────────────────────────────────────────────────────┤
-#   │                     WITH apikey + auth                   │
+#   │  Auth wrapper (added LAST)                               │
 #   ├──────────────────────────────────────────────────────────┤
-#   │  api_core    = api_base + apikey                         │
-#   │  api_auth    = api_core + auth + template                │
-#   │  api_catalog = api_open + apikey + auth + template       │
-#   │               + extension_admin                          │
-#   │  api_maps    = api_core + g_catalog + geometries         │
-#   │               + maps_group + dwh                         │
+#   │  auth_grp    = apikey + auth + admin                     │
 #   ├──────────────────────────────────────────────────────────┤
-#   │                     Deployable services                  │
+#   │  Deployable services                                     │
 #   ├──────────────────────────────────────────────────────────┤
-#   │  api_full       = api_catalog + api_maps + stac + crs    │
-#   │                   + geospatial_io                        │
+#   │  api_open       = core + catalog + google + tools        │
+#   │                   + monitor + index             NO auth  │
+#   │  api_catalog    = api_open + auth_grp          WITH auth │
+#   │  api_maps       = core + catalog + google + maps         │
+#   │                   + tools + monitor + auth_grp WITH auth │
+#   │  api_full       = api_catalog + maps_grp                 │
+#   │                   + geospatial_io              WITH auth │
 #   │  geoid_service  = api_catalog + extension_geoid          │
-#   │  worker_service = g_catalog + tasks + processes + events │
-#   │                   + elasticsearch + tiles + ingestion    │
-#   │                   + job extras + apikey                  │
+#   │  worker_service = core + catalog + google + index        │
+#   │                   + tasks + ingestion + jobs    WITH key │
 #   └──────────────────────────────────────────────────────────┘
 #
 # Docker scopes:
-#   api   service -> API_SCOPE=api_open      (no auth, open testing)
+#   api   service -> API_SCOPE=api_open        (no auth, open testing)
 #   geoid service -> GEOID_SCOPE=geoid_service (full auth + geoid UI)
 #
 # ==========================================================================
-# api_base: minimal HTTP service — NO auth, NO apikey (open for testing)
-api_base = ["dynastore[db_async,web,extension_httpx,logs,stats]"]
-# api_core: api_base + apikey (authenticated but no identity provider)
-api_core = ["dynastore[api_base,apikey]"]
-# api_auth: core + authentication layer (identity provider)
-api_auth = ["dynastore[api_core,auth,template]"]
-# api_open: full catalog service WITHOUT auth/apikey — open for testing
-api_open = ["dynastore[api_base,catalog_group,gdal,google,processes,proxy,elasticsearch,features]"]
-# api_catalog: full catalog service WITH auth (most common deployment)
-api_catalog = ["dynastore[api_open,apikey,auth,template,extension_admin]"]
+# api_open: full catalog WITHOUT auth — open for testing
+api_open = ["dynastore[core,catalog_grp,google_grp,tools_grp,monitor_grp,index_grp]"]
+# api_catalog: api_open + auth (most common production deployment)
+api_catalog = ["dynastore[api_open,auth_grp]"]
 # api_maps: maps/tiles/styles service
-api_maps = ["dynastore[api_core,g_catalog,geometries,maps_group,dwh]"]
-# api_full: all features (for local dev or monolithic deployments)
-api_full = ["dynastore[api_catalog,api_maps,stac,crs,geospatial_io]"]
+api_maps = ["dynastore[core,catalog_grp,google_grp,maps_grp,tools_grp,monitor_grp,auth_grp]"]
+# api_full: all features (local dev or monolithic deployments)
+api_full = ["dynastore[api_catalog,maps_grp,geospatial_io]"]
 # geoid_service: api_catalog + geoid extension
 geoid_service = ["dynastore[api_catalog,extension_geoid]"]
-# worker_service: background task processor
-worker_service = ["dynastore[g_catalog,tasks,processes,events,elasticsearch,tiles,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,apikey]"]
-# worker_local: dev-only — worker_service + FastAPI to simulate Cloud Run Jobs via BackgroundTasks
+# worker_service: background task processor (sync-db tasks + async-db catalog reads)
+worker_service = ["dynastore[core,catalog_grp,google_grp,index_grp,tasks,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,apikey]"]
+# worker_local: dev-only — worker_service + FastAPI to simulate Cloud Run Jobs
 worker_local = ["dynastore[worker_service]"]
 
 # ==========================================================================
