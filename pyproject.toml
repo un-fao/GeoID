@@ -32,6 +32,9 @@ build-backend = "setuptools.build_meta"
 # Use underscores to match entry-point names and folder names.
 # pip normalizes _ to - internally (PEP 685); no effect on resolution.
 # ==========================================================================
+module_storage = []
+module_storage_duckdb = ["duckdb>=1.0.0"]
+module_storage_iceberg = ["pyiceberg[sql-postgres]>=0.9.0", "pyarrow>=14.0.0"]
 module_catalog = ["dynastore[geospatial_core]", "sqlalchemy>=2.0.0", "async-lru>=2.0.0"]
 module_gcp = ["gcloud-aio-storage==9.6.0", "google-cloud-bigquery==3.24.0", "google-cloud-run", "google-cloud-storage>=3.1.0", "google-cloud-pubsub", "gcsfs>=2024.5.0", "charset-normalizer", "httpx"]
 module_datastore = ["dynastore[db_sync]", "psycopg2-binary>=2.9.7"]
@@ -121,6 +124,7 @@ logs = ["dynastore[extension_logs]"]
 assets = ["dynastore[extension_assets]"]
 configs = ["dynastore[extension_configs]"]
 search = ["dynastore[extension_search]"]
+storage = ["dynastore[module_storage]"]
 auth = ["dynastore[extension_auth]"]
 template = ["dynastore[extension_template]"]
 
@@ -157,7 +161,7 @@ db_sync = ["dynastore[db_config,datastore]"]
 #   *  processes    — standalone; on catalog (cloud) or worker (on-prem)
 #
 # ==========================================================================
-core = ["dynastore[db_async,web,configs,events]"]
+core = ["dynastore[db_async,web,configs,events,storage]"]
 catalog_grp = ["dynastore[geospatial_core,catalog,features,stac,assets,search]"]
 maps_grp = ["dynastore[styles,maps,extension_wfs,tiles,crs,gdal]"]
 google_grp = ["dynastore[gcp,extension_dwh]"]
@@ -271,6 +275,11 @@ notebooks = "dynastore.modules.notebooks.notebooks_module:NotebooksModule"
 elasticsearch = "dynastore.modules.elasticsearch.module:ElasticsearchModule"
 stats = "dynastore.modules.stats.stats_module:STATS"
 web = "dynastore.modules.web.web_module:WebModule"
+storage_postgresql = "dynastore.modules.storage.drivers.postgresql:PostgresStorageDriver"
+storage_elasticsearch = "dynastore.modules.storage.drivers.elasticsearch:ElasticsearchStorageDriver"
+storage_elasticsearch_obfuscated = "dynastore.modules.storage.drivers.elasticsearch:ElasticsearchObfuscatedDriver"
+storage_duckdb = "dynastore.modules.storage.drivers.duckdb:DuckDBStorageDriver"
+storage_iceberg = "dynastore.modules.storage.drivers.iceberg:IcebergStorageDriver"
 
 [project.entry-points."dynastore.extensions"]
 maps = "dynastore.extensions.maps.maps_service:MapsService"

@@ -144,6 +144,12 @@ web_service.py
 .python-version
 deprecated/**
 
+# AI / Agent artifacts
+.claude/
+.memory/
+plans/
+skills/
+
 # System Files
 .DS_Store
 
