@@ -926,12 +926,12 @@ class AssetService(ExtensionProtocol):
         yet cleaned up its data. Only call this **after** the referencing
         collection or table has been dropped.
         """
-        from dynastore.modules.catalog.asset_service import AssetReferenceType as _ART
+        from dynastore.models.shared_models import CoreAssetReferenceType
 
-        # Convert the path string to a typed enum value
+        # Convert the path string to a typed enum value if it matches a known type
         try:
-            typed_ref_type = _ART(ref_type)
-        except ValueError:
+            typed_ref_type = CoreAssetReferenceType(ref_type)
+        except (ValueError, TypeError):
             # Accept unknown values as raw strings (forward-compat with unknown driver types)
             typed_ref_type = ref_type  # type: ignore[assignment]
 
