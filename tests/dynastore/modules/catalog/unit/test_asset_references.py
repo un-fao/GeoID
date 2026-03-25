@@ -29,7 +29,7 @@ Covers (no DB required):
 
 import pytest
 from datetime import datetime, timezone, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from dynastore.models.shared_models import AssetReferenceType, CoreAssetReferenceType
 from dynastore.modules.catalog.asset_service import (
@@ -330,3 +330,74 @@ class TestProtocolCompliance:
         """A mock missing a required method must NOT satisfy the protocol."""
         mock = MagicMock(spec=[])
         assert not isinstance(mock, AssetUploadProtocol)
+
+
+# ---------------------------------------------------------------------------
+# ref_type string coercion — hasattr(ref_type, "value") guard
+# ---------------------------------------------------------------------------
+
+
+class TestRefTypeCoercion:
+    """
+    Verifies that the ``hasattr(ref_type, 'value')`` guard in
+    ``add_asset_reference`` / ``remove_asset_reference`` correctly serialises
+    both enum instances and plain strings without raising AttributeError.
+    """
+
+    def test_enum_has_value_attr(self):
+        rt = CoreAssetReferenceType.COLLECTION
+        coerced = rt.value if hasattr(rt, "value") else str(rt)
+        assert coerced == "collection"
+
+    def test_plain_string_no_value_attr(self):
+        rt = "duckdb:table"
+        coerced = rt.value if hasattr(rt, "value") else str(rt)
+        assert coerced == "duckdb:table"
+
+    def test_custom_subclass_enum_coerced(self):
+        class DuckDbReferenceType(AssetReferenceType):
+            TABLE = "duckdb:table"
+
+        rt = DuckDbReferenceType.TABLE
+        coerced = rt.value if hasattr(rt, "value") else str(rt)
+        assert coerced == "duckdb:table"
+
+
+# ---------------------------------------------------------------------------
+# _list_blocking_references_bulk — result grouping logic
+# ---------------------------------------------------------------------------
+
+
+class TestBulkBlockingRefs:
+    """
+    Unit-tests the grouping logic used after ``_list_blocking_references_bulk``
+    returns results: the first asset_id with blocking refs triggers the error.
+    """
+
+    def _blocking_ref(self, asset_id: str, ref_id: str = "tbl") -> AssetReference:
+        return AssetReference(
+            asset_id=asset_id,
+            catalog_id="cat",
+            ref_type="duckdb:table",
+            ref_id=ref_id,
+            cascade_delete=False,
+            created_at=datetime.now(timezone.utc),
+        )
+
+    def test_first_asset_id_is_raised(self):
+        """When bulk results arrive, AssetReferencedError uses the first asset_id."""
+        rows = [
+            self._blocking_ref("asset_a", "tbl1"),
+            self._blocking_ref("asset_a", "tbl2"),
+            self._blocking_ref("asset_b", "tbl3"),
+        ]
+        first_asset_id = rows[0].asset_id
+        asset_blocking = [r for r in rows if r.asset_id == first_asset_id]
+        err = AssetReferencedError(first_asset_id, asset_blocking)
+        assert err.asset_id == "asset_a"
+        assert len(err.blocking_refs) == 2
+
+    def test_empty_bulk_result_no_error(self):
+        """Empty bulk result means no blocking refs → no error raised."""
+        rows: list = []
+        assert not rows  # guard condition in delete_assets

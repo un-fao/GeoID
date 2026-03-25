@@ -478,8 +478,13 @@ class AssetService(AssetsProtocol):
         self.engine = engine
         self._event_emitter = event_emitter
 
-        # Instance-bound cache for assets
-        self.get_asset_cached = cached(maxsize=128, namespace="assets")(self._get_asset_db)
+        # Instance-bound cache for assets.
+        # TTL=60 s prevents stale reads across multi-worker deployments where
+        # another process may have updated the row. Jitter spreads expiry to
+        # avoid a thundering herd when many keys were warmed at the same time.
+        self.get_asset_cached = cached(
+            maxsize=128, ttl=60, jitter=5, namespace="assets"
+        )(self._get_asset_db)
 
     def is_available(self) -> bool:
         """Returns True if the manager is initialized and ready."""
@@ -853,14 +858,18 @@ class AssetService(AssetsProtocol):
                 return 0
 
             # --- Reference guard: block hard-delete of owned assets with blocking references ---
+            # Single LEFT JOIN replaces the per-asset loop (eliminates N+1 round trips).
             if hard:
-                for a in assets:
-                    if a.get("owned_by"):
-                        blocking = await self._list_blocking_references(
-                            a["asset_id"], a["catalog_id"], conn, phys_schema
-                        )
-                        if blocking:
-                            raise AssetReferencedError(a["asset_id"], blocking)
+                owned_ids = [a["asset_id"] for a in assets if a.get("owned_by")]
+                if owned_ids:
+                    blocking_rows = await self._list_blocking_references_bulk(
+                        owned_ids, catalog_id, conn, phys_schema
+                    )
+                    if blocking_rows:
+                        # Raise on the first asset that has blocking refs.
+                        first_asset_id = blocking_rows[0].asset_id
+                        asset_blocking = [r for r in blocking_rows if r.asset_id == first_asset_id]
+                        raise AssetReferencedError(first_asset_id, asset_blocking)
 
             prefix = (
                 f'DELETE FROM "{phys_schema}".assets'
@@ -1053,7 +1062,7 @@ class AssetService(AssetsProtocol):
                 conn,
                 asset_id=asset_id,
                 catalog_id=catalog_id,
-                ref_type=ref_type.value,
+                ref_type=ref_type.value if hasattr(ref_type, "value") else str(ref_type),
                 ref_id=ref_id,
                 cascade_delete=cascade_delete,
                 created_at=now,
@@ -1084,7 +1093,7 @@ class AssetService(AssetsProtocol):
                 conn,
                 catalog_id=catalog_id,
                 asset_id=asset_id,
-                ref_type=ref_type.value,
+                ref_type=ref_type.value if hasattr(ref_type, "value") else str(ref_type),
                 ref_id=ref_id,
             )
 
@@ -1118,7 +1127,7 @@ class AssetService(AssetsProtocol):
         phys_schema: str,
     ) -> List[AssetReference]:
         """
-        Returns only the ``cascade_delete=False`` references for an asset.
+        Returns only the ``cascade_delete=False`` references for a single asset.
         Uses the partial index for efficiency.
         """
         sql = f"""
@@ -1129,4 +1138,34 @@ class AssetService(AssetsProtocol):
         rows = await DQLQuery(
             sql, result_handler=PydanticResultHandler.pydantic_all(AssetReference)
         ).execute(conn, catalog_id=catalog_id, asset_id=asset_id)
+        return rows or []
+
+    async def _list_blocking_references_bulk(
+        self,
+        asset_ids: List[str],
+        catalog_id: str,
+        conn: DbConnection,
+        phys_schema: str,
+    ) -> List[AssetReference]:
+        """
+        Returns ``cascade_delete=False`` references for *all* given asset IDs in one
+        round trip.  Uses the partial index on ``(catalog_id, asset_id) WHERE
+        cascade_delete = FALSE``.  Called by ``delete_assets`` to replace the
+        per-asset loop.
+        """
+        placeholders = ", ".join(f":aid_{i}" for i in range(len(asset_ids)))
+        params: Dict[str, Any] = {"catalog_id": catalog_id}
+        for i, aid in enumerate(asset_ids):
+            params[f"aid_{i}"] = aid
+        sql = text(f"""
+            SELECT asset_id, catalog_id, ref_type, ref_id, cascade_delete, created_at
+            FROM "{phys_schema}".asset_references
+            WHERE catalog_id = :catalog_id
+              AND asset_id IN ({placeholders})
+              AND cascade_delete = FALSE
+            ORDER BY asset_id, created_at ASC;
+        """)
+        rows = await DQLQuery(
+            sql, result_handler=PydanticResultHandler.pydantic_all(AssetReference)
+        ).execute(conn, **params)
         return rows or []
