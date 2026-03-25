@@ -20,8 +20,9 @@
 
 from enum import Enum
 from typing import Any, ClassVar, Dict, List, Optional, Union
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.models.localization import LocalizedText, Language
 
 # --- Configuration Identifiers ---
 STAC_PLUGIN_CONFIG_ID = "stac"
@@ -176,6 +177,48 @@ class AssetTrackingConfig(BaseModel):
     enabled: bool = Field(True, description="Enable or disable dynamic tracking for ingestion sources.")
     access_mode: AssetAccessMode = Field(AssetAccessMode.DIRECT, description="Method to expose the source file.")
 
+# --- STAC Summaries ---
+
+class StacSummaryRange(BaseModel):
+    """STAC Range Object for summaries: ``{minimum, maximum}`` plus optional derived stats."""
+    model_config = ConfigDict(extra="allow")
+    minimum: Union[float, int, str]
+    maximum: Union[float, int, str]
+
+# A summary value is one of: Range | enum array | JSON Schema dict
+StacSummaryValue = Union[StacSummaryRange, List[Any], Dict[str, Any]]
+
+# --- STAC Asset Definition ---
+
+class StacAssetDefinition(BaseModel):
+    """
+    Open-schema STAC asset definition for collection ``assets`` and ``item_assets``.
+
+    Text fields (``title``, ``description``) use ``LocalizedText`` for multilanguage.
+    Extension-specific fields (``eo:bands``, ``raster:bands``, ``proj:shape``,
+    ``table:columns``, etc.) are accepted directly via ``extra="allow"`` and
+    validated downstream by ``stac-pydantic``'s ``validate_extensions()`` against
+    the actual JSON schemas listed in ``stac_extensions``.
+
+    For collection ``assets``, ``href`` is required.
+    For ``item_assets``, ``href`` MUST NOT be set (templates only).
+    """
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    href: Optional[str] = None
+    title: Optional[LocalizedText] = None
+    description: Optional[LocalizedText] = None
+    type: Optional[str] = Field(None, description="IANA media type (e.g. image/tiff; application=geotiff)")
+    roles: Optional[List[str]] = Field(None, description="Semantic roles: data, overview, thumbnail, metadata, source, …")
+    hreflang: Optional[str] = Field(None, description="RFC 5646 language tag for the href target (STAC Language Extension)")
+
+    @field_validator("title", "description", mode="before")
+    @classmethod
+    def wrap_localized(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            return {Language.EN.value: v}
+        return v
+
 # --- THE PLUGIN DEFINITION ---
 
 class StacPluginConfig(PluginConfig):
@@ -186,8 +229,26 @@ class StacPluginConfig(PluginConfig):
     # Extension schemas
     enabled_extensions: List[str] = Field(default_factory=list)
     
-    # Metadata summaries
-    summaries: Dict[str, dict] = Field(default_factory=dict)
+    # Metadata summaries (Range Object, enum array, or JSON Schema dict)
+    summaries: Dict[str, StacSummaryValue] = Field(default_factory=dict)
+
+    # STAC Providers (spec §providers)
+    providers: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="List of provider objects (name, description, roles, url + extras).",
+    )
+
+    # Collection-level assets (spec §assets) — keyed by asset ID
+    assets: Dict[str, StacAssetDefinition] = Field(
+        default_factory=dict,
+        description="Static collection-level assets (href required).",
+    )
+
+    # Item asset templates (item_assets extension) — keyed by asset ID
+    item_assets: Dict[str, StacAssetDefinition] = Field(
+        default_factory=dict,
+        description="Item asset templates (no href, ≥2 fields each).",
+    )
     
     # Datacube definitions
     cube_dimensions: Dict[str, DatacubeDimension] = Field(default_factory=dict)

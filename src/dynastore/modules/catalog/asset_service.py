@@ -1018,10 +1018,7 @@ class AssetService(AssetsProtocol):
             ref_id         VARCHAR     NOT NULL,
             cascade_delete BOOLEAN     NOT NULL DEFAULT TRUE,
             created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-            PRIMARY KEY (catalog_id, asset_id, ref_type, ref_id),
-            FOREIGN KEY (catalog_id, asset_id)
-                REFERENCES "{schema}".assets (catalog_id, asset_id)
-                ON DELETE CASCADE
+            PRIMARY KEY (catalog_id, asset_id, ref_type, ref_id)
         );
         CREATE INDEX IF NOT EXISTS idx_asset_refs_blocking_{schema}
             ON "{schema}".asset_references (catalog_id, asset_id)
@@ -1199,10 +1196,7 @@ async def _initialize_asset_refs_tenant_slice(
         ref_id         VARCHAR     NOT NULL,
         cascade_delete BOOLEAN     NOT NULL DEFAULT TRUE,
         created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-        PRIMARY KEY (catalog_id, asset_id, ref_type, ref_id),
-        FOREIGN KEY (catalog_id, asset_id)
-            REFERENCES "{schema}".assets (catalog_id, asset_id)
-            ON DELETE CASCADE
+        PRIMARY KEY (catalog_id, asset_id, ref_type, ref_id)
     );
     CREATE INDEX IF NOT EXISTS idx_asset_refs_blocking_{schema}
         ON "{schema}".asset_references (catalog_id, asset_id)

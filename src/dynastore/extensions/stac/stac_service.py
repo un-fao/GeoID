@@ -60,6 +60,7 @@ from dynastore.modules.stac.stac_config import STAC_PLUGIN_CONFIG_ID, StacPlugin
 
 from dynastore.tools.db import validate_sql_identifier  # type: ignore
 from .stac_models import STACCatalogRequest, stac_localize
+from .stac_validator import validate_stac_item, validate_stac_collection
 from dynastore.models.shared_models import Feature
 from . import stac_generator, stac_db, asset_factory, metadata_mapper
 from .stac_models import (
@@ -515,6 +516,9 @@ class STACService(ExtensionProtocol, StaticFilesProtocol):
 
             input_data = request_body.model_dump(exclude_unset=True)
 
+            # Write-time STAC validation (lenient — warnings only)
+            validate_stac_collection(input_data)
+
             use_lang = (
                 "*"
                 if any(
@@ -609,6 +613,9 @@ class STACService(ExtensionProtocol, StaticFilesProtocol):
         from dynastore.models.localization import is_multilanguage_input
 
         input_data = request_body.model_dump(exclude_unset=True)
+
+        # Write-time STAC validation (lenient — warnings only)
+        validate_stac_collection(input_data)
 
         # Sidecars are now handled transparently by ItemsProtocol / LifecycleRegistry
         # No need to manually inject them here.
@@ -823,6 +830,9 @@ class STACService(ExtensionProtocol, StaticFilesProtocol):
         engine=Depends(get_async_engine),
         language: str = Depends(get_language),
     ):
+        # Write-time STAC validation (lenient — warnings only)
+        validate_stac_item(item_payload.model_dump(by_alias=True, exclude_unset=True))
+
         stac_item = item_payload.to_pystac()
         if not stac_item.collection_id:
             stac_item.collection_id = collection_id
@@ -832,8 +842,6 @@ class STACService(ExtensionProtocol, StaticFilesProtocol):
         items_svc = get_protocol(ItemsProtocol)
         if not items_svc:
             raise HTTPException(status_code=500, detail="Items protocol not available.")
-
-        # catalogs_svc = await self._get_catalogs_service()
 
         try:
             from .metadata_helpers import prune_managed_content
@@ -933,6 +941,9 @@ class STACService(ExtensionProtocol, StaticFilesProtocol):
         engine=Depends(get_async_engine),
         language: str = Depends(get_language),
     ):
+        # Write-time STAC validation (lenient — warnings only)
+        validate_stac_item(item_payload.model_dump(by_alias=True, exclude_unset=True))
+
         stac_item = item_payload.to_pystac()
         if not stac_item.collection_id:
             stac_item.collection_id = collection_id

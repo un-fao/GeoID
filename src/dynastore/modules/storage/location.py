@@ -25,9 +25,10 @@ the correct class for deserialization, following the same pattern as
 ``SidecarConfigRegistry``.
 """
 
+from enum import StrEnum
 from typing import Any, ClassVar, Dict, Optional, Type
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class StorageLocationConfigRegistry:
@@ -91,11 +92,29 @@ class FileStorageLocationConfig(StorageLocationConfig):
     )
 
 
+class WarehouseScheme(StrEnum):
+    """Supported warehouse URI schemes for OTF drivers."""
+
+    GCS = "gs"
+    S3 = "s3"
+    FILE = "file"
+
+
 class OTFStorageLocationConfig(StorageLocationConfig):
-    """For Open Table Format drivers (Iceberg, Delta Lake, Hudi)."""
+    """For Open Table Format drivers (Iceberg, Delta Lake, Hudi).
+
+    Warehouse resolution order:
+      1. Explicit ``warehouse_uri`` if set
+      2. Auto-detected from platform ``StorageProtocol`` (GCS bucket, future S3)
+      3. Local temp dir fallback (``file://``)
+    """
+
+    model_config = ConfigDict(extra="allow")
 
     _driver_id: ClassVar[str] = "iceberg"
     driver: str = "iceberg"
+
+    # Catalog
     catalog_name: Optional[str] = Field(
         None, description="OTF catalog name (e.g., Glue, Hive, REST)"
     )
@@ -108,5 +127,19 @@ class OTFStorageLocationConfig(StorageLocationConfig):
         None,
         description="Extra catalog-specific properties (e.g., warehouse, credentials)",
     )
+
+    # Warehouse — auto-resolved from StorageProtocol by default
+    warehouse_uri: Optional[str] = Field(
+        None,
+        description="Manual override for warehouse URI. Auto-resolved from the "
+        "collection's existing storage bucket (GCS/S3) when not set.",
+    )
+    warehouse_scheme: Optional[WarehouseScheme] = Field(
+        None,
+        description="Manual override for warehouse scheme. "
+        "Auto-detected from warehouse_uri or StorageProtocol.",
+    )
+
+    # Table location
     namespace: Optional[str] = Field(None, description="OTF namespace/database")
     table_name: Optional[str] = Field(None, description="OTF table name")

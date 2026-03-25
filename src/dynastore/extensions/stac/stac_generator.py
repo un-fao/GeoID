@@ -54,8 +54,10 @@ from dynastore.modules.catalog.sidecars.geometries_config import GeometriesSidec
 from dynastore.modules.stac.stac_config import (
     STAC_PLUGIN_CONFIG_ID,
     StacPluginConfig,
+    StacAssetDefinition,
     HierarchyStrategy,
 )
+from dynastore.tools.language_utils import resolve_localized_field
 from dynastore.extensions.tools.conformance import Conformance, get_active_conformance
 from dynastore.models.localization import (
     STAC_LANGUAGE_EXTENSION_URI,
@@ -394,9 +396,14 @@ async def create_collection(
     extent = pystac.Extent(spatial=spatial_extent, temporal=temporal_extent)
 
     stac_extensions_to_add = [STAC_LANGUAGE_EXTENSION_URI]
+    # Merge extension URIs declared in config (any-extension support)
+    for ext_uri in stac_config.enabled_extensions:
+        if ext_uri not in stac_extensions_to_add:
+            stac_extensions_to_add.append(ext_uri)
     # Add extensions based on config
     if stac_config.cube_dimensions or stac_config.cube_variables:
-        stac_extensions_to_add.append(SUPPORTED_STAC_EXTENSIONS[0])
+        if SUPPORTED_STAC_EXTENSIONS[0] not in stac_extensions_to_add:
+            stac_extensions_to_add.append(SUPPORTED_STAC_EXTENSIONS[0])
 
     # Cast layer_config components to expected types to handle Immutable wrappers
     storage_config = None
@@ -424,6 +431,86 @@ async def create_collection(
         keywords=meta_dict.get("keywords"),
         license=meta_dict.get("license") or "proprietary",
     )
+
+    # --- Providers (DB model takes precedence, config as fallback) ---
+    providers_list = meta_dict.get("providers") or []
+    if not providers_list and stac_config.providers:
+        providers_list = stac_config.providers
+    if providers_list:
+        collection.providers = [
+            pystac.Provider(**p) if isinstance(p, dict) else p
+            for p in providers_list
+        ]
+
+    # --- Summaries (merge: config base + DB overrides) ---
+    merged_summaries: Dict[str, Any] = {}
+    if stac_config.summaries:
+        for k, v in stac_config.summaries.items():
+            merged_summaries[k] = v.model_dump(exclude_none=True) if hasattr(v, "model_dump") else v
+    db_summaries = meta_dict.get("summaries")
+    if db_summaries and isinstance(db_summaries, dict):
+        merged_summaries.update(db_summaries)
+    if merged_summaries:
+        collection.summaries = pystac.Summaries(merged_summaries)
+
+    # --- Collection-level assets (config base + DB overrides) ---
+    merged_assets: Dict[str, pystac.Asset] = {}
+    # Config assets (static definitions with multilanguage resolution)
+    for asset_id, asset_def in stac_config.assets.items():
+        asset_dict = asset_def.model_dump(exclude_none=True)
+        title = resolve_localized_field(asset_def.title, lang)
+        desc = resolve_localized_field(asset_def.description, lang)
+        merged_assets[asset_id] = pystac.Asset(
+            href=asset_dict.get("href", ""),
+            title=title if isinstance(title, str) else None,
+            description=desc if isinstance(desc, str) else None,
+            media_type=asset_dict.get("type"),
+            roles=asset_dict.get("roles"),
+            extra_fields={
+                k: v for k, v in asset_dict.items()
+                if k not in {"href", "title", "description", "type", "roles"}
+            },
+        )
+    # DB-level assets override config
+    db_assets = meta_dict.get("assets")
+    if db_assets and isinstance(db_assets, dict):
+        for asset_id, asset_data in db_assets.items():
+            if isinstance(asset_data, dict):
+                merged_assets[asset_id] = pystac.Asset(
+                    href=asset_data.get("href", ""),
+                    title=asset_data.get("title"),
+                    description=asset_data.get("description"),
+                    media_type=asset_data.get("type"),
+                    roles=asset_data.get("roles"),
+                    extra_fields={
+                        k: v for k, v in asset_data.items()
+                        if k not in {"href", "title", "description", "type", "roles"}
+                    },
+                )
+    if merged_assets:
+        collection.assets = merged_assets
+
+    # --- Item assets templates (config base + DB overrides) ---
+    merged_item_assets: Dict[str, Any] = {}
+    for asset_id, asset_def in stac_config.item_assets.items():
+        asset_dict = asset_def.model_dump(exclude_none=True)
+        asset_dict.pop("href", None)  # item_assets must NOT have href
+        title = resolve_localized_field(asset_def.title, lang)
+        desc = resolve_localized_field(asset_def.description, lang)
+        if title:
+            asset_dict["title"] = title
+        if desc:
+            asset_dict["description"] = desc
+        merged_item_assets[asset_id] = asset_dict
+    db_item_assets = meta_dict.get("item_assets")
+    if db_item_assets and isinstance(db_item_assets, dict):
+        merged_item_assets.update(db_item_assets)
+    if merged_item_assets:
+        if "https://stac-extensions.github.io/item-assets/v1.0.0/schema.json" not in collection.stac_extensions:
+            collection.stac_extensions.append(
+                "https://stac-extensions.github.io/item-assets/v1.0.0/schema.json"
+            )
+        collection.extra_fields["item_assets"] = merged_item_assets
 
     # Inject language metadata
     if "language" in meta_dict:

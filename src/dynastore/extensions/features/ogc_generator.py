@@ -134,8 +134,21 @@ def _db_row_to_ogc_feature(
         from pydantic import TypeAdapter
         geometry_model = TypeAdapter(ogc_models.GeoJSONGeometry).validate_python(geom_dict)
 
+    # -- 3b. Strip STAC-specific output fields (sidecar ran for multilanguage) -
+    from dynastore.extensions.stac.stac_items_sidecar import STAC_FEATURES_STRIP
+
+    for stac_key in STAC_FEATURES_STRIP:
+        if hasattr(item, stac_key):
+            try:
+                delattr(item, stac_key)
+            except Exception:
+                pass
+
     # -- 4. Properties + OGC-specific validity mapping ------------------------
     properties = dict(item.properties or {})
+    # Remove any STAC keys that leaked into properties
+    for stac_key in STAC_FEATURES_STRIP:
+        properties.pop(stac_key, None)
 
     if "validity" in properties:
         v = properties.pop("validity", None)

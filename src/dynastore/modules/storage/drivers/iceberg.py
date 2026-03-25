@@ -31,18 +31,29 @@ DynaStore hierarchy mapping:
   - DynaStore collection → Iceberg table
   - DynaStore item/feature → Iceberg row
 
-The driver delegates to a PyIceberg catalog (REST, Glue, Hive, SQL, etc.)
-configured via ``OTFStorageLocationConfig``.
+The driver delegates to a PyIceberg catalog configured via
+``OTFStorageLocationConfig``.  Uses ``pyiceberg.catalog.CatalogType`` enum
+and PyIceberg constants (``TYPE``, ``URI``, ``WAREHOUSE_LOCATION``) for
+configuration — no string literals.
 
-Catalog types supported via ``OTFStorageLocationConfig.catalog_type``:
-  - ``rest`` (default): REST catalog (e.g., Tabular, Polaris)
-  - ``glue``: AWS Glue Data Catalog
-  - ``hive``: Hive Metastore
-  - ``sql``: SQL-based catalog (JDBC)
-  - ``dynamodb``: DynamoDB-backed catalog
+Catalog types (via ``pyiceberg.catalog.CatalogType``):
+  - ``SQL`` (default): PostgreSQL-backed SqlCatalog
+  - ``REST``: REST catalog (e.g., Tabular, Polaris)
+  - ``GLUE``: AWS Glue Data Catalog
+  - ``HIVE``: Hive Metastore
+  - ``DYNAMODB``: DynamoDB-backed catalog
+
+Warehouse resolution order:
+  1. Explicit ``warehouse_uri`` in ``OTFStorageLocationConfig``
+  2. Auto-detected from platform ``StorageProtocol`` (GCS bucket, future S3)
+  3. Local temp dir fallback (``file://``)
+
+When the warehouse URI scheme is ``gs://``, the driver injects PyIceberg
+GCS IO properties (``GCS_PROJECT_ID``) so PyArrowFileIO can access GCS.
+S3 follows the same pattern when an AWS module is implemented.
 
 Connection lifecycle:
-  - **Lazy init**: catalog loaded on first use via ``_get_catalog()``.
+  - **Lazy init**: catalog loaded on first use via ``_ensure_catalog()``.
   - **Cached**: once loaded, the same catalog instance is reused.
   - **Shutdown**: catalog reference cleared in ``lifespan()`` on app shutdown.
 """
@@ -141,59 +152,142 @@ class IcebergStorageDriver(ModuleProtocol):
         self._catalog_loc_key = None
         logger.info("IcebergStorageDriver: stopped")
 
-    def _get_catalog(self, loc: OTFStorageLocationConfig):
-        """Get or create a PyIceberg catalog from location config.
+    # ------------------------------------------------------------------
+    # Catalog & warehouse resolution
+    # ------------------------------------------------------------------
 
-        Supports multiple catalog types: sql (default), rest, glue, hive, dynamodb.
-        When catalog_type is "sql" and no explicit URI is provided, falls back
-        to the platform DATABASE_URL (PostgreSQL) — zero-config for production.
+    async def _resolve_warehouse(
+        self, loc: OTFStorageLocationConfig, catalog_id: str
+    ) -> str:
+        """Resolve warehouse URI: explicit config > StorageProtocol auto-detect > local fallback.
 
-        The catalog is cached and reused across calls; if the location
-        config key changes (different catalog), a new catalog is loaded.
+        When a collection already has a GCS bucket (via StorageProtocol),
+        the warehouse is automatically derived from that bucket with an
+        ``iceberg/`` subfolder for isolation.
+        """
+        if loc.warehouse_uri:
+            return loc.warehouse_uri
+
+        # Auto-detect from platform StorageProtocol (GCS today, S3 in future)
+        try:
+            from dynastore.tools.discovery import get_protocol
+            from dynastore.models.protocols.storage import StorageProtocol
+            storage = get_protocol(StorageProtocol)
+            if storage:
+                base_path = await storage.get_catalog_storage_path(catalog_id)
+                if base_path:
+                    warehouse = base_path.rstrip("/") + "/iceberg/"
+                    logger.info(
+                        "Iceberg warehouse auto-resolved from StorageProtocol: %s",
+                        warehouse,
+                    )
+                    return warehouse
+        except Exception as e:
+            logger.debug("StorageProtocol not available for warehouse: %s", e)
+
+        # Fallback: local filesystem
+        import tempfile
+        return f"file://{tempfile.gettempdir()}/iceberg_warehouse"
+
+    def _get_catalog(
+        self,
+        loc: OTFStorageLocationConfig,
+        *,
+        warehouse: Optional[str] = None,
+    ):
+        """Build a PyIceberg catalog from location config + resolved warehouse.
+
+        Uses ``pyiceberg.catalog.CatalogType`` enum and PyIceberg constants
+        (``TYPE``, ``URI``, ``WAREHOUSE_LOCATION``) instead of string literals.
+
+        The catalog is cached; if the location config key changes, a new
+        catalog is loaded.
         """
         loc_key = f"{loc.catalog_name}:{loc.catalog_uri}:{loc.catalog_type}"
         if self._catalog is not None and self._catalog_loc_key == loc_key:
             return self._catalog
 
-        from pyiceberg.catalog import load_catalog
+        from pyiceberg.catalog import (
+            load_catalog,
+            CatalogType,
+            TYPE as _TYPE,
+            URI as _URI,
+            WAREHOUSE_LOCATION as _WAREHOUSE,
+        )
 
-        catalog_type = loc.catalog_type or "sql"
-        catalog_props: Dict[str, Any] = {"type": catalog_type}
+        # Resolve catalog type via enum (default: SQL)
+        raw_type = (loc.catalog_type or "sql").lower()
+        try:
+            cat_type = CatalogType(raw_type)
+        except ValueError:
+            cat_type = CatalogType.SQL
+            logger.warning(
+                "Unknown catalog_type %r, falling back to %s",
+                raw_type, cat_type.value,
+            )
 
+        catalog_props: Dict[str, Any] = {_TYPE: cat_type.value}
+
+        # URI resolution
         if loc.catalog_uri:
-            catalog_props["uri"] = loc.catalog_uri
-        elif catalog_type == "sql":
-            # Fall back to platform DATABASE_URL when no explicit URI
+            catalog_props[_URI] = loc.catalog_uri
+        elif cat_type == CatalogType.SQL:
             from dynastore.modules.db_config.db_config import DBConfig
             from dynastore.modules.db_config.tools import normalize_db_url
             sync_url = normalize_db_url(DBConfig.database_url, is_async=False)
-            # PyIceberg SqlCatalog requires psycopg2 driver format
             if sync_url.startswith("postgresql://"):
                 sync_url = sync_url.replace(
                     "postgresql://", "postgresql+psycopg2://", 1
                 )
-            catalog_props["uri"] = sync_url
+            catalog_props[_URI] = sync_url
 
-        # Pass through extra properties for catalog-specific config
+        # Extra catalog-specific properties
         if loc.catalog_properties:
             catalog_props.update(loc.catalog_properties)
 
-        # Default warehouse to local temp dir for SQL catalogs if not specified
-        if "warehouse" not in catalog_props and catalog_type == "sql":
-            import tempfile
-            catalog_props["warehouse"] = (
-                f"file://{tempfile.gettempdir()}/iceberg_warehouse"
+        # Warehouse resolution
+        if _WAREHOUSE not in catalog_props:
+            if warehouse:
+                catalog_props[_WAREHOUSE] = warehouse
+            elif cat_type == CatalogType.SQL:
+                import tempfile
+                catalog_props[_WAREHOUSE] = (
+                    f"file://{tempfile.gettempdir()}/iceberg_warehouse"
+                )
+
+        # Inject IO properties for cloud warehouse schemes
+        resolved_wh = catalog_props.get(_WAREHOUSE, "")
+        if resolved_wh.startswith("gs://"):
+            import os
+            from pyiceberg.io import GCS_PROJECT_ID
+            catalog_props.setdefault(
+                GCS_PROJECT_ID,
+                os.getenv("PROJECT_ID", os.getenv("GOOGLE_CLOUD_PROJECT", "")),
             )
+        # Future: elif resolved_wh.startswith("s3://"):
+        #     from pyiceberg.io import S3_REGION, S3_ACCESS_KEY_ID, ...
 
         self._catalog = load_catalog(
             loc.catalog_name or "default", **catalog_props
         )
         self._catalog_loc_key = loc_key
         logger.debug(
-            "IcebergStorageDriver: loaded %s catalog '%s'",
-            catalog_type, loc.catalog_name or "default",
+            "IcebergStorageDriver: loaded %s catalog '%s' (warehouse=%s)",
+            cat_type.value,
+            loc.catalog_name or "default",
+            resolved_wh or "none",
         )
         return self._catalog
+
+    async def _ensure_catalog(
+        self, loc: OTFStorageLocationConfig, catalog_id: str
+    ):
+        """Async wrapper: resolve warehouse then get/create catalog."""
+        loc_key = f"{loc.catalog_name}:{loc.catalog_uri}:{loc.catalog_type}"
+        if self._catalog is not None and self._catalog_loc_key == loc_key:
+            return self._catalog
+        warehouse = await self._resolve_warehouse(loc, catalog_id)
+        return self._get_catalog(loc, warehouse=warehouse)
 
     def _table_identifier(
         self, loc: OTFStorageLocationConfig, catalog_id: str, collection_id: str
@@ -255,7 +349,7 @@ class IcebergStorageDriver(ModuleProtocol):
         if not rows:
             return []
 
-        catalog = self._get_catalog(loc)
+        catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
         table = catalog.load_table(table_id)
 
@@ -264,6 +358,7 @@ class IcebergStorageDriver(ModuleProtocol):
         arrow_schema = schema_to_pyarrow(table.schema())
         pa_table = pa.Table.from_pylist(rows, schema=arrow_schema)
         table.append(pa_table)
+        del pa_table  # release memory early (Cloud Run)
 
         return dicts_to_features(rows)
 
@@ -282,7 +377,7 @@ class IcebergStorageDriver(ModuleProtocol):
         if not loc:
             return
 
-        catalog = self._get_catalog(loc)
+        catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
         table = catalog.load_table(table_id)
 
@@ -399,7 +494,7 @@ class IcebergStorageDriver(ModuleProtocol):
         if not loc:
             raise RuntimeError("IcebergStorageDriver: no location config")
 
-        catalog = self._get_catalog(loc)
+        catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
         table = catalog.load_table(table_id)
 
@@ -437,7 +532,7 @@ class IcebergStorageDriver(ModuleProtocol):
             )
             return
 
-        catalog = self._get_catalog(loc)
+        catalog = await self._ensure_catalog(loc, catalog_id)
         namespace = loc.namespace or catalog_id
 
         try:
@@ -470,7 +565,7 @@ class IcebergStorageDriver(ModuleProtocol):
         if not loc:
             return
 
-        catalog = self._get_catalog(loc)
+        catalog = await self._ensure_catalog(loc, catalog_id)
 
         if soft:
             logger.info(
@@ -519,7 +614,7 @@ class IcebergStorageDriver(ModuleProtocol):
         if not loc:
             raise ValueError("IcebergStorageDriver: no location config for export")
 
-        catalog = self._get_catalog(loc)
+        catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
         table = catalog.load_table(table_id)
 
@@ -538,6 +633,7 @@ class IcebergStorageDriver(ModuleProtocol):
             import pyarrow.parquet as pq
             pq.write_table(pa_table, target_path)
 
+        del pa_table  # release memory early (Cloud Run)
         return target_path
 
     # ------------------------------------------------------------------
@@ -575,7 +671,7 @@ class IcebergStorageDriver(ModuleProtocol):
         if not loc:
             return []
 
-        catalog = self._get_catalog(loc)
+        catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
         table = catalog.load_table(table_id)
 
@@ -607,7 +703,7 @@ class IcebergStorageDriver(ModuleProtocol):
         if not loc:
             raise RuntimeError("IcebergStorageDriver: no location config")
 
-        catalog = self._get_catalog(loc)
+        catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
         table = catalog.load_table(table_id)
 
@@ -642,7 +738,7 @@ class IcebergStorageDriver(ModuleProtocol):
         if not loc:
             raise RuntimeError("IcebergStorageDriver: no location config")
 
-        catalog = self._get_catalog(loc)
+        catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
         table = catalog.load_table(table_id)
 
@@ -663,7 +759,7 @@ class IcebergStorageDriver(ModuleProtocol):
         if not loc:
             return
 
-        catalog = self._get_catalog(loc)
+        catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
         table = catalog.load_table(table_id)
 
@@ -707,7 +803,7 @@ class IcebergStorageDriver(ModuleProtocol):
         if not loc:
             return
 
-        catalog = self._get_catalog(loc)
+        catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
         table = catalog.load_table(table_id)
 
@@ -743,7 +839,7 @@ class IcebergStorageDriver(ModuleProtocol):
         if not loc:
             return []
 
-        catalog = self._get_catalog(loc)
+        catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
         table = catalog.load_table(table_id)
 
@@ -795,7 +891,7 @@ class IcebergStorageDriver(ModuleProtocol):
         if not loc:
             raise RuntimeError("IcebergStorageDriver: no location config")
 
-        catalog = self._get_catalog(loc)
+        catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
         table = catalog.load_table(table_id)
 

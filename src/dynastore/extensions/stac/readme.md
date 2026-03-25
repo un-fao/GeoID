@@ -422,13 +422,39 @@ Configure STAC-specific features per collection.
 ```json
 {
   "enabled": true,
-  "enabled_extensions": ["datacube", "projection"],
+  "enabled_extensions": [
+    "https://stac-extensions.github.io/eo/v1.1.0/schema.json",
+    "https://stac-extensions.github.io/raster/v1.1.0/schema.json"
+  ],
+  "providers": [
+    {
+      "name": "FAO",
+      "description": "Food and Agriculture Organization",
+      "roles": ["host", "producer"],
+      "url": "https://www.fao.org"
+    }
+  ],
   "summaries": {
-    "gsd": [10, 20, 30],
-    "eo:bands": [
-      {"name": "B1", "common_name": "blue"},
-      {"name": "B2", "common_name": "green"}
-    ]
+    "platform": ["sentinel-2a", "sentinel-2b"],
+    "gsd": {"minimum": 10, "maximum": 60},
+    "eo:cloud_cover": {"type": "number", "minimum": 0, "maximum": 100}
+  },
+  "assets": {
+    "thumbnail": {
+      "href": "https://example.com/thumb.png",
+      "title": {"en": "Thumbnail", "fr": "Vignette"},
+      "type": "image/png",
+      "roles": ["thumbnail"]
+    }
+  },
+  "item_assets": {
+    "data": {
+      "title": {"en": "Raster Data", "fr": "Donnees Raster"},
+      "type": "image/tiff; application=geotiff",
+      "roles": ["data"],
+      "eo:bands": [{"name": "B02", "common_name": "blue"}],
+      "raster:bands": [{"nodata": -9999, "data_type": "float32"}]
+    }
   },
   "navigation_links": [
     {
@@ -439,6 +465,27 @@ Configure STAC-specific features per collection.
   ]
 }
 ```
+
+**Summaries** support three formats per the STAC spec:
+- **Range Object**: `{"minimum": 10, "maximum": 60}` (with optional extra stats via `extra="allow"`)
+- **Enum Array**: `["sentinel-2a", "sentinel-2b"]`
+- **JSON Schema Object**: `{"type": "number", "minimum": 0, "maximum": 100}` (draft-07)
+
+**Assets** and **item_assets** accept any extension-specific fields (`eo:bands`, `raster:bands`, `table:columns`, etc.) via open-schema (`extra="allow"`). Text fields (`title`, `description`) support multilanguage via `LocalizedText` dicts.
+
+**Providers** follow the STAC spec: `name` (required), `description`, `roles` (`licensor|producer|processor|host`), `url`.
+
+### Write-Time Validation
+
+All items and collections are validated at write time (create/update) using a dual-layer validator:
+1. **pystac** `JsonSchemaSTACValidator` — core spec + extension JSON Schema validation
+2. **stac-pydantic** `validate_extensions()` — Pydantic model + extension schema validation
+
+Validation is **lenient by default** (warnings logged, not blocking). Set `strict=True` in `stac_validator.py` calls to enforce strict mode.
+
+### Features Isolation
+
+OGC Features responses (`/features/...`) strip STAC-specific output fields (`stac_extensions`, `stac_version`, `assets`) while preserving multilanguage resolution from the sidecar pipeline. The constants `STAC_FEATURES_STRIP` (output keys to remove) and `STAC_RAW_COLUMNS` (raw sidecar columns) are exported from `stac_items_sidecar.py`.
 
 ---
 

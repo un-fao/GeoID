@@ -13,11 +13,13 @@
 #    limitations under the License.
 
 from dynastore.models.shared_models import (
+    AssetReferenceType,
     BaseMetadata,
     Catalog,
     CatalogUpdate,
     Collection,
     CollectionUpdate,
+    CoreAssetReferenceType,
     EventType,
     Extent,
     ItemDataForDB,
@@ -29,11 +31,13 @@ from dynastore.models.shared_models import (
 )
 
 __all__ = [
+    "AssetReferenceType",
     "BaseMetadata",
     "Catalog",
     "CatalogUpdate",
     "Collection",
     "CollectionUpdate",
+    "CoreAssetReferenceType",
     "EventType",
     "Extent",
     "ItemDataForDB",

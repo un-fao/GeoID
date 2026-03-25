@@ -20,7 +20,9 @@
 Collection-related protocol definitions.
 """
 
+from datetime import datetime
 from typing import (
+    AsyncIterator,
     Protocol,
     Optional,
     Any,
@@ -35,6 +37,7 @@ from typing import (
 if TYPE_CHECKING:
     from dynastore.models.shared_models import Collection, CollectionUpdate
     from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
+    from dynastore.models.otf import SchemaEvolution, SchemaVersion, SnapshotInfo
 
 
 @runtime_checkable
@@ -151,4 +154,95 @@ class CollectionsProtocol(Protocol):
         self, catalog_id: str, collection_id: str, db_resource: Optional[Any] = None
     ) -> Set[str]:
         """Retrieves the physical column names for a collection."""
+        ...
+
+    # === OTF Extension: Snapshots ===
+
+    async def list_snapshots(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        limit: int = 100,
+        db_resource: Optional[Any] = None,
+    ) -> List["SnapshotInfo"]:
+        """List available snapshots (versions) for a collection.
+
+        Delegates to the collection's storage driver if it has
+        ``Capability.SNAPSHOTS``. Raises ``NotImplementedError`` otherwise.
+        """
+        ...
+
+    async def create_snapshot(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        label: Optional[str] = None,
+        db_resource: Optional[Any] = None,
+    ) -> "SnapshotInfo":
+        """Create an explicit snapshot/bookmark of current state."""
+        ...
+
+    async def rollback_to_snapshot(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        snapshot_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> None:
+        """Rollback collection to a previous snapshot."""
+        ...
+
+    # === OTF Extension: Time Travel ===
+
+    async def read_at_snapshot(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        snapshot_id: str,
+        *,
+        request: Optional[Any] = None,
+        db_resource: Optional[Any] = None,
+    ) -> AsyncIterator[Any]:
+        """Read entities at a specific snapshot (time-travel)."""
+        ...
+
+    async def read_at_timestamp(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        as_of: datetime,
+        *,
+        request: Optional[Any] = None,
+        db_resource: Optional[Any] = None,
+    ) -> AsyncIterator[Any]:
+        """Read entities as they existed at a point in time."""
+        ...
+
+    # === OTF Extension: Schema Evolution ===
+
+    async def get_schema_history(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> List["SchemaVersion"]:
+        """Return schema evolution history for a collection."""
+        ...
+
+    async def evolve_schema(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        changes: "SchemaEvolution",
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> "SchemaVersion":
+        """Apply schema changes (add/rename/drop columns, type widening).
+
+        Does NOT rewrite data — only updates metadata.
+        """
         ...

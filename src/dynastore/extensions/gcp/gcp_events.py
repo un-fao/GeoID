@@ -53,7 +53,10 @@ from fastapi.security import APIKeyHeader
 from dynastore.tasks.ingestion.ingestion_models import TaskIngestionRequest
 from dynastore.modules.processes.models import ExecuteRequest
 import dynastore.modules.processes.processes_module as processes_module
-from google.api_core import exceptions as google_exceptions
+try:
+    from google.api_core import exceptions as google_exceptions
+except ImportError:
+    google_exceptions = None
 
 logger = logging.getLogger(__name__)
 

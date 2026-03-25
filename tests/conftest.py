@@ -304,7 +304,10 @@ async def reset_dynastore_state(engine=None):
     from dynastore.modules.stats.service import STATS_SERVICE
     from dynastore.extensions import registry
     from dynastore.modules.catalog import catalog_module
-    from dynastore.extensions.gcp import gcp_events
+    try:
+        from dynastore.extensions.gcp import gcp_events
+    except ImportError:
+        gcp_events = None
     from dynastore.tools.async_utils import signal_bus
     from dynastore.tools.discovery import (
         get_protocol,
@@ -341,7 +344,8 @@ async def reset_dynastore_state(engine=None):
 
     # 6. Clear Event Listeners (CRITICAL for loop isolation)
     catalog_module._event_listeners = defaultdict(list)
-    gcp_events._gcp_event_listeners = defaultdict(list)
+    if gcp_events is not None:
+        gcp_events._gcp_event_listeners = defaultdict(list)
 
     # 7. Clear Module Singletons (CRITICAL FIX)
     catalog_module._module_instance = None

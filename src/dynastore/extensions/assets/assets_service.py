@@ -511,7 +511,7 @@ class AssetService(ExtensionProtocol):
                     "message": str(e),
                     "asset_id": e.asset_id,
                     "blocking_references": [
-                        r.model_dump() for r in e.blocking_refs
+                        r.model_dump(mode="json") for r in e.blocking_refs
                     ],
                 },
             )
@@ -650,7 +650,7 @@ class AssetService(ExtensionProtocol):
                     "message": str(e),
                     "asset_id": e.asset_id,
                     "blocking_references": [
-                        r.model_dump() for r in e.blocking_refs
+                        r.model_dump(mode="json") for r in e.blocking_refs
                     ],
                 },
             )

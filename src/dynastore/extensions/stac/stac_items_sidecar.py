@@ -29,6 +29,26 @@ from dynastore.modules.catalog.sidecars.base import (
 
 logger = logging.getLogger(__name__)
 
+# Raw column aliases produced by the STAC sidecar's SQL join.
+# These hold multilanguage JSONB data needed for title/description/keywords resolution.
+STAC_RAW_COLUMNS: Set[str] = {
+    "stac_title",
+    "stac_description",
+    "stac_keywords",
+    "external_extensions",
+    "external_assets",
+    "stac_extra_fields",
+}
+
+# STAC-specific output fields that must NOT appear in OGC Features responses.
+# The sidecar still runs (to resolve multilanguage), but these keys are stripped
+# from the final Feature dict before returning from the Features extension.
+STAC_FEATURES_STRIP: Set[str] = {
+    "stac_extensions",
+    "stac_version",
+    "assets",
+}
+
 
 class StacItemsSidecarConfig(SidecarConfig):
     """Configuration for STAC metadata sidecar."""

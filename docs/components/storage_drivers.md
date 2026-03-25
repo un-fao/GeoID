@@ -132,15 +132,22 @@ Lives in the 4-tier `ConfigsProtocol` hierarchy (collection > catalog > platform
    }
  }}
 
-// Iceberg with S3 warehouse (production)
+// Iceberg with GCS warehouse (auto-resolved from StorageProtocol)
+{"primary_driver": "iceberg",
+ "storage_locations": {
+   "iceberg": {
+     "driver": "iceberg",
+     "catalog_type": "sql"
+   }
+ }}
+
+// Iceberg with explicit S3 warehouse override
 {"primary_driver": "iceberg",
  "storage_locations": {
    "iceberg": {
      "driver": "iceberg",
      "catalog_type": "sql",
-     "catalog_properties": {
-       "warehouse": "s3://my-bucket/iceberg/"
-     }
+     "warehouse_uri": "s3://my-bucket/iceberg/"
    }
  }}
 ```
@@ -229,9 +236,17 @@ and schema evolution — all backed by a real Iceberg catalog.
 
 **Catalog strategy:**
 - **Default**: PostgreSQL-backed `SqlCatalog` using the platform's `DATABASE_URL` (zero config)
+- Uses `pyiceberg.catalog.CatalogType` enum and PyIceberg constants (`TYPE`, `URI`, `WAREHOUSE_LOCATION`) — no string literals
 - PyIceberg creates lightweight metadata tables (`iceberg_tables`, `iceberg_namespace_properties`) — no conflict with DynaStore schema
-- Other catalog types supported via `catalog_type`: `rest`, `glue`, `hive`, `dynamodb`
-- Warehouse defaults to local temp dir; set `catalog_properties.warehouse` to S3/GCS URI in production
+- Other catalog types supported via `CatalogType`: `REST`, `GLUE`, `HIVE`, `DYNAMODB`, `BIGQUERY`, `IN_MEMORY`
+
+**Warehouse auto-resolution** (via `_resolve_warehouse()` → `_ensure_catalog()`):
+
+1. **Explicit** — `warehouse_uri` field in `OTFStorageLocationConfig` (manual override)
+2. **Auto-detected** — from platform `StorageProtocol` (e.g., GCS bucket). When a collection already has a GCP bucket, the driver derives `gs://bucket/.../iceberg/` automatically
+3. **Fallback** — local temp dir (`file:///tmp/iceberg_warehouse`)
+
+When the warehouse URI starts with `gs://`, the driver injects `GCS_PROJECT_ID` from environment for PyArrowFileIO. The same pattern applies for future `s3://` support.
 
 ```
 write_entities       → PyArrow append to Iceberg table
@@ -251,16 +266,23 @@ evolve_schema        → table.update_schema() with add/rename/drop/type-promote
 - DynaStore collection → Iceberg table
 - DynaStore entity → Iceberg row
 
-**Location config:**
+**Location config (minimal — warehouse auto-resolved from GCS bucket):**
+```json
+{
+  "driver": "iceberg",
+  "catalog_type": "sql",
+  "namespace": "analytics"
+}
+```
+
+**Location config (explicit warehouse override):**
 ```json
 {
   "driver": "iceberg",
   "catalog_name": "production",
   "catalog_type": "sql",
   "catalog_uri": "postgresql+psycopg2://user:pass@host:5432/db",
-  "catalog_properties": {
-    "warehouse": "s3://my-bucket/iceberg/"
-  },
+  "warehouse_uri": "gs://my-bucket/iceberg/",
   "namespace": "analytics",
   "table_name": "observations"
 }
@@ -395,7 +417,7 @@ drivers = StorageLocationConfigRegistry.registered_drivers()
 |--------|-------------|------------|
 | `postgresql` | `PostgresStorageLocationConfig` | `physical_schema`, `physical_table` |
 | `duckdb` | `FileStorageLocationConfig` | `path`, `format`, `write_path`, `write_format` |
-| `iceberg` | `OTFStorageLocationConfig` | `catalog_name`, `catalog_type`, `catalog_uri`, `catalog_properties`, `namespace`, `table_name` |
+| `iceberg` | `OTFStorageLocationConfig` | `catalog_name`, `catalog_type`, `catalog_uri`, `catalog_properties`, `warehouse_uri`, `warehouse_scheme`, `namespace`, `table_name` |
 
 ---
 

@@ -139,6 +139,15 @@ class STACCollectionRequest(BaseModel):
         None, description="A dictionary of summaries of the data in the collection."
     )
 
+    assets: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Collection-level assets keyed by asset ID (STAC spec §assets).",
+    )
+    item_assets: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Item asset templates keyed by asset ID (STAC Item Assets extension).",
+    )
+
     links: Optional[List[Link]] = Field(
         default_factory=list, description="A list of references to other documents."
     )
@@ -173,6 +182,8 @@ class STACCollectionUpdate(BaseModel):
     providers: Optional[List[Provider]] = None
     extent: Optional[Extent] = None
     summaries: Optional[Dict[str, Any]] = None
+    assets: Optional[Dict[str, Any]] = None
+    item_assets: Optional[Dict[str, Any]] = None
     extra_metadata: Optional[Internationalized[Any]] = None
 
 

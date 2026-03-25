@@ -19,6 +19,8 @@ from dynastore.modules.storage.drivers.iceberg import (
     IcebergStorageDriver,
     _resolve_iceberg_type,
 )
+
+pyiceberg = pytest.importorskip("pyiceberg", reason="pyiceberg not installed")
 from pyiceberg.types import (
     BooleanType, DateType, DoubleType, FloatType,
     IntegerType, LongType, StringType,
