@@ -79,11 +79,15 @@ from dynastore.modules.gcp.models import (
 
 try:
     from google.cloud import storage
-    from google.cloud import pubsub_v1
-    from google.cloud import run_v2
 except ImportError:
     storage = None
+try:
+    from google.cloud import pubsub_v1
+except ImportError:
     pubsub_v1 = None
+try:
+    from google.cloud import run_v2
+except ImportError:
     run_v2 = None
 from dynastore.modules.gcp.bucket_service import BucketService
 # from google.cloud import compute_v1
