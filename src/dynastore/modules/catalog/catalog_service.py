@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS {schema}.assets (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     deleted_at TIMESTAMPTZ DEFAULT NULL,
     metadata JSONB DEFAULT '{{}}',
+    owned_by VARCHAR DEFAULT NULL,
     PRIMARY KEY (collection_id, asset_id)
 ) PARTITION BY LIST (collection_id);
 CREATE INDEX IF NOT EXISTS idx_assets_created_at ON {schema}.assets (created_at);

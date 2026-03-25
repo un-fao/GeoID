@@ -1169,3 +1169,43 @@ class AssetService(AssetsProtocol):
             sql, result_handler=PydanticResultHandler.pydantic_all(AssetReference)
         ).execute(conn, **params)
         return rows or []
+
+
+# ==============================================================================
+# Lifecycle registration — asset_references table
+# ==============================================================================
+
+from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
+
+
+@lifecycle_registry.sync_catalog_initializer(priority=10)
+async def _initialize_asset_refs_tenant_slice(
+    conn: DbResource, schema: str, catalog_id: str
+) -> None:
+    """
+    Idempotently creates ``asset_references`` in every new tenant schema.
+    Runs inside the outer catalog-creation transaction (same SAVEPOINT context as
+    other sync_catalog_initializers) so the table is guaranteed to exist before
+    any lifecycle hook that registers references.
+
+    Priority 10 ensures this runs before module-specific hooks (default priority
+    is 0; stats/events use 50) that may call ``add_asset_reference``.
+    """
+    ddl = f"""
+    CREATE TABLE IF NOT EXISTS "{schema}".asset_references (
+        asset_id       VARCHAR     NOT NULL,
+        catalog_id     VARCHAR     NOT NULL,
+        ref_type       VARCHAR     NOT NULL,
+        ref_id         VARCHAR     NOT NULL,
+        cascade_delete BOOLEAN     NOT NULL DEFAULT TRUE,
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (catalog_id, asset_id, ref_type, ref_id),
+        FOREIGN KEY (catalog_id, asset_id)
+            REFERENCES "{schema}".assets (catalog_id, asset_id)
+            ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_asset_refs_blocking_{schema}
+        ON "{schema}".asset_references (catalog_id, asset_id)
+        WHERE cascade_delete = FALSE;
+    """.strip()
+    await DDLQuery(ddl).execute(conn, schema=schema)
