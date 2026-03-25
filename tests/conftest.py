@@ -58,6 +58,25 @@ def pytest_load_initial_conftests(early_config, parser, args):
                 i += 1
 
 
+def pytest_collection_modifyitems(items):
+    """
+    Patch pytest-asyncio Coroutine items so VS Code's test explorer recognises them.
+
+    pytest-asyncio 1.x wraps async tests in a ``Coroutine`` subclass of
+    ``pytest.Function``.  VS Code's Python extension only lists items whose
+    ``__class__.__name__ == "Function"``, so async tests become invisible in the
+    Testing panel.  Re-stamping the class name fixes discovery without changing
+    runtime behaviour (``Coroutine`` already inherits from ``Function``).
+    """
+    try:
+        from pytest_asyncio.plugin import Coroutine  # noqa: F401
+    except ImportError:
+        return
+    for item in items:
+        if isinstance(item, Coroutine):
+            item.__class__.__name__ = "Function"
+
+
 def pytest_runtest_setup(item):
     """
     Called before each test is executed.
