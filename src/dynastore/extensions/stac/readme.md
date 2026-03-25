@@ -42,6 +42,10 @@ Complete implementation of OGC STAC API 1.0.0 with advanced features including v
 11. [Virtual Collections](#virtual-collections)
     - [Asset-Based Views](#asset-based-views)
     - [Hierarchy-Based Views](#hierarchy-based-views)
+12. [Asset References & Deletion Protection](#asset-references--deletion-protection)
+    - [Reference Types](#reference-types)
+    - [Blocking vs Non-Blocking References](#blocking-vs-non-blocking-references)
+    - [Upload Protocol](#upload-protocol)
 12. [Aggregations](#aggregations)
     - [Term Aggregation](#term-aggregation)
     - [Stats Aggregation](#stats-aggregation)
@@ -51,7 +55,8 @@ Complete implementation of OGC STAC API 1.0.0 with advanced features including v
     - [Temporal Extent Aggregation](#temporal-extent-aggregation)
 
 ### Reference
-13. [Complete Configuration Schema](#complete-configuration-schema)
+13. [Asset Reference Endpoints](#asset-reference-endpoints)
+14. [Complete Configuration Schema](#complete-configuration-schema)
 14. [Reserved Names](#reserved-names)
 15. [Performance Optimization](#performance-optimization)
 16. [Troubleshooting](#troubleshooting)
@@ -296,7 +301,8 @@ Retrieval: Automatically flattened into the STAC Item/Collection properties for 
 |------|-------------|
 | `400` | Invalid geometry, ID mismatch, bad filter, or invalid aggregation |
 | `404` | Catalog, collection, item, or table not found |
-| `409` | Configuration already set (immutable fields) |
+| `409` | Configuration already set (immutable fields), or asset hard-deletion blocked by active references |
+| `503` | No upload backend configured for the catalog |
 | `500` | Unexpected server error |
 
 ---
@@ -520,9 +526,12 @@ Track data lineage from source files to ingested items.
 - `DIRECT`: Expose raw storage URLs (S3, GCS, HTTP - requires public access)
 
 **Behavior**:
-- Ingested items get `derived_from` link
-- Virtual endpoints expose asset-based views
+- Ingested items get `derived_from` link pointing to the virtual asset collection
+- Virtual endpoints expose asset-based views (see [Virtual Collections](#virtual-collections))
 - Asset metadata stored in `catalog.assets` table
+- On ingestion, a `CoreAssetReferenceType.COLLECTION` reference is registered on the asset
+  with `cascade_delete=True` — it is informational (the PostgreSQL trigger handles row cleanup)
+  and does **not** block asset deletion. See [Asset References & Deletion Protection](#asset-references--deletion-protection).
 
 **Example Item Link**:
 ```json
@@ -1124,6 +1133,170 @@ Calculate min/max datetime range.
 
 ---
 
+## Asset References & Deletion Protection
+
+Assets can be referenced by collections, DuckDB tables, Iceberg tables, or any other driver.
+References control whether hard-deletion of an asset is permitted.
+
+### Reference Types
+
+Reference types are extensible string enums.  Built-in types:
+
+| Value | Registered by | Meaning |
+|-------|--------------|---------|
+| `collection` | Ingestion task (`main_ingestion.py`) | The asset was ingested into this collection |
+
+Driver modules extend this with namespaced values to avoid collisions:
+
+```python
+# DuckDB driver:
+class DuckDbReferenceType(AssetReferenceType):
+    TABLE = "duckdb:table"
+
+# Iceberg driver:
+class IcebergReferenceType(AssetReferenceType):
+    TABLE = "iceberg:table"
+```
+
+### Blocking vs Non-Blocking References
+
+| `cascade_delete` | Effect on hard-delete | Registered by |
+|---|---|---|
+| `True` | **Non-blocking** — informational only; the referencing driver (e.g. PostgreSQL trigger) handles its own cleanup | Ingestion task |
+| `False` | **Blocking** — hard-delete is rejected (HTTP 409) until the reference is explicitly removed | Non-SQL drivers (DuckDB, Iceberg, HTTP) |
+
+**Typical lifecycle for a non-SQL collection (e.g. DuckDB)**:
+
+```
+1. Create DuckDB-backed collection
+   └── add_asset_reference(ref_type="duckdb:table", cascade_delete=False)
+
+2. Attempt DELETE /assets/…?force=true  →  409 Conflict
+   {
+     "detail": {
+       "message": "Asset 'parquet_file' cannot be hard-deleted: 1 blocking reference(s) remain.",
+       "asset_id": "parquet_file",
+       "blocking_references": [
+         {"ref_type": "duckdb:table", "ref_id": "my_table", "cascade_delete": false}
+       ]
+     }
+   }
+
+3. Drop DuckDB table
+   └── remove_asset_reference(ref_type="duckdb:table", ref_id="my_table")
+
+4. Retry DELETE /assets/…?force=true  →  204 No Content
+```
+
+**Typical lifecycle for a STAC ingestion collection (PostgreSQL)**:
+
+```
+1. Ingest source file into collection
+   └── add_asset_reference(ref_type="collection", cascade_delete=True)
+       # Non-blocking: PostgreSQL trg_asset_cleanup trigger handles row cleanup
+
+2. DELETE /assets/…?force=true  →  204 No Content  (no blocking refs)
+   # PostgreSQL trigger fires automatically, cascades feature row deletion
+```
+
+### Asset Reference Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/assets/catalogs/{cat}/assets/{aid}/references` | List all active references for an asset |
+| `DELETE` | `/assets/catalogs/{cat}/assets/{aid}/references/{ref_type}/{ref_id}` | Remove a specific reference |
+
+**List references** — useful for diagnosing a 409:
+
+```bash
+GET /assets/catalogs/public/assets/parquet_file/references
+```
+
+```json
+[
+  {
+    "asset_id": "parquet_file",
+    "catalog_id": "public",
+    "ref_type": "duckdb:table",
+    "ref_id": "weather_stations_duckdb",
+    "cascade_delete": false,
+    "created_at": "2025-03-25T10:00:00Z"
+  }
+]
+```
+
+**Remove a blocking reference** — only after the referencing entity has been dropped:
+
+```bash
+DELETE /assets/catalogs/public/assets/parquet_file/references/duckdb:table/weather_stations_duckdb
+# → 204 No Content
+```
+
+### Upload Protocol
+
+Backend-agnostic upload initiation.  The upload backend (GCS, S3, local) is resolved automatically.
+
+**Initiate upload**:
+
+```bash
+POST /assets/catalogs/{catalog_id}/upload
+# or scoped to a collection:
+POST /assets/catalogs/{catalog_id}/collections/{collection_id}/upload
+```
+
+```json
+{
+  "filename": "LC09_198030_20251225.tif",
+  "content_type": "image/tiff",
+  "asset": {
+    "asset_id": "LC09_198030_20251225",
+    "asset_type": "RASTER",
+    "metadata": {"sensor": "OLI-2", "cloud_cover": 5.2}
+  }
+}
+```
+
+**Response** (`UploadTicket`):
+
+```json
+{
+  "ticket_id": "tkt-abc123",
+  "upload_url": "https://storage.googleapis.com/bucket/file?upload_id=xyz",
+  "method": "PUT",
+  "headers": {"Content-Type": "image/tiff"},
+  "expires_at": "2025-03-25T11:00:00Z",
+  "backend": "gcs"
+}
+```
+
+The client `PUT`s the file directly to `upload_url` using the provided `method` and `headers`.
+For event-driven backends (GCS, S3) the asset is registered asynchronously when the cloud event fires.
+For local backends the asset is registered synchronously.
+
+**Poll status**:
+
+```bash
+GET /assets/catalogs/{catalog_id}/upload/{ticket_id}/status
+```
+
+```json
+{
+  "ticket_id": "tkt-abc123",
+  "status": "completed",
+  "asset_id": "LC09_198030_20251225"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | Client has not yet started uploading |
+| `uploading` | Transfer in progress (resumable/multipart) |
+| `completed` | File received, asset registered in catalog |
+| `failed` | Upload or registration failed |
+| `cancelled` | Ticket expired or cancelled by client |
+
+---
+
 ## Complete Configuration Schema
 
 Full example combining all configuration options:
@@ -1241,8 +1414,14 @@ Configure thresholds based on use case:
 
 ### 409 Errors
 
-**Config already set**: Storage config is immutable after first insert  
+**Config already set**: Storage config is immutable after first insert
 **Solution**: Delete collection and recreate, or create new collection
+
+**Asset has blocking references**: A hard-delete (`force=true`) was attempted on an asset with
+one or more `cascade_delete=false` references still active
+**Solution**: Call `GET /assets/catalogs/{cat}/assets/{id}/references` to identify blocking refs.
+Remove each with `DELETE .../references/{ref_type}/{ref_id}` after the referencing entity
+(DuckDB table, Iceberg table, etc.) has been dropped. Then retry the deletion.
 
 ### Performance Issues
 
