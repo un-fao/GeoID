@@ -478,6 +478,84 @@ class EventType(str, Enum):
     pass
 
 
+class AssetReferenceType(str, Enum):
+    """
+    Base extensible enum for asset reference types.
+
+    Each driver module subclasses this to define its own namespaced values.
+    Values are stored as ``VARCHAR`` in the ``asset_references`` table, so
+    use ``"module:kind"`` namespacing to avoid collisions across modules.
+
+    Extension pattern
+    ~~~~~~~~~~~~~~~~~
+    ::
+
+        # In dynastore/modules/duckdb/models.py
+        class DuckDbReferenceType(AssetReferenceType):
+            TABLE = "duckdb:table"     # A DuckDB table backed by this asset
+
+        # In dynastore/modules/iceberg/models.py
+        class IcebergReferenceType(AssetReferenceType):
+            TABLE = "iceberg:table"    # An Iceberg table backed by this asset
+
+        # In dynastore/modules/http/models.py
+        class HttpReferenceType(AssetReferenceType):
+            DOWNLOAD = "http:download" # An HTTP-served file backed by this asset
+
+    Usage
+    ~~~~~
+    ::
+
+        # Register a non-cascading reference (blocks hard-delete):
+        await assets.add_asset_reference(
+            asset_id="my_parquet_asset",
+            catalog_id="my_catalog",
+            ref_type=DuckDbReferenceType.TABLE,
+            ref_id="collection_table_name",
+            cascade_delete=False,
+        )
+
+        # Register an informational reference (does NOT block hard-delete):
+        await assets.add_asset_reference(
+            asset_id="stations_csv",
+            catalog_id="my_catalog",
+            ref_type=CoreAssetReferenceType.COLLECTION,
+            ref_id="weather_collection",
+            cascade_delete=True,
+        )
+    """
+
+    pass
+
+
+class CoreAssetReferenceType(AssetReferenceType):
+    """
+    Built-in reference types for standard catalog/collection relationships.
+
+    ``COLLECTION = "collection"``
+        An asset is the data source for a collection.  Used by ingestion tasks
+        and the SQL catalog module where the PostgreSQL ``trg_asset_cleanup``
+        trigger already handles row-level cascade cleanup.
+
+        Always registered with ``cascade_delete=True`` — this reference is
+        informational and **does not block** hard-deletion of the asset.
+
+    Example::
+
+        from dynastore.modules.catalog.models import CoreAssetReferenceType
+
+        await asset_service.add_asset_reference(
+            asset_id=asset.asset_id,
+            catalog_id=catalog_id,
+            ref_type=CoreAssetReferenceType.COLLECTION,
+            ref_id=collection_id,
+            cascade_delete=True,
+        )
+    """
+
+    COLLECTION = "collection"
+
+
 class ItemDataForDB(BaseModel):
     """
     A Pydantic model representing the processed item data ready for database insertion.

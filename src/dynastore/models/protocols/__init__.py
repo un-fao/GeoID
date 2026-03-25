@@ -21,7 +21,8 @@ Centralized protocol definitions for DynaStore.
 
 This package contains protocol definitions organized by domain:
 - catalogs.py: Catalog-related protocols
-- assets.py: Asset management protocols
+- assets.py: Asset management protocols (CRUD + reference tracking)
+- asset_upload.py: Backend-agnostic asset upload protocol (GCS, S3, local, HTTP)
 - configs.py: Configuration management protocols
 - logs.py: Logging protocols
 - storage.py: Storage protocols
@@ -64,6 +65,13 @@ from dynastore.models.protocols.httpx import HttpxProtocol
 from dynastore.models.protocols.styles import StylesProtocol
 from dynastore.models.protocols.search import SearchProtocol
 from dynastore.models.protocols.indexer import IndexerProtocol
+from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
+from dynastore.models.protocols.asset_upload import (
+    AssetUploadProtocol,
+    UploadTicket,
+    UploadStatus,
+    UploadStatusResponse,
+)
 # Export auth_models for convenience
 from dynastore.models.auth_models import (
     SYSTEM_USER_ID,
@@ -113,6 +121,11 @@ __all__ = [
     "StylesProtocol",
     "SearchProtocol",
     "IndexerProtocol",
+    "CollectionStorageDriverProtocol",
+    "AssetUploadProtocol",
+    "UploadTicket",
+    "UploadStatus",
+    "UploadStatusResponse",
     # Auth models
     "SYSTEM_USER_ID",
     "ApiKeyPolicy",

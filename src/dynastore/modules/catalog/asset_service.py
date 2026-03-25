@@ -16,6 +16,129 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
+"""
+Asset lifecycle management for the DynaStore catalog.
+
+Overview
+--------
+An **asset** is a pointer to a file (local path, GCS URI, HTTP URL, S3 key, …)
+registered in the catalog database.  Assets are the central linking mechanism:
+
+- **Ingestion tasks** create an asset from a source-file URI, then write
+  feature rows into the collection's physical table keyed by ``asset_id``.
+- **GCS/S3 uploads** create assets automatically when the storage event fires
+  (``GcsStorageEventTask`` / future ``S3EventTask``).
+- **Direct API calls** create assets immediately via
+  ``POST /assets/catalogs/{id}`` or the collection-scoped variant.
+
+Key models
+----------
+``AssetBase``
+    Input/creation shape.  ``owned_by`` marks which storage backend owns the
+    underlying file; assets with this field set are protected from hard-deletion
+    while non-cascading references remain active.
+
+``Asset``
+    Fully persisted asset returned by reads, including ``catalog_id``,
+    ``collection_id``, and audit timestamps.
+
+``AssetReference``
+    A dependency row in ``{schema}.asset_references`` that links an asset to a
+    referencing entity (collection, DuckDB table, Iceberg table, …).  The
+    ``cascade_delete`` flag controls deletion safety:
+
+    * ``True`` — informational; the referring driver handles its own cleanup
+      (e.g. the PostgreSQL ``trg_asset_cleanup`` trigger).  **Does not block**
+      hard-deletion.
+    * ``False`` — protective; hard-deletion of the asset is **blocked**
+      (raises ``AssetReferencedError`` → HTTP 409) until this reference is
+      explicitly removed.
+
+Reference type extension
+------------------------
+Each driver module defines its own ``AssetReferenceType`` subclass so values
+are namespaced and type-safe::
+
+    # In dynastore/modules/duckdb/models.py
+    from dynastore.models.shared_models import AssetReferenceType
+
+    class DuckDbReferenceType(AssetReferenceType):
+        TABLE = "duckdb:table"
+
+    # When creating a DuckDB-backed collection:
+    await assets.add_asset_reference(
+        asset_id=asset_id,
+        catalog_id=catalog_id,
+        ref_type=DuckDbReferenceType.TABLE,
+        ref_id=table_name,
+        cascade_delete=False,   # DuckDB cannot auto-cascade → blocks deletion
+    )
+
+    # On collection drop — must happen BEFORE the hard-delete attempt:
+    await assets.remove_asset_reference(
+        asset_id=asset_id,
+        catalog_id=catalog_id,
+        ref_type=DuckDbReferenceType.TABLE,
+        ref_id=table_name,
+    )
+
+Ingestion (PostgreSQL, cascade-safe)
+-------------------------------------
+::
+
+    from dynastore.modules.catalog.models import CoreAssetReferenceType
+
+    # After successful ingestion the DB trigger already handles row cleanup,
+    # so the reference is informational only (cascade_delete=True):
+    await asset_manager.add_asset_reference(
+        asset_id=asset.asset_id,
+        catalog_id=catalog_id,
+        ref_type=CoreAssetReferenceType.COLLECTION,
+        ref_id=collection_id,
+        cascade_delete=True,
+        db_resource=engine,
+    )
+
+Upload flow (GCS)
+-----------------
+::
+
+    from dynastore.models.protocols import AssetUploadProtocol
+    from dynastore.modules import get_protocol
+
+    upload = get_protocol(AssetUploadProtocol)
+    ticket = await upload.initiate_upload(
+        catalog_id="imagery_catalog",
+        asset_def=AssetUploadDefinition(
+            asset_id="LC09_198030_20251225",
+            asset_type=AssetTypeEnum.RASTER,
+            metadata={"sensor": "OLI-2"},
+        ),
+        filename="LC09_L1TP_198030_20251225_02_T1.tif",
+        content_type="image/tiff",
+        collection_id="landsat_scenes",
+    )
+    # → ticket.upload_url is a GCS signed resumable PUT URL
+    # → PUT file to ticket.upload_url with ticket.headers
+    # → GCS fires OBJECT_FINALIZE → GcsStorageEventTask → create_asset(owned_by="gcs")
+    # → poll GET /assets/catalogs/{id}/upload/{ticket.ticket_id}/status
+
+Deletion guard
+--------------
+Hard-deletion of an ``owned_by`` asset with blocking references raises
+``AssetReferencedError`` (caught by the API layer → HTTP 409)::
+
+    # Will succeed — soft delete never checks references:
+    await assets.delete_assets(catalog_id, asset_id=id, hard=False)
+
+    # Will raise AssetReferencedError if cascade_delete=False refs remain:
+    await assets.delete_assets(catalog_id, asset_id=id, hard=True)
+
+    # Inspect blocking references before retrying:
+    refs = await assets.list_asset_references(asset_id=id, catalog_id=catalog_id)
+    blocking = [r for r in refs if not r.cascade_delete]
+"""
+
 import uuid
 import json
 import logging
@@ -43,7 +166,7 @@ from dynastore.modules.db_config.partition_tools import (
     ensure_hierarchical_partitions_exist,
     PartitionDefinition,
 )
-from dynastore.modules.catalog.models import EventType
+from dynastore.modules.catalog.models import AssetReferenceType, CoreAssetReferenceType, EventType
 from dynastore.models.protocols.assets import AssetsProtocol
 from dynastore.models.query_builder import FilterOperator
 from enum import Enum
@@ -73,7 +196,40 @@ class AssetEventType(EventType):
 
 
 class AssetBase(BaseModel):
-    """Core fields for an Asset."""
+    """
+    Core fields required to create or represent an asset.
+
+    ``owned_by`` semantics
+    ~~~~~~~~~~~~~~~~~~~~~~
+    When set, ``owned_by`` declares that a storage backend (``"gcs"``,
+    ``"local"``, ``"http"``, …) manages the underlying file.  This activates
+    the deletion guard: if any ``AssetReference`` with ``cascade_delete=False``
+    is active, ``delete_assets(hard=True)`` raises ``AssetReferencedError``
+    (HTTP 409) instead of removing the row.
+
+    Assets created by ingestion tasks (not file-owned) should leave
+    ``owned_by=None`` so the existing PostgreSQL trigger cascade works without
+    interference from the reference guard.
+
+    Examples::
+
+        # File uploaded to GCS — owned by the GCS backend
+        AssetBase(
+            asset_id="scene_20251225",
+            uri="gs://my-bucket/landsat/scene_20251225.tif",
+            asset_type=AssetTypeEnum.RASTER,
+            metadata={"sensor": "OLI-2"},
+            owned_by="gcs",
+        )
+
+        # Ingestion source file on local disk — NOT file-owned
+        AssetBase(
+            asset_id="stations_2025",
+            uri="/data/uploads/stations_2025.csv",
+            asset_type=AssetTypeEnum.ASSET,
+            metadata={"year": 2025},
+        )
+    """
 
     asset_id: str = Field(..., description="Unique logical identifier for the asset.")
     uri: str = Field(
@@ -90,6 +246,16 @@ class AssetBase(BaseModel):
         description="Arbitrary metadata associated with the asset.",
         examples=[{"owner": "", "provider": ""}],
     )
+    owned_by: Optional[str] = Field(
+        None,
+        description=(
+            "Identifier of the system that manages the underlying file "
+            "(e.g. 'gcs', 'local', 'http'). "
+            "Assets with this field set are protected from hard-deletion while "
+            "non-cascading references (cascade_delete=False) remain active."
+        ),
+        examples=["gcs", "local", "http", None],
+    )
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -103,7 +269,20 @@ class AssetUpdate(BaseModel):
 
 
 class AssetUploadDefinition(BaseModel):
-    """A model for defining an asset during upload initiation, where the URI is not yet known."""
+    """
+    Asset metadata supplied at upload-initiation time when the URI is not yet known.
+
+    The backend fills in the ``uri`` after receiving the file and then calls
+    ``AssetsProtocol.create_asset`` with a fully formed ``AssetBase``.
+
+    Example::
+
+        AssetUploadDefinition(
+            asset_id="gadm_adm2_italy",
+            asset_type=AssetTypeEnum.VECTORIAL,
+            metadata={"source": "GADM", "version": "4.1", "country": "ITA"},
+        )
+    """
 
     asset_id: str = Field(..., description="Unique logical identifier for the asset.")
     asset_type: AssetTypeEnum = Field(
@@ -114,6 +293,105 @@ class AssetUploadDefinition(BaseModel):
     )
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+class AssetReference(BaseModel):
+    """
+    Tracks a dependency between an asset and a referencing entity.
+
+    Two modes
+    ~~~~~~~~~
+    ``cascade_delete=True`` — **informational**.  The referring driver handles
+    its own cleanup (e.g. the PostgreSQL ``trg_asset_cleanup`` trigger cascades
+    feature-row deletion automatically).  This reference **does not block**
+    hard-deletion of the asset.
+
+    ``cascade_delete=False`` — **protective**.  Hard-deletion of the asset is
+    **blocked** (raises ``AssetReferencedError`` → HTTP 409) while this
+    reference is active.  Use this for drivers that cannot auto-cascade (e.g.
+    DuckDB, Iceberg, HTTP remote files).
+
+    Typical usage
+    ~~~~~~~~~~~~~
+    Ingestion (PostgreSQL, cascade-safe)::
+
+        await assets.add_asset_reference(
+            asset_id="stations_2025",
+            catalog_id="my_catalog",
+            ref_type=CoreAssetReferenceType.COLLECTION,
+            ref_id="weather_stations",
+            cascade_delete=True,   # DB trigger already handles row cleanup
+        )
+
+    DuckDB-backed collection (non-cascading)::
+
+        # On collection creation:
+        await assets.add_asset_reference(
+            asset_id="parquet_file_id",
+            catalog_id="my_catalog",
+            ref_type=DuckDbReferenceType.TABLE,   # "duckdb:table"
+            ref_id="weather_stations_duckdb",
+            cascade_delete=False,  # blocks deletion until the table is dropped
+        )
+
+        # On collection deletion (MUST precede the hard-delete attempt):
+        await assets.remove_asset_reference(
+            asset_id="parquet_file_id",
+            catalog_id="my_catalog",
+            ref_type=DuckDbReferenceType.TABLE,
+            ref_id="weather_stations_duckdb",
+        )
+    """
+
+    asset_id: str = Field(..., description="The referenced asset ID.")
+    catalog_id: str = Field(..., description="Catalog scope of the asset.")
+    ref_type: Union[AssetReferenceType, str] = Field(
+        ...,
+        description=(
+            "Pluggable reference kind (e.g. 'collection', 'duckdb:table'). "
+            "Use namespaced strings to avoid collisions between modules. "
+            "Raw strings are accepted for forward-compat with driver types "
+            "unknown at parse time (e.g. records read back from the database)."
+        ),
+    )
+    ref_id: str = Field(
+        ...,
+        description=(
+            "Owner-scoped identifier of the referencing entity "
+            "(e.g. collection_id, DuckDB table name)."
+        ),
+    )
+    cascade_delete: bool = Field(
+        default=True,
+        description=(
+            "If True: the referring driver handles cleanup on asset deletion. "
+            "If False: hard-deletion is BLOCKED while this reference is active."
+        ),
+    )
+    created_at: datetime = Field(..., description="Timestamp when the reference was registered.")
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class AssetReferencedError(ValueError):
+    """
+    Raised when a hard-delete of an owned asset is attempted while one or more
+    ``cascade_delete=False`` references remain active.
+
+    Caught by the API layer and converted to HTTP 409 Conflict.
+    """
+
+    def __init__(self, asset_id: str, blocking_refs: List[AssetReference]) -> None:
+        self.asset_id = asset_id
+        self.blocking_refs = blocking_refs
+        refs_summary = ", ".join(
+            f"{r.ref_type}:{r.ref_id}" for r in blocking_refs
+        )
+        super().__init__(
+            f"Asset '{asset_id}' cannot be hard-deleted: "
+            f"{len(blocking_refs)} blocking reference(s) remain — {refs_summary}. "
+            "Remove the referencing entities first or use soft-delete."
+        )
 
 
 class Asset(AssetBase):
@@ -150,7 +428,44 @@ class AssetFilter(BaseModel):
 
 
 class AssetService(AssetsProtocol):
-    """Manages Asset lifecycle with advanced search and event-driven architecture."""
+    """
+    SQL-backed implementation of ``AssetsProtocol``.
+
+    Provides full asset lifecycle management against a PostgreSQL tenant schema:
+    CRUD, soft/hard delete with reference guard, paginated list/search, and
+    the ``asset_references`` tracking table for cross-driver dependency management.
+
+    The ``db_resource`` parameter is an **internal** optional kwarg preserved for
+    intra-module transactional calls (e.g. ingestion passing an open engine).
+    It is NOT part of the ``AssetsProtocol`` contract and must not be called
+    from outside the catalog module.
+
+    Schema layout
+    ~~~~~~~~~~~~~
+    ::
+
+        {catalog_schema}.assets
+          asset_id       VARCHAR  PK
+          catalog_id     VARCHAR
+          collection_id  VARCHAR  (NULL for catalog-level assets)
+          uri            TEXT
+          asset_type     VARCHAR
+          metadata       JSONB
+          owned_by       VARCHAR  (NULL = not file-owned; set = deletion guard active)
+          created_at     TIMESTAMPTZ
+          updated_at     TIMESTAMPTZ
+          deleted_at     TIMESTAMPTZ  (soft-delete sentinel)
+
+        {catalog_schema}.asset_references
+          asset_id       VARCHAR  FK → assets
+          catalog_id     VARCHAR
+          ref_type       VARCHAR  (namespaced enum value, e.g. 'collection', 'duckdb:table')
+          ref_id         VARCHAR  (collection_id, table_name, …)
+          cascade_delete BOOLEAN  DEFAULT TRUE
+          created_at     TIMESTAMPTZ
+          PRIMARY KEY (catalog_id, asset_id, ref_type, ref_id)
+          PARTIAL INDEX  on (catalog_id, asset_id) WHERE cascade_delete = FALSE
+    """
 
     # Protocol attributes
     priority: int = 10  # Higher priority than CatalogModule
@@ -196,7 +511,7 @@ class AssetService(AssetsProtocol):
             if not phys_schema:
                 return None
             # asset_id in DB is VARCHAR now
-            sql = f'SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata FROM "{phys_schema}".assets WHERE asset_id = :asset_id AND catalog_id = :catalog_id AND collection_id = :collection_id AND deleted_at IS NULL;'
+            sql = f'SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata, owned_by FROM "{phys_schema}".assets WHERE asset_id = :asset_id AND catalog_id = :catalog_id AND collection_id = :collection_id AND deleted_at IS NULL;'
             return await DQLQuery(
                 sql, result_handler=PydanticResultHandler.pydantic_one(Asset)
             ).execute(
@@ -222,7 +537,7 @@ class AssetService(AssetsProtocol):
                 phys_schema = await self._resolve_schema(catalog_id, conn)
                 if not phys_schema:
                     return None
-                sql = f'SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata FROM "{phys_schema}".assets WHERE asset_id = :asset_id AND catalog_id = :catalog_id AND collection_id = :collection_id AND deleted_at IS NULL;'
+                sql = f'SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata, owned_by FROM "{phys_schema}".assets WHERE asset_id = :asset_id AND catalog_id = :catalog_id AND collection_id = :collection_id AND deleted_at IS NULL;'
                 return await DQLQuery(
                     sql, result_handler=PydanticResultHandler.pydantic_one(Asset)
                 ).execute(
@@ -262,8 +577,8 @@ class AssetService(AssetsProtocol):
                 return []
 
             sql = f"""
-            SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata FROM "{phys_schema}".assets 
-            WHERE catalog_id = :catalog_id 
+            SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata, owned_by FROM "{phys_schema}".assets
+            WHERE catalog_id = :catalog_id
               AND collection_id = :collection_id
               AND deleted_at IS NULL
             ORDER BY created_at DESC LIMIT :limit OFFSET :offset;
@@ -296,7 +611,7 @@ class AssetService(AssetsProtocol):
             if not phys_schema:
                 return []
 
-            sql_base = f'SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata FROM "{phys_schema}".assets WHERE catalog_id = :catalog_id AND deleted_at IS NULL'
+            sql_base = f'SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata, owned_by FROM "{phys_schema}".assets WHERE catalog_id = :catalog_id AND deleted_at IS NULL'
             params = {"catalog_id": catalog_id, "limit": limit, "offset": offset}
 
             target_col_id = (
@@ -388,13 +703,16 @@ class AssetService(AssetsProtocol):
             now = datetime.now(timezone.utc)
 
             insert_sql = text(f"""
-                INSERT INTO "{phys_schema}".assets (asset_id, catalog_id, collection_id, asset_type, uri, created_at, metadata)
-                VALUES (:asset_id, :catalog_id, :collection_id, :asset_type, :uri, :created_at, :metadata)
+                INSERT INTO "{phys_schema}".assets
+                    (asset_id, catalog_id, collection_id, asset_type, uri, created_at, metadata, owned_by)
+                VALUES
+                    (:asset_id, :catalog_id, :collection_id, :asset_type, :uri, :created_at, :metadata, :owned_by)
                 ON CONFLICT (collection_id, asset_id) DO UPDATE SET
                     uri = EXCLUDED.uri,
                     metadata = EXCLUDED.metadata,
+                    owned_by = EXCLUDED.owned_by,
                     deleted_at = NULL
-                RETURNING asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata;
+                RETURNING asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata, owned_by;
             """)
 
             res_row = await DQLQuery(
@@ -408,6 +726,7 @@ class AssetService(AssetsProtocol):
                 uri=asset.uri,
                 created_at=now,
                 metadata=json.dumps(asset.metadata, cls=CustomJSONEncoder),
+                owned_by=asset.owned_by,
             )
 
             created = Asset.model_validate(res_row)
@@ -458,10 +777,10 @@ class AssetService(AssetsProtocol):
             )
 
             update_sql = text(f"""
-                UPDATE "{phys_schema}".assets 
-                SET metadata = :metadata 
+                UPDATE "{phys_schema}".assets
+                SET metadata = :metadata
                 WHERE asset_id = :asset_id AND catalog_id = :catalog_id AND collection_id = :collection_id
-                RETURNING asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata;
+                RETURNING asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata, owned_by;
             """)
 
             res_row = await DQLQuery(
@@ -523,7 +842,7 @@ class AssetService(AssetsProtocol):
             where_stmt = " AND ".join(where_clauses)
 
             fetch_sql = text(
-                f'SELECT asset_id, catalog_id, collection_id FROM "{phys_schema}".assets WHERE {where_stmt}'
+                f'SELECT asset_id, catalog_id, collection_id, owned_by FROM "{phys_schema}".assets WHERE {where_stmt}'
             )
 
             assets = await DQLQuery(
@@ -532,6 +851,16 @@ class AssetService(AssetsProtocol):
 
             if not assets:
                 return 0
+
+            # --- Reference guard: block hard-delete of owned assets with blocking references ---
+            if hard:
+                for a in assets:
+                    if a.get("owned_by"):
+                        blocking = await self._list_blocking_references(
+                            a["asset_id"], a["catalog_id"], conn, phys_schema
+                        )
+                        if blocking:
+                            raise AssetReferencedError(a["asset_id"], blocking)
 
             prefix = (
                 f'DELETE FROM "{phys_schema}".assets'
@@ -657,3 +986,147 @@ class AssetService(AssetsProtocol):
             """.strip()
 
             await DDLQuery(trigger_ddl).execute(conn, schema=schema)
+
+    # -------------------------------------------------------------------------
+    # Asset reference table bootstrap
+    # -------------------------------------------------------------------------
+
+    async def ensure_asset_references_table(
+        self,
+        schema: str,
+        db_resource: Optional[DbResource] = None,
+    ) -> None:
+        """
+        Idempotently creates the ``asset_references`` table in *schema* if it
+        does not yet exist.  Called during tenant schema initialisation alongside
+        the ``assets`` table creation.
+        """
+        ddl = f"""
+        CREATE TABLE IF NOT EXISTS "{schema}".asset_references (
+            asset_id       VARCHAR     NOT NULL,
+            catalog_id     VARCHAR     NOT NULL,
+            ref_type       VARCHAR     NOT NULL,
+            ref_id         VARCHAR     NOT NULL,
+            cascade_delete BOOLEAN     NOT NULL DEFAULT TRUE,
+            created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (catalog_id, asset_id, ref_type, ref_id),
+            FOREIGN KEY (catalog_id, asset_id)
+                REFERENCES "{schema}".assets (catalog_id, asset_id)
+                ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_asset_refs_blocking_{schema}
+            ON "{schema}".asset_references (catalog_id, asset_id)
+            WHERE cascade_delete = FALSE;
+        """.strip()
+        async with managed_transaction(db_resource or self.engine) as conn:
+            await DDLQuery(ddl).execute(conn, schema=schema)
+
+    # -------------------------------------------------------------------------
+    # Asset reference CRUD
+    # -------------------------------------------------------------------------
+
+    async def add_asset_reference(
+        self,
+        asset_id: str,
+        catalog_id: str,
+        ref_type: AssetReferenceType,
+        ref_id: str,
+        cascade_delete: bool = True,
+        db_resource: Optional[DbResource] = None,
+    ) -> AssetReference:
+        """Registers a dependency on an asset from *ref_id*."""
+        async with managed_transaction(db_resource or self.engine) as conn:
+            phys_schema = await self._resolve_schema(catalog_id, conn)
+            if not phys_schema:
+                raise ValueError(f"Catalog '{catalog_id}' not found.")
+
+            now = datetime.now(timezone.utc)
+            sql = text(f"""
+                INSERT INTO "{phys_schema}".asset_references
+                    (asset_id, catalog_id, ref_type, ref_id, cascade_delete, created_at)
+                VALUES (:asset_id, :catalog_id, :ref_type, :ref_id, :cascade_delete, :created_at)
+                ON CONFLICT (catalog_id, asset_id, ref_type, ref_id) DO UPDATE SET
+                    cascade_delete = EXCLUDED.cascade_delete
+                RETURNING asset_id, catalog_id, ref_type, ref_id, cascade_delete, created_at;
+            """)
+            row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
+                conn,
+                asset_id=asset_id,
+                catalog_id=catalog_id,
+                ref_type=ref_type.value,
+                ref_id=ref_id,
+                cascade_delete=cascade_delete,
+                created_at=now,
+            )
+            return AssetReference.model_validate(row)
+
+    async def remove_asset_reference(
+        self,
+        asset_id: str,
+        catalog_id: str,
+        ref_type: AssetReferenceType,
+        ref_id: str,
+        db_resource: Optional[DbResource] = None,
+    ) -> None:
+        """Removes a previously registered asset reference."""
+        async with managed_transaction(db_resource or self.engine) as conn:
+            phys_schema = await self._resolve_schema(catalog_id, conn)
+            if not phys_schema:
+                return
+            sql = text(f"""
+                DELETE FROM "{phys_schema}".asset_references
+                WHERE catalog_id = :catalog_id
+                  AND asset_id   = :asset_id
+                  AND ref_type   = :ref_type
+                  AND ref_id     = :ref_id;
+            """)
+            await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
+                conn,
+                catalog_id=catalog_id,
+                asset_id=asset_id,
+                ref_type=ref_type.value,
+                ref_id=ref_id,
+            )
+
+    async def list_asset_references(
+        self,
+        asset_id: str,
+        catalog_id: str,
+        db_resource: Optional[DbResource] = None,
+    ) -> List[AssetReference]:
+        """Returns all active references for the given asset."""
+        async with managed_transaction(db_resource or self.engine) as conn:
+            phys_schema = await self._resolve_schema(catalog_id, conn)
+            if not phys_schema:
+                return []
+            sql = f"""
+                SELECT asset_id, catalog_id, ref_type, ref_id, cascade_delete, created_at
+                FROM "{phys_schema}".asset_references
+                WHERE catalog_id = :catalog_id AND asset_id = :asset_id
+                ORDER BY created_at ASC;
+            """
+            rows = await DQLQuery(
+                sql, result_handler=PydanticResultHandler.pydantic_all(AssetReference)
+            ).execute(conn, catalog_id=catalog_id, asset_id=asset_id)
+            return rows or []
+
+    async def _list_blocking_references(
+        self,
+        asset_id: str,
+        catalog_id: str,
+        conn: DbConnection,
+        phys_schema: str,
+    ) -> List[AssetReference]:
+        """
+        Returns only the ``cascade_delete=False`` references for an asset.
+        Uses the partial index for efficiency.
+        """
+        sql = f"""
+            SELECT asset_id, catalog_id, ref_type, ref_id, cascade_delete, created_at
+            FROM "{phys_schema}".asset_references
+            WHERE catalog_id = :catalog_id AND asset_id = :asset_id AND cascade_delete = FALSE;
+        """
+        rows = await DQLQuery(
+            sql, result_handler=PydanticResultHandler.pydantic_all(AssetReference)
+        ).execute(conn, catalog_id=catalog_id, asset_id=asset_id)
+        return rows or []

@@ -33,7 +33,7 @@ from fastapi import (
 from pydantic import UUID4, BaseModel, Field, AliasChoices, ConfigDict
 
 from dynastore.extensions.protocols import ExtensionProtocol
-from dynastore.models.protocols import AssetsProtocol
+from dynastore.models.protocols import AssetsProtocol, AssetUploadProtocol, UploadTicket, UploadStatusResponse
 from dynastore.tools.protocol_helpers import get_engine
 from dynastore.extensions.tools.exception_handlers import handle_exception
 from dynastore.extensions.tools.security import get_principal
@@ -45,6 +45,9 @@ from dynastore.modules.catalog.asset_service import (
     AssetBase,
     AssetFilter,
     AssetUpdate,
+    AssetUploadDefinition,
+    AssetReference,
+    AssetReferencedError,
 )
 from dynastore.modules.catalog.asset_tasks_spi import AssetTasksSPI
 from dynastore.modules.processes.models import (
@@ -74,6 +77,40 @@ class SearchQuery(BaseModel):
     ]
     limit: int = Field(10, ge=1, le=100)
     offset: int = Field(0, ge=0)
+class UploadRequest(BaseModel):
+    """
+    Request body for initiating a backend-agnostic asset upload session.
+
+    After submitting this request the client receives an ``UploadTicket``
+    containing a backend-specific URL and HTTP method to deliver the file.
+    For GCS/S3 backends the client PUTs the file directly to the signed URL;
+    for local/HTTP backends the client POSTs to the server-side proxy path.
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    filename: str = Field(
+        ...,
+        description=(
+            "Original filename including extension. "
+            "Used to derive the storage path and content-type hints."
+        ),
+        examples=["LC09_L1TP_198030_20251225_02_T1.tif"],
+    )
+    content_type: Optional[str] = Field(
+        None,
+        description="MIME type of the file being uploaded.",
+        examples=["image/tiff", "application/geo+json", "text/csv"],
+    )
+    asset: AssetUploadDefinition = Field(
+        ...,
+        description=(
+            "Asset metadata for the file being uploaded. "
+            "The URI is not yet known — the backend sets it after receiving the file."
+        ),
+    )
+
+
 class AssetService(ExtensionProtocol):
     priority: int = 100
     """
@@ -142,6 +179,38 @@ class AssetService(ExtensionProtocol):
             methods=["DELETE"],
             status_code=status.HTTP_204_NO_CONTENT,
             summary="Delete Asset",
+            description=(
+                "Deletes an asset by ID. "
+                "Soft-delete (default) sets `deleted_at`; hard-delete (`force=true`) removes "
+                "the row entirely. Hard-deletion is **blocked** (HTTP 409) when the asset is "
+                "owned by a storage backend (`owned_by` is set) and one or more non-cascading "
+                "references remain. Use `GET .../references` to diagnose blocking references."
+            ),
+            responses={
+                204: {"description": "Asset deleted."},
+                404: {"description": "Asset not found."},
+                409: {
+                    "description": "Asset has blocking references. Hard-deletion is not allowed until they are removed.",
+                    "content": {
+                        "application/json": {
+                            "example": {
+                                "detail": {
+                                    "message": "Asset 'my_asset' cannot be hard-deleted: 1 blocking reference(s) remain.",
+                                    "asset_id": "my_asset",
+                                    "blocking_references": [
+                                        {
+                                            "ref_type": "duckdb:table",
+                                            "ref_id": "my_collection_table",
+                                            "cascade_delete": False,
+                                            "created_at": "2025-03-25T10:00:00Z",
+                                        }
+                                    ],
+                                }
+                            }
+                        }
+                    },
+                },
+            },
         )
         # Collection-level single asset routes
         self.router.add_api_route(
@@ -164,6 +233,16 @@ class AssetService(ExtensionProtocol):
             methods=["DELETE"],
             status_code=status.HTTP_204_NO_CONTENT,
             summary="Delete Collection Asset",
+            description=(
+                "Deletes a collection-scoped asset by ID. "
+                "Hard-deletion (`force=true`) is blocked (HTTP 409) when blocking "
+                "references remain. See `GET .../references` for details."
+            ),
+            responses={
+                204: {"description": "Asset deleted."},
+                404: {"description": "Asset not found."},
+                409: {"description": "Asset has blocking references preventing hard-deletion."},
+            },
         )
         # Collection delete all
         self.router.add_api_route(
@@ -184,6 +263,107 @@ class AssetService(ExtensionProtocol):
             self.advanced_search,
             methods=["POST"],
             summary="Advanced Search",
+        )
+        # -----------------------------------------------------------------
+        # Upload endpoints (backend-agnostic)
+        # -----------------------------------------------------------------
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/upload",
+            self.initiate_catalog_upload,
+            methods=["POST"],
+            response_model=UploadTicket,
+            status_code=status.HTTP_200_OK,
+            summary="Initiate Asset Upload (Catalog Level)",
+            description=(
+                "Starts a new upload session for a catalog-level asset. "
+                "Returns an `UploadTicket` containing a backend-specific upload URL, "
+                "the HTTP method to use (`PUT` for GCS/S3, `POST` for local), and any "
+                "required headers. "
+                "After delivering the file the backend registers the asset automatically "
+                "(event-driven for GCS/S3, synchronous for local storage). "
+                "Poll `/upload/{ticket_id}/status` to confirm registration."
+            ),
+            responses={
+                200: {"description": "Upload session created. Use the returned ticket to upload the file."},
+                503: {"description": "No upload backend available or storage not provisioned."},
+                424: {"description": "Catalog storage provisioning failed."},
+            },
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/upload",
+            self.initiate_collection_upload,
+            methods=["POST"],
+            response_model=UploadTicket,
+            status_code=status.HTTP_200_OK,
+            summary="Initiate Asset Upload (Collection Level)",
+            description=(
+                "Starts a new upload session for an asset scoped to a collection. "
+                "Identical to the catalog-level endpoint but the file is stored under "
+                "the collection's path prefix. "
+                "The `collection_id` from the path is authoritative over any value "
+                "in the request body."
+            ),
+            responses={
+                200: {"description": "Upload session created."},
+                503: {"description": "No upload backend available or storage not provisioned."},
+                424: {"description": "Catalog/collection storage provisioning failed."},
+            },
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/upload/{ticket_id}/status",
+            self.get_upload_status,
+            methods=["GET"],
+            response_model=UploadStatusResponse,
+            status_code=status.HTTP_200_OK,
+            summary="Get Upload Status",
+            description=(
+                "Polls the status of a previously initiated upload session.\n\n"
+                "For **event-driven backends** (GCS, S3) the status transitions "
+                "`pending → uploading → completed` asynchronously after the cloud event "
+                "fires and the asset is registered.\n\n"
+                "For **local/HTTP backends** the status is `completed` immediately "
+                "after the server receives the file."
+            ),
+            responses={
+                200: {"description": "Current upload status."},
+                404: {"description": "Ticket not found or expired."},
+            },
+        )
+        # -----------------------------------------------------------------
+        # Asset reference endpoints
+        # -----------------------------------------------------------------
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/assets/{asset_id}/references",
+            self.list_asset_references,
+            methods=["GET"],
+            response_model=List[AssetReference],
+            status_code=status.HTTP_200_OK,
+            summary="List Asset References",
+            description=(
+                "Returns all active references to this asset from collections, "
+                "DuckDB tables, Iceberg tables, or other drivers.\n\n"
+                "References with `cascade_delete=false` will **block** hard-deletion "
+                "of the asset (HTTP 409 Conflict). "
+                "Use this endpoint to diagnose why a deletion was rejected."
+            ),
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/assets/{asset_id}/references/{ref_type}/{ref_id}",
+            self.remove_asset_reference,
+            methods=["DELETE"],
+            status_code=status.HTTP_204_NO_CONTENT,
+            summary="Remove Asset Reference",
+            description=(
+                "Manually removes a reference to this asset.\n\n"
+                "**Warning:** removing a blocking reference (`cascade_delete=false`) "
+                "allows hard-deletion of the asset even if the referencing "
+                "collection or table has **not** been dropped yet. "
+                "Only call this after confirming the referencing entity has been cleaned up."
+            ),
+            responses={
+                204: {"description": "Reference removed successfully."},
+                404: {"description": "Asset or reference not found."},
+            },
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/assets/{asset_id}/tasks",
@@ -217,6 +397,12 @@ class AssetService(ExtensionProtocol):
     @property
     def assets(self) -> AssetsProtocol:
         return self.get_protocol(AssetsProtocol)
+
+    @property
+    def upload_provider(self) -> Optional[AssetUploadProtocol]:
+        """Returns the active AssetUploadProtocol implementation, or None if unavailable."""
+        from dynastore.modules import get_protocol as _gp
+        return _gp(AssetUploadProtocol)
 
     # =============================================================================
     #  CATALOG LEVEL OPERATIONS
@@ -314,9 +500,21 @@ class AssetService(ExtensionProtocol):
         ),
     ):
         """Deletes a specific asset by ID."""
-        success = await self.assets.delete_assets(
-            catalog_id=catalog_id, asset_id=asset_id, hard=force, propagate=propagate
-        )
+        try:
+            success = await self.assets.delete_assets(
+                catalog_id=catalog_id, asset_id=asset_id, hard=force, propagate=propagate
+            )
+        except AssetReferencedError as e:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": str(e),
+                    "asset_id": e.asset_id,
+                    "blocking_references": [
+                        r.model_dump() for r in e.blocking_refs
+                    ],
+                },
+            )
         if success == 0:
             raise HTTPException(status_code=404, detail="Asset not found")
 
@@ -437,13 +635,25 @@ class AssetService(ExtensionProtocol):
         ),
     ):
         """Deletes a specific asset by ID."""
-        success = await self.assets.delete_assets(
-            catalog_id=catalog_id,
-            asset_id=asset_id,
-            collection_id=collection_id,
-            hard=force,
-            propagate=propagate,
-        )
+        try:
+            success = await self.assets.delete_assets(
+                catalog_id=catalog_id,
+                asset_id=asset_id,
+                collection_id=collection_id,
+                hard=force,
+                propagate=propagate,
+            )
+        except AssetReferencedError as e:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": str(e),
+                    "asset_id": e.asset_id,
+                    "blocking_references": [
+                        r.model_dump() for r in e.blocking_refs
+                    ],
+                },
+            )
         if success == 0:
             raise HTTPException(status_code=404, detail="Asset not found")
 
@@ -471,6 +681,270 @@ class AssetService(ExtensionProtocol):
         except Exception as e:
             logger.error(f"Search failed: {e}")
             raise HTTPException(status_code=400, detail=str(e))
+
+    # =============================================================================
+    #  UPLOAD (BACKEND-AGNOSTIC)
+    # =============================================================================
+
+    async def initiate_catalog_upload(
+        self,
+        catalog_id: str = Path(..., description="Catalog that will own the uploaded asset."),
+        body: UploadRequest = Body(
+            ...,
+            examples={
+                "raster_geotiff": {
+                    "summary": "Upload a GeoTIFF raster",
+                    "description": "Upload a satellite scene. The GCS backend returns a signed resumable PUT URL.",
+                    "value": {
+                        "filename": "LC09_L1TP_198030_20251225_02_T1.tif",
+                        "content_type": "image/tiff",
+                        "asset": {
+                            "asset_id": "LC09_198030_20251225",
+                            "asset_type": "RASTER",
+                            "metadata": {
+                                "sensor": "OLI-2",
+                                "cloud_cover": 5.2,
+                                "acquisition_date": "2025-12-25T10:30:00Z",
+                            },
+                        },
+                    },
+                },
+                "vector_geojson": {
+                    "summary": "Upload a GeoJSON vector file",
+                    "description": "Upload administrative boundaries for Italy.",
+                    "value": {
+                        "filename": "gadm_adm2_italy.geojson",
+                        "content_type": "application/geo+json",
+                        "asset": {
+                            "asset_id": "italy_adm2",
+                            "asset_type": "VECTORIAL",
+                            "metadata": {"source": "GADM", "version": "4.1", "country": "ITA"},
+                        },
+                    },
+                },
+                "generic_csv": {
+                    "summary": "Upload a generic CSV data file",
+                    "description": "Upload a tabular dataset.",
+                    "value": {
+                        "filename": "stations_2025.csv",
+                        "content_type": "text/csv",
+                        "asset": {
+                            "asset_id": "stations_2025",
+                            "asset_type": "ASSET",
+                            "metadata": {"year": 2025, "variable": "temperature"},
+                        },
+                    },
+                },
+            },
+        ),
+    ) -> UploadTicket:
+        """
+        Initiates an upload session for a catalog-level asset.
+
+        Returns an ``UploadTicket`` with a backend-specific upload URL.
+        For **GCS/S3** backends, PUT the file directly to ``upload_url`` using
+        the provided ``method`` and ``headers``.
+        For **local/HTTP** backends, POST the file to the server-side proxy path.
+
+        After delivery the backend registers the asset automatically.
+        Poll ``GET /assets/catalogs/{catalog_id}/upload/{ticket_id}/status``
+        to confirm registration.
+        """
+        provider = self.upload_provider
+        if not provider:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="No upload backend is available. Configure a storage module (e.g. GCP, local).",
+            )
+        try:
+            return await provider.initiate_upload(
+                catalog_id=catalog_id,
+                asset_def=body.asset,
+                filename=body.filename,
+                content_type=body.content_type,
+                collection_id=None,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Upload initiation failed for catalog '{catalog_id}': {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Upload initiation failed: {e}",
+            )
+
+    async def initiate_collection_upload(
+        self,
+        catalog_id: str = Path(..., description="Catalog that will own the uploaded asset."),
+        collection_id: str = Path(..., description="Collection scope for the asset."),
+        body: UploadRequest = Body(
+            ...,
+            examples={
+                "raster_geotiff": {
+                    "summary": "Upload a GeoTIFF to a collection",
+                    "description": "Upload a Landsat scene to the 'landsat_scenes' collection.",
+                    "value": {
+                        "filename": "LC09_L1TP_198030_20251225_02_T1.tif",
+                        "content_type": "image/tiff",
+                        "asset": {
+                            "asset_id": "LC09_198030_20251225",
+                            "asset_type": "RASTER",
+                            "metadata": {
+                                "sensor": "OLI-2",
+                                "cloud_cover": 5.2,
+                                "acquisition_date": "2025-12-25T10:30:00Z",
+                            },
+                        },
+                    },
+                },
+                "vector_collection": {
+                    "summary": "Upload a vector dataset to a collection",
+                    "description": "Upload a GeoPackage of drainage basins.",
+                    "value": {
+                        "filename": "drainage_basins_africa.gpkg",
+                        "content_type": "application/geopackage+sqlite3",
+                        "asset": {
+                            "asset_id": "drainage_africa_2025",
+                            "asset_type": "VECTORIAL",
+                            "metadata": {"continent": "Africa", "source": "HydroSHEDS"},
+                        },
+                    },
+                },
+            },
+        ),
+    ) -> UploadTicket:
+        """
+        Initiates an upload session scoped to a collection.
+
+        Identical to the catalog-level upload endpoint but the file is stored
+        under the collection's path prefix.  The ``collection_id`` from the
+        path takes precedence.
+        """
+        provider = self.upload_provider
+        if not provider:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="No upload backend is available. Configure a storage module (e.g. GCP, local).",
+            )
+        try:
+            return await provider.initiate_upload(
+                catalog_id=catalog_id,
+                asset_def=body.asset,
+                filename=body.filename,
+                content_type=body.content_type,
+                collection_id=collection_id,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(
+                f"Upload initiation failed for '{catalog_id}/{collection_id}': {e}",
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Upload initiation failed: {e}",
+            )
+
+    async def get_upload_status(
+        self,
+        catalog_id: str = Path(..., description="Catalog that owns the upload session."),
+        ticket_id: str = Path(
+            ...,
+            description="Upload ticket ID returned by the initiate-upload endpoint.",
+        ),
+    ) -> UploadStatusResponse:
+        """
+        Polls the current lifecycle status of an upload session.
+
+        Status values:
+
+        | Value       | Meaning                                                                         |
+        |-------------|---------------------------------------------------------------------------------|
+        | `pending`   | Session created; client has not yet delivered the file.                         |
+        | `uploading` | Transfer in progress (resumable / multipart).                                   |
+        | `completed` | File received and asset registered in the catalog.                              |
+        | `failed`    | Upload or registration failed; see ``error`` field.                             |
+        | `cancelled` | Session expired or explicitly cancelled.                                        |
+        """
+        provider = self.upload_provider
+        if not provider:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="No upload backend is available.",
+            )
+        return await provider.get_upload_status(
+            ticket_id=ticket_id,
+            catalog_id=catalog_id,
+        )
+
+    # =============================================================================
+    #  ASSET REFERENCES
+    # =============================================================================
+
+    async def list_asset_references(
+        self,
+        catalog_id: str = Path(..., description="Catalog scope."),
+        asset_id: str = Path(..., description="Asset ID to inspect."),
+    ) -> List[AssetReference]:
+        """
+        Returns all active references to this asset.
+
+        Any entry with ``cascade_delete=false`` is a **blocking** reference:
+        it prevents hard-deletion of the asset (HTTP 409 Conflict) until the
+        referencing entity (collection, DuckDB table, etc.) is dropped and the
+        reference is explicitly removed.
+        """
+        asset = await self.assets.get_asset(asset_id=asset_id, catalog_id=catalog_id)
+        if not asset:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found.")
+        return await self.assets.list_asset_references(
+            asset_id=asset_id, catalog_id=catalog_id
+        )
+
+    async def remove_asset_reference(
+        self,
+        catalog_id: str = Path(..., description="Catalog scope."),
+        asset_id: str = Path(..., description="Asset ID."),
+        ref_type: str = Path(
+            ...,
+            description=(
+                "Reference type discriminator (e.g. `collection`, `duckdb:table`, `iceberg:table`). "
+                "Use the namespaced string value of the ``AssetReferenceType`` enum."
+            ),
+        ),
+        ref_id: str = Path(
+            ...,
+            description="Owner-scoped identifier of the referencing entity (collection_id, table name, …).",
+        ),
+    ):
+        """
+        Manually removes a reference from this asset.
+
+        **Use with caution.** Removing a blocking reference (`cascade_delete=false`)
+        immediately unblocks hard-deletion even if the referencing driver has not
+        yet cleaned up its data. Only call this **after** the referencing
+        collection or table has been dropped.
+        """
+        from dynastore.modules.catalog.asset_service import AssetReferenceType as _ART
+
+        # Convert the path string to a typed enum value
+        try:
+            typed_ref_type = _ART(ref_type)
+        except ValueError:
+            # Accept unknown values as raw strings (forward-compat with unknown driver types)
+            typed_ref_type = ref_type  # type: ignore[assignment]
+
+        asset = await self.assets.get_asset(asset_id=asset_id, catalog_id=catalog_id)
+        if not asset:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found.")
+
+        await self.assets.remove_asset_reference(
+            asset_id=asset_id,
+            catalog_id=catalog_id,
+            ref_type=typed_ref_type,
+            ref_id=ref_id,
+        )
 
     # =============================================================================
     #  ASSET TASKS (SPI)

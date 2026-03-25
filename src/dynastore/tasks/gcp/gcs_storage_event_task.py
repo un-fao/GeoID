@@ -92,6 +92,7 @@ class GcsStorageEventTask(TaskProtocol):
                     asset_id=asset_id,
                     asset_type=asset_type,
                     metadata=inputs.metadata,
+                    owned_by="gcs",
                 ),
             )
             logger.info(

@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Type
 
 from dynastore.modules.catalog.asset_service import Asset, AssetBase
+from dynastore.modules.catalog.models import CoreAssetReferenceType
 from pydantic import BaseModel
 
 from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
@@ -352,6 +353,26 @@ async def run_ingestion_task(
                 )
 
         await recalculate_and_update_extents(engine, catalog_id, collection_id)
+
+        # Register an informational reference: this asset feeds collection_id.
+        # cascade_delete=True because the DB trigger (trg_asset_cleanup) already
+        # cascades row-level cleanup when the asset is deleted — this reference is
+        # purely for discoverability and audit, not for blocking deletion.
+        try:
+            await asset_manager.add_asset_reference(
+                asset_id=asset.asset_id,
+                catalog_id=catalog_id,
+                ref_type=CoreAssetReferenceType.COLLECTION,
+                ref_id=collection_id,
+                cascade_delete=True,
+                db_resource=engine,
+            )
+        except Exception as ref_err:
+            logger.warning(
+                f"Task '{task_id}': Could not register asset reference "
+                f"({asset.asset_id} → {collection_id}): {ref_err}"
+            )
+
         await asyncio.gather(
             *(reporter.task_finished("COMPLETED") for reporter in reporters)
         )

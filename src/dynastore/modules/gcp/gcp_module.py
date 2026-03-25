@@ -49,6 +49,10 @@ from dynastore.models.protocols import (
     EventingProtocol,
     DatabaseProtocol,
     CatalogsProtocol,
+    AssetUploadProtocol,
+    UploadTicket,
+    UploadStatus,
+    UploadStatusResponse,
 )
 from dynastore.modules.gcp.tools.service_account import get_credentials
 from dynastore.modules.gcp import gcp_db
@@ -103,12 +107,15 @@ class GCPModule(
     CloudStorageClientProtocol,
     CloudIdentityProtocol,
     EventingProtocol,
+    AssetUploadProtocol,
 ):
     _credentials: Optional[Any] = None
     _identity: Optional[Dict[str, Any]] = None
     _engine: Optional[DbResource] = None
     _config_service: Optional[ConfigsProtocol] = None
     _module_config: Optional[GcpModuleConfig] = None
+    # In-memory upload ticket store: ticket_id → {asset_id, catalog_id, collection_id, expires_at}
+    _upload_tickets: Dict[str, Dict[str, Any]] = {}
 
     @property
     def engine(self) -> DbResource:
@@ -1723,3 +1730,208 @@ class GCPModule(
         if isinstance(config, dict):
             return GcpEventingConfig.model_validate(config)
         return None
+
+    # -------------------------------------------------------------------------
+    # AssetUploadProtocol implementation
+    # -------------------------------------------------------------------------
+
+    async def initiate_upload(
+        self,
+        catalog_id: str,
+        asset_def: "Any",
+        filename: str,
+        content_type: Optional[str] = None,
+        collection_id: Optional[str] = None,
+    ) -> "UploadTicket":
+        """
+        Prepares a GCS resumable upload session and returns a backend-agnostic
+        ``UploadTicket``.  The client PUTs the file directly to ``upload_url``
+        (a GCS signed resumable-session URI).  After the upload completes the
+        GCS Pub/Sub OBJECT_FINALIZE event triggers ``GcsStorageEventTask`` which
+        calls ``AssetsProtocol.create_asset`` with ``owned_by='gcs'``.
+
+        The ticket is stored in ``_upload_tickets`` so ``get_upload_status`` can
+        later check whether the asset was registered.
+        """
+        from datetime import datetime, timezone, timedelta
+        from fastapi import HTTPException, status as http_status
+        from enum import Enum
+        from google.api_core.retry import Retry
+        import google.api_core.exceptions
+        from dynastore.modules.gcp.tools import bucket as bucket_tool
+        from dynastore.modules.gcp.gcp_config import (
+            GCP_COLLECTION_BUCKET_CONFIG_ID,
+            GcpCollectionBucketConfig,
+        )
+        from dynastore.tools.identifiers import generate_uuidv7
+
+        catalogs_provider = get_protocol(CatalogsProtocol)
+        config_provider = get_protocol(ConfigsProtocol)
+        if not catalogs_provider:
+            raise HTTPException(
+                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Catalogs service unavailable.",
+            )
+
+        # Ensure the target catalog/collection exist (JIT provisioning gate)
+        await self.prepare_upload_target(
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+        )
+
+        catalog = await catalogs_provider.get_catalog(catalog_id)
+        if catalog.provisioning_status != "ready":
+            if catalog.provisioning_status == "failed":
+                raise HTTPException(
+                    status_code=http_status.HTTP_424_FAILED_DEPENDENCY,
+                    detail=f"Catalog '{catalog_id}' provisioning failed; storage not available.",
+                )
+            raise HTTPException(
+                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Catalog '{catalog_id}' storage is still being provisioned. Retry shortly.",
+                headers={"Retry-After": "30"},
+            )
+
+        bucket_name = await self.get_storage_identifier(catalog_id)
+        if not bucket_name:
+            raise HTTPException(
+                status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Bucket for catalog '{catalog_id}' was not found despite 'ready' status.",
+            )
+
+        storage_client = self.get_storage_client()
+        bucket = storage_client.bucket(bucket_name)
+
+        if collection_id:
+            blob_path = bucket_tool.get_blob_path_for_collection_file(collection_id, filename)
+        else:
+            blob_path = bucket_tool.get_blob_path_for_catalog_file(filename)
+
+        blob = bucket.blob(blob_path)
+
+        # Build custom metadata — merge collection defaults with asset metadata
+        final_metadata: Dict[str, Any] = dict(asset_def.metadata) if asset_def.metadata else {}
+        if collection_id and config_provider:
+            try:
+                coll_cfg = await config_provider.get_config(
+                    GCP_COLLECTION_BUCKET_CONFIG_ID, catalog_id, collection_id
+                )
+                if isinstance(coll_cfg, GcpCollectionBucketConfig) and coll_cfg.custom_metadata_defaults:
+                    final_metadata = {**coll_cfg.custom_metadata_defaults, **final_metadata}
+            except Exception:
+                pass  # config is optional — proceed without it
+
+        final_metadata["asset_id"] = asset_def.asset_id
+        final_metadata["asset_type"] = asset_def.asset_type.value if hasattr(asset_def.asset_type, "value") else str(asset_def.asset_type)
+        blob.metadata = {k: str(v) if not isinstance(v, str) else v for k, v in final_metadata.items()}
+
+        try:
+            session_uri = blob.create_resumable_upload_session(
+                content_type=content_type or "application/octet-stream"
+            )
+        except google.api_core.exceptions.GoogleAPICallError as e:
+            raise HTTPException(
+                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"GCS upload session creation failed: {e}",
+            )
+
+        if not session_uri:
+            raise HTTPException(
+                status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="GCS did not return a session URI for resumable upload.",
+            )
+
+        ticket_id = str(generate_uuidv7())
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+
+        self._upload_tickets[ticket_id] = {
+            "asset_id": asset_def.asset_id,
+            "catalog_id": catalog_id,
+            "collection_id": collection_id,
+            "expires_at": expires_at,
+        }
+
+        logger.info(
+            f"GCPModule.initiate_upload: ticket '{ticket_id}' created for asset "
+            f"'{asset_def.asset_id}' in catalog '{catalog_id}'."
+        )
+
+        return UploadTicket(
+            ticket_id=ticket_id,
+            upload_url=session_uri,
+            method="PUT",
+            headers={"Content-Type": content_type or "application/octet-stream"},
+            expires_at=expires_at,
+            backend="gcs",
+        )
+
+    async def get_upload_status(
+        self,
+        ticket_id: str,
+        catalog_id: str,
+    ) -> "UploadStatusResponse":
+        """
+        Polls the status of an upload session.
+
+        Status is determined by checking whether the asset has been registered
+        in the catalog (set by ``GcsStorageEventTask`` after OBJECT_FINALIZE).
+        The ticket is removed from the in-memory store once the upload is
+        confirmed complete or the session has expired.
+        """
+        from datetime import datetime, timezone
+        from fastapi import HTTPException, status as http_status
+        from dynastore.modules import get_protocol
+        from dynastore.models.protocols import AssetsProtocol
+
+        ticket = self._upload_tickets.get(ticket_id)
+        if not ticket:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail=f"Upload ticket '{ticket_id}' not found or expired.",
+            )
+
+        # Expire stale tickets
+        if datetime.now(timezone.utc) > ticket["expires_at"]:
+            del self._upload_tickets[ticket_id]
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail=f"Upload ticket '{ticket_id}' has expired.",
+            )
+
+        asset_id = ticket["asset_id"]
+        ticket_catalog_id = ticket["catalog_id"]
+        collection_id = ticket.get("collection_id")
+
+        # Verify the caller is querying the right catalog
+        if ticket_catalog_id != catalog_id:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail=f"Upload ticket '{ticket_id}' not found in catalog '{catalog_id}'.",
+            )
+
+        assets = get_protocol(AssetsProtocol)
+        if not assets:
+            return UploadStatusResponse(
+                ticket_id=ticket_id,
+                status=UploadStatus.PENDING,
+            )
+
+        asset = await assets.get_asset(
+            asset_id=asset_id,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+        )
+
+        if asset:
+            # Asset registered — clean up the ticket
+            del self._upload_tickets[ticket_id]
+            return UploadStatusResponse(
+                ticket_id=ticket_id,
+                status=UploadStatus.COMPLETED,
+                asset_id=asset_id,
+            )
+
+        return UploadStatusResponse(
+            ticket_id=ticket_id,
+            status=UploadStatus.PENDING,
+        )
