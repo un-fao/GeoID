@@ -32,10 +32,10 @@ from pyiceberg.types import (
 # ---------------------------------------------------------------------------
 
 
-def _make_loc(table_name="test_tbl", **overrides):
+def _make_loc(table_name="test_tbl", namespace="test_ns", **overrides):
     defaults = dict(
         catalog_name="test_iceberg",
-        namespace="test_ns",
+        namespace=namespace,
         table_name=table_name,
     )
     defaults.update(overrides)
@@ -51,7 +51,13 @@ def iceberg_warehouse(tmp_path):
 
 
 @pytest.fixture
-def iceberg_catalog(db_url, iceberg_warehouse):
+def ns_name(request):
+    """Unique namespace per test to avoid xdist cross-worker conflicts."""
+    return f"ns_{hashlib.md5(request.node.nodeid.encode()).hexdigest()[:12]}"
+
+
+@pytest.fixture
+def iceberg_catalog(db_url, iceberg_warehouse, ns_name):
     """Real PyIceberg SqlCatalog backed by the test PostgreSQL."""
     from pyiceberg.catalog.sql import SqlCatalog
     from dynastore.modules.db_config.tools import normalize_db_url
@@ -66,26 +72,26 @@ def iceberg_catalog(db_url, iceberg_warehouse):
         warehouse=f"file://{iceberg_warehouse}",
     )
     try:
-        catalog.create_namespace("test_ns")
+        catalog.create_namespace(ns_name)
     except Exception:
         pass  # namespace may already exist
 
     yield catalog
 
     # Cleanup: drop all tables and namespace
-    for table_id in catalog.list_tables("test_ns"):
+    for table_id in catalog.list_tables(ns_name):
         try:
             catalog.drop_table(table_id)
         except Exception:
             pass
     try:
-        catalog.drop_namespace("test_ns")
+        catalog.drop_namespace(ns_name)
     except Exception:
         pass
 
 
 @pytest.fixture
-def iceberg_table(iceberg_catalog, request):
+def iceberg_table(iceberg_catalog, ns_name, request):
     """Real Iceberg table with id/name/value/geometry schema — unique per test."""
     from pyiceberg.schema import Schema as IcebergSchema
     from pyiceberg.types import NestedField
@@ -95,7 +101,7 @@ def iceberg_table(iceberg_catalog, request):
 
     # Drop if leftover from a previous run
     try:
-        iceberg_catalog.drop_table(("test_ns", table_name))
+        iceberg_catalog.drop_table((ns_name, table_name))
     except Exception:
         pass
 
@@ -105,19 +111,19 @@ def iceberg_table(iceberg_catalog, request):
         NestedField(3, "value", LongType(), required=False),
         NestedField(4, "geometry", StringType(), required=False),
     )
-    table = iceberg_catalog.create_table(("test_ns", table_name), schema=schema)
+    table = iceberg_catalog.create_table((ns_name, table_name), schema=schema)
     yield table
 
     try:
-        iceberg_catalog.drop_table(("test_ns", table_name))
+        iceberg_catalog.drop_table((ns_name, table_name))
     except Exception:
         pass
 
 
 @pytest.fixture
-def test_loc(iceberg_table):
+def test_loc(iceberg_table, ns_name):
     """OTFStorageLocationConfig pointing to the test's unique table."""
-    return _make_loc(table_name=iceberg_table.name()[-1])
+    return _make_loc(table_name=iceberg_table.name()[-1], namespace=ns_name)
 
 
 @pytest.fixture
@@ -221,10 +227,10 @@ class TestIcebergCatalogConfig:
         )
         assert loc.catalog_properties["warehouse"] == "s3://bucket/wh"
 
-    def test_real_catalog_connection(self, iceberg_catalog):
+    def test_real_catalog_connection(self, iceberg_catalog, ns_name):
         """Verify the real catalog can list namespaces."""
         namespaces = iceberg_catalog.list_namespaces()
-        assert ("test_ns",) in namespaces
+        assert (ns_name,) in namespaces
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +410,7 @@ class TestIcebergDropStorage:
         assert "dynastore.deleted_at" in props
 
     @pytest.mark.asyncio
-    async def test_hard_drop_removes_table(self, iceberg_catalog, request):
+    async def test_hard_drop_removes_table(self, iceberg_catalog, ns_name, request):
         """Create a unique table for hard drop test."""
         from pyiceberg.schema import Schema as IcebergSchema
         from pyiceberg.types import NestedField
@@ -414,24 +420,24 @@ class TestIcebergDropStorage:
 
         # Clean up leftover from previous runs
         try:
-            iceberg_catalog.drop_table(("test_ns", tbl_name))
+            iceberg_catalog.drop_table((ns_name, tbl_name))
         except Exception:
             pass
 
         schema = IcebergSchema(
             NestedField(1, "id", StringType(), required=False),
         )
-        iceberg_catalog.create_table(("test_ns", tbl_name), schema=schema)
+        iceberg_catalog.create_table((ns_name, tbl_name), schema=schema)
 
         driver = IcebergStorageDriver()
         driver._catalog = iceberg_catalog
         driver._catalog_loc_key = "test_iceberg:None:None"
 
-        loc = _make_loc(table_name=tbl_name)
+        loc = _make_loc(table_name=tbl_name, namespace=ns_name)
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=loc):
             await driver.drop_storage("cat1", "col1", soft=False)
 
-        tables = iceberg_catalog.list_tables("test_ns")
+        tables = iceberg_catalog.list_tables(ns_name)
         table_names = [t[1] for t in tables]
         assert tbl_name not in table_names
 
@@ -443,13 +449,13 @@ class TestIcebergDropStorage:
 
 class TestIcebergEnsureStorage:
     @pytest.mark.asyncio
-    async def test_ensure_creates_namespace_and_table(self, iceberg_catalog, request):
+    async def test_ensure_creates_namespace_and_table(self, iceberg_catalog, ns_name, request):
         test_id = hashlib.md5(request.node.nodeid.encode()).hexdigest()[:8]
         tbl_name = f"ensure_{test_id}"
 
         # Clean up leftover
         try:
-            iceberg_catalog.drop_table(("test_ns", tbl_name))
+            iceberg_catalog.drop_table((ns_name, tbl_name))
         except Exception:
             pass
 
@@ -457,17 +463,17 @@ class TestIcebergEnsureStorage:
         driver._catalog = iceberg_catalog
         driver._catalog_loc_key = "test_iceberg:None:None"
 
-        loc = _make_loc(table_name=tbl_name)
+        loc = _make_loc(table_name=tbl_name, namespace=ns_name)
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=loc):
             await driver.ensure_storage("cat1", tbl_name)
 
-        tables = iceberg_catalog.list_tables("test_ns")
+        tables = iceberg_catalog.list_tables(ns_name)
         table_names = [t[1] for t in tables]
         assert tbl_name in table_names
 
         # Cleanup
         try:
-            iceberg_catalog.drop_table(("test_ns", tbl_name))
+            iceberg_catalog.drop_table((ns_name, tbl_name))
         except Exception:
             pass
 
