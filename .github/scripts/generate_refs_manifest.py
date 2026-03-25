@@ -13,16 +13,16 @@ import sys
 from datetime import datetime, timezone
 
 
-def fetch_options(repo: str, commits: int = 5, tags: int = 3) -> list[str]:
-    """Fetch recent commits and tags from GitHub API via gh CLI."""
+def fetch_options(repo: str, commits: int = 5, tags: int = 3, branches: int = 10) -> list[str]:
+    """Fetch recent commits, tags, and branches from GitHub API via gh CLI."""
     options = ["main"]
 
-    # Fetch recent commits
+    # Fetch branches (excluding main, already listed)
     try:
         result = subprocess.run(
             [
-                "gh", "api", f"repos/{repo}/commits",
-                "-q", f'.[0:{commits}] | .[] | .sha[0:12] + " - " + (.commit.message | split("\\n")[0][0:60])',
+                "gh", "api", f"repos/{repo}/branches?per_page={branches}",
+                "-q", '.[] | select(.name != "main") | "branch:" + .name',
             ],
             capture_output=True, text=True, check=True,
         )
@@ -30,7 +30,7 @@ def fetch_options(repo: str, commits: int = 5, tags: int = 3) -> list[str]:
             if line.strip():
                 options.append(line.strip())
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        print(f"Warning: failed to fetch commits: {e}", file=sys.stderr)
+        print(f"Warning: failed to fetch branches: {e}", file=sys.stderr)
 
     # Fetch recent tags
     try:
@@ -46,6 +46,21 @@ def fetch_options(repo: str, commits: int = 5, tags: int = 3) -> list[str]:
                 options.append(line.strip())
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         print(f"Warning: failed to fetch tags: {e}", file=sys.stderr)
+
+    # Fetch recent commits
+    try:
+        result = subprocess.run(
+            [
+                "gh", "api", f"repos/{repo}/commits",
+                "-q", f'.[0:{commits}] | .[] | .sha[0:12] + " - " + (.commit.message | split("\\n")[0][0:60])',
+            ],
+            capture_output=True, text=True, check=True,
+        )
+        for line in result.stdout.strip().splitlines():
+            if line.strip():
+                options.append(line.strip())
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"Warning: failed to fetch commits: {e}", file=sys.stderr)
 
     return options
 
@@ -68,11 +83,12 @@ def main():
     parser.add_argument("--output", default="geoid-refs.json", help="Output file path")
     parser.add_argument("--commits", type=int, default=5, help="Number of recent commits")
     parser.add_argument("--tags", type=int, default=3, help="Number of recent tags")
+    parser.add_argument("--branches", type=int, default=10, help="Number of branches to include")
     parser.add_argument("--tests-passed", default="true", help="Whether tests passed")
     parser.add_argument("--test-run-url", default="", help="URL to the test run")
     args = parser.parse_args()
 
-    options = fetch_options(args.repo, args.commits, args.tags)
+    options = fetch_options(args.repo, args.commits, args.tags, args.branches)
 
     manifest = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
