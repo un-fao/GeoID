@@ -28,11 +28,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
     environment:
       UVICORN_WORKERS: 1
       LOG_LEVEL: DEBUG
       ACCESS_LOG: "-"
       ERROR_LOG: "-"
+      ES_HOST: elasticsearch
+      ES_PORT: "9200"
     ports:
       - "5678:5678" # Debug port
     command: python -m debugpy --listen 0.0.0.0:5678 -m uvicorn dynastore.main:app --host 0.0.0.0 --port 80 --reload --reload-dir src
@@ -47,8 +51,15 @@ services:
       target: development
     volumes:
       - ../src:/dynastore/src
+    depends_on:
+      db:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
     environment:
       UVICORN_WORKERS: 1
+      ES_HOST: elasticsearch
+      ES_PORT: "9200"
 
 
   worker:
@@ -65,6 +76,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
     volumes:
       - ../src:/dynastore/src
     environment:
@@ -72,6 +85,8 @@ services:
       LOG_LEVEL: DEBUG
       ACCESS_LOG: "-"
       ERROR_LOG: "-"
+      ES_HOST: elasticsearch
+      ES_PORT: "9200"
     ports:
       - "5679:5679" # Debug port for worker
     command: python -m debugpy --listen 0.0.0.0:5679 -m uvicorn dynastore.main:app --host 0.0.0.0 --port 81 --reload --reload-dir src

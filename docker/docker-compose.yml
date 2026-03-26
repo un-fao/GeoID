@@ -103,26 +103,36 @@ services:
       - dynastore_net
 
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    # OpenSearch 2.x (Apache 2.0) — drop-in replacement for Elasticsearch REST API.
+    # Elasticsearch ≥7.11 uses SSPL/ELv2, incompatible with this project's Apache 2.0 license.
+    image: opensearchproject/opensearch:2.17.0
     container_name: geoid_elasticsearch
     restart: always
     environment:
       - discovery.type=single-node
-      - xpack.security.enabled=false
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - DISABLE_SECURITY_PLUGIN=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
     ports:
       - "9200:9200"
     volumes:
-      - elasticsearch_data:/usr/share/elasticsearch/data
+      - elasticsearch_data:/usr/share/opensearch/data
     networks:
       - dynastore_net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
   kibana:
-    image: docker.elastic.co/kibana/kibana:8.15.0
+    # OpenSearch Dashboards (Apache 2.0) — replaces Kibana (SSPL/ELv2).
+    image: opensearchproject/opensearch-dashboards:2.17.0
     container_name: geoid_kibana
     restart: always
     environment:
-      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - OPENSEARCH_HOSTS=http://elasticsearch:9200
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
     ports:
       - "5601:5601"
     depends_on:

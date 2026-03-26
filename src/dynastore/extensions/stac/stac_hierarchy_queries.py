@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import text
 from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
 from dynastore.modules.stac.stac_config import HierarchyRule, HierarchyStrategy
+from dynastore.tools.cache import cached
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,13 @@ async def get_hierarchy_item_count(
     return int(result) if result else 0
 
 
+@cached(
+    maxsize=256,
+    ttl=300,
+    jitter=15,
+    namespace="stac_hierarchy",
+    ignore=["conn"],
+)
 async def get_distinct_hierarchy_values(
     conn: AsyncConnection,
     catalog_id: str,
@@ -163,6 +171,13 @@ async def get_distinct_hierarchy_values(
     return results if results else []
 
 
+@cached(
+    maxsize=256,
+    ttl=300,
+    jitter=15,
+    namespace="stac_hierarchy_ext",
+    ignore=["conn"],
+)
 async def get_hierarchy_extent(
     conn: AsyncConnection,
     catalog_id: str,

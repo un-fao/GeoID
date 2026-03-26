@@ -29,14 +29,43 @@ pip install dynastore[elasticsearch]
 
 ### Connection (environment variables, deploy-time)
 
+| Variable | Default | Description |
+|---|---|---|
+| `ES_HOST` | `localhost` | ES/OpenSearch hostname or IP |
+| `ES_PORT` | `9200` | REST API port |
+| `ES_USE_SSL` | `false` | `true` to use HTTPS (Elastic Cloud, on-prem TLS) |
+| `ES_VERIFY_CERTS` | `true` | `false` to skip TLS certificate verification (self-signed) |
+| `ES_API_KEY` | — | API key authentication (preferred over basic auth) |
+| `ES_USERNAME` | — | Basic auth username |
+| `ES_PASSWORD` | — | Basic auth password |
+| `ES_INDEX_PREFIX` | `dynastore` | Prefix applied to all index names |
+| `ES_CONNECTIONS_PER_NODE` | `10` | Connection pool size per node |
+
+#### On-Premise / OpenSearch Example
+
 ```env
-ELASTICSEARCH_URL="http://localhost:9200"
-ELASTICSEARCH_API_KEY=""            # Optional
-ELASTICSEARCH_USERNAME=""           # Optional
-ELASTICSEARCH_PASSWORD=""           # Optional
-ELASTICSEARCH_VERIFY_CERTS="true"
-ELASTICSEARCH_INDEX_PREFIX="dynastore"
+ES_HOST=my-opensearch-node.internal
+ES_PORT=9200
+ES_USE_SSL=true
+ES_VERIFY_CERTS=false   # self-signed cert
+ES_API_KEY=abc123==
+ES_INDEX_PREFIX=geoid_prod
 ```
+
+#### Startup Connectivity Check
+
+On startup, `client.init()` attempts a ping (`GET /`) against the configured host.
+On success the cluster name and version are logged at `INFO`. On failure a `WARNING` is
+emitted and the service continues — ES is optional. Indexing tasks will fail (and retry)
+until the connection is restored.
+
+#### License Note
+
+This module is compatible with **OpenSearch 2.x** (Apache 2.0) and
+**Elasticsearch ≤7.10.2** (Apache 2.0). Elasticsearch ≥7.11 uses SSPL/ELv2,
+which is incompatible with this project's Apache 2.0 license.
+The Docker Compose files in this repository use
+`opensearchproject/opensearch:2.17.0` for this reason.
 
 ### Per-Catalog Config (runtime-mutable, stored in AlloyDB)
 

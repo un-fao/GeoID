@@ -92,15 +92,37 @@ async def init(index_prefix: Optional[str] = None) -> None:
     Initialize the singleton client.  Called once from ElasticsearchModule.lifespan.
     Safe to call when ES env vars are not set — client will be created but may
     fail at first use (lazy connection; does not block startup).
+
+    A connectivity ping is attempted after client creation.  On success the
+    cluster name and version are logged at INFO.  On failure a WARNING is emitted
+    and startup continues — ES is optional; callers handle missing connectivity.
     """
     global _client, _index_prefix
     _index_prefix = index_prefix or os.environ.get("ES_INDEX_PREFIX", "dynastore")
     _client = _build_client()
-    logger.info(
-        "Elasticsearch client initialised (prefix=%r, ssl=%s).",
-        _index_prefix,
-        os.environ.get("ES_USE_SSL", "false"),
-    )
+    host = os.environ.get("ES_HOST", "localhost")
+    port = os.environ.get("ES_PORT", "9200")
+    try:
+        info = await _client.info()
+        cluster = info.get("cluster_name", "unknown")
+        version = info.get("version", {}).get("number", "unknown")
+        logger.info(
+            "Elasticsearch connected: cluster=%r version=%s host=%s:%s prefix=%r ssl=%s",
+            cluster,
+            version,
+            host,
+            port,
+            _index_prefix,
+            os.environ.get("ES_USE_SSL", "false"),
+        )
+    except Exception as exc:
+        logger.warning(
+            "Elasticsearch ping failed — %s:%s unreachable (%s). "
+            "Indexing will be unavailable until the connection is restored.",
+            host,
+            port,
+            exc,
+        )
 
 
 async def close() -> None:

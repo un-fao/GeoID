@@ -684,14 +684,15 @@ async def search_items(
     if search_request.aggregations:
         from dynastore.extensions.stac.stac_aggregations import execute_aggregations
 
-        # Hints for joins in aggregation queries
-        hints = set()
+        # Hints for joins in aggregation queries (frozenset for deterministic cache keys)
+        _hints: set = set()
         # If we have attribute filters, we likely need attributes sidecar
         if "attributes" in where_sql or "properties" in str(search_request.filter):
-            hints.add("attributes")
+            _hints.add("attributes")
         # If we have spatial filters, we likely need geometry sidecar
         if "geom" in where_sql or search_request.bbox or search_request.intersects:
-            hints.add("geometry")
+            _hints.add("geometry")
+        hints = frozenset(_hints)
 
         if isinstance(db_resource, AsyncEngine):
             async with db_resource.connect() as agg_conn:

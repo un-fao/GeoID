@@ -18,7 +18,7 @@
 
 # dynastore/extensions/stac/stac_aggregations.py
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -27,11 +27,19 @@ from sqlalchemy import text
 from dynastore.modules.stac.stac_config import AggregationRule, AggregationType
 from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
 from dynastore.tools.discovery import get_protocol
+from dynastore.tools.cache import cached
 from dynastore.models.protocols import CatalogsProtocol
 
 logger = logging.getLogger(__name__)
 
 
+@cached(
+    maxsize=256,
+    ttl=300,
+    jitter=15,
+    namespace="stac_agg",
+    ignore=["conn"],
+)
 async def execute_aggregations(
     conn: AsyncConnection,
     catalog_id: str,
@@ -39,7 +47,7 @@ async def execute_aggregations(
     aggregation_rules: List[AggregationRule],
     where_sql: str = "TRUE",
     params: Optional[Dict[str, Any]] = None,
-    filter_hints: Optional[set] = None,
+    filter_hints: Optional[FrozenSet[str]] = None,
 ) -> Dict[str, Any]:
     """
     Executes multiple aggregations and returns combined results.
@@ -60,7 +68,7 @@ async def execute_aggregations(
     if params is None:
         params = {}
     if filter_hints is None:
-        filter_hints = set()
+        filter_hints = frozenset()
 
     results = {}
 

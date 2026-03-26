@@ -57,6 +57,7 @@ from dynastore.extensions.web import expose_web_page
 import os
 
 from dynastore.modules.tiles import tiles_db
+from dynastore.tools.cache import cached
 from dynastore.modules.tiles.tiles_config import (
     TilesPluginConfig,
     TILES_PLUGIN_CONFIG_ID,
@@ -595,20 +596,20 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
                 logger.info(f"No valid collections found for {dataset}/{collections}")
                 return self._finalize_response(request, b"")
 
-            # Retrieve MVT content (Fast SQL execution with pre-resolved metadata)
-            mvt_content = await tiles_db.get_features_as_mvt_filtered(
-                conn=conn,
-                resolved_collections=resolved_collections,
-                tms_def=tms_def,
-                target_srid=target_srid,
-                z=str(z),
-                x=x,
-                y=y,
-                datetime_str=datetime,
-                cql_filter=filter,
-                subset_params=subset,
-                simplification=simplification,
-                simplification_algorithm=simplification_algorithm,
+            # Retrieve MVT content — L1 in-process cache, then PostGIS on miss
+            mvt_content = await self._generate_mvt(
+                conn,
+                resolved_collections,
+                tms_def,
+                target_srid,
+                str(z),
+                x,
+                y,
+                datetime,
+                filter,
+                subset,
+                simplification,
+                simplification_algorithm,
             )
 
             # 9. Background Caching
@@ -657,6 +658,45 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
             )
 
     # --- Helper Private Methods ---
+
+    @cached(
+        maxsize=512,
+        ttl=60,
+        jitter=5,
+        namespace="mvt_l1",
+        ignore=["conn"],
+        condition=lambda r: r is not None,
+    )
+    async def _generate_mvt(
+        self,
+        conn: AsyncConnection,
+        resolved_collections: list,
+        tms_def,
+        target_srid: int,
+        z: str,
+        x: int,
+        y: int,
+        datetime_str: Optional[str],
+        cql_filter: Optional[str],
+        subset_params: Optional[str],
+        simplification: Optional[float],
+        simplification_algorithm,
+    ) -> Optional[bytes]:
+        """PostGIS MVT generation — L1 in-process cache above the storage provider L2."""
+        return await tiles_db.get_features_as_mvt_filtered(
+            conn=conn,
+            resolved_collections=resolved_collections,
+            tms_def=tms_def,
+            target_srid=target_srid,
+            z=z,
+            x=x,
+            y=y,
+            datetime_str=datetime_str,
+            cql_filter=cql_filter,
+            subset_params=subset_params,
+            simplification=simplification,
+            simplification_algorithm=simplification_algorithm,
+        )
 
     @staticmethod
     async def _resolve_request_config(

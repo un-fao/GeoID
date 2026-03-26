@@ -65,6 +65,7 @@ from typing import (
     get_origin,
     get_type_hints,
 )
+from typing import Protocol, runtime_checkable
 
 from dynastore.models.protocols.cache import (
     Cache,
@@ -114,6 +115,29 @@ def _has_cache_ignore(annotation: Any) -> bool:
             if isinstance(arg, _CacheIgnoreMarker):
                 return True
     return False
+
+
+# ---------------------------------------------------------------------------
+#  LockableCacheBackend — optional protocol for backends with stampede protection
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class LockableCacheBackend(Protocol):
+    """Optional protocol for cache backends that provide per-key async locks.
+
+    When a backend registered via ``CacheManager`` implements this protocol,
+    the ``@cached`` decorator uses its ``get_lock()`` for stampede protection.
+    Backends that do not implement it fall back to decorator-local asyncio locks.
+
+    ``LocalAsyncCacheBackend`` implements this protocol.  Redis or other
+    external backends should implement it if they want native lock semantics
+    (e.g. Redis SETNX-based distributed locks).
+    """
+
+    async def get_lock(self, key: str) -> asyncio.Lock:
+        """Return an asyncio.Lock for the given cache key."""
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +275,6 @@ class LocalAsyncCacheBackend:
         self._store: collections.OrderedDict[str, _CacheEntry] = collections.OrderedDict()
         self._max_size = max_size
         self._locks: Dict[str, asyncio.Lock] = {}
-        self._global_lock = asyncio.Lock()
         self._stats = CacheStats(maxsize=max_size)
 
     @property
@@ -360,10 +383,11 @@ class LocalAsyncCacheBackend:
             self._stats.evictions += 1
 
     async def get_lock(self, key: str) -> asyncio.Lock:
-        async with self._global_lock:
-            if key not in self._locks:
-                self._locks[key] = asyncio.Lock()
-            return self._locks[key]
+        # asyncio is single-threaded and cooperative — no concurrent access to
+        # _locks between suspension points, so no global lock is needed here.
+        if key not in self._locks:
+            self._locks[key] = asyncio.Lock()
+        return self._locks[key]
 
 
 # ---------------------------------------------------------------------------
@@ -813,11 +837,16 @@ def cached(
         params = list(sig.parameters.keys())
         is_method = len(params) > 0 and params[0] == "self"
 
-        # Each decorator instance gets its own backend
-        _backend = LocalAsyncCacheBackend(max_size=maxsize) if is_async else None
+        # Resolve async backend: named shared backend or private local LRU
+        if backend is not None and is_async:
+            _backend = get_cache_manager().get_async_backend(backend)
+            _backend_has_lock = isinstance(_backend, LockableCacheBackend)
+        else:
+            _backend = LocalAsyncCacheBackend(max_size=maxsize) if is_async else None
+            _backend_has_lock = True  # LocalAsyncCacheBackend always implements LockableCacheBackend
         _sync_backend = LocalSyncCacheBackend(max_size=maxsize) if not is_async else None
-        _locks: Dict[str, asyncio.Lock] = {}
-        _global_lock = asyncio.Lock() if is_async else None
+        # Fallback per-key locks for external backends that don't implement get_lock
+        _fallback_locks: Dict[str, asyncio.Lock] = {}
 
         ns = namespace or func_qualname
 
@@ -851,7 +880,12 @@ def cached(
                     return raw  # NullSerializer: stored as-is
 
                 # Stampede protection
-                lock = await _backend.get_lock(cache_key)
+                if _backend_has_lock:
+                    lock = await _backend.get_lock(cache_key)
+                else:
+                    if cache_key not in _fallback_locks:
+                        _fallback_locks[cache_key] = asyncio.Lock()
+                    lock = _fallback_locks[cache_key]
                 async with lock:
                     raw = await _backend.get(cache_key)
                     if raw is not None:
