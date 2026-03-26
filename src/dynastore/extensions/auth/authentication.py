@@ -214,7 +214,7 @@ class Authentication(ExtensionProtocol):
                 _login_limiter.record_failure(client_ip, username)
                 # Redirect back to login with error parameter, preserving root_path prefix
                 from urllib.parse import quote_plus
-                login_url = f"{root_path}{request.url.path}?error=Invalid+credentials"
+                login_url = f"{root_path}{request.scope['path']}?error=Invalid+credentials"
                 if redirect_uri:
                     login_url += f"&redirect_uri={quote_plus(redirect_uri)}"
                 if state:
@@ -599,14 +599,14 @@ class Authentication(ExtensionProtocol):
                 if _sa_password:
                     logger.info("✓ Loaded sysadmin password from SYSADMIN_PASSWORD env var")
 
-            # 3. Generate random, encrypt and store
+            # 3. Default well-known password — change via admin panel after first login
             if not _sa_password:
-                _sa_password = secrets.token_urlsafe(24)
+                _sa_password = "sysadmin"
                 logger.warning(
                     "SYSADMIN_PASSWORD not set and no stored password found. "
-                    "Generated a random sysadmin password — stored encrypted in "
-                    f"properties table under key '{_SYSADMIN_PROP_KEY}'. "
-                    "Set SYSADMIN_PASSWORD or update that property to change it."
+                    "Using default sysadmin password 'sysadmin' — CHANGE THIS IMMEDIATELY "
+                    "via the admin panel or update the properties table key "
+                    f"'{_SYSADMIN_PROP_KEY}' and restart."
                 )
 
             # Persist encrypted password to properties if not already there

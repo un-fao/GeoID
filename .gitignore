@@ -90,6 +90,7 @@ FullLogs*.txt
 # Test Artifacts
 test-results.xml
 test_run.log
+geoid-refs.json
 
 # Temporary / Reproduction Scripts
 debug_*.py
