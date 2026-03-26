@@ -194,11 +194,11 @@ def base_url():
 
     # 2. Build from components (local dev fallback)
     # Support environment specific variable for API_HOST
-    # Local: localhost, Docker dev: api, Pipeline test: api_test
+    # Local: localhost, Docker dev: catalog, Pipeline test: catalog_test
     host = os.getenv("API_HOST", "127.0.0.1")
     port = os.getenv("TCP_PORT", "80")
     # Respect docker-compose port if present
-    port = os.getenv("HOST_PORT_API", port)
+    port = os.getenv("HOST_PORT_CATALOG", port)
 
     root_path = os.getenv("API_ROOT_PATH", "").rstrip("/")
     return f"http://{host}:{port}{root_path}"

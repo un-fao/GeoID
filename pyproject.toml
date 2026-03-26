@@ -224,11 +224,19 @@ task_gdal_job = ["dynastore[task_base,gdal]"]
 #   │  worker_service = core + catalog + google + index        │
 #   │                   + tasks + processes                     │
 #   │                   + ingestion + jobs        ... NO auth  │
+#   ├──────────────────────────────────────────────────────────┤
+#   │  Local-only scopes                                       │
+#   ├──────────────────────────────────────────────────────────┤
+#   │  catalog_local  = api_open WITHOUT google_grp ... NO gcp │
+#   │  worker_local   = worker_service + monitor    ... NO auth│
 #   └──────────────────────────────────────────────────────────┘
 #
 # Docker scopes:
-#   api   service -> API_SCOPE=api_open        (no auth, open testing)
-#   geoid service -> GEOID_SCOPE=geoid_service (full auth + geoid UI)
+#   catalog service -> CATALOG_SCOPE=catalog_local (no auth, no gcp_cloud_runner)
+#   geoid   service -> GEOID_SCOPE=geoid_service   (full auth + geoid UI)
+#   worker  service -> WORKER_SCOPE=worker_local   (tasks + processes/stats UI)
+#   tools   service -> TOOLS_SCOPE=core,proxy,template
+#   maps    service -> MAPS_SCOPE=api_maps_open
 #
 # ==========================================================================
 # api_open: full catalog WITHOUT auth — open for testing
@@ -247,8 +255,10 @@ api_full = ["dynastore[api_catalog,maps_grp,geospatial_io]"]
 geoid_service = ["dynastore[api_catalog,extension_geoid]"]
 # worker_service: background task processor (sync-db tasks + async-db catalog reads), no auth
 worker_service = ["dynastore[core,catalog_grp,google_grp,index_grp,tasks,processes,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job]"]
-# worker_local: dev-only — worker_service + FastAPI to simulate Cloud Run Jobs
-worker_local = ["dynastore[worker_service]"]
+# catalog_local: local dev catalog — api_open without google_grp/gcp_cloud_runner
+catalog_local = ["dynastore[core,catalog_grp,tools_grp,monitor_grp,index_grp,processes]"]
+# worker_local: local HTTP simulation of Cloud Run Jobs — all tasks + processes/stats UI
+worker_local = ["dynastore[worker_service,monitor_grp]"]
 
 # ==========================================================================
 # DEVELOPMENT & TESTING
