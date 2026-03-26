@@ -1,15 +1,15 @@
 {
-  "generated_at": "2026-03-25T22:54:29.134915+00:00",
-  "head_sha": "855d17a9798a6f53f4903ac2a45fe8e9368f1fc5",
+  "generated_at": "2026-03-26T09:22:05.500557+00:00",
+  "head_sha": "4a606b8a3a67b0d7b773ef32e87c49f7038d6cae",
   "tests_passed": true,
-  "test_run_url": "https://github.com/un-fao/GeoID/actions/runs/23567878904",
+  "test_run_url": "https://github.com/un-fao/GeoID/actions/runs/23586274984",
   "options": [
     "main",
     "branch:feature/storage-driver-framework",
+    "4a606b8a3a67 - refactor(scopes): isolate auth to geoid-service only; add op",
+    "75132b57498c - ci: update refs manifest [skip ci]",
     "855d17a9798a - fix(tests): use unique namespace per iceberg test for xdist",
     "98caa3885597 - fix(tests): patch pytest-asyncio Coroutine class name for VS",
-    "ea7b79d2b7cb - fix(assets): use CoreAssetReferenceType for ref_type coercio",
-    "470234a89ef3 - fix(gcp): isolate google-cloud imports to prevent cascading",
-    "9debb9af782f - feat(stac,iceberg): Full STAC collection spec + Iceberg ware"
+    "ea7b79d2b7cb - fix(assets): use CoreAssetReferenceType for ref_type coercio"
   ]
 }
