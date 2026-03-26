@@ -133,3 +133,36 @@ class EventBusProtocol(EventsProtocol, Protocol):
     async def stop_consumer(self) -> None:
         """Stop the background event consumer loop gracefully."""
         ...
+
+    # --- Tenant event space lifecycle ---
+
+    async def init_tenant_events(self, tenant: str, **extras: Any) -> None:
+        """
+        Register a tenant as an event space (idempotent).
+
+        Creates the necessary tables, partitions, triggers, and cron jobs
+        for tenant-scoped event storage.
+
+        Implementations may accept ``db_resource`` in *extras* for
+        transactional participation with the caller's DDL.
+        """
+        ...
+
+    async def init_namespace(
+        self, tenant: str, namespace: str, **extras: Any
+    ) -> None:
+        """
+        Register a namespace within a tenant event space (idempotent).
+
+        Creates the necessary partitioning/storage for namespace-scoped
+        events (e.g. collection-level event partition).
+        """
+        ...
+
+    async def drop_events(
+        self, tenant: str, namespace: str, **extras: Any
+    ) -> None:
+        """
+        Remove event storage for a namespace within a tenant.
+        """
+        ...

@@ -140,7 +140,19 @@ from enum import Enum
 # --- Enumerations ---
 
 class TaskStatusEnum(str, Enum):
-    """Internal task status enumeration."""
+    """Internal task status enumeration.
+
+    OGC API Processes mapping:
+      CREATED     → "created"    (Part 4: deferred, unlocked — PATCH allowed)
+      PENDING     → "accepted"   (Part 1: queued for execution, locked)
+      ACTIVE      → "running"    (Part 1: claimed by runner, locked)
+      RUNNING     → "running"    (legacy alias)
+      COMPLETED   → "successful" (Part 1: terminal)
+      FAILED      → "failed"     (Part 1: terminal)
+      DISMISSED   → "dismissed"  (Part 1: cancelled, terminal)
+      DEAD_LETTER → "failed"     (internal: max retries exhausted)
+    """
+    CREATED     = "CREATED"      # OGC Part 4: defined but not started (unlocked)
     PENDING     = "PENDING"
     ACTIVE      = "ACTIVE"       # Claimed by a runner; heartbeat expected
     RUNNING     = "RUNNING"      # Legacy alias kept for backwards compatibility
@@ -154,6 +166,25 @@ class TaskExecutionMode(str, Enum):
     """Defines the execution strategy for a task runner."""
     SYNCHRONOUS = "SYNCHRONOUS"
     ASYNCHRONOUS = "ASYNCHRONOUS"
+
+
+class TaskExecutionScope(str, Enum):
+    """Where a task should execute. Caller-specified, not class-level.
+
+    This mirrors the existing pattern where ``execution_mode``
+    (SYNC/ASYNC) is caller-specified via ``TaskCreate.execution_mode``
+    or the HTTP ``Prefer`` header.  The same task can run in-process
+    for a multi-driver write OR be offloaded remotely for a bulk
+    ingestion — the caller decides.
+
+    Resolution order (same as execution_mode):
+      1. Caller preference (header, explicit param)
+      2. Process constraints (``supportedScopes``)
+      3. Runner availability
+    """
+    IN_PROCESS = "IN_PROCESS"      # asyncio.create_task, no dispatcher claim
+    LOCAL_QUEUE = "LOCAL_QUEUE"    # Dispatcher claim loop (current default)
+    REMOTE = "REMOTE"              # Offload to remote execution (Cloud Run Job, etc.)
 
 
 class TaskScope(str, Enum):
@@ -191,6 +222,7 @@ class TaskBase(BaseModel):
 
 class TaskCreate(TaskBase):
     execution_mode: str = TaskExecutionMode.ASYNCHRONOUS
+    execution_scope: str = TaskExecutionScope.LOCAL_QUEUE
     scope: str = TaskScope.CATALOG
     dedup_key: Optional[str] = Field(
         default=None,

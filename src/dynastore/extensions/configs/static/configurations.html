@@ -100,13 +100,18 @@
 <div id="toast"></div>
 
 <script>
-const API_BASE = '/configs';
+// Derive API root from the page URL so paths work behind any prefix proxy.
+const _CONFIGS_ROOT = (function () {
+    const path = window.location.pathname.replace(/\/web\/.*$/, '');
+    return path || '';
+}());
+const API_BASE = `${_CONFIGS_ROOT}/configs`;
 let _configSchemas = {};
 let _jsonEditor = null;
 let _csConfig = null;
 
 let TOKEN_KEY = 'ds_token';
-let _tokenKeyPromise = fetch('/configs/web_config').then(r => r.ok ? r.json() : {}).then(c => {
+let _tokenKeyPromise = fetch(`${_CONFIGS_ROOT}/configs/web_config`).then(r => r.ok ? r.json() : {}).then(c => {
   if (c.token_key) TOKEN_KEY = c.token_key;
 }).catch(() => {});
 

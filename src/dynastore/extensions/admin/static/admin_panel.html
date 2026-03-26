@@ -289,9 +289,16 @@
 </div>
 
 <div id="toast"></div><script>
-const BASE = '/admin';
+// Derive API root from the page URL so paths work behind any prefix proxy.
+// admin_panel.html is served at {root}/web/pages/admin — go up to {root}.
+const _ADMIN_ROOT = (function () {
+    // Strip /web/pages/admin (or similar) suffix to find the app root
+    const path = window.location.pathname.replace(/\/web\/.*$/, '');
+    return path || '';
+}());
+const BASE = `${_ADMIN_ROOT}/admin`;
 let TOKEN_KEY = 'ds_token';
-let _tokenKeyPromise = fetch('/configs/web_config').then(r => r.ok ? r.json() : {}).then(c => {
+let _tokenKeyPromise = fetch(`${_ADMIN_ROOT}/configs/web_config`).then(r => r.ok ? r.json() : {}).then(c => {
   if (c.token_key) TOKEN_KEY = c.token_key;
 }).catch(() => {});
 
@@ -473,7 +480,7 @@ async function loadPolicies() {
   const tb = document.getElementById('policies-tbody');
   tb.innerHTML = '<tr><td colspan="6" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr>';
   try {
-    let url = '/policies';
+    let url = `${_ADMIN_ROOT}/policies`;
     if (_csPolicies && _csPolicies.state.catalogId && _csPolicies.state.catalogId !== '_system_') {
       url += `?catalog_id=${encodeURIComponent(_csPolicies.state.catalogId)}`;
     }

@@ -23,6 +23,8 @@ from dynastore.modules import get_protocol
 from dynastore.modules.db_config.query_executor import DbResource
 from dynastore.modules.catalog.event_service import CatalogEventType, register_event_listener
 from dynastore.models.protocols import CatalogsProtocol
+from dynastore.models.protocols.event_bus import EventBusProtocol
+from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
 
 from . import events_module
 
@@ -118,3 +120,11 @@ def register_all_listeners():
         CatalogEventType.COLLECTION_HARD_DELETION,
         on_collection_hard_deletion
     )
+
+@lifecycle_registry.sync_catalog_initializer(priority=50)
+async def _init_events_schema_for_catalog(conn: DbResource, schema: str, catalog_id: str):
+    bus = get_protocol(EventBusProtocol)
+    if bus:
+        await bus.init_tenant_events(schema, db_resource=conn)
+    else:
+        logger.warning("EventBusProtocol not available during catalog schema init.")

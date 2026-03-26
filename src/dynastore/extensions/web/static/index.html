@@ -964,7 +964,7 @@
 
             try {
                 // This endpoint needs to be provided by the backend `web` extension
-                const response = await fetch('/web/docs-manifest');
+                const response = await fetch('../docs-manifest');
                 if (!response.ok) throw new Error('Failed to load docs manifest');
                 const manifest = await response.json();
 

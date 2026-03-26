@@ -92,24 +92,6 @@ CREATE TABLE IF NOT EXISTS {schema}.tasks (
 ) PARTITION BY RANGE (timestamp);
 """
 
-GLOBAL_EVENTS_TABLE_DDL = """
-CREATE TABLE IF NOT EXISTS {schema}.events (
-    event_id      UUID          NOT NULL DEFAULT gen_random_uuid(),
-    event_type    VARCHAR       NOT NULL,
-    scope         VARCHAR(50)   NOT NULL DEFAULT 'PLATFORM',
-    schema_name   VARCHAR(255),
-    collection_id VARCHAR(255),
-    payload       JSONB         NOT NULL DEFAULT '{{}}',
-    status        VARCHAR       NOT NULL DEFAULT 'PENDING',
-    dedup_key     VARCHAR(512),
-    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-    processed_at  TIMESTAMPTZ,
-    error_message TEXT,
-    retry_count   INT           NOT NULL DEFAULT 0,
-    PRIMARY KEY (created_at, event_id)
-) PARTITION BY RANGE (created_at);
-"""
-
 # --- Step 2: Indexes and triggers (run AFTER migration so all columns exist) ---
 
 GLOBAL_TASKS_INDEXES_DDL = """
@@ -164,37 +146,7 @@ CREATE TRIGGER on_task_status_update
     EXECUTE FUNCTION {schema}.notify_task_status_changed();
 """
 
-GLOBAL_EVENTS_INDEXES_DDL = """
-CREATE INDEX IF NOT EXISTS idx_events_queue
-    ON {schema}.events (status, created_at)
-    WHERE status = 'PENDING';
--- Dedup index: includes created_at (partition key) as PG requires for
--- unique indexes on partitioned tables. Cross-partition dedup enforced
--- at application layer.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedup
-    ON {schema}.events (dedup_key, created_at)
-    WHERE dedup_key IS NOT NULL AND status NOT IN ('DEAD_LETTER');
-CREATE INDEX IF NOT EXISTS idx_events_schema
-    ON {schema}.events (schema_name, event_type);
--- event_id lookup index: enables ack/nack without full partition scan
-CREATE INDEX IF NOT EXISTS idx_events_event_id
-    ON {schema}.events (event_id);
 
-CREATE OR REPLACE FUNCTION {schema}.notify_event_ready()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
-BEGIN
-    PERFORM pg_notify('dynastore_events_channel', NEW.event_type);
-    RETURN NEW;
-END;
-$$;
-
-DROP TRIGGER IF EXISTS on_event_insert ON {schema}.events;
-CREATE TRIGGER on_event_insert
-    AFTER INSERT ON {schema}.events
-    FOR EACH ROW
-    WHEN (NEW.status = 'PENDING')
-    EXECUTE FUNCTION {schema}.notify_event_ready();
-"""
 
 
 
@@ -266,6 +218,17 @@ class TasksModule(TaskQueueProtocol, ModuleProtocol):
         owner_id: str,
     ) -> Optional[Dict[str, Any]]:
         return await claim_next(engine, async_task_types, sync_task_types, visibility_timeout, owner_id)
+
+    async def claim_batch_tasks(
+        self,
+        engine: Any,
+        async_task_types: List[str],
+        sync_task_types: List[str],
+        visibility_timeout: timedelta,
+        owner_id: str,
+        batch_size: int = 10,
+    ) -> List[Dict[str, Any]]:
+        return await claim_batch(engine, async_task_types, sync_task_types, visibility_timeout, owner_id, batch_size)
 
     async def complete(
         self,
@@ -395,9 +358,11 @@ class TasksModule(TaskQueueProtocol, ModuleProtocol):
 
 async def ensure_task_storage_exists(conn: DbResource, schema: str):
     """
-    Ensures that the global tasks and events tables exist in the specified schema.
+    Ensures that the global tasks table exists in the specified schema.
     Called once at startup. The schema is typically 'tasks' (configurable via
     DYNASTORE_TASK_SCHEMA env var).
+
+    Note: events table is now owned by EventsModule (priority=5).
     """
     from dynastore.modules.db_config import maintenance_tools
 
@@ -407,55 +372,69 @@ async def ensure_task_storage_exists(conn: DbResource, schema: str):
     async def tasks_table_exists():
         return await check_table_exists(conn, "tasks", schema)
 
-    async def events_table_exists():
-        return await check_table_exists(conn, "events", schema)
-
-    # Step 1: Create tables (IF NOT EXISTS — safe for existing DBs)
+    # Step 1: Create tasks table (IF NOT EXISTS — safe for existing DBs)
     await DDLQuery(GLOBAL_TASKS_TABLE_DDL).execute(
         conn,
         schema=schema,
         lock_key=f"{schema}_tasks",
         existence_check=tasks_table_exists,
     )
-    await DDLQuery(GLOBAL_EVENTS_TABLE_DDL).execute(
+
+    # Step 2: Create indexes and triggers
+    await DDLQuery(GLOBAL_TASKS_INDEXES_DDL).execute(conn, schema=schema)
+
+    # Ensure partitions for tasks table
+    await maintenance_tools.ensure_future_partitions(
         conn,
         schema=schema,
-        lock_key=f"{schema}_events",
-        existence_check=events_table_exists,
+        table="tasks",
+        interval="monthly",
+        periods_ahead=12,
+        column="timestamp",
+    )
+    await maintenance_tools.register_retention_policy(
+        conn,
+        schema=schema,
+        table="tasks",
+        policy="prune",
+        interval="daily",
+        retention_period="1 month",
+        column="timestamp",
+    )
+    await maintenance_tools.register_partition_creation_policy(
+        conn,
+        schema=schema,
+        table="tasks",
+        interval="monthly",
+        periods_ahead=3,
     )
 
-    # Step 2: Create indexes and triggers (runs AFTER table creation so all columns exist)
-    # Note: Column evolution for existing tables is handled by migration files
-    # in dynastore.modules.tasks.migrations (v0001–v0003).
-    await DDLQuery(GLOBAL_TASKS_INDEXES_DDL).execute(conn, schema=schema)
-    await DDLQuery(GLOBAL_EVENTS_INDEXES_DDL).execute(conn, schema=schema)
+    # --- Task maintenance cron jobs ---
+    from dynastore.modules.db_config.maintenance_tools import register_cron_job
 
-    # Ensure partitions for both tables
-    for table, column in [("tasks", "timestamp"), ("events", "created_at")]:
-        await maintenance_tools.ensure_future_partitions(
-            conn,
-            schema=schema,
-            table=table,
-            interval="monthly",
-            periods_ahead=12,
-            column=column,
-        )
-        await maintenance_tools.register_retention_policy(
-            conn,
-            schema=schema,
-            table=table,
-            policy="prune",
-            interval="daily",
-            retention_period="1 month",
-            column=column,
-        )
-        await maintenance_tools.register_partition_creation_policy(
-            conn,
-            schema=schema,
-            table=table,
-            interval="monthly",
-            periods_ahead=3,
-        )
+    completed_retention = int(os.getenv("TASK_COMPLETED_RETENTION_DAYS", "30"))
+    dlq_retention = int(os.getenv("TASK_DLQ_RETENTION_DAYS", "90"))
+
+    await register_cron_job(
+        conn,
+        job_name=f"purge_completed_tasks_{schema}",
+        schedule="0 5 * * *",  # Daily 05:00
+        command=(
+            f"DELETE FROM {schema}.tasks "
+            f"WHERE status IN ('COMPLETED', 'FAILED') "
+            f"AND finished_at < NOW() - INTERVAL '{completed_retention} days';"
+        ),
+    )
+    await register_cron_job(
+        conn,
+        job_name=f"purge_dead_letter_tasks_{schema}",
+        schedule="0 5 1 * *",  # 1st of month 05:00
+        command=(
+            f"DELETE FROM {schema}.tasks "
+            f"WHERE status = 'DEAD_LETTER' "
+            f"AND finished_at < NOW() - INTERVAL '{dlq_retention} days';"
+        ),
+    )
 
 
 # --- Public API Functions ---
@@ -813,6 +792,81 @@ async def claim_next(
         )
 
     return result
+
+
+async def claim_batch(
+    engine: DbResource,
+    async_task_types: List[str],
+    sync_task_types: List[str],
+    visibility_timeout: timedelta,
+    owner_id: str,
+    batch_size: int = 10,
+) -> List[Dict[str, Any]]:
+    """
+    Atomically claim up to ``batch_size`` available tasks matching the given
+    types and execution modes using FOR UPDATE SKIP LOCKED.
+
+    Returns a list of claimed task rows (may be empty).
+    """
+    if not async_task_types and not sync_task_types:
+        return []
+
+    task_schema = get_task_schema()
+    locked_until = datetime.now(timezone.utc) + visibility_timeout
+
+    conditions = []
+    now = datetime.now(timezone.utc)
+    lookback = now - timedelta(days=30)
+    params: Dict[str, Any] = {
+        "locked_until": locked_until,
+        "owner_id": owner_id,
+        "now": now,
+        "lookback": lookback,
+        "batch_size": batch_size,
+    }
+
+    if async_task_types:
+        conditions.append(
+            "(execution_mode = 'ASYNCHRONOUS' AND task_type = ANY(:async_types))"
+        )
+        params["async_types"] = async_task_types
+
+    if sync_task_types:
+        conditions.append(
+            "(execution_mode = 'SYNCHRONOUS' AND task_type = ANY(:sync_types))"
+        )
+        params["sync_types"] = sync_task_types
+
+    mode_filter = " OR ".join(conditions)
+
+    sql = f"""
+        UPDATE {task_schema}.tasks
+        SET status = 'ACTIVE',
+            locked_until = :locked_until,
+            owner_id = :owner_id,
+            started_at = COALESCE(started_at, NOW()),
+            last_heartbeat_at = NOW()
+        WHERE (timestamp, task_id) IN (
+            SELECT timestamp, task_id FROM {task_schema}.tasks
+            WHERE status = 'PENDING'
+              AND timestamp >= :lookback
+              AND (locked_until IS NULL OR locked_until <= :now)
+              AND ({mode_filter})
+            ORDER BY timestamp ASC
+            LIMIT :batch_size
+            FOR UPDATE SKIP LOCKED
+        )
+        RETURNING task_id, schema_name, scope, task_type, execution_mode,
+                  caller_id, inputs, collection_id, retry_count, max_retries,
+                  timestamp, dedup_key;
+    """
+
+    async with managed_transaction(engine) as conn:
+        result = await DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS).execute(
+            conn, **params
+        )
+
+    return result or []
 
 
 async def complete_task(

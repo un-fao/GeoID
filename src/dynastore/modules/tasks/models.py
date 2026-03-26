@@ -29,6 +29,7 @@ import uuid
 from dynastore.models.tasks import (
     TaskStatusEnum,
     TaskExecutionMode,
+    TaskExecutionScope,
     TaskPayload,
     TaskBase,
     TaskCreate,

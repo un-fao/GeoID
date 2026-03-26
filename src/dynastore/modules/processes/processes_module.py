@@ -23,14 +23,82 @@ from pydantic import ValidationError
 from dynastore.modules.db_config.query_executor import DbEngine
 from dynastore.modules import get_protocol
 from dynastore.modules.tasks import runners
-from dynastore.modules.tasks.models import (Task, TaskExecutionMode, RunnerContext)
+from dynastore.modules.tasks.models import TaskExecutionMode
 from dynastore.modules.processes import models
 from dynastore.modules.apikey.models import SYSTEM_USER_ID
 from dynastore.tasks import get_definitions_by_type
-from dynastore.models.protocols import CatalogsProtocol, DatabaseProtocol
+from dynastore.models.protocols import CatalogsProtocol
 from dynastore.models.auth import AuthorizationProtocol, Principal, Action
+from dynastore.modules.tasks.execution import execution_engine
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_execution_mode(
+    process: models.Process,
+    preferred_mode: Optional[models.JobControlOptions],
+) -> TaskExecutionMode:
+    """
+    Determine execution mode from caller preference + process constraints.
+
+    Raises NotImplementedError if no runners are available for any
+    supported mode.
+    """
+    candidate_modes = []
+    if preferred_mode and preferred_mode in process.jobControlOptions:
+        candidate_modes.append(preferred_mode)
+
+    for option in process.jobControlOptions:
+        if option not in candidate_modes:
+            candidate_modes.append(option)
+
+    for mode in candidate_modes:
+        if mode == models.JobControlOptions.ASYNC_EXECUTE:
+            check_mode = TaskExecutionMode.ASYNCHRONOUS
+        elif mode == models.JobControlOptions.SYNC_EXECUTE:
+            check_mode = TaskExecutionMode.SYNCHRONOUS
+        else:
+            continue
+
+        if runners.get_runners(check_mode):
+            return check_mode
+
+    raise NotImplementedError(
+        f"No available execution mode for process '{process.id}'."
+    )
+
+
+def _validate_process_inputs(
+    process: models.Process,
+    execution_request: models.ExecuteRequest,
+) -> None:
+    """Validate inputs against the process definition's JSON Schema."""
+    for input_name, input_def in process.inputs.items():
+        if not input_def.schema_:
+            continue
+        payload = execution_request.inputs.get(input_name)
+        if payload is None:
+            continue
+        try:
+            from jsonschema import validate
+
+            validate(instance=payload, schema=input_def.schema_)
+        except Exception as e:
+            try:
+                from jsonschema.exceptions import (
+                    ValidationError as JsonschemaValidationError,
+                )
+
+                is_jsonschema_error = isinstance(e, JsonschemaValidationError)
+            except ImportError:
+                is_jsonschema_error = False
+
+            if is_jsonschema_error or isinstance(
+                e, (ValidationError, ValueError)
+            ):
+                raise ValueError(f"Invalid input for '{input_name}': {e}")
+            raise
+
 
 async def execute_process(
     process_id: str,
@@ -43,129 +111,67 @@ async def execute_process(
     collection_id: Optional[str] = None,
 ) -> Any:
     """
-    Core logic for executing a process. This function is decoupled from the API layer.
-    It finds the appropriate process definition, validates inputs, determines the
-    execution mode, and delegates to the highest-priority available runner.
+    Core logic for executing a process.
+
+    Responsibilities (OGC-specific):
+      1. Lookup process definition
+      2. Validate inputs against JSON Schema
+      3. Resolve execution mode from preference + process constraints
+      4. Authorization check
+      5. Delegate to ExecutionEngine.execute()
     """
     # 1. Find the requested process definition.
-    process = next((p for p in get_definitions_by_type(models.Process) if p.id == process_id), None)
+    process = next(
+        (p for p in get_definitions_by_type(models.Process) if p.id == process_id),
+        None,
+    )
     if not process:
         raise ValueError(f"Process '{process_id}' not found.")
 
-    # 2. Perform pre-flight validation of inputs against the process definition's schema.
-    for input_name, input_def in process.inputs.items():
-        if input_def.schema_:
-            try:
-                from jsonschema import validate
-                payload = execution_request.inputs.get(input_name)
-                
-                # Skip validation if the input is not provided. 
-                #jsonschema.validate() would fail on None if the schema expects an object.
-                if payload is None:
-                    continue
+    # 2. Validate inputs.
+    _validate_process_inputs(process, execution_request)
 
-                validate(instance=payload, schema=input_def.schema_)
-                logger.info(f"Input '{input_name}' for process '{process_id}' passed pre-flight validation.")
-            except Exception as e:
-                # Catch jsonschema.ValidationError which might be raised by validate()
-                # We use lazy import to avoid heavy dependencies at load time.
-                try:
-                    from jsonschema.exceptions import ValidationError as JsonschemaValidationError
-                    is_jsonschema_error = isinstance(e, JsonschemaValidationError)
-                except ImportError:
-                    is_jsonschema_error = False
+    # 3. Determine execution mode.
+    execution_mode = _resolve_execution_mode(process, preferred_mode)
 
-                if is_jsonschema_error or isinstance(e, (ValidationError, ValueError)):
-                    logger.warning(f"Validation failed for input '{input_name}': {e}")
-                    raise ValueError(f"Invalid input for '{input_name}': {e}")
-                
-                # Re-raise unexpected exceptions
-                raise e
-
-    # 3. Determine execution mode based on preference and availability.
-    candidate_modes = []
-    if preferred_mode and preferred_mode in process.jobControlOptions:
-        candidate_modes.append(preferred_mode)
-    
-    for option in process.jobControlOptions:
-        if option not in candidate_modes:
-            candidate_modes.append(option)
-
-    chosen_mode = None
-    execution_mode = None
-    available_runners = []
-
-    for mode in candidate_modes:
-        if mode == models.JobControlOptions.ASYNC_EXECUTE:
-            check_mode = TaskExecutionMode.ASYNCHRONOUS
-        elif mode == models.JobControlOptions.SYNC_EXECUTE:
-            check_mode = TaskExecutionMode.SYNCHRONOUS
-        else:
-            continue
-            
-        runners_list = runners.get_runners(check_mode)
-        if runners_list:
-            chosen_mode = mode
-            execution_mode = check_mode
-            available_runners = runners_list
-            break
-
-    if not chosen_mode:
-        raise NotImplementedError(f"No available execution mode for process '{process_id}'.")
-    
-    # 5. Authorization check (if AuthorizationProtocol is available)
+    # 4. Authorization check.
     auth_protocol = get_protocol(AuthorizationProtocol)
     if auth_protocol:
-        # Create a principal for the caller
         principal = Principal(id=caller_id, subject_id=caller_id)
-        
-        # Check if the caller has permission to execute processes in this catalog
         resource_id = f"catalog:{catalog_id}" if catalog_id else "system"
         if collection_id:
             resource_id = f"{resource_id}:collection:{collection_id}"
-        
+
         is_authorized = await auth_protocol.check_permission(
             principal=principal,
             action=Action.EXECUTE,
-            resource=resource_id
+            resource=resource_id,
         )
         if not is_authorized:
             from fastapi import HTTPException
-            raise HTTPException(status_code=403, detail=f"User '{caller_id}' is not authorized to execute process '{process_id}' on resource '{resource_id}'.")
 
-    # 6. Execute using the prioritized runners.
-    result = None
-    last_error = None
-    
-    # Resolve the db schema for the context
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"User '{caller_id}' is not authorized to execute "
+                    f"process '{process_id}' on resource '{resource_id}'."
+                ),
+            )
+
+    # 5. Resolve DB schema and delegate to ExecutionEngine.
     db_schema = "public"
     catalog_protocol = get_protocol(CatalogsProtocol)
     if catalog_protocol and catalog_id:
-        db_schema = await catalog_protocol.resolve_physical_schema(catalog_id, engine)
+        db_schema = await catalog_protocol.resolve_physical_schema(
+            catalog_id, engine
+        )
 
-    # Build the RunnerContext with catalog and collection info.
-    context = RunnerContext(
-        engine=engine,
+    return await execution_engine.execute(
         task_type=process_id,
-        caller_id=caller_id,
         inputs=execution_request.model_dump(),
+        engine=engine,
+        mode=execution_mode,
+        caller_id=caller_id,
         db_schema=db_schema or "public",
-        extra_context={"background_tasks": background_tasks}
+        background_tasks=background_tasks,
     )
-
-    for runner in available_runners:
-        try:
-            logger.info(f"Attempting execution using runner '{runner.__class__.__name__}'...")
-            result = await runner.run(context)
-            if result is not None:
-                break
-        except Exception as e:
-            last_error = e
-            logger.warning(f"Runner '{runner.__class__.__name__}' failed for process '{process_id}': {e}")
-            continue # Try the next runner
-
-    if result is None:
-        # If the loop completes and result is still None, all runners failed.
-        raise RuntimeError(f"All available runners for mode '{execution_mode.value}' failed to execute for process '{process_id}'. Last error: {last_error}")
-
-    return result

@@ -121,10 +121,8 @@ class DBService(ModuleProtocol, DatabaseProtocol):
                 check_migration_status,
                 MigrationStatus,
             )
-            from dynastore.modules.db_config.tools import ensure_init_db
 
             if app_state.engine:
-                await ensure_init_db(app_state.engine)
                 status = await check_migration_status(app_state.engine)
                 if status == MigrationStatus.UP_TO_DATE:
                     logger.info(

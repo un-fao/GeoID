@@ -18,8 +18,6 @@
 
 import logging
 import json
-from unittest import result
-from unittest import result
 import uuid
 from typing import List, Union, Any, Optional, cast
 from pydantic import ValidationError
@@ -28,6 +26,7 @@ from fastapi import (
     BackgroundTasks,
     Depends,
     HTTPException,
+    Query,
     Request,
     Response,
     status,
@@ -41,23 +40,29 @@ from dynastore.extensions.tools.security import get_principal
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
 
-# from dynastore.modules.db_config.tools import get_any_engine
 from dynastore.tasks import get_definitions_by_type
 
 import dynastore.modules.processes.processes_module as processes_module
-from dynastore.modules.tasks import runners, tasks_module
+from dynastore.modules.tasks import tasks_module
 from dynastore.modules.tasks.models import (
     Task,
-    TaskExecutionMode,
     TaskStatusEnum,
-    RunnerContext,
 )
+from dynastore.modules.tasks.execution import execution_engine
 from dynastore.modules.processes import models
-from dynastore.modules.apikey.models import Principal, SYSTEM_USER_ID
 from dynastore.modules.apikey.models import Principal, SYSTEM_USER_ID
 
 
 logger = logging.getLogger(__name__)
+
+# --- OGC Processes Conformance URIs ---
+PROCESSES_CONFORMANCE = [
+    "http://www.opengis.net/spec/ogcapi-processes-1/1.0/conf/core",
+    "http://www.opengis.net/spec/ogcapi-processes-1/1.0/conf/ogc-process-description",
+    "http://www.opengis.net/spec/ogcapi-processes-1/1.0/conf/json",
+    "http://www.opengis.net/spec/ogcapi-processes-1/1.0/conf/job-list",
+    "http://www.opengis.net/spec/ogcapi-processes-1/1.0/conf/dismiss",
+]
 
 router: APIRouter = APIRouter(prefix="/processes", tags=["OGC API - Processes"])
 
@@ -370,23 +375,20 @@ def _handle_execution_result(
             )
 
 
-async def _get_job_internal(job_id: uuid.UUID, catalog_id: str, conn: AsyncConnection):
-    from dynastore.models.protocols import CatalogsProtocol
-    from dynastore.tools.discovery import get_protocol
-
+async def _resolve_catalog_schema(catalog_id: str, conn: AsyncConnection) -> str:
+    """Resolve the physical PG schema for a catalog."""
     catalogs = get_protocol(CatalogsProtocol)
     if not catalogs:
         raise HTTPException(status_code=500, detail="CatalogsProtocol not available.")
-
-    # Cast to ensure type checker knows it has methods
     catalogs = cast(CatalogsProtocol, catalogs)
-
     schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
     if not schema:
-        raise HTTPException(
-            status_code=404, detail=f"Catalog '{catalog_id}' not found."
-        )
+        raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
+    return schema
 
+
+async def _get_job_internal(job_id: uuid.UUID, catalog_id: str, conn: AsyncConnection):
+    schema = await _resolve_catalog_schema(catalog_id, conn)
     task = await tasks_module.get_task(conn, job_id, schema=schema)
     if not task:
         raise HTTPException(
@@ -512,6 +514,401 @@ async def get_job_results_catalog(
     return _handle_job_results(task, job_id)
 
 
+# --- OGC Part 1: List Jobs (GET /jobs) at 3 scopes ---
+
+@router.get(
+    "/jobs",
+    response_model=List[models.StatusInfo],
+    name="list_jobs",
+)
+async def list_jobs(
+    request: Request,
+    limit: int = Query(20, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    conn: AsyncConnection = Depends(get_async_connection),
+):
+    """Lists jobs (System context)."""
+    tasks = await tasks_module.list_tasks(conn, schema="public", limit=limit, offset=offset)
+    return [_task_to_status_info(t, request) for t in tasks]
+
+
+@router.get(
+    "/catalogs/{catalog_id}/jobs",
+    response_model=List[models.StatusInfo],
+    name="list_jobs_catalog",
+)
+async def list_jobs_catalog(
+    catalog_id: str,
+    request: Request,
+    limit: int = Query(20, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    conn: AsyncConnection = Depends(get_async_connection),
+):
+    """Lists jobs (Catalog context)."""
+    schema = await _resolve_catalog_schema(catalog_id, conn)
+    tasks = await tasks_module.list_tasks(conn, schema=schema, limit=limit, offset=offset)
+    return [_task_to_status_info(t, request) for t in tasks]
+
+
+@router.get(
+    "/catalogs/{catalog_id}/collections/{collection_id}/jobs",
+    response_model=List[models.StatusInfo],
+    name="list_jobs_collection",
+)
+async def list_jobs_collection(
+    catalog_id: str,
+    collection_id: str,
+    request: Request,
+    limit: int = Query(20, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    conn: AsyncConnection = Depends(get_async_connection),
+):
+    """Lists jobs (Collection context). Filters by collection_id."""
+    schema = await _resolve_catalog_schema(catalog_id, conn)
+    all_tasks = await tasks_module.list_tasks(conn, schema=schema, limit=limit, offset=offset)
+    filtered = [t for t in all_tasks if getattr(t, "collection_id", None) == collection_id]
+    return [_task_to_status_info(t, request) for t in filtered]
+
+
+# --- OGC Part 1: Dismiss Job (DELETE /jobs/{id}) at 3 scopes ---
+
+@router.delete(
+    "/jobs/{job_id}",
+    response_model=models.StatusInfo,
+    name="dismiss_job",
+)
+async def dismiss_job(
+    job_id: uuid.UUID,
+    request: Request,
+    conn: AsyncConnection = Depends(get_async_connection),
+):
+    """Dismiss a job (System context)."""
+    engine = get_async_engine(request)
+    try:
+        task = await execution_engine.dismiss_job(job_id, engine=engine, db_schema="public")
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    return _task_to_status_info(task, request)
+
+
+@router.delete(
+    "/catalogs/{catalog_id}/jobs/{job_id}",
+    response_model=models.StatusInfo,
+    name="dismiss_job_catalog",
+)
+async def dismiss_job_catalog(
+    catalog_id: str,
+    job_id: uuid.UUID,
+    request: Request,
+    conn: AsyncConnection = Depends(get_async_connection),
+):
+    """Dismiss a job (Catalog context)."""
+    engine = get_async_engine(request)
+    schema = await _resolve_catalog_schema(catalog_id, conn)
+    try:
+        task = await execution_engine.dismiss_job(job_id, engine=engine, db_schema=schema)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    return _task_to_status_info(task, request)
+
+
+@router.delete(
+    "/catalogs/{catalog_id}/collections/{collection_id}/jobs/{job_id}",
+    response_model=models.StatusInfo,
+    name="dismiss_job_collection",
+)
+async def dismiss_job_collection(
+    catalog_id: str,
+    collection_id: str,
+    job_id: uuid.UUID,
+    request: Request,
+    conn: AsyncConnection = Depends(get_async_connection),
+):
+    """Dismiss a job (Collection context)."""
+    engine = get_async_engine(request)
+    schema = await _resolve_catalog_schema(catalog_id, conn)
+    task = await _get_job_internal(job_id, catalog_id, conn)
+    if task.collection_id and task.collection_id != collection_id:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' does not belong to collection '{collection_id}'.")
+    try:
+        task = await execution_engine.dismiss_job(job_id, engine=engine, db_schema=schema)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    return _task_to_status_info(task, request)
+
+
+# --- OGC Part 4: Deferred Execution (POST /jobs, PATCH, POST /results) at 3 scopes ---
+
+class _CreateJobRequest(models.BaseModel):
+    """Request body for creating a deferred job."""
+    process_id: str
+    inputs: Optional[dict] = None
+
+
+@router.post(
+    "/jobs",
+    status_code=status.HTTP_201_CREATED,
+    response_model=models.StatusInfo,
+    name="create_job",
+)
+async def create_job(
+    body: _CreateJobRequest,
+    request: Request,
+    principal: Optional[Principal] = Depends(get_principal),
+):
+    """Create a deferred job (System context). Status = CREATED."""
+    caller_id = str(principal.id) if principal else SYSTEM_USER_ID
+    engine = get_async_engine(request)
+    job = await execution_engine.create_job(
+        task_type=body.process_id,
+        inputs=body.inputs,
+        engine=engine,
+        caller_id=caller_id,
+        db_schema="public",
+    )
+    status_info = _task_to_status_info(job, request)
+    job_url = str(request.url_for("get_job_status", job_id=str(job.task_id)))
+    return Response(
+        content=status_info.model_dump_json(by_alias=True),
+        status_code=status.HTTP_201_CREATED,
+        headers={"Location": job_url},
+        media_type="application/json",
+    )
+
+
+@router.post(
+    "/catalogs/{catalog_id}/jobs",
+    status_code=status.HTTP_201_CREATED,
+    response_model=models.StatusInfo,
+    name="create_job_catalog",
+)
+async def create_job_catalog(
+    catalog_id: str,
+    body: _CreateJobRequest,
+    request: Request,
+    conn: AsyncConnection = Depends(get_async_connection),
+    principal: Optional[Principal] = Depends(get_principal),
+):
+    """Create a deferred job (Catalog context). Status = CREATED."""
+    caller_id = str(principal.id) if principal else SYSTEM_USER_ID
+    engine = get_async_engine(request)
+    schema = await _resolve_catalog_schema(catalog_id, conn)
+    job = await execution_engine.create_job(
+        task_type=body.process_id,
+        inputs=body.inputs,
+        engine=engine,
+        caller_id=caller_id,
+        db_schema=schema,
+    )
+    status_info = _task_to_status_info(job, request)
+    job_url = str(request.url_for("get_job_status_catalog", catalog_id=catalog_id, job_id=str(job.task_id)))
+    return Response(
+        content=status_info.model_dump_json(by_alias=True),
+        status_code=status.HTTP_201_CREATED,
+        headers={"Location": job_url},
+        media_type="application/json",
+    )
+
+
+@router.post(
+    "/catalogs/{catalog_id}/collections/{collection_id}/jobs",
+    status_code=status.HTTP_201_CREATED,
+    response_model=models.StatusInfo,
+    name="create_job_collection",
+)
+async def create_job_collection(
+    catalog_id: str,
+    collection_id: str,
+    body: _CreateJobRequest,
+    request: Request,
+    conn: AsyncConnection = Depends(get_async_connection),
+    principal: Optional[Principal] = Depends(get_principal),
+):
+    """Create a deferred job (Collection context). Status = CREATED."""
+    caller_id = str(principal.id) if principal else SYSTEM_USER_ID
+    engine = get_async_engine(request)
+    schema = await _resolve_catalog_schema(catalog_id, conn)
+    job = await execution_engine.create_job(
+        task_type=body.process_id,
+        inputs=body.inputs,
+        engine=engine,
+        caller_id=caller_id,
+        db_schema=schema,
+        collection_id=collection_id,
+    )
+    status_info = _task_to_status_info(job, request)
+    job_url = str(request.url_for(
+        "get_job_status_collection",
+        catalog_id=catalog_id,
+        collection_id=collection_id,
+        job_id=str(job.task_id),
+    ))
+    return Response(
+        content=status_info.model_dump_json(by_alias=True),
+        status_code=status.HTTP_201_CREATED,
+        headers={"Location": job_url},
+        media_type="application/json",
+    )
+
+
+# --- OGC Part 4: Update Job (PATCH /jobs/{id}) at 3 scopes ---
+
+class _UpdateJobRequest(models.BaseModel):
+    """Request body for updating a deferred job's inputs."""
+    inputs: dict
+
+
+@router.patch(
+    "/jobs/{job_id}",
+    response_model=models.StatusInfo,
+    name="update_job",
+)
+async def update_job(
+    job_id: uuid.UUID,
+    body: _UpdateJobRequest,
+    request: Request,
+):
+    """Update a deferred job's inputs (System context). Only while CREATED."""
+    engine = get_async_engine(request)
+    try:
+        job = await execution_engine.update_job(job_id, body.inputs, engine=engine, db_schema="public")
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    return _task_to_status_info(job, request)
+
+
+@router.patch(
+    "/catalogs/{catalog_id}/jobs/{job_id}",
+    response_model=models.StatusInfo,
+    name="update_job_catalog",
+)
+async def update_job_catalog(
+    catalog_id: str,
+    job_id: uuid.UUID,
+    body: _UpdateJobRequest,
+    request: Request,
+    conn: AsyncConnection = Depends(get_async_connection),
+):
+    """Update a deferred job's inputs (Catalog context). Only while CREATED."""
+    engine = get_async_engine(request)
+    schema = await _resolve_catalog_schema(catalog_id, conn)
+    try:
+        job = await execution_engine.update_job(job_id, body.inputs, engine=engine, db_schema=schema)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    return _task_to_status_info(job, request)
+
+
+@router.patch(
+    "/catalogs/{catalog_id}/collections/{collection_id}/jobs/{job_id}",
+    response_model=models.StatusInfo,
+    name="update_job_collection",
+)
+async def update_job_collection(
+    catalog_id: str,
+    collection_id: str,
+    job_id: uuid.UUID,
+    body: _UpdateJobRequest,
+    request: Request,
+    conn: AsyncConnection = Depends(get_async_connection),
+):
+    """Update a deferred job's inputs (Collection context). Only while CREATED."""
+    engine = get_async_engine(request)
+    schema = await _resolve_catalog_schema(catalog_id, conn)
+    try:
+        job = await execution_engine.update_job(job_id, body.inputs, engine=engine, db_schema=schema)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    return _task_to_status_info(job, request)
+
+
+# --- OGC Part 4: Start Job (POST /jobs/{id}/results) at 3 scopes ---
+
+@router.post(
+    "/jobs/{job_id}/results",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=Union[models.StatusInfo, Any],
+    name="start_job",
+)
+async def start_job(
+    job_id: uuid.UUID,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """Trigger execution of a CREATED job (System context)."""
+    engine = get_async_engine(request)
+    preferred_mode = _get_preferred_mode(request)
+    from dynastore.modules.tasks.models import TaskExecutionMode
+    mode = TaskExecutionMode.SYNCHRONOUS if preferred_mode == models.JobControlOptions.SYNC_EXECUTE else TaskExecutionMode.ASYNCHRONOUS
+    try:
+        result = await execution_engine.start_job(
+            job_id, engine=engine, mode=mode, db_schema="public",
+            background_tasks=background_tasks,
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    return _handle_execution_result(result, request)
+
+
+@router.post(
+    "/catalogs/{catalog_id}/jobs/{job_id}/results",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=Union[models.StatusInfo, Any],
+    name="start_job_catalog",
+)
+async def start_job_catalog(
+    catalog_id: str,
+    job_id: uuid.UUID,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    conn: AsyncConnection = Depends(get_async_connection),
+):
+    """Trigger execution of a CREATED job (Catalog context)."""
+    engine = get_async_engine(request)
+    schema = await _resolve_catalog_schema(catalog_id, conn)
+    preferred_mode = _get_preferred_mode(request)
+    from dynastore.modules.tasks.models import TaskExecutionMode
+    mode = TaskExecutionMode.SYNCHRONOUS if preferred_mode == models.JobControlOptions.SYNC_EXECUTE else TaskExecutionMode.ASYNCHRONOUS
+    try:
+        result = await execution_engine.start_job(
+            job_id, engine=engine, mode=mode, db_schema=schema,
+            background_tasks=background_tasks,
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    return _handle_execution_result(result, request)
+
+
+@router.post(
+    "/catalogs/{catalog_id}/collections/{collection_id}/jobs/{job_id}/results",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=Union[models.StatusInfo, Any],
+    name="start_job_collection",
+)
+async def start_job_collection(
+    catalog_id: str,
+    collection_id: str,
+    job_id: uuid.UUID,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    conn: AsyncConnection = Depends(get_async_connection),
+):
+    """Trigger execution of a CREATED job (Collection context)."""
+    engine = get_async_engine(request)
+    schema = await _resolve_catalog_schema(catalog_id, conn)
+    preferred_mode = _get_preferred_mode(request)
+    from dynastore.modules.tasks.models import TaskExecutionMode
+    mode = TaskExecutionMode.SYNCHRONOUS if preferred_mode == models.JobControlOptions.SYNC_EXECUTE else TaskExecutionMode.ASYNCHRONOUS
+    try:
+        result = await execution_engine.start_job(
+            job_id, engine=engine, mode=mode, db_schema=schema,
+            background_tasks=background_tasks,
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    return _handle_execution_result(result, request)
+
+
 def _handle_job_results(task: Task, job_id: uuid.UUID):
     if task.status == TaskStatusEnum.FAILED:
         raise HTTPException(
@@ -524,6 +921,8 @@ def _handle_job_results(task: Task, job_id: uuid.UUID):
             detail=f"Job '{job_id}' is not complete. Current status: {task.status}",
         )
     return task.outputs or {}
+
+
 class ProcessesService(ExtensionProtocol):
     priority: int = 100
     """
@@ -533,6 +932,10 @@ class ProcessesService(ExtensionProtocol):
     """
 
     router = router
+
+    def __init__(self):
+        from dynastore.extensions.tools.conformance import register_conformance_uris
+        register_conformance_uris(PROCESSES_CONFORMANCE)
 
 
 

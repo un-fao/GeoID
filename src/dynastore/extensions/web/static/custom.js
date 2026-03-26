@@ -563,7 +563,7 @@ async function loadTestResults() {
     if (!content) return;
 
     try {
-        const res = await fetch('/web/static/test-results.json');
+        const res = await fetch(`${_SCRIPT_ROOT}/web/static/test-results.json`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 

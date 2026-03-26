@@ -246,13 +246,14 @@ async def run_dispatcher(
     shutdown_event: asyncio.Event,
     visibility_timeout: timedelta = timedelta(minutes=5),
     signal_timeout: float = 35.0,
+    batch_size: int = int(os.getenv("DISPATCHER_BATCH_SIZE", "10")),
 ) -> None:
     """
     Main dispatcher loop.
 
-    Waits for a ``new_task_queued`` signal-bus event, atomically claims a
-    PENDING task from the global queue via ``claim_next()``, dispatches it
-    to the registered runners, and updates the task state on completion or
+    Waits for a ``new_task_queued`` signal-bus event, atomically claims up to
+    ``batch_size`` PENDING tasks from the global queue via ``claim_batch()``,
+    dispatches them concurrently, and updates task state on completion or
     failure.
 
     Also runs the Janitor on every timeout-based wakeup.
@@ -266,17 +267,18 @@ async def run_dispatcher(
                             Janitor can reclaim it (heartbeat extends this).
         signal_timeout:     Max seconds to wait for a signal before running
                             the Janitor anyway (defensive polling).
+        batch_size:         Max tasks to claim per batch (env: DISPATCHER_BATCH_SIZE).
     """
-    from dynastore.modules.tasks.runners import capability_map, get_runners
-    from dynastore.modules.tasks.models import TaskExecutionMode, RunnerContext, PermanentTaskFailure
-    from dynastore.tasks import get_task_instance, hydrate_task_payload
-    from dynastore.modules.tasks.tasks_module import claim_next, complete_task, fail_task
+    from dynastore.modules.tasks.runners import capability_map
+    from dynastore.modules.tasks.models import TaskExecutionMode, PermanentTaskFailure
+    from dynastore.modules.tasks.tasks_module import claim_batch, complete_task, fail_task
+    from dynastore.modules.tasks.execution import execution_engine
 
     # Refresh capability map at startup
     await capability_map.refresh()
 
     logger.info(
-        f"Dispatcher: Started (runner={_RUNNER_ID!r}, "
+        f"Dispatcher: Started (runner={_RUNNER_ID!r}, batch_size={batch_size}, "
         f"async_types={capability_map.async_types}, "
         f"sync_types={capability_map.sync_types})."
     )
@@ -284,6 +286,55 @@ async def run_dispatcher(
 
     heartbeat = BatchedHeartbeat(engine, visibility_timeout=visibility_timeout)
     await heartbeat.start()
+
+    async def _dispatch_one(row: Dict) -> None:
+        """Dispatch a single claimed task with full error handling."""
+        task_id = row["task_id"]
+        timestamp = row["timestamp"]
+
+        await heartbeat.register(str(task_id), timestamp)
+        try:
+            result = await execution_engine.dispatch(row, engine=engine)
+            await complete_task(engine, task_id, timestamp, outputs=result)
+            logger.info(f"Dispatcher: Task {task_id} completed successfully.")
+
+        except asyncio.CancelledError:
+            logger.warning(
+                f"Dispatcher: Task {task_id} interrupted "
+                f"(CancelledError) — resetting to PENDING."
+            )
+            await fail_task(
+                engine, task_id, timestamp,
+                "Runner interrupted (SIGTERM)",
+                retry=True,
+            )
+            raise
+
+        except PermanentTaskFailure as e:
+            logger.error(
+                f"Dispatcher: Task {task_id} permanently failed "
+                f"(no retries): {e}"
+            )
+            await fail_task(
+                engine, task_id, timestamp,
+                str(e),
+                retry=False,
+            )
+
+        except Exception as e:
+            import traceback
+            logger.error(
+                f"Dispatcher: Task {task_id} failed with error: "
+                f"{e}\n{traceback.format_exc()}"
+            )
+            await fail_task(
+                engine, task_id, timestamp,
+                str(e),
+                retry=True,
+            )
+
+        finally:
+            await heartbeat.unregister(str(task_id))
 
     while not shutdown_event.is_set():
         try:
@@ -296,153 +347,36 @@ async def run_dispatcher(
                 await _run_janitor(engine, visibility_timeout)
                 _last_janitor_run = datetime.now(timezone.utc)
 
-            # Claim as many tasks as we can from the global queue
+            # Claim and dispatch in batches until queue is empty
             while not shutdown_event.is_set():
-                row = await claim_next(
+                rows = await claim_batch(
                     engine,
                     async_task_types=capability_map.async_types,
                     sync_task_types=capability_map.sync_types,
                     visibility_timeout=visibility_timeout,
                     owner_id=_RUNNER_ID,
+                    batch_size=batch_size,
                 )
-                if row is None:
+                if not rows:
                     break  # Queue empty for our capability set
 
-                task_id = row["task_id"]
-                task_type = row["task_type"]
-                timestamp = row["timestamp"]
-                schema_name = row["schema_name"]
-                execution_mode = row.get("execution_mode", TaskExecutionMode.ASYNCHRONOUS)
-
-                logger.info(
-                    f"Dispatcher: Claimed task {task_id} ({task_type}) "
-                    f"schema={schema_name!r} mode={execution_mode}."
-                )
-
-                raw_payload = {
-                    "task_id": task_id,
-                    "caller_id": row.get("caller_id") or "",
-                    "inputs": row["inputs"] if isinstance(row.get("inputs"), dict) else (
-                        json.loads(row["inputs"]) if row.get("inputs") else {}
-                    ),
-                }
-
-                # Select runners by execution mode
-                runner_mode = (
-                    TaskExecutionMode.SYNCHRONOUS
-                    if execution_mode == "SYNCHRONOUS"
-                    else TaskExecutionMode.ASYNCHRONOUS
-                )
-                runners = get_runners(runner_mode)
-                if not runners:
-                    logger.warning(
-                        f"Dispatcher: No {runner_mode} runners registered — "
-                        f"resetting task {task_id}."
-                    )
-                    await fail_task(
-                        engine, task_id, timestamp,
-                        f"No {runner_mode} runners registered",
-                        retry=True,
-                    )
-                    continue
-
-                context = RunnerContext(
-                    engine=engine,
-                    task_type=task_type,
-                    caller_id=raw_payload["caller_id"],
-                    inputs=raw_payload["inputs"],
-                    db_schema=schema_name,
-                    extra_context={"task_id": str(task_id)},
-                )
-
-                await heartbeat.register(str(task_id), timestamp)
-                try:
-                    result = None
-
-                    # 1. Try runners that can handle this task type
-                    for runner in runners:
-                        if not runner.can_handle(task_type):
-                            continue
-                        caps = getattr(runner, 'capabilities', None)
-                        if caps is not None and getattr(caps, 'requires_request_context', False):
-                            continue
-
-                        logger.debug(
-                            f"Dispatcher: Running task {task_id} via "
-                            f"runner '{runner.__class__.__name__}'."
-                        )
-                        result = await runner.run(context)
-                        if result is not None:
-                            logger.info(
-                                f"Dispatcher: Task {task_id} handled by "
-                                f"runner '{runner.__class__.__name__}'."
-                            )
-                            break
-
-                    # 2. Fallback: Direct task execution via TaskProtocol singleton
-                    if result is None:
-                        task_instance = get_task_instance(task_type)
-                        if task_instance:
-                            logger.info(
-                                f"Dispatcher: Executing task '{task_type}' "
-                                f"via TaskProtocol singleton."
-                            )
-                            hydrated_payload = hydrate_task_payload(
-                                task_instance, raw_payload
-                            )
-                            result = await task_instance.run(hydrated_payload)
-                            logger.info(
-                                f"Dispatcher: Task {task_id} via TaskProtocol "
-                                f"singleton completed."
-                            )
-                        else:
-                            raise RuntimeError(
-                                f"No runner or task implementation found "
-                                f"for '{task_type}'."
-                            )
-
-                    await complete_task(engine, task_id, timestamp, outputs=result)
+                for row in rows:
                     logger.info(
-                        f"Dispatcher: Task {task_id} completed successfully."
+                        f"Dispatcher: Claimed task {row['task_id']} ({row['task_type']}) "
+                        f"schema={row.get('schema_name')!r} "
+                        f"mode={row.get('execution_mode', 'ASYNC')}."
                     )
 
-                except asyncio.CancelledError:
-                    logger.warning(
-                        f"Dispatcher: Task {task_id} interrupted "
-                        f"(CancelledError) — resetting to PENDING."
-                    )
-                    await fail_task(
-                        engine, task_id, timestamp,
-                        "Runner interrupted (SIGTERM)",
-                        retry=True,
-                    )
-                    raise
+                # Dispatch batch concurrently
+                results = await asyncio.gather(
+                    *[_dispatch_one(row) for row in rows],
+                    return_exceptions=True,
+                )
 
-                except PermanentTaskFailure as e:
-                    logger.error(
-                        f"Dispatcher: Task {task_id} permanently failed "
-                        f"(no retries): {e}"
-                    )
-                    await fail_task(
-                        engine, task_id, timestamp,
-                        str(e),
-                        retry=False,
-                    )
-
-                except Exception as e:
-                    import traceback
-                    logger.error(
-                        f"Dispatcher: Task {task_id} failed with error: "
-                        f"{e}\n{traceback.format_exc()}"
-                    )
-                    await fail_task(
-                        engine, task_id, timestamp,
-                        str(e),
-                        retry=True,
-                    )
-
-                finally:
-                    await heartbeat.unregister(str(task_id))
+                # Check for CancelledError — propagate shutdown
+                for r in results:
+                    if isinstance(r, asyncio.CancelledError):
+                        raise r
 
         except asyncio.CancelledError:
             logger.info("Dispatcher: Cancelled — shutting down.")

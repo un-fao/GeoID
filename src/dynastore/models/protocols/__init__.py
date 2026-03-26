@@ -52,6 +52,7 @@ from dynastore.models.protocols.events import EventsProtocol
 from dynastore.models.protocols.tasks import TasksProtocol
 from dynastore.models.protocols.task_queue import TaskQueueProtocol
 from dynastore.models.protocols.event_bus import EventBusProtocol
+from dynastore.models.protocols.event_storage import EventStorageProtocol
 from dynastore.models.protocols.apikey import ApiKeyProtocol
 from dynastore.models.protocols.proxy import ProxyProtocol
 from dynastore.models.protocols.database import DatabaseProtocol
@@ -108,6 +109,7 @@ __all__ = [
     "TasksProtocol",
     "TaskQueueProtocol",
     "EventBusProtocol",
+    "EventStorageProtocol",
     "ApiKeyProtocol",
     "ProxyProtocol",
     "DatabaseProtocol",

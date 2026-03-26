@@ -301,7 +301,7 @@ class ContextSelector {
     async loadAssets(catalogId, collectionId) {
         try {
              // Mock endpoint - Adjust to actual API
-            const res = await fetch(`/api/catalogs/${catalogId}/collections/${collectionId}/assets`);
+            const res = await fetch(`catalogs/${catalogId}/collections/${collectionId}/assets`);
             if (!res.ok) throw new Error("Failed to fetch assets");
             const assets = await res.json();
             

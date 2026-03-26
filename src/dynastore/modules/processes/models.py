@@ -134,6 +134,7 @@ def task_to_status_info(task: "Task", links: Optional[List[Link]] = None) -> Sta
     
     # Specialized OGC status mapping
     mapping = {
+        TaskStatusEnum.CREATED:     "created",
         TaskStatusEnum.PENDING:     "accepted",
         TaskStatusEnum.ACTIVE:      "running",
         TaskStatusEnum.RUNNING:     "running",

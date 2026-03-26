@@ -287,3 +287,121 @@ class SignalBus:
 
 # Global SignalBus instance
 signal_bus = SignalBus()
+
+
+class PgListenBridge:
+    """Bridges PostgreSQL LISTEN/NOTIFY channels to SignalBus with auto-reconnect.
+
+    Opens ONE lightweight asyncpg LISTEN connection per instance (no query
+    execution). On each notification, optionally transforms it via a callback,
+    then emits to SignalBus.  Auto-reconnects on connection failure.
+
+    A periodic health timeout emits signals even when no notifications arrive,
+    ensuring janitor / claim sweeps still fire.
+
+    Usage::
+
+        bridge = PgListenBridge(
+            channels=["new_task_queued", "dynastore_events_channel"],
+            signal_bus=signal_bus,
+            health_timeout=30.0,
+            transform=lambda ch, payload: (ch, None) if ch == "new_task_queued" else (ch, payload),
+        )
+        task = asyncio.create_task(bridge.run(engine))
+        ...
+        await bridge.stop()
+        task.cancel()
+    """
+
+    def __init__(
+        self,
+        channels: List[str],
+        signal_bus: SignalBus,
+        health_timeout: float = 120.0,
+        transform: Optional[Callable[[str, Optional[str]], Optional[Tuple[str, Optional[str]]]]] = None,
+    ):
+        self._channels = channels
+        self._signal_bus = signal_bus
+        self._health_timeout = health_timeout
+        self._transform = transform
+        self._running = False
+
+    async def run(self, engine) -> None:
+        """Long-running LISTEN loop.  Call via ``asyncio.create_task()``."""
+        self._running = True
+
+        while self._running:
+            try:
+                async with engine.connect() as conn:
+                    raw = await conn.get_raw_connection()
+                    driver_conn = getattr(raw, "driver_connection", None)
+
+                    if not (driver_conn and hasattr(driver_conn, "add_listener")):
+                        logger.warning(
+                            "PgListenBridge: asyncpg not available "
+                            f"(driver={type(driver_conn).__name__}) — periodic fallback."
+                        )
+                        await self._periodic_fallback()
+                        return
+
+                    queue: asyncio.Queue = asyncio.Queue()
+
+                    def _on_notify(connection, pid, channel, payload):
+                        queue.put_nowait((channel, payload))
+
+                    for ch in self._channels:
+                        await driver_conn.add_listener(ch, _on_notify)
+
+                    logger.info(f"PgListenBridge: LISTEN active on {self._channels}.")
+
+                    try:
+                        while self._running:
+                            try:
+                                channel, payload = await asyncio.wait_for(
+                                    queue.get(), timeout=self._health_timeout
+                                )
+                            except asyncio.TimeoutError:
+                                # Liveness: emit periodic signal for janitor / claim sweep
+                                for ch in self._channels:
+                                    await self._signal_bus.emit(ch)
+                                continue
+
+                            # Optional transform / filter
+                            if self._transform:
+                                result = self._transform(channel, payload)
+                                if result is None:
+                                    continue
+                                channel, identifier = result
+                            else:
+                                identifier = payload
+
+                            await self._signal_bus.emit(channel, identifier=identifier)
+                    finally:
+                        for ch in self._channels:
+                            try:
+                                await driver_conn.remove_listener(ch, _on_notify)
+                            except Exception:
+                                pass
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                if not self._running:
+                    break
+                logger.warning(
+                    f"PgListenBridge: connection error — reconnecting in 5s: {e}"
+                )
+                await asyncio.sleep(5.0)
+
+        logger.info("PgListenBridge: Stopped.")
+
+    async def _periodic_fallback(self) -> None:
+        """Fallback for non-asyncpg engines: periodic signal emission."""
+        while self._running:
+            await asyncio.sleep(self._health_timeout)
+            for ch in self._channels:
+                await self._signal_bus.emit(ch)
+
+    async def stop(self) -> None:
+        """Signal the bridge to stop."""
+        self._running = False

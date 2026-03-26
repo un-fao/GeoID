@@ -34,7 +34,7 @@ from dynastore.models.protocols import DatabaseProtocol
 
 logger = logging.getLogger(__name__)
 class DatastoreModule(ModuleProtocol, DatabaseProtocol):
-    priority: int = 5
+    priority: int = 7
     app_state: object
 
     def __init__(self, app_state: object):

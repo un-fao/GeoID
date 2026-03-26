@@ -69,7 +69,7 @@
             const form = document.querySelector('form');
             form.parentElement.insertBefore(errorDiv, form);
         }
-        document.getElementById('redirect_uri').value = urlParams.get('redirect_uri') || '/auth/debug';
+        document.getElementById('redirect_uri').value = urlParams.get('redirect_uri') || '/web/';
         document.getElementById('state').value = urlParams.get('state') || 'init';
     </script>
 </body>

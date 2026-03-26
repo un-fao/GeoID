@@ -106,7 +106,11 @@
             initialUrl = `${appRoot}/tiles/catalogs/${dataset}/tiles/WebMercatorQuad/{z}/{x}/{y}.mvt?collections=${collections}`;
         } else {
              // Fallback example
-             initialUrl = window.location.origin + '/tiles/catalogs/asif_test/tiles/WebMercatorQuad/{z}/{x}/{y}.mvt?collections=col_test';
+             // Use same prefix detection for fallback URL
+             let fallbackRoot = window.location.origin;
+             const fallbackIdx = window.location.pathname.indexOf('/web/');
+             if (fallbackIdx !== -1) fallbackRoot += window.location.pathname.substring(0, fallbackIdx);
+             initialUrl = `${fallbackRoot}/tiles/catalogs/asif_test/tiles/WebMercatorQuad/{z}/{x}/{y}.mvt?collections=col_test`;
              addLog('No dataset/collections params found. Using default example.', 'warn');
         }
 

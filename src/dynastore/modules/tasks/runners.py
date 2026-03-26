@@ -17,6 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
+import os
 from typing import Any, Callable, Coroutine, List, Union, Dict, Tuple, Type, Protocol, runtime_checkable, AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -27,6 +28,7 @@ from dynastore.tasks import get_task_instance
 import asyncio
 from dynastore.tools.plugin import ProtocolPlugin
 from dynastore.tools.discovery import register_plugin
+from dynastore.modules.concurrency import get_background_executor
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +232,8 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
     """
     def __init__(self):
         self._running_tasks = set()
+        self._max_concurrency = int(os.getenv("BACKGROUND_RUNNER_CONCURRENCY", "100"))
+        self._semaphore = asyncio.Semaphore(self._max_concurrency)
 
     def can_handle(self, task_type: str) -> bool:
         return get_task_instance(task_type) is not None
@@ -255,7 +259,7 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
     @property
     def capabilities(self) -> Any:
         from dynastore.modules.tasks.models import RunnerCapabilities
-        return RunnerCapabilities(max_concurrency=20)
+        return RunnerCapabilities(max_concurrency=self._max_concurrency)
 
     async def run(self, context: RunnerContext) -> Any:
         from dynastore.tools.protocol_helpers import resolve
@@ -295,51 +299,51 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
 
         background_tasks = context.extra_context.get("background_tasks")
         
-        # Define the background execution logic
+        # Define the background execution logic (semaphore-guarded)
         async def _execute_background():
-            try:
-                logger.info(f"Executing async task '{job.task_id}' in background...")
+            async with self._semaphore:
+                try:
+                    logger.info(f"Executing async task '{job.task_id}' in background...")
 
-                # Hydrate and execute
-                hydrated_payload = hydrate_task_payload(task_instance, raw_payload)
-                result = await task_instance.run(hydrated_payload)
-                
-                # Update to COMPLETED with outputs
-                update_data = TaskUpdate(status=TaskStatusEnum.COMPLETED, progress=100, outputs=result)
-                await tasks_mgr.update_task(context.engine, job.task_id, update_data, schema=context.db_schema)
-                logger.info(f"Async task '{job.task_id}' completed successfully.")
-                
-            except asyncio.CancelledError:
-                logger.warning(f"Async task '{job.task_id}' was cancelled (SIGTERM?). Resetting to PENDING.")
-                try:
-                    # Reset to PENDING so another worker can pick it up
-                    await tasks_mgr.update_task(context.engine, job.task_id, TaskUpdate(status=TaskStatusEnum.PENDING), schema=context.db_schema)
-                except Exception as e:
-                    logger.error(f"Failed to reset cancelled task '{job.task_id}': {e}")
-                raise
-            except Exception as e:
-                logger.error(f"Async task '{job.task_id}' failed: {e}", exc_info=True)
-                error_message = f"Asynchronous execution failed: {str(e)}"
-                try:
-                    update_data = TaskUpdate(status=TaskStatusEnum.FAILED, error_message=error_message)
+                    # Hydrate and execute
+                    hydrated_payload = hydrate_task_payload(task_instance, raw_payload)
+                    result = await task_instance.run(hydrated_payload)
+
+                    # Update to COMPLETED with outputs
+                    update_data = TaskUpdate(status=TaskStatusEnum.COMPLETED, progress=100, outputs=result)
                     await tasks_mgr.update_task(context.engine, job.task_id, update_data, schema=context.db_schema)
-                except Exception as update_error:
-                    logger.critical(f"Failed to update task '{job.task_id}' status to FAILED: {update_error}")
-                await _emit_task_failure(context, job, error_message, e)
+                    logger.info(f"Async task '{job.task_id}' completed successfully.")
+
+                except asyncio.CancelledError:
+                    logger.warning(f"Async task '{job.task_id}' was cancelled (SIGTERM?). Resetting to PENDING.")
+                    try:
+                        # Reset to PENDING so another worker can pick it up
+                        await tasks_mgr.update_task(context.engine, job.task_id, TaskUpdate(status=TaskStatusEnum.PENDING), schema=context.db_schema)
+                    except Exception as e:
+                        logger.error(f"Failed to reset cancelled task '{job.task_id}': {e}")
+                    raise
+                except Exception as e:
+                    logger.error(f"Async task '{job.task_id}' failed: {e}", exc_info=True)
+                    error_message = f"Asynchronous execution failed: {str(e)}"
+                    try:
+                        update_data = TaskUpdate(status=TaskStatusEnum.FAILED, error_message=error_message)
+                        await tasks_mgr.update_task(context.engine, job.task_id, update_data, schema=context.db_schema)
+                    except Exception as update_error:
+                        logger.critical(f"Failed to update task '{job.task_id}' status to FAILED: {update_error}")
+                    await _emit_task_failure(context, job, error_message, e)
 
         # Submit to background
         if background_tasks:
-             # Starlette BackgroundTasks expects a sync callable or async coroutine? 
-             # It handles async functions. add_task(func, *args, **kwargs)
-             # NOTE: we don't track Starlette tasks here as Starlette is responsible for them.
+             # Starlette BackgroundTasks — not semaphore-guarded (Starlette manages lifecycle)
              background_tasks.add_task(_execute_background)
              logger.info(f"Task '{job.task_id}' submitted to Starlette BackgroundTasks.")
         else:
-             # Fallback to asyncio
-             t = asyncio.create_task(_execute_background())
+             # Use BackgroundExecutor for tracked execution with GC prevention + error logging
+             executor = get_background_executor()
+             t = executor.submit(_execute_background(), task_name=f"task:{job.task_id}")
              self._running_tasks.add(t)
              t.add_done_callback(self._running_tasks.discard)
-             logger.info(f"Task '{job.task_id}' submitted to asyncio event loop.")
+             logger.info(f"Task '{job.task_id}' submitted via BackgroundExecutor.")
 
         # For ASYNC, we return a StatusInfo object (or similar) immediately.
         # Check what the processes module expects.

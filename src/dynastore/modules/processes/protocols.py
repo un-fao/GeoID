@@ -16,12 +16,13 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from typing import Protocol, TypeVar, Generic, runtime_checkable
+from typing import Protocol, TypeVar, Generic, runtime_checkable, Optional, List
 from dynastore.tasks.protocols import TaskProtocol
 
 DefinitionType = TypeVar('DefinitionType', covariant=True)
 PayloadType = TypeVar('PayloadType', contravariant=True)
 ReturnType = TypeVar('ReturnType', covariant=True)
+
 
 @runtime_checkable
 class ProcessTaskProtocol(TaskProtocol[DefinitionType, PayloadType, ReturnType], Protocol):
@@ -33,4 +34,28 @@ class ProcessTaskProtocol(TaskProtocol[DefinitionType, PayloadType, ReturnType],
         """
         MUST return the typed task definition model (e.g., OGC Process).
         """
+        ...
+
+
+@runtime_checkable
+class ProcessRegistryProtocol(Protocol):
+    """
+    OGC Process discovery and metadata.
+
+    Provides a structured interface for listing and looking up process
+    definitions, replacing the ad-hoc ``get_definitions_by_type(Process)``
+    pattern.  Supports tenant-scoped process listings for multi-tenant
+    OGC API Processes compliance.
+    """
+
+    def list_processes(
+        self, tenant: Optional[str] = None,
+    ) -> list:
+        """Return all available process summaries, optionally filtered by tenant."""
+        ...
+
+    def get_process(
+        self, process_id: str, tenant: Optional[str] = None,
+    ) -> Optional[object]:
+        """Return a single process definition by ID, or None."""
         ...

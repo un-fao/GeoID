@@ -586,7 +586,8 @@ async def generic_exception_handler(request: Request, exc: Exception) -> Respons
         status_code = getattr(result, "status_code", 500)
 
         if log_id and status_code >= 500:
-            log_url = f"/web/#/logs?catalog={context['log_catalog']}&log_id={log_id}"
+            _root = request.scope.get("root_path", "").rstrip("/")
+            log_url = f"{_root}/web/#/logs?catalog={context['log_catalog']}&log_id={log_id}"
             response_content["log_reference"] = {
                 "log_id": log_id,
                 "catalog_id": context["log_catalog"],

@@ -265,18 +265,16 @@ class Web(ExtensionProtocol):
         @app.get("", include_in_schema=False)
         @app.get("/", include_in_schema=False)
         async def root_redirect(request: Request):
-            # Absolute redirect to /web/ to ensure consistency
-            # root_path handles proxy prefixes if configured
-            root_path = request.scope.get("root_path", "").rstrip("/")
-            return RedirectResponse(url=f"{root_path}/web/")
+            # Use relative redirect so it resolves correctly behind any
+            # path-prefix proxy (avoids root_path duplication).
+            return RedirectResponse(url="web/")
 
         # Explicitly handle /web redirect to ensure consistent behavior
         # regardless of Router prefix mounting order or strict slashes config.
         @app.get("/web", include_in_schema=False)
         async def web_redirect(request: Request):
-            root_path = request.scope.get("root_path", "").rstrip("/")
-            # Redirect to /web/ (with trailing slash)
-            return RedirectResponse(url=f"{root_path}/web/")
+            # Relative redirect — trailing slash for consistent static-asset resolution
+            return RedirectResponse(url="web/")
 
         #     # Prepend the new route to avoid being shadowed by path converters.
         #     # This is a common pattern when dynamically adding routes to a FastAPI app instance.
@@ -904,10 +902,13 @@ async function demoAction(action) {
 
         @self.router.get("", include_in_schema=False)
         async def redirect_web_root(request: Request):
-            # Force trailing slash for relative assets to work
-            path = request.url.path
+            # Force trailing slash for relative assets to work.
+            # Use the last path segment so the redirect resolves correctly
+            # behind any prefix proxy (avoids root_path duplication).
+            path = request.scope.get("path", "")
             if not path.endswith("/"):
-                return RedirectResponse(url=path + "/")
+                segment = path.rsplit("/", 1)[-1]
+                return RedirectResponse(url=f"{segment}/")
             # If already has slash, serve index (should be handled by @router.get("/"))
             return await read_extension_root()
 
