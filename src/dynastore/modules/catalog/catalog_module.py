@@ -64,6 +64,7 @@ from dynastore.models.protocols import (
     DatabaseProtocol,
     PropertiesProtocol,
     LocalizationProtocol,
+    EventStorageProtocol,
 )
 
 from dynastore.tools.discovery import register_plugin, get_protocol
@@ -143,12 +144,13 @@ from dynastore.modules import ModuleProtocol
 
 _module_instance: Optional[ModuleProtocol] = None
 class CatalogModule(ModuleProtocol):
-    priority: int = 15
+    priority: int = 20
     """
     Manages catalog lifecycle.
     Functions as a composition root, initializing services and registering them as protocol providers.
-    Must start after DBService (priority=10) so the database engine is available.
-    Priority < 20 ensures startup aborts on failure (foundational module).
+    Must start after DBService (priority=10) and TasksModule (priority=15),
+    which creates tables that the event consumer depends on.
+    Priority < 20 would cause hard-abort on startup failure; 20 is still foundational.
     """
 
 
@@ -223,8 +225,11 @@ class CatalogModule(ModuleProtocol):
 
             async with managed_transaction(engine) as conn:
                 await ensure_schema_exists(conn, "catalog")
-                if self.event_service.storage:
-                    await self.event_service.storage.initialize(conn)
+                
+                # Initialize event storage if available
+                storage = get_protocol(EventStorageProtocol)
+                if storage:
+                    await storage.init_catalog_scope(conn, "catalog")
 
                 # Centralized system-level maintenance initialization
                 await initialize_system_logs(conn)
@@ -295,7 +300,7 @@ class CatalogModule(ModuleProtocol):
 
     @property
     def assets(self) -> AssetsProtocol:
-        return self.asset_manager
+        return self.asset_service
 
     @property
     def configs(self) -> ConfigsProtocol:
