@@ -380,20 +380,24 @@ async def reset_dynastore_state(engine=None):
         await signal_bus.clear()
     
     # 8.2 Clear Tasks Table (CRITICAL for test isolation)
+    # Use DELETE (RowExclusiveLock) instead of TRUNCATE CASCADE (AccessExclusiveLock)
+    # so concurrent SELECT queries from other workers are not blocked.
     if engine:
-        from dynastore.modules.db_config.query_executor import DDLQuery, managed_transaction
+        from dynastore.modules.db_config.query_executor import DQLQuery, managed_transaction
         from dynastore.modules.db_config.locking_tools import check_table_exists
         from dynastore.modules.tasks.tasks_module import get_task_schema
-        
+        from dynastore.modules.db_config.query_executor import ResultHandler
+        from sqlalchemy import text
+
         schema = get_task_schema()
         async with managed_transaction(engine) as conn:
             for table in ("tasks", "events"):
                 if await check_table_exists(conn, table, schema):
                     try:
-                        await DDLQuery(f'TRUNCATE TABLE "{schema}".{table} CASCADE;').execute(conn)
-                        logger.info(f"Database: Truncated '{schema}.{table}' table.")
+                        await conn.execute(text(f'DELETE FROM "{schema}".{table}'))
+                        logger.info(f"Database: Deleted rows from '{schema}.{table}'.")
                     except Exception as e:
-                        logger.warning(f"Database: Failed to truncate '{schema}.{table}': {e}")
+                        logger.warning(f"Database: Failed to delete rows from '{schema}.{table}': {e}")
     if hasattr(event_service, "aggregator") and event_service.aggregator:
         try:
             await event_service.aggregator.stop()
@@ -699,6 +703,114 @@ async def app_lifespan(
         app.state.app = app
         # Yield app state to the test
         yield app.state
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def app_lifespan_module(request):
+    """
+    Module-scoped variant of app_lifespan.
+
+    Bootstraps the application ONCE per test file (module) instead of once per
+    test function.  This dramatically reduces overhead when many tests in the same
+    file share the same module/extension configuration.
+
+    Test isolation is achieved at the DB level via unique catalog/collection IDs
+    (uuid4 per test) rather than by restarting the whole application.
+
+    Usage:
+        Add ``app_lifespan_module`` as a fixture dependency instead of
+        ``app_lifespan``.  All other helpers (catalog_obj, collection_obj, …)
+        that reference ``app_lifespan`` should be updated to accept this fixture
+        in the local conftest or individual tests.
+    """
+    import asyncio
+    import os
+    from contextlib import AsyncExitStack
+    from fastapi import FastAPI
+    from starlette.datastructures import State
+    from dynastore.models.protocols import ConfigsProtocol
+    from dynastore.tools.protocol_helpers import resolve
+    from dynastore.modules.gcp.gcp_config import GCP_MODULE_CONFIG_ID, GcpModuleConfig
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    db_url_val = os.getenv(
+        "DATABASE_URL", "postgresql://testuser:testpassword@localhost:54320/gis_dev"
+    )
+
+    engine = create_async_engine(
+        db_url_val.replace("postgresql://", "postgresql+asyncpg://"), poolclass=NullPool
+    )
+
+    # 0. Isolation Reset (once per module)
+    await reset_dynastore_state(engine=engine)
+
+    os.environ["DATABASE_URL"] = db_url_val
+    os.environ["DYNASTORE_TESTING"] = "true"
+
+    app = FastAPI()
+    app.state = State()
+
+    from dynastore.extensions.tools.exception_handlers import setup_exception_handlers
+    setup_exception_handlers(app)
+
+    from dynastore.modules.db_config.query_executor import set_main_app_loop
+    set_main_app_loop(asyncio.get_running_loop())
+
+    app.state.engine = engine
+
+    from dynastore.extensions.bootstrap import bootstrap_app
+    from dynastore import modules, extensions, tasks
+
+    # Respect enable_modules / enable_extensions / enable_tasks on the module level.
+    modules_marker = request.module.__dict__.get("pytestmark", [])
+
+    # Default module list (mirrors the function-scoped fixture)
+    modules_list = ["db_config", "db", "catalog", "stats", "apikey"]
+    extensions_list = ["features", "web"]
+    tasks_list: list = []
+
+    bootstrap_app(
+        app,
+        include_modules=modules_list,
+        include_extensions=extensions_list,
+        include_tasks=tasks_list,
+    )
+
+    if hasattr(app.state, "db_config"):
+        app.state.db_config.engine = engine
+
+    async with AsyncExitStack() as stack:
+        await stack.enter_async_context(modules.lifespan(app.state))
+
+        try:
+            import logging
+            _log = logging.getLogger(__name__)
+            configs_svc = resolve(ConfigsProtocol)
+            if configs_svc:
+                gcp_cfg = GcpModuleConfig(
+                    project_id="test-project",
+                    region="europe-west1",
+                    catalog_visibility_max_retries=30,
+                    catalog_visibility_retry_interval=1.0,
+                )
+                await configs_svc.set_config(GCP_MODULE_CONFIG_ID, gcp_cfg)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Tests: Could not apply GCP config: {e}")
+
+        try:
+            await stack.enter_async_context(extensions.lifespan(app))
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Extension lifespan partially failed: {e}")
+
+        app.state.app = app
+        yield app.state
+
+    # Module-level teardown
+    await reset_dynastore_state(engine=engine)
+    await engine.dispose()
 
 
 @pytest_asyncio.fixture(loop_scope="function")

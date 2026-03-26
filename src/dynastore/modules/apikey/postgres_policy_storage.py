@@ -151,50 +151,25 @@ class PostgresPolicyStorage(AbstractPolicyStorage):
         return await self._initialize_schema(conn, schema=schema)
 
     async def _initialize_schema(self, conn: DbResource, schema: str = "apikey"):
-        from dynastore.modules.db_config.locking_tools import check_table_exists
-        
         schema = schema.strip('"')
-        
+
         # 0. Ensure Schema
         await maintenance_tools.ensure_schema_exists(conn, schema)
-        
-        # 1. Base Table
-        await DDLQuery(
-            CREATE_POLICIES_TABLE.template,
-            lock_key=f"{schema}_policies_table",
-            check_query=lambda: check_table_exists(conn, "policies", schema=schema),
-        ).execute(conn, schema=schema)
-        
 
-        
-        # 3. Partitions
-        partitions = [
-            ("global", CREATE_PARTITION_GLOBAL.template),
-            ("sysadmin", CREATE_PARTITION_SYSADMIN.template),
-            ("auth", CREATE_PARTITION_AUTH.template),
-            ("default", CREATE_PARTITION_DEFAULT.template),
-        ]
-        
-        for part_name, ddl in partitions:
-            await DDLQuery(
-                ddl,
-                lock_key=f"{schema}_policies_part_{part_name}",
-                check_query=lambda pn=part_name: check_table_exists(conn, f"policies_{pn}", schema=schema),
-            ).execute(conn, schema=schema)
+        # 1. Base Table (auto-inferred existence check via {schema})
+        await CREATE_POLICIES_TABLE.execute(conn, schema=schema)
+
+        # 2. Partitions (IF NOT EXISTS in SQL handles idempotency)
+        await CREATE_PARTITION_GLOBAL.execute(conn, schema=schema)
+        await CREATE_PARTITION_SYSADMIN.execute(conn, schema=schema)
+        await CREATE_PARTITION_AUTH.execute(conn, schema=schema)
+        await CREATE_PARTITION_DEFAULT.execute(conn, schema=schema)
 
     async def ensure_policy_partition(self, conn: DbResource, partition_key: str, schema: str = "apikey"):
-        from dynastore.modules.db_config.locking_tools import check_table_exists
-        
         schema = schema.strip('"')
-        
         partition_table = f"policies_{partition_key}"
         ddl = f"CREATE TABLE IF NOT EXISTS {{schema}}.{partition_table} PARTITION OF {{schema}}.policies FOR VALUES IN ('{partition_key}');"
-        
-        await DDLQuery(
-            ddl,
-            lock_key=f"{schema}_policies_part_{partition_key}",
-            check_query=lambda: check_table_exists(conn, partition_table, schema=schema),
-        ).execute(conn, schema=schema)
+        await DDLQuery(ddl).execute(conn, schema=schema)
 
     async def create_policy(self, policy: Policy, conn: Optional[DbResource] = None, schema: str = "apikey") -> Policy:
         async with managed_transaction(conn or self.engine) as db:

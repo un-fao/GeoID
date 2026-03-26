@@ -25,7 +25,7 @@ from dynastore.tools.discovery import get_protocol
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("assets")
 async def test_asset_cache_targeted_invalidation(
-    app_lifespan, catalog_obj, catalog_id, collection_obj, collection_id
+    app_lifespan_module, catalog_obj, catalog_id, collection_obj, collection_id
 ):
     """
     Verify that cache invalidation only affects the specific asset being modified,
@@ -122,7 +122,7 @@ async def test_asset_cache_targeted_invalidation(
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("assets")
 async def test_asset_cache_bypassed_with_db_resource(
-    app_lifespan, catalog_obj, catalog_id, collection_obj, collection_id
+    app_lifespan_module, catalog_obj, catalog_id, collection_obj, collection_id
 ):
     """
     Verify that cache is bypassed when db_resource is provided (transactional queries).
@@ -189,7 +189,7 @@ async def test_asset_cache_bypassed_with_db_resource(
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("assets")
 async def test_asset_cache_invalidation_on_delete(
-    app_lifespan, catalog_obj, catalog_id, collection_obj, collection_id
+    app_lifespan_module, catalog_obj, catalog_id, collection_obj, collection_id
 ):
     """
     Verify that cache is properly invalidated when an asset is deleted.
@@ -238,7 +238,7 @@ async def test_asset_cache_invalidation_on_delete(
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("assets")
 async def test_asset_cache_performance_improvement(
-    app_lifespan, catalog_obj, catalog_id, collection_obj, collection_id
+    app_lifespan_module, catalog_obj, catalog_id, collection_obj, collection_id
 ):
     """
     Demonstrate the performance improvement of targeted cache invalidation.

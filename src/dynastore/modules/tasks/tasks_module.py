@@ -372,6 +372,10 @@ async def ensure_task_storage_exists(conn: DbResource, schema: str):
     async def tasks_table_exists():
         return await check_table_exists(conn, "tasks", schema)
 
+    if await tasks_table_exists():
+        logger.info(f"TasksModule: Global tasks table '{schema}.tasks' exists. Skipping DDL.")
+        return
+
     # Step 1: Create tasks table (IF NOT EXISTS — safe for existing DBs)
     await DDLQuery(GLOBAL_TASKS_TABLE_DDL).execute(
         conn,

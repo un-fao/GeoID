@@ -229,7 +229,9 @@ class CatalogModule(ModuleProtocol):
                 # Initialize tenant event space if available
                 event_bus = get_protocol(EventBusProtocol)
                 if event_bus:
-                    await event_bus.init_tenant_events("catalog", db_resource=conn)
+                    from dynastore.modules.db_config.locking_tools import check_table_exists
+                    if not await check_table_exists(conn, "catalog_events", "catalog"):
+                        await event_bus.init_tenant_events("catalog", db_resource=conn)
 
                 # Centralized system-level maintenance initialization
                 await initialize_system_logs(conn)

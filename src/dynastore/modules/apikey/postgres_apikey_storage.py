@@ -31,6 +31,7 @@ import time
 from dynastore.modules.db_config.exceptions import ForeignKeyViolationError, TableNotFoundError
 from dynastore.modules.db_config.query_executor import (
     DDLQuery,
+    DDLBatch,
     DQLQuery,
     ResultHandler,
     DbResource,
@@ -1023,10 +1024,6 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         Initializes the API Key storage backend for a specific schema.
         Includes V1 (Keys) and V2 (Identity/RBAC) tables.
         """
-        from dynastore.modules.db_config.locking_tools import (
-            check_table_exists,
-        )
-
         # Strip quotes just in case, to prevent double quoting
         schema = schema.strip('"')
 
@@ -1037,125 +1034,40 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         # 0. Ensure Schema
         await maintenance_tools.ensure_schema_exists(conn, schema)
 
-        # 1. Base Tables (Check-Before-Lock Pattern)
-
-        # Principals (Enhanced V2)
-        await DDLQuery(
-            CREATE_PRINCIPALS_TABLE.template,
-            lock_key=f"{schema}_principals_table",
-            check_query=lambda: check_table_exists(conn, "principals", schema=schema),
+        # 1. Base Tables — DDLBatch checks the sentinel (audit_log, the last
+        #    table) once; if it exists the entire batch is skipped in 1 query.
+        await DDLBatch(
+            sentinel=CREATE_AUDIT_LOG_TABLE,
+            steps=[
+                CREATE_PRINCIPALS_TABLE,
+                CREATE_IDENTITY_LINKS_TABLE,
+                CREATE_IDENTITY_AUTHORIZATION_TABLE,
+                CREATE_IDENTITY_ROLES_TABLE,
+                CREATE_IDENTITY_POLICIES_TABLE,
+                CREATE_ROLES_TABLE,
+                CREATE_ROLE_HIERARCHY_TABLE,
+                CREATE_API_KEYS_TABLE,
+                CREATE_USAGE_COUNTERS_TABLE,
+                CREATE_QUOTA_COUNTERS_TABLE,
+                CREATE_REFRESH_TOKENS_TABLE,
+                CREATE_POLICIES_TABLE,
+                CREATE_AUDIT_LOG_TABLE,
+            ],
         ).execute(conn, schema=schema)
 
-        # Identity Links (V2)
-        await DDLQuery(
-            CREATE_IDENTITY_LINKS_TABLE.template,
-            lock_key=f"{schema}_identity_links_table",
-            check_query=lambda: check_table_exists(conn, "identity_links", schema=schema),
-        ).execute(conn, schema=schema)
-
-        # Simplified IAG Tables (v2.1) - All Schemas
-        await DDLQuery(
-            CREATE_IDENTITY_AUTHORIZATION_TABLE.template,
-            lock_key=f"{schema}_identity_authorization_table",
-            check_query=lambda: check_table_exists(conn, "identity_authorization", schema=schema),
-        ).execute(conn, schema=schema)
-
-        await DDLQuery(
-            CREATE_IDENTITY_ROLES_TABLE.template,
-            lock_key=f"{schema}_identity_roles_table",
-            check_query=lambda: check_table_exists(conn, "identity_roles", schema=schema),
-        ).execute(conn, schema=schema)
-
-        await DDLQuery(
-            CREATE_IDENTITY_POLICIES_TABLE.template,
-            lock_key=f"{schema}_identity_policies_table",
-            check_query=lambda: check_table_exists(conn, "identity_policies", schema=schema),
-        ).execute(conn, schema=schema)
-
-        # Roles (V2)
-        await DDLQuery(
-            CREATE_ROLES_TABLE.template,
-            lock_key=f"{schema}_roles_table",
-            check_query=lambda: check_table_exists(conn, "roles", schema=schema),
-        ).execute(conn, schema=schema)
-
-        # Role Hierarchy
-        await DDLQuery(
-            CREATE_ROLE_HIERARCHY_TABLE.template,
-            lock_key=f"{schema}_role_hierarchy_table",
-            check_query=lambda: check_table_exists(conn, "role_hierarchy", schema=schema),
-        ).execute(conn, schema=schema)
-
-        # API Keys (V1 Legacy)
-        await DDLQuery(
-            CREATE_API_KEYS_TABLE.template,
-            lock_key=f"{schema}_api_keys_table",
-            check_query=lambda: check_table_exists(conn, "api_keys", schema=schema),
-        ).execute(conn, schema=schema)
-
-        # Usage Counters
-        await DDLQuery(
-            CREATE_USAGE_COUNTERS_TABLE.template,
-            lock_key=f"{schema}_usage_counters_table",
-            check_query=lambda: check_table_exists(conn, "usage_counters", schema=schema),
-        ).execute(conn, schema=schema)
-
-        # Quota Counters
-        await DDLQuery(
-            CREATE_QUOTA_COUNTERS_TABLE.template,
-            lock_key=f"{schema}_quota_counters_table",
-            check_query=lambda: check_table_exists(conn, "quota_counters", schema=schema),
-        ).execute(conn, schema=schema)
-
-        # Refresh Tokens
-        await DDLQuery(
-            CREATE_REFRESH_TOKENS_TABLE.template,
-            lock_key=f"{schema}_refresh_tokens_table",
-            check_query=lambda: check_table_exists(conn, "refresh_tokens", schema=schema),
-        ).execute(conn, schema=schema)
-
-        # Policies (V2)
-        await DDLQuery(
-            CREATE_POLICIES_TABLE.template,
-            lock_key=f"{schema}_policies_table",
-            check_query=lambda: check_table_exists(conn, "policies", schema=schema),
-        ).execute(conn, schema=schema)
-
-        # Audit Log
-        await DDLQuery(
-            CREATE_AUDIT_LOG_TABLE.template,
-            lock_key=f"{schema}_audit_log_table",
-            check_query=lambda: check_table_exists(conn, "audit_log", schema=schema),
-        ).execute(conn, schema=schema)
-
-        # Local Authentication Tables (users schema)
-        # Identities are global - stored in users schema (managed by auth extension)
+        # 2. Auth tables (users/apikey schemas only)
         if schema in ["users", "apikey"]:
-            # OAuth2 Authentication Tables
-            await DDLQuery(
-                CREATE_USERS_TABLE.template,
-                lock_key=f"{schema}_users_table",
-                check_query=lambda: check_table_exists(conn, "users", schema=schema),
+            await DDLBatch(
+                sentinel=CREATE_OAUTH_TOKENS_TABLE,
+                steps=[
+                    CREATE_USERS_TABLE,
+                    CREATE_OAUTH_CODES_TABLE,
+                    CREATE_OAUTH_TOKENS_TABLE,
+                ],
             ).execute(conn, schema=schema)
 
-            await DDLQuery(
-                CREATE_OAUTH_CODES_TABLE.template,
-                lock_key=f"{schema}_oauth_codes_table",
-                check_query=lambda: check_table_exists(conn, "oauth_codes", schema=schema),
-            ).execute(conn, schema=schema)
-
-            await DDLQuery(
-                CREATE_OAUTH_TOKENS_TABLE.template,
-                lock_key=f"{schema}_oauth_tokens_table",
-                check_query=lambda: check_table_exists(conn, "oauth_tokens", schema=schema),
-            ).execute(conn, schema=schema)
-
-            # Ensure global partition
-            await DDLQuery(
-                CREATE_PARTITION_GLOBAL.template,
-                lock_key=f"{schema}_global_policies_partition",
-                check_query=lambda: check_table_exists(conn, "policies_global", schema=schema),
-            ).execute(conn, schema=schema)
+            # Partition tables (IF NOT EXISTS in SQL handles idempotency)
+            await CREATE_PARTITION_GLOBAL.execute(conn, schema=schema)
 
         # 2. Maintenance (System Schema Only)
         if schema == "apikey":

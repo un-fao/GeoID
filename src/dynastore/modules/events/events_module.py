@@ -338,8 +338,10 @@ class EventsModule(ModuleProtocol):
         # 2. Create webhook subscriptions table
         try:
             async with managed_transaction(self._engine) as conn:
-                await DDLQuery(SUBSCRIPTIONS_SCHEMA).execute(conn)
-                await DDLQuery(SUBSCRIPTIONS_SCHEMA_INDEX).execute(conn)
+                from dynastore.modules.db_config.locking_tools import check_table_exists
+                if not await check_table_exists(conn, "event_subscriptions", _EVENTS_SCHEMA):
+                    await DDLQuery(SUBSCRIPTIONS_SCHEMA).execute(conn)
+                    await DDLQuery(SUBSCRIPTIONS_SCHEMA_INDEX).execute(conn)
         except Exception:
             logger.exception("EventsModule: Failed to initialise subscriptions schema.")
 

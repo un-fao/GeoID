@@ -168,3 +168,6 @@ skills/
 *old.md
 *backup*
 
+
+# Git worktrees
+.worktrees/
