@@ -1,15 +1,15 @@
 {
-  "generated_at": "2026-03-26T09:22:05.500557+00:00",
-  "head_sha": "4a606b8a3a67b0d7b773ef32e87c49f7038d6cae",
+  "generated_at": "2026-03-26T10:24:24.389453+00:00",
+  "head_sha": "e3bffdfc79fee510997e5d2d4eea5f8a13b906a7",
   "tests_passed": true,
-  "test_run_url": "https://github.com/un-fao/GeoID/actions/runs/23586274984",
+  "test_run_url": "https://github.com/un-fao/GeoID/actions/runs/23588772669",
   "options": [
     "main",
     "branch:feature/storage-driver-framework",
+    "e3bffdfc79fe - refactor(docker): add catalog_local scope, align local servi",
+    "2447d396b667 - ci: update refs manifest [skip ci]",
     "4a606b8a3a67 - refactor(scopes): isolate auth to geoid-service only; add op",
     "75132b57498c - ci: update refs manifest [skip ci]",
-    "855d17a9798a - fix(tests): use unique namespace per iceberg test for xdist",
-    "98caa3885597 - fix(tests): patch pytest-asyncio Coroutine class name for VS",
-    "ea7b79d2b7cb - fix(assets): use CoreAssetReferenceType for ref_type coercio"
+    "855d17a9798a - fix(tests): use unique namespace per iceberg test for xdist"
   ]
 }
