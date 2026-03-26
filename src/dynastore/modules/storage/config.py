@@ -26,15 +26,18 @@ All fields are strongly typed Pydantic models with auto-coercion from
 shorthand strings for backward compatibility with existing JSON configs.
 """
 
+import logging
 from typing import Any, ClassVar, Dict, List, Optional, Set
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.modules.db_config.platform_config_service import Immutable, PluginConfig
 from dynastore.modules.storage.location import (
     StorageLocationConfig,
     StorageLocationConfigRegistry,
 )
+
+logger = logging.getLogger(__name__)
 
 STORAGE_ROUTING_CONFIG_ID = "storage_routing"
 
@@ -80,9 +83,9 @@ class StorageRoutingConfig(PluginConfig):
 
     _plugin_id: ClassVar[Optional[str]] = STORAGE_ROUTING_CONFIG_ID
 
-    primary_driver: DriverRef = Field(
+    primary_driver: Immutable[DriverRef] = Field(
         default_factory=lambda: DriverRef(driver_id="postgresql"),
-        description="Driver for writes and default reads.",
+        description="Driver for writes and default reads. Immutable on existing catalogs.",
     )
     read_drivers: Dict[str, DriverRef] = Field(
         default_factory=dict,
@@ -156,3 +159,88 @@ class StorageRoutingConfig(PluginConfig):
     def secondary_driver_ids(self) -> List[str]:
         """Shortcut: secondary driver IDs as strings."""
         return [d.driver_id for d in self.secondary_drivers]
+
+
+# ---------------------------------------------------------------------------
+# on_apply handler — validates new secondary drivers & cleans up removed ones
+# ---------------------------------------------------------------------------
+
+async def _on_apply_storage_routing(
+    config: StorageRoutingConfig,
+    catalog_id: Optional[str],
+    collection_id: Optional[str],
+    db_resource: Optional[Any],
+) -> None:
+    """Called after StorageRoutingConfig is written.
+
+    1. For newly-added secondary drivers: verify the driver is registered.
+    2. For removed secondary drivers: call ``drop_storage`` as best-effort cleanup.
+    """
+    from dynastore.modules.db_config.platform_config_service import ConfigRegistry
+
+    # Resolve previous config to compute diff
+    old_config: Optional[StorageRoutingConfig] = None
+    if catalog_id:
+        try:
+            from dynastore.models.protocols.configs import ConfigsProtocol
+            from dynastore.tools.discovery import get_protocol
+
+            configs_proto = get_protocol(ConfigsProtocol)
+            if configs_proto:
+                old_config = await configs_proto.get_config(
+                    STORAGE_ROUTING_CONFIG_ID,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                )
+        except Exception:
+            pass
+
+    old_ids = set(old_config.secondary_driver_ids) if old_config else set()
+    new_ids = set(config.secondary_driver_ids)
+
+    added = new_ids - old_ids
+    removed = old_ids - new_ids
+
+    if not added and not removed:
+        return
+
+    # Verify added drivers are registered
+    if added:
+        from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
+        from dynastore.tools.discovery import get_protocols
+
+        registered = {d.driver_id for d in get_protocols(CollectionStorageDriverProtocol)}
+        unknown = added - registered
+        if unknown:
+            logger.warning(
+                "StorageRouting: secondary driver(s) not registered: %s. "
+                "Available: %s. Events will be silently ignored until the driver loads.",
+                sorted(unknown), sorted(registered),
+            )
+
+    # Best-effort cleanup for removed drivers
+    if removed and catalog_id:
+        from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
+        from dynastore.tools.discovery import get_protocols
+
+        driver_index = {d.driver_id: d for d in get_protocols(CollectionStorageDriverProtocol)}
+        for driver_id in removed:
+            driver = driver_index.get(driver_id)
+            if driver and hasattr(driver, "drop_storage"):
+                try:
+                    await driver.drop_storage(catalog_id, collection_id)
+                    logger.info(
+                        "StorageRouting: cleaned up driver '%s' for catalog '%s'.",
+                        driver_id, catalog_id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "StorageRouting: cleanup failed for driver '%s' catalog '%s': %s",
+                        driver_id, catalog_id, e,
+                    )
+
+
+# Register the on_apply handler
+from dynastore.modules.db_config.platform_config_service import ConfigRegistry  # noqa: E402
+
+ConfigRegistry.register_apply_handler(STORAGE_ROUTING_CONFIG_ID, _on_apply_storage_routing)

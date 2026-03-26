@@ -13,13 +13,14 @@ Implements ``SearchProtocol`` so that the router and other consumers discover
 the search backend via protocol discovery, not direct imports.
 """
 import logging
+import re
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import APIRouter, FastAPI
 from contextlib import asynccontextmanager
 from dynastore.extensions import ExtensionProtocol
 
-from dynastore.modules.elasticsearch.config import config as es_config
+from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
 from dynastore.modules.elasticsearch.mappings import get_index_name, get_obfuscated_index_name
 from .search_models import (
     CatalogSearchBody,
@@ -37,22 +38,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _build_es_client():
-    """Build and return an AsyncElasticsearch client."""
-    try:
-        from elasticsearch import AsyncElasticsearch
-    except ImportError:
-        raise RuntimeError(
-            "Elasticsearch client is not installed. Run: poetry add elasticsearch[async]"
-        )
-    kwargs: Dict[str, Any] = {
-        "hosts": [es_config.url],
-        "verify_certs": es_config.verify_certs,
-    }
-    if es_config.username and es_config.password:
-        kwargs["basic_auth"] = (es_config.username, es_config.password)
-    return AsyncElasticsearch(**kwargs)
 
 
 def _parse_sort(sortby: Optional[str]) -> List[Dict[str, Any]]:
@@ -138,7 +123,13 @@ def _build_item_query(body: SearchBody) -> Dict[str, Any]:
         })
 
     # ------------------------------------------------------------------
-    # 2. IDs filter
+    # 2. Catalog filter
+    # ------------------------------------------------------------------
+    if body.catalog_id:
+        filter_.append({"term": {"catalog_id": body.catalog_id}})
+
+    # ------------------------------------------------------------------
+    # 3. IDs filter
     # ------------------------------------------------------------------
     if body.ids:
         filter_.append({"terms": {"id": body.ids}})
@@ -198,6 +189,34 @@ def _build_item_query(body: SearchBody) -> Dict[str, Any]:
     return query
 
 
+_GENERIC_SORT_ALIASES: Dict[str, str] = {"code": "id", "label": "title"}
+_GENERIC_MULTILINGUAL_FIELDS = frozenset({"title", "description"})
+
+
+def _parse_sort_generic(
+    sortby: Optional[str], lang: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Parse a catalog/collection sortby string into an ES sort clause.
+
+    Aliases:  code → id,  label → title
+    Multilingual fields (title, description) sort on title.{lang} — plain keyword
+    per the catch-all strings dynamic template (NOT title.{lang}.keyword).
+    """
+    if not sortby:
+        return [{"_score": {"order": "desc"}}]
+    direction = "desc" if sortby.startswith("-") else "asc"
+    raw_field = sortby.lstrip("+-")
+    field = _GENERIC_SORT_ALIASES.get(raw_field, raw_field)
+    # Validate lang: 2-3 lowercase letters only
+    safe_lang = lang if (lang and re.match(r"^[a-z]{2,3}$", lang)) else "en"
+    if field in _GENERIC_MULTILINGUAL_FIELDS:
+        es_field = f"{field}.{safe_lang}"
+    else:
+        es_field = field
+    return [{es_field: {"order": direction}}, {"_score": {"order": "desc"}}]
+
+
 def _build_generic_query(body: CatalogSearchBody) -> Dict[str, Any]:
     """Build a query for catalog/collection search."""
     must: List[Dict[str, Any]] = []
@@ -219,6 +238,8 @@ def _build_generic_query(body: CatalogSearchBody) -> Dict[str, Any]:
         })
     if body.ids:
         filter_.append({"terms": {"id": body.ids}})
+    if body.catalog_id:
+        filter_.append({"term": {"catalog_id": body.catalog_id}})
 
     if not must and not filter_:
         return {"match_all": {}}
@@ -251,7 +272,21 @@ class SearchService(ExtensionProtocol):
     def __init__(self):
         from .router import router as search_router
         self.router = search_router
+        self._es = None  # set during lifespan
         logger.info("SearchService: Initializing extension.")
+
+    def _get_es(self):
+        """Return the shared ES client (cached after first lifespan startup)."""
+        if self._es is None:
+            # Lazy fallback: look up the singleton from the elasticsearch module.
+            from dynastore.modules.elasticsearch.client import get_client
+            self._es = get_client()
+            if self._es is None:
+                raise RuntimeError(
+                    "Elasticsearch client is not initialized. "
+                    "Ensure ElasticsearchModule is registered and its lifespan has started."
+                )
+        return self._es
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
@@ -262,8 +297,11 @@ class SearchService(ExtensionProtocol):
         Implements paginated search for Items, Catalogs, and Collections.
         """
         from .policies import register_search_policies
+        from dynastore.modules.elasticsearch.client import get_client
         register_search_policies()
+        self._es = get_client()  # cache the module-level singleton for all requests
         yield
+        self._es = None
 
     async def search_items(
         self,
@@ -276,7 +314,7 @@ class SearchService(ExtensionProtocol):
         Supports: q (full-text, multilingual), bbox, intersects, datetime,
                   ids, collections, sortby, and cursor-based pagination via token.
         """
-        index = get_index_name(es_config.index_prefix, "item")
+        index = get_index_name(_get_index_prefix(), "item")
         sort = _parse_sort(body.sortby)
         query = _build_item_query(body)
 
@@ -294,11 +332,8 @@ class SearchService(ExtensionProtocol):
             except Exception:
                 logger.warning(f"Ignoring invalid search token: {body.token!r}")
 
-        es = _build_es_client()
-        try:
-            resp = await es.search(index=index, body=es_body)
-        finally:
-            await es.close()
+        es = self._get_es()
+        resp = await es.search(index=index, body=es_body)
 
         hits = resp.get("hits", {})
         total = hits.get("total", {}).get("value", 0)
@@ -348,20 +383,17 @@ class SearchService(ExtensionProtocol):
         obfuscated indexes ({prefix}-geoid-*).
         """
         if catalog_id:
-            index = get_obfuscated_index_name(es_config.index_prefix, catalog_id)
+            index = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
         else:
-            index = f"{es_config.index_prefix}-geoid-*"
+            index = f"{_get_index_prefix()}-geoid-*"
 
         es_body: Dict[str, Any] = {
             "query": {"terms": {"geoid": geoids}},
             "size": limit,
         }
 
-        es = _build_es_client()
-        try:
-            resp = await es.search(index=index, body=es_body, ignore_unavailable=True)
-        finally:
-            await es.close()
+        es = self._get_es()
+        resp = await es.search(index=index, body=es_body, ignore_unavailable=True)
 
         raw_hits = resp.get("hits", {}).get("hits", [])
         results = [
@@ -383,12 +415,14 @@ class SearchService(ExtensionProtocol):
         self,
         catalog_id: str,
         mode: Optional[Literal["catalog", "obfuscated"]] = None,
+        driver: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Dispatch a BulkCatalogReindexTask and return 202 + task_id.
 
         If `mode` is omitted, falls back to the catalog's indexer config
         (obfuscated=True → "obfuscated", otherwise "catalog").
+        If `driver` is provided, the task targets only that secondary driver.
         """
         from dynastore.models.protocols import DatabaseProtocol
         from dynastore.modules.tasks import tasks as tasks_module
@@ -400,26 +434,32 @@ class SearchService(ExtensionProtocol):
         db = get_protocol(DatabaseProtocol)
         if not db:
             raise RuntimeError("DatabaseProtocol not available.")
+
+        inputs: Dict[str, Any] = {"catalog_id": catalog_id, "mode": resolved_mode}
+        if driver:
+            inputs["driver"] = driver
 
         task = await tasks_module.create_task(
             engine=db,
             task_data=TaskCreate(
                 caller_id="system:search",
                 task_type="elasticsearch_bulk_reindex_catalog",
-                inputs={"catalog_id": catalog_id, "mode": resolved_mode},
+                inputs=inputs,
             ),
             schema=tasks_module.get_task_schema(),
         )
-        return {"task_id": str(task.id), "catalog_id": catalog_id, "mode": resolved_mode, "status": "queued"}
+        return {"task_id": str(task.id), "catalog_id": catalog_id, "mode": resolved_mode, "driver": driver, "status": "queued"}
 
     async def reindex_collection(
         self,
         catalog_id: str,
         collection_id: str,
         mode: Optional[Literal["catalog", "obfuscated"]] = None,
+        driver: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Dispatch a BulkCollectionReindexTask and return 202 + task_id.
+        If `driver` is provided, the task targets only that secondary driver.
         """
         from dynastore.models.protocols import DatabaseProtocol
         from dynastore.modules.tasks import tasks as tasks_module
@@ -432,12 +472,16 @@ class SearchService(ExtensionProtocol):
         if not db:
             raise RuntimeError("DatabaseProtocol not available.")
 
+        inputs: Dict[str, Any] = {"catalog_id": catalog_id, "collection_id": collection_id, "mode": resolved_mode}
+        if driver:
+            inputs["driver"] = driver
+
         task = await tasks_module.create_task(
             engine=db,
             task_data=TaskCreate(
                 caller_id="system:search",
                 task_type="elasticsearch_bulk_reindex_collection",
-                inputs={"catalog_id": catalog_id, "collection_id": collection_id, "mode": resolved_mode},
+                inputs=inputs,
             ),
             schema=tasks_module.get_task_schema(),
         )
@@ -446,6 +490,7 @@ class SearchService(ExtensionProtocol):
             "catalog_id": catalog_id,
             "collection_id": collection_id,
             "mode": resolved_mode,
+            "driver": driver,
             "status": "queued",
         }
 
@@ -489,13 +534,13 @@ class SearchService(ExtensionProtocol):
         entity_type: str,
         base_url: str = "",
     ) -> GenericCollection:
-        index = get_index_name(es_config.index_prefix, entity_type)
+        index = get_index_name(_get_index_prefix(), entity_type)
         query = _build_generic_query(body)
 
         es_body: Dict[str, Any] = {
             "query": query,
             "size": body.limit,
-            "sort": [{"_score": {"order": "desc"}}],
+            "sort": _parse_sort_generic(body.sortby, body.lang),
         }
         if body.token:
             import json as _json
@@ -504,11 +549,8 @@ class SearchService(ExtensionProtocol):
             except Exception:
                 pass
 
-        es = _build_es_client()
-        try:
-            resp = await es.search(index=index, body=es_body)
-        finally:
-            await es.close()
+        es = self._get_es()
+        resp = await es.search(index=index, body=es_body)
 
         raw_hits = resp.get("hits", {}).get("hits", [])
         entities = [h["_source"] for h in raw_hits]

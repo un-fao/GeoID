@@ -34,12 +34,14 @@ logger = logging.getLogger(__name__)
 class BulkCatalogReindexInputs(BaseModel):
     catalog_id: str
     mode: Literal["catalog", "obfuscated"] = "catalog"
+    driver: Optional[str] = None
 
 
 class BulkCollectionReindexInputs(BaseModel):
     catalog_id: str
     collection_id: str
     mode: Literal["catalog", "obfuscated"] = "catalog"
+    driver: Optional[str] = None
 
 
 class ObfuscatedIndexInputs(BaseModel):
@@ -58,20 +60,15 @@ class ObfuscatedDeleteInputs(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _build_es_client():
-    from dynastore.modules.elasticsearch.config import config as es_config
-    try:
-        from elasticsearch import AsyncElasticsearch
-    except ImportError:
+    """Return the shared singleton AsyncElasticsearch client."""
+    from dynastore.modules.elasticsearch.client import get_client
+    es = get_client()
+    if es is None:
         raise RuntimeError(
-            "elasticsearch package not installed. Run: poetry add elasticsearch[async]"
+            "Elasticsearch client is not initialized. "
+            "Ensure ElasticsearchModule is registered and its lifespan has started."
         )
-    kwargs: Dict[str, Any] = {
-        "hosts": [es_config.url],
-        "verify_certs": es_config.verify_certs,
-    }
-    if es_config.username and es_config.password:
-        kwargs["basic_auth"] = (es_config.username, es_config.password)
-    return AsyncElasticsearch(**kwargs)
+    return es
 
 
 async def _reindex_collection(
@@ -176,7 +173,7 @@ class BulkCatalogReindexTask(TaskProtocol):
     task_type = "elasticsearch_bulk_reindex_catalog"
 
     async def run(self, payload: TaskPayload) -> Dict[str, Any]:
-        from dynastore.modules.elasticsearch.config import config as es_config
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
         from dynastore.modules.elasticsearch.mappings import (
             get_index_name,
             get_obfuscated_index_name,
@@ -189,61 +186,60 @@ class BulkCatalogReindexTask(TaskProtocol):
         catalog_id = inputs.catalog_id
         mode = inputs.mode
 
-        stac_index = get_index_name(es_config.index_prefix, "item")
-        obfuscated_index = get_obfuscated_index_name(es_config.index_prefix, catalog_id)
+        stac_index = get_index_name(_get_index_prefix(), "item")
+        obfuscated_index = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
 
         catalogs_proto = get_protocol(CatalogsProtocol)
         if not catalogs_proto:
             raise RuntimeError("CatalogsProtocol not available in this process.")
 
         total_indexed = 0
-        async with _build_es_client() as es:
-            # Ensure obfuscated index exists when needed.
-            if mode == "obfuscated":
-                if not await es.indices.exists(index=obfuscated_index):
-                    await es.indices.create(
-                        index=obfuscated_index,
-                        body={"mappings": GEOID_OBFUSCATED_MAPPING},
-                        ignore=400,
-                    )
-                # Remove stale STAC items for this catalog.
-                await es.delete_by_query(
-                    index=stac_index,
-                    body={"query": {"term": {"catalog_id": catalog_id}}},
-                    ignore_unavailable=True,
-                )
-            else:
-                # Remove stale obfuscated docs for this catalog.
-                await es.delete_by_query(
+        es = _build_es_client()
+        # Ensure obfuscated index exists when needed.
+        if mode == "obfuscated":
+            if not await es.indices.exists(index=obfuscated_index):
+                await es.indices.create(
                     index=obfuscated_index,
-                    body={"query": {"match_all": {}}},
-                    ignore_unavailable=True,
+                    body={"mappings": GEOID_OBFUSCATED_MAPPING},
                 )
+            # Remove stale STAC items for this catalog.
+            await es.delete_by_query(
+                index=stac_index,
+                body={"query": {"term": {"catalog_id": catalog_id}}},
+                ignore_unavailable=True,
+            )
+        else:
+            # Remove stale obfuscated docs for this catalog.
+            await es.delete_by_query(
+                index=obfuscated_index,
+                body={"query": {"match_all": {}}},
+                ignore_unavailable=True,
+            )
 
-            # Reindex all collections.
-            offset, batch = 0, 50
-            while True:
-                collections = await catalogs_proto.list_collections(
-                    catalog_id, limit=batch, offset=offset
+        # Reindex all collections.
+        offset, batch = 0, 50
+        while True:
+            collections = await catalogs_proto.list_collections(
+                catalog_id, limit=batch, offset=offset
+            )
+            if not collections:
+                break
+            for collection in collections:
+                collection_id = getattr(collection, "id", None)
+                if not collection_id:
+                    continue
+                count = await _reindex_collection(
+                    es, catalogs_proto, catalog_id, collection_id,
+                    mode, stac_index, obfuscated_index,
                 )
-                if not collections:
-                    break
-                for collection in collections:
-                    collection_id = getattr(collection, "id", None)
-                    if not collection_id:
-                        continue
-                    count = await _reindex_collection(
-                        es, catalogs_proto, catalog_id, collection_id,
-                        mode, stac_index, obfuscated_index,
-                    )
-                    total_indexed += count
-                    logger.info(
-                        "BulkCatalogReindexTask: %s/%s — %d docs indexed (%s mode).",
-                        catalog_id, collection_id, count, mode,
-                    )
-                if len(collections) < batch:
-                    break
-                offset += batch
+                total_indexed += count
+                logger.info(
+                    "BulkCatalogReindexTask: %s/%s — %d docs indexed (%s mode).",
+                    catalog_id, collection_id, count, mode,
+                )
+            if len(collections) < batch:
+                break
+            offset += batch
 
         return {
             "catalog_id": catalog_id,
@@ -266,7 +262,7 @@ class BulkCollectionReindexTask(TaskProtocol):
     task_type = "elasticsearch_bulk_reindex_collection"
 
     async def run(self, payload: TaskPayload) -> Dict[str, Any]:
-        from dynastore.modules.elasticsearch.config import config as es_config
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
         from dynastore.modules.elasticsearch.mappings import (
             get_index_name,
             get_obfuscated_index_name,
@@ -280,24 +276,23 @@ class BulkCollectionReindexTask(TaskProtocol):
         collection_id = inputs.collection_id
         mode = inputs.mode
 
-        stac_index = get_index_name(es_config.index_prefix, "item")
-        obfuscated_index = get_obfuscated_index_name(es_config.index_prefix, catalog_id)
+        stac_index = get_index_name(_get_index_prefix(), "item")
+        obfuscated_index = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
 
         catalogs_proto = get_protocol(CatalogsProtocol)
         if not catalogs_proto:
             raise RuntimeError("CatalogsProtocol not available.")
 
-        async with _build_es_client() as es:
-            if mode == "obfuscated" and not await es.indices.exists(index=obfuscated_index):
-                await es.indices.create(
-                    index=obfuscated_index,
-                    body={"mappings": GEOID_OBFUSCATED_MAPPING},
-                    ignore=400,
-                )
-            count = await _reindex_collection(
-                es, catalogs_proto, catalog_id, collection_id,
-                mode, stac_index, obfuscated_index,
+        es = _build_es_client()
+        if mode == "obfuscated" and not await es.indices.exists(index=obfuscated_index):
+            await es.indices.create(
+                index=obfuscated_index,
+                body={"mappings": GEOID_OBFUSCATED_MAPPING},
             )
+        count = await _reindex_collection(
+            es, catalogs_proto, catalog_id, collection_id,
+            mode, stac_index, obfuscated_index,
+        )
 
         return {
             "catalog_id": catalog_id,
@@ -322,31 +317,30 @@ class ObfuscatedIndexTask(TaskProtocol):
     task_type = "elasticsearch_obfuscated_index"
 
     async def run(self, payload: TaskPayload) -> Dict[str, Any]:
-        from dynastore.modules.elasticsearch.config import config as es_config
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
         from dynastore.modules.elasticsearch.mappings import (
             get_obfuscated_index_name,
             GEOID_OBFUSCATED_MAPPING,
         )
 
         inputs = ObfuscatedIndexInputs.model_validate(payload.inputs)
-        index_name = get_obfuscated_index_name(es_config.index_prefix, inputs.catalog_id)
+        index_name = get_obfuscated_index_name(_get_index_prefix(), inputs.catalog_id)
 
-        async with _build_es_client() as es:
-            if not await es.indices.exists(index=index_name):
-                await es.indices.create(
-                    index=index_name,
-                    body={"mappings": GEOID_OBFUSCATED_MAPPING},
-                    ignore=400,
-                )
-            await es.index(
+        es = _build_es_client()
+        if not await es.indices.exists(index=index_name):
+            await es.indices.create(
                 index=index_name,
-                id=inputs.geoid,
-                document={
-                    "geoid": inputs.geoid,
-                    "catalog_id": inputs.catalog_id,
-                    "collection_id": inputs.collection_id,
-                },
+                body={"mappings": GEOID_OBFUSCATED_MAPPING},
             )
+        await es.index(
+            index=index_name,
+            id=inputs.geoid,
+            document={
+                "geoid": inputs.geoid,
+                "catalog_id": inputs.catalog_id,
+                "collection_id": inputs.collection_id,
+            },
+        )
 
         return {"geoid": inputs.geoid, "index": index_name, "status": "indexed"}
 
@@ -364,7 +358,7 @@ class ObfuscatedDeleteTask(TaskProtocol):
     task_type = "elasticsearch_obfuscated_delete"
 
     async def run(self, payload: TaskPayload) -> Dict[str, Any]:
-        from dynastore.modules.elasticsearch.config import config as es_config
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
         from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
 
         try:
@@ -373,12 +367,12 @@ class ObfuscatedDeleteTask(TaskProtocol):
             raise RuntimeError("elasticsearch package not installed.")
 
         inputs = ObfuscatedDeleteInputs.model_validate(payload.inputs)
-        index_name = get_obfuscated_index_name(es_config.index_prefix, inputs.catalog_id)
+        index_name = get_obfuscated_index_name(_get_index_prefix(), inputs.catalog_id)
 
-        async with _build_es_client() as es:
-            try:
-                await es.delete(index=index_name, id=inputs.geoid)
-            except NotFoundError:
-                pass  # safe: document may not be in the obfuscated index
+        es = _build_es_client()
+        try:
+            await es.delete(index=index_name, id=inputs.geoid)
+        except NotFoundError:
+            pass  # safe: document may not be in the obfuscated index
 
         return {"geoid": inputs.geoid, "index": index_name, "status": "deleted"}

@@ -267,3 +267,8 @@ GEOID_OBFUSCATED_MAPPING: Dict[str, Any] = {
 def get_obfuscated_index_name(prefix: str, catalog_id: str) -> str:
     """Return the name of the geoid-only obfuscated index for a catalog."""
     return f"{prefix}-geoid-{catalog_id}"
+
+
+def get_assets_index_name(prefix: str, catalog_id: str) -> str:
+    """Return the name of the assets index for a catalog."""
+    return f"{prefix}-assets-{catalog_id}"

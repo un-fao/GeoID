@@ -890,6 +890,15 @@ class AssetService(AssetsProtocol):
                     a["asset_id"], a["catalog_id"], a["collection_id"]
                 )
 
+            # Emit delete events for secondary driver fan-out
+            if self._event_emitter and rowcount > 0:
+                event_type = (
+                    AssetEventType.ASSET_HARD_DELETED if hard
+                    else AssetEventType.ASSET_DELETED
+                )
+                for a in assets:
+                    await self._event_emitter(event_type, dict(a))
+
             return rowcount
 
     async def soft_delete_asset(

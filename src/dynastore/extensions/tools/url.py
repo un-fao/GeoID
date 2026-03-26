@@ -17,7 +17,8 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 from fastapi import Request
-from urllib.parse import urlparse, urljoin
+from typing import Optional, Dict
+from urllib.parse import urlparse, urljoin, urlencode, quote_plus
 import os
 
 FORCE_HTTPS: bool = False
@@ -69,9 +70,30 @@ def get_url(request: Request, remove_qp=True) -> str:
     if remove_qp:
         # FIX: Pass the keys of the current query parameters to be removed.
         url = url.remove_query_params(keys=request.query_params.keys())
-    
+
     scheme = url.scheme
     if FORCE_HTTPS:
         scheme = "https"
     return f"{scheme}://{url.netloc}{url.path.rstrip('/')}"
+
+
+def build_sibling_redirect(endpoint: str, params: Optional[Dict[str, Optional[str]]] = None) -> str:
+    """Build a relative redirect URL to a sibling endpoint with query parameters.
+
+    Uses a **relative** URL so that the browser resolves it against the current
+    request path.  This avoids root_path duplication that occurs when the
+    reverse proxy also rewrites ``Location`` headers.
+
+    Args:
+        endpoint: Sibling endpoint name (e.g. ``"login"``, ``"register"``).
+        params: Query-parameter dict.  ``None`` values are silently excluded.
+
+    Returns:
+        Relative URL string, e.g. ``"login?error=Invalid+credentials&state=init"``.
+    """
+    if params:
+        filtered = {k: v for k, v in params.items() if v is not None}
+        if filtered:
+            return f"{endpoint}?{urlencode(filtered, quote_via=quote_plus)}"
+    return endpoint
 

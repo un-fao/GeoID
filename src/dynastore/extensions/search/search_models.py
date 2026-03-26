@@ -12,6 +12,10 @@ class SearchBody(BaseModel):
         None,
         description="Free-text query over id, title, description, and all item properties."
     )
+    catalog_id: Optional[str] = Field(
+        None,
+        description="Restrict search to items in a single catalog."
+    )
     ids: Optional[List[str]] = Field(
         None,
         description="Array of Item ids to return."
@@ -59,8 +63,21 @@ class CatalogSearchBody(BaseModel):
     """Body for catalog or collection keyword search."""
     q: Optional[str] = Field(None, description="Free-text query over id, title, description.")
     ids: Optional[List[str]] = Field(None, description="Array of IDs to return.")
+    catalog_id: Optional[str] = Field(None, description="Restrict to a single catalog.")
     limit: int = Field(10, ge=1, le=10_000)
     token: Optional[str] = Field(None, description="Pagination cursor token.")
+    sortby: Optional[str] = Field(
+        None,
+        description=(
+            "Sort field. Prefix with '+' for ascending, '-' for descending. "
+            "Aliases: 'code'=id, 'label'=title. "
+            "E.g. '+code', '-label'."
+        ),
+    )
+    lang: Optional[str] = Field(
+        None,
+        description="Language code for multilingual sort (e.g. 'en', 'fr'). Default: 'en'.",
+    )
 
 
 class SearchLink(BaseModel):

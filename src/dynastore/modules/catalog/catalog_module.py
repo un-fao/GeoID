@@ -72,7 +72,7 @@ from dynastore.modules.catalog.collection_service import CollectionService
 from dynastore.modules.catalog.item_service import ItemService
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.catalog.config_service import ConfigService
-from dynastore.modules.catalog.asset_service import AssetService
+from dynastore.modules.catalog.asset_service import AssetService, AssetEventType
 from dynastore.modules.catalog.properties_service import PropertiesService
 from dynastore.modules.catalog.localization_service import LocalizationService
 from dynastore.modules.catalog.event_service import (
@@ -84,6 +84,29 @@ from dynastore.modules.catalog.event_service import (
 from dynastore.modules.catalog.log_manager import LogService, initialize_system_logs
 
 logger = logging.getLogger(__name__)
+
+# --- Asset event bridge: AssetEventType → CatalogEventType via EventsProtocol ---
+
+_ASSET_EVENT_MAP = {
+    AssetEventType.ASSET_CREATED: CatalogEventType.ASSET_CREATION,
+    AssetEventType.ASSET_UPDATED: CatalogEventType.ASSET_UPDATE,
+    AssetEventType.ASSET_DELETED: CatalogEventType.ASSET_DELETION,
+    AssetEventType.ASSET_HARD_DELETED: CatalogEventType.ASSET_HARD_DELETION,
+}
+
+
+async def _asset_event_bridge(event_type: AssetEventType, data: dict) -> None:
+    """Bridge AssetService events to CatalogEventType for secondary drivers."""
+    catalog_event = _ASSET_EVENT_MAP.get(event_type)
+    if catalog_event:
+        await emit_event(
+            catalog_event,
+            catalog_id=data.get("catalog_id"),
+            collection_id=data.get("collection_id"),
+            asset_id=data.get("asset_id"),
+            payload=data,
+        )
+
 
 # --- Legacy Constants and DDL (Shared by Module Initialization) ---
 
@@ -120,14 +143,13 @@ from dynastore.modules import ModuleProtocol
 
 _module_instance: Optional[ModuleProtocol] = None
 class CatalogModule(ModuleProtocol):
-    priority: int = 20
+    priority: int = 15
     """
     Manages catalog lifecycle.
     Functions as a composition root, initializing services and registering them as protocol providers.
+    Must start after DBService (priority=10) so the database engine is available.
+    Priority < 20 ensures startup aborts on failure (foundational module).
     """
-
-    # Protocol attributes
-    priority: int = 10  # High priority for protocol discovery
 
 
     def __init__(self):
@@ -163,7 +185,7 @@ class CatalogModule(ModuleProtocol):
         self.collection_service = CollectionService(engine=engine)
         self.items_service = ItemService(engine=engine)
         self.config_service = ConfigService(engine=engine)
-        self.asset_service = AssetService(engine=engine)
+        self.asset_service = AssetService(engine=engine, event_emitter=_asset_event_bridge)
         self.properties_service = PropertiesService(engine=engine)
         self.localization_service = LocalizationService()
         self.event_service = EventService()

@@ -282,16 +282,31 @@ class STACService(ExtensionProtocol, StaticFilesProtocol):
 
         # Search Endpoints
         self.router.add_api_route(
+            "/catalogs/{catalog_id}/search",
+            self.search_items_post,
+            methods=["POST"],
+            response_class=JSONResponse,
+        )
+        self.router.add_api_route(
+            "/collections-search",
+            self.search_stac_collections_post,
+            methods=["POST"],
+            response_class=JSONResponse,
+        )
+        # Deprecated aliases — kept for backward compat
+        self.router.add_api_route(
             "/search",
             self.search_items_post,
             methods=["POST"],
             response_class=JSONResponse,
+            deprecated=True,
         )
         self.router.add_api_route(
             "/collections/search",
             self.search_stac_collections_post,
             methods=["POST"],
             response_class=JSONResponse,
+            deprecated=True,
         )
 
         # Virtual STAC Endpoints
@@ -1058,7 +1073,11 @@ class STACService(ExtensionProtocol, StaticFilesProtocol):
         search_request: ItemSearchRequest,
         engine=Depends(get_async_engine),
         language: str = Depends(get_language),
+        catalog_id: Optional[str] = None,
     ):
+        # Path param overrides body when present (new canonical path includes catalog_id)
+        if catalog_id:
+            search_request = search_request.model_copy(update={"catalog_id": catalog_id})
         async with managed_transaction(engine) as conn:
             stac_config = await self._get_stac_config(
                 search_request.catalog_id, db_resource=conn
@@ -1088,8 +1107,11 @@ class STACService(ExtensionProtocol, StaticFilesProtocol):
         engine=Depends(get_async_engine),
         language: str = Depends(get_language),
     ):
-        async with managed_transaction(engine) as conn:
-            collections, total_count = await search_collections(conn, search_req)
+        try:
+            async with managed_transaction(engine) as conn:
+                collections, total_count = await search_collections(conn, search_req)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
         # Release connection before PySTAC processing
         stac_collections = []

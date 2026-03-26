@@ -210,9 +210,10 @@ task_gdal_job = ["dynastore[task_base,gdal]"]
 #   ├──────────────────────────────────────────────────────────┤
 #   │  Deployable services                                     │
 #   ├──────────────────────────────────────────────────────────┤
-#   │  api_open       = core + catalog + google + tools        │
+#   │  api_open       = core + catalog + google                │
 #   │                   + monitor + index                      │
 #   │                   + processes               ... NO auth  │
+#   │                   (tools_grp on dedicated tools service) │
 #   │  api_catalog    = api_open + auth_grp      ... WITH auth │
 #   │  api_maps_open  = core + catalog + google + maps         │
 #   │                   + tools + monitor         ... NO auth  │
@@ -227,7 +228,7 @@ task_gdal_job = ["dynastore[task_base,gdal]"]
 #   ├──────────────────────────────────────────────────────────┤
 #   │  Local-only scopes                                       │
 #   ├──────────────────────────────────────────────────────────┤
-#   │  catalog_local  = api_open WITHOUT google_grp ... NO gcp │
+#   │  catalog_local  = api_open w/o google_grp     ... NO gcp │
 #   │  worker_local   = worker_service + monitor    ... NO auth│
 #   └──────────────────────────────────────────────────────────┘
 #
@@ -239,8 +240,8 @@ task_gdal_job = ["dynastore[task_base,gdal]"]
 #   maps    service -> MAPS_SCOPE=api_maps_open
 #
 # ==========================================================================
-# api_open: full catalog WITHOUT auth — open for testing
-api_open = ["dynastore[core,catalog_grp,google_grp,tools_grp,monitor_grp,index_grp,processes]"]
+# api_open: full catalog WITHOUT auth — open for testing (no tools_grp: proxy/template served by the dedicated tools service)
+api_open = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes]"]
 # api_catalog: api_open + auth (most common production deployment)
 api_catalog = ["dynastore[api_open,auth_grp]"]
 # api_maps: maps/tiles/styles service — WITH auth (kept for reference / future use)
@@ -255,8 +256,8 @@ api_full = ["dynastore[api_catalog,maps_grp,geospatial_io]"]
 geoid_service = ["dynastore[api_catalog,extension_geoid]"]
 # worker_service: background task processor (sync-db tasks + async-db catalog reads), no auth
 worker_service = ["dynastore[core,catalog_grp,google_grp,index_grp,tasks,processes,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job]"]
-# catalog_local: local dev catalog — api_open without google_grp/gcp_cloud_runner
-catalog_local = ["dynastore[core,catalog_grp,tools_grp,monitor_grp,index_grp,processes]"]
+# catalog_local: local dev catalog — api_open without google_grp/gcp_cloud_runner (no tools_grp: use the dedicated tools service)
+catalog_local = ["dynastore[core,catalog_grp,monitor_grp,index_grp,processes]"]
 # worker_local: local HTTP simulation of Cloud Run Jobs — all tasks + processes/stats UI
 worker_local = ["dynastore[worker_service,monitor_grp]"]
 
@@ -293,6 +294,7 @@ web = "dynastore.modules.web.web_module:WebModule"
 storage_postgresql = "dynastore.modules.storage.drivers.postgresql:PostgresStorageDriver"
 storage_elasticsearch = "dynastore.modules.storage.drivers.elasticsearch:ElasticsearchStorageDriver"
 storage_elasticsearch_obfuscated = "dynastore.modules.storage.drivers.elasticsearch:ElasticsearchObfuscatedDriver"
+storage_elasticsearch_assets = "dynastore.modules.storage.drivers.elasticsearch:ElasticsearchAssetsDriver"
 storage_duckdb = "dynastore.modules.storage.drivers.duckdb:DuckDBStorageDriver"
 storage_iceberg = "dynastore.modules.storage.drivers.iceberg:IcebergStorageDriver"
 

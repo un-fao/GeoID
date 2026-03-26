@@ -23,7 +23,7 @@ Reuses ``stac-fastapi-elasticsearch-opensearch`` (SFEOS) library for all ES
 operations instead of reimplementing.  This ensures full compatibility: SFEOS
 can read data written by these drivers transparently.
 
-Two drivers:
+Three drivers:
 
 * ``ElasticsearchStorageDriver``  (driver_id ``"elasticsearch"``)
   Full STAC indexing via SFEOS ``DatabaseLogic`` for items, collections, and
@@ -33,7 +33,12 @@ Two drivers:
   Stores full entity data but only allows search by geoid (``dynamic: false``).
   Manages DENY access policies in its own lifecycle.
 
-Both drivers register as async event listeners on item events, checking
+* ``ElasticsearchAssetsDriver``  (driver_id ``"elasticsearch_assets"``)
+  Indexes asset metadata into per-catalog ``{prefix}-assets-{catalog_id}`` indices.
+  Listens for ``CatalogEventType.ASSET_*`` events (when wired) and supports
+  direct programmatic indexing via ``index_asset()`` / ``delete_asset()``.
+
+All drivers register as async event listeners, checking
 ``StorageRoutingConfig.secondary_drivers`` before acting.
 """
 
@@ -693,9 +698,9 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
         from dynastore.modules.elasticsearch.mappings import (
             get_obfuscated_index_name, GEOID_OBFUSCATED_MAPPING,
         )
-        from dynastore.modules.elasticsearch.config import config as es_config
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
 
-        index_name = get_obfuscated_index_name(es_config.index_prefix, catalog_id)
+        index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
         items = self._normalize_entities(entities)
         es = self._get_client()
 
@@ -736,12 +741,12 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> AsyncIterator[Feature]:
         from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
-        from dynastore.modules.elasticsearch.config import config as es_config
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
 
         if not entity_ids:
             return
 
-        index_name = get_obfuscated_index_name(es_config.index_prefix, catalog_id)
+        index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
         es = self._get_client()
 
         if not await es.indices.exists(index=index_name):
@@ -777,9 +782,9 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
                 "ElasticsearchObfuscatedDriver does not support soft delete."
             )
         from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
-        from dynastore.modules.elasticsearch.config import config as es_config
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
 
-        index_name = get_obfuscated_index_name(es_config.index_prefix, catalog_id)
+        index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
         es = self._get_client()
         deleted = 0
 
@@ -800,9 +805,9 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
         from dynastore.modules.elasticsearch.mappings import (
             get_obfuscated_index_name, GEOID_OBFUSCATED_MAPPING,
         )
-        from dynastore.modules.elasticsearch.config import config as es_config
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
 
-        index_name = get_obfuscated_index_name(es_config.index_prefix, catalog_id)
+        index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
         es = self._get_client()
 
         if not await es.indices.exists(index=index_name):
@@ -826,9 +831,9 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
                 "ElasticsearchObfuscatedDriver does not support soft drop."
             )
         from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
-        from dynastore.modules.elasticsearch.config import config as es_config
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
 
-        index_name = get_obfuscated_index_name(es_config.index_prefix, catalog_id)
+        index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
         es = self._get_client()
         await es.indices.delete(index=index_name, ignore_unavailable=True)
         await self._revoke_deny_policy(catalog_id)
@@ -862,9 +867,9 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
             from dynastore.modules.elasticsearch.mappings import (
                 get_obfuscated_index_name, GEOID_OBFUSCATED_MAPPING,
             )
-            from dynastore.modules.elasticsearch.config import config as es_config
+            from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
 
-            index_name = get_obfuscated_index_name(es_config.index_prefix, catalog_id)
+            index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
             es = self._get_client()
 
             if not await es.indices.exists(index=index_name):
@@ -904,9 +909,9 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
             from dynastore.modules.elasticsearch.mappings import (
                 get_obfuscated_index_name, GEOID_OBFUSCATED_MAPPING,
             )
-            from dynastore.modules.elasticsearch.config import config as es_config
+            from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
 
-            index_name = get_obfuscated_index_name(es_config.index_prefix, catalog_id)
+            index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
             es = self._get_client()
 
             if not await es.indices.exists(index=index_name):
@@ -947,9 +952,9 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
             return
         try:
             from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
-            from dynastore.modules.elasticsearch.config import config as es_config
+            from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
 
-            index_name = get_obfuscated_index_name(es_config.index_prefix, catalog_id)
+            index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
             es = self._get_client()
             try:
                 await es.delete(index=index_name, id=item_id)
@@ -1055,4 +1060,297 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
         except Exception as e:
             logger.warning(
                 "ObfuscatedDriver: could not restore DENY policies: %s", e,
+            )
+
+
+# ---------------------------------------------------------------------------
+# ElasticsearchAssetsDriver — per-catalog asset index
+# ---------------------------------------------------------------------------
+
+class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
+    """Elasticsearch storage driver for asset metadata.
+
+    Indexes asset documents into per-catalog ``{prefix}-assets-{catalog_id}``
+    indices using the ``ASSET_MAPPING`` from ``modules/elasticsearch/mappings.py``.
+
+    Event listeners for ``CatalogEventType.ASSET_*`` are registered at
+    lifespan if available.  The driver also exposes ``index_asset()`` and
+    ``delete_asset()`` for direct programmatic use.
+
+    Registered as ``storage_elasticsearch_assets`` via entry points.
+    """
+
+    driver_id: str = "elasticsearch_assets"
+    priority: int = 52
+    capabilities: FrozenSet[str] = frozenset({
+        Capability.STREAMING,
+        Capability.FULLTEXT,
+    })
+
+    def is_available(self) -> bool:
+        return self._sfeos_available()
+
+    def _get_client(self):
+        """Get the async ES client from SFEOS DatabaseLogic."""
+        return self._get_db_logic().client
+
+    @asynccontextmanager
+    async def lifespan(self, app_state: object):
+        from dynastore.models.protocols.events import EventsProtocol
+        from dynastore.tools.discovery import get_protocol
+        from dynastore.modules.catalog.event_service import CatalogEventType
+
+        events = get_protocol(EventsProtocol)
+        if events:
+            for etype, handler in [
+                (CatalogEventType.ASSET_CREATION, self._on_asset_upsert),
+                (CatalogEventType.ASSET_UPDATE, self._on_asset_upsert),
+                (CatalogEventType.ASSET_DELETION, self._on_asset_delete),
+                (CatalogEventType.ASSET_HARD_DELETION, self._on_asset_delete),
+            ]:
+                decorator = events.async_event_listener(etype)
+                if decorator:
+                    decorator(handler)
+            logger.info("ElasticsearchAssetsDriver: event listeners registered.")
+        yield
+
+    # ------------------------------------------------------------------
+    # Public API — direct programmatic indexing
+    # ------------------------------------------------------------------
+
+    async def index_asset(
+        self, catalog_id: str, asset_doc: Dict[str, Any],
+    ) -> None:
+        """Index a single asset document."""
+        from dynastore.modules.elasticsearch.mappings import (
+            get_assets_index_name, ASSET_MAPPING,
+        )
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
+
+        index_name = get_assets_index_name(_get_index_prefix(), catalog_id)
+        es = self._get_client()
+
+        if not await es.indices.exists(index=index_name):
+            await es.indices.create(
+                index=index_name,
+                body={"mappings": ASSET_MAPPING},
+                ignore=400,
+            )
+
+        asset_id = asset_doc.get("asset_id", asset_doc.get("id"))
+        await es.index(index=index_name, id=asset_id, document=asset_doc)
+
+    async def delete_asset(
+        self, catalog_id: str, asset_id: str,
+    ) -> None:
+        """Delete a single asset document from the index."""
+        from dynastore.modules.elasticsearch.mappings import get_assets_index_name
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
+
+        index_name = get_assets_index_name(_get_index_prefix(), catalog_id)
+        es = self._get_client()
+        try:
+            await es.delete(index=index_name, id=asset_id)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # StorageDriverProtocol
+    # ------------------------------------------------------------------
+
+    async def write_entities(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        entities: Union[Feature, FeatureCollection, Dict[str, Any], List[Dict[str, Any]]],
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> List[Feature]:
+        from dynastore.modules.elasticsearch.mappings import (
+            get_assets_index_name, ASSET_MAPPING,
+        )
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
+
+        index_name = get_assets_index_name(_get_index_prefix(), catalog_id)
+        items = self._normalize_entities(entities)
+        es = self._get_client()
+
+        if not await es.indices.exists(index=index_name):
+            await es.indices.create(
+                index=index_name,
+                body={"mappings": ASSET_MAPPING},
+                ignore=400,
+            )
+
+        bulk_body: list = []
+        for item in items:
+            doc = item if isinstance(item, dict) else (
+                item.model_dump(by_alias=True, exclude_none=True)
+                if hasattr(item, "model_dump") else dict(item)
+            )
+            doc.setdefault("catalog_id", catalog_id)
+            doc.setdefault("collection_id", collection_id)
+            asset_id = doc.get("asset_id", doc.get("id", ""))
+            bulk_body.append({"index": {"_index": index_name, "_id": asset_id}})
+            bulk_body.append(doc)
+
+        if bulk_body:
+            await es.bulk(body=bulk_body)
+
+        return items if isinstance(items, list) else list(items)
+
+    async def read_entities(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        entity_ids: Optional[List[str]] = None,
+        request: Optional[QueryRequest] = None,
+        limit: int = 100,
+        offset: int = 0,
+        db_resource: Optional[Any] = None,
+    ) -> AsyncIterator[Feature]:
+        from dynastore.modules.elasticsearch.mappings import get_assets_index_name
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
+
+        if not entity_ids:
+            return
+
+        index_name = get_assets_index_name(_get_index_prefix(), catalog_id)
+        es = self._get_client()
+
+        if not await es.indices.exists(index=index_name):
+            return
+
+        for asset_id in entity_ids:
+            try:
+                resp = await es.get(index=index_name, id=asset_id)
+                source = resp["_source"]
+                yield Feature(
+                    type="Feature",
+                    id=source.get("asset_id", asset_id),
+                    geometry=None,
+                    properties=source,
+                )
+            except Exception:
+                pass
+
+    async def delete_entities(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        entity_ids: List[str],
+        *,
+        soft: bool = False,
+        db_resource: Optional[Any] = None,
+    ) -> int:
+        if soft:
+            raise SoftDeleteNotSupportedError(
+                "ElasticsearchAssetsDriver does not support soft delete."
+            )
+        from dynastore.modules.elasticsearch.mappings import get_assets_index_name
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
+
+        index_name = get_assets_index_name(_get_index_prefix(), catalog_id)
+        es = self._get_client()
+        deleted = 0
+        for asset_id in entity_ids:
+            try:
+                await es.delete(index=index_name, id=asset_id)
+                deleted += 1
+            except Exception:
+                pass
+        return deleted
+
+    async def ensure_storage(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+    ) -> None:
+        from dynastore.modules.elasticsearch.mappings import (
+            get_assets_index_name, ASSET_MAPPING,
+        )
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
+
+        index_name = get_assets_index_name(_get_index_prefix(), catalog_id)
+        es = self._get_client()
+        if not await es.indices.exists(index=index_name):
+            await es.indices.create(
+                index=index_name,
+                body={"mappings": ASSET_MAPPING},
+                ignore=400,
+            )
+
+    async def drop_storage(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        soft: bool = False,
+    ) -> None:
+        if soft:
+            raise SoftDeleteNotSupportedError(
+                "ElasticsearchAssetsDriver does not support soft drop."
+            )
+        from dynastore.modules.elasticsearch.mappings import get_assets_index_name
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
+
+        index_name = get_assets_index_name(_get_index_prefix(), catalog_id)
+        es = self._get_client()
+        await es.indices.delete(index=index_name, ignore_unavailable=True)
+
+    async def export_entities(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        format: str = "parquet",
+        target_path: str = "",
+        db_resource: Optional[Any] = None,
+    ) -> str:
+        raise NotImplementedError(
+            "ElasticsearchAssetsDriver.export_entities: not supported."
+        )
+
+    # ------------------------------------------------------------------
+    # Event handlers (fired when CatalogEventType.ASSET_* events are emitted)
+    # ------------------------------------------------------------------
+
+    async def _on_asset_upsert(
+        self, catalog_id: str = None, collection_id: str = None,
+        asset_id: str = None, payload=None, **kwargs,
+    ):
+        if not catalog_id or not asset_id:
+            return
+        if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
+            return
+        try:
+            doc = payload if isinstance(payload, dict) else {}
+            doc.setdefault("asset_id", asset_id)
+            doc.setdefault("catalog_id", catalog_id)
+            if collection_id:
+                doc.setdefault("collection_id", collection_id)
+            await self.index_asset(catalog_id, doc)
+        except Exception as e:
+            logger.error(
+                "AssetsDriver: index failed for %s/%s: %s",
+                catalog_id, asset_id, e,
+            )
+
+    async def _on_asset_delete(
+        self, catalog_id: str = None, collection_id: str = None,
+        asset_id: str = None, payload=None, **kwargs,
+    ):
+        if not asset_id:
+            asset_id = (payload if isinstance(payload, dict) else {}).get("asset_id")
+        if not catalog_id or not asset_id:
+            return
+        if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
+            return
+        try:
+            await self.delete_asset(catalog_id, asset_id)
+        except Exception as e:
+            logger.error(
+                "AssetsDriver: delete failed for %s/%s: %s",
+                catalog_id, asset_id, e,
             )

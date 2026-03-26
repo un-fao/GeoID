@@ -252,17 +252,33 @@ class AssetService(ExtensionProtocol):
             status_code=status.HTTP_204_NO_CONTENT,
             summary="Delete All Collection Assets",
         )
+        # Canonical asset search routes
+        self.router.add_api_route(
+            "/assets-search",
+            self.advanced_search,
+            methods=["POST"],
+            summary="Advanced Asset Search",
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/assets-search",
+            self.advanced_search,
+            methods=["POST"],
+            summary="Advanced Asset Search (scoped to catalog)",
+        )
+        # Deprecated aliases (backward compat)
         self.router.add_api_route(
             "/search",
             self.advanced_search,
             methods=["POST"],
-            summary="Advanced Search",
+            summary="Advanced Search. Deprecated: use /assets-search.",
+            deprecated=True,
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/search",
             self.advanced_search,
             methods=["POST"],
-            summary="Advanced Search",
+            summary="Advanced Search. Deprecated: use /catalogs/{catalog_id}/assets-search.",
+            deprecated=True,
         )
         # -----------------------------------------------------------------
         # Upload endpoints (backend-agnostic)

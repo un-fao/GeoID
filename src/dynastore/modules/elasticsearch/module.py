@@ -174,7 +174,12 @@ class ElasticsearchModule(ModuleProtocol):
         # on_apply is not called automatically on service restart, so we do it here.
         await self._restore_obfuscated_policies()
 
-        yield
+        from dynastore.modules.elasticsearch import client as es_client
+        await es_client.init()
+        try:
+            yield
+        finally:
+            await es_client.close()
 
     # ------------------------------------------------------------------
     # Task dispatcher
@@ -332,35 +337,29 @@ class ElasticsearchModule(ModuleProtocol):
 
     async def _ensure_obfuscated_index(self, catalog_id: str) -> None:
         """Create the geoid-only obfuscated ES index if it does not yet exist."""
-        from dynastore.modules.elasticsearch.config import config as es_config
+        from dynastore.modules.elasticsearch import client as es_client
         from dynastore.modules.elasticsearch.mappings import (
             GEOID_OBFUSCATED_MAPPING,
             get_obfuscated_index_name,
         )
-        try:
-            from elasticsearch import AsyncElasticsearch
-        except ImportError:
-            logger.warning("ElasticsearchModule: elasticsearch package not installed.")
+
+        es = es_client.get_client()
+        if es is None:
+            logger.warning("ElasticsearchModule: ES client not initialized, skipping obfuscated index creation.")
             return
 
-        index_name = get_obfuscated_index_name(es_config.index_prefix, catalog_id)
-        client_kwargs: dict = {
-            "hosts": [es_config.url],
-            "verify_certs": es_config.verify_certs,
-        }
-        if es_config.username and es_config.password:
-            client_kwargs["basic_auth"] = (es_config.username, es_config.password)
-
-        async with AsyncElasticsearch(**client_kwargs) as es:
+        index_name = get_obfuscated_index_name(es_client.get_index_prefix(), catalog_id)
+        try:
             if not await es.indices.exists(index=index_name):
                 await es.indices.create(
                     index=index_name,
                     body={"mappings": GEOID_OBFUSCATED_MAPPING},
-                    ignore=400,
                 )
                 logger.info(
                     "ElasticsearchModule: Created obfuscated index '%s'.", index_name
                 )
+        except Exception as exc:
+            logger.warning("ElasticsearchModule: Could not create obfuscated index '%s': %s", index_name, exc)
 
     # ------------------------------------------------------------------
     # Startup: restore in-memory DENY policies

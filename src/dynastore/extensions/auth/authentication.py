@@ -10,6 +10,7 @@ from dynastore.extensions import (
     ExtensionProtocol,
 )
 from dynastore.extensions.web import expose_static
+from dynastore.extensions.tools.url import build_sibling_redirect
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import (
     CatalogsProtocol,
@@ -212,14 +213,11 @@ class Authentication(ExtensionProtocol):
 
             if not user:
                 _login_limiter.record_failure(client_ip, username)
-                # Redirect back to login with error parameter, preserving root_path prefix
-                from urllib.parse import quote_plus
-                login_url = f"{root_path}{request.scope['path']}?error=Invalid+credentials"
-                if redirect_uri:
-                    login_url += f"&redirect_uri={quote_plus(redirect_uri)}"
-                if state:
-                    login_url += f"&state={state}"
-
+                login_url = build_sibling_redirect("login", {
+                    "error": "Invalid credentials",
+                    "redirect_uri": redirect_uri,
+                    "state": state,
+                })
                 return RedirectResponse(url=login_url, status_code=303)
 
             _login_limiter.record_success(client_ip, username)
@@ -285,30 +283,24 @@ class Authentication(ExtensionProtocol):
             if not redirect_uri:
                 redirect_uri = f"{root_path}/auth/debug"
             if password != confirm_password:
-                url = f"{request.url.path}?error=Passwords+do+not+match"
-                if redirect_uri:
-                    from urllib.parse import quote_plus
-                    url += f"&redirect_uri={quote_plus(redirect_uri)}"
-                if state:
-                    url += f"&state={state}"
+                url = build_sibling_redirect("register", {
+                    "error": "Passwords do not match",
+                    "redirect_uri": redirect_uri,
+                    "state": state,
+                })
                 return RedirectResponse(url=url, status_code=303)
 
             try:
-                # Create user in LocalDB
-                # Note: This requires the storage backend to support user creation which LocalDBIdentitySPI should facilitate
-                # Accessing the underlying storage directly
-
                 # Check if user exists
                 existing = await self.local_identity_provider.storage.get_local_user_by_username(
                     username
                 )
                 if existing:
-                    url = f"{request.url.path}?error=Username+already+taken"
-                    if redirect_uri:
-                        from urllib.parse import quote_plus
-                        url += f"&redirect_uri={quote_plus(redirect_uri)}"
-                    if state:
-                        url += f"&state={state}"
+                    url = build_sibling_redirect("register", {
+                        "error": "Username already taken",
+                        "redirect_uri": redirect_uri,
+                        "state": state,
+                    })
                     return RedirectResponse(url=url, status_code=303)
 
                 # Create user
@@ -327,12 +319,11 @@ class Authentication(ExtensionProtocol):
 
             except Exception as e:
                 logger.error(f"Registration failed: {e}", exc_info=True)
-                from urllib.parse import quote_plus
-                url = f"{request.url.path}?error=Registration+failed"
-                if redirect_uri:
-                    url += f"&redirect_uri={quote_plus(redirect_uri)}"
-                if state:
-                    url += f"&state={state}"
+                url = build_sibling_redirect("register", {
+                    "error": "Registration failed",
+                    "redirect_uri": redirect_uri,
+                    "state": state,
+                })
                 return RedirectResponse(url=url, status_code=303)
 
         @self.router.post("/token")

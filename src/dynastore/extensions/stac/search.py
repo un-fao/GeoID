@@ -86,6 +86,17 @@ class CollectionSearchRequest(BaseModel):
     keywords: Optional[List[str]] = None
     limit: int = Field(10, ge=1, le=1000)
     offset: int = Field(0, ge=0)
+    sortby: Optional[str] = Field(
+        None,
+        description=(
+            "Sort field. Prefix with '+' for ascending, '-' for descending. "
+            "Aliases: 'code'=id, 'label'=title. E.g. '+code', '-label'."
+        ),
+    )
+    lang: Optional[str] = Field(
+        None,
+        description="Language code for multilingual sort (e.g. 'en', 'fr'). Default: 'en'.",
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -107,6 +118,32 @@ def _get_simplification_sql(config: Optional[StacPluginConfig]) -> str:
 
 
 _SAFE_ATTRIBUTE_FIELD_RE = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+
+_COLLECTION_SORT_ALIASES: dict = {"code": "id", "label": "title"}
+_COLLECTION_DIRECT_SORT_COLUMNS = frozenset({"id", "catalog_id"})
+
+
+def _parse_collection_sort_sql(sortby: Optional[str], lang: Optional[str] = None) -> str:
+    """
+    Convert a sortby string to a safe SQL ORDER BY clause for collection search.
+
+    Aliases: code → id, label → title
+    Multilingual: title → (metadata->'title'->>'{lang}')
+    Custom fields: (metadata->>'field') validated against _SAFE_ATTRIBUTE_FIELD_RE
+    """
+    if not sortby:
+        return "catalog_id ASC, id ASC"
+    direction = "DESC" if sortby.startswith("-") else "ASC"
+    raw_field = sortby.lstrip("+-")
+    field = _COLLECTION_SORT_ALIASES.get(raw_field, raw_field)
+    if field in _COLLECTION_DIRECT_SORT_COLUMNS:
+        return f"{field} {direction}"
+    if field == "title":
+        safe_lang = lang if (lang and re.match(r"^[a-z]{2,3}$", lang)) else "en"
+        return f"(metadata->'title'->>'{safe_lang}') {direction}"
+    if _SAFE_ATTRIBUTE_FIELD_RE.match(field):
+        return f"(metadata->>'{field}') {direction}"
+    raise ValueError(f"Invalid sort field: {field!r}")
 
 
 def _build_attribute_filter_sql(filt: AttributeFilter, params: dict) -> str:
@@ -763,9 +800,10 @@ async def search_collections(
 
     count_query = f"{base_query_cte} SELECT count(*) FROM all_matches"
 
+    order_by = _parse_collection_sort_sql(search_request.sortby, search_request.lang)
     # We select metadata from the matches
     data_query = minified_data_query = (
-        f"{base_query_cte} SELECT metadata FROM all_matches ORDER BY catalog_id, id LIMIT :limit OFFSET :offset"
+        f"{base_query_cte} SELECT metadata FROM all_matches ORDER BY {order_by} LIMIT :limit OFFSET :offset"
     )
 
     final_params = {

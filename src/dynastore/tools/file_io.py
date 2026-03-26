@@ -16,6 +16,8 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
+from __future__ import annotations
+
 import io
 import os
 import json
@@ -35,11 +37,6 @@ from typing import (
 )
 from dynastore.models.shared_models import OutputFormatEnum
 from dynastore.tools.json import CustomJSONEncoder
-import pandas as pd
-import geopandas as gpd
-import pyarrow.parquet as pq
-import pyarrow as pa
-import numpy as np
 import uuid
 from decimal import Decimal
 from datetime import datetime, date
@@ -199,6 +196,8 @@ def read_shapefile(
     file_path_or_buffer: Union[str, io.BytesIO], encoding="utf-8"
 ) -> Generator[Dict[str, Any], None, None]:
     """Reads a zipped Shapefile and yields records."""
+    import fiona
+
     logger.info(f"Reading Zipped Shapefile from: {file_path_or_buffer}")
 
     # Handle both file paths and in-memory buffers
@@ -243,6 +242,8 @@ def read_geopackage(
     encoding: str = "utf-8",
 ) -> Generator[Dict[str, Any], None, None]:
     """Reads a GeoPackage file and yields records."""
+    import geopandas as gpd
+
     logger.info(f"Reading GeoPackage from: {file_path_or_buffer}")
 
     # Geopandas can often read directly from buffer-like objects for GPKG
@@ -256,6 +257,8 @@ def read_parquet(
     encoding: str = "utf-8",
 ) -> Generator[Dict[str, Any], None, None]:
     """Reads a Parquet file and yields records."""
+    import pyarrow.parquet as pq
+
     logger.info(f"Reading Parquet from: {file_path_or_buffer}")
 
     # Pyarrow can read directly from file paths or buffer-like objects
@@ -277,6 +280,8 @@ def read_csv(
     encoding: str = "utf-8",
 ) -> Generator[Dict[str, Any], None, None]:
     """Reads a CSV file and yields records, creating Point geometry from lat/lon or parsing WKT."""
+    import pandas as pd
+
     logger.info(f"Reading CSV from: {file_path_or_buffer}")
     # TODO elevation and elevation unit handling can be added here as additional properties, but for now we focus on geometry creation.
 
@@ -296,6 +301,9 @@ def _process_csv_chunk(
     wkt_col: Optional[str],
 ) -> Generator[Dict[str, Any], None, None]:
     """Helper to process a DataFrame chunk from a CSV into GeoJSON-like features."""
+    import geopandas as gpd
+    import pandas as pd
+
     geometries = None
     if wkt_col:
         # Create GeoSeries from WKT column
@@ -383,6 +391,8 @@ def _prepare_gdf_chunk_for_writing(
     records_chunk: List[Dict[str, Any]], srid: int
 ) -> gpd.GeoDataFrame:
     """Converts a chunk of processed records into a GeoDataFrame."""
+    import geopandas as gpd
+
     if not records_chunk:
         return gpd.GeoDataFrame(columns=["geometry"], crs=f"EPSG:{srid}")
 
@@ -446,6 +456,9 @@ def write_parquet(
     encoding: str = "utf-8",
 ) -> Generator[bytes, None, None]:
     """Streams records to a Parquet byte string by writing chunks to a temporary file."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
     processed_records_gen = _process_records_for_writing(records)
     record_chunks = _iterate_chunks(processed_records_gen, chunk_size=chunk_size)
 
