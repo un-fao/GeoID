@@ -155,7 +155,7 @@ db_sync = ["dynastore[db_config,datastore]"]
 #   2. maps_grp     — rendering: WFS, tiles, CRS, styles, maps
 #   3. google_grp   — GCP storage, BigQuery DWH
 #   4. auth_grp     — apikey + auth + admin  (always the LAST wrapper)
-#   5. tools_grp    — HTTP client, proxy, templating
+#   5. tools_grp    — HTTP client, templating (proxy is opt-in for catalog/maps)
 #   6. monitor_grp  — stats, logs
 #   7. index_grp    — Elasticsearch full-text search
 #   *  processes    — standalone; on catalog (cloud) or worker (on-prem)
@@ -166,7 +166,7 @@ catalog_grp = ["dynastore[geospatial_core,catalog,features,stac,assets,search]"]
 maps_grp = ["dynastore[styles,maps,extension_wfs,tiles,crs,gdal]"]
 google_grp = ["dynastore[gcp,extension_dwh]"]
 auth_grp = ["dynastore[apikey,auth,extension_admin]"]
-tools_grp = ["dynastore[extension_httpx,proxy,template]"]
+tools_grp = ["dynastore[extension_httpx,template]"]
 monitor_grp = ["dynastore[stats,logs]"]
 index_grp = ["dynastore[elasticsearch]"]
 
@@ -194,7 +194,7 @@ task_gdal_job = ["dynastore[task_base,gdal]"]
 #   │               + assets + search                          │
 #   │  maps_grp    = styles + maps + wfs + tiles + crs + gdal  │
 #   │  google_grp  = gcp + dwh                                 │
-#   │  tools_grp   = httpx + proxy + template                  │
+#   │  tools_grp   = httpx + template                          │
 #   │  monitor_grp = stats + logs                              │
 #   │  index_grp   = elasticsearch                             │
 #   ├──────────────────────────────────────────────────────────┤
@@ -236,7 +236,7 @@ task_gdal_job = ["dynastore[task_base,gdal]"]
 #   catalog service -> CATALOG_SCOPE=catalog_local (no auth, no gcp_cloud_runner)
 #   geoid   service -> GEOID_SCOPE=geoid_service   (full auth + geoid UI)
 #   worker  service -> WORKER_SCOPE=worker_local   (tasks + processes/stats UI)
-#   tools   service -> TOOLS_SCOPE=core,proxy,template
+#   tools   service -> TOOLS_SCOPE=core,template
 #   maps    service -> MAPS_SCOPE=api_maps_open
 #
 # ==========================================================================
@@ -335,8 +335,6 @@ ingestion = "dynastore.tasks.ingestion.ingestion_task:IngestionTask"
 dwh_join = "dynastore.tasks.dwh_join.dwh_join_export_task:DwhJoinExportTask"
 export_features = "dynastore.tasks.export_features.export_features_task:ExportFeaturesTask"
 tiles_preseed = "dynastore.tasks.tiles_preseed.task:TilePreseedTask"
-event_dispatch = "dynastore.tasks.events.event_dispatch_task:EventDispatchTask"
-webhook_delivery = "dynastore.tasks.events.webhook_delivery_task:WebhookDeliveryTask"
 gcs_storage_event = "dynastore.tasks.gcp.gcs_storage_event_task:GcsStorageEventTask"
 gcp_catalog_cleanup = "dynastore.tasks.gcp.gcp_catalog_cleanup_task:GcpCatalogCleanupTask"
 structural_migration = "dynastore.tasks.structural_migration:StructuralMigrationTask"
