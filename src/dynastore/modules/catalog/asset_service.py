@@ -158,6 +158,7 @@ from dynastore.modules.db_config.query_executor import (
     PydanticResultHandler,
     GeoDQLQuery,
 )
+from dynastore.modules.db_config.transactional import transactional
 from dynastore.tools.json import CustomJSONEncoder
 from dynastore.tools.db import validate_sql_identifier
 from dynastore.modules.db_config.locking_tools import acquire_startup_lock
@@ -1040,6 +1041,7 @@ class AssetService(AssetsProtocol):
     # Asset reference CRUD
     # -------------------------------------------------------------------------
 
+    @transactional()
     async def add_asset_reference(
         self,
         asset_id: str,
@@ -1050,31 +1052,31 @@ class AssetService(AssetsProtocol):
         db_resource: Optional[DbResource] = None,
     ) -> AssetReference:
         """Registers a dependency on an asset from *ref_id*."""
-        async with managed_transaction(db_resource or self.engine) as conn:
-            phys_schema = await self._resolve_schema(catalog_id, conn)
-            if not phys_schema:
-                raise ValueError(f"Catalog '{catalog_id}' not found.")
+        phys_schema = await self._resolve_schema(catalog_id, db_resource)
+        if not phys_schema:
+            raise ValueError(f"Catalog '{catalog_id}' not found.")
 
-            now = datetime.now(timezone.utc)
-            sql = text(f"""
-                INSERT INTO "{phys_schema}".asset_references
-                    (asset_id, catalog_id, ref_type, ref_id, cascade_delete, created_at)
-                VALUES (:asset_id, :catalog_id, :ref_type, :ref_id, :cascade_delete, :created_at)
-                ON CONFLICT (catalog_id, asset_id, ref_type, ref_id) DO UPDATE SET
-                    cascade_delete = EXCLUDED.cascade_delete
-                RETURNING asset_id, catalog_id, ref_type, ref_id, cascade_delete, created_at;
-            """)
-            row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
-                conn,
-                asset_id=asset_id,
-                catalog_id=catalog_id,
-                ref_type=ref_type.value if hasattr(ref_type, "value") else str(ref_type),
-                ref_id=ref_id,
-                cascade_delete=cascade_delete,
-                created_at=now,
-            )
-            return AssetReference.model_validate(row)
+        now = datetime.now(timezone.utc)
+        sql = text(f"""
+            INSERT INTO "{phys_schema}".asset_references
+                (asset_id, catalog_id, ref_type, ref_id, cascade_delete, created_at)
+            VALUES (:asset_id, :catalog_id, :ref_type, :ref_id, :cascade_delete, :created_at)
+            ON CONFLICT (catalog_id, asset_id, ref_type, ref_id) DO UPDATE SET
+                cascade_delete = EXCLUDED.cascade_delete
+            RETURNING asset_id, catalog_id, ref_type, ref_id, cascade_delete, created_at;
+        """)
+        row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
+            db_resource,
+            asset_id=asset_id,
+            catalog_id=catalog_id,
+            ref_type=ref_type.value if hasattr(ref_type, "value") else str(ref_type),
+            ref_id=ref_id,
+            cascade_delete=cascade_delete,
+            created_at=now,
+        )
+        return AssetReference.model_validate(row)
 
+    @transactional()
     async def remove_asset_reference(
         self,
         asset_id: str,
@@ -1084,25 +1086,25 @@ class AssetService(AssetsProtocol):
         db_resource: Optional[DbResource] = None,
     ) -> None:
         """Removes a previously registered asset reference."""
-        async with managed_transaction(db_resource or self.engine) as conn:
-            phys_schema = await self._resolve_schema(catalog_id, conn)
-            if not phys_schema:
-                return
-            sql = text(f"""
-                DELETE FROM "{phys_schema}".asset_references
-                WHERE catalog_id = :catalog_id
-                  AND asset_id   = :asset_id
-                  AND ref_type   = :ref_type
-                  AND ref_id     = :ref_id;
-            """)
-            await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
-                conn,
-                catalog_id=catalog_id,
-                asset_id=asset_id,
-                ref_type=ref_type.value if hasattr(ref_type, "value") else str(ref_type),
-                ref_id=ref_id,
-            )
+        phys_schema = await self._resolve_schema(catalog_id, db_resource)
+        if not phys_schema:
+            return
+        sql = text(f"""
+            DELETE FROM "{phys_schema}".asset_references
+            WHERE catalog_id = :catalog_id
+              AND asset_id   = :asset_id
+              AND ref_type   = :ref_type
+              AND ref_id     = :ref_id;
+        """)
+        await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
+            db_resource,
+            catalog_id=catalog_id,
+            asset_id=asset_id,
+            ref_type=ref_type.value if hasattr(ref_type, "value") else str(ref_type),
+            ref_id=ref_id,
+        )
 
+    @transactional()
     async def list_asset_references(
         self,
         asset_id: str,
@@ -1110,20 +1112,19 @@ class AssetService(AssetsProtocol):
         db_resource: Optional[DbResource] = None,
     ) -> List[AssetReference]:
         """Returns all active references for the given asset."""
-        async with managed_transaction(db_resource or self.engine) as conn:
-            phys_schema = await self._resolve_schema(catalog_id, conn)
-            if not phys_schema:
-                return []
-            sql = f"""
-                SELECT asset_id, catalog_id, ref_type, ref_id, cascade_delete, created_at
-                FROM "{phys_schema}".asset_references
-                WHERE catalog_id = :catalog_id AND asset_id = :asset_id
-                ORDER BY created_at ASC;
-            """
-            rows = await DQLQuery(
-                sql, result_handler=PydanticResultHandler.pydantic_all(AssetReference)
-            ).execute(conn, catalog_id=catalog_id, asset_id=asset_id)
-            return rows or []
+        phys_schema = await self._resolve_schema(catalog_id, db_resource)
+        if not phys_schema:
+            return []
+        sql = f"""
+            SELECT asset_id, catalog_id, ref_type, ref_id, cascade_delete, created_at
+            FROM "{phys_schema}".asset_references
+            WHERE catalog_id = :catalog_id AND asset_id = :asset_id
+            ORDER BY created_at ASC;
+        """
+        rows = await DQLQuery(
+            sql, result_handler=PydanticResultHandler.pydantic_all(AssetReference)
+        ).execute(db_resource, catalog_id=catalog_id, asset_id=asset_id)
+        return rows or []
 
     async def _list_blocking_references(
         self,

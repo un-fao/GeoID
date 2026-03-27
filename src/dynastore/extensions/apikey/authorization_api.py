@@ -30,6 +30,7 @@ from datetime import datetime
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import ApiKeyProtocol, CatalogsProtocol
 from dynastore.models.auth import Principal
+from dynastore.extensions.tools.exception_handlers import http_errors
 
 
 def _require_admin_role(request: Request) -> Principal:
@@ -297,10 +298,8 @@ async def grant_global_roles(email: EmailStr, request: RoleGrantRequest):
     """Grant global roles to a user (admin only)."""
     storage = await get_storage()
 
-    try:
+    async with http_errors({ValueError: 404}):
         provider, subject_id = await storage.resolve_identity(email)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
 
     await storage.grant_roles(
         provider=provider,
@@ -318,10 +317,8 @@ async def get_user_global_roles(email: EmailStr):
     """Get global roles for a user (admin only)."""
     storage = await get_storage()
 
-    try:
+    async with http_errors({ValueError: 404}):
         provider, subject_id = await storage.resolve_identity(email)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
 
     roles = await storage.get_identity_roles(provider, subject_id, schema="apikey")
     return roles
@@ -332,10 +329,8 @@ async def revoke_global_role(email: EmailStr, role: str):
     """Revoke a global role from a user (admin only)."""
     storage = await get_storage()
 
-    try:
+    async with http_errors({ValueError: 404}):
         provider, subject_id = await storage.resolve_identity(email)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
 
     await storage.revoke_role(provider, subject_id, role, schema="apikey")
     return None
@@ -349,10 +344,8 @@ async def grant_catalog_roles(
     storage = await get_storage()
     catalog_schema = await resolve_catalog_schema(catalog_id)
 
-    try:
+    async with http_errors({ValueError: 404}):
         provider, subject_id = await storage.resolve_identity(email)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
 
     await storage.grant_roles(
         provider=provider,
@@ -375,10 +368,8 @@ async def get_user_catalog_roles(email: EmailStr, catalog_id: str):
     storage = await get_storage()
     catalog_schema = await resolve_catalog_schema(catalog_id)
 
-    try:
+    async with http_errors({ValueError: 404}):
         provider, subject_id = await storage.resolve_identity(email)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
 
     roles = await storage.get_identity_roles(
         provider, subject_id, schema=catalog_schema
@@ -392,10 +383,8 @@ async def revoke_catalog_role(email: EmailStr, catalog_id: str, role: str):
     storage = await get_storage()
     catalog_schema = await resolve_catalog_schema(catalog_id)
 
-    try:
+    async with http_errors({ValueError: 404}):
         provider, subject_id = await storage.resolve_identity(email)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
 
     await storage.revoke_role(provider, subject_id, role, schema=catalog_schema)
     return None
@@ -407,10 +396,8 @@ async def get_user_catalogs(email: EmailStr):
     storage = await get_storage()
     catalog_module = await get_catalogs_protocol()
 
-    try:
+    async with http_errors({ValueError: 404}):
         provider, subject_id = await storage.resolve_identity(email)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
 
     result = []
 
@@ -452,10 +439,8 @@ async def get_user_effective_authorization(email: EmailStr, catalog_id: str):
     storage = await get_storage()
     catalog_schema = await resolve_catalog_schema(catalog_id)
 
-    try:
+    async with http_errors({ValueError: 404}):
         provider, subject_id = await storage.resolve_identity(email)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
 
     # Get global and catalog roles
     global_roles = await storage.get_identity_roles(
