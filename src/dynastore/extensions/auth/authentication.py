@@ -84,7 +84,7 @@ KEYCLOAK_CLIENT_ID = os.getenv("KEYCLOAK_CLIENT_ID")
 
 
 class Authentication(ExtensionProtocol):
-    priority: int = 50
+    priority: int = 110  # Must run after ApiKeyModule (100) which owns users schema init
     """
     Authentication Extension - OAuth2 Identity Validation
 
@@ -641,23 +641,23 @@ class Authentication(ExtensionProtocol):
                 except Exception as _le:
                     logger.warning(f"Could not link sysadmin principal (may exist): {_le}")
             else:
-                # User exists: apply password change if the properties table was updated.
-                # Verify current hash; only re-hash and update if it no longer matches.
+                # User exists: verify current hash against the resolved password
+                # (from properties, env var, or default) and update if it no longer matches.
                 _sa_id = existing.get("id")
                 logger.info(f"✓ sysadmin already exists (id={_sa_id})")
-                if _password_from_props:
-                    try:
-                        _ph = _PasswordHasher()
-                        _ph.verify(existing.get("password_hash", ""), _sa_password)
-                        logger.debug("sysadmin password unchanged — no update needed")
-                    except _VerifyMismatchError:
-                        _new_hash = _PasswordHasher().hash(_sa_password)
-                        await storage.update_local_user(
-                            _sa_id, password_hash=_new_hash, schema="users"
-                        )
-                        logger.info("✓ sysadmin password updated from properties table (argon2)")
-                    except Exception as _ve:
-                        logger.warning(f"Could not verify/update sysadmin password: {_ve}")
+                try:
+                    _ph = _PasswordHasher()
+                    _ph.verify(existing.get("password_hash", ""), _sa_password)
+                    logger.debug("sysadmin password unchanged — no update needed")
+                except _VerifyMismatchError:
+                    _new_hash = _PasswordHasher().hash(_sa_password)
+                    await storage.update_local_user(
+                        _sa_id, password_hash=_new_hash, schema="users"
+                    )
+                    _source = "properties" if _password_from_props else "env var / default"
+                    logger.info(f"✓ sysadmin password updated from {_source} (argon2)")
+                except Exception as _ve:
+                    logger.warning(f"Could not verify/update sysadmin password: {_ve}")
         except Exception as _e:
             logger.error(f"Failed to provision sysadmin: {_e}", exc_info=True)
 

@@ -1,0 +1,811 @@
+#    Copyright 2025 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
+# dynastore/extensions/stac/stac_virtual.py
+
+import logging
+import asyncio
+from typing import Optional, cast
+
+import pystac
+from fastapi import Depends, HTTPException, Query, Request, status
+from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
+from sqlalchemy import text
+
+from dynastore.models.protocols import (
+    AssetsProtocol,
+    CatalogsProtocol,
+    ConfigsProtocol,
+)
+from dynastore.modules.stac.stac_config import STAC_PLUGIN_CONFIG_ID, StacPluginConfig
+from dynastore.tools.db import validate_sql_identifier
+from dynastore.tools.discovery import get_protocol
+from dynastore.extensions.tools.db import get_async_engine
+from dynastore.extensions.tools.url import get_url, get_root_url
+from dynastore.extensions.tools.language_utils import get_language
+from dynastore.modules.db_config.query_executor import (
+    managed_transaction,
+    ResultHandler,
+)
+from dynastore.extensions.stac.search import ItemSearchRequest
+from . import stac_generator, asset_factory, metadata_mapper
+
+logger = logging.getLogger(__name__)
+
+
+class StacVirtualMixin:
+    """Mixin providing virtual STAC endpoints (asset views and hierarchy views)."""
+
+    # --- Virtual STAC Endpoints ---
+    # NOTE: Virtual endpoints might also need localization if they return titles/descriptions.
+    # Currently they generate titles dynamically based on IDs/codes which are language-agnostic.
+    # We'll pass language where applicable.
+
+    async def get_virtual_asset_list(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        request: Request,
+        engine=Depends(get_async_engine),
+        limit: int = Query(10, ge=1, le=1000),
+        offset: int = Query(0, ge=0),
+    ):
+        """
+        Virtual View: Lists all 'Assets' for a collection as if they were STAC Collections.
+        """
+        catalog_id = validate_sql_identifier(catalog_id)
+        collection_id = validate_sql_identifier(collection_id)
+        catalogs_svc = await self._get_catalogs_service()
+
+        async with managed_transaction(engine) as conn:
+            stac_config = await self._get_stac_config(
+                catalog_id, collection_id, db_resource=conn
+            )
+
+            if not stac_config.asset_tracking.enabled:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Asset tracking not enabled for this collection.",
+                )
+
+            # AssetsProtocol is available via CatalogsProtocol property
+            assets = await catalogs_svc.assets.list_assets(
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                limit=limit,
+                offset=offset,
+                db_resource=conn,
+            )
+
+        base_url = get_url(request, remove_qp=True)
+        # Root for assets is /stac/virtual/assets
+        assets_root = f"{get_root_url(request)}/stac/virtual/assets"
+
+        virtual_cat = pystac.Catalog(
+            id=f"{collection_id}_assets",
+            description=f"Virtual collection of assets for {collection_id}",
+            title=f"Assets of {collection_id}",
+        )
+        virtual_cat.set_self_href(base_url)
+
+        for asset in assets:
+            # New structure: /virtual/assets/{asset_id}/catalogs/{cat}/collections/{coll}
+            child_href = f"{assets_root}/{asset.asset_id}/catalogs/{catalog_id}/collections/{collection_id}"
+            virtual_cat.add_link(
+                pystac.Link(
+                    rel="child",
+                    target=child_href,
+                    title=asset.asset_id,
+                    media_type="application/json",
+                )
+            )
+
+        # Add pagination links
+        if len(assets) == limit:
+            virtual_cat.add_link(
+                pystac.Link(
+                    rel="next",
+                    target=f"{base_url}?offset={offset + limit}&limit={limit}",
+                )
+            )
+        if offset > 0:
+            virtual_cat.add_link(
+                pystac.Link(
+                    rel="prev",
+                    target=f"{base_url}?offset={max(0, offset - limit)}&limit={limit}",
+                )
+            )
+
+        return JSONResponse(content=virtual_cat.to_dict())
+
+    async def get_virtual_asset_collection(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        asset_code: str,
+        request: Request,
+        engine=Depends(get_async_engine),
+    ):
+        """
+        Virtual View: Represents a single Asset as a STAC Collection.
+        Metadata is generated from the Asset record.
+        """
+        catalog_id = validate_sql_identifier(catalog_id)
+        collection_id = validate_sql_identifier(collection_id)
+        catalogs_svc = await self._get_catalogs_service()
+
+        async with managed_transaction(engine) as conn:
+            stac_config = await self._get_stac_config(
+                catalog_id, collection_id, db_resource=conn
+            )
+
+            # AssetsProtocol is also implemented by CatalogModule
+            assets_svc = get_protocol(AssetsProtocol)
+            if not assets_svc:
+                raise HTTPException(
+                    status_code=500, detail="Assets protocol not available."
+                )
+
+            asset = await assets_svc.get_asset(
+                asset_id=asset_code,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                db_resource=conn,
+            )
+            if not asset:
+                logger.warning(
+                    f"Virtual Asset not found: catalog={catalog_id}, id={asset_code}, collection={collection_id}"
+                )
+                raise HTTPException(
+                    status_code=404, detail=f"Asset '{asset_code}' not found."
+                )
+
+        # Create a Collection representing this Asset
+        base_url = get_url(request)
+        collection = pystac.Collection(
+            id=asset.asset_id,
+            description=f"Virtual collection for ingested asset: {asset.asset_id}",
+            extent=pystac.Extent(
+                spatial=pystac.SpatialExtent([[-180, -90, 180, 90]]),
+                temporal=pystac.TemporalExtent([[asset.created_at, None]]),
+            ),
+            title=asset.asset_id,
+            license="proprietary",
+        )
+
+        # Enrich from metadata
+        metadata_mapper.enrich_collection_from_metadata(
+            collection, asset.metadata or {}
+        )
+
+        collection.set_self_href(base_url)
+        collection.add_link(
+            pystac.Link(
+                rel="items",
+                target=f"{base_url}/items",
+                media_type="application/geo+json",
+            )
+        )
+
+        # Parent is the list of assets for this collection
+        parent_href = f"{get_root_url(request)}/stac/virtual/assets/catalogs/{catalog_id}/collections/{collection_id}"
+        collection.add_link(
+            pystac.Link(rel="parent", target=parent_href, title="Assets List")
+        )
+
+        # Add dynamic assets via factory
+        asset_context = asset_factory.AssetContext(
+            base_url=get_root_url(request),
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            request=request,
+            stac_config=stac_config,
+            asset_id=asset.asset_id,
+        )
+        asset_factory.add_dynamic_assets(collection, asset_context)
+
+        return JSONResponse(content=collection.to_dict())
+
+    async def get_virtual_asset_items(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        asset_id: str,
+        request: Request,
+        engine=Depends(get_async_engine),
+        limit: int = Query(10, ge=1, le=1000),
+        offset: int = Query(0, ge=0),
+        language: str = Depends(get_language),
+    ):
+        """
+        Virtual View: Lists items belonging to a specific asset.
+        Filters the main collection by 'asset_id'.
+        """
+        catalog_id = validate_sql_identifier(catalog_id)
+        collection_id = validate_sql_identifier(collection_id)
+        catalogs_svc = await self._get_catalogs_service()
+
+        async with managed_transaction(engine) as conn:
+            stac_config = await self._get_stac_config(
+                catalog_id, collection_id, db_resource=conn
+            )
+
+            phys_schema = await catalogs_svc.resolve_physical_schema(
+                catalog_id, db_resource=conn
+            )
+            phys_table = await catalogs_svc.resolve_physical_table(
+                catalog_id, collection_id, db_resource=conn
+            )
+
+            # Optimized query with limit/offset and total count
+            # We use ItemsProtocol.stream_features to leverage standard filtering and sidecar logic
+            from dynastore.models.protocols import ItemsProtocol
+
+            items_svc = get_protocol(ItemsProtocol)
+            if not items_svc:
+                raise HTTPException(
+                    status_code=500, detail="Items protocol not available."
+                )
+
+            # Resolve col_config for sidecar resolution
+            col_config = await catalogs_svc.get_collection_config(
+                catalog_id, collection_id, db_resource=conn
+            )
+
+            # Optimized query with QueryRequest
+            from dynastore.models.query_builder import QueryRequest, FilterCondition
+
+            # Build request for asset items
+            # We assume 'asset_id' is a queryable field in the sidecars (attributes or stac_metadata)
+            query_req = QueryRequest(
+                filters=[
+                    FilterCondition(field="asset_id", operator="=", value=asset_id)
+                ],
+                limit=limit,
+                offset=offset,
+                include_total_count=True,
+            )
+
+            # Fetch features using ItemService.stream_items to get QueryResponse
+            query_res = await items_svc.stream_items(
+                catalog_id, collection_id, request=query_req, db_resource=conn
+            )
+
+            total_count = query_res.total_count or 0
+
+            # Map features to STAC Items
+            stac_items = []
+            async for feature in query_res.items:
+                # create_item_from_row expects a dict from DB, but QueryResponse.items returns Features (GeoJSON)
+                # We need to ensure stac_generator.create_item_from_row can handle high-level Feature models
+                # or we use a different generator method.
+                # Actually, stac_generator.create_item_from_row uses row.get("geoid") etc.
+                # If feature is a Feature model from geojson-pydantic:
+                virtual_collection_url = (
+                    str(request.url).split("?")[0].replace("/items", "")
+                )
+                item = await stac_generator.create_item_from_feature(
+                    request,
+                    catalog_id,
+                    collection_id,
+                    feature=feature,
+                    stac_config=stac_config,
+                    view_mode="virtual-asset",
+                    lang=language,
+                    collection_url_override=virtual_collection_url,
+                )
+                if item:
+                    item_dict = item.to_dict()
+                    # PySTAC to_dict() drops duplicate targets with different rels (e.g. parent and collection).
+                    # We must explicitly inject it for Virtual Assets
+                    has_parent = any(link.get("rel") == "parent" for link in item_dict.get("links", []))
+                    if not has_parent:
+                        item_dict.setdefault("links", []).append({
+                            "rel": "parent",
+                            "href": virtual_collection_url,
+                            "type": "application/json"
+                        })
+                    stac_items.append(item_dict)
+
+        item_collection = pystac.ItemCollection(items=stac_items)
+        coll_dict = item_collection.to_dict()
+
+        coll_dict["numberMatched"] = total_count
+        coll_dict["numberReturned"] = len(stac_items)
+
+        # Paging links
+        base_url = get_url(request, remove_qp=True)
+        if (offset + limit) < total_count:
+            coll_dict.setdefault("links", []).append(
+                {
+                    "rel": "next",
+                    "href": f"{base_url}?offset={offset + limit}&limit={limit}",
+                }
+            )
+        if offset > 0:
+            coll_dict.setdefault("links", []).append(
+                {
+                    "rel": "prev",
+                    "href": f"{base_url}?offset={max(0, offset - limit)}&limit={limit}",
+                }
+            )
+
+        return JSONResponse(content=coll_dict)
+
+    async def resolve_asset_source(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        asset_code: str,
+        request: Request,
+        engine=Depends(get_async_engine),
+    ):
+        """
+        Dynamically resolves the source asset URL.
+        Decides between Proxy or Direct access based on STAC configuration.
+        """
+        catalog_id = validate_sql_identifier(catalog_id)
+        collection_id = validate_sql_identifier(collection_id)
+
+        async with managed_transaction(engine) as conn:
+            # 1. Get the asset to find its URI
+            asset_mgr = get_protocol(AssetsProtocol)
+            if not asset_mgr:
+                raise HTTPException(
+                    status_code=500, detail="Assets protocol not available."
+                )
+
+            asset = await asset_mgr.get_asset(
+                asset_id=asset_code, catalog_id=catalog_id, collection_id=collection_id
+            )
+            if not asset:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Asset '{asset_code}' not found.",
+                )
+
+            # 2. Get STAC config to decide on access mode
+            # If no collection_id provided, we try to use a default or first collection config
+            # But usually we want the collection-specific config.
+            cm = get_protocol(ConfigsProtocol)
+            if not cm:
+                raise HTTPException(
+                    status_code=500, detail="Configs protocol not available."
+                )
+            stac_config_raw = await cm.get_config(
+                STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
+            )
+            stac_config = cast(StacPluginConfig, stac_config_raw)
+
+            from dynastore.modules.stac.stac_config import AssetAccessMode
+            from fastapi.responses import RedirectResponse
+
+            if stac_config.asset_tracking.access_mode == AssetAccessMode.PROXY:
+                try:
+                    from dynastore.modules.proxy.proxy_module import create_short_url
+
+                    proxy_key = await create_short_url(
+                        conn,
+                        catalog_id=catalog_id,
+                        long_url=asset.uri,
+                        collection_id=collection_id,
+                        comment=f"Dynamic source for {asset_code}",
+                    )
+                    root_path = request.scope.get("root_path", "").rstrip("/")
+                    proxy_url = f"{root_path}/proxy/r/{proxy_key.short_key}"
+                    return RedirectResponse(url=proxy_url)
+                except Exception as e:
+                    logger.error(
+                        f"Failed to create proxy for asset {asset_code}: {str(e)}"
+                    )
+                    return RedirectResponse(url=asset.uri)
+            else:
+                return RedirectResponse(url=asset.uri)
+
+    async def get_virtual_hierarchy_collection(
+        hierarchy_id: str,
+        catalog_id: str,
+        collection_id: str,
+        request: Request,
+        engine=Depends(get_async_engine),
+        parent_value: Optional[str] = Query(None),
+        limit: int = Query(100, ge=1, le=1000),
+    ):
+        """
+        Virtual View: Returns a STAC collection representation of a hierarchy level.
+        If parent_value is provided, the collection metadata is scoped to that parent.
+        """
+        catalog_id = validate_sql_identifier(catalog_id)
+        collection_id = validate_sql_identifier(collection_id)
+
+        async with managed_transaction(engine) as conn:
+            # Get STAC config to find the hierarchy rule
+            config_manager = get_protocol(ConfigsProtocol)
+            if not config_manager:
+                raise HTTPException(
+                    status_code=500, detail="Configs protocol not available."
+                )
+
+            stac_config = cast(
+                StacPluginConfig,
+                await config_manager.get_config(
+                    STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
+                ),
+            )
+
+            if not stac_config.hierarchy or not stac_config.hierarchy.enabled:
+                raise HTTPException(
+                    status_code=404, detail="Hierarchy not enabled for this collection."
+                )
+
+            # Get the rule directly from dictionary (O(1) lookup)
+            matching_rule = stac_config.hierarchy.rules.get(hierarchy_id)
+            if not matching_rule:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Hierarchy rule '{hierarchy_id}' not found.",
+                )
+
+            # Import hierarchy queries
+            from dynastore.extensions.stac import stac_hierarchy_queries
+
+            # Get distinct values for this hierarchy level (optionally filtered by parent_value)
+            distinct_values = (
+                await stac_hierarchy_queries.get_distinct_hierarchy_values(
+                    conn,
+                    catalog_id,
+                    collection_id,
+                    matching_rule,
+                    parent_value=parent_value,
+                    limit=limit,
+                )
+            )
+
+            # Get computed extent (bbox and temporal)
+            extent_data = await stac_hierarchy_queries.get_hierarchy_extent(
+                conn,
+                catalog_id,
+                collection_id,
+                matching_rule,
+                parent_value=parent_value,
+            )
+
+        # Generate virtual collection
+        base_url = get_url(request, remove_qp=True)
+        root_url = get_root_url(request)
+
+        # Use template if provided, otherwise use default
+        title = (
+            matching_rule.collection_title_template
+            or f"{matching_rule.level_name or hierarchy_id} Hierarchy"
+        )
+        if parent_value:
+            title += f" (Parent: {parent_value})"
+
+        description = (
+            matching_rule.collection_description_template
+            or f"Virtual collection for {matching_rule.level_name or hierarchy_id} level"
+        )
+
+        virtual_collection = pystac.Collection(
+            id=f"{collection_id}_{hierarchy_id}",
+            description=description,
+            title=title,
+            extent=pystac.Extent(
+                spatial=pystac.SpatialExtent([extent_data["bbox"]]),
+                temporal=pystac.TemporalExtent(extent_data["temporal"]),
+            ),
+            license="proprietary",
+        )
+
+        virtual_collection.set_self_href(get_url(request))
+
+        # Add parent link if this rule has a parent level
+        if matching_rule.parent_hierarchy_id:
+            parent_rule_id = matching_rule.parent_hierarchy_id
+            # Link to the parent hierarchy collection
+            parent_coll_url = f"{root_url}/stac/virtual/hierarchy/{parent_rule_id}/catalogs/{catalog_id}/collections/{collection_id}"
+            virtual_collection.add_link(
+                pystac.Link(
+                    rel="parent",
+                    target=parent_coll_url,
+                    title=f"Parent Level: {parent_rule_id}",
+                    media_type="application/json",
+                )
+            )
+        else:
+            # Root of hierarchy links back to the main collection
+            main_coll_url = (
+                f"{root_url}/stac/catalogs/{catalog_id}/collections/{collection_id}"
+            )
+            virtual_collection.add_link(
+                pystac.Link(
+                    rel="parent",
+                    target=main_coll_url,
+                    title="Main Collection",
+                    media_type="application/json",
+                )
+            )
+
+        # Add child links for each distinct value
+        for value_row in distinct_values:
+            code = value_row["code"]
+            item_count = value_row.get("item_count", 0)
+
+            # Children are either items (if at leaf) or next level collections
+            # For now we link to items scoped by this value
+            child_href = f"{base_url}/items?parent_value={code}"
+
+            # If there is a rule that has THIS rule as its parent, we could also link to that
+            # but usually the navigation is Value -> Children
+            virtual_collection.add_link(
+                pystac.Link(
+                    rel="child",
+                    target=child_href,
+                    title=f"Items for {code} ({item_count} items)",
+                    media_type="application/geo+json",
+                )
+            )
+
+        # Add items link (all items in this level)
+        items_url = f"{base_url}/items"
+        if parent_value:
+            items_url += f"?parent_value={parent_value}"
+
+        virtual_collection.add_link(
+            pystac.Link(
+                rel="items", target=items_url, media_type="application/geo+json"
+            )
+        )
+
+        return JSONResponse(content=virtual_collection.to_dict())
+
+    async def get_virtual_hierarchy_items(
+        hierarchy_id: str,
+        catalog_id: str,
+        collection_id: str,
+        request: Request,
+        engine=Depends(get_async_engine),
+        parent_value: Optional[str] = Query(None),
+        limit: int = Query(10, ge=1, le=1000),
+        offset: int = Query(0, ge=0),
+        language: str = Depends(get_language),
+    ):
+        """
+        Virtual View: Returns items filtered by hierarchy rule.
+        If parent_value is provided, filters to children of that parent.
+        """
+        catalog_id = validate_sql_identifier(catalog_id)
+        collection_id = validate_sql_identifier(collection_id)
+
+        async with managed_transaction(engine) as conn:
+            # Get STAC config to find the hierarchy rule
+            config_service = await self._get_configs_service()
+            stac_config = cast(
+                StacPluginConfig,
+                await config_service.get_config(
+                    STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
+                ),
+            )
+
+            if not stac_config.hierarchy or not stac_config.hierarchy.enabled:
+                raise HTTPException(
+                    status_code=404, detail="Hierarchy not enabled for this collection."
+                )
+
+            # Find the matching rule directly from dictionary (O(1) lookup)
+            matching_rule = stac_config.hierarchy.rules.get(hierarchy_id)
+
+            if not matching_rule:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Hierarchy rule '{hierarchy_id}' not found.",
+                )
+
+            # Import hierarchy queries
+            from dynastore.extensions.stac import stac_hierarchy_queries
+            from dynastore.modules.catalog.catalog_module import GeoDQLQuery
+
+            # Build and execute query
+            sql, params = await stac_hierarchy_queries.build_hierarchy_items_query(
+                catalog_id, collection_id, matching_rule, parent_value, limit, offset
+            )
+
+            query = GeoDQLQuery(text(sql), result_handler=ResultHandler.ALL)
+            items_rows = await query.execute(conn, **params)
+
+            # Get total count
+            total_count = await stac_hierarchy_queries.get_hierarchy_item_count(
+                conn, catalog_id, collection_id, matching_rule, parent_value
+            )
+
+            # Map to Features
+            from dynastore.models.protocols import ItemsProtocol
+            items_svc = get_protocol(ItemsProtocol)
+            catalogs_svc = await self._get_catalogs_service()
+            features = []
+            for row in items_rows:
+                # Hierarchy queries return base table rows + sidecar joins if configured
+                col_config = await catalogs_svc.get_collection_config(catalog_id, collection_id, db_resource=conn)
+                feat = items_svc.map_row_to_feature(dict(row._mapping) if hasattr(row, "_mapping") else dict(row), col_config)
+                if feat:
+                    features.append(feat)
+
+            # Generate STAC items
+            stac_items = await asyncio.gather(
+                *[
+                    stac_generator.create_item_from_feature(
+                        request,
+                        catalog_id,
+                        collection_id,
+                        feature=f,
+                        stac_config=stac_config,
+                        view_mode="virtual-hierarchy",
+                        lang=language,
+                    )
+                    for f in features
+                ]
+            )
+
+        # Create item collection
+        item_collection = pystac.ItemCollection(
+            items=[item for item in stac_items if item]
+        )
+        coll_dict = item_collection.to_dict()
+
+        coll_dict["numberMatched"] = total_count
+        coll_dict["numberReturned"] = len(stac_items)
+
+        # Paging links
+        base_url = get_url(request, remove_qp=True)
+        if (offset + limit) < total_count:
+            next_url = f"{base_url}?offset={offset + limit}&limit={limit}"
+            if parent_value:
+                next_url += f"&parent_value={parent_value}"
+            coll_dict.setdefault("links", []).append({"rel": "next", "href": next_url})
+
+        return JSONResponse(content=coll_dict)
+
+    async def search_virtual_hierarchy_items(
+        hierarchy_id: str,
+        catalog_id: str,
+        collection_id: str,
+        search_request: ItemSearchRequest,
+        request: Request,
+        parent_value: Optional[str] = Query(None),
+        engine=Depends(get_async_engine),
+        language: str = Depends(get_language),
+    ):
+        """
+        Virtual View: Executes a STAC search scoped to a hierarchy level.
+        Combines hierarchy filters with standard search parameters.
+        """
+        catalog_id = validate_sql_identifier(catalog_id)
+        collection_id = validate_sql_identifier(collection_id)
+
+        # Override catalog_id in search_request to ensure consistency
+        search_request.catalog_id = catalog_id
+        # Scoped to the specific collection
+        search_request.collections = [collection_id]
+
+        async with managed_transaction(engine) as conn:
+            # Get STAC config to find the hierarchy rule
+            config_service = await self._get_configs_service()
+            stac_config = cast(
+                StacPluginConfig,
+                await config_service.get_config(
+                    STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
+                ),
+            )
+
+            if not stac_config.hierarchy or not stac_config.hierarchy.enabled:
+                raise HTTPException(
+                    status_code=404, detail="Hierarchy not enabled for this collection."
+                )
+
+            # Find the matching rule directly from dictionary (O(1) lookup)
+            matching_rule = stac_config.hierarchy.rules.get(hierarchy_id)
+
+            if not matching_rule:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Hierarchy rule '{hierarchy_id}' not found.",
+                )
+
+            # Import hierarchy queries and search
+            from dynastore.extensions.stac import (
+                stac_hierarchy_queries,
+                search as stac_search,
+            )
+
+            # Build hierarchy SQL fragment
+            hierarchy_params = {}
+            hierarchy_sql = stac_hierarchy_queries.build_hierarchy_where_clause(
+                matching_rule, parent_value, hierarchy_params
+            )
+
+            # Execute search with hierarchy scope
+            (
+                items_rows,
+                total_count,
+                aggregation_results,
+            ) = await stac_search.search_items(
+                conn,
+                search_request,
+                stac_config,
+                hierarchy_sql=hierarchy_sql,
+                hierarchy_params=hierarchy_params,
+            )
+
+            # Map to Features
+            from dynastore.models.protocols import ItemsProtocol
+            items_svc = get_protocol(ItemsProtocol)
+            catalogs_svc = get_protocol(CatalogsProtocol)
+            features = []
+            for row in items_rows:
+                col_config = await catalogs_svc.get_collection_config(catalog_id, collection_id, db_resource=conn)
+                feat = items_svc.map_row_to_feature(dict(row._mapping) if hasattr(row, "_mapping") else dict(row), col_config)
+                if feat:
+                    features.append(feat)
+
+            # Generate STAC items
+            stac_items = await asyncio.gather(
+                *[
+                    stac_generator.create_item_from_feature(
+                        request,
+                        catalog_id,
+                        collection_id,
+                        feature=f,
+                        stac_config=stac_config,
+                        view_mode="virtual-hierarchy",
+                        lang=language,
+                    )
+                    for f in features
+                ]
+            )
+
+        # Create item collection
+        item_collection = pystac.ItemCollection(
+            items=[item for item in stac_items if item]
+        )
+        coll_dict = item_collection.to_dict()
+
+        coll_dict["numberMatched"] = total_count
+        coll_dict["numberReturned"] = len(stac_items)
+
+        # Add aggregation results if present
+        if aggregation_results:
+            coll_dict["aggregations"] = aggregation_results
+
+        # Paging links
+        offset = search_request.offset
+        limit = search_request.limit
+        base_url = get_url(request, remove_qp=True)
+        if (offset + limit) < total_count:
+            next_url = f"{base_url}?offset={offset + limit}&limit={limit}"
+            if parent_value:
+                next_url += f"&parent_value={parent_value}"
+            coll_dict.setdefault("links", []).append({"rel": "next", "href": next_url})
+
+        if offset > 0:
+            prev_url = f"{base_url}?offset={max(0, offset - limit)}&limit={limit}"
+            if parent_value:
+                prev_url += f"&parent_value={parent_value}"
+            coll_dict.setdefault("links", []).append({"rel": "prev", "href": prev_url})
+
+        return JSONResponse(content=coll_dict)

@@ -266,7 +266,7 @@ worker_local = ["dynastore[worker_service,monitor_grp]"]
 # ==========================================================================
 all = ["dynastore[api_full,geoid_service,worker_service]"]
 test = ["pytest>=8.0.0", "pytest-asyncio>=0.23.5", "pytest-cov>=4.1.0", "pytest-xdist>=3.5.0", "requests>=2.31.0", "orjson>=3.9.15"]
-dev = ["ruff", "black", "mypy", "debugpy", "dynastore[test]"]
+dev = ["ruff", "black", "mypy", "pyright>=1.1.390", "debugpy", "dynastore[test]"]
 
 # Internals/Aliases
 mvt = []
@@ -356,6 +356,33 @@ Homepage = "https://github.com/un-fao/dynastore/"
 Documentation = "https://github.com/un-fao/dynastore/#readme"
 Issues = "https://github.com/un-fao/dynastore/issues"
 Changelog = "https://github.com/un-fao/dynastore/blob/main/CHANGES.md"
+
+# ==========================================================================
+# TYPE CHECKING — Pyright
+# ==========================================================================
+[tool.pyright]
+pythonVersion = "3.12"
+pythonPlatform = "Linux"
+typeCheckingMode = "basic"
+venvPath = "."
+venv = ".venv"
+include = ["src/dynastore"]
+exclude = [
+    "**/__pycache__",
+    "tests",
+    "scripts",
+    "build",
+]
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownParameterType = false
+reportUnknownVariableType = false
+reportMissingParameterType = false
+reportUnnecessaryTypeIgnoreComment = "warning"
+
+[[tool.pyright.executionEnvironments]]
+root = "src/dynastore/models/protocols"
+typeCheckingMode = "strict"
 
 # Machine compositions have been moved to docker/.env (Docker) and
 # .github/config/apps.base.yml (cloud). Use the extras groups above as building blocks.

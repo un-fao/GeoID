@@ -33,6 +33,7 @@ Integration with FastAPI:
 
 import logging
 import functools
+from contextlib import asynccontextmanager
 from typing import Callable, Optional, List, Dict, Any, Union, TypeVar, Awaitable
 from fastapi import FastAPI, HTTPException, status, Response, Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -663,3 +664,31 @@ def register_extension_handler(
         register_extension_handler(MyCustomHandler(), prepend=True)
     """
     register_handler(handler, prepend=prepend)
+
+
+@asynccontextmanager
+async def http_errors(
+    mapping: Optional[Dict[type, int]] = None,
+):
+    """Context manager that catches exceptions and re-raises as HTTPException.
+
+    Usage::
+
+        async with http_errors({ValueError: 400}):
+            result = await some_operation()
+
+        async with http_errors({ValueError: 404, KeyError: 400}):
+            result = await find_or_fail()
+
+    ``HTTPException`` is always re-raised as-is (never wrapped).
+    """
+    if mapping is None:
+        mapping = {ValueError: 400}
+    try:
+        yield
+    except HTTPException:
+        raise
+    except tuple(mapping) as e:
+        raise HTTPException(
+            status_code=mapping[type(e)], detail=str(e)
+        ) from e

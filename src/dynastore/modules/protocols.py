@@ -18,47 +18,49 @@
 
 # dynastore/modules/protocols.py
 
+from __future__ import annotations
+
 import logging
-from typing import Protocol, AsyncGenerator, Any, Optional, runtime_checkable
-from contextlib import asynccontextmanager
-from dynastore.models.auth import Principal
+from typing import TYPE_CHECKING, Any, Optional, Protocol, Type, TypeVar
+
 from dynastore.tools.plugin import ProtocolPlugin
+
+if TYPE_CHECKING:
+    from dynastore.models.protocols.config_registry import ConfigRegistryProtocol
 
 logger = logging.getLogger(__name__)
 
-# Re-exporting for backward compatibility if needed, or simply cleaning up.
-# The core protocols are now in dynastore.models.auth
+_P = TypeVar("_P")
 
 
 class HasConfigService(Protocol):
     """
-    Protocol for any component (Module, Extension, Task) that provides access 
+    Protocol for any component (Module, Extension, Task) that provides access
     to the centralized Configuration Manager.
     """
-    def get_config_service(self) -> Any:
-        """
-        Returns the configuration manager instance (typically ConfigManager).
-        The return type is Any to avoid circular imports with the concrete class.
-        """
+
+    def get_config_service(self) -> Optional[ConfigRegistryProtocol]:
+        """Returns the configuration manager instance."""
         ...
 
-    def get_protocol(self, protocol_type: Any) -> Any:
+    def get_protocol(self, protocol_type: Type[_P]) -> Optional[_P]:
         """
         Discovers and caches a protocol implementation at the instance level.
         Provides a standardized way for modules and extensions to access other protocols.
         """
-        if not hasattr(self, "_protocol_cache"):
-            self._protocol_cache = {}
-        if protocol_type not in self._protocol_cache:
+        cache: dict[type, Any] = getattr(self, "_protocol_cache", {})
+        if not cache:
+            object.__setattr__(self, "_protocol_cache", cache)
+        if protocol_type not in cache:
             from dynastore.tools.discovery import get_protocol
             instance = get_protocol(protocol_type)
             if not instance:
                 logger.debug(
-                    f"Protocol {protocol_type.__name__ if hasattr(protocol_type, '__name__') else protocol_type} not found at this stage."
+                    f"Protocol {getattr(protocol_type, '__name__', protocol_type)} not found at this stage."
                 )
                 return None
-            self._protocol_cache[protocol_type] = instance
-        return self._protocol_cache[protocol_type]
+            cache[protocol_type] = instance
+        return cache[protocol_type]
 
 
 class ModuleProtocol(ProtocolPlugin[object], HasConfigService):
