@@ -71,10 +71,12 @@ async def test_async_hard_deletion_failure(app_lifespan):
         while time.time() - start_time < 5:
             async with managed_transaction(app_lifespan.engine) as conn:
                 # C. Check Event Store for Failure Event
-                # We check catalog.system_events for the platform event
+                # Platform-scoped events go to the global events.events outbox
                 logs = await DQLQuery(
                     """
-                     SELECT id FROM catalog.system_events WHERE catalog_id = :id AND event_type = 'catalog_hard_deletion_failure'
+                     SELECT event_id FROM events.events
+                     WHERE event_type = 'catalog_hard_deletion_failure'
+                       AND payload->'kwargs'->>'catalog_id' = :id
                      """,
                     result_handler=ResultHandler.ALL_DICTS,
                 ).execute(conn, id=catalog_id)
