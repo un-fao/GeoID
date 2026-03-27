@@ -1,0 +1,658 @@
+#    Copyright 2025 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
+import asyncio
+import logging
+from typing import Optional, Dict, Tuple, Any
+
+try:
+    from google.api_core import exceptions as google_exceptions
+    from google.api_core.exceptions import Aborted
+except ImportError:
+    google_exceptions = None
+    Aborted = None
+
+try:
+    from google.cloud import pubsub_v1
+except ImportError:
+    pubsub_v1 = None
+
+from dynastore.modules.concurrency import run_in_thread
+from dynastore.modules.db_config.query_executor import managed_transaction
+from dynastore.modules.gcp import gcp_db
+from dynastore.modules.gcp.gcp_config import (
+    GcpEventingConfig,
+    ManagedBucketEventing,
+    GcsNotificationEventType,
+    GCP_EVENTING_CONFIG_ID,
+)
+from dynastore.modules.gcp.models import (
+    PushSubscriptionConfig,
+    PUBSUB_JWT_AUDIENCE,
+)
+from dynastore.modules.catalog.lifecycle_manager import LifecycleContext
+
+logger = logging.getLogger(__name__)
+
+
+class GcpEventingOpsMixin:
+    """Mixin providing Pub/Sub and eventing operations for GCPModule."""
+
+    def generate_default_topic_id(self, catalog_id: str) -> str:
+        """Generates the deterministic default Pub/Sub topic ID for a catalog."""
+        return f"ds-{catalog_id}-events"
+
+    def generate_default_subscription_id(self, catalog_id: str) -> str:
+        """Generates the deterministic default Pub/Sub subscription ID for a catalog."""
+        return f"ds-{catalog_id}-default-sub"
+
+    async def apply_eventing_config(
+        self, catalog_id: str, config: GcpEventingConfig, conn=None
+    ):
+        """Applies eventing configuration changes to the live GCP resources."""
+        logger.info(
+            f"Applying eventing configuration changes for catalog '{catalog_id}'."
+        )
+
+        # Handle the managed eventing system
+        if config.managed_eventing:
+            if config.managed_eventing.enabled:
+                logger.info(
+                    f"Setting up or updating managed eventing for catalog '{catalog_id}'."
+                )
+                # This call is already idempotent and manages Topic, Notification, and Subscription
+                updated_managed_config = await self.setup_managed_eventing_channel(
+                    catalog_id, config.managed_eventing, conn=conn
+                )
+                # We don't save back here to avoid infinite loops, the caller (ConfigManager) just saved the config.
+                # However, setup_managed_eventing_channel might update output fields (topic_path, etc.)
+                # If they changed, we might need a way to update the DB without triggering the hook again.
+                # For now, we assume these output fields are stable once established.
+            else:
+                logger.info(
+                    f"Tearing down managed eventing for catalog '{catalog_id}'."
+                )
+                await self.teardown_managed_eventing_channel(
+                    catalog_id, config.managed_eventing
+                )
+
+        # Handle custom subscriptions to external topics
+        for sub in config.custom_subscriptions:
+            if sub.enabled:
+                logger.info(
+                    f"Setting up external subscription '{sub.id}' for catalog '{catalog_id}'."
+                )
+                push_attributes = {
+                    "subscription_id": sub.id,
+                    "catalog_id": catalog_id,
+                    "subscription_type": "custom",
+                    "custom_subscription_id": sub.id,
+                }
+                await self.setup_push_subscription(
+                    sub.topic_path, sub.subscription, custom_attributes=push_attributes
+                )
+            else:
+                logger.info(
+                    f"Tearing down external subscription '{sub.id}' for catalog '{catalog_id}'."
+                )
+                await self.teardown_external_subscription(sub.subscription)
+
+    async def setup_managed_eventing_channel(
+        self,
+        catalog_id: str,
+        managed_config: ManagedBucketEventing,
+        bucket_name: Optional[str] = None,
+        conn=None,
+        context: Optional[LifecycleContext] = None,
+    ) -> ManagedBucketEventing:
+        """Creates/updates the full managed eventing pipeline: Topic -> GCS Notification -> Subscription.
+
+        conn is optional. If provided it is used only for the bucket name lookup (a short read).
+        All GCP API calls (gRPC) happen after the connection is released to avoid
+        ConnectionDoesNotExistError from asyncpg closing idle connections.
+        """
+        project_id = self.get_project_id()
+        if not project_id:
+            raise RuntimeError(
+                "Cannot setup managed eventing: GCP Project ID is not available."
+            )
+        # If managed_config.subscription is None, initialize it with a default ID.
+        if managed_config.subscription is None:
+            managed_config.subscription = PushSubscriptionConfig(
+                subscription_id=self.generate_default_subscription_id(catalog_id)
+            )
+
+        # 1. Create the managed topic idempotently.
+        publisher_client = self.get_publisher_client()
+        topic_id = managed_config.topic_id or self.generate_default_topic_id(catalog_id)
+        topic_path = publisher_client.topic_path(project_id, topic_id)
+
+        try:
+            logger.info(f"Attempting to create topic with path: '{topic_path}'")
+            await run_in_thread(publisher_client.create_topic, name=topic_path)
+            logger.info(f"Created managed Pub/Sub topic: {topic_path}")
+        except google_exceptions.AlreadyExists:
+            logger.debug(f"Managed Pub/Sub topic '{topic_path}' already exists.")
+        managed_config.topic_path = topic_path
+
+        # Grant the GCS service account permission to publish to the newly created topic.
+        storage_client = self.get_storage_client()
+        gcs_service_account_email = await run_in_thread(
+            storage_client.get_service_account_email, project=project_id
+        )
+        logger.info(
+            f"Granting Pub/Sub Publisher role to GCS service account '{gcs_service_account_email}' on topic '{topic_path}'."
+        )
+
+        # Retry logic for IAM policy operations to handle transient "Socket closed" errors
+        for attempt in range(1, 6):
+            try:
+                policy = await run_in_thread(
+                    publisher_client.get_iam_policy, request={"resource": topic_path}
+                )
+                policy.bindings.add(
+                    role="roles/pubsub.publisher",
+                    members=[f"serviceAccount:{gcs_service_account_email}"],
+                )
+                await run_in_thread(
+                    publisher_client.set_iam_policy,
+                    request={"resource": topic_path, "policy": policy},
+                )
+                break
+            except (
+                google_exceptions.ServiceUnavailable,
+                google_exceptions.InternalServerError,
+                google_exceptions.Unknown,
+                Aborted,
+            ) as e:
+                # "Socket closed" can appear as ServiceUnavailable or Unknown depending on the gRPC layer
+                if attempt == 5:
+                    logger.error(
+                        f"Failed to update IAM policy for topic '{topic_path}' after {attempt} attempts: {e}"
+                    )
+                    raise
+
+                delay = 1.0 * (2 ** (attempt - 1))
+                logger.warning(
+                    f"Retrying IAM policy update for topic '{topic_path}' due to error: {e}. Attempt {attempt}/5. Retrying in {delay}s..."
+                )
+                await asyncio.sleep(delay)
+
+        # 2. Create GCS notifications for each configured prefix.
+        if not bucket_name:
+            if conn:
+                bucket_name = await gcp_db.get_bucket_for_catalog_query.execute(
+                    conn, catalog_id=catalog_id
+                )
+            else:
+                async with managed_transaction(self.engine) as legacy_conn:
+                    bucket_name = await gcp_db.get_bucket_for_catalog_query.execute(
+                        legacy_conn, catalog_id=catalog_id
+                    )
+        if not bucket_name:
+            raise RuntimeError(
+                f"Cannot setup GCS notification: Bucket for catalog '{catalog_id}' does not exist."
+            )
+
+        bucket = storage_client.bucket(bucket_name)
+
+        # Listing notifications can briefly return 404 if the bucket has just been
+        # created or was externally deleted. We treat NotFound as recoverable:
+        # ensure the bucket exists (via BucketService), wait for readiness, then retry with backoff.
+        async def _list_notifications_with_retry(
+            bucket_obj,
+            bucket_name_str,
+            max_retries: int = 8,
+            initial_delay: float = 0.5,
+        ):
+            """
+            Retries listing notifications with exponential backoff to handle GCS eventual consistency.
+            Even after a bucket exists, it may not be immediately ready for all operations.
+            """
+
+            def _list_notifications_sync():
+                return list(bucket_obj.list_notifications())
+
+            last_exception = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    return await run_in_thread(_list_notifications_sync)
+                except google_exceptions.NotFound as e:
+                    last_exception = e
+                    if attempt < max_retries:
+                        # Exponential backoff: 0.5s, 1s, 2s, 4s, 8s, 16s, 32s, 64s (max ~127s total)
+                        delay = initial_delay * (2 ** (attempt - 1))
+                        logger.debug(
+                            f"Attempt {attempt}/{max_retries}: Bucket '{bucket_name_str}' not ready for listing notifications. "
+                            f"Retrying in {delay}s..."
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.warning(
+                            f"Failed to list notifications after {max_retries} attempts. "
+                            f"Bucket '{bucket_name_str}' may not be fully ready yet."
+                        )
+                        raise
+            # Should never reach here, but just in case
+            if last_exception:
+                raise last_exception
+
+        try:
+            existing_notifications = await _list_notifications_with_retry(
+                bucket, bucket_name
+            )
+        except google_exceptions.NotFound as e:
+            # Attempt a repair: ensure the bucket exists and is ready, then retry with backoff.
+            logger.warning(
+                f"GCS bucket '{bucket_name}' for catalog '{catalog_id}' not found when listing notifications. "
+                f"Attempting to repair by ensuring bucket existence and retrying. Error: {e}"
+            )
+
+            bucket_manager = self.get_bucket_service()
+            repaired_bucket_name = (
+                await bucket_manager.ensure_storage_for_catalog(
+                    catalog_id, conn=conn
+                )
+            )
+            if not repaired_bucket_name:
+                logger.error(
+                    f"Failed to repair missing bucket for catalog '{catalog_id}'. "
+                    f"Original bucket name was '{bucket_name}'."
+                )
+                raise RuntimeError(
+                    f"Cannot setup GCS notification: Bucket for catalog '{catalog_id}' "
+                    f"does not exist and could not be recreated."
+                ) from e
+
+            # If the bucket name changed, rebuild the bucket handle.
+            if repaired_bucket_name != bucket_name:
+                logger.info(
+                    f"Bucket name for catalog '{catalog_id}' changed from '{bucket_name}' "
+                    f"to '{repaired_bucket_name}' during repair."
+                )
+                bucket_name = repaired_bucket_name
+                bucket = storage_client.bucket(bucket_name)
+
+            # Wait for the bucket to be fully ready/visible.
+            # Note: Even if wait_for_bucket_ready returns True, the bucket might not be ready
+            # for all operations (like listing notifications) due to eventual consistency.
+            # We'll rely on the retry logic below to handle this.
+            ready = await bucket_manager.wait_for_bucket_ready(bucket_name)
+            if not ready:
+                logger.warning(
+                    f"Repaired bucket '{bucket_name}' for catalog '{catalog_id}' did not report as ready "
+                    f"within the expected time window, but will attempt to list notifications with retries."
+                )
+            else:
+                # Even if the bucket reports as ready, give it a moment for eventual consistency
+                # before attempting to list notifications
+                await asyncio.sleep(0.5)
+
+            # Retry listing notifications with backoff after repair.
+            # The retry logic will handle eventual consistency even if wait_for_bucket_ready
+            # returned False or if the bucket exists but isn't ready for listing notifications yet.
+            try:
+                existing_notifications = await _list_notifications_with_retry(
+                    bucket, bucket_name
+                )
+            except google_exceptions.NotFound as e2:
+                logger.error(
+                    f"Bucket '{bucket_name}' for catalog '{catalog_id}' is still reported as missing "
+                    f"after repair and retry attempts. Project: '{project_id}'. Error: {e2}"
+                )
+
+                raise RuntimeError(
+                    f"Cannot setup GCS notification: Bucket '{bucket_name}' for catalog '{catalog_id}' "
+                    f"is missing even after repair and retry attempts."
+                ) from e2
+
+        event_types = managed_config.event_types or [
+            GcsNotificationEventType.OBJECT_FINALIZE
+        ]
+        managed_config.gcs_notification_ids = []
+
+        # We need to ensure each prefix in managed_config.blob_name_prefixes has a notification.
+        prefixes_to_setup = managed_config.blob_name_prefixes or [
+            None
+        ]  # None means entire bucket
+
+        for prefix in prefixes_to_setup:
+            match_found = False
+            for notif in existing_notifications:
+                # topic_name in GCS notification is the short ID, not full path
+                if notif.topic_name == topic_id and notif.topic_project == project_id:
+                    if (
+                        notif.blob_name_prefix == prefix
+                        and set(notif.event_types or []) == set(event_types)
+                        and notif.payload_format == managed_config.payload_format
+                    ):
+                        managed_config.gcs_notification_ids.append(
+                            notif.notification_id
+                        )
+                        logger.info(
+                            f"Existing matching GCS notification '{notif.notification_id}' found for prefix '{prefix}' on bucket '{bucket_name}'."
+                        )
+                        match_found = True
+                        break
+
+            if not match_found:
+                notification = bucket.notification(
+                    topic_name=topic_id,
+                    topic_project=project_id,
+                    payload_format=managed_config.payload_format,
+                    event_types=event_types,
+                    blob_name_prefix=prefix,
+                )
+
+                await run_in_thread(notification.create)
+                managed_config.gcs_notification_ids.append(notification.notification_id)
+                logger.info(
+                    f"Successfully created GCS notification '{notification.notification_id}' for prefix '{prefix}' on bucket '{bucket_name}'."
+                )
+
+        managed_config.bucket_id = bucket_name
+
+        # 3. Create the push subscription to the managed topic.
+        push_attributes = {
+            "subscription_id": managed_config.subscription.subscription_id,
+            "catalog_id": catalog_id,
+            "subscription_type": "managed",
+        }
+        updated_subscription = await self.setup_push_subscription(
+            topic_path, managed_config.subscription, custom_attributes=push_attributes
+        )
+        managed_config.subscription = updated_subscription
+
+        return managed_config
+
+    async def setup_push_subscription(
+        self,
+        topic_path: str,
+        sub_config: PushSubscriptionConfig,
+        custom_attributes: Optional[Dict[str, str]] = None,
+    ) -> PushSubscriptionConfig:
+        """Creates a push subscription to a given topic. Idempotent."""
+        project_id = self.get_project_id()
+        region = self.get_region()
+        if not project_id or not region:
+            raise RuntimeError(
+                "Cannot determine self URL for push subscription: Project ID or Region could not be determined."
+            )
+
+        base_url = await self.get_self_url()
+        push_endpoint = f"{base_url}/gcp/events/pubsub-push"
+
+        # Ensure custom_attributes is not None for logging and usage
+        attributes = custom_attributes or {}
+
+        # Pub/Sub requires HTTPS for push endpoints. In local/test environments
+        # where HTTPS is not available, we skip the push configuration to avoid 400 errors.
+        if not push_endpoint.startswith("https://"):
+            logger.warning(
+                f"Push endpoint '{push_endpoint}' does not use HTTPS. Skipping push configuration as it is required by GCP Pub/Sub."
+            )
+            push_config = None
+        else:
+            # The custom attributes must be attached to the parent PushConfig object,
+            # not the OidcToken object, for them to be included in the push message.
+            oidc_token_config = pubsub_v1.types.PushConfig.OidcToken(
+                service_account_email=self.get_account_email(),
+                audience=PUBSUB_JWT_AUDIENCE,
+            )
+
+            # For compatibility with some library versions, attributes must be placed
+            # on the PushConfig. This will send them as HTTP headers.
+            push_config = pubsub_v1.types.PushConfig(
+                push_endpoint=push_endpoint,
+                oidc_token=oidc_token_config,
+                attributes=attributes,
+            )
+
+        subscriber_client = self.get_subscriber_client()
+        subscription_path = subscriber_client.subscription_path(
+            project_id, sub_config.subscription_id
+        )
+
+        subscription_args = {
+            "name": subscription_path,
+            "topic": topic_path,
+            "push_config": push_config,
+            "ack_deadline_seconds": sub_config.ack_deadline_seconds,
+            # "retain_acked_messages": sub_config.retain_acked_messages,
+            # "enable_message_ordering": sub_config.enable_message_ordering,
+            # "filter": sub_config.filter,
+            # "enable_exactly_once_delivery": sub_config.enable_exactly_once_delivery
+        }
+
+        # Message retention duration
+        # retention_duration = pubsub_v1.types.Duration()
+        # retention_duration.seconds = sub_config.message_retention_duration_days * 24 * 60 * 60
+        # subscription_args["message_retention_duration"] = retention_duration
+
+        # Dead letter policy
+        # if sub_config.dead_letter_policy:
+        #     subscription_args["dead_letter_policy"] = pubsub_v1.types.DeadLetterPolicy(
+        #         dead_letter_topic=sub_config.dead_letter_policy.dead_letter_topic,
+        #         max_delivery_attempts=sub_config.dead_letter_policy.max_delivery_attempts,
+        #     )
+
+        # # Retry policy (exponential backoff)
+        # if sub_config.retry_policy:
+        #     min_backoff = pubsub_v1.types.Duration(seconds=sub_config.retry_policy.minimum_backoff_seconds)
+        #     max_backoff = pubsub_v1.types.Duration(seconds=sub_config.retry_policy.maximum_backoff_seconds)
+        #     subscription_args["retry_policy"] = pubsub_v1.types.RetryPolicy(
+        #         minimum_backoff=min_backoff,
+        #         maximum_backoff=max_backoff,
+        #     )
+
+        # # Expiration policy (TTL)
+        # if sub_config.expiration_policy:
+        #     ttl_duration = pubsub_v1.types.Duration(seconds=sub_config.expiration_policy.ttl_days * 24 * 60 * 60)
+        #     subscription_args["expiration_policy"] = pubsub_v1.types.ExpirationPolicy(ttl=ttl_duration)
+
+        try:
+            # Run blocking create_subscription via the shared concurrency backend
+            await run_in_thread(
+                subscriber_client.create_subscription, **subscription_args
+            )
+            logger.info(
+                f"Created Pub/Sub push subscription '{subscription_path}' to endpoint '{push_endpoint}' with attributes {list(attributes.keys())}."
+            )
+        except google_exceptions.AlreadyExists:
+            logger.debug(
+                f"Pub/Sub subscription '{subscription_path}' already exists. Updating PushConfig to ensure attributes are current."
+            )
+            # If the subscription exists, we MUST update the PushConfig to ensure that
+            # any new custom attributes (like subscription_id) are applied.
+            # create_subscription does not update existing resources.
+            try:
+                # Run blocking modify_push_config via the shared concurrency backend
+                await run_in_thread(
+                    subscriber_client.modify_push_config,
+                    request={
+                        "subscription": subscription_path,
+                        "push_config": push_config,
+                    },
+                )
+                logger.info(
+                    f"Successfully updated PushConfig (attributes: {list(attributes.keys())}) for existing subscription '{subscription_path}'."
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to update PushConfig for existing subscription '{subscription_path}': {e}"
+                )
+
+        sub_config.subscription_path = subscription_path
+        return sub_config
+
+    async def teardown_managed_eventing_channel(
+        self, catalog_id: str, managed_config: ManagedBucketEventing
+    ):
+        """Tears down the full managed eventing pipeline."""
+        # 1. Delete all GCS notification resources from the bucket.
+        if managed_config.gcs_notification_ids:
+            bucket_name = await self.get_bucket_service().get_storage_identifier(
+                catalog_id
+            )
+            if bucket_name:
+                for notif_id in managed_config.gcs_notification_ids:
+                    await self.get_bucket_service().teardown_gcs_notification(
+                        bucket_name, notif_id
+                    )
+            else:
+                logger.warning(
+                    f"Could not determine bucket name for catalog '{catalog_id}'. Skipping GCS notification teardown."
+                )
+
+        # 2. Delete the managed topic. This will also delete its subscriptions.
+        if managed_config.topic_path:
+            publisher_client = self.get_publisher_client()
+            try:
+                # Run blocking delete_topic via the shared concurrency backend
+                await run_in_thread(
+                    publisher_client.delete_topic,
+                    request={"topic": managed_config.topic_path},
+                )
+                logger.info(
+                    f"Deleted managed Pub/Sub topic: {managed_config.topic_path}"
+                )
+            except google_exceptions.NotFound:
+                logger.debug(
+                    f"Managed Pub/Sub topic '{managed_config.topic_path}' not found. Nothing to delete."
+                )
+
+            # # Dispatch event: Managed Eventing Teardown
+            # await events_module.create_event(
+            #     event_type=GcpEventType.MANAGED_EVENTING_TEARDOWN.value,
+            #     payload={"catalog_id": catalog_id, "topic_path": managed_config.topic_path})
+
+    async def teardown_external_subscription(self, sub_config: PushSubscriptionConfig):
+        """
+        Deletes a single external Pub/Sub subscription.
+        """
+        if sub_config.subscription_path:
+            subscriber_client = self.get_subscriber_client()
+            try:
+                # Run blocking delete_subscription via the shared concurrency backend
+                await run_in_thread(
+                    subscriber_client.delete_subscription,
+                    request={"subscription": sub_config.subscription_path},
+                )
+                logger.info(
+                    f"Deleted Pub/Sub subscription: {sub_config.subscription_path}"
+                )
+            except google_exceptions.NotFound:
+                logger.debug(
+                    f"Pub/Sub subscription '{sub_config.subscription_path}' not found. Nothing to delete."
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to delete Pub/Sub subscription '{sub_config.subscription_path}': {e}",
+                    exc_info=True,
+                )
+
+    async def set_eventing_config(
+        self, catalog_id: str, config: GcpEventingConfig, conn=None
+    ) -> GcpEventingConfig:
+        """Persists the eventing configuration for a catalog."""
+        config_service = self.get_config_service()
+        # Pass the connection to reuse the transaction
+        await config_service.set_config(
+            GCP_EVENTING_CONFIG_ID, config, catalog_id=catalog_id, db_resource=conn
+        )
+        # Re-fetch to confirm and return the validated model
+        return await config_service.get_config(
+            GCP_EVENTING_CONFIG_ID, catalog_id, db_resource=conn
+        )
+
+    async def setup_catalog_eventing(self, catalog_id: str) -> Tuple[str, Any]:
+        """EventingProtocol: Sets up GCP eventing for a catalog."""
+        # For GCP, this ensures both bucket and eventing are ready
+        return await self.setup_catalog_gcp_resources(catalog_id)
+
+    async def teardown_catalog_eventing(
+        self, catalog_id: str, config: Optional[Any] = None
+    ) -> None:
+        """EventingProtocol: Tears down GCP eventing for a catalog."""
+        if config and hasattr(config, "managed_eventing") and config.managed_eventing:
+            await self.teardown_managed_eventing_channel(
+                catalog_id, config.managed_eventing
+            )
+
+        if config is None:
+            # Force cleanup of deterministic default resources (topics/subscriptions)
+            # This is useful during hard deletion where config might be already missing.
+            project_id = self.get_project_id()
+            if not project_id:
+                return
+
+            # Default Topic (deleting topic deletes its subscriptions)
+            topic_id = self.generate_default_topic_id(catalog_id)
+            topic_path = self.get_publisher_client().topic_path(project_id, topic_id)
+            try:
+                await run_in_thread(
+                    self.get_publisher_client().delete_topic,
+                    request={"topic": topic_path},
+                )
+                logger.info(f"Forcefully deleted default topic: {topic_path}")
+            except google_exceptions.NotFound:
+                pass
+            except Exception as e:
+                logger.error(
+                    f"Failed to force delete default topic '{topic_path}': {e}"
+                )
+
+            # Default Subscription (if it exists separately, though deleting topic should handle it)
+            sub_id = self.generate_default_subscription_id(catalog_id)
+            sub_path = self.get_subscriber_client().subscription_path(
+                project_id, sub_id
+            )
+            try:
+                await run_in_thread(
+                    self.get_subscriber_client().delete_subscription,
+                    request={"subscription": sub_path},
+                )
+                logger.info(f"Forcefully deleted default subscription: {sub_path}")
+            except google_exceptions.NotFound:
+                pass
+            except Exception as e:
+                logger.error(
+                    f"Failed to force delete default subscription '{sub_path}': {e}"
+                )
+
+    async def get_eventing_config(
+        self,
+        catalog_id: str,
+        conn=None,
+        context: Optional[LifecycleContext] = None,
+    ) -> Optional[GcpEventingConfig]:
+        """Internal helper to fetch and parse a catalog's eventing config."""
+        config_service = self.get_config_service()
+        # Pass the connection to reuse the transaction if provided
+        config = await config_service.get_config(
+            GCP_EVENTING_CONFIG_ID,
+            catalog_id,
+            db_resource=conn,
+            config_snapshot=context.config if context else None,
+        )
+
+        if isinstance(config, GcpEventingConfig):
+            return config
+        if isinstance(config, dict):
+            return GcpEventingConfig.model_validate(config)
+        return None
