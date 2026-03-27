@@ -182,12 +182,17 @@ class StatsService(ProtocolPlugin[object]):
         catalog_id: Optional[str] = None,
     ) -> AccessRecord:
         """Internal helper to construct the AccessRecord from request state."""
+        from dynastore.extensions.tools.request_state import (
+            get_api_key_hash,
+            get_catalog_id,
+            get_principal_id,
+        )
+
         return AccessRecord(
             timestamp=datetime.now(timezone.utc),
-            catalog_id=catalog_id
-            or getattr(request.state, "catalog_id", None),
-            api_key_hash=getattr(request.state, "api_key_hash", None),
-            principal_id=getattr(request.state, "principal_id", None),
+            catalog_id=catalog_id or get_catalog_id(request),
+            api_key_hash=get_api_key_hash(request),
+            principal_id=get_principal_id(request),
             source_ip=request.client.host if request.client else "unknown",
             method=request.method,
             path=request.url.path,
@@ -196,18 +201,14 @@ class StatsService(ProtocolPlugin[object]):
             details=details or {},
         )
 
-    async def get_summary(self, **kwargs):
-        """
-        Proxies the call to the underlying driver's get_summary.
-        """
+    async def get_summary(self, **kwargs: Any) -> Optional[Any]:
+        """Proxies the call to the underlying driver's get_summary."""
         if self._stats_driver:
             return await self._stats_driver.get_summary(**kwargs)
         return None
 
-    async def get_logs(self, **kwargs):
-        """
-        Proxies the call to the underlying driver's get_logs.
-        """
+    async def get_logs(self, **kwargs: Any) -> Optional[Any]:
+        """Proxies the call to the underlying driver's get_logs."""
         if self._stats_driver:
             return await self._stats_driver.get_logs(**kwargs)
         return None

@@ -897,11 +897,11 @@ def cached(
                     evictions=_backend._stats.evictions,
                 )
 
-            async_wrapper.cache_invalidate = sync_cache_invalidate_impl  # type: ignore[attr-defined]
-            async_wrapper.cache_clear = sync_cache_clear_impl  # type: ignore[attr-defined]
-            async_wrapper.cache_info = cache_info  # type: ignore[attr-defined]
-            async_wrapper._cache_backend = _backend  # type: ignore[attr-defined]
-            async_wrapper._cache_namespace = ns  # type: ignore[attr-defined]
+            setattr(async_wrapper, "cache_invalidate", sync_cache_invalidate_impl)
+            setattr(async_wrapper, "cache_clear", sync_cache_clear_impl)
+            setattr(async_wrapper, "cache_info", cache_info)
+            setattr(async_wrapper, "cache_backend", _backend)
+            setattr(async_wrapper, "cache_namespace", ns)
             return async_wrapper
 
         else:
@@ -942,11 +942,11 @@ def cached(
                     evictions=_sync_backend._stats.evictions,
                 )
 
-            sync_wrapper.cache_invalidate = sync_cache_invalidate  # type: ignore[attr-defined]
-            sync_wrapper.cache_clear = sync_cache_clear  # type: ignore[attr-defined]
-            sync_wrapper.cache_info = cache_info  # type: ignore[attr-defined]
-            sync_wrapper._cache_backend = _sync_backend  # type: ignore[attr-defined]
-            sync_wrapper._cache_namespace = ns  # type: ignore[attr-defined]
+            setattr(sync_wrapper, "cache_invalidate", sync_cache_invalidate)
+            setattr(sync_wrapper, "cache_clear", sync_cache_clear)
+            setattr(sync_wrapper, "cache_info", cache_info)
+            setattr(sync_wrapper, "cache_backend", _sync_backend)
+            setattr(sync_wrapper, "cache_namespace", ns)
             return sync_wrapper
 
     return decorator

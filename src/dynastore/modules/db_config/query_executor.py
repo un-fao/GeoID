@@ -115,43 +115,39 @@ def _get_wire_identity(conn: Any) -> Any:
     """
     Safely drills down to find a stable identity for the connection wire
     without triggering prohibited SQLAlchemy properties like .connection.
+
+    Uses isinstance checks against concrete SQLAlchemy types instead of
+    hasattr duck typing — faster and type-checker friendly.
     """
     curr = conn
-    for i in range(15):  # Slightly deeper search
-        # 1. Handle Async Wrappers
-        if hasattr(curr, "sync_session"):
+    for _ in range(15):
+        # 1. Handle Async Wrappers — unwrap to sync counterparts
+        if isinstance(curr, AsyncSession):
             curr = curr.sync_session
             continue
-        if hasattr(curr, "sync_connection"):
+        if isinstance(curr, AsyncConnection):
             curr = curr.sync_connection
             continue
 
         # 2. Handle Session bound to Connection
-        if hasattr(curr, "bind") and not isinstance(curr.bind, (Engine, AsyncEngine)):
-            # It might be a Connection object
-            if hasattr(curr.bind, "driver_connection") or hasattr(
-                curr.bind, "_connection"
-            ):
+        if isinstance(curr, SASession) and curr.bind is not None and not isinstance(curr.bind, (Engine, AsyncEngine)):
+            if isinstance(curr.bind, (SAConnection, AsyncConnection)):
                 curr = curr.bind
                 continue
 
-        # 3. Modern SQLAlchemy handles this via driver_connection or _connection
-        # We avoid .connection as it's often a property that creates new ones
-        proto_nxt = (
+        # 3. Drill to driver connection via standard attributes.
+        # driver_connection is the public API; _connection and _proxied
+        # are SQLAlchemy internals needed to traverse proxy layers to reach
+        # the actual asyncpg wire (required for correct wire-lock identity).
+        nxt = (
             getattr(curr, "driver_connection", None)
             or getattr(curr, "_connection", None)
             or getattr(curr, "_proxied", None)
         )
 
-        # Deep drill into DBAPI connection
-        if hasattr(curr, "dbapi_connection"):
-            nxt = curr.dbapi_connection
-        else:
-            nxt = proto_nxt
-
-        if nxt is None:
-            # Try checking for _dbapi_connection directly (internal)
-            nxt = getattr(curr, "_dbapi_connection", None)
+        # 4. Fallback to dbapi_connection / _dbapi_connection (on Connection objects)
+        if nxt is None and isinstance(curr, SAConnection):
+            nxt = getattr(curr, "dbapi_connection", None) or getattr(curr, "_dbapi_connection", None)
 
         if nxt is None or nxt is curr:
             break
@@ -225,15 +221,12 @@ def set_main_app_loop(loop: asyncio.AbstractEventLoop):
 
 def is_async_resource(db_resource: DbResource) -> bool:
     """Determines if a resource supports asynchronous operations."""
-    return isinstance(db_resource, (AsyncEngine, AsyncConnection, AsyncSession)) or (
-        hasattr(db_resource, "begin_nested")
-        and inspect.iscoroutinefunction(db_resource.begin_nested)
-    )
+    return isinstance(db_resource, (AsyncEngine, AsyncConnection, AsyncSession, AsyncTransaction))
 
 
 def _is_in_transaction(conn: Any) -> bool:
     """Helper to check if a database resource is currently in a transaction."""
-    if hasattr(conn, "in_transaction"):
+    if isinstance(conn, (SAConnection, SASession, AsyncConnection, AsyncSession)):
         return conn.in_transaction()
     return False
 
@@ -314,12 +307,16 @@ class TemplateQueryBuilder(QueryBuilderStrategy):
         is_ddl = isinstance(self.query_template, DDL)
         template_str = str(self.query_template)
 
-        if hasattr(db_resource, "engine") and hasattr(db_resource.engine, "dialect"):
-            dialect = db_resource.engine.dialect
-        elif hasattr(db_resource, "dialect"):
+        if isinstance(db_resource, (Engine, AsyncEngine, SAConnection, AsyncConnection)):
             dialect = db_resource.dialect
-        elif hasattr(db_resource, "bind") and hasattr(db_resource.bind, "dialect"):
-            dialect = db_resource.bind.dialect
+        elif isinstance(db_resource, (SASession, AsyncSession)):
+            bind = db_resource.bind
+            if bind is not None:
+                dialect = bind.dialect
+            else:
+                raise TypeError(
+                    f"TemplateQueryBuilder: Session has no bind, cannot resolve dialect."
+                )
         else:
             raise TypeError(
                 f"TemplateQueryBuilder: Unable to resolve dialect from {type(db_resource)}."
@@ -621,7 +618,7 @@ class DDLExecutor(BaseExecutor):
             except Exception:
                 pass
 
-        stmt_text = query_obj.text if hasattr(query_obj, "text") else str(query_obj)
+        stmt_text = query_obj.text if isinstance(query_obj, TextClause) else str(query_obj)
         # Include parameters in hash for proper coordination
         param_str = json.dumps(params, sort_keys=True, default=str) if params else ""
         combined = f"{stmt_text.strip()}|{param_str}"
@@ -660,7 +657,7 @@ class DDLExecutor(BaseExecutor):
             try:
                 # Use a savepoint if we're already inside a transaction to prevent
                 # a failed existence check from aborting the outer transaction.
-                if hasattr(conn, "begin_nested") and hasattr(conn, "in_transaction") and conn.in_transaction():
+                if isinstance(conn, (AsyncConnection, AsyncSession)) and conn.in_transaction():
                     try:
                         res = False
                         async with conn.begin_nested() as sp:
@@ -683,7 +680,7 @@ class DDLExecutor(BaseExecutor):
             except Exception:
                 pass
 
-        stmt_text = query_obj.text if hasattr(query_obj, "text") else str(query_obj)
+        stmt_text = query_obj.text if isinstance(query_obj, TextClause) else str(query_obj)
         # Include parameters in hash for proper coordination
         param_str = json.dumps(params, sort_keys=True, default=str) if params else ""
         combined = f"{stmt_text.strip()}|{param_str}"
@@ -695,7 +692,7 @@ class DDLExecutor(BaseExecutor):
                 # 2. Re-check after acquiring transaction but before locking
                 if self.existence_check:
                     res = False
-                    if hasattr(tx_conn, "begin_nested") and hasattr(tx_conn, "in_transaction") and tx_conn.in_transaction():
+                    if isinstance(tx_conn, (AsyncConnection, AsyncSession)) and tx_conn.in_transaction():
                         async with tx_conn.begin_nested() as sp:
                             res = await self._call_existence_check(tx_conn, params)
                             await sp.rollback()
@@ -832,7 +829,7 @@ async def managed_transaction(db_resource: DbResource):
                 getattr(getattr(conn, "connection", None), "closed", False) is True
             ):
                 is_closed = True
-            elif hasattr(conn, "driver_connection"):
+            elif isinstance(conn, (SAConnection, AsyncConnection)):
                 # Try to access driver state safely
                 drv = conn.driver_connection
                 if (

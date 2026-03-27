@@ -44,12 +44,15 @@ async def get_principal(
     If authentication fails or is not configured, it returns None (Anonymous).
     """
 
+    from dynastore.extensions.tools.request_state import get_principal, get_principal_role
+
     # 1. Check if Middleware already authenticated a User Principal
-    if hasattr(request.state, "principal") and request.state.principal:
-        return request.state.principal
+    principal = get_principal(request)
+    if principal:
+        return principal
 
     # 2. Check if Middleware authenticated a System Admin
-    principal_role = getattr(request.state, "principal_role", None)
+    principal_role = get_principal_role(request)
     if principal_role == "sysadmin":
         return Principal(
             id=UUID('00000000-0000-0000-0000-000000000000'), 

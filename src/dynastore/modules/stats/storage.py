@@ -172,10 +172,30 @@ class AbstractStatsDriver(ProtocolPlugin[object]):
     async def flush(self, conn: Optional[DbResource] = None): ...
 
     @abc.abstractmethod
-    async def get_summary(self, **kwargs) -> StatsSummary: ...
+    async def get_summary(
+        self,
+        schema: Optional[str] = None,
+        catalog_id: Optional[str] = None,
+        principal_id: Optional[str] = None,
+        api_key_hash: Optional[str] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        **kwargs: Any,
+    ) -> StatsSummary: ...
 
     @abc.abstractmethod
-    async def get_logs(self, **kwargs) -> AccessLogPage: ...
+    async def get_logs(
+        self,
+        schema: Optional[str] = None,
+        catalog_id: Optional[str] = None,
+        principal_id: Optional[str] = None,
+        api_key_hash: Optional[str] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        limit: int = 100,
+        offset: int = 0,
+        **kwargs: Any,
+    ) -> AccessLogPage: ...
 
 
 class PostgresStatsDriver(AbstractStatsDriver):
@@ -423,11 +443,19 @@ class PostgresStatsDriver(AbstractStatsDriver):
     def name(self) -> str:
         return "postgres"
 
-    async def get_summary(self, **kwargs) -> StatsSummary:
+    async def get_summary(
+        self,
+        schema: Optional[str] = None,
+        catalog_id: Optional[str] = None,
+        principal_id: Optional[str] = None,
+        api_key_hash: Optional[str] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        **kwargs: Any,
+    ) -> StatsSummary:
         from dynastore.models.shared_models import SYSTEM_CATALOG_ID, SYSTEM_SCHEMA
 
-        schema = SYSTEM_SCHEMA
-        catalog_id = kwargs.get("catalog_id")
+        resolved_schema = schema or SYSTEM_SCHEMA
         if catalog_id and catalog_id != SYSTEM_CATALOG_ID and catalog_id != "_system_":
             from dynastore.modules import get_protocol
             from dynastore.models.protocols import CatalogsProtocol
@@ -435,24 +463,41 @@ class PostgresStatsDriver(AbstractStatsDriver):
             catalogs = get_protocol(CatalogsProtocol)
             db_resource = self._engine or (catalogs.engine if catalogs else None)
             try:
-                schema = (
+                resolved_schema = (
                     await catalogs.resolve_physical_schema(
                         catalog_id, db_resource=db_resource
                     )
                     or SYSTEM_SCHEMA
                 )
             except ValueError:
-                # Fallback if catalog not found
                 pass
 
-        kwargs["schema"] = schema
-        return await get_stats_summary(self._engine, **kwargs)
+        return await get_stats_summary(
+            self._engine,
+            schema=resolved_schema,
+            catalog_id=catalog_id,
+            principal_id=principal_id,
+            api_key_hash=api_key_hash,
+            start_date=start_date,
+            end_date=end_date,
+            **kwargs,
+        )
 
-    async def get_logs(self, **kwargs) -> AccessLogPage:
+    async def get_logs(
+        self,
+        schema: Optional[str] = None,
+        catalog_id: Optional[str] = None,
+        principal_id: Optional[str] = None,
+        api_key_hash: Optional[str] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        limit: int = 100,
+        offset: int = 0,
+        **kwargs: Any,
+    ) -> AccessLogPage:
         from dynastore.models.shared_models import SYSTEM_CATALOG_ID, SYSTEM_SCHEMA
 
-        schema = SYSTEM_SCHEMA
-        catalog_id = kwargs.get("catalog_id")
+        resolved_schema = schema or SYSTEM_SCHEMA
         if catalog_id and catalog_id != SYSTEM_CATALOG_ID and catalog_id != "_system_":
             from dynastore.modules import get_protocol
             from dynastore.models.protocols import CatalogsProtocol
@@ -460,18 +505,27 @@ class PostgresStatsDriver(AbstractStatsDriver):
             catalogs = get_protocol(CatalogsProtocol)
             db_resource = self._engine or (catalogs.engine if catalogs else None)
             try:
-                schema = (
+                resolved_schema = (
                     await catalogs.resolve_physical_schema(
                         catalog_id, db_resource=db_resource
                     )
                     or SYSTEM_SCHEMA
                 )
             except ValueError:
-                # Fallback if catalog not found
                 pass
 
-        kwargs["schema"] = schema
-        return await get_access_logs(self._engine, **kwargs)
+        return await get_access_logs(
+            self._engine,
+            schema=resolved_schema,
+            catalog_id=catalog_id,
+            principal_id=principal_id,
+            api_key_hash=api_key_hash,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            offset=offset,
+            **kwargs,
+        )
 
 
 # --- Optimized Query Functions ---
