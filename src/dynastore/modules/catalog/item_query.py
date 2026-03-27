@@ -1,0 +1,573 @@
+"""
+Query and search mixin for ItemService.
+
+Extracted from item_service.py to reduce file size.  All methods access
+``self.*`` helpers defined on the main ``ItemService`` class, which
+inherits from this mixin.
+"""
+
+import logging
+from contextlib import asynccontextmanager
+from typing import List, Optional, Any, Dict, Tuple, AsyncIterator
+
+from sqlalchemy import text
+
+from dynastore.modules.db_config.query_executor import (
+    DQLQuery,
+    GeoDQLQuery,
+    DbResource,
+    ResultHandler,
+    managed_transaction,
+)
+from dynastore.modules.catalog.models import Collection
+from dynastore.modules.catalog.catalog_config import (
+    CollectionPluginConfig,
+    COLLECTION_PLUGIN_CONFIG_ID,
+)
+from dynastore.models.ogc import Feature, FeatureCollection
+from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
+from dynastore.modules.catalog.sidecars.base import SidecarProtocol
+from dynastore.tools.discovery import get_protocol
+from dynastore.tools.db import validate_sql_identifier
+from dynastore.models.query_builder import QueryRequest, QueryResponse
+from dynastore.modules.catalog.query_optimizer import QueryOptimizer
+from dynastore.modules.catalog.query_orchestrator import CatalogQueryOrchestrator
+
+logger = logging.getLogger(__name__)
+
+
+async def _run_query(conn, stmt, params=None):
+    """Run a statement on either sync or async connection."""
+    import inspect as _inspect
+
+    result = conn.execute(stmt, params or {})
+    if _inspect.isawaitable(result):
+        result = await result
+    return result
+
+
+class ItemQueryMixin:
+    """Query, search and streaming methods for ItemService."""
+
+    async def get_features(
+        self,
+        conn: DbResource,
+        catalog_id: str,
+        collection_id: str,
+        col_config: Optional[CollectionPluginConfig] = None,
+        item_ids: Optional[List[str]] = None,
+        request: Optional[QueryRequest] = None,
+        **kwargs,
+    ) -> List[Feature]:
+        """Retrieves a list of items via the QueryOptimizer path."""
+        if not col_config:
+            catalogs_svc = get_protocol(CatalogsProtocol)
+            col_config = await catalogs_svc.get_collection_config(
+                catalog_id, collection_id, db_resource=conn
+            )
+
+        phys_schema = await self._resolve_physical_schema(catalog_id, db_resource=conn)
+        phys_table = await self._resolve_physical_table(
+            catalog_id, collection_id, db_resource=conn
+        )
+
+        if request is None:
+            request = QueryRequest(item_ids=item_ids or None)
+
+        optimizer = QueryOptimizer(col_config)
+        sql, params = optimizer.build_optimized_query(request, phys_schema, phys_table)
+        rows = await _run_query(conn, text(sql), params)
+        return [self.map_row_to_feature(dict(row._mapping), col_config) for row in rows]
+
+    async def get_features_query(
+        self,
+        conn: DbResource,
+        catalog_id: str,
+        collection_id: str,
+        col_config: CollectionPluginConfig,
+        params: Dict[str, Any],
+        param_suffix: str = "",
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        Exposes the underlying query generation for features (used by Tiles/MVT).
+        Now uses pluggable query transformations.
+        """
+        # 1. Build base QueryRequest from params
+        query_request = self._build_base_query_request(params, col_config)
+
+        # 2. Apply transformations and generate SQL
+        context = {
+            "catalog_id": catalog_id,
+            "collection_id": collection_id,
+            "col_config": col_config,
+            **params,
+        }
+        sql, bind_params = await self._apply_query_transformations(
+            query_request, context, catalog_id, collection_id, col_config
+        )
+
+        # 3. Apply param suffixing for multi-collection queries
+        if param_suffix:
+            sql, bind_params = self._apply_param_suffix(sql, bind_params, param_suffix)
+
+        return sql, bind_params
+
+    def _build_base_query_request(
+        self, params: Dict[str, Any], col_config: CollectionPluginConfig
+    ) -> QueryRequest:
+        """Build base QueryRequest from params before transformations"""
+        from dynastore.models.query_builder import QueryRequest, FieldSelection
+
+        # Mandatory ID
+        selects = [FieldSelection(field="geoid", alias="id")]
+
+        # Geometry (if requested or by default)
+        if params.get("with_geometry", True) and params.get("geom_format") != "MVT":
+            selects.append(FieldSelection(field="geom"))
+
+        # Attributes (JSONB)
+        selects.append(FieldSelection(field="attributes"))
+
+        query_req = QueryRequest(
+            select=selects,
+            limit=params.get("limit"),
+            offset=params.get("offset"),
+            raw_where=params.get("where"),
+            raw_params=params.get("raw_params", {}),
+        )
+
+        # CQL Filter
+        if params.get("cql_filter"):
+            from dynastore.modules.tools.cql import parse_cql_filter
+
+            cql_where_str, cql_params = parse_cql_filter(
+                params["cql_filter"], field_mapping=None, parser_type="ecql"
+            )
+            if cql_where_str:
+                if query_req.raw_where:
+                    query_req.raw_where = (
+                        f"({query_req.raw_where}) AND ({cql_where_str})"
+                    )
+                else:
+                    query_req.raw_where = cql_where_str
+                query_req.raw_params.update(cql_params)
+
+        return query_req
+
+    async def _apply_query_transformations(
+        self,
+        query_request: QueryRequest,
+        context: Dict[str, Any],
+        catalog_id: str,
+        collection_id: str,
+        col_config: CollectionPluginConfig,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        Applies registered query transformations and generates optimized SQL.
+
+        This centralizes the transformation logic used across get_features_query,
+        _prepare_search, and stream_items.
+        """
+        from dynastore.models.protocols import QueryTransformProtocol
+        from dynastore.tools.discovery import get_protocols
+
+        # Get and sort transformers by priority
+        transformers = sorted(
+            get_protocols(QueryTransformProtocol),
+            key=lambda t: getattr(t, "priority", 100),
+        )
+
+        # Apply QueryRequest-level transformations
+        for transformer in transformers:
+            if transformer.can_transform(context):
+                logger.debug(f"Applying transformation: {transformer.transform_id}")
+                query_request = transformer.transform_query(query_request, context)
+
+        # Apply CQL Filter parsing if present
+        if query_request.cql_filter:
+            from dynastore.modules.tools.cql import parse_cql_filter
+
+            # Use a temporary optimizer to get all available fields for validation
+            temp_optimizer = QueryOptimizer(col_config)
+            queryable_fields = temp_optimizer.get_all_queryable_fields()
+
+            # Create mapping for CQL parser
+            # We map field names to their SQL expressions
+            field_mapping = {
+                name: text(field_def.sql_expression)
+                for name, field_def in queryable_fields.items()
+            }
+            # Add implicit fields
+            field_mapping.update(
+                {
+                    "geoid": text("h.geoid"),
+                    "deleted_at": text("h.deleted_at"),
+                    "transaction_time": text("h.transaction_time"),
+                    "validity": text("h.validity"),
+                }
+            )
+
+            try:
+                cql_where, cql_params = parse_cql_filter(
+                    query_request.cql_filter,
+                    field_mapping=field_mapping,
+                    parser_type="cql2",  # OGC API Features uses CQL2 by default
+                )
+
+                if cql_where:
+                    if query_request.raw_where:
+                        query_request.raw_where = (
+                            f"({query_request.raw_where}) AND ({cql_where})"
+                        )
+                    else:
+                        query_request.raw_where = cql_where
+                    query_request.raw_params.update(cql_params)
+            except ValueError as e:
+                # Re-raise as ValueError so it can be caught and returned as 400
+                raise ValueError(f"Invalid CQL filter: {e}")
+
+        # Resolve physical storage and generate SQL
+        phys_schema = await self._resolve_physical_schema(catalog_id)
+        phys_table = await self._resolve_physical_table(catalog_id, collection_id)
+        if not phys_schema or not phys_table:
+            raise ValueError(
+                f"Could not resolve storage for {catalog_id}:{collection_id}"
+            )
+
+        optimizer = QueryOptimizer(col_config)
+        sql, params = optimizer.build_optimized_query(
+            query_request, schema=phys_schema, table=phys_table
+        )
+
+        # Apply SQL-level transformations
+        for transformer in transformers:
+            if transformer.can_transform(context):
+                sql, params = transformer.post_process_sql(sql, params, context)
+
+        return sql, params
+
+    def _apply_param_suffix(
+        self, sql: str, bind_params: Dict[str, Any], suffix: str
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Applies a suffix to bind parameters to avoid collisions."""
+        import re
+
+        new_params = {}
+        sql_str = str(sql)
+        for key, val in bind_params.items():
+            new_key = f"{key}{suffix}"
+            new_params[new_key] = val
+            sql_str = re.sub(f":{key}(?=\\b)", f":{new_key}", sql_str)
+        return sql_str, new_params
+
+    async def get_item(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        item_id: str,
+        db_resource: Optional[DbResource] = None,
+        lang: str = "en",
+        context: Optional[Any] = None,
+    ) -> Optional[Feature]:
+        validate_sql_identifier(catalog_id)
+        validate_sql_identifier(collection_id)
+        async with managed_transaction(db_resource or self.engine) as conn:
+            col_config = await self._get_collection_config(
+                catalog_id, collection_id, db_resource=conn
+            )
+            phys_schema = await self._resolve_physical_schema(catalog_id, db_resource=conn)
+            phys_table = await self._resolve_physical_table(
+                catalog_id, collection_id, db_resource=conn
+            )
+            if not phys_schema or not phys_table:
+                return None
+
+            request = QueryRequest(item_ids=[str(item_id)], limit=1)
+            ctx: Dict[str, Any] = {
+                "catalog_id": catalog_id,
+                "collection_id": collection_id,
+                "col_config": col_config,
+            }
+            sql, params = await self._apply_query_transformations(
+                request, ctx, catalog_id, collection_id, col_config
+            )
+
+            result = await _run_query(conn, text(sql), params)
+            row = result.mappings().first()
+
+            return (
+                self.map_row_to_feature(dict(row), col_config, lang=lang, context=context)
+                if row else None
+            )
+
+    async def delete_item(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        item_id: str,
+        db_resource: Optional[DbResource] = None,
+    ) -> int:
+        from dynastore.modules.catalog.tools import recalculate_and_update_extents
+
+        validate_sql_identifier(catalog_id)
+        validate_sql_identifier(collection_id)
+        async with managed_transaction(db_resource or self.engine) as conn:
+            phys_schema = await self._resolve_physical_schema(
+                catalog_id, db_resource=conn
+            )
+            phys_table = await self._resolve_physical_table(
+                catalog_id, collection_id, db_resource=conn
+            )
+            if not phys_schema or not phys_table:
+                return 0
+
+            configs = get_protocol(ConfigsProtocol)
+            col_config = await configs.get_config(
+                COLLECTION_PLUGIN_CONFIG_ID,
+                catalog_id,
+                collection_id,
+                db_resource=conn,
+            )
+
+            # ID Resolution Logic: delete ALL active rows for this external_id
+            rows = 0
+            if col_config and col_config.sidecars:
+                from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+                from sqlalchemy import text as sa_text
+
+                for sc in col_config.sidecars:
+                    if sc.feature_id_field_name:
+                        sidecar = SidecarRegistry.get_sidecar(sc)
+                        sc_table = f"{phys_table}_{sidecar.sidecar_id}"
+                        # Delete ALL hub rows linked to this external_id via the sidecar
+                        delete_sql = sa_text(
+                            f'UPDATE "{phys_schema}"."{phys_table}" h '
+                            f'SET deleted_at = NOW() '
+                            f'FROM "{phys_schema}"."{sc_table}" s '
+                            f'WHERE s.{sc.feature_id_field_name} = :ext_id '
+                            f'AND h.deleted_at IS NULL '
+                            f'AND h.geoid = s.geoid'
+                        )
+                        result = await conn.execute(delete_sql, {"ext_id": str(item_id)})
+                        rows = result.rowcount
+                        break
+
+            if not rows:
+                # Fallback: try direct geoid match (item_id may already be the geoid)
+                from dynastore.modules.catalog.item_service import soft_delete_item_query
+
+                rows = await soft_delete_item_query.execute(
+                    conn,
+                    catalog_id=phys_schema,
+                    collection_id=phys_table,
+                    geoid=item_id,
+                )
+
+            if rows > 0:
+                await recalculate_and_update_extents(conn, catalog_id, collection_id)
+
+                try:
+                    from dynastore.models.protocols.events import EventsProtocol
+                    from dynastore.modules.catalog.event_service import CatalogEventType
+                    events_protocol = get_protocol(EventsProtocol)
+                    if events_protocol:
+                        await events_protocol.emit(
+                            event_type=CatalogEventType.ITEM_DELETION,
+                            catalog_id=catalog_id,
+                            collection_id=collection_id,
+                            item_id=item_id,
+                            payload={"original_id": item_id}
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to emit item deletion event: {e}")
+
+        return rows
+
+    async def stream_items(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        request: QueryRequest,
+        config: Optional[ConfigsProtocol] = None,
+        db_resource: Optional[DbResource] = None,
+    ) -> QueryResponse:
+        """
+        Stream search results using an async iterator (O(1) Memory).
+        """
+        # Metadata Resolution
+        async with managed_transaction(db_resource or self.engine) as conn:
+            col_config = await self._get_collection_config(catalog_id, collection_id, config, db_resource=conn)
+            phys_schema = await self._resolve_physical_schema(catalog_id, db_resource=conn)
+            phys_table = await self._resolve_physical_table(catalog_id, collection_id, db_resource=conn)
+
+            if not phys_schema or not phys_table:
+                raise ValueError(f"Collection '{catalog_id}/{collection_id}' not found.")
+
+            # Apply transformations and generate SQL
+            context = {
+                "catalog_id": catalog_id,
+                "collection_id": collection_id,
+                "col_config": col_config,
+                **(request.raw_params or {}),
+            }
+            sql, params = await self._apply_query_transformations(
+                request, context, catalog_id, collection_id, col_config
+            )
+
+            total_count = None
+            if request.include_total_count:
+                count_wrapper = f"SELECT count(*) FROM ({sql}) AS sub"
+                total_count = await DQLQuery(
+                    count_wrapper, result_handler=ResultHandler.SCALAR
+                ).execute(conn, **(params or {}))
+
+        # Stream Generator (O(1) Memory)
+        async def feature_stream():
+            # Open a fresh connection/transaction for streaming to ensure isolation and avoid leaks
+            async with managed_transaction(self.engine) as stream_conn:
+                # Use a buffer for higher throughput but still O(1) memory
+                stream = await stream_conn.stream(text(sql), params)
+                async for row in stream:
+                    yield self.map_row_to_feature(dict(row._mapping), col_config)
+
+        return QueryResponse(
+            items=feature_stream(),
+            total_count=total_count,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            collection_config=col_config,
+        )
+
+    @asynccontextmanager
+    async def _prepare_search(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        request: QueryRequest,
+        config: Optional[ConfigsProtocol] = None,
+        db_resource: Optional[DbResource] = None,
+    ):
+        """Standardized preparation for search results."""
+        async with managed_transaction(db_resource or self.engine) as conn:
+            col_config = await self._get_collection_config(catalog_id, collection_id, config, db_resource=conn)
+
+            context = {
+                "catalog_id": catalog_id,
+                "collection_id": collection_id,
+                "col_config": col_config,
+                **(request.raw_params or {}),
+            }
+            sql, params = await self._apply_query_transformations(
+                request, context, catalog_id, collection_id, col_config
+            )
+
+            params.update({
+                "col_config": col_config,
+                "catalog_id": catalog_id,
+                "collection_id": collection_id,
+            })
+
+            query = GeoDQLQuery(text(sql), result_handler=ResultHandler.ALL)
+            yield query, conn, params
+
+    async def search_items(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        request: QueryRequest,
+        config: Optional[ConfigsProtocol] = None,
+        db_resource: Optional[Any] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search and retrieve items using optimized query generation.
+        """
+        async with self._prepare_search(
+            catalog_id, collection_id, request, config, db_resource
+        ) as (query, conn, params):
+            rows = await query.execute(conn, **params)
+            col_config = params.get("col_config")
+            return [self.map_row_to_feature(row, col_config) for row in rows]
+
+    async def stream_items_from_query(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        where_clause: str,
+        query_params: Optional[Dict[str, Any]] = None,
+        select_columns: Optional[List[str]] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        db_resource: Optional[Any] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """
+        Stream search results from a raw SQL WHERE clause, leveraging the QueryOrchestrator.
+
+        This method builds a query with sidecar JOINs. The user provides the WHERE clause content.
+
+        **NOTE**: The `where_clause` must use the correct table aliases:
+        - `h` for the main items (hub) table.
+        - `g` for the geometry sidecar.
+        - `a` for the attributes sidecar.
+
+        Example: `where_clause="a.external_id = :ext_id AND ST_Intersects(g.geom, ST_MakeEnvelope(...))"`
+
+        WARNING: The caller is responsible for ensuring that if `select_columns` is provided,
+        it includes all columns whose sidecars are referenced in the `where_clause`.
+        If `select_columns` is None, all sidecars are joined, which is safer but may be less performant.
+
+        Args:
+            catalog_id: The catalog ID.
+            collection_id: The collection ID.
+            where_clause: The content of the SQL WHERE clause.
+            query_params: A dictionary of parameters to bind to the query.
+            select_columns: Optional list of columns to select. If None, selects all available fields.
+            limit: Optional limit for the query.
+            offset: Optional offset for the query.
+            db_resource: Optional database resource.
+
+        Yields:
+            An async iterator of result dictionaries.
+        """
+        validate_sql_identifier(catalog_id)
+        validate_sql_identifier(collection_id)
+
+        async with managed_transaction(db_resource or self.engine) as conn:
+            catalogs = get_protocol(CatalogsProtocol)
+            col_config = await catalogs.get_collection_config(catalog_id, collection_id)
+            phys_schema = await self._resolve_physical_schema(catalog_id)
+            phys_table = await self._resolve_physical_table(catalog_id, collection_id)
+
+            if not phys_schema or not phys_table:
+                raise ValueError(
+                    f"Collection '{catalog_id}/{collection_id}' not found."
+                )
+
+            orchestrator = CatalogQueryOrchestrator(col_config)
+
+            columns_to_select = select_columns
+            if not columns_to_select:
+                from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+
+                all_fields = {"geoid", "deleted_at"}
+                if col_config.sidecars:
+                    for sc_config in col_config.sidecars:
+                        sidecar = SidecarRegistry.get_sidecar(sc_config)
+                        all_fields.update(sidecar.get_field_definitions().keys())
+                columns_to_select = list(all_fields)
+
+            where_clauses = [where_clause] if where_clause else []
+
+            query_string = orchestrator.build_select_query(
+                schema=phys_schema,
+                table=phys_table,
+                columns=columns_to_select,
+                where_clauses=where_clauses,
+                limit=limit,
+            )
+
+            if offset is not None:
+                query_string += f" OFFSET {offset}"
+
+            query = GeoDQLQuery(text(query_string), result_handler=ResultHandler.ALL)
+            async for item in await query.stream(conn, **(query_params or {})):
+                yield self.map_row_to_feature(item, col_config)

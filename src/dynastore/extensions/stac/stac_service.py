@@ -188,170 +188,47 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin):
         return svc
 
     def _register_routes(self):
-        """Registers routes using bound methods."""
-        # Catalog Discovery
-        self.router.add_api_route("/", self.get_stac_root_catalog, methods=["GET"])
-        self.router.add_api_route(
-            "/catalogs",
-            self.list_stac_catalogs,
-            methods=["GET"],
-            response_class=JSONResponse,
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}",
-            self.get_stac_catalog,
-            methods=["GET"],
-            response_class=JSONResponse,
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections",
-            self.list_stac_collections,
-            methods=["GET"],
-            response_class=JSONResponse,
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}",
-            self.get_stac_collection,
-            methods=["GET"],
-            response_class=JSONResponse,
-        )
+        """Registers routes using a declarative route table."""
+        _J = JSONResponse  # shorthand
 
-        # Write Operations
-        self.router.add_api_route(
-            "/catalogs",
-            self.create_stac_catalog,
-            methods=["POST"],
-            status_code=status.HTTP_201_CREATED,
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections",
-            self.create_stac_collection,
-            methods=["POST"],
-            status_code=status.HTTP_201_CREATED,
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}",
-            self.update_stac_catalog,
-            methods=["PUT", "PATCH"],
-            status_code=status.HTTP_200_OK,
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}", self.delete_stac_catalog, methods=["DELETE"]
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}",
-            self.update_stac_collection,
-            methods=["PUT", "PATCH"],
-            status_code=status.HTTP_200_OK,
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}",
-            self.delete_stac_collection,
-            methods=["DELETE"],
-        )
+        # (path, handler_name, methods, kwargs)
+        route_table = [
+            # Catalog Discovery
+            ("/", "get_stac_root_catalog", ["GET"], {}),
+            ("/catalogs", "list_stac_catalogs", ["GET"], {"response_class": _J}),
+            ("/catalogs/{catalog_id}", "get_stac_catalog", ["GET"], {"response_class": _J}),
+            ("/catalogs/{catalog_id}/collections", "list_stac_collections", ["GET"], {"response_class": _J}),
+            ("/catalogs/{catalog_id}/collections/{collection_id}", "get_stac_collection", ["GET"], {"response_class": _J}),
+            # Write Operations
+            ("/catalogs", "create_stac_catalog", ["POST"], {"status_code": status.HTTP_201_CREATED}),
+            ("/catalogs/{catalog_id}/collections", "create_stac_collection", ["POST"], {"status_code": status.HTTP_201_CREATED}),
+            ("/catalogs/{catalog_id}", "update_stac_catalog", ["PUT", "PATCH"], {"status_code": status.HTTP_200_OK}),
+            ("/catalogs/{catalog_id}", "delete_stac_catalog", ["DELETE"], {}),
+            ("/catalogs/{catalog_id}/collections/{collection_id}", "update_stac_collection", ["PUT", "PATCH"], {"status_code": status.HTTP_200_OK}),
+            ("/catalogs/{catalog_id}/collections/{collection_id}", "delete_stac_collection", ["DELETE"], {}),
+            # Item Endpoints
+            ("/catalogs/{catalog_id}/collections/{collection_id}/items", "get_stac_collection_items", ["GET"], {"response_class": _J}),
+            ("/catalogs/{catalog_id}/collections/{collection_id}/items/{item_id}", "get_stac_item", ["GET"], {"response_class": _J}),
+            ("/catalogs/{catalog_id}/collections/{collection_id}/items", "add_stac_item", ["POST"], {"status_code": status.HTTP_201_CREATED}),
+            ("/catalogs/{catalog_id}/collections/{collection_id}/items/{item_id}", "update_stac_item", ["PUT"], {"status_code": status.HTTP_200_OK}),
+            ("/catalogs/{catalog_id}/collections/{collection_id}/items/{item_id}", "delete_stac_item", ["DELETE"], {}),
+            # Search Endpoints
+            ("/catalogs/{catalog_id}/search", "search_items_post", ["POST"], {"response_class": _J}),
+            ("/collections-search", "search_stac_collections_post", ["POST"], {"response_class": _J}),
+            ("/search", "search_items_post", ["POST"], {"response_class": _J, "deprecated": True}),
+            ("/collections/search", "search_stac_collections_post", ["POST"], {"response_class": _J, "deprecated": True}),
+            # Virtual STAC Endpoints
+            ("/virtual/assets/catalogs/{catalog_id}/collections/{collection_id}", "get_virtual_asset_list", ["GET"], {"response_class": _J}),
+            ("/virtual/assets/{asset_code}/catalogs/{catalog_id}/collections/{collection_id}", "get_virtual_asset_collection", ["GET"], {"response_class": _J}),
+            ("/virtual/assets/{asset_id}/catalogs/{catalog_id}/collections/{collection_id}/items", "get_virtual_asset_items", ["GET"], {"response_class": _J}),
+            ("/catalogs/{catalog_id}/collections/{collection_id}/assets/{asset_code}/source", "resolve_asset_source", ["GET"], {}),
+            ("/virtual/hierarchy/{hierarchy_id}/catalogs/{catalog_id}/collections/{collection_id}", "get_virtual_hierarchy_collection", ["GET"], {"response_class": _J}),
+            ("/virtual/hierarchy/{hierarchy_id}/catalogs/{catalog_id}/collections/{collection_id}/items", "get_virtual_hierarchy_items", ["GET"], {"response_class": _J}),
+            ("/virtual/hierarchy/{hierarchy_id}/catalogs/{catalog_id}/collections/{collection_id}/search", "search_virtual_hierarchy_items", ["GET", "POST"], {"response_class": _J}),
+        ]
 
-        # Item Endpoints
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/items",
-            self.get_stac_collection_items,
-            methods=["GET"],
-            response_class=JSONResponse,
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/items/{item_id}",
-            self.get_stac_item,
-            methods=["GET"],
-            response_class=JSONResponse,
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/items",
-            self.add_stac_item,
-            methods=["POST"],
-            status_code=status.HTTP_201_CREATED,
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/items/{item_id}",
-            self.update_stac_item,
-            methods=["PUT"],
-            status_code=status.HTTP_200_OK,
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/items/{item_id}",
-            self.delete_stac_item,
-            methods=["DELETE"],
-        )
-
-        # Search Endpoints
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/search",
-            self.search_items_post,
-            methods=["POST"],
-            response_class=JSONResponse,
-        )
-        self.router.add_api_route(
-            "/collections-search",
-            self.search_stac_collections_post,
-            methods=["POST"],
-            response_class=JSONResponse,
-        )
-        # Deprecated aliases — kept for backward compat
-        self.router.add_api_route(
-            "/search",
-            self.search_items_post,
-            methods=["POST"],
-            response_class=JSONResponse,
-            deprecated=True,
-        )
-        self.router.add_api_route(
-            "/collections/search",
-            self.search_stac_collections_post,
-            methods=["POST"],
-            response_class=JSONResponse,
-            deprecated=True,
-        )
-
-        # Virtual STAC Endpoints
-        self.router.add_api_route(
-            "/virtual/assets/catalogs/{catalog_id}/collections/{collection_id}",
-            self.get_virtual_asset_list,
-            methods=["GET"],
-            response_class=JSONResponse,
-        )
-        self.router.add_api_route(
-            "/virtual/assets/{asset_code}/catalogs/{catalog_id}/collections/{collection_id}",
-            self.get_virtual_asset_collection,
-            methods=["GET"],
-            response_class=JSONResponse,
-        )
-        self.router.add_api_route(
-            "/virtual/assets/{asset_id}/catalogs/{catalog_id}/collections/{collection_id}/items",
-            self.get_virtual_asset_items,
-            methods=["GET"],
-            response_class=JSONResponse,
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/assets/{asset_code}/source",
-            self.resolve_asset_source,
-            methods=["GET"],
-        )
-        self.router.add_api_route(
-            "/virtual/hierarchy/{hierarchy_id}/catalogs/{catalog_id}/collections/{collection_id}",
-            self.get_virtual_hierarchy_collection,
-            methods=["GET"],
-            response_class=JSONResponse,
-        )
-        self.router.add_api_route(
-            "/virtual/hierarchy/{hierarchy_id}/catalogs/{catalog_id}/collections/{collection_id}/items",
-            self.get_virtual_hierarchy_items,
-            methods=["GET"],
-            response_class=JSONResponse,
-        )
-        self.router.add_api_route(
-            "/virtual/hierarchy/{hierarchy_id}/catalogs/{catalog_id}/collections/{collection_id}/search",
-            self.search_virtual_hierarchy_items,
-            methods=["GET", "POST"],
-            response_class=JSONResponse,
-        )
+        for path, handler_name, methods, kwargs in route_table:
+            self.router.add_api_route(path, getattr(self, handler_name), methods=methods, **kwargs)
 
     @expose_static("stac")
     def provide_static_files(self) -> list[str]:
