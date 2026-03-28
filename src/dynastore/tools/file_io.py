@@ -62,7 +62,7 @@ def _sanitize(o: Any) -> Any:
             # Attempt to parse as WKB geometry for string representation if needed
             # but usually sanitization for properties shouldn't contain raw geometry
             return o.decode("utf-8")
-        except:
+        except Exception:
             return o.hex()
     if hasattr(o, "model_dump") and callable(o.model_dump):
         return o.model_dump(exclude_none=True)

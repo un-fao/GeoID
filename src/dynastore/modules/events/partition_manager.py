@@ -31,17 +31,22 @@ logger = logging.getLogger(__name__)
 RETENTION_DAYS = 30
 PRECREATE_DAYS = 7
 PARTITION_INTERVAL = "daily" # Controls the partition granularity. "daily" or "monthly"
-BASE_TABLE_NAME = "events"
+_EVENTS_SCHEMA = "events"
+BASE_TABLE_NAME = f'"{_EVENTS_SCHEMA}".events'
 # --- End Configuration ---
 
-def _get_partition_name(for_date: datetime) -> str:
-    """Generates a standardized partition name based on the interval."""
+def _get_partition_bare_name(for_date: datetime) -> str:
+    """Generates the unqualified partition table name based on the interval."""
     if PARTITION_INTERVAL == "daily":
-        return f"{BASE_TABLE_NAME}_{for_date.strftime('%Y_%m_%d')}"
+        return f'events_{for_date.strftime("%Y_%m_%d")}'
     elif PARTITION_INTERVAL == "monthly":
-        return f"{BASE_TABLE_NAME}_{for_date.strftime('%Y_%m')}"
+        return f'events_{for_date.strftime("%Y_%m")}'
     else:
         raise ValueError(f"Unsupported partition interval: {PARTITION_INTERVAL}")
+
+def _get_qualified_partition_name(for_date: datetime) -> str:
+    """Returns the schema-qualified partition table name."""
+    return f'"{_EVENTS_SCHEMA}".{_get_partition_bare_name(for_date)}'
 
 def _get_partition_bounds(for_date: datetime) -> Tuple[str, str]:
     """Calculates the SQL-formatted date bounds for a new partition."""
@@ -64,24 +69,25 @@ async def _create_partition_if_not_exists(conn: DbResource, for_date: datetime):
     """
     Atomically creates a new partition for the given date if it doesn't exist.
     """
-    partition_name = _get_partition_name(for_date)
+    bare_name = _get_partition_bare_name(for_date)
+    qualified_name = _get_qualified_partition_name(for_date)
     start_bound, end_bound = _get_partition_bounds(for_date)
-    
+
     sql = f"""
-    CREATE TABLE IF NOT EXISTS {partition_name}
+    CREATE TABLE IF NOT EXISTS {qualified_name}
     PARTITION OF {BASE_TABLE_NAME}
     FOR VALUES FROM ('{start_bound}') TO ('{end_bound}');
     """
-    
+
     # Add indexes to the new partition. This is idempotent.
     index_sql_status = f"""
-    CREATE INDEX IF NOT EXISTS idx_{partition_name}_status_locked
-    ON {partition_name} (status, locked_until)
+    CREATE INDEX IF NOT EXISTS idx_{bare_name}_status_locked
+    ON {qualified_name} (status, locked_until)
     WHERE status IN ('PENDING', 'FAILED');
     """
     index_sql_events = f"""
-    CREATE INDEX IF NOT EXISTS idx_{partition_name}_event_type
-    ON {partition_name} (event_type);
+    CREATE INDEX IF NOT EXISTS idx_{bare_name}_event_type
+    ON {qualified_name} (event_type);
     """
     
     try:
@@ -89,11 +95,11 @@ async def _create_partition_if_not_exists(conn: DbResource, for_date: datetime):
         await DDLQuery(sql).execute(conn)
         await DDLQuery(index_sql_status).execute(conn)
         await DDLQuery(index_sql_events).execute(conn)
-        logger.debug(f"Ensured partition exists: {partition_name}")
+        logger.debug(f"Ensured partition exists: {qualified_name}")
     except Exception as e:
         # This can happen in a race condition, it's safe to ignore
         if "concurrently" in str(e) or "duplicate" in str(e):
-             logger.warning(f"Race condition while creating {partition_name}, ignoring: {e}")
+             logger.warning(f"Race condition while creating {qualified_name}, ignoring: {e}")
         else:
             logger.error(f"Failed to create partition {partition_name}: {e}", exc_info=True)
 
@@ -131,7 +137,7 @@ async def _drop_old_partitions(conn: DbResource):
             # If the partition's end date is before the cutoff, drop it.
             if to_date < cutoff_date:
                 logger.info(f"Dropping old partition: {name} (ends at {to_date})")
-                await DDLQuery(f"DROP TABLE IF EXISTS {name};").execute(conn)
+                await DDLQuery(f'DROP TABLE IF EXISTS "{_EVENTS_SCHEMA}"."{name}";').execute(conn)
                 
         except Exception as e:
             logger.warning(f"Could not parse or drop partition {name} from bound '{bound_expr}': {e}")

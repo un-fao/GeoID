@@ -187,7 +187,7 @@ class ApiKeyService(ApiKeyProtocol):
 
         return "apikey"
 
-    # Alias for internal use compatibility (deprecated)
+    # Internal alias used by extensions and multi_catalog_helpers
     _resolve_schema = resolve_schema
 
     def get_identity_providers(self) -> List[IdentityProviderProtocol]:

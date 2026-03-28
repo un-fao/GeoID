@@ -285,7 +285,7 @@ class OneShotMigrator:
         # Geometry conversion
         if geometry_storage:
             if isinstance(geometry_storage, dict):
-                from dynastore.modules.catalog.sidecars.geometry import (
+                from dynastore.modules.catalog.sidecars.geometries_config import (
                     GeometriesSidecarConfig,
                 )
 

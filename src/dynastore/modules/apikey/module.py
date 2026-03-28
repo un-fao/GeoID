@@ -176,7 +176,7 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
             async with managed_transaction(engine) as conn:
                 await self._policy_service.storage.update_policy(policy, schema="apikey", conn=conn)
                 logger.debug(f"Persisted policy: {policy.id}")
-                self._policy_service._invalidate_cache()
+                self._policy_service.invalidate_cache()
         except Exception as e:
             logger.warning(f"Failed to persist policy {policy.id}: {e}")
 
@@ -204,7 +204,7 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
                     else:
                         await self.storage.create_role(role, schema="apikey", conn=conn)
                     logger.debug(f"Persisted role: {role.name}")
-                    self._policy_service._invalidate_cache()
+                    self._policy_service.invalidate_cache()
             except Exception as e:
                 logger.warning(f"Failed to persist role {role.name}: {e}")
 

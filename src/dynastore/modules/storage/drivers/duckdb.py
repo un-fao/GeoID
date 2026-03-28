@@ -232,6 +232,9 @@ class DuckDBStorageDriver(ModuleProtocol):
 
         write_fmt = loc.write_format or "sqlite"
         if write_fmt == "sqlite":
+            from dynastore.tools.db import validate_sql_identifier
+            validate_sql_identifier(collection_id)
+
             self._ensure_sqlite_extension()
             conn.execute(f"ATTACH '{loc.write_path}' AS write_db (TYPE SQLITE)")
             try:
@@ -276,14 +279,19 @@ class DuckDBStorageDriver(ModuleProtocol):
         base_sql = f"SELECT * FROM {reader}('{loc.path}')"
 
         where_clauses: List[str] = []
+        params: List[Any] = []
         if entity_ids:
-            ids_str = ", ".join(f"'{eid}'" for eid in entity_ids)
-            where_clauses.append(f"id IN ({ids_str})")
+            placeholders = ", ".join(["?"] * len(entity_ids))
+            where_clauses.append(f"id IN ({placeholders})")
+            params.extend(entity_ids)
 
         if request and request.filters:
             for f in request.filters:
                 if f.operator == "eq":
-                    where_clauses.append(f"{f.field} = '{f.value}'")
+                    from dynastore.tools.db import validate_sql_identifier
+                    validate_sql_identifier(f.field)
+                    where_clauses.append(f"{f.field} = ?")
+                    params.append(f.value)
                 elif f.operator == "bbox" and isinstance(f.value, list) and len(f.value) == 4:
                     minx, miny, maxx, maxy = f.value
                     where_clauses.append(
@@ -300,10 +308,11 @@ class DuckDBStorageDriver(ModuleProtocol):
                 effective_offset = request.offset
 
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        sql = f"{base_sql}{where_sql} LIMIT {effective_limit} OFFSET {effective_offset}"
+        sql = f"{base_sql}{where_sql} LIMIT ? OFFSET ?"
+        params.extend([effective_limit, effective_offset])
 
         try:
-            result = conn.execute(sql)
+            result = conn.execute(sql, params)
             columns = [desc[0] for desc in result.description]
             for row in result.fetchall():
                 row_dict = dict(zip(columns, row))
@@ -344,12 +353,16 @@ class DuckDBStorageDriver(ModuleProtocol):
                 "DuckDBStorageDriver: delete only supported with SQLite write backend"
             )
 
+        from dynastore.tools.db import validate_sql_identifier
+        validate_sql_identifier(collection_id)
+
         self._ensure_sqlite_extension()
         conn.execute(f"ATTACH '{loc.write_path}' AS write_db (TYPE SQLITE)")
         try:
-            ids_str = ", ".join(f"'{eid}'" for eid in entity_ids)
+            placeholders = ", ".join(["?"] * len(entity_ids))
             result = conn.execute(
-                f"DELETE FROM write_db.{collection_id} WHERE id IN ({ids_str})"
+                f"DELETE FROM write_db.{collection_id} WHERE id IN ({placeholders})",
+                list(entity_ids),
             )
             return result.fetchone()[0] if result.description else len(entity_ids)
         finally:

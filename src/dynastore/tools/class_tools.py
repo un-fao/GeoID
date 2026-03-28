@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-def __repr__(self, sensitive_attrs=[], private_attrs=[]) -> str:
+def __repr__(self, sensitive_attrs=None, private_attrs=None) -> str:
     """
     Provides a flexible string representation of the object.
 
@@ -29,6 +29,10 @@ def __repr__(self, sensitive_attrs=[], private_attrs=[]) -> str:
         private_attrs: A list of private attribute names (starting with '_') to
                        explicitly include in the output.
     """
+    if sensitive_attrs is None:
+        sensitive_attrs = []
+    if private_attrs is None:
+        private_attrs = []
     attrs_to_show = []
     # Iterate over all annotated attributes
     for attr_name in self.__class__.__annotations__.keys():

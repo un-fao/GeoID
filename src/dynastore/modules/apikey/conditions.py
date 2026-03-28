@@ -389,10 +389,10 @@ class AttributeMatchHandler(ConditionHandler):
         if operator == "regex": return bool(re.match(str(expected), str(actual)))
         if operator == "gt": 
             try: return float(actual) > float(expected)
-            except: return False
+            except Exception: return False
         if operator == "lt":
             try: return float(actual) < float(expected)
-            except: return False
+            except Exception: return False
         if operator == "in":
             if isinstance(expected, list): return actual in expected
             return actual in str(expected).split(",")

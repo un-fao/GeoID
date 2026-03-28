@@ -96,8 +96,11 @@ async def ensure_enum_type(conn: DbResource, type_name: str, labels: list[str]):
     multiple services start up), the sub-transaction is rolled back, but the
     main transaction remains healthy, preventing the application from crashing.
     """
-    label_str = ", ".join([f"'{label}'" for label in labels])
-    create_type_sql = f"CREATE TYPE {type_name} AS ENUM ({label_str});"
+    from dynastore.tools.db import validate_sql_identifier
+    validate_sql_identifier(type_name)
+    escaped_labels = [label.replace("'", "''") for label in labels]
+    label_str = ", ".join([f"'{label}'" for label in escaped_labels])
+    create_type_sql = f'CREATE TYPE "{type_name}" AS ENUM ({label_str});'
 
     try:
         from dynastore.modules.db_config.tools import isolated_transaction
@@ -170,7 +173,10 @@ async def register_retention_policy(
     schedule_cron: str = "0 3 * * 0",
 ):
     try:
-        # Use quoted identifiers for function/job names to handle mixed-case schemas safely
+        from dynastore.tools.db import validate_sql_identifier
+        validate_sql_identifier(schema)
+        validate_sql_identifier(table)
+
         func_name = f"maintain_partitions_{schema}_{table}"
         job_name = f"{policy}_{schema}_{table}"
 
@@ -266,6 +272,10 @@ async def register_partition_creation_policy(
         schedule_cron: Cron expression for the job. Default: 1st of each month at 2 AM.
     """
     try:
+        from dynastore.tools.db import validate_sql_identifier
+        validate_sql_identifier(schema)
+        validate_sql_identifier(table)
+
         func_name = f"create_partitions_{schema}_{table}"
         job_name = f"partcreate_{schema}_{table}"
 
@@ -438,6 +448,11 @@ async def register_cron_job(
     Registers a generic pg_cron job safely using the check-before-lock pattern.
     """
     command = command.strip().rstrip(";")
+    # Escape single quotes for safe interpolation into PL/pgSQL string literals
+    safe_job_name = job_name.replace("'", "''")
+    safe_schedule = schedule.replace("'", "''")
+    # Escape dollar-quote delimiter inside command to prevent early termination
+    safe_command = command.replace("$CMD$", "$$CMD$$")
 
     async def check_exists():
         from .locking_tools import check_cron_job_exists
@@ -448,13 +463,13 @@ async def register_cron_job(
     -- SAFE UNSCHEDULE
     DO $$
     BEGIN
-        IF EXISTS (SELECT 1 FROM cron.job WHERE jobname = '{job_name}') THEN
-            PERFORM cron.unschedule('{job_name}');
+        IF EXISTS (SELECT 1 FROM cron.job WHERE jobname = '{safe_job_name}') THEN
+            PERFORM cron.unschedule('{safe_job_name}');
         END IF;
     END;
     $$;
 
-    SELECT cron.schedule('{job_name}', '{schedule}', $CMD${command}$CMD$);
+    SELECT cron.schedule('{safe_job_name}', '{safe_schedule}', $CMD${safe_command}$CMD$);
     """
 
     await DDLQuery(

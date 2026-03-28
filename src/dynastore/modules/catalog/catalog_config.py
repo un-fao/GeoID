@@ -174,10 +174,7 @@ class CollectionPluginConfig(PluginConfig):
         # Add validity from sidecars if contributed (AttributeSidecar now contributes it)
 
         for sidecar in self.sidecars:
-            if hasattr(sidecar, "partition_key_contributions"):
-                # contributions is now a dict {name: type}, we just need names for validation here
-                # type validation requires more context, done at DDL generation
-                available_keys.update(sidecar.partition_key_contributions.keys())
+            available_keys.update(sidecar.partition_key_contributions.keys())
 
         # Check requested keys
         missing_keys = [

@@ -194,7 +194,7 @@ async def _resolve(client: httpx.AsyncClient, template_str: str, resolve_urls: l
             url = interpolated_template[key]
             try:
                 HttpUrl(url)
-            except:
+            except Exception:
                 raise Exception(f"Url to be resolved for key: {key} is not valid, invalid url: {url}")
             urls.append(url)
             as_json.append(True)
@@ -255,7 +255,7 @@ async def _fetch(client: httpx.AsyncClient, url: str, as_json: bool = False, hea
             log_level(f"{error_type} fetching {url} (Attempt {attempt+1}/{max_retry_count+1}): {str(e)}")
 
             if attempt < max_retry_count:
-                time.sleep(sleep_time)
+                await asyncio.sleep(sleep_time)
             else:
                 logger.error(f"Failed to fetch {url} after {max_retry_count+1} attempts: {str(e)}")
                 raise e
@@ -623,7 +623,7 @@ class TemplatingExtension(ExtensionProtocol):
         if t_url:
             try:
                 HttpUrl(t_url)
-            except:
+            except Exception:
                 raise HTTPException(
                     status_code=500, detail=f"value of parameter 't_url' should be a valid url: {str(t_url)}")
             
@@ -632,17 +632,17 @@ class TemplatingExtension(ExtensionProtocol):
         if m and isinstance(m,str):
             try:
                 m = json.loads(m)
-            except:
+            except Exception:
                 raise HTTPException(
                     status_code=500, detail=f"parameter 'm' should be a valid object: {str(m)}")
             
         if ru and isinstance(ru,str):
             try:
                 ru = json.loads(ru)
-            except:
+            except Exception:
                 try:
                     ru = ast.literal_eval(ru)
-                except:
+                except Exception:
                     raise HTTPException(
                         status_code=500, detail="parameter 'ru' should be a valid list")
             
@@ -652,14 +652,14 @@ class TemplatingExtension(ExtensionProtocol):
             if isinstance(m_urls, str):
                 try:
                     m_urls = json.loads(m_urls)
-                except:
+                except Exception:
                     raise HTTPException(
                         status_code=500, detail="Parameter 'm_urls' should be a valid object")
             
             for url in m_urls.values():
                 try:
                     HttpUrl(url)
-                except:
+                except Exception:
                     raise HTTPException(status_code=500, detail="values of parameter 'm_urls' should be valid urls")
                 
             _check_headers(m_urls_h, m_urls, headers, "m_urls_h")

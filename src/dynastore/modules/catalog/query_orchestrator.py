@@ -87,11 +87,11 @@ class CatalogQueryOrchestrator:
         return sidecars_to_join, resolved_columns
 
     def build_select_query(
-        self, 
-        schema: str, 
-        table: str, 
-        columns: List[str], 
-        where_clauses: List[str] = [],
+        self,
+        schema: str,
+        table: str,
+        columns: List[str],
+        where_clauses: Optional[List[str]] = None,
         limit: Optional[int] = None
     ) -> str:
         """
@@ -109,23 +109,26 @@ class CatalogQueryOrchestrator:
         # But wait, `resolve_query_path` is powerful.
         
         needed_sidecars, resolved_cols = self._get_required_joins(set(columns))
-        
+
         # 2. Construct SQL
         select_parts = [f"{expr} AS {alias}" for alias, expr in resolved_cols.items()]
         select_clause = ", ".join(select_parts)
-        
+
         joins = []
         for sidecar in needed_sidecars:
             joins.append(sidecar.get_join_clause(hub_alias="h"))
-            
+
         join_clause = " ".join(joins)
-        
-        where_clause = " AND ".join(where_clauses)
+
+        # SAFETY: where_clauses must use bind-parameter syntax (:param),
+        # never interpolated user input.
+        effective_where = where_clauses or []
+        where_clause = " AND ".join(effective_where)
         if where_clause:
             where_clause = f"WHERE {where_clause}"
-            
-        limit_clause = f"LIMIT {limit}" if limit else ""
-        
+
+        limit_clause = f"LIMIT :_qo_limit" if limit is not None else ""
+
         query = f"""
             SELECT {select_clause}
             FROM "{schema}"."{table}" h

@@ -376,7 +376,7 @@ class MapsService(ExtensionProtocol):
                 match = re.search(r'(\d+)$', bbox_crs)
                 if match:
                     bbox_srid = int(match.group(1))
-            except:
+            except Exception:
                 pass # Fallback or error handling
 
         try:

@@ -139,7 +139,7 @@ class PolicyService:
             return "default"
         return pattern[:32]
 
-    def _invalidate_cache(self):
+    def invalidate_cache(self):
         """Invalidates the evaluation cache."""
         try:
             # Clear the @cached cache for get_effective_policies
@@ -176,7 +176,7 @@ class PolicyService:
                 raise ValueError(f"Policy with ID '{policy.id}' already exists.")
 
             res = await self.storage.create_policy(policy, schema=schema, conn=conn)
-            self._invalidate_cache()
+            self.invalidate_cache()
             return res
 
     async def get_policy(
@@ -190,7 +190,7 @@ class PolicyService:
     ) -> Optional[Policy]:
         schema = await self._resolve_schema(catalog_id)
         res = await self.storage.update_policy(policy, schema=schema)
-        self._invalidate_cache()
+        self.invalidate_cache()
         return res
 
     async def list_policies(
@@ -206,7 +206,7 @@ class PolicyService:
     ) -> bool:
         schema = await self._resolve_schema(catalog_id)
         res = await self.storage.delete_policy(policy_id, schema=schema)
-        self._invalidate_cache()
+        self.invalidate_cache()
         return res
 
     async def search_policies(

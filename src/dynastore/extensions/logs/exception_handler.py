@@ -94,54 +94,47 @@ class CatalogLoggingExceptionHandler(ExceptionHandler):
         
         async def _do_log():
             try:
-                # Use LOG_SERVICE directly with db_resource to get log ID synchronously
                 from dynastore.tools.protocol_helpers import get_engine
                 from dynastore.modules.db_config.query_executor import managed_transaction
-                
+
                 app_state = context.get('app_state')
                 if not app_state and 'request' in context:
                     app_state = getattr(context['request'].app, 'state', None)
 
-                    logs_service = get_protocol(LogsProtocol)
-                    if engine and logs_service:
-                        async with managed_transaction(engine) as conn:
-                            log_id = await logs_service.log_event(
-                                catalog_id=target_catalog,
-                                event_type="exception",
-                                level="ERROR",
-                                message=message,
-                                collection_id=collection_id,
-                                details=details,
-                                db_resource=conn
-                            )
-                        # Store log ID in context for global exception handler to use
-                        if log_id:
-                            context['log_id'] = log_id
-                            context['log_catalog'] = target_catalog
-                            context['log_collection'] = collection_id
-                else:
-                    # Fallback if no engine available
-                    logs_service = get_protocol(LogsProtocol)
-                    if logs_service:
-                        await logs_service.log_event(
+                engine = get_engine()
+                logs_service = get_protocol(LogsProtocol)
+                if engine and logs_service:
+                    async with managed_transaction(engine) as conn:
+                        log_id = await logs_service.log_event(
                             catalog_id=target_catalog,
                             event_type="exception",
                             level="ERROR",
                             message=message,
                             collection_id=collection_id,
-                            details=details
+                            details=details,
+                            db_resource=conn
                         )
+                    if log_id:
+                        context['log_id'] = log_id
+                        context['log_catalog'] = target_catalog
+                        context['log_collection'] = collection_id
+                elif logs_service:
+                    await logs_service.log_event(
+                        catalog_id=target_catalog,
+                        event_type="exception",
+                        level="ERROR",
+                        message=message,
+                        collection_id=collection_id,
+                        details=details
+                    )
             except Exception as e:
-                # Fallback to standard logger if remote logging fails
                 logger.error(f"Failed to send exception to LogService: {e}")
                 
         # Use centralized background runner
         try:
-             # run_in_background expects a coroutine
              run_in_background(_do_log(), name=f"log_exception_{operation}")
-        except Exception:
-            # Fallback if loop issues or other conflicts
-            logger.error(f"Failed to schedule async logging. Original error: {message}")
+        except Exception as e:
+            logger.error(f"Failed to schedule async logging: {e}. Original error: {message}", exc_info=True)
 
         # RETURN NONE to allow other handlers to process the exception into a response
         return None

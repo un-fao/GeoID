@@ -37,7 +37,7 @@ from dynastore.modules.db_config.query_executor import DbResource
 from dynastore.tools.async_utils import signal_bus
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.protocols import DatabaseProtocol
-# from dynastore.modules.catalog.event_service import emit_event, CatalogEventType  # Removed to avoid circular import
+
 
 logger = logging.getLogger(__name__)
 
@@ -247,7 +247,7 @@ class LifecycleRegistry:
             
             # Check for bound method replacement (same class, same method name, but DIFFERENT instance)
             if is_bound_method and hasattr(h, "__self__") and h.__self__ is not None:
-                if (type(h.__self__) == type(func.__self__) and 
+                if (type(h.__self__) is type(func.__self__) and
                     h.__self__ is not func.__self__ and
                     getattr(h, "__name__", None) == getattr(func, "__name__", None)):
                     # Replace old instance's hook with the new one

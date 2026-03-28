@@ -166,9 +166,12 @@ class PostgresPolicyStorage(AbstractPolicyStorage):
         await CREATE_PARTITION_DEFAULT.execute(conn, schema=schema)
 
     async def ensure_policy_partition(self, conn: DbResource, partition_key: str, schema: str = "apikey"):
+        from dynastore.tools.db import validate_sql_identifier
         schema = schema.strip('"')
+        validate_sql_identifier(partition_key)
         partition_table = f"policies_{partition_key}"
-        ddl = f"CREATE TABLE IF NOT EXISTS {{schema}}.{partition_table} PARTITION OF {{schema}}.policies FOR VALUES IN ('{partition_key}');"
+        safe_key = partition_key.replace("'", "''")
+        ddl = f"CREATE TABLE IF NOT EXISTS {{schema}}.{partition_table} PARTITION OF {{schema}}.policies FOR VALUES IN ('{safe_key}');"
         await DDLQuery(ddl).execute(conn, schema=schema)
 
     async def create_policy(self, policy: Policy, conn: Optional[DbResource] = None, schema: str = "apikey") -> Policy:

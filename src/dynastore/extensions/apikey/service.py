@@ -66,6 +66,7 @@ from dynastore.modules.apikey.models import (
     ApiKeyStatusFilter,
     Condition,
 )
+# TODO: move to StatsProtocol to eliminate cross-module layer violation
 from dynastore.modules.stats.storage import (
     get_access_logs,
     get_stats_summary,
@@ -74,7 +75,7 @@ from dynastore.modules.stats.storage import (
 )
 from dynastore.models.protocols import ApiKeyProtocol
 from dynastore.modules import get_protocol
-from dynastore.modules.apikey.policies import PolicyService
+from dynastore.models.protocols.policies import PermissionProtocol
 from dynastore.modules.apikey.exceptions import (
     ConflictingResourceError,
     PrincipalNotFoundError,
@@ -402,7 +403,7 @@ class ApiKeyExtension(ExtensionProtocol):
         super().__init__()
         self.app = app
         self._apikey_manager: Optional[ApiKeyProtocol] = None
-        self._policy_service: Optional[PolicyService] = None
+        self._policy_service: Optional[PermissionProtocol] = None
         self._engine: Optional[DbResource] = None
 
         self._register_routes()
@@ -680,12 +681,12 @@ class ApiKeyExtension(ExtensionProtocol):
              try:
                  # We can't use await in property, but we can return the protocol if available
                  return get_protocol(ApiKeyProtocol)
-             except:
+             except Exception:
                  pass
         return self._apikey_manager
 
     @property
-    def policy_service(self) -> PolicyService:
+    def policy_service(self) -> PermissionProtocol:
         return self._policy_service
 
     # ==========================================
@@ -768,7 +769,7 @@ class ApiKeyExtension(ExtensionProtocol):
                     token = auth.split(" ")[1]
                     payload = jwt.decode(token, options={"verify_signature": False})
                     api_key_hash = payload.get("kid")
-                except:
+                except Exception:
                     pass
 
         return await self.apikey_manager.get_usage_status(

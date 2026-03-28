@@ -565,9 +565,13 @@ class ItemQueryMixin:
                 limit=limit,
             )
 
+            bind_params = dict(query_params or {})
+            if limit is not None:
+                bind_params["_qo_limit"] = limit
             if offset is not None:
-                query_string += f" OFFSET {offset}"
+                query_string += " OFFSET :_qo_offset"
+                bind_params["_qo_offset"] = offset
 
             query = GeoDQLQuery(text(query_string), result_handler=ResultHandler.ALL)
-            async for item in await query.stream(conn, **(query_params or {})):
+            async for item in await query.stream(conn, **bind_params):
                 yield self.map_row_to_feature(item, col_config)

@@ -248,7 +248,7 @@ class ItemDistributedMixin:
                 sc_payload, hub_data, processing_context or {}
             )
 
-            logger.info(f"DEBUG: Upserting sidecar {sc_table} for geoid {geoid}")
+            logger.debug(f"Upserting sidecar {sc_table} for geoid {geoid}")
             await self._upsert_sidecar_table_raw(
                 conn, schema, sc_table, full_payload, conflict_cols=conflict_cols
             )
@@ -266,7 +266,7 @@ class ItemDistributedMixin:
                         await self._upsert_sidecar_table_raw(
                             conn, schema, place_table, place_payload, conflict_cols=["geoid"]
                         )
-                        logger.info(f"DEBUG: Upserted place stats into {schema}.{place_table} for geoid {geoid}")
+                        logger.debug(f"Upserted place stats into {schema}.{place_table} for geoid {geoid}")
                 except Exception as e:
                     logger.warning(f"Place stats upsert skipped for geoid {geoid}: {e}")
 

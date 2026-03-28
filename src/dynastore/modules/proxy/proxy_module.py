@@ -70,7 +70,6 @@ CREATE TABLE IF NOT EXISTS {schema}.url_analytics (
 @lifecycle_registry.sync_catalog_initializer
 async def _initialize_proxy_tenant_slice(conn: DbResource, schema: str, catalog_id: str):
     """Initializes the proxy module's slice of the tenant schema."""
-    print(f"DEBUG: _initialize_proxy_tenant_slice CALLED for {schema}")
     from dynastore.modules.db_config.locking_tools import execute_safe_ddl, check_table_exists
     from dynastore.modules.db_config.query_executor import DDLQuery
     from .queries import CREATE_SHORT_URL_SEQUENCE, CREATE_BASE62_FUNCTION, CREATE_OBFUSCATE_FUNCTION
@@ -80,9 +79,9 @@ async def _initialize_proxy_tenant_slice(conn: DbResource, schema: str, catalog_
     await CREATE_BASE62_FUNCTION.execute(conn, schema=schema)
     await CREATE_OBFUSCATE_FUNCTION.execute(conn, schema=schema)
     
-    logger.warning(f"PROXY_INIT: Creating short_urls table for schema: {schema}")
+    logger.info(f"PROXY_INIT: Creating short_urls table for schema: {schema}")
     await DDLQuery(TENANT_SHORT_URLS_DDL).execute(conn, schema=schema)
-    logger.warning(f"PROXY_INIT: Creating short_urls_catalog partition for schema: {schema}")
+    logger.info(f"PROXY_INIT: Creating short_urls_catalog partition for schema: {schema}")
     await DDLQuery(TENANT_SHORT_URLS_CATALOG_PARTITION_DDL).execute(conn, schema=schema)
     
     async def table_exists_check():
@@ -287,21 +286,12 @@ class ProxyModule(ModuleProtocol, ProxyProtocol):
 
 # --- Public API ---
 
-_proxy_module_instance: Optional[ProxyModule] = None
-
 def _get_proxy_module() -> ProxyProtocol:
-    """
-    Retrieves the cached instance of the ProxyProtocol implementation.
-
-    This function uses a module-level cache to avoid repeated lookups
-    via get_protocol, optimizing performance for every API call.
-    """
-    global _proxy_module_instance
-    if _proxy_module_instance is None:
-        _proxy_module_instance = get_protocol(ProxyProtocol)
-    if _proxy_module_instance is None:
+    """Retrieves the ProxyProtocol implementation via protocol discovery (lru_cached)."""
+    proxy = get_protocol(ProxyProtocol)
+    if proxy is None:
         raise Exception("ProxyProtocol implementation not found. Ensure the ProxyModule is properly initialized.")
-    return _proxy_module_instance
+    return proxy
 
 async def create_short_url(engine: DbResource, catalog_id: str, long_url: str, custom_key: Optional[str] = None, collection_id: Optional[str] = None, comment: Optional[str] = None) -> ShortURL:
     """Public API function to create a short URL."""

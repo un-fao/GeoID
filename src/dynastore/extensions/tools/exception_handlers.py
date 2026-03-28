@@ -478,7 +478,7 @@ def _extract_resource_id(obj: Any) -> Optional[str]:
         try:
             data = obj.model_dump()
             return data.get("id") or data.get("code")
-        except:
+        except Exception:
             pass
 
     # Try .code attribute

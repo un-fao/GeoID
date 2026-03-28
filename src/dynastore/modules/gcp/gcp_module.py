@@ -485,7 +485,7 @@ class GCPModule(
             )
         return self._run_client
 
-    def _refresh_credentials(self) -> None:
+    def _refresh_credentials(self) -> bool:
         """
         Synchronously checks and refreshes GCP credentials if they are expired or invalid.
 

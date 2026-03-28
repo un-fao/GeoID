@@ -4,7 +4,7 @@ Shared tools for SQL-like expression evaluation in-memory.
 import ast
 import logging
 import operator
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +56,15 @@ def _safe_eval_node(node: ast.AST) -> Any:
     raise ValueError(f"Unsupported expression node: {type(node).__name__}")
 
 
-def evaluate_sql_condition(condition: str, properties: Dict[str, Any], params: Dict[str, Any] = {}) -> bool:
+def evaluate_sql_condition(condition: str, properties: Dict[str, Any], params: Optional[Dict[str, Any]] = None) -> bool:
     """
     Evaluates a SQL-like condition (from CQL2) against a set of properties in-memory.
     Uses Python's ast module for safe expression parsing — no eval().
     """
     if not condition:
         return True
+    if params is None:
+        params = {}
 
     try:
         eval_expr = condition
