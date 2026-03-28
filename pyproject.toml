@@ -1,6 +1,6 @@
 [project]
 name = "DynaStore"
-version = "0.1.1"
+dynamic = ["version"]
 description = "DynaStore application"
 authors = [
     { name = "Carlo Cancellieri", email = "ccancellieri@gmail.com" }
@@ -84,6 +84,7 @@ extension_gcp_bucket = ["dynastore[extension_base,module_gcp]"]
 extension_geoid = ["dynastore[extension_base,extension_web]", "user-agents>=2.2.0"]
 extension_maps = ["dynastore[extension_base,geospatial_core,mvt]", "GDAL==3.11.4"]
 extension_dwh = ["dynastore[extension_base,dwh]"]
+extension_dimensions = ["dynastore[extension_base]", "ogc-dimensions @ git+https://github.com/ccancellieri/ogc-dimensions.git@main#subdirectory=reference-implementation"]
 
 # ==========================================================================
 # GRANULAR TASKS
@@ -127,6 +128,7 @@ search = ["dynastore[extension_search]"]
 storage = ["dynastore[module_storage]"]
 auth = ["dynastore[extension_auth]"]
 template = ["dynastore[extension_template]"]
+dimensions = ["dynastore[extension_dimensions]"]
 
 # ==========================================================================
 # PRIMITIVES
@@ -166,7 +168,7 @@ catalog_grp = ["dynastore[geospatial_core,catalog,features,stac,assets,search]"]
 maps_grp = ["dynastore[styles,maps,extension_wfs,tiles,crs,gdal]"]
 google_grp = ["dynastore[gcp,extension_dwh]"]
 auth_grp = ["dynastore[apikey,auth,extension_admin]"]
-tools_grp = ["dynastore[extension_httpx,template]"]
+tools_grp = ["dynastore[extension_httpx,template,dimensions]"]
 monitor_grp = ["dynastore[stats,logs]"]
 index_grp = ["dynastore[elasticsearch]"]
 
@@ -326,6 +328,7 @@ assets = "dynastore.extensions.assets.assets_service:AssetService"
 notebooks = "dynastore.extensions.notebooks.notebooks_extension:NotebooksExtension"
 stats = "dynastore.extensions.stats.extension:StatsExtension"
 tiles = "dynastore.extensions.tiles.tiles_service:TilesService"
+dimensions = "dynastore.extensions.dimensions.dimensions_extension:DimensionsExtension"
 
 [project.entry-points."dynastore.tasks"]
 gdal = "dynastore.tasks.gdal.gdalinfo_task:GdalInfoTask"
@@ -339,6 +342,9 @@ gcs_storage_event = "dynastore.tasks.gcp.gcs_storage_event_task:GcsStorageEventT
 gcp_catalog_cleanup = "dynastore.tasks.gcp.gcp_catalog_cleanup_task:GcpCatalogCleanupTask"
 structural_migration = "dynastore.tasks.structural_migration:StructuralMigrationTask"
 schema_migration = "dynastore.tasks.schema_migration:SchemaMigrationTask"
+
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}
 
 [tool.setuptools]
 # Include files specified in MANIFEST.in

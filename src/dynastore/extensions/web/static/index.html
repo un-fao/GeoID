@@ -841,6 +841,7 @@
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row justify-between items-center">
             <div class="mb-4 md:mb-0">
                 <span class="font-bold text-xl text-white">DYNASTORE</span>
+                <span id="dynastore-version" class="text-slate-500 text-xs ml-2"></span>
                 <p class="text-slate-500 text-sm mt-1">Architecting the future of geospatial data.</p>
             </div>
             <div class="flex gap-6 text-slate-400">
@@ -1097,6 +1098,12 @@
                 });
             }
         });
+    </script>
+    <script>
+        fetch('health').then(function(r){return r.json()}).then(function(d){
+            var el=document.getElementById('dynastore-version');
+            if(el&&d.version) el.textContent='v'+d.version;
+        }).catch(function(){});
     </script>
 </body>
 

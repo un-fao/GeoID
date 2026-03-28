@@ -25,6 +25,7 @@ import sys
 import os
 from contextlib import asynccontextmanager
 from dynastore import modules, extensions, tasks
+from dynastore._version import VERSION, get_build_info
 from dynastore.extensions.tools.fast_api import ORJSONResponse
 from dynastore.extensions.bootstrap import bootstrap_app
 from dynastore.modules.concurrency import set_concurrency_backend
@@ -82,7 +83,7 @@ app = FastAPI(
         "DESCRIPTION", 
         "Agro-Informatics Platform - Catalog Services is an enterprise-grade, cloud-native platform for geospatial data.",
     ),
-    version=os.getenv("VERSION", "0.1.0"),
+    version=VERSION,
     docs_url=None, # We will serve custom docs
     redoc_url=None, # We will serve custom redoc
     swagger_ui_parameters={"defaultModelsExpandDepth": -1} # Optional: hide models by default
@@ -90,7 +91,15 @@ app = FastAPI(
 
 @app.get("/health", tags=["Web Health"])
 async def health_check():
-    return {"name": app.title, "description": app.description, "version": app.version, "status": "ok"}
+    info = get_build_info()
+    return {
+        "name": app.title,
+        "description": app.description,
+        "version": info["version"],
+        "commit": info["commit"],
+        "build_time": info["build_time"],
+        "status": "ok",
+    }
 
 # Custom Swagger UI to include logo
 @app.get("/docs", include_in_schema=False)

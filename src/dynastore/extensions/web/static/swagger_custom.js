@@ -332,7 +332,23 @@ window.addEventListener('load', function() {
 
         const footer = document.createElement('div');
         footer.id = 'dynastore-footer';
-        footer.innerHTML = '<span>DynaStore API &copy; 2025 FAO</span>';
+
+        const label = document.createElement('span');
+        label.textContent = 'DynaStore API';
+        footer.appendChild(label);
+
+        const versionSpan = document.createElement('span');
+        versionSpan.id = 'swagger-version';
+        versionSpan.style.marginLeft = '4px';
+        footer.appendChild(versionSpan);
+
+        const copyright = document.createElement('span');
+        copyright.textContent = ' \u00A9 2025 FAO';
+        footer.appendChild(copyright);
+
+        fetch('../health').then(function(r){return r.json()}).then(function(d){
+            if(d.version) versionSpan.textContent = 'v' + d.version;
+        }).catch(function(){});
         
         const author = document.createElement('span');
         author.innerText = ' • Architected by Carlo Cancellieri';

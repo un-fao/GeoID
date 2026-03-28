@@ -20,8 +20,12 @@ RUN python3.12 -m venv ${VENV_PATH}
 ENV PATH="${VENV_PATH}/bin:$PATH"
 ENV PYTHONPATH=${APP_DIR}/src
 
+# Build-time commit hash for version info (no .git in runtime image)
+ARG BUILD_COMMIT=unknown
+ENV BUILD_COMMIT=${BUILD_COMMIT}
+
 # Install Production Dependencies
-COPY pyproject.toml LICENSE README.md requirements*.txt pytest.ini* setup.cfg* .coveragerc* ./
+COPY pyproject.toml LICENSE README.md requirements*.txt pytest.ini* setup.cfg* .coveragerc* VERSION ./
 
 # Copy .env file if it exists (CI creates it in root, local has it in env/)
 # We use pyproject.toml as a sentinel to prevent COPY from failing if .env is missing.

@@ -1,0 +1,23 @@
+#!/bin/bash
+# Pre-commit hook: bumps patch version and stages VERSION into the same commit.
+# No extra commit is created — the version bump is part of your commit.
+#
+# Install: ./scripts/install-hooks.sh
+set -euo pipefail
+
+# Skip if VERSION is already staged (manual bump or merge)
+if git diff --cached --name-only | grep -q '^VERSION$'; then
+    exit 0
+fi
+
+# Recursion guard
+[ "${GIT_VERSION_BUMP_RUNNING:-}" = "1" ] && exit 0
+export GIT_VERSION_BUMP_RUNNING=1
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+BUMP_SCRIPT="${REPO_ROOT}/scripts/bump-version.sh"
+
+if [ -x "$BUMP_SCRIPT" ]; then
+    "$BUMP_SCRIPT"
+    git add "${REPO_ROOT}/VERSION"
+fi

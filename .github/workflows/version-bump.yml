@@ -1,0 +1,46 @@
+name: Version Bump
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['VERSION']
+  workflow_dispatch:
+    inputs:
+      level:
+        description: 'Bump level (leave empty for patch, or "major")'
+        required: false
+        default: ''
+
+jobs:
+  bump:
+    # Skip version-bump commits to prevent infinite loops
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: main
+
+      - name: Bump version
+        env:
+          BUMP_LEVEL: ${{ github.event.inputs.level }}
+        run: |
+          chmod +x scripts/bump-version.sh
+          if [ -n "$BUMP_LEVEL" ]; then
+            scripts/bump-version.sh "$BUMP_LEVEL"
+          else
+            scripts/bump-version.sh
+          fi
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          NEW_VERSION=$(cat VERSION)
+          git add VERSION
+          git diff --cached --quiet && echo "No version change" && exit 0
+          git commit -m "chore: bump version to ${NEW_VERSION} [skip ci]"
+          git push
