@@ -17,6 +17,22 @@
         .layer-pill { transition: all 0.2s; cursor: pointer; }
         .layer-pill:hover { transform: translateY(-1px); box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         .layer-pill.active { background-color: #2563eb !important; color: white !important; border-color: #1e40af !important; }
+        /* Feature inspector styles */
+        .props-table { width: 100%; border-collapse: collapse; font-size: 11px; font-family: monospace; }
+        .props-table th, .props-table td { padding: 3px 6px; text-align: left; border-bottom: 1px solid #e5e7eb; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
+        .props-table th { background: #f3f4f6; color: #6b7280; font-weight: 600; position: sticky; top: 0; }
+        .props-table tr:hover { background: #eff6ff; }
+        .props-table td.prop-key { color: #4b5563; font-weight: 600; width: 40%; }
+        .props-table td.prop-val { color: #1d4ed8; }
+        #inspector-panel { max-height: 300px; overflow-y: auto; }
+        .inspector-header { display: flex; justify-content: space-between; align-items: center; }
+        .geom-badge { font-size: 9px; padding: 1px 6px; border-radius: 9999px; font-weight: 700; text-transform: uppercase; }
+        .geom-Polygon { background: #dbeafe; color: #1e40af; }
+        .geom-LineString { background: #e0e7ff; color: #3730a3; }
+        .geom-Point { background: #fef3c7; color: #92400e; }
+        .geom-MultiPolygon { background: #dbeafe; color: #1e40af; }
+        .geom-MultiLineString { background: #e0e7ff; color: #3730a3; }
+        .geom-MultiPoint { background: #fef3c7; color: #92400e; }
     </style>
 </head>
 <body class="flex bg-white text-gray-900">
@@ -49,6 +65,21 @@
                     <!-- Layer pills generated here -->
                 </div>
                 <p class="text-[10px] text-gray-400">Click a layer to render its geometry.</p>
+            </div>
+
+            <!-- Feature Inspector -->
+            <div id="inspector-section" class="hidden">
+                <div class="inspector-header mb-1">
+                    <label class="block text-xs font-bold uppercase tracking-wider text-gray-700">Feature Properties</label>
+                    <span id="inspector-geom" class="geom-badge"></span>
+                </div>
+                <div id="inspector-panel" class="border border-gray-200 rounded-lg bg-white shadow-sm custom-scrollbar">
+                    <table class="props-table">
+                        <thead><tr><th>Property</th><th>Value</th></tr></thead>
+                        <tbody id="inspector-body"></tbody>
+                    </table>
+                </div>
+                <p class="text-[10px] text-gray-400 mt-1">Hover over features on the map to inspect.</p>
             </div>
 
             <!-- Stats -->
@@ -119,16 +150,22 @@
         function addLog(msg, type = 'info') {
             const time = new Date().toLocaleTimeString().split(' ')[0];
             const div = document.createElement('div');
-            div.className = `mb-1 py-1 border-b border-gray-800 ${type === 'error' ? 'text-red-400' : type === 'network' ? 'text-blue-300' : type === 'success' ? 'text-yellow-400 font-bold' : ''}`;
-            div.innerHTML = `<span class="opacity-40">[${time}]</span> ${msg}`;
+            div.className = 'mb-1 py-1 border-b border-gray-800 ' + (type === 'error' ? 'text-red-400' : type === 'network' ? 'text-blue-300' : type === 'success' ? 'text-yellow-400 font-bold' : '');
+            const ts = document.createElement('span');
+            ts.className = 'opacity-40';
+            ts.textContent = '[' + time + '] ';
+            div.appendChild(ts);
+            div.appendChild(document.createTextNode(msg));
             logEl.appendChild(div);
             logEl.scrollTop = logEl.scrollHeight;
         }
 
-        document.getElementById('clear-log').onclick = () => logEl.innerHTML = '';
+        document.getElementById('clear-log').onclick = () => logEl.replaceChildren();
 
-        // Security bypass for Canvas
-        maplibregl.setWorkerUrl('https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl-csp-worker.js');
+        // Set CSP worker URL if available (maplibre-gl >= 4.x)
+        if (typeof maplibregl.setWorkerUrl === 'function') {
+            maplibregl.setWorkerUrl('https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl-csp-worker.js');
+        }
 
         let map;
         let activeLayerId = null;
@@ -203,7 +240,7 @@
             if (JSON.stringify(currentPills.sort()) === JSON.stringify(layers.sort())) return;
 
             addLog(`LAYER SNIFFER FOUND: ${layers.join(', ')}`, 'success');
-            detectedLayersEl.innerHTML = '';
+            detectedLayersEl.replaceChildren();
             
             layers.forEach((layer) => {
                 const btn = document.createElement('button');
@@ -231,11 +268,17 @@
             }
         }
 
+        const inspectorSection = document.getElementById('inspector-section');
+        const inspectorBody = document.getElementById('inspector-body');
+        const inspectorGeom = document.getElementById('inspector-geom');
+        const debugLayerIds = ['debug-fill', 'debug-line', 'debug-points'];
+        const highlightLayerIds = ['debug-highlight-fill', 'debug-highlight-line', 'debug-highlight-point'];
+
         function renderGeometries(sourceLayer) {
             if (!map) return;
-            
-            // Clean up old layers
-            ['debug-fill', 'debug-line', 'debug-points'].forEach(id => {
+
+            // Clean up old layers (including highlight layers)
+            [...debugLayerIds, ...highlightLayerIds].forEach(id => {
                 if (map.getLayer(id)) map.removeLayer(id);
             });
 
@@ -272,6 +315,139 @@
                 },
                 filter: ['==', '$type', 'Point']
             });
+
+            // Highlight layers (rendered on top, hidden by default, shown on hover)
+            map.addLayer({
+                id: 'debug-highlight-fill',
+                type: 'fill',
+                source: 'debug-source',
+                'source-layer': sourceLayer,
+                layout: { visibility: 'none' },
+                paint: { 'fill-color': '#facc15', 'fill-opacity': 0.45 }
+            });
+            map.addLayer({
+                id: 'debug-highlight-line',
+                type: 'line',
+                source: 'debug-source',
+                'source-layer': sourceLayer,
+                layout: { visibility: 'none' },
+                paint: { 'line-color': '#facc15', 'line-width': 3 }
+            });
+            map.addLayer({
+                id: 'debug-highlight-point',
+                type: 'circle',
+                source: 'debug-source',
+                'source-layer': sourceLayer,
+                layout: { visibility: 'none' },
+                paint: { 'circle-radius': 8, 'circle-color': '#facc15', 'circle-stroke-width': 2, 'circle-stroke-color': '#fff' }
+            });
+
+            setupFeatureInspector();
+        }
+
+        function setupFeatureInspector() {
+            map.off('mousemove', onFeatureHover);
+            map.off('mouseleave', onFeatureLeave);
+            map.on('mousemove', onFeatureHover);
+            map.on('mouseleave', onFeatureLeave);
+        }
+
+        function onFeatureHover(e) {
+            const queryLayers = debugLayerIds.filter(id => map.getLayer(id));
+            if (queryLayers.length === 0) return;
+
+            const features = map.queryRenderedFeatures(e.point, { layers: queryLayers });
+
+            if (features.length === 0) {
+                clearInspector();
+                map.getCanvas().style.cursor = '';
+                return;
+            }
+
+            map.getCanvas().style.cursor = 'pointer';
+            const feat = features[0];
+            const geomType = feat.geometry?.type || 'Unknown';
+
+            // Show and filter highlight layers to match this feature
+            const highlightFilter = buildHighlightFilter(feat);
+            highlightLayerIds.forEach(id => {
+                if (map.getLayer(id)) {
+                    map.setLayoutProperty(id, 'visibility', 'visible');
+                    map.setFilter(id, highlightFilter);
+                }
+            });
+
+            // Update sidebar inspector
+            inspectorSection.classList.remove('hidden');
+            inspectorGeom.textContent = geomType;
+            inspectorGeom.className = 'geom-badge geom-' + geomType;
+
+            const props = feat.properties || {};
+            const keys = Object.keys(props).sort();
+
+            // Build rows safely using DOM methods
+            inspectorBody.replaceChildren();
+            if (keys.length === 0) {
+                const tr = document.createElement('tr');
+                const td = document.createElement('td');
+                td.colSpan = 2;
+                td.className = 'text-gray-400 text-center py-2';
+                td.textContent = 'No properties';
+                tr.appendChild(td);
+                inspectorBody.appendChild(tr);
+            } else {
+                keys.forEach(k => {
+                    const tr = document.createElement('tr');
+                    const tdKey = document.createElement('td');
+                    tdKey.className = 'prop-key';
+                    tdKey.title = k;
+                    tdKey.textContent = k;
+                    const tdVal = document.createElement('td');
+                    tdVal.className = 'prop-val';
+                    const val = props[k];
+                    tdVal.title = String(val ?? '');
+                    tdVal.textContent = val === null || val === undefined ? 'null' : String(val);
+                    if (val === null || val === undefined) tdVal.style.color = '#d1d5db';
+                    tr.appendChild(tdKey);
+                    tr.appendChild(tdVal);
+                    inspectorBody.appendChild(tr);
+                });
+            }
+        }
+
+        function onFeatureLeave() {
+            clearInspector();
+            if (map) map.getCanvas().style.cursor = '';
+        }
+
+        function clearInspector() {
+            highlightLayerIds.forEach(id => {
+                if (map && map.getLayer(id)) {
+                    map.setLayoutProperty(id, 'visibility', 'none');
+                }
+            });
+            inspectorBody.replaceChildren();
+            const tr = document.createElement('tr');
+            const td = document.createElement('td');
+            td.colSpan = 2;
+            td.className = 'text-gray-400 text-center py-2';
+            td.textContent = 'Hover a feature...';
+            tr.appendChild(td);
+            inspectorBody.appendChild(tr);
+            inspectorGeom.textContent = '';
+            inspectorGeom.className = 'geom-badge';
+        }
+
+        function buildHighlightFilter(feature) {
+            const props = feature.properties || {};
+            const keys = Object.keys(props);
+            if (keys.length === 0) return ['==', '$type', feature.geometry?.type || 'Polygon'];
+            const conditions = [['==', '$type', feature.geometry?.type || 'Polygon']];
+            for (const k of keys.slice(0, 3)) {
+                const v = props[k];
+                if (v !== null && v !== undefined) conditions.push(['==', k, v]);
+            }
+            return conditions.length > 1 ? ['all', ...conditions] : conditions[0];
         }
 
         function loadSource() {
@@ -290,8 +466,9 @@
             
             // Cleanup existing layers and source
             activeLayerId = null;
-            detectedLayersEl.innerHTML = '';
-            ['debug-fill', 'debug-line', 'debug-points'].forEach(id => {
+            detectedLayersEl.replaceChildren();
+            inspectorSection.classList.add('hidden');
+            [...debugLayerIds, ...highlightLayerIds].forEach(id => {
                 if (map.getLayer(id)) map.removeLayer(id);
             });
             if (map.getSource('debug-source')) map.removeSource('debug-source');
