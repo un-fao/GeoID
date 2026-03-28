@@ -190,6 +190,54 @@ from pydantic import Field
 from dynastore.models.protocols.web import WebModuleProtocol, WebPageProtocol, StaticFilesProtocol
 from dynastore.modules.db_config.platform_config_service import PluginConfig, ConfigRegistry
 
+from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.routing import Match, get_route_path
+
+
+class RelativeSlashRedirectMiddleware:
+    """Replace Starlette's redirect_slashes with proxy-safe relative redirects.
+
+    Starlette's built-in redirect_slashes emits an absolute ``Location`` URL
+    built from ``scope["path"]`` which does **not** include ``root_path``.
+    Behind a prefix-stripping reverse proxy this sends the browser to the
+    wrong path (e.g. ``/maps/`` instead of ``/geospatial/v2/api/maps/``).
+
+    This middleware performs the same trailing-slash probe but returns a
+    **relative** redirect (just the last path segment + ``/``), which the
+    browser resolves correctly regardless of any proxy prefix.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    def _get_router(self) -> "Router | None":
+        """Walk the middleware stack to find the underlying Router."""
+        from starlette.routing import Router
+        app = self.app
+        while app is not None:
+            if isinstance(app, Router):
+                return app
+            app = getattr(app, "app", None)
+        return None
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            route_path = get_route_path(scope)
+            if route_path != "/" and not route_path.endswith("/"):
+                router = self._get_router()
+                if router is not None:
+                    probe_scope = dict(scope)
+                    probe_scope["path"] = scope["path"] + "/"
+                    for route in router.routes:
+                        match, _ = route.matches(probe_scope)
+                        if match != Match.NONE:
+                            segment = route_path.rsplit("/", 1)[-1]
+                            response = RedirectResponse(url=f"{segment}/")
+                            await response(scope, receive, send)
+                            return
+
+        await self.app(scope, receive, send)
+
 
 class WebConfig(PluginConfig):
     """Configuration for the Web Platform interface."""
@@ -243,6 +291,14 @@ class Web(ExtensionProtocol):
         app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
         app.add_middleware(GZipMiddleware, minimum_size=1000)
         app.add_middleware(DynamicCORSMiddleware)
+
+        # Disable Starlette's built-in redirect_slashes: it generates absolute
+        # Location URLs that omit root_path, breaking redirects behind prefix
+        # proxies (e.g. /maps → http://host/maps/ instead of relative "maps/").
+        # The RelativeSlashRedirectMiddleware below replaces it with
+        # proxy-safe relative redirects.
+        app.router.redirect_slashes = False
+        app.add_middleware(RelativeSlashRedirectMiddleware)
 
         # Discover and register static / page providers from other extensions.
         # Skip self — Web.__init__() already called scan_and_register_providers(self).
