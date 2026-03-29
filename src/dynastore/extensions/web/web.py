@@ -226,15 +226,21 @@ class RelativeSlashRedirectMiddleware:
             if route_path != "/" and not route_path.endswith("/"):
                 router = self._get_router()
                 if router is not None:
-                    probe_scope = dict(scope)
-                    probe_scope["path"] = scope["path"] + "/"
-                    for route in router.routes:
-                        match, _ = route.matches(probe_scope)
-                        if match != Match.NONE:
-                            segment = route_path.rsplit("/", 1)[-1]
-                            response = RedirectResponse(url=f"{segment}/")
-                            await response(scope, receive, send)
-                            return
+                    # Skip redirect if the original path already matches a route
+                    original_matched = any(
+                        route.matches(scope)[0] == Match.FULL
+                        for route in router.routes
+                    )
+                    if not original_matched:
+                        probe_scope = dict(scope)
+                        probe_scope["path"] = scope["path"] + "/"
+                        for route in router.routes:
+                            match, _ = route.matches(probe_scope)
+                            if match != Match.NONE:
+                                segment = route_path.rsplit("/", 1)[-1]
+                                response = RedirectResponse(url=f"{segment}/")
+                                await response(scope, receive, send)
+                                return
 
         await self.app(scope, receive, send)
 
