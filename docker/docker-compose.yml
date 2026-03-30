@@ -26,7 +26,6 @@ services:
       dockerfile: docker/Dockerfile.db
     container_name: geoid_db
     restart: always
-    # CHANGED: Now looks for .env in the same folder (docker/)
     env_file: .env
     command: postgres -c max_locks_per_transaction=256 -c shared_preload_libraries='pg_cron' -c cron.database_name='${POSTGRES_DB:-gis_dev}'
     volumes:
@@ -34,24 +33,24 @@ services:
     networks:
       - dynastore_net
 
-  api:
+  catalog:
     build:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        SCOPE: ${API_SCOPE:-all}
-    container_name: geoid_api
+        SCOPE: ${CATALOG_SCOPE:-scope_catalog}
+    container_name: geoid_catalog
     restart: always
     env_file: .env
     environment:
-      SCOPE: ${API_SCOPE:-all}
+      SCOPE: ${CATALOG_SCOPE:-scope_catalog}
       TCP_PORT: 80
       UVICORN_WORKERS: 4
       ERROR_LOG: /dynastore/logs/error.log
     ports:
-      - "${HOST_PORT_API:-80}:80"
+      - "${HOST_PORT_CATALOG:-80}:80"
     volumes:
-      - ../logs/api:/dynastore/logs
+      - ../logs/catalog:/dynastore/logs
     depends_on:
       - db
     networks:
@@ -62,12 +61,12 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        SCOPE: ${GEOID_SCOPE:-all}
+        SCOPE: ${GEOID_SCOPE:-scope_geoid}
     container_name: geoid_web
     restart: always
     env_file: .env
     environment:
-      SCOPE: ${GEOID_SCOPE:-all}
+      SCOPE: ${GEOID_SCOPE:-scope_geoid}
       TCP_PORT: 80
       UVICORN_WORKERS: 1
     ports:
@@ -84,17 +83,16 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        SCOPE: ${WORKER_SCOPE:-all}
+        SCOPE: ${WORKER_SCOPE:-scope_worker}
     container_name: geoid_worker
     restart: always
     env_file: .env
-    # Run in worker mode (same image as API, different modules + CMD)
+    # Run in worker mode (same image as catalog, different modules + CMD)
     command: ["worker"]
     environment:
-      SCOPE: ${WORKER_SCOPE:-all}
+      SCOPE: ${WORKER_SCOPE:-scope_worker}
       TCP_PORT: 81
-      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
-      ACCESS_LOG: /dynastore/logs/access.log
+      UVICORN_WORKERS: 2
       ERROR_LOG: /dynastore/logs/error.log
     ports:
       - "${HOST_PORT_WORKER:-81}:81"
@@ -105,9 +103,55 @@ services:
     networks:
       - dynastore_net
 
+  tools:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        SCOPE: ${TOOLS_SCOPE:-scope_tools}
+    container_name: geoid_tools
+    restart: always
+    env_file: .env
+    environment:
+      SCOPE: ${TOOLS_SCOPE:-scope_tools}
+      TCP_PORT: 8082
+      UVICORN_WORKERS: 2
+      ERROR_LOG: /dynastore/logs/error.log
+    ports:
+      - "${HOST_PORT_TOOLS:-8082}:8082"
+    volumes:
+      - ../logs/tools:/dynastore/logs
+    depends_on:
+      - db
+    networks:
+      - dynastore_net
+
+  maps:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        SCOPE: ${MAPS_SCOPE:-scope_maps}
+    container_name: geoid_maps
+    restart: always
+    env_file: .env
+    environment:
+      SCOPE: ${MAPS_SCOPE:-scope_maps}
+      TCP_PORT: 8083
+      UVICORN_WORKERS: 2
+      ERROR_LOG: /dynastore/logs/error.log
+    ports:
+      - "${HOST_PORT_MAPS:-8083}:8083"
+    volumes:
+      - ../logs/maps:/dynastore/logs
+    depends_on:
+      - db
+    networks:
+      - dynastore_net
+
   elasticsearch:
     # OpenSearch 2.x (Apache 2.0) — drop-in replacement for Elasticsearch REST API.
-    # Elasticsearch ≥7.11 uses SSPL/ELv2, incompatible with this project's Apache 2.0 license.
+    # Elasticsearch >=7.11 uses SSPL/ELv2, incompatible with this project's Apache 2.0 license.
     image: opensearchproject/opensearch:2.17.0
     container_name: geoid_elasticsearch
     restart: always
@@ -118,7 +162,7 @@ services:
     ports:
       - "9200:9200"
     volumes:
-      - elasticsearch_data:/usr/share/opensearch/data
+      - elasticsearch_data:/usr/share/elasticsearch/data
     networks:
       - dynastore_net
     healthcheck:

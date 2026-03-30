@@ -11,17 +11,17 @@ services:
       timeout: 5s
       retries: 15
       start_period: 10s
-  
-  api:
+
+  catalog:
     extends:
       file: docker-compose.yml
-      service: api
+      service: catalog
     build:
       context: ..
       dockerfile: docker/Dockerfile
       target: development
       args:
-        SCOPE: ${API_SCOPE:-all}
+        SCOPE: ${CATALOG_SCOPE:-scope_catalog}
     volumes:
       - ../src:/dynastore/src # Hot reload mount
     env_file: .env
@@ -61,7 +61,6 @@ services:
       ES_HOST: elasticsearch
       ES_PORT: "9200"
 
-
   worker:
     extends:
       file: docker-compose.yml
@@ -71,7 +70,7 @@ services:
       dockerfile: docker/Dockerfile
       target: development
       args:
-        SCOPE: ${WORKER_SCOPE:-all}
+        SCOPE: ${WORKER_SCOPE:-scope_worker}
     env_file: .env
     depends_on:
       db:
@@ -90,6 +89,60 @@ services:
     ports:
       - "5679:5679" # Debug port for worker
     command: python -m debugpy --listen 0.0.0.0:5679 -m uvicorn dynastore.main:app --host 0.0.0.0 --port 81 --reload --reload-dir src
+
+  tools:
+    extends:
+      file: docker-compose.yml
+      service: tools
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: development
+      args:
+        SCOPE: ${TOOLS_SCOPE:-scope_tools}
+    volumes:
+      - ../src:/dynastore/src
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      UVICORN_WORKERS: 1
+      LOG_LEVEL: DEBUG
+      ACCESS_LOG: "-"
+      ERROR_LOG: "-"
+    ports:
+      - "5680:5680" # Debug port for tools
+    command: python -m debugpy --listen 0.0.0.0:5680 -m uvicorn dynastore.main:app --host 0.0.0.0 --port 8082 --reload --reload-dir src
+
+  maps:
+    extends:
+      file: docker-compose.yml
+      service: maps
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: development
+      args:
+        SCOPE: ${MAPS_SCOPE:-scope_maps}
+    volumes:
+      - ../src:/dynastore/src
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      UVICORN_WORKERS: 1
+      LOG_LEVEL: DEBUG
+      ACCESS_LOG: "-"
+      ERROR_LOG: "-"
+      ES_HOST: elasticsearch
+      ES_PORT: "9200"
+    ports:
+      - "5681:5681" # Debug port for maps
+    command: python -m debugpy --listen 0.0.0.0:5681 -m uvicorn dynastore.main:app --host 0.0.0.0 --port 8083 --reload --reload-dir src
 
   elasticsearch:
     extends:

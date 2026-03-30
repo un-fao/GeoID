@@ -12,18 +12,18 @@ services:
       retries: 15
       start_period: 10s
 
-  api:
+  catalog:
     extends:
       file: docker-compose.yml
-      service: api
+      service: catalog
     restart: "no"
     build:
       context: ..
       dockerfile: docker/Dockerfile
       target: builder
       args:
-        SCOPE: ${API_SCOPE:-all}
-    container_name: geoid_api_test
+        SCOPE: ${CATALOG_SCOPE:-all}
+    container_name: geoid_catalog_test
     env_file: .env
     depends_on:
       db:
@@ -87,7 +87,7 @@ services:
       - LOG_LEVEL=INFO
       - PYTEST_CURRENT_TEST=true
       - REMOTE_TEST_EXECUTION=true
-      - DYNASTORE_API_URL=http://api:80
+      - DYNASTORE_API_URL=http://catalog:80
       - DYNASTORE_WORKER_URL=http://worker:81
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-gis_dev}
     volumes:
@@ -98,7 +98,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      api:
+      catalog:
         condition: service_healthy
       worker:
         condition: service_healthy

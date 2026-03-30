@@ -4,10 +4,15 @@
 #  Usage: docker compose -f docker-compose.yml -f docker-compose.local.yml up
 #
 #  Overrides:
-#    - Removes GCP-specific modules from the worker / api services
-#    - Sets NAME so the migration runner can fast-path by app_key
-#    - Provides DEFAULT_MAX_RETRIES used by the dispatcher
-# -----------------------------------------------------------------------------
+#    - Exposes DB port for local dev tools
+#    - Adds healthchecks for dependency ordering
+#    - Sets NAME for migration runner fast-path by app_key
+#    - Sets DEFAULT_MAX_RETRIES for the task dispatcher
+#
+#  Module/extension selection is handled entirely by the SCOPE variable
+#  (configured in .env via WORKER_SCOPE, API_SCOPE). Do NOT hardcode
+#  DYNASTORE_MODULES / DYNASTORE_EXTENSION_MODULES / DYNASTORE_TASK_MODULES
+#  here — they override SCOPE-based discovery and go stale quickly.
 # -----------------------------------------------------------------------------
 
 services:
@@ -20,23 +25,17 @@ services:
       timeout: 5s
       retries: 5
 
-  api:
+  catalog:
     depends_on:
       db:
         condition: service_healthy
     environment:
-      NAME: "dynastore-api-local"
-      DYNASTORE_MODULES: "db_config,db,datastore,catalog,stac,tiles,gcp,processes,tasks,crs,httpx,proxy,auth,apikey,stats,gdal,spanner"
-      DYNASTORE_EXTENSION_MODULES: "web,logs,stats,events,assets,configs,stac,features,processes,tasks,gcp,httpx,proxy,gdal,tiles,maps,wfs,styles,crs,dwh,apikey,auth,template,datamind,permissions"
-      DYNASTORE_TASK_MODULES: ""
+      NAME: "dynastore-catalog-local"
       DEFAULT_MAX_RETRIES: "3"
 
   worker:
     environment:
       NAME: "dynastore-worker-local"
-      DYNASTORE_MODULES: "db_config,db,datastore,catalog,stac,tiles,gcp,processes,tasks,crs,gdal,httpx"
-      DYNASTORE_EXTENSION_MODULES: "web,gcp,processes,tasks,httpx,logs,events,stats,tiles"
-      DYNASTORE_TASK_MODULES: "ingestion,export_features,dwh_join,tiles_preseed,gdal,gcp_cloud_runner"
       RUNNER_ID: "local-worker"
       DEFAULT_MAX_RETRIES: "3"
     depends_on:
