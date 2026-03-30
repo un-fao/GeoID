@@ -49,7 +49,7 @@ async def run_cloud_run_job_async(
     return await job_runner.run_job(job_name, args, env_vars)
 
 
-@cached(maxsize=1, namespace="job_config")
+@cached(maxsize=1, namespace="job_config", distributed=False)
 async def load_job_config():
     """
     Discovers deployed jobs and returns a mapping of task_type to job name.

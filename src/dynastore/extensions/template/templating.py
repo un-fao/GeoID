@@ -406,7 +406,7 @@ HTTP_TIMEOUT = 10.0
 ALLOWED_CONTENT_TYPES = {"text/xml", "application/xml"}
 
 # Use cached to memoize parser configurations
-@cached(maxsize=1)
+@cached(maxsize=1, distributed=False)
 def get_safe_parser_config():
     return {
         "xmltodict": {

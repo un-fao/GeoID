@@ -18,20 +18,26 @@
 
 """
 Storage Router — resolves the correct ``CollectionStorageDriverProtocol``
-for a given catalog/collection based on ``StorageRoutingConfig``.
+for a given catalog/collection based on ``CollectionPluginConfig``.
+
+Resolution order:
+1. write=True → write_driver (always)
+2. read_drivers[hint] → explicit mapping
+3. Auto-select: driver whose preferred_for includes this hint
+4. Fallback → write_driver
 
 Performance: driver lookup is cached (300s TTL, same as config) to
 avoid repeated linear scans on every request.
 """
 
 import logging
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from dynastore.models.protocols.storage_driver import (
     Capability,
     CollectionStorageDriverProtocol,
 )
-from dynastore.modules.storage.config import STORAGE_ROUTING_CONFIG_ID, StorageRoutingConfig
+from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID, CollectionPluginConfig
 from dynastore.modules.storage.errors import ReadOnlyDriverError
 from dynastore.modules.storage.hints import ReadHint
 from dynastore.tools.cache import cached
@@ -46,14 +52,63 @@ def _build_driver_index() -> Dict[str, CollectionStorageDriverProtocol]:
     return {d.driver_id: d for d in get_protocols(CollectionStorageDriverProtocol)}
 
 
-def _resolve_driver_id(routing: StorageRoutingConfig, *, hint: str, write: bool) -> str:
-    """Pure function: pick driver_id from routing config + intent."""
+def _get_collection_drivers(
+    col_config: CollectionPluginConfig,
+    driver_index: Dict[str, CollectionStorageDriverProtocol],
+) -> List[CollectionStorageDriverProtocol]:
+    """Return the write driver + all secondary driver instances for this collection."""
+    drivers = []
+    write_driver = driver_index.get(col_config.write_driver_id)
+    if write_driver:
+        drivers.append(write_driver)
+    for driver_id in col_config.secondary_driver_ids:
+        d = driver_index.get(driver_id)
+        if d:
+            drivers.append(d)
+    return drivers
+
+
+def _resolve_driver_id(
+    col_config: CollectionPluginConfig,
+    *,
+    hint: str,
+    write: bool,
+    driver_index: Dict[str, CollectionStorageDriverProtocol],
+) -> str:
+    """Pure function: pick driver_id from collection config + intent.
+
+    Resolution order:
+    1. write=True → write_driver (always)
+    2. read_drivers[hint] → explicit mapping
+    3. read_drivers["default"] → explicit default mapping
+    4. Auto-select: driver whose preferred_for includes this hint
+    5. Fallback → write_driver
+    """
     if write:
-        return routing.primary_driver_id
-    return routing.resolve_read_driver_id(hint)
+        return col_config.write_driver_id
+
+    # 1. Explicit hint mapping
+    ref = col_config.read_drivers.get(hint)
+    if ref:
+        return ref.driver_id
+
+    # 2. Explicit default mapping
+    default_ref = col_config.read_drivers.get("default")
+    if default_ref:
+        return default_ref.driver_id
+
+    # 3. Auto-select by preferred_for from available drivers
+    available_drivers = _get_collection_drivers(col_config, driver_index)
+    for driver in available_drivers:
+        preferred = getattr(driver, "preferred_for", frozenset())
+        if hint in preferred:
+            return driver.driver_id
+
+    # 4. Fallback to write_driver
+    return col_config.write_driver_id
 
 
-@cached(maxsize=4096, ttl=300, namespace="storage_router")
+@cached(maxsize=4096, ttl=300, namespace="storage_router", distributed=False)
 async def _resolve_driver_cached(
     catalog_id: str,
     collection_id: Optional[str],
@@ -68,12 +123,13 @@ async def _resolve_driver_cached(
     if not configs:
         raise RuntimeError("ConfigsProtocol not available — cannot resolve storage routing")
 
-    routing = await configs.get_config(
-        STORAGE_ROUTING_CONFIG_ID,
+    col_config: CollectionPluginConfig = await configs.get_config(
+        COLLECTION_PLUGIN_CONFIG_ID,
         catalog_id=catalog_id,
         collection_id=collection_id,
     )
-    return _resolve_driver_id(routing, hint=hint, write=write)
+    driver_index = _build_driver_index()
+    return _resolve_driver_id(col_config, hint=hint, write=write, driver_index=driver_index)
 
 
 async def get_driver(
@@ -90,14 +146,14 @@ async def get_driver(
         collection_id: Optional collection within the catalog.
         hint: Read-intent hint (``ReadHint`` enum or custom string).
             Ignored when ``write=True``.
-        write: If ``True``, always returns the primary driver.
+        write: If ``True``, always returns the write driver.
 
     Returns:
         A ``CollectionStorageDriverProtocol`` instance.
 
     Raises:
         ValueError: If the resolved driver ID is not registered.
-        ReadOnlyDriverError: If ``write=True`` and driver is read-only.
+        ReadOnlyDriverError: If ``write=True`` and driver lacks WRITE capability.
     """
     hint_str = hint.value if isinstance(hint, ReadHint) else hint
     driver_id = await _resolve_driver_cached(catalog_id, collection_id, hint_str, write)
@@ -110,9 +166,9 @@ async def get_driver(
             f"Registered drivers: {list(index.keys())}"
         )
 
-    if write and Capability.READ_ONLY in driver.capabilities:
+    if write and Capability.WRITE not in driver.capabilities:
         raise ReadOnlyDriverError(
-            f"Driver '{driver_id}' is read-only and cannot handle writes"
+            f"Driver '{driver_id}' does not support writes (missing Capability.WRITE)"
         )
 
     return driver

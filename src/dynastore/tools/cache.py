@@ -780,6 +780,23 @@ def _register_cache_manager_as_plugin() -> None:
 
 
 # ---------------------------------------------------------------------------
+#  Backend upgrade tracking
+# ---------------------------------------------------------------------------
+
+_backend_generation: int = 0
+
+
+def _notify_backend_upgrade() -> None:
+    """Called by CacheModule after registering a distributed backend (Valkey).
+
+    Bumps the generation counter so that ``@cached`` functions lazily
+    re-resolve their backend on the next call.
+    """
+    global _backend_generation
+    _backend_generation += 1
+
+
+# ---------------------------------------------------------------------------
 #  @cached decorator
 # ---------------------------------------------------------------------------
 
@@ -794,6 +811,7 @@ def cached(
     typed: bool = False,
     condition: Optional[Callable[[Any], bool]] = None,
     key_builder: Optional[Callable[..., str]] = None,
+    distributed: bool = True,
 ) -> Callable:
     """Centralized caching decorator for sync and async functions.
 
@@ -809,6 +827,9 @@ def cached(
         typed: Cache differently based on argument types.
         condition: Post-condition -- only cache if ``condition(result)`` is True.
         key_builder: Custom key builder ``(func, *args, **kwargs) -> str``.
+        distributed: If ``False``, always use local in-memory backend regardless
+            of registered distributed backends. Use for non-serializable return
+            types (driver instances, singletons).
 
     The decorated function gets these methods:
         - ``.cache_invalidate(*args, **kwargs)`` -- invalidate specific entry
@@ -837,13 +858,32 @@ def cached(
         params = list(sig.parameters.keys())
         is_method = len(params) > 0 and params[0] == "self"
 
-        # Resolve async backend: named shared backend or private local LRU
-        if backend is not None and is_async:
-            _backend = get_cache_manager().get_async_backend(backend)
+        # Lazy backend resolution — deferred to first cache access so that
+        # CacheModule has time to register Valkey during its lifespan.
+        _is_named_backend = backend is not None
+        _backend: Optional[Any] = None
+        _backend_has_lock: bool = True
+        _backend_gen: int = -1  # tracks _backend_generation at resolution time
+
+        def _resolve_backend() -> None:
+            nonlocal _backend, _backend_has_lock, _backend_gen
+            if _is_named_backend:
+                _backend = get_cache_manager().get_async_backend(backend)
+            elif distributed:
+                best = get_cache_manager().get_async_backend()  # lowest priority wins
+                if best.priority < 1000:
+                    _backend = best  # Distributed backend available (Valkey)
+                else:
+                    _backend = LocalAsyncCacheBackend(max_size=maxsize)
+            else:
+                _backend = LocalAsyncCacheBackend(max_size=maxsize)  # forced local
             _backend_has_lock = isinstance(_backend, LockableCacheBackend)
-        else:
-            _backend = LocalAsyncCacheBackend(max_size=maxsize) if is_async else None
-            _backend_has_lock = True  # LocalAsyncCacheBackend always implements LockableCacheBackend
+            _backend_gen = _backend_generation
+            logger.debug(
+                "cache backend resolved: fn=%s backend=%s distributed=%s",
+                func_qualname, getattr(_backend, "name", type(_backend).__name__), distributed,
+            )
+
         _sync_backend = LocalSyncCacheBackend(max_size=maxsize) if not is_async else None
         # Fallback per-key locks for external backends that don't implement get_lock
         _fallback_locks: Dict[str, asyncio.Lock] = {}
@@ -867,17 +907,26 @@ def cached(
             return base
 
         if is_async:
-            assert _backend is not None
 
             @functools.wraps(func)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                nonlocal _backend, _backend_gen
+                # Lazy resolve on first call; re-resolve on backend upgrade
+                if _backend is None or (
+                    distributed
+                    and not _is_named_backend
+                    and _backend_gen != _backend_generation
+                ):
+                    _resolve_backend()
+                assert _backend is not None
+
                 cache_key = _build_key(args, kwargs)
 
                 # Fast path
                 raw = await _backend.get(cache_key)
                 if raw is not None:
                     _backend._stats.hits += 1
-                    return raw  # NullSerializer: stored as-is
+                    return raw  # NullSerializer for local; msgpack for Valkey
 
                 # Stampede protection
                 if _backend_has_lock:
@@ -904,29 +953,44 @@ def cached(
 
             def sync_cache_invalidate_impl(*args: Any, **kwargs: Any) -> None:
                 """Sync invalidation -- works in both sync and async contexts."""
+                if _backend is None:
+                    return
                 cache_key = _build_key(args, kwargs)
-                if cache_key in _backend._store:
-                    del _backend._store[cache_key]
-                    _backend._stats.size = len(_backend._store)
+                if isinstance(_backend, LocalAsyncCacheBackend):
+                    if cache_key in _backend._store:
+                        del _backend._store[cache_key]
+                        _backend._stats.size = len(_backend._store)
+                else:
+                    # Distributed backend: schedule async clear (fire-and-forget)
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(_backend.clear(key=cache_key))
+                    except RuntimeError:
+                        pass
 
             def sync_cache_clear_impl() -> None:
                 """Sync clear -- works in both sync and async contexts."""
-                prefix = ns + ":"
-                to_delete = [k for k in _backend._store if k.startswith(prefix)]
-                if not to_delete:
-                    # Also clear if no namespace prefix (clear all)
+                if _backend is None:
+                    return
+                if isinstance(_backend, LocalAsyncCacheBackend):
                     _backend._store.clear()
                     _backend._locks.clear()
+                    _backend._stats.size = 0
                 else:
-                    for k in to_delete:
-                        del _backend._store[k]
-                _backend._stats.size = len(_backend._store)
+                    # Distributed backend: schedule async namespace clear
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(_backend.clear(namespace=ns))
+                    except RuntimeError:
+                        pass
 
             def cache_info() -> CacheStats:
+                if _backend is None:
+                    return CacheStats()
                 return CacheStats(
                     hits=_backend._stats.hits,
                     misses=_backend._stats.misses,
-                    size=len(_backend._store),
+                    size=len(getattr(_backend, "_store", {})),
                     maxsize=maxsize,
                     evictions=_backend._stats.evictions,
                 )
@@ -934,7 +998,6 @@ def cached(
             setattr(async_wrapper, "cache_invalidate", sync_cache_invalidate_impl)
             setattr(async_wrapper, "cache_clear", sync_cache_clear_impl)
             setattr(async_wrapper, "cache_info", cache_info)
-            setattr(async_wrapper, "cache_backend", _backend)
             setattr(async_wrapper, "cache_namespace", ns)
             return async_wrapper
 
@@ -979,7 +1042,6 @@ def cached(
             setattr(sync_wrapper, "cache_invalidate", sync_cache_invalidate)
             setattr(sync_wrapper, "cache_clear", sync_cache_clear)
             setattr(sync_wrapper, "cache_info", cache_info)
-            setattr(sync_wrapper, "cache_backend", _sync_backend)
             setattr(sync_wrapper, "cache_namespace", ns)
             return sync_wrapper
 

@@ -46,6 +46,7 @@ module_events = ["psycopg[binary,pool]"]
 module_elasticsearch = ["opensearch-py[async]"]
 module_gdal = ["dynastore[geospatial_core]", "GDAL==3.11.4"]
 module_tiles = ["dynastore[geospatial_core]"]
+module_cache = ["valkey>=6.0", "msgpack>=1.0"]
 module_tasks = []
 module_proxy = []
 module_styles = []
@@ -234,16 +235,16 @@ task_gdal_job = ["dynastore[task_base,gdal]"]
 #   │  worker_local   = worker_service + monitor    ... NO auth│
 #   └──────────────────────────────────────────────────────────┘
 #
-# Docker scopes:
-#   catalog service -> CATALOG_SCOPE=catalog_local (no auth, no gcp_cloud_runner)
-#   geoid   service -> GEOID_SCOPE=geoid_service   (full auth + geoid UI)
-#   worker  service -> WORKER_SCOPE=worker_local   (tasks + processes/stats UI)
-#   tools   service -> TOOLS_SCOPE=core,template
-#   maps    service -> MAPS_SCOPE=api_maps_open
+# Docker scopes (scope_* extras):
+#   catalog service -> CATALOG_SCOPE=scope_catalog (no auth)
+#   geoid   service -> GEOID_SCOPE=scope_geoid     (catalog + auth + geoid UI)
+#   worker  service -> WORKER_SCOPE=scope_worker   (tasks + processes/stats UI)
+#   tools   service -> TOOLS_SCOPE=scope_tools     (proxy + template)
+#   maps    service -> MAPS_SCOPE=scope_maps       (tiles/styles, no auth)
 #
 # ==========================================================================
 # api_open: full catalog WITHOUT auth — open for testing (no tools_grp: proxy/template served by the dedicated tools service)
-api_open = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes]"]
+api_open = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,task_gcp_provision]"]
 # api_catalog: api_open + auth (most common production deployment)
 api_catalog = ["dynastore[api_open,auth_grp]"]
 # api_maps: maps/tiles/styles service — WITH auth (kept for reference / future use)
@@ -257,11 +258,26 @@ api_full = ["dynastore[api_catalog,maps_grp,geospatial_io]"]
 # geoid_service: api_catalog + geoid extension — the ONLY service with auth
 geoid_service = ["dynastore[api_catalog,extension_geoid]"]
 # worker_service: background task processor (sync-db tasks + async-db catalog reads), no auth
-worker_service = ["dynastore[core,catalog_grp,google_grp,index_grp,tasks,processes,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job]"]
+worker_service = ["dynastore[core,catalog_grp,google_grp,index_grp,tasks,processes,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision]"]
 # catalog_local: local dev catalog — api_open without google_grp/gcp_cloud_runner (no tools_grp: use the dedicated tools service)
 catalog_local = ["dynastore[core,catalog_grp,monitor_grp,index_grp,processes]"]
 # worker_local: local HTTP simulation of Cloud Run Jobs — all tasks + processes/stats UI
 worker_local = ["dynastore[worker_service,monitor_grp]"]
+
+# ==========================================================================
+# DOCKER SERVICE SCOPES (used by docker-compose SCOPE build arg)
+# Prefixed with scope_ to avoid collision with module-level extras above.
+# ==========================================================================
+# scope_catalog: catalog API without auth — open for local testing
+scope_catalog = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,task_gcp_provision,module_cache]"]
+# scope_geoid: catalog + geoid UI + auth/apikey — maps to geospatial-auth in cloud
+scope_geoid = ["dynastore[scope_catalog,extension_geoid,auth_grp]"]
+# scope_worker: background task processor — all tasks + monitoring UI
+scope_worker = ["dynastore[core,catalog_grp,google_grp,index_grp,tasks,processes,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision,monitor_grp,module_cache]"]
+# scope_tools: proxy + template tools service — no auth
+scope_tools = ["dynastore[core,template,module_cache]"]
+# scope_maps: map tiles/styles service — no auth
+scope_maps = ["dynastore[core,catalog_grp,google_grp,maps_grp,monitor_grp,module_cache]"]
 
 # ==========================================================================
 # DEVELOPMENT & TESTING
@@ -276,6 +292,7 @@ dwh = ["google-cloud-bigquery", "db-dtypes", "pandas"]
 psycopg_pool = ["psycopg[binary,pool]"]
 
 [project.entry-points."dynastore.modules"]
+cache = "dynastore.modules.cache.cache_module:CacheModule"
 tasks = "dynastore.modules.tasks.tasks_module:TasksModule"
 proxy = "dynastore.modules.proxy.proxy_module:ProxyModule"
 gdal = "dynastore.modules.gdal.gdal_module:GdalModule"
