@@ -70,10 +70,7 @@ class ElasticsearchDeleteTask(TaskProtocol):
         from dynastore.modules.elasticsearch.client import get_client, get_index_prefix
         from dynastore.modules.elasticsearch.mappings import get_index_name
 
-        try:
-            from opensearchpy.exceptions import NotFoundError
-        except ImportError:
-            from elasticsearch import NotFoundError
+        from opensearchpy.exceptions import NotFoundError
 
         inputs = payload.inputs
         index_name = get_index_name(get_index_prefix(), inputs.entity_type)
