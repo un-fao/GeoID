@@ -44,6 +44,7 @@ services:
     restart: always
     env_file: .env
     environment:
+      SCOPE: ${API_SCOPE:-all}
       TCP_PORT: 80
       UVICORN_WORKERS: 4
       ERROR_LOG: /dynastore/logs/error.log
@@ -66,6 +67,7 @@ services:
     restart: always
     env_file: .env
     environment:
+      SCOPE: ${GEOID_SCOPE:-all}
       TCP_PORT: 80
       UVICORN_WORKERS: 1
     ports:
@@ -89,6 +91,7 @@ services:
     # Run in worker mode (same image as API, different modules + CMD)
     command: ["worker"]
     environment:
+      SCOPE: ${WORKER_SCOPE:-all}
       TCP_PORT: 81
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
       ACCESS_LOG: /dynastore/logs/access.log
