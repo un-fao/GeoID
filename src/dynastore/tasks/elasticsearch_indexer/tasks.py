@@ -89,9 +89,14 @@ async def _reindex_collection(
 
     if mode == "catalog":
         col_config = await catalogs_proto.get_collection_config(catalog_id, collection_id)
-        if not getattr(col_config, "search_index", False):
+        es_active = (
+            col_config.write_driver_id == "elasticsearch"
+            or "elasticsearch" in col_config.secondary_driver_ids
+            or any(ref.driver_id == "elasticsearch" for ref in col_config.read_drivers.values())
+        )
+        if not es_active:
             logger.debug(
-                "Skipping collection %s/%s — search_index=False.",
+                "Skipping collection %s/%s — elasticsearch not configured as driver.",
                 catalog_id, collection_id,
             )
             return 0

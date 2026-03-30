@@ -22,12 +22,15 @@ Multi-driver storage abstraction layer.
 Public API::
 
     from dynastore.modules.storage import (
-        get_driver, StorageRoutingConfig, Capability, ReadHint,
+        get_driver, Capability, ReadHint,
     )
 
     driver = await get_driver(catalog_id, collection_id, hint=ReadHint.SEARCH)
     async for entity in driver.read_entities(catalog_id, collection_id):
         ...
+
+Storage routing configuration is now part of ``CollectionPluginConfig``
+in ``dynastore.modules.catalog.catalog_config``.
 """
 
 from dynastore.models.protocols.storage_driver import (
@@ -36,11 +39,7 @@ from dynastore.models.protocols.storage_driver import (
     ReadOnlyDriverMixin,
     StorageLocationResolver,
 )
-from dynastore.modules.storage.config import (
-    DriverRef,
-    StorageRoutingConfig,
-    STORAGE_ROUTING_CONFIG_ID,
-)
+from dynastore.modules.storage.config import DriverRef
 from dynastore.modules.storage.errors import ReadOnlyDriverError, SoftDeleteNotSupportedError
 from dynastore.modules.storage.hints import ReadHint, register_hint, get_registered_hints
 from dynastore.modules.storage.location import (
@@ -57,8 +56,6 @@ __all__ = [
     "ReadOnlyDriverMixin",
     # Config
     "DriverRef",
-    "StorageRoutingConfig",
-    "STORAGE_ROUTING_CONFIG_ID",
     # Hints
     "ReadHint",
     "register_hint",

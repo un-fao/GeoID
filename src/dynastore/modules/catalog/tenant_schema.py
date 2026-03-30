@@ -45,16 +45,38 @@ TENANT_COLLECTIONS_DDL = """
 CREATE TABLE IF NOT EXISTS {schema}.collections (
     id VARCHAR NOT NULL,
     catalog_id VARCHAR NOT NULL,
-    title JSONB,
-    description JSONB,
-    keywords JSONB,
-    license JSONB,
-    extra_metadata JSONB,
-    physical_table VARCHAR,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     deleted_at TIMESTAMPTZ DEFAULT NULL,
     PRIMARY KEY (id)
+);
+"""
+
+PG_STORAGE_LOCATIONS_DDL = """
+CREATE TABLE IF NOT EXISTS {schema}.pg_storage_locations (
+    collection_id VARCHAR NOT NULL PRIMARY KEY,
+    physical_table VARCHAR NOT NULL,
+    schema_hash VARCHAR(64),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+"""
+
+PG_COLLECTION_METADATA_DDL = """
+CREATE TABLE IF NOT EXISTS {schema}.pg_collection_metadata (
+    collection_id VARCHAR NOT NULL PRIMARY KEY,
+    title JSONB,
+    description JSONB,
+    keywords JSONB,
+    license JSONB,
+    extent JSONB,
+    providers JSONB,
+    summaries JSONB,
+    links JSONB,
+    assets JSONB,
+    item_assets JSONB,
+    stac_version VARCHAR(20) DEFAULT '1.1.0',
+    stac_extensions JSONB DEFAULT '[]'::jsonb,
+    extra_metadata JSONB
 );
 """
 
@@ -133,6 +155,8 @@ async def initialize_tenant_shell(conn: DbResource, schema: str, catalog_id: str
     # 2. Core Tables (Tenant-local, not globally partitioned) - Combined for efficiency
     await DDLQuery(
         TENANT_COLLECTIONS_DDL
+        + PG_STORAGE_LOCATIONS_DDL
+        + PG_COLLECTION_METADATA_DDL
         + TENANT_ASSETS_DDL
         + TENANT_CATALOG_CONFIGS_DDL
         + TENANT_COLLECTION_CONFIGS_DDL

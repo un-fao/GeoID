@@ -29,7 +29,8 @@ Design principles:
   - Query via ``QueryRequest``: structured, validated queries with typed
     filters, sorts, and field selections.
   - Any driver can be primary or secondary — the framework is driver-agnostic.
-  - Capabilities: drivers declare what they support via ``FrozenSet[str]``.
+  - Capabilities: drivers declare what they support via ``FrozenSet[str]``
+    using ``Capability`` string constants or any custom string.
   - Unified soft delete: ``delete_entities(soft=True)`` and
     ``drop_storage(soft=True)`` for recoverable operations.
 
@@ -40,7 +41,6 @@ Type contracts:
   - Query input: ``QueryRequest`` — structured, not opaque dicts.
 """
 
-from enum import StrEnum
 from typing import (
     Any,
     AsyncIterator,
@@ -57,19 +57,52 @@ from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.query_builder import QueryRequest, QueryResponse
 
 
-class Capability(StrEnum):
-    """Standard capability tags. Drivers may add custom string tags."""
+class Capability:
+    """Well-known capability constants. Drivers may declare any string.
 
-    READ_ONLY = "read_only"
+    Usage::
+
+        capabilities: FrozenSet[str] = frozenset({
+            Capability.READ, Capability.WRITE, Capability.STREAMING,
+        })
+
+    Callers check membership::
+
+        if Capability.WRITE not in driver.capabilities:
+            raise ReadOnlyDriverError(...)
+    """
+
+    # --- I/O ---
+    READ = "read"
+    WRITE = "write"
     STREAMING = "streaming"
+    EXPORT = "export"
+
+    # --- Query ---
     SPATIAL_FILTER = "spatial_filter"
     FULLTEXT = "fulltext"
-    EXPORT = "export"
-    TIME_TRAVEL = "time_travel"
+    SORT = "sort"        # can sort results by arbitrary fields
+    GROUP_BY = "group_by"  # can group/aggregate results
+
+    # --- Data management ---
     SOFT_DELETE = "soft_delete"
+    TIME_TRAVEL = "time_travel"
     VERSIONING = "versioning"
     SCHEMA_EVOLUTION = "schema_evolution"
     SNAPSHOTS = "snapshots"
+
+    # --- Per-feature processing ---
+    GEOSPATIAL = "geospatial"      # bbox, centroid, geometry validation/fix per row
+    STATISTICS = "statistics"      # area, volume, length, morphological indices per row
+    SPATIAL_INDEX = "spatial_index"  # H3/S2 indexing per row
+
+    # --- Per-feature tracking & filtering ---
+    ASSET_TRACKING = "asset_tracking"      # tracks asset_id per feature (source provenance)
+    ATTRIBUTE_FILTER = "attribute_filter"  # can filter by feature attributes
+    SOURCE_REFERENCE = "source_reference"  # provides source reference per feature
+
+    # --- Cross-driver composition ---
+    ENRICHMENT = "enrichment"  # can provide filter keys + extra attrs for cross-driver join
 
 
 @runtime_checkable
@@ -77,15 +110,19 @@ class CollectionStorageDriverProtocol(Protocol):
     """Entity-level storage abstraction for collection data.
 
     Each driver provides CRUD + lifecycle operations for a specific backend.
-    The ``driver_id`` is used by ``StorageRoutingConfig`` to select the
-    active driver for a given collection.
+    The ``driver_id`` is used by routing config to select the active driver
+    for a given collection.
 
     ``capabilities`` declares what the driver supports as a ``FrozenSet[str]``
     using ``Capability`` constants and/or custom strings.
+
+    ``preferred_for`` declares which routing hints this driver is optimized for.
+    The router uses this for auto-selection when no explicit hint mapping exists.
     """
 
     driver_id: str
     capabilities: FrozenSet[str]
+    preferred_for: FrozenSet[str]
 
     async def write_entities(
         self,
@@ -105,6 +142,7 @@ class CollectionStorageDriverProtocol(Protocol):
         *,
         entity_ids: Optional[List[str]] = None,
         request: Optional[QueryRequest] = None,
+        context: Optional[Dict[str, Any]] = None,
         limit: int = 100,
         offset: int = 0,
         db_resource: Optional[Any] = None,
@@ -114,6 +152,9 @@ class CollectionStorageDriverProtocol(Protocol):
         Args:
             entity_ids: Fetch specific entities by ID.
             request: Structured query with filters, sorts, field selections.
+            context: Driver-specific query context. Each driver documents what
+                keys it expects (input) and what it publishes to
+                ``FeaturePipelineContext`` (output). See driver docstrings.
             limit: Maximum entities to return.
             offset: Number of entities to skip.
             db_resource: Optional connection/transaction to reuse.
@@ -145,6 +186,9 @@ class CollectionStorageDriverProtocol(Protocol):
         self,
         catalog_id: str,
         collection_id: Optional[str] = None,
+        *,
+        db_resource: Optional[Any] = None,
+        col_config: Optional[Any] = None,
     ) -> None:
         """Ensure backing storage exists (create table/index/bucket/etc.)."""
         ...
@@ -177,6 +221,41 @@ class CollectionStorageDriverProtocol(Protocol):
         """Export entities to an interchange format. Returns path to exported data.
 
         Can be wrapped by ``TaskProtocol`` for async execution on task runners.
+        """
+        ...
+
+    async def get_collection_metadata(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return collection metadata managed by this driver.
+
+        Returns a dict with fields like title, description, extent, keywords,
+        license, providers, summaries, links, assets, item_assets, stac_version,
+        stac_extensions, extra_metadata — or any subset thereof.
+
+        Returns None if no metadata is stored for this collection.
+        """
+        ...
+
+    async def set_collection_metadata(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        metadata: Dict[str, Any],
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> None:
+        """Store collection metadata in this driver's storage.
+
+        Each driver persists in its own format:
+        - PG: ``pg_collection_metadata`` table (UPSERT)
+        - Iceberg: table properties via ``table.transaction().set_properties()``
+        - DuckDB: sidecar JSON file or parquet metadata
+        - ES: index settings/mappings or ``_meta`` field
         """
         ...
 

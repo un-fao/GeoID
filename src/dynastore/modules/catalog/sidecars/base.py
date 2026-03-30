@@ -52,7 +52,7 @@ _SIDECAR_DATA_KEY = "_sidecar_data"
 class ConsumerType(str, Enum):
     """Consumer of the sidecar pipeline output.
 
-    Passed via ``SidecarPipelineContext.consumer`` so that sidecars can
+    Passed via ``FeaturePipelineContext.consumer`` so that sidecars can
     gate extension-specific field injection (e.g. STAC assets) while
     still performing shared work (e.g. multilanguage resolution).
     """
@@ -109,7 +109,7 @@ class SidecarDataEntry:
 
 # ── ContextContract ─────────────────────────────────────────────────────────
 # Well-known top-level context keys and their ownership.
-# Use the typed properties on SidecarPipelineContext (e.g. context.asset_id)
+# Use the typed properties on FeaturePipelineContext (e.g. context.asset_id)
 # rather than accessing these keys directly.
 #
 # Key                  Written by                    Read by
@@ -124,7 +124,7 @@ class SidecarDataEntry:
 # ────────────────────────────────────────────────────────────────────────────
 
 
-class SidecarPipelineContext:
+class FeaturePipelineContext:
     """
     Typed pipeline context passed through ``map_row_to_feature``.
 
@@ -725,7 +725,7 @@ class SidecarProtocol(ABC):
         return set()
 
     # ── Pipeline context ---------------------------------------------------
-    # Use SidecarPipelineContext (see module level) as the context type for
+    # Use FeaturePipelineContext (see module level) as the context type for
     # map_row_to_feature.  All sidecars should call:
     #   context.publish(self.sidecar_id, data)   # to write
     #   context.get_sidecar(other_id)            # to read from another sidecar

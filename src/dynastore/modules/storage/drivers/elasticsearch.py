@@ -95,13 +95,13 @@ class _ElasticsearchBase:
         try:
             from dynastore.models.protocols.configs import ConfigsProtocol
             from dynastore.tools.discovery import get_protocol
-            from dynastore.modules.storage.config import STORAGE_ROUTING_CONFIG_ID
+            from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
 
             configs = get_protocol(ConfigsProtocol)
             if not configs:
                 return False
             routing = await configs.get_config(
-                STORAGE_ROUTING_CONFIG_ID,
+                COLLECTION_PLUGIN_CONFIG_ID,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )
@@ -160,11 +160,16 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
     driver_id: str = "elasticsearch"
     priority: int = 50
     capabilities: FrozenSet[str] = frozenset({
+        Capability.READ,
+        Capability.WRITE,
         Capability.STREAMING,
         Capability.SPATIAL_FILTER,
+        Capability.SORT,
         Capability.FULLTEXT,
         Capability.SOFT_DELETE,
+        Capability.ATTRIBUTE_FILTER,
     })
+    preferred_for: FrozenSet[str] = frozenset({"search"})
 
     def is_available(self) -> bool:
         return self._sfeos_available()
@@ -650,8 +655,11 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
     driver_id: str = "elasticsearch_obfuscated"
     priority: int = 51
     capabilities: FrozenSet[str] = frozenset({
+        Capability.READ,
+        Capability.WRITE,
         Capability.STREAMING,
     })
+    preferred_for: FrozenSet[str] = frozenset()
 
     def is_available(self) -> bool:
         return self._sfeos_available()
@@ -1024,7 +1032,7 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
             from dynastore.models.protocols import CatalogsProtocol
             from dynastore.models.protocols.configs import ConfigsProtocol
             from dynastore.tools.discovery import get_protocol
-            from dynastore.modules.storage.config import STORAGE_ROUTING_CONFIG_ID
+            from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
 
             catalogs_proto = get_protocol(CatalogsProtocol)
             configs = get_protocol(ConfigsProtocol)
@@ -1044,9 +1052,9 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
                         continue
                     try:
                         routing = await configs.get_config(
-                            STORAGE_ROUTING_CONFIG_ID, catalog_id=catalog_id,
+                            COLLECTION_PLUGIN_CONFIG_ID, catalog_id=catalog_id,
                         )
-                        if self.driver_id in (routing.secondary_drivers or []):
+                        if self.driver_id in routing.secondary_driver_ids:
                             await self._apply_deny_policy(catalog_id)
                             logger.info(
                                 "ObfuscatedDriver: restored DENY for '%s'.",
@@ -1083,9 +1091,12 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
     driver_id: str = "elasticsearch_assets"
     priority: int = 52
     capabilities: FrozenSet[str] = frozenset({
+        Capability.READ,
+        Capability.WRITE,
         Capability.STREAMING,
         Capability.FULLTEXT,
     })
+    preferred_for: FrozenSet[str] = frozenset()
 
     def is_available(self) -> bool:
         return self._sfeos_available()

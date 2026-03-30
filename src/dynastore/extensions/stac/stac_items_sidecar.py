@@ -20,7 +20,7 @@ from dynastore.modules.catalog.sidecars.base import (
     SidecarProtocol,
     SidecarConfig,
     SidecarConfigRegistry,
-    SidecarPipelineContext,
+    FeaturePipelineContext,
     ConsumerType,
     ValidationResult,
     FieldDefinition,
@@ -220,7 +220,7 @@ class StacItemsSidecar(SidecarProtocol):
         self,
         row: Dict[str, Any],
         feature: Feature,
-        context: SidecarPipelineContext,
+        context: FeaturePipelineContext,
     ) -> None:
         """Inject STAC-specific fields into the Feature.
 

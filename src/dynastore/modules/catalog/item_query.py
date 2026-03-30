@@ -28,7 +28,7 @@ from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
 from dynastore.modules.catalog.sidecars.base import (
     SidecarProtocol,
-    SidecarPipelineContext,
+    FeaturePipelineContext,
     ConsumerType,
 )
 from dynastore.tools.discovery import get_protocol
@@ -434,7 +434,7 @@ class ItemQueryMixin:
                 # Use a buffer for higher throughput but still O(1) memory
                 stream = await stream_conn.stream(text(sql), params)
                 async for row in stream:
-                    ctx = SidecarPipelineContext(lang=lang, consumer=consumer)
+                    ctx = FeaturePipelineContext(lang=lang, consumer=consumer)
                     yield self.map_row_to_feature(
                         dict(row._mapping), col_config, context=ctx,
                     )

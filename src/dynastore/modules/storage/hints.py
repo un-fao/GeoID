@@ -31,11 +31,13 @@ class ReadHint(StrEnum):
     """Standard read hints for storage driver routing."""
 
     DEFAULT = "default"
+    METADATA = "metadata"      # collection-level metadata (title, description, extent)
     SEARCH = "search"
     FEATURES = "features"
     GRAPH = "graph"
     ANALYTICS = "analytics"
     CACHE = "cache"
+    ENRICHMENT = "enrichment"  # cross-driver filtering/enrichment (collection and item level)
 
 
 _CUSTOM_HINTS: Dict[str, str] = {}

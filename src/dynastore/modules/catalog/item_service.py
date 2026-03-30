@@ -48,7 +48,7 @@ from dynastore.modules.db_config import shared_queries
 from dynastore.models.query_builder import QueryRequest, QueryResponse
 from dynastore.modules.catalog.query_optimizer import QueryOptimizer
 from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
-from dynastore.modules.catalog.sidecars.base import SidecarPipelineContext
+from dynastore.modules.catalog.sidecars.base import FeaturePipelineContext
 from dynastore.modules.catalog.item_query import ItemQueryMixin
 from dynastore.modules.catalog.item_distributed import ItemDistributedMixin
 
@@ -131,7 +131,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         row: Dict[str, Any],
         col_config: Any,
         lang: str = "en",
-        context: Optional[SidecarPipelineContext] = None,
+        context: Optional[FeaturePipelineContext] = None,
     ) -> Feature:
         """
         Canonical row-to-Feature mapper. Runs each configured sidecar's
@@ -148,7 +148,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
              a STAC Item — adds ``links``, converts timestamps, attaches the
              asset reference from context.
 
-        Each sidecar receives the *same* ``SidecarPipelineContext`` so sidecars
+        Each sidecar receives the *same* ``FeaturePipelineContext`` so sidecars
         can share data (e.g. attributes → STAC via ``asset_id``) without
         direct coupling. Internal-field filtering is delegated to sidecars
         via ``get_internal_columns()``.
@@ -171,7 +171,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
         # Shared context propagated through the entire sidecar pipeline.
         if context is None:
-            context = SidecarPipelineContext(lang=lang)
+            context = FeaturePipelineContext(lang=lang)
 
         if col_config and col_config.sidecars:
             from dynastore.modules.catalog.sidecars.registry import SidecarRegistry

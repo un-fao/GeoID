@@ -40,7 +40,7 @@ from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.catalog.sidecars.base import (
     SidecarProtocol,
     SidecarConfig,
-    SidecarPipelineContext,
+    FeaturePipelineContext,
     ValidationResult,
     FieldDefinition,
     FieldCapability,
@@ -222,7 +222,7 @@ class GeometriesSidecar(SidecarProtocol):
         ]
 
         # Shared context for column tracking
-        known_columns = {"geoid", self.config.geom_column, "geom_type", "was_geom_fixed"}
+        known_columns = {"geoid", self.config.geom_column, "geom_type"}
         if self.config.bbox_column:
             known_columns.add(self.config.bbox_column)
 
@@ -230,11 +230,6 @@ class GeometriesSidecar(SidecarProtocol):
         if has_validity or "validity" in partition_keys:
             columns.append("validity TSTZRANGE NOT NULL")
             known_columns.add("validity")
-
-        # Add was_geom_fixed only if specifically requested or as a column if stats disabled
-        # (Actually user wanted it in stats, so let's use columns for it ONLY if stats are NOT enabled)
-        if not (self.config.statistics and self.config.statistics.enabled):
-            columns.append("was_geom_fixed BOOLEAN DEFAULT FALSE")
 
         if self.config.bbox_column:
             columns.append(f"{self.config.bbox_column} GEOMETRY(POLYGON, {srid})")
@@ -281,8 +276,6 @@ class GeometriesSidecar(SidecarProtocol):
                     columns.append("vertex_count INTEGER")
                 if stats_cfg.hole_count.enabled:
                     columns.append("hole_count INTEGER")
-                # Add was_geom_fixed here if stats are columnar
-                columns.append("was_geom_fixed BOOLEAN DEFAULT FALSE")
 
         # Composite PK Construction
         # Rule: Partition keys FIRST, then Hub identity (geoid, validity)
@@ -486,8 +479,6 @@ class GeometriesSidecar(SidecarProtocol):
             return (f"{alias}.{self.config.bbox_column}", alias)
         if attr_name == "geom_type":
             return (f"{alias}.geom_type", alias)
-        if attr_name == "was_geom_fixed":
-            return (f"{alias}.was_geom_fixed", alias)
 
         # BBOX components
         if self.config.bbox_column:
@@ -577,9 +568,6 @@ class GeometriesSidecar(SidecarProtocol):
                 elif "geom_stats" in all_needed or "*" in requested:
                     fields.append(f"{alias}.geom_stats")
 
-            if "was_geom_fixed" in all_needed or "*" in requested or not requested:
-                fields.append(f"{alias}.was_geom_fixed")
-
         else:
             # Full mode (existing behavior)
             if request is not None:
@@ -620,9 +608,6 @@ class GeometriesSidecar(SidecarProtocol):
                         fields.append(f"{alias}.hole_count")
                 else:
                     fields.append(f"{alias}.geom_stats")
-
-            # Always return was_geom_fixed
-            fields.append(f"{alias}.was_geom_fixed")
 
         return fields
 
@@ -1051,7 +1036,6 @@ class GeometriesSidecar(SidecarProtocol):
             geom_data = {
                 "wkb_hex_processed": wkb_hex,
                 "geom_type": self._get_val(feature, "geom_type", "UNKNOWN"),
-                "was_geom_fixed": self._get_val(feature, "was_geom_fixed", False),
                 "bbox_coords": self._get_val(feature, "bbox_coords"),
             }
             # If we need shapely_geom for stats (and stats are enabled), we must re-parse
@@ -1090,9 +1074,6 @@ class GeometriesSidecar(SidecarProtocol):
         # Store processed geometry
         payload[self.config.geom_column] = geom_data["wkb_hex_processed"]
         payload["geom_type"] = geom_data["geom_type"]
-
-        # Handle was_geom_fixed based on where it's stored
-        was_fixed = geom_data.get("was_geom_fixed", False)
 
         # Calculate bbox if configured
         if self.config.bbox_column:
@@ -1160,11 +1141,9 @@ class GeometriesSidecar(SidecarProtocol):
             stats = compute_geometry_statistics(shapely_geom, self.config.statistics)
 
             if self.config.statistics.storage_mode == StatisticStorageMode.JSONB:
-                stats["was_geom_fixed"] = was_fixed
                 payload["geom_stats"] = stats
             else:
                 # Columnar mode: flat addition
-                stats["was_geom_fixed"] = was_fixed
                 payload.update(stats)
         elif (
             self.config.statistics
@@ -1176,10 +1155,6 @@ class GeometriesSidecar(SidecarProtocol):
                 f"GeometrySidecar: Statistics enabled but no valid geometry provided for geoid {geoid}. "
                 "Discarding feature to maintain data integrity."
             )
-        else:
-            # No stats, store flag in column if not already added to payload
-            payload["was_geom_fixed"] = was_fixed
-
         return payload
 
     def prepare_place_upsert_payload(
@@ -1258,7 +1233,7 @@ class GeometriesSidecar(SidecarProtocol):
         self,
         row: Dict[str, Any],
         feature: Feature,
-        context: SidecarPipelineContext,
+        context: FeaturePipelineContext,
     ) -> None:
         """Populate Feature geometry from database row."""
         # Publish all raw row values for downstream sidecars (e.g. STAC for bbox).

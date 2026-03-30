@@ -31,13 +31,12 @@ avoid repeated linear scans on every request.
 """
 
 import logging
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from dynastore.models.protocols.storage_driver import (
     Capability,
     CollectionStorageDriverProtocol,
 )
-from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID, CollectionPluginConfig
 from dynastore.modules.storage.errors import ReadOnlyDriverError
 from dynastore.modules.storage.hints import ReadHint
 from dynastore.tools.cache import cached
@@ -53,7 +52,7 @@ def _build_driver_index() -> Dict[str, CollectionStorageDriverProtocol]:
 
 
 def _get_collection_drivers(
-    col_config: CollectionPluginConfig,
+    col_config: Any,
     driver_index: Dict[str, CollectionStorageDriverProtocol],
 ) -> List[CollectionStorageDriverProtocol]:
     """Return the write driver + all secondary driver instances for this collection."""
@@ -69,7 +68,7 @@ def _get_collection_drivers(
 
 
 def _resolve_driver_id(
-    col_config: CollectionPluginConfig,
+    col_config: Any,
     *,
     hint: str,
     write: bool,
@@ -118,12 +117,13 @@ async def _resolve_driver_cached(
     """Cached resolution: (catalog, collection, hint, write) -> driver_id."""
     from dynastore.tools.discovery import get_protocol
     from dynastore.models.protocols.configs import ConfigsProtocol
+    from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
 
     configs = get_protocol(ConfigsProtocol)
     if not configs:
         raise RuntimeError("ConfigsProtocol not available — cannot resolve storage routing")
 
-    col_config: CollectionPluginConfig = await configs.get_config(
+    col_config = await configs.get_config(
         COLLECTION_PLUGIN_CONFIG_ID,
         catalog_id=catalog_id,
         collection_id=collection_id,
@@ -155,7 +155,7 @@ async def get_driver(
         ValueError: If the resolved driver ID is not registered.
         ReadOnlyDriverError: If ``write=True`` and driver lacks WRITE capability.
     """
-    hint_str = hint.value if isinstance(hint, ReadHint) else hint
+    hint_str = hint.value if isinstance(hint, ReadHint) else str(hint)
     driver_id = await _resolve_driver_cached(catalog_id, collection_id, hint_str, write)
 
     index = _build_driver_index()

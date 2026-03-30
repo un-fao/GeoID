@@ -78,7 +78,7 @@ class ItemIntrospectionProtocol(Protocol):
         Transform a database row dict into a GeoJSON ``Feature``.
 
         Chains all active sidecars in declaration order via
-        ``SidecarPipelineContext`` (blackboard pattern).  Each sidecar
+        ``FeaturePipelineContext`` (blackboard pattern).  Each sidecar
         contributes its domain: geometry, attributes, STAC metadata, etc.
         """
         ...

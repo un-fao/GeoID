@@ -82,7 +82,7 @@ class CollectionService:
             )
             if not phys_schema:
                 return None
-            query_sql = f'SELECT physical_table FROM "{phys_schema}".collections WHERE id = :collection_id AND deleted_at IS NULL;'
+            query_sql = f'SELECT physical_table FROM "{phys_schema}".pg_storage_locations WHERE collection_id = :collection_id;'
             return await DQLQuery(
                 query_sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
             ).execute(conn, collection_id=collection_id)
@@ -100,7 +100,7 @@ class CollectionService:
                 )
                 if not phys_schema:
                     return None
-                query_sql = f'SELECT physical_table FROM "{phys_schema}".collections WHERE id = :collection_id AND deleted_at IS NULL;'
+                query_sql = f'SELECT physical_table FROM "{phys_schema}".pg_storage_locations WHERE collection_id = :collection_id;'
                 return await DQLQuery(
                     query_sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
                 ).execute(conn, collection_id=collection_id)
@@ -125,7 +125,9 @@ class CollectionService:
 
             await conn.execute(
                 text(
-                    f'UPDATE "{phys_schema}".collections SET physical_table = :pt WHERE id = :colid'
+                    f'INSERT INTO "{phys_schema}".pg_storage_locations (collection_id, physical_table) '
+                    f'VALUES (:colid, :pt) '
+                    f'ON CONFLICT (collection_id) DO UPDATE SET physical_table = EXCLUDED.physical_table'
                 ),
                 {"pt": physical_table, "colid": collection_id},
             )
@@ -148,34 +150,45 @@ class CollectionService:
         phys_schema = await self._resolve_physical_schema(catalog_id, db_resource=conn)
         if not phys_schema:
             return None
-        query_sql = f'SELECT * FROM "{phys_schema}".collections WHERE id = :id AND deleted_at IS NULL;'
-        row_dict = await DQLQuery(
-            query_sql, result_handler=ResultHandler.ONE_DICT
+
+        # 1. Verify existence in thin registry
+        exists_sql = f'SELECT id FROM "{phys_schema}".collections WHERE id = :id AND deleted_at IS NULL;'
+        exists = await DQLQuery(
+            exists_sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
         ).execute(conn, id=collection_id)
-        if not row_dict:
+        if not exists:
             return None
-        # Unpack STAC dedicated columns if present
-        for key in ["links", "assets", "extent", "providers", "summaries", "extra_metadata", "item_assets"]:
-            dict_val = row_dict.get(key)
-            if isinstance(dict_val, str):
+
+        # 2. Read metadata from pg_collection_metadata
+        meta_sql = f'SELECT * FROM "{phys_schema}".pg_collection_metadata WHERE collection_id = :id;'
+        meta_dict = await DQLQuery(
+            meta_sql, result_handler=ResultHandler.ONE_DICT
+        ).execute(conn, id=collection_id) or {}
+
+        # Deserialize JSONB columns
+        for key in ["title", "description", "keywords", "license", "links", "assets",
+                    "extent", "providers", "summaries", "item_assets", "extra_metadata",
+                    "stac_extensions"]:
+            val = meta_dict.get(key)
+            if isinstance(val, str):
                 try:
-                    row_dict[key] = json.loads(dict_val)
+                    meta_dict[key] = json.loads(val)
                 except Exception:
-                    row_dict[key] = None
+                    meta_dict[key] = None
 
         data = {
-            "id": row_dict["id"],
-            "title": row_dict["title"],
-            "description": row_dict["description"],
-            "keywords": row_dict["keywords"],
-            "license": row_dict["license"],
-            "links": row_dict.get("links"),
-            "assets": row_dict.get("assets"),
-            "extent": row_dict.get("extent"),
-            "providers": row_dict.get("providers"),
-            "summaries": row_dict.get("summaries"),
-            "item_assets": row_dict.get("item_assets"),
-            "extra_metadata": row_dict.get("extra_metadata"),
+            "id": collection_id,
+            "title": meta_dict.get("title"),
+            "description": meta_dict.get("description"),
+            "keywords": meta_dict.get("keywords"),
+            "license": meta_dict.get("license"),
+            "links": meta_dict.get("links"),
+            "assets": meta_dict.get("assets"),
+            "extent": meta_dict.get("extent"),
+            "providers": meta_dict.get("providers"),
+            "summaries": meta_dict.get("summaries"),
+            "item_assets": meta_dict.get("item_assets"),
+            "extra_metadata": meta_dict.get("extra_metadata"),
         }
         return Collection.model_validate(data)
 
@@ -294,17 +307,12 @@ class CollectionService:
         validate_sql_identifier(catalog_id)
         validate_sql_identifier(collection_model.id)
 
-        # We need a reference to the 'generate_physical_name' helper.
-        # I'll import it from catalog_service or redefine it. Redefining for now to avoid circularity.
-        from dynastore.modules.catalog.catalog_service import generate_physical_name
-
         async with managed_transaction(db_resource or self.engine) as conn:
             # Check catalog exists
             catalogs = get_protocol(CatalogsProtocol)
             if not await catalogs.get_catalog_model(catalog_id, db_resource=conn):
                 raise ValueError(f"Catalog '{catalog_id}' does not exist.")
 
-            physical_table = kwargs.get("physical_table") or generate_physical_name("t")
             phys_schema = await self._resolve_physical_schema(
                 catalog_id, db_resource=conn
             )
@@ -392,7 +400,7 @@ class CollectionService:
                         f"Registry: Injected sidecars for {catalog_id}:{collection_model.id}: {list(current_types)}"
                     )
 
-            # Execute sync lifecycle initializers
+            # Resolved config for this collection creation
             init_config = layer_config_override or collection_config
 
             # Clean kwargs to avoid multiple values for arguments already passed positionally or explicitly
@@ -400,16 +408,42 @@ class CollectionService:
             init_kwargs.pop("physical_table", None)
             init_kwargs.pop("layer_config", None)
 
+            # 3. Insert thin registry row (id + catalog_id only)
+            insert_sql = f"""
+                INSERT INTO "{phys_schema}".collections (id, catalog_id)
+                VALUES (:id, :catalog_id)
+                RETURNING id;
+            """
+            await DQLQuery(insert_sql, result_handler=ResultHandler.SCALAR_ONE).execute(
+                conn, id=collection_model.id, catalog_id=catalog_id,
+            )
+
+            # 4. Run infrastructure hooks (events partition, logs, proxy —
+            #    create_physical_collection_impl is unregistered; hub/sidecars
+            #    are now handled by write_driver.ensure_storage() below).
             await lifecycle_registry.init_collection(
                 conn,
                 phys_schema,
                 catalog_id,
                 collection_model.id,
-                physical_table=physical_table,
                 layer_config=init_config,
                 **init_kwargs,
             )
-            # Store only user-provided extra_metadata content (no envelope)
+
+            # 5. Call write driver's ensure_storage() — creates hub + sidecar tables.
+            from dynastore.modules.storage.router import get_driver
+            write_driver = await get_driver(
+                catalog_id, collection_model.id, write=True
+            )
+            if write_driver is not None:
+                await write_driver.ensure_storage(
+                    catalog_id,
+                    collection_model.id,
+                    db_resource=conn,
+                    col_config=init_config,
+                )
+
+            # 6. Store collection metadata via metadata driver.
             user_extra_metadata = (
                 json.dumps(
                     collection_model.extra_metadata.model_dump(exclude_none=True),
@@ -418,61 +452,35 @@ class CollectionService:
                 if collection_model.extra_metadata
                 else None
             )
-
-            insert_sql = f"""
-                INSERT INTO "{phys_schema}".collections 
-                (id, catalog_id, physical_table, title, description, keywords, license, links, assets, extent, providers, summaries, extra_metadata) 
-                VALUES (:id, :catalog_id, :physical_table, :title, :description, :keywords, :license, :links, :assets, :extent, :providers, :summaries, :extra_metadata) 
-                RETURNING id;
-            """
-
-            await DQLQuery(insert_sql, result_handler=ResultHandler.SCALAR_ONE).execute(
-                conn,
-                id=collection_model.id,
-                catalog_id=catalog_id,
-                physical_table=physical_table,
-                title=json.dumps(
-                    collection_model.title.model_dump(exclude_none=True),
-                    cls=CustomJSONEncoder,
-                )
-                if collection_model.title
-                else None,
-                description=json.dumps(
-                    collection_model.description.model_dump(exclude_none=True),
-                    cls=CustomJSONEncoder,
-                )
-                if collection_model.description
-                else None,
-                keywords=json.dumps(
-                    collection_model.keywords.model_dump(exclude_none=True),
-                    cls=CustomJSONEncoder,
-                )
-                if collection_model.keywords
-                else None,
-                license=json.dumps(
-                    collection_model.license.model_dump(exclude_none=True),
-                    cls=CustomJSONEncoder,
-                )
-                if collection_model.license
-                else None,
-                links=json.dumps([l.model_dump() for l in collection_model.links], cls=CustomJSONEncoder) if collection_model.links else None,
-                assets=json.dumps(collection_model.assets, cls=CustomJSONEncoder) if collection_model.assets else None,
-                extent=json.dumps(collection_model.extent.model_dump(exclude_none=True), cls=CustomJSONEncoder) if collection_model.extent else None,
-                providers=json.dumps([p.model_dump() for p in (collection_model.providers or [])], cls=CustomJSONEncoder) if collection_model.providers else None,
-                summaries=json.dumps(collection_model.summaries, cls=CustomJSONEncoder) if collection_model.summaries else None,
-                extra_metadata=user_extra_metadata,
+            meta_driver = await get_driver(
+                catalog_id, collection_model.id, hint="metadata"
             )
+            if meta_driver is not None:
+                await meta_driver.set_collection_metadata(
+                    catalog_id,
+                    collection_model.id,
+                    {
+                        "title": json.dumps(collection_model.title.model_dump(exclude_none=True), cls=CustomJSONEncoder) if collection_model.title else None,
+                        "description": json.dumps(collection_model.description.model_dump(exclude_none=True), cls=CustomJSONEncoder) if collection_model.description else None,
+                        "keywords": json.dumps(collection_model.keywords.model_dump(exclude_none=True), cls=CustomJSONEncoder) if collection_model.keywords else None,
+                        "license": json.dumps(collection_model.license.model_dump(exclude_none=True), cls=CustomJSONEncoder) if collection_model.license else None,
+                        "links": json.dumps([l.model_dump() for l in collection_model.links], cls=CustomJSONEncoder) if collection_model.links else None,
+                        "assets": json.dumps(collection_model.assets, cls=CustomJSONEncoder) if collection_model.assets else None,
+                        "extent": json.dumps(collection_model.extent.model_dump(exclude_none=True), cls=CustomJSONEncoder) if collection_model.extent else None,
+                        "providers": json.dumps([p.model_dump() for p in (collection_model.providers or [])], cls=CustomJSONEncoder) if collection_model.providers else None,
+                        "summaries": json.dumps(collection_model.summaries, cls=CustomJSONEncoder) if collection_model.summaries else None,
+                        "extra_metadata": user_extra_metadata,
+                    },
+                    db_resource=conn,
+                )
 
-            # Persist config if override provided
-            # Move AFTER metadata insert so set_config (which checks existence) succeeds
+            # 7. Persist config if override provided.
             if layer_config_override:
-                # Ensure it's a model instance
                 config_to_save = layer_config_override
                 if isinstance(layer_config_override, dict):
                     config_to_save = CollectionPluginConfig.model_validate(
                         layer_config_override
                     )
-
                 await configs.set_config(
                     COLLECTION_PLUGIN_CONFIG_ID,
                     config_to_save,
@@ -480,6 +488,11 @@ class CollectionService:
                     collection_id=collection_model.id,
                     db_resource=conn,
                 )
+
+        # Resolve physical_table for async lifecycle context (PG driver only; None for others).
+        physical_table = await self.resolve_physical_table(
+            catalog_id, collection_model.id
+        )
 
         # Invalidate caches
         self._get_collection_model_cached.cache_invalidate(
@@ -532,33 +545,52 @@ class CollectionService:
                 return []
 
             if not q:
-                query_sql = f'SELECT * FROM "{phys_schema}".collections WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT :limit OFFSET :offset;'
+                query_sql = (
+                    f'SELECT c.id, m.title, m.description, m.keywords, m.license, '
+                    f'm.links, m.assets, m.extent, m.providers, m.summaries, '
+                    f'm.item_assets, m.extra_metadata '
+                    f'FROM "{phys_schema}".collections c '
+                    f'LEFT JOIN "{phys_schema}".pg_collection_metadata m ON m.collection_id = c.id '
+                    f'WHERE c.deleted_at IS NULL '
+                    f'ORDER BY c.created_at DESC LIMIT :limit OFFSET :offset;'
+                )
                 result_rows = await DQLQuery(
                     query_sql, result_handler=ResultHandler.ALL_DICTS
                 ).execute(conn, limit=limit, offset=offset)
             else:
-                query_sql = f'SELECT * FROM "{phys_schema}".collections WHERE deleted_at IS NULL AND (id ILIKE :q OR title->>\'en\' ILIKE :q OR description->>\'en\' ILIKE :q) ORDER BY created_at DESC LIMIT :limit OFFSET :offset;'
+                query_sql = (
+                    f'SELECT c.id, m.title, m.description, m.keywords, m.license, '
+                    f'm.links, m.assets, m.extent, m.providers, m.summaries, '
+                    f'm.item_assets, m.extra_metadata '
+                    f'FROM "{phys_schema}".collections c '
+                    f'LEFT JOIN "{phys_schema}".pg_collection_metadata m ON m.collection_id = c.id '
+                    f'WHERE c.deleted_at IS NULL '
+                    f"AND (c.id ILIKE :q OR m.title->>'en' ILIKE :q OR m.description->>'en' ILIKE :q) "
+                    f'ORDER BY c.created_at DESC LIMIT :limit OFFSET :offset;'
+                )
                 result_rows = await DQLQuery(
                     query_sql, result_handler=ResultHandler.ALL_DICTS
                 ).execute(conn, limit=limit, offset=offset, q=f"%{q}%")
 
             results = []
             for row_dict in result_rows:
-                # Unpack localized properties
-                for key in ["links", "assets", "extent", "providers", "summaries", "extra_metadata", "item_assets"]:
-                    dict_val = row_dict.get(key)
-                    if isinstance(dict_val, str):
+                # Deserialize JSONB columns
+                for key in ["title", "description", "keywords", "license", "links",
+                            "assets", "extent", "providers", "summaries", "item_assets",
+                            "extra_metadata"]:
+                    val = row_dict.get(key)
+                    if isinstance(val, str):
                         try:
-                            row_dict[key] = json.loads(dict_val)
+                            row_dict[key] = json.loads(val)
                         except Exception:
                             row_dict[key] = None
 
                 data = {
                     "id": row_dict["id"],
-                    "title": row_dict["title"],
-                    "description": row_dict["description"],
-                    "keywords": row_dict["keywords"],
-                    "license": row_dict["license"],
+                    "title": row_dict.get("title"),
+                    "description": row_dict.get("description"),
+                    "keywords": row_dict.get("keywords"),
+                    "license": row_dict.get("license"),
                     "links": row_dict.get("links"),
                     "assets": row_dict.get("assets"),
                     "extent": row_dict.get("extent"),
@@ -610,14 +642,34 @@ class CollectionService:
                 else None
             )
 
+            # First verify the collection exists in thin registry
+            exists_sql = f'SELECT id FROM "{phys_schema}".collections WHERE id = :id AND deleted_at IS NULL;'
+            exists = await DQLQuery(
+                exists_sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
+            ).execute(conn, id=collection_id)
+            if not exists:
+                return None
+
             update_sql = f"""
-                UPDATE "{phys_schema}".collections 
-                SET title = :title, description = :description, keywords = :keywords,
-                    license = :license, links = :links, assets = :assets, extent = :extent,
-                    providers = :providers, summaries = :summaries, item_assets = :item_assets,
-                    extra_metadata = :extra_metadata
-                WHERE id = :id AND deleted_at IS NULL 
-                RETURNING *;
+                INSERT INTO "{phys_schema}".pg_collection_metadata
+                    (collection_id, title, description, keywords, license,
+                     links, assets, extent, providers, summaries, item_assets, extra_metadata)
+                VALUES
+                    (:id, :title, :description, :keywords, :license,
+                     :links, :assets, :extent, :providers, :summaries, :item_assets, :extra_metadata)
+                ON CONFLICT (collection_id) DO UPDATE SET
+                    title        = EXCLUDED.title,
+                    description  = EXCLUDED.description,
+                    keywords     = EXCLUDED.keywords,
+                    license      = EXCLUDED.license,
+                    links        = EXCLUDED.links,
+                    assets       = EXCLUDED.assets,
+                    extent       = EXCLUDED.extent,
+                    providers    = EXCLUDED.providers,
+                    summaries    = EXCLUDED.summaries,
+                    item_assets  = EXCLUDED.item_assets,
+                    extra_metadata = EXCLUDED.extra_metadata
+                RETURNING collection_id;
             """
 
             rows = await DQLQuery(
@@ -737,6 +789,13 @@ class CollectionService:
                     f'DELETE FROM "{phys_schema}".collections WHERE id = :id;'
                 )
                 await DDLQuery(hard_delete_sql).execute(conn, id=collection_id)
+                # Clean up driver-owned metadata tables
+                await DDLQuery(
+                    f'DELETE FROM "{phys_schema}".pg_storage_locations WHERE collection_id = :id;'
+                ).execute(conn, id=collection_id)
+                await DDLQuery(
+                    f'DELETE FROM "{phys_schema}".pg_collection_metadata WHERE collection_id = :id;'
+                ).execute(conn, id=collection_id)
 
                 logger.info(
                     f"[LIFECYCLE] Hard deleted collection '{catalog_id}:{collection_id}' successfully"
@@ -829,7 +888,6 @@ class CollectionService:
             return True
 
 
-@lifecycle_registry.sync_collection_initializer
 async def create_physical_collection_impl(
     conn: DbResource,
     schema: str,

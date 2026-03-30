@@ -106,7 +106,6 @@ def process_geometry(
             )
 
     processed_geom = shapely_geom
-    was_geom_fixed = False
 
     # 1. Handle SRID Mismatch and Transformation
     if source_srid != storage_config.target_srid:
@@ -147,7 +146,6 @@ def process_geometry(
                 raise UnfixableGeometryError(
                     "Geometry remains invalid after attempt to fix."
                 )
-            was_geom_fixed = True
 
     # 3. Force Dimension
     if storage_config.target_dimension == TargetDimension.FORCE_2D:
@@ -237,7 +235,6 @@ def process_geometry(
         "content_hash": content_hash,
         "bbox_coords": bbox_coords,
         "centroid": (processed_geom.centroid.x, processed_geom.centroid.y),
-        "was_geom_fixed": was_geom_fixed,
         "shapely_geom": processed_geom,
     }
 

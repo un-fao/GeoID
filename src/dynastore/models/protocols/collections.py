@@ -124,6 +124,31 @@ class CollectionsProtocol(Protocol):
 
     # === Metadata and Physical Resolution ===
 
+    async def resolve_datasource(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        hint: str = "default",
+        write: bool = False,
+    ) -> Any:
+        """Resolve the best storage driver for a collection based on usage intent.
+
+        Resolution order:
+        1. write=True → primary/write driver (always)
+        2. read_drivers[hint] → explicit mapping in CollectionPluginConfig
+        3. Auto-select: driver whose preferred_for includes this hint
+        4. Fallback → primary/write driver
+
+        Args:
+            hint: Read-intent hint (e.g. "search", "analytics", "metadata").
+            write: If True, always returns the write driver.
+
+        Returns:
+            A ``CollectionStorageDriverProtocol`` instance.
+        """
+        ...
+
     async def resolve_physical_table(
         self, catalog_id: str, collection_id: str, db_resource: Optional[Any] = None
     ) -> Optional[str]:

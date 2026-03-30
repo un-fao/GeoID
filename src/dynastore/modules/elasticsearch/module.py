@@ -30,18 +30,25 @@ async def _get_es_catalog_config(catalog_id: str):
         return None
 
 
-async def _get_search_index_config(catalog_id: str, collection_id: str) -> bool:
-    """Return True only when the collection has search_index=True."""
+async def _is_es_active(catalog_id: str, collection_id: str) -> bool:
+    """Return True when the collection has ES as write, secondary, or read driver."""
     try:
         from dynastore.models.protocols import CatalogsProtocol
         catalogs = get_protocol(CatalogsProtocol)
         if not catalogs:
             return False
         col_config = await catalogs.get_collection_config(catalog_id, collection_id)
-        return bool(getattr(col_config, "search_index", False))
+        if col_config.write_driver_id == "elasticsearch":
+            return True
+        if "elasticsearch" in col_config.secondary_driver_ids:
+            return True
+        return any(
+            ref.driver_id == "elasticsearch"
+            for ref in col_config.read_drivers.values()
+        )
     except Exception as e:
         logger.debug(
-            "Could not resolve search_index config for %s/%s: %s",
+            "Could not resolve ES active config for %s/%s: %s",
             catalog_id, collection_id, e,
         )
         return False
@@ -526,7 +533,7 @@ class ElasticsearchModule(ModuleProtocol):
             return  # never populate the STAC items index
 
         # --- Normal catalog path ---
-        if not await _get_search_index_config(catalog_id, collection_id):
+        if not await _is_es_active(catalog_id, collection_id):
             return
 
         doc = await _stac_serialize_item(catalog_id, collection_id, item_id)
@@ -575,7 +582,7 @@ class ElasticsearchModule(ModuleProtocol):
             return
 
         # --- Normal catalog path ---
-        if not await _get_search_index_config(catalog_id, collection_id):
+        if not await _is_es_active(catalog_id, collection_id):
             return
 
         from dynastore.tasks.elasticsearch.tasks import ElasticsearchIndexInputs

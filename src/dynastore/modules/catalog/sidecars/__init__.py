@@ -1,7 +1,7 @@
 from .base import (
     SidecarProtocol,
     SidecarConfig,
-    SidecarPipelineContext,
+    FeaturePipelineContext,
     ConsumerType,
     ValidationResult,
     FieldDefinition,
@@ -15,10 +15,14 @@ from .attributes_config import FeatureAttributeSidecarConfig
 from .item_metadata_config import ItemMetadataSidecarConfig
 from .registry import SidecarRegistry
 
+# Deprecated alias — remove in next major version
+SidecarPipelineContext = FeaturePipelineContext
+
 __all__ = [
     "SidecarProtocol",
     "SidecarConfig",
-    "SidecarPipelineContext",
+    "FeaturePipelineContext",
+    "SidecarPipelineContext",  # deprecated alias
     "ConsumerType",
     "ValidationResult",
     "FieldDefinition",

@@ -43,7 +43,7 @@ from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
 from dynastore.modules.catalog.sidecars.base import (
     SidecarProtocol,
     SidecarConfig,
-    SidecarPipelineContext,
+    FeaturePipelineContext,
     ValidationResult,
     FieldDefinition,
     FieldCapability,
@@ -471,7 +471,7 @@ class ItemMetadataSidecar(SidecarProtocol):
         self,
         row: Dict[str, Any],
         feature: Feature,
-        context: SidecarPipelineContext,
+        context: FeaturePipelineContext,
     ) -> None:
         """Resolve multilanguage metadata from database row into feature properties.
 

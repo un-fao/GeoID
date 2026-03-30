@@ -215,13 +215,9 @@ class CatalogModule(ModuleProtocol):
             logger.info("Initialized CatalogModule services.")
 
             # 4. Initialize Storage & Schemas
-            # 2. Register core collection lifecycle handlers
-            from dynastore.modules.catalog.collection_service import (
-                create_physical_collection_impl,
-            )
+            # Hub/sidecar creation is handled by PostgresStorageDriver.ensure_storage()
+            # which is called from _create_collection_internal(). No lifecycle hook needed.
             from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
-
-            lifecycle_registry.sync_collection_initializer(create_physical_collection_impl)
 
             async with managed_transaction(engine) as conn:
                 await ensure_schema_exists(conn, "catalog")
@@ -545,6 +541,18 @@ class CatalogModule(ModuleProtocol):
     ) -> Optional[str]:
         return await self.catalog_service.resolve_physical_schema(
             catalog_id, db_resource=db_resource, allow_missing=allow_missing
+        )
+
+    async def resolve_datasource(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        hint: str = "default",
+        write: bool = False,
+    ):
+        return await self.catalog_service.resolve_datasource(
+            catalog_id, collection_id, hint=hint, write=write
         )
 
     async def resolve_physical_table(

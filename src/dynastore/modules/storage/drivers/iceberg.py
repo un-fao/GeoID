@@ -128,15 +128,25 @@ class IcebergStorageDriver(ModuleProtocol):
     driver_id: str = "iceberg"
     priority: int = 20
     capabilities: FrozenSet[str] = frozenset({
+        Capability.READ,
+        Capability.WRITE,
         Capability.STREAMING,
         Capability.SPATIAL_FILTER,
+        Capability.SORT,
+        Capability.GROUP_BY,
         Capability.EXPORT,
         Capability.TIME_TRAVEL,
         Capability.VERSIONING,
         Capability.SNAPSHOTS,
         Capability.SCHEMA_EVOLUTION,
         Capability.SOFT_DELETE,
+        Capability.GEOSPATIAL,
+        Capability.STATISTICS,
+        Capability.ASSET_TRACKING,
+        Capability.ATTRIBUTE_FILTER,
+        Capability.SOURCE_REFERENCE,
     })
+    preferred_for: FrozenSet[str] = frozenset({"analytics", "features", "write"})
 
     _catalog = None
     _catalog_loc_key: Optional[str] = None
@@ -304,13 +314,13 @@ class IcebergStorageDriver(ModuleProtocol):
         try:
             from dynastore.tools.discovery import get_protocol
             from dynastore.models.protocols.configs import ConfigsProtocol
-            from dynastore.modules.storage.config import STORAGE_ROUTING_CONFIG_ID
+            from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
 
             configs = get_protocol(ConfigsProtocol)
             if not configs:
                 return None
             routing = await configs.get_config(
-                STORAGE_ROUTING_CONFIG_ID,
+                COLLECTION_PLUGIN_CONFIG_ID,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )

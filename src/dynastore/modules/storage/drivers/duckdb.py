@@ -42,7 +42,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, FrozenSet, List, Optional, Set, Union
 
 from dynastore.models.ogc import Feature, FeatureCollection
-from dynastore.models.protocols.storage_driver import Capability, ReadOnlyDriverMixin
+from dynastore.models.protocols.storage_driver import Capability
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.protocols import ModuleProtocol
 from dynastore.modules.storage.errors import ReadOnlyDriverError, SoftDeleteNotSupportedError
@@ -145,11 +145,18 @@ class DuckDBStorageDriver(ModuleProtocol):
     priority: int = 30
 
     capabilities: FrozenSet[str] = frozenset({
-        Capability.READ_ONLY,
+        Capability.READ,
+        Capability.WRITE,
         Capability.STREAMING,
         Capability.SPATIAL_FILTER,
+        Capability.SORT,
+        Capability.GROUP_BY,
         Capability.EXPORT,
+        Capability.GEOSPATIAL,
+        Capability.SOURCE_REFERENCE,
+        Capability.ATTRIBUTE_FILTER,
     })
+    preferred_for: FrozenSet[str] = frozenset({"analytics"})
 
     def is_available(self) -> bool:
         return _duckdb_available()
@@ -173,13 +180,13 @@ class DuckDBStorageDriver(ModuleProtocol):
         try:
             from dynastore.tools.discovery import get_protocol
             from dynastore.models.protocols.configs import ConfigsProtocol
-            from dynastore.modules.storage.config import STORAGE_ROUTING_CONFIG_ID
+            from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
 
             configs = get_protocol(ConfigsProtocol)
             if not configs:
                 return None
             routing = await configs.get_config(
-                STORAGE_ROUTING_CONFIG_ID,
+                COLLECTION_PLUGIN_CONFIG_ID,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )

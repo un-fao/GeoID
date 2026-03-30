@@ -18,9 +18,9 @@
 
 from dynastore.tools.discovery import get_protocol
 import logging
-import os
-from typing import Any, Dict, Generator, List, Iterator, Optional
+from typing import Any, Dict, List, Optional
 from dynastore.tools.cache import cached
+from dynastore.tools.enrichment import enrich_features
 
 from fastapi import (
     HTTPException,
@@ -28,11 +28,9 @@ from fastapi import (
     Depends,
     Response,
     Request,
-    Request,
     APIRouter,
 )
-from fastapi.responses import StreamingResponse
-from dynastore.models.shared_models import OutputFormatEnum, Link
+from dynastore.models.shared_models import OutputFormatEnum
 from google.cloud import bigquery
 
 from dynastore.extensions.dwh.models import (
@@ -49,39 +47,19 @@ from dynastore.models.protocols import (
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     ResultHandler,
-    managed_transaction,
 )
-from dynastore.tools.features import FeatureCollection
-from dynastore.modules.db_config import shared_queries
 from dynastore.tools.db import validate_sql_identifier
 from dynastore.extensions.tools.db import get_async_connection
 from sqlalchemy.ext.asyncio import AsyncConnection
-from sqlalchemy import text
 from shapely.geometry import box
 from shapely import wkb
 import hashlib
 import json
 import dynastore.modules.tiles.tiles_module as tms_manager
 from dynastore.modules.tiles.tms_definitions import BUILTIN_TILE_MATRIX_SETS
-from dynastore.tools.discovery import get_protocol
 
 # --- App Setup & Configuration ---
 logger = logging.getLogger(__name__)
-
-
-class CursorWrapper:
-    """
-    Wraps an async iterator (from streaming query) to behave like a
-    synchronous iterator for FeatureCollection compatibility (handled via helper),
-    OR wraps a synchronous iterable.
-    """
-
-    def __init__(self, async_iterator):
-        self._async_iterator = async_iterator
-
-    async def __aiter__(self):
-        async for item in self._async_iterator:
-            yield item
 
 
 @cached(maxsize=128, namespace="dwh")
@@ -124,35 +102,6 @@ async def execute_bigquery_async(
         raise HTTPException(status_code=500, detail=f"BigQuery query error: {str(e)}")
     finally:
         client.close()
-
-
-async def join_features_with_dwh_data_async(
-    features_async_iter, dwh_data: Dict, join_on: str
-):
-    """
-    Async Generator that streams features from DB and joins with in-memory DWH data.
-    """
-    async for feature_dict in features_async_iter:
-        # feature_dict comes from streaming query, it's a dict
-        join_key_value = feature_dict.get(join_on)
-
-        if join_key_value is None:
-            continue
-
-        supplementary_row = dwh_data.get(join_key_value)
-
-        # Ensure 'attributes' exists (it's a JSONB column from DB, usually)
-        attributes = feature_dict.get("attributes", {})
-        if attributes is None:
-            attributes = {}
-
-        if supplementary_row:
-            # Attach DWH data
-            attributes.update(supplementary_row)
-
-        feature_dict["attributes"] = attributes
-        yield feature_dict
-
 
 
 from dynastore.models.query_builder import QueryRequest, FieldSelection, FilterCondition
@@ -284,16 +233,16 @@ class DwhService(ExtensionProtocol):
             db_resource=conn,
         )
 
-        # Use the items iterator from the context
-        joined_stream = join_features_with_dwh_data_async(
-            features_async_iter=query_context.items,
-            dwh_data=join_values,
-            join_on=req.join_column,
+        # Enrich streamed features with DWH data (O(1) dict lookup per feature)
+        enriched_stream = enrich_features(
+            query_context.items,
+            join_values,
+            join_column=req.join_column,
         )
 
         return format_response(
             request=request,
-            features=joined_stream,
+            features=enriched_stream,
             output_format=req.output_format,
             collection_id=req.collection,
             target_srid=req.destination_crs,
@@ -517,37 +466,23 @@ class DwhService(ExtensionProtocol):
             db_resource=conn,
         )
 
-        # 8. Join with DWH data
-        # joined_features = []
-        # async for feature_dict in query_context.items:
-        #     join_key_value = feature_dict.get(req.join_column)
-        #     if join_key_value is None:
-        #         continue
-        #
-        #     supplementary_row = join_values.get(join_key_value)
-        #     attributes = feature_dict.get("attributes", {}) or {}
-        #
-        #     if supplementary_row:
-        #         attributes.update(supplementary_row)
-        #
-        #     feature_dict["attributes"] = attributes
-        #     joined_features.append(feature_dict)
-
+        # 8. Join with DWH data and materialize for MVT query
         ids = []
         attributes_array = []
 
-        async for feature_dict in query_context.items:
-            join_key_value = feature_dict.get(req.join_column)
+        async for feature in query_context.items:
+            props = feature.properties or {}
+            join_key_value = props.get(req.join_column)
             if join_key_value is None:
                 continue
 
             supplementary_row = join_values.get(join_key_value)
-            attributes = feature_dict.get("attributes", {}) or {}
+            attributes = dict(props)
 
             if supplementary_row:
                 attributes.update(supplementary_row)
 
-            ids.append(feature_dict.get("id"))
+            ids.append(feature.id)
             attributes_array.append(json.dumps(attributes))
 
         if not ids:

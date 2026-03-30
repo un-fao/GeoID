@@ -40,7 +40,7 @@ from dynastore.tools.json import CustomJSONEncoder
 from dynastore.modules.catalog.sidecars.base import (
     SidecarProtocol,
     SidecarConfig,
-    SidecarPipelineContext,
+    FeaturePipelineContext,
     ValidationResult,
     FieldDefinition,
     FieldCapability,
@@ -1104,7 +1104,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         self,
         row: Dict[str, Any],
         feature: Feature,
-        context: SidecarPipelineContext,
+        context: FeaturePipelineContext,
     ) -> None:
         """Populate Feature from database row.
 

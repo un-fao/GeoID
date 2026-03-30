@@ -50,11 +50,21 @@ class PostgresStorageDriver(ModuleProtocol):
     driver_id: str = "postgresql"
     priority: int = 10
     capabilities: FrozenSet[str] = frozenset({
+        Capability.READ,
+        Capability.WRITE,
         Capability.STREAMING,
         Capability.SPATIAL_FILTER,
+        Capability.SORT,
+        Capability.GROUP_BY,
         Capability.SOFT_DELETE,
         Capability.EXPORT,
+        Capability.GEOSPATIAL,
+        Capability.STATISTICS,
+        Capability.SPATIAL_INDEX,
+        Capability.ASSET_TRACKING,
+        Capability.ATTRIBUTE_FILTER,
     })
+    preferred_for: FrozenSet[str] = frozenset({"features", "write"})
 
     def is_available(self) -> bool:
         from dynastore.tools.discovery import get_protocol
@@ -136,21 +146,314 @@ class PostgresStorageDriver(ModuleProtocol):
             )
         return total
 
-    async def ensure_storage(
-        self,
-        catalog_id: str,
-        collection_id: Optional[str] = None,
-    ) -> None:
+    async def _resolve_schema(self, catalog_id: str, db_resource=None) -> str:
+        """Resolve the PG schema name for a catalog."""
         from dynastore.tools.discovery import get_protocol
         from dynastore.models.protocols.catalogs import CatalogsProtocol
 
         catalogs = get_protocol(CatalogsProtocol)
         if not catalogs:
             raise RuntimeError("CatalogsProtocol not available")
-        logger.debug(
-            "PostgresStorageDriver.ensure_storage: catalog=%s collection=%s "
-            "(delegated to CatalogsProtocol lifecycle)",
-            catalog_id, collection_id,
+        schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=db_resource)
+        if not schema:
+            raise ValueError(f"No physical schema found for catalog '{catalog_id}'")
+        return schema
+
+    async def resolve_physical_table(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        db_resource=None,
+    ) -> Optional[str]:
+        """Resolve physical table name from pg_storage_locations."""
+        from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler, managed_transaction
+
+        schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
+        query_sql = f'SELECT physical_table FROM "{schema}".pg_storage_locations WHERE collection_id = :collection_id;'
+
+        async def _query(conn):
+            return await DQLQuery(
+                query_sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
+            ).execute(conn, collection_id=collection_id)
+
+        if db_resource is not None:
+            return await _query(db_resource)
+        from dynastore.tools.discovery import get_protocol
+        from dynastore.models.protocols.database import DatabaseProtocol
+        db_proto = get_protocol(DatabaseProtocol)
+        if not db_proto:
+            raise RuntimeError("DatabaseProtocol not available")
+        async with managed_transaction(db_proto.engine) as conn:
+            return await _query(conn)
+
+    async def ensure_storage(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        db_resource=None,
+        col_config=None,
+    ) -> None:
+        """Create PG hub table + sidecar tables for a collection.
+
+        Creates ``pg_storage_locations`` and ``pg_collection_metadata``
+        if they don't already exist, generates a unique ``physical_table``
+        name, creates the hub table, creates sidecar tables, and registers
+        the mapping in ``pg_storage_locations``.
+
+        If ``collection_id`` is None, this is a no-op (catalog-level call).
+        """
+        if not collection_id:
+            return
+
+        from dynastore.modules.db_config.query_executor import (
+            DDLQuery, DQLQuery, ResultHandler, managed_transaction, managed_nested_transaction,
+        )
+        from dynastore.tools.discovery import get_protocol
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.modules.catalog.catalog_config import (
+            CollectionPluginConfig,
+            COLLECTION_PLUGIN_CONFIG_ID,
+        )
+        from dynastore.modules.catalog.catalog_service import generate_physical_name
+        from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+        from dynastore.models.protocols.assets import AssetsProtocol
+
+        schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
+
+        # Resolve col_config if not provided
+        if col_config is None:
+            configs = get_protocol(ConfigsProtocol)
+            if configs:
+                col_config = await configs.get_config(
+                    COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id
+                )
+        if col_config is None:
+            col_config = CollectionPluginConfig()
+
+        # --- Generate physical table name ---
+        physical_table = generate_physical_name("t")
+
+        # --- Partition context ---
+        partition_keys = []
+        partition_key_types = {
+            "transaction_time": "TIMESTAMPTZ",
+            "validity": "TSTZRANGE",
+            "geoid": "UUID",
+            "asset_id": "VARCHAR(255)",
+        }
+
+        if col_config.partitioning.enabled:
+            partition_keys = col_config.partitioning.partition_keys
+            for sc_config in col_config.sidecars:
+                partition_key_types.update(sc_config.partition_key_types)
+
+        # --- Build hub table DDL ---
+        hub_cols_map = col_config.get_column_definitions()
+        for key in partition_keys:
+            if key not in hub_cols_map:
+                col_type = partition_key_types.get(key, "TEXT")
+                hub_cols_map[key] = f"{col_type} NOT NULL"
+
+        has_validity = "validity" in partition_keys
+
+        hub_columns_ddl = []
+        for name, spec in hub_cols_map.items():
+            clean_spec = spec.replace(" PRIMARY KEY", "")
+            hub_columns_ddl.append(f'"{name}" {clean_spec}')
+
+        pk_hub = ["geoid"]
+        if has_validity:
+            pk_hub.append("validity")
+        pk_all = list(set(pk_hub) | set(partition_keys)) if partition_keys else list(pk_hub)
+        quoted_pk = ", ".join(f'"{c}"' for c in pk_all)
+        hub_columns_ddl.append(f"PRIMARY KEY ({quoted_pk})")
+
+        partition_clause = ""
+        if partition_keys:
+            quoted_pk_keys = ", ".join(f'"{k}"' for k in partition_keys)
+            partition_clause = f" PARTITION BY LIST ({quoted_pk_keys})"
+
+        create_hub_sql = (
+            f'CREATE TABLE IF NOT EXISTS "{schema}"."{physical_table}" '
+            f'({", ".join(hub_columns_ddl)}){partition_clause};'
+        )
+        await DDLQuery(create_hub_sql).execute(db_resource)
+
+        # --- Create sidecar tables ---
+        for sidecar_config in col_config.sidecars:
+            try:
+                sidecar_impl = SidecarRegistry.get_sidecar(sidecar_config)
+                sc_has_validity = sidecar_impl.has_validity()
+                ddl_statements = sidecar_impl.get_ddl(
+                    physical_table=physical_table,
+                    partition_keys=partition_keys,
+                    partition_key_types=partition_key_types,
+                    has_validity=sc_has_validity,
+                )
+                await DDLQuery(ddl_statements).execute(db_resource, schema=schema)
+                await sidecar_impl.setup_lifecycle_hooks(
+                    db_resource, schema, f"{physical_table}_{sidecar_impl.sidecar_id}"
+                )
+            except ValueError as e:
+                logger.warning("Skipping sidecar table creation: %s", e)
+
+        # --- Register physical table mapping ---
+        insert_loc_sql = f"""
+            INSERT INTO "{schema}".pg_storage_locations (collection_id, physical_table)
+            VALUES (:collection_id, :physical_table)
+            ON CONFLICT (collection_id) DO UPDATE SET physical_table = EXCLUDED.physical_table;
+        """
+        await DQLQuery(
+            insert_loc_sql, result_handler=ResultHandler.NONE
+        ).execute(db_resource, collection_id=collection_id, physical_table=physical_table)
+
+        # --- Store schema hash ---
+        try:
+            import hashlib
+            import json as _json
+            config_dump = col_config.model_dump() if hasattr(col_config, "model_dump") else {}
+            schema_hash = hashlib.sha256(
+                _json.dumps(config_dump, sort_keys=True, default=str).encode()
+            ).hexdigest()
+            async with managed_nested_transaction(db_resource):
+                await DQLQuery(
+                    f'UPDATE "{schema}".collection_configs '
+                    f'SET schema_hash = :schema_hash, updated_at = NOW() '
+                    f'WHERE catalog_id = :catalog_id AND collection_id = :collection_id '
+                    f"AND plugin_id = 'collection';",
+                    result_handler=ResultHandler.NONE,
+                ).execute(
+                    db_resource,
+                    schema_hash=schema_hash,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                )
+        except Exception as e:
+            logger.warning("Failed to store schema hash: %s", e)
+
+        # --- Ensure asset cleanup trigger ---
+        am = get_protocol(AssetsProtocol)
+        if am:
+            await am.ensure_asset_cleanup_trigger(schema, physical_table, db_resource=db_resource)
+
+        logger.info(
+            "PostgresStorageDriver.ensure_storage: created hub '%s' + sidecars for %s/%s",
+            physical_table, catalog_id, collection_id,
+        )
+
+    async def get_collection_metadata(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        db_resource=None,
+    ) -> Optional[Dict[str, Any]]:
+        """Read collection metadata from pg_collection_metadata."""
+        from dynastore.modules.db_config.query_executor import (
+            DQLQuery, ResultHandler, managed_transaction,
+        )
+        import json
+
+        schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
+        query_sql = f'SELECT * FROM "{schema}".pg_collection_metadata WHERE collection_id = :collection_id;'
+
+        async def _query(conn):
+            row = await DQLQuery(
+                query_sql, result_handler=ResultHandler.ONE_DICT
+            ).execute(conn, collection_id=collection_id)
+            if not row:
+                return None
+            # Deserialize JSONB columns stored as strings
+            for key in ["title", "description", "keywords", "license", "extent",
+                        "providers", "summaries", "links", "assets", "item_assets",
+                        "extra_metadata", "stac_extensions"]:
+                val = row.get(key)
+                if isinstance(val, str):
+                    try:
+                        row[key] = json.loads(val)
+                    except Exception:
+                        row[key] = None
+            row.pop("collection_id", None)
+            return row
+
+        if db_resource is not None:
+            return await _query(db_resource)
+        from dynastore.tools.discovery import get_protocol
+        from dynastore.models.protocols.database import DatabaseProtocol
+        db_proto = get_protocol(DatabaseProtocol)
+        if not db_proto:
+            raise RuntimeError("DatabaseProtocol not available")
+        async with managed_transaction(db_proto.engine) as conn:
+            return await _query(conn)
+
+    async def set_collection_metadata(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        metadata: Dict[str, Any],
+        *,
+        db_resource=None,
+    ) -> None:
+        """Upsert collection metadata into pg_collection_metadata."""
+        from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
+        import json
+
+        schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
+
+        def _serialize(val) -> Optional[str]:
+            if val is None:
+                return None
+            if isinstance(val, str):
+                return val
+            return json.dumps(val, default=str)
+
+        upsert_sql = f"""
+            INSERT INTO "{schema}".pg_collection_metadata
+                (collection_id, title, description, keywords, license,
+                 extent, providers, summaries, links, assets, item_assets,
+                 extra_metadata)
+            VALUES
+                (:collection_id, :title, :description, :keywords, :license,
+                 :extent, :providers, :summaries, :links, :assets, :item_assets,
+                 :extra_metadata)
+            ON CONFLICT (collection_id) DO UPDATE SET
+                title        = EXCLUDED.title,
+                description  = EXCLUDED.description,
+                keywords     = EXCLUDED.keywords,
+                license      = EXCLUDED.license,
+                extent       = EXCLUDED.extent,
+                providers    = EXCLUDED.providers,
+                summaries    = EXCLUDED.summaries,
+                links        = EXCLUDED.links,
+                assets       = EXCLUDED.assets,
+                item_assets  = EXCLUDED.item_assets,
+                extra_metadata = EXCLUDED.extra_metadata;
+        """
+        from dynastore.tools.json import CustomJSONEncoder
+
+        def _to_json(val) -> Optional[str]:
+            if val is None:
+                return None
+            if isinstance(val, str):
+                return val
+            return json.dumps(val, cls=CustomJSONEncoder)
+
+        await DQLQuery(upsert_sql, result_handler=ResultHandler.NONE).execute(
+            db_resource,
+            collection_id=collection_id,
+            title=_to_json(metadata.get("title")),
+            description=_to_json(metadata.get("description")),
+            keywords=_to_json(metadata.get("keywords")),
+            license=_to_json(metadata.get("license")),
+            extent=_to_json(metadata.get("extent")),
+            providers=_to_json(metadata.get("providers")),
+            summaries=_to_json(metadata.get("summaries")),
+            links=_to_json(metadata.get("links")),
+            assets=_to_json(metadata.get("assets")),
+            item_assets=_to_json(metadata.get("item_assets")),
+            extra_metadata=_to_json(metadata.get("extra_metadata")),
         )
 
     async def drop_storage(

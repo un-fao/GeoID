@@ -645,10 +645,10 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin):
         language: str,
         conn: Any,
     ) -> Tuple[Optional[Feature], Dict[str, Any]]:
-        """Utility to get an item and its raw row via SidecarPipelineContext."""
-        from dynastore.modules.catalog.sidecars.base import SidecarPipelineContext
+        """Utility to get an item and its raw row via FeaturePipelineContext."""
+        from dynastore.modules.catalog.sidecars.base import FeaturePipelineContext
 
-        context = SidecarPipelineContext(lang=language)
+        context = FeaturePipelineContext(lang=language)
         item = await items_svc.get_item(
             catalog_id=catalog_id,
             collection_id=collection_id,

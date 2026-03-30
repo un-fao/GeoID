@@ -80,20 +80,6 @@ TENANT_COLLECTIONS_DDL = """
 CREATE TABLE IF NOT EXISTS {schema}.collections (
     id VARCHAR NOT NULL,
     catalog_id VARCHAR NOT NULL,
-    title JSONB,
-    description JSONB,
-    keywords JSONB,
-    license JSONB,
-    links JSONB,
-    assets JSONB,
-    extent JSONB,
-    providers JSONB,
-    summaries JSONB,
-    item_assets JSONB,
-    stac_version VARCHAR(20) DEFAULT '1.1.0',
-    stac_extensions JSONB DEFAULT '[]'::jsonb,
-    extra_metadata JSONB,
-    physical_table VARCHAR,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     deleted_at TIMESTAMPTZ DEFAULT NULL,
@@ -101,6 +87,36 @@ CREATE TABLE IF NOT EXISTS {schema}.collections (
 );
 """
 
+# Internal PG driver tables — always created alongside collections.
+# pg_storage_locations: maps collection_id → physical_table (PG hub table name).
+# pg_collection_metadata: stores all descriptive metadata for collections.
+PG_STORAGE_LOCATIONS_DDL = """
+CREATE TABLE IF NOT EXISTS {schema}.pg_storage_locations (
+    collection_id VARCHAR NOT NULL PRIMARY KEY,
+    physical_table VARCHAR NOT NULL,
+    schema_hash VARCHAR(64),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+"""
+
+PG_COLLECTION_METADATA_DDL = """
+CREATE TABLE IF NOT EXISTS {schema}.pg_collection_metadata (
+    collection_id VARCHAR NOT NULL PRIMARY KEY,
+    title JSONB,
+    description JSONB,
+    keywords JSONB,
+    license JSONB,
+    extent JSONB,
+    providers JSONB,
+    summaries JSONB,
+    links JSONB,
+    assets JSONB,
+    item_assets JSONB,
+    stac_version VARCHAR(20) DEFAULT '1.1.0',
+    stac_extensions JSONB DEFAULT '[]'::jsonb,
+    extra_metadata JSONB
+);
+"""
 
 
 # 2. ASSETS
@@ -162,11 +178,13 @@ async def initialize_core_tenant_tables(conn: DbResource, schema: str, catalog_i
     logger.info(f"Executing core DDL for schema: {schema}")
     await DDLQuery(
         TENANT_COLLECTIONS_DDL
+        + PG_STORAGE_LOCATIONS_DDL
+        + PG_COLLECTION_METADATA_DDL
         + TENANT_ASSETS_DDL
         + TENANT_CATALOG_CONFIGS_DDL
         + TENANT_COLLECTION_CONFIGS_DDL
     ).execute(conn, schema=schema)
-    logger.info(f"Core tenant tables (collections, assets, configs) initialized for {schema}.")
+    logger.info(f"Core tenant tables (collections, assets, configs, pg_storage_locations, pg_collection_metadata) initialized for {schema}.")
 
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.query_builder import QueryRequest, QueryResponse
@@ -361,6 +379,23 @@ class CatalogService(CatalogsProtocol):
         return ps
 
     # --- Collection Resolution ---
+    async def resolve_datasource(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        hint: str = "default",
+        write: bool = False,
+    ):
+        """Resolve the best storage driver for a collection.
+
+        Delegates to the storage router which implements the 5-step
+        resolution: write → read_drivers[hint] → read_drivers[default]
+        → preferred_for auto-select → fallback to write_driver.
+        """
+        from dynastore.modules.storage.router import get_driver
+        return await get_driver(catalog_id, collection_id, hint=hint, write=write)
+
     async def resolve_physical_table(
         self,
         catalog_id: str,
@@ -515,6 +550,8 @@ class CatalogService(CatalogsProtocol):
             )
             await DDLQuery(
                 TENANT_COLLECTIONS_DDL
+                + PG_STORAGE_LOCATIONS_DDL
+                + PG_COLLECTION_METADATA_DDL
                 + TENANT_ASSETS_DDL
                 + TENANT_CATALOG_CONFIGS_DDL
                 + TENANT_COLLECTION_CONFIGS_DDL
