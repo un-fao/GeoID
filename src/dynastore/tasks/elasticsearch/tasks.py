@@ -71,9 +71,9 @@ class ElasticsearchDeleteTask(TaskProtocol):
         from dynastore.modules.elasticsearch.mappings import get_index_name
 
         try:
-            from elasticsearch.exceptions import NotFoundError
+            from opensearchpy.exceptions import NotFoundError
         except ImportError:
-            raise RuntimeError("Missing elasticsearch dependency")
+            from elasticsearch import NotFoundError
 
         inputs = payload.inputs
         index_name = get_index_name(get_index_prefix(), inputs.entity_type)

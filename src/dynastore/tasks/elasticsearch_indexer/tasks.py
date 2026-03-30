@@ -362,9 +362,9 @@ class ObfuscatedDeleteTask(TaskProtocol):
         from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
 
         try:
-            from elasticsearch.exceptions import NotFoundError
+            from opensearchpy.exceptions import NotFoundError
         except ImportError:
-            raise RuntimeError("elasticsearch package not installed.")
+            from elasticsearch import NotFoundError
 
         inputs = ObfuscatedDeleteInputs.model_validate(payload.inputs)
         index_name = get_obfuscated_index_name(_get_index_prefix(), inputs.catalog_id)

@@ -5,7 +5,7 @@ from typing import Any, Dict, Literal, Optional
 from contextlib import asynccontextmanager
 
 from dynastore.modules import ModuleProtocol
-from dynastore.models.protocols.events import EventsProtocol
+from dynastore.models.protocols.event_bus import EventBusProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.catalog.event_service import CatalogEventType
 from dynastore.modules.elasticsearch.es_catalog_config import ES_CATALOG_CONFIG_ID
@@ -139,7 +139,7 @@ class ElasticsearchModule(ModuleProtocol):
 
     @asynccontextmanager
     async def lifespan(self, app_state: object):
-        events = get_protocol(EventsProtocol)
+        events = get_protocol(EventBusProtocol)
 
         if events:
             for etype, handler in [

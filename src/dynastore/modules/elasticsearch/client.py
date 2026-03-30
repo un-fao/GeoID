@@ -1,9 +1,14 @@
 """
-Elasticsearch singleton client — initialized once at lifespan startup.
+Elasticsearch / OpenSearch singleton client — initialized once at lifespan startup.
+
+Supports both ``opensearch-py`` (for OpenSearch) and ``elasticsearch[async]``
+(for Elasticsearch).  ``opensearch-py`` is preferred because it works with
+both backends; ``elasticsearch`` 7.14+ rejects OpenSearch due to product
+checking.
 
 All ES_* connection parameters are read directly from environment variables.
-No Pydantic model; no per-request client creation. The single
-AsyncElasticsearch instance manages its own connection pool.
+No Pydantic model; no per-request client creation. The single async client
+instance manages its own connection pool.
 
 Usage
 -----
@@ -20,19 +25,17 @@ Everywhere else:
 """
 import logging
 import os
-from typing import Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from elasticsearch import AsyncElasticsearch
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-_client: Optional["AsyncElasticsearch"] = None
+_client: Optional[Any] = None
 _index_prefix: str = "dynastore"
+_backend: Optional[str] = None  # "opensearch" or "elasticsearch"
 
 
-def get_client() -> Optional["AsyncElasticsearch"]:
-    """Return the shared AsyncElasticsearch instance, or None if not initialized."""
+def get_client() -> Optional[Any]:
+    """Return the shared async client instance, or None if not initialized."""
     return _client
 
 
@@ -40,9 +43,12 @@ def get_index_prefix() -> str:
     return _index_prefix
 
 
-def _build_client() -> "AsyncElasticsearch":
+def _build_client() -> Any:
     """
-    Build an AsyncElasticsearch from ES_* environment variables.
+    Build an async client from ES_* environment variables.
+
+    Tries ``opensearch-py`` first (works with both OpenSearch and Elasticsearch).
+    Falls back to ``elasticsearch[async]`` if opensearch-py is not installed.
 
     Supported variables:
         ES_HOST           host name or IP   (default: localhost)
@@ -53,13 +59,7 @@ def _build_client() -> "AsyncElasticsearch":
         ES_USERNAME       basic-auth user
         ES_PASSWORD       basic-auth password
     """
-    try:
-        from elasticsearch import AsyncElasticsearch
-    except ImportError:
-        raise RuntimeError(
-            "elasticsearch package is not installed. "
-            "Run: poetry add 'elasticsearch[async]'"
-        )
+    global _backend
 
     host = os.environ.get("ES_HOST", "localhost")
     port = int(os.environ.get("ES_PORT", "9200"))
@@ -70,21 +70,54 @@ def _build_client() -> "AsyncElasticsearch":
     username = os.environ.get("ES_USERNAME")
     password = os.environ.get("ES_PASSWORD")
 
-    kwargs = {
-        "hosts": [f"{scheme}://{host}:{port}"],
-        "verify_certs": verify_certs,
-        # Connection pool — reused across all requests in this process
-        "connections_per_node": int(os.environ.get("ES_CONNECTIONS_PER_NODE", "10")),
-        "retry_on_timeout": True,
-        "max_retries": 3,
-    }
+    # --- Try opensearch-py (preferred: no product check, works with both) ---
+    try:
+        from opensearchpy import AsyncOpenSearch
 
-    if api_key:
-        kwargs["api_key"] = api_key
-    elif username and password:
-        kwargs["basic_auth"] = (username, password)
+        kwargs = {
+            "hosts": [f"{scheme}://{host}:{port}"],
+            "verify_certs": verify_certs,
+            "maxsize": int(os.environ.get("ES_CONNECTIONS_PER_NODE", "10")),
+            "retry_on_timeout": True,
+            "max_retries": 3,
+        }
+        if api_key:
+            kwargs["headers"] = {"Authorization": f"ApiKey {api_key}"}
+        elif username and password:
+            kwargs["http_auth"] = (username, password)
 
-    return AsyncElasticsearch(**kwargs)
+        _backend = "opensearch"
+        logger.debug("Using opensearch-py async client.")
+        return AsyncOpenSearch(**kwargs)
+    except ImportError:
+        pass
+
+    # --- Fallback: elasticsearch[async] ---
+    try:
+        from elasticsearch import AsyncElasticsearch
+
+        kwargs = {
+            "hosts": [f"{scheme}://{host}:{port}"],
+            "verify_certs": verify_certs,
+            "connections_per_node": int(os.environ.get("ES_CONNECTIONS_PER_NODE", "10")),
+            "retry_on_timeout": True,
+            "max_retries": 3,
+        }
+        if api_key:
+            kwargs["api_key"] = api_key
+        elif username and password:
+            kwargs["basic_auth"] = (username, password)
+
+        _backend = "elasticsearch"
+        logger.debug("Using elasticsearch-py async client.")
+        return AsyncElasticsearch(**kwargs)
+    except ImportError:
+        pass
+
+    raise RuntimeError(
+        "Neither opensearch-py nor elasticsearch is installed. "
+        "Run: pip install 'opensearch-py[async]'  or  pip install 'elasticsearch[async]'"
+    )
 
 
 async def init(index_prefix: Optional[str] = None) -> None:
@@ -107,13 +140,14 @@ async def init(index_prefix: Optional[str] = None) -> None:
         cluster = info.get("cluster_name", "unknown")
         version = info.get("version", {}).get("number", "unknown")
         logger.info(
-            "Elasticsearch connected: cluster=%r version=%s host=%s:%s prefix=%r ssl=%s",
+            "Elasticsearch connected: cluster=%r version=%s host=%s:%s prefix=%r ssl=%s backend=%s",
             cluster,
             version,
             host,
             port,
             _index_prefix,
             os.environ.get("ES_USE_SSL", "false"),
+            _backend,
         )
     except Exception as exc:
         logger.warning(
