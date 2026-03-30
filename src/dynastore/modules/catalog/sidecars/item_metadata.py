@@ -1,0 +1,564 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
+"""
+Item Metadata Sidecar - Generic per-item multilanguage metadata.
+
+Stores title, description, keywords (internationalized) plus extension
+columns (external_extensions, external_assets, extra_fields) that downstream
+sidecars like the STAC overlay may consume via the pipeline context.
+
+This is a **core** sidecar — it runs for all consumers (OGC Features, STAC,
+WFS) and resolves multilanguage fields into the requested language.
+"""
+
+import json
+import logging
+from datetime import datetime
+from typing import Dict, Any, List, Optional, Set, Tuple, Union
+
+from geojson_pydantic import Feature
+
+from dynastore.modules.db_config.query_executor import (
+    DbResource,
+    DQLQuery,
+    ResultHandler,
+)
+from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+from dynastore.modules.catalog.sidecars.base import (
+    SidecarProtocol,
+    SidecarConfig,
+    SidecarPipelineContext,
+    ValidationResult,
+    FieldDefinition,
+    FieldCapability,
+)
+from dynastore.modules.catalog.sidecars.item_metadata_config import (
+    ItemMetadataSidecarConfig,
+)
+
+logger = logging.getLogger(__name__)
+
+# Raw column aliases produced by the item metadata sidecar's SQL join.
+ITEM_METADATA_RAW_COLUMNS: Set[str] = {
+    "item_title",
+    "item_description",
+    "item_keywords",
+    "external_extensions",
+    "external_assets",
+    "item_extra_fields",
+}
+
+
+class ItemMetadataSidecar(SidecarProtocol):
+    """
+    Core sidecar for per-item multilanguage metadata.
+
+    Stores:
+    - Per-item title, description, keywords (internationalized)
+    - External extension URIs (consumed by STAC overlay)
+    - External assets (consumed by STAC overlay)
+    - Extension-specific extra fields (consumed by STAC overlay)
+    """
+
+    def __init__(self, config: ItemMetadataSidecarConfig):
+        self.config = config
+
+    @property
+    def sidecar_id(self) -> str:
+        return "item_metadata"
+
+    @property
+    def sidecar_type_id(self) -> str:
+        return "item_metadata"
+
+    @classmethod
+    def get_default_config(
+        cls, context: Dict[str, Any]
+    ) -> Optional[ItemMetadataSidecarConfig]:
+        """Auto-inject metadata sidecar if STAC context is active."""
+        if context.get("stac_context"):
+            return ItemMetadataSidecarConfig()
+        return None
+
+    def is_mandatory(self) -> bool:
+        """Metadata sidecar is not mandatory — items can exist without metadata."""
+        return False
+
+    @property
+    def provides_feature_id(self) -> bool:
+        return False
+
+    @property
+    def feature_id_field_name(self) -> Optional[str]:
+        return None
+
+    def get_ddl(
+        self,
+        physical_table: str,
+        partition_keys: List[str] = [],
+        partition_key_types: Dict[str, str] = {},
+        has_validity: bool = False,
+    ) -> str:
+        """
+        Generate DDL for item metadata sidecar table.
+
+        Follows the standard sidecar pattern:
+        - Composite PK from partition keys + geoid
+        - Supports dynamic partitioning from other sidecars
+        """
+        columns = [
+            "geoid UUID NOT NULL",
+            "title JSONB",
+            "description JSONB",
+            "keywords JSONB",
+            "external_extensions JSONB",
+            "external_assets JSONB",
+            "extra_fields JSONB",
+        ]
+
+        known_columns = {
+            "geoid",
+            "title",
+            "description",
+            "keywords",
+            "external_extensions",
+            "external_assets",
+            "extra_fields",
+        }
+
+        if has_validity or "validity" in partition_keys:
+            columns.append('"validity" TSTZRANGE NOT NULL')
+            known_columns.add("validity")
+
+        pk_columns = []
+
+        if partition_keys:
+            for key in partition_keys:
+                if key not in known_columns:
+                    col_type = partition_key_types.get(key, "TEXT")
+                    columns.insert(0, f'"{key}" {col_type} NOT NULL')
+                    known_columns.add(key)
+
+            for key in partition_keys:
+                pk_columns.append(f'"{key}"')
+
+            if "geoid" not in set(partition_keys):
+                pk_columns.append('"geoid"')
+
+            partition_clause = (
+                f" PARTITION BY LIST ({', '.join([f'\"{k}\"' for k in partition_keys])})"
+            )
+        else:
+            partition_clause = ""
+            pk_columns = ['"geoid"']
+
+        table_name = f"{physical_table}_{self.sidecar_id}"
+
+        create_sql = (
+            f'CREATE TABLE IF NOT EXISTS {{schema}}."{table_name}" '
+            f"({', '.join(columns)}, PRIMARY KEY ({', '.join(pk_columns)}))"
+            f"{partition_clause};"
+        )
+
+        ref_cols = ["geoid"]
+        if "validity" in partition_keys:
+            ref_cols.append("validity")
+
+        fk_sql = (
+            f'\nALTER TABLE {{schema}}."{table_name}" '
+            f'ADD CONSTRAINT "fk_{table_name}_hub" '
+            f"FOREIGN KEY ({', '.join([f'\"' + c + '\"' for c in ref_cols])}) "
+            f'REFERENCES {{schema}}."{physical_table}" '
+            f"({', '.join([f'\"' + c + '\"' for c in ref_cols])}) "
+            f"ON DELETE CASCADE;"
+        )
+
+        ddl = create_sql + fk_sql
+
+        for col in [
+            "title",
+            "description",
+            "keywords",
+            "external_extensions",
+            "external_assets",
+            "extra_fields",
+        ]:
+            ddl += (
+                f'\nCREATE INDEX IF NOT EXISTS "idx_{table_name}_{col}" '
+                f'ON {{schema}}."{table_name}" USING GIN({col});'
+            )
+
+        return ddl
+
+    def get_select_fields(
+        self,
+        request: Optional[Any] = None,
+        hub_alias: str = "h",
+        sidecar_alias: Optional[str] = None,
+        include_all: bool = False,
+    ) -> List[str]:
+        """Return SELECT fields for item metadata."""
+        alias = sidecar_alias or f"sc_{self.sidecar_id}"
+        return [
+            f"{alias}.title AS item_title",
+            f"{alias}.description AS item_description",
+            f"{alias}.keywords AS item_keywords",
+            f"{alias}.external_extensions",
+            f"{alias}.external_assets",
+            f"{alias}.extra_fields AS item_extra_fields",
+        ]
+
+    def get_join_clause(
+        self,
+        schema: str,
+        hub_table: str,
+        hub_alias: str = "h",
+        sidecar_alias: Optional[str] = None,
+        join_type: str = "LEFT",
+        extra_condition: Optional[str] = None,
+    ) -> str:
+        """Generate JOIN clause for item metadata sidecar."""
+        alias = sidecar_alias or f"sc_{self.sidecar_id}"
+        table_name = f"{hub_table}_{self.sidecar_id}"
+
+        on_clause = f"{hub_alias}.geoid = {alias}.geoid"
+        if extra_condition:
+            on_clause += f" AND {extra_condition}"
+
+        return f'{join_type} JOIN "{schema}"."{table_name}" AS {alias} ON {on_clause}'
+
+    async def validate_upsert(
+        self,
+        feature: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
+    ) -> ValidationResult:
+        """Validate metadata before upsert."""
+        errors = []
+
+        if "assets" in feature and not isinstance(feature["assets"], dict):
+            errors.append("Assets must be an object")
+
+        if "stac_extensions" in feature and not isinstance(
+            feature["stac_extensions"], list
+        ):
+            errors.append("stac_extensions must be an array")
+
+        return ValidationResult(
+            valid=len(errors) == 0,
+            error="; ".join(errors) if errors else None,
+        )
+
+    async def setup_lifecycle_hooks(
+        self, conn: Any, schema: str, table_name: str
+    ) -> None:
+        pass
+
+    async def on_partition_create(
+        self,
+        conn: Any,
+        schema: str,
+        parent_table: str,
+        partition_table: str,
+        partition_value: Any,
+    ) -> None:
+        pass
+
+    def resolve_query_path(self, attr_name: str) -> Optional[Tuple[str, str]]:
+        """Resolves an attribute reference to SQL and JOIN requirements."""
+        alias = f"sc_{self.sidecar_id}"
+        if attr_name in ["item_title", "title"]:
+            return (f"{alias}.title", alias)
+        if attr_name in ["item_description", "description"]:
+            return (f"{alias}.description", alias)
+        if attr_name == "external_extensions":
+            return (f"{alias}.external_extensions", alias)
+        return None
+
+    def apply_query_context(
+        self,
+        request: Any,
+        context: Dict[str, Any],
+    ) -> None:
+        """Populates query context with metadata selections and joins."""
+        is_select_all = not request.select or any(
+            s.field == "*" for s in request.select
+        )
+
+        has_metadata_request = any(
+            s.field.startswith("item_")
+            or s.field in ["title", "description", "keywords"]
+            for s in request.select
+        )
+
+        if is_select_all or has_metadata_request:
+            sc_alias = f"sc_{self.sidecar_id}"
+            context["select_fields"].extend(
+                self.get_select_fields(
+                    request, hub_alias="h", sidecar_alias=sc_alias
+                )
+            )
+
+    def get_queryable_fields(self) -> Dict[str, FieldDefinition]:
+        """Return queryable field definitions."""
+        return {
+            "item_title": FieldDefinition(
+                name="item_title",
+                data_type="jsonb",
+                sql_expression="sc_item_metadata.title",
+                capabilities={FieldCapability.FILTERABLE},
+                description="Item title (internationalized)",
+            ),
+            "item_description": FieldDefinition(
+                name="item_description",
+                data_type="jsonb",
+                sql_expression="sc_item_metadata.description",
+                capabilities={FieldCapability.FILTERABLE},
+                description="Item description (internationalized)",
+            ),
+            "external_extensions": FieldDefinition(
+                name="external_extensions",
+                data_type="jsonb",
+                sql_expression="sc_item_metadata.external_extensions",
+                capabilities={FieldCapability.FILTERABLE},
+                description="External extension URIs",
+            ),
+        }
+
+    def get_feature_type_schema(self) -> Dict[str, Any]:
+        """Return JSON Schema fragment for Feature output."""
+        return {
+            "title": {"type": "string"},
+            "description": {"type": "string"},
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        }
+
+    def get_identity_columns(self) -> List[str]:
+        return ["geoid"]
+
+    def prepare_upsert_payload(
+        self, feature: Any, context: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Extract item metadata and prune managed assets.
+        Called automatically by ItemService.upsert if registered.
+        """
+        geoid = context.get("geoid")
+        if not geoid:
+            raise ValueError("geoid is required in context for item metadata sidecar")
+
+        if hasattr(feature, "dict"):
+            data = feature.dict(by_alias=True)
+        elif hasattr(feature, "model_dump"):
+            data = feature.model_dump(by_alias=True)
+        else:
+            data = dict(feature)
+
+        from dynastore.tools.discovery import get_protocols
+        from dynastore.extensions.stac.stac_extension_protocol import (
+            StacExtensionProtocol,
+        )
+
+        providers = get_protocols(StacExtensionProtocol)
+
+        from dynastore.extensions.stac.metadata_helpers import (
+            prune_managed_content_sync,
+            prune_stac_managed_properties,
+        )
+
+        pruned = prune_managed_content_sync(data, providers)
+
+        if isinstance(feature, dict) and "properties" in feature:
+            prune_stac_managed_properties(feature["properties"], providers)
+        elif hasattr(feature, "properties") and isinstance(feature.properties, dict):
+            prune_stac_managed_properties(feature.properties, providers)
+
+        payload = {
+            "geoid": geoid,
+            "title": pruned["title"],
+            "description": pruned["description"],
+            "keywords": pruned["keywords"],
+            "external_extensions": pruned["external_extensions"],
+            "external_assets": pruned["external_assets"],
+            "extra_fields": pruned["extra_fields"],
+        }
+
+        if context.get("partition_key_name"):
+            payload[context["partition_key_name"]] = context["partition_key_value"]
+
+        from dynastore.extensions.tools.fast_api import CustomJSONEncoder
+
+        for field in [
+            "title",
+            "description",
+            "keywords",
+            "external_extensions",
+            "external_assets",
+            "extra_fields",
+        ]:
+            if payload[field] is not None:
+                payload[field] = json.dumps(payload[field], cls=CustomJSONEncoder)
+
+        return payload
+
+    def finalize_upsert_payload(
+        self,
+        sc_payload: Dict[str, Any],
+        hub_row: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Finalizes payload by injecting validity from Hub or context."""
+        payload = sc_payload.copy()
+
+        if "validity" in context or "validity" in hub_row:
+            validity = hub_row.get("validity") or context.get("validity")
+            if validity:
+                payload["validity"] = validity
+
+        return payload
+
+    async def expire_version(
+        self,
+        conn: DbResource,
+        physical_schema: str,
+        physical_table: str,
+        geoid: str,
+        expire_at: datetime,
+    ) -> int:
+        """Marks the current active version as expired."""
+        sc_table = f"{physical_table}_{self.sidecar_id}"
+
+        sql = (
+            f'UPDATE "{physical_schema}"."{sc_table}" '
+            f"SET validity = tstzrange(lower(validity), :expire_at, '[)') "
+            f"WHERE geoid = :geoid AND upper(validity) IS NULL"
+        )
+
+        try:
+            return await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
+                conn, geoid=geoid, expire_at=expire_at
+            )
+        except Exception as e:
+            if 'column "validity" does not exist' in str(e).lower():
+                return 0
+            raise
+
+    def get_internal_columns(self) -> set:
+        """Columns owned by this sidecar that are never part of Feature properties."""
+        return ITEM_METADATA_RAW_COLUMNS
+
+    def map_row_to_feature(
+        self,
+        row: Dict[str, Any],
+        feature: Feature,
+        context: SidecarPipelineContext,
+    ) -> None:
+        """Resolve multilanguage metadata from database row into feature properties.
+
+        This sidecar handles ONLY the generic metadata fields (title,
+        description, keywords).  Extension-specific fields (assets,
+        stac_extensions, extra_fields) are left in the context for
+        downstream sidecars (e.g. the STAC overlay) to consume.
+        """
+        # Publish raw row values for downstream sidecars.
+        context.publish(
+            self.sidecar_id,
+            {k: row[k] for k in self.get_internal_columns() if k in row},
+        )
+
+        def _maybe_parse(v):
+            if isinstance(v, str):
+                try:
+                    return json.loads(v)
+                except (ValueError, TypeError):
+                    return v
+            return v
+
+        if feature.properties is None:
+            feature.properties = {}
+
+        from dynastore.tools.language_utils import resolve_localized_field
+        from dynastore.models.localization import is_valid_language_key
+
+        # Resolve multilanguage title, description, keywords
+        available_langs = set()
+        for field in ["title", "description", "keywords"]:
+            val = row.get(f"item_{field}") or row.get(f"stac_{field}") or row.get(field)
+            if val is not None:
+                parsed = _maybe_parse(val)
+                if isinstance(parsed, dict):
+                    available_langs.update(
+                        k for k in parsed.keys()
+                        if isinstance(k, str) and is_valid_language_key(k)
+                    )
+                    resolved = resolve_localized_field(parsed, context.lang)
+                    if resolved is not None:
+                        feature.properties[field] = resolved
+                else:
+                    feature.properties[field] = parsed
+
+        if available_langs:
+            context.publish("item_metadata_available_langs", list(available_langs))
+
+
+SidecarRegistry.register("item_metadata", ItemMetadataSidecar)
+
+
+# ── Migration: rename legacy _stac_metadata tables → _item_metadata ──────
+
+from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
+from sqlalchemy import text as _sa_text
+
+
+@lifecycle_registry.sync_catalog_initializer(priority=5)
+async def _migrate_stac_metadata_tables(
+    conn: DbResource, schema: str, catalog_id: str
+):
+    """Rename legacy ``_stac_metadata`` sidecar tables to ``_item_metadata``.
+
+    Runs once per catalog init; the ``IF EXISTS … AND NOT EXISTS`` guard
+    makes it a safe no-op when the table has already been renamed or
+    never existed.
+    """
+    sql = (
+        "SELECT tablename FROM pg_tables "
+        "WHERE schemaname = :schema AND tablename LIKE '%\\_stac\\_metadata'"
+    )
+    result = await conn.execute(_sa_text(sql), {"schema": schema})
+    rows = result.fetchall()
+    for (old_name,) in rows:
+        new_name = old_name.replace("_stac_metadata", "_item_metadata")
+        check = (
+            "SELECT 1 FROM pg_tables "
+            "WHERE schemaname = :schema AND tablename = :new_name"
+        )
+        exists = await conn.execute(
+            _sa_text(check), {"schema": schema, "new_name": new_name}
+        )
+        if exists.fetchone() is None:
+            rename_sql = (
+                f'ALTER TABLE "{schema}"."{old_name}" '
+                f'RENAME TO "{new_name}"'
+            )
+            await conn.execute(_sa_text(rename_sql))
+            logger.info(
+                f"Migrated sidecar table: {schema}.{old_name} → {new_name}"
+            )

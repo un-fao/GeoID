@@ -192,14 +192,23 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             if context:
                 # model_extra is already initialized by Pydantic 'extra="allow"'
                 sidecar_data = context._sidecar_store
+                all_internal = context.all_internal_columns
+                # Never overwrite defined model fields (id, geometry, etc.)
+                # via __pydantic_extra__ — that would clobber values already
+                # set by the sidecar pipeline.
+                model_fields = set(Feature.model_fields)
                 for sid, data in sidecar_data.items():
                     if isinstance(data, dict):
-                        # Merge dicts if it's a standard sidecar publication
+                        # Merge dicts if it's a standard sidecar publication,
+                        # but skip raw internal columns (e.g. item_title,
+                        # external_extensions) that are only meant for
+                        # inter-sidecar communication.
                         for k, v in data.items():
-                            feature.__pydantic_extra__[k] = v
+                            if k not in all_internal and k not in model_fields:
+                                feature.__pydantic_extra__[k] = v
                     else:
-                        # Direct assignment for flat values
-                        feature.__pydantic_extra__[sid] = data
+                        if sid not in model_fields:
+                            feature.__pydantic_extra__[sid] = data
         else:
             logger.warning(
                 "No sidecars configured for col_config; returning minimal "
@@ -390,8 +399,10 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                     )
                     raise RuntimeError(f"Failed to upsert item. Geoid: {geoid}")
 
-            # Return valid results (Sidecar-aware mapping)
-            results = [self.map_row_to_feature(row, col_config) for row in created_rows]
+            # created_rows already contains Feature objects from
+            # _execute_distributed_insert / _execute_distributed_update
+            # (which call map_row_to_feature internally).
+            results = created_rows
             
             # Emit Item Events
             if results:

@@ -32,7 +32,11 @@ The consumer loop is backend-agnostic:
 """
 
 import asyncio
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from dynastore.modules.events.models import EventSubscription, EventSubscriptionCreate
+    from dynastore.modules.db_config.query_executor import DbResource
 
 
 @runtime_checkable
@@ -197,4 +201,33 @@ class EventStorageProtocol(Protocol):
             Simply ``await asyncio.sleep(timeout)`` — gives the same polling
             semantics without any special-casing in the consumer.
         """
+        ...
+
+    # ------------------------------------------------------------------
+    # Webhook subscription management
+    # ------------------------------------------------------------------
+
+    async def subscribe(
+        self,
+        subscription_data: "EventSubscriptionCreate",
+        engine: Optional["DbResource"] = None,
+    ) -> "EventSubscription":
+        """Create or update a webhook subscription."""
+        ...
+
+    async def unsubscribe(
+        self,
+        subscriber_name: str,
+        event_type: str,
+        engine: Optional["DbResource"] = None,
+    ) -> Optional["EventSubscription"]:
+        """Delete a webhook subscription."""
+        ...
+
+    async def get_subscriptions_for_event_type(
+        self,
+        event_type: str,
+        engine: Optional["DbResource"] = None,
+    ) -> List["EventSubscription"]:
+        """Return all webhook subscribers for an event type."""
         ...

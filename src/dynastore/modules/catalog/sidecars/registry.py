@@ -49,6 +49,12 @@ class SidecarRegistry:
             )
             cls._registry["attributes"] = FeatureAttributeSidecar
             
+        if "item_metadata" not in cls._registry:
+            from dynastore.modules.catalog.sidecars.item_metadata import (
+                ItemMetadataSidecar,
+            )
+            cls._registry["item_metadata"] = ItemMetadataSidecar
+
         if "stac_metadata" not in cls._registry:
             try:
                 from dynastore.extensions.stac.stac_items_sidecar import StacItemsSidecar

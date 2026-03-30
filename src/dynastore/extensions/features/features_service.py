@@ -81,6 +81,7 @@ from dynastore.modules.catalog.catalog_config import (
 from . import features_db
 from dynastore.extensions.tools.formatters import OutputFormatEnum, format_response
 from dynastore.extensions.tools.query import parse_ogc_query_request, stream_ogc_features
+from dynastore.modules.catalog.sidecars.base import ConsumerType
 
 logger = logging.getLogger(__name__)
 
@@ -999,6 +1000,7 @@ class OGCFeaturesService(ExtensionProtocol):
                     request=request_obj,
                     # Decouple from request connection to allow background streaming
                     db_resource=None,
+                    consumer=ConsumerType.OGC_FEATURES,
                 )
             except ValueError as e:
                 # Catch invalid properties/fields and return 400
@@ -1041,6 +1043,50 @@ class OGCFeaturesService(ExtensionProtocol):
                         type="application/geo+json",
                     )
                 )
+
+            # --- OGC post-processing wrapper (defense-in-depth) ---
+            from dynastore.extensions.stac.stac_items_sidecar import STAC_FEATURES_STRIP
+            from dynastore.extensions.features.ogc_generator import _map_validity_to_ogc
+
+            collection_url = (
+                f"{root_url}/features/catalogs/{catalog_id}"
+                f"/collections/{collection_id}"
+            )
+
+            async def _ogc_post_process(items):
+                async for feature in items:
+                    # Strip any residual STAC fields (defense-in-depth)
+                    for key in STAC_FEATURES_STRIP:
+                        if hasattr(feature, key):
+                            try:
+                                delattr(feature, key)
+                            except Exception:
+                                pass
+                        if feature.properties and key in feature.properties:
+                            feature.properties.pop(key, None)
+
+                    if feature.properties:
+                        # Map validity → start_datetime / end_datetime
+                        _map_validity_to_ogc(feature.properties)
+                        feature.properties.pop("_total_count", None)
+
+                    # Add OGC self/collection links
+                    feature_id = feature.id
+                    feature.links = [
+                        Link(
+                            href=f"{collection_url}/items/{feature_id}",
+                            rel="self",
+                            type="application/geo+json",
+                        ),
+                        Link(
+                            href=collection_url,
+                            rel="collection",
+                            type="application/json",
+                        ),
+                    ]
+                    yield feature
+
+            query_response.items = _ogc_post_process(query_response.items)
 
             # --- Unified Streaming Response ---
             return stream_ogc_features(

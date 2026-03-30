@@ -48,6 +48,19 @@ from dynastore.models.localization import LocalizedText
 
 _SIDECAR_DATA_KEY = "_sidecar_data"
 
+
+class ConsumerType(str, Enum):
+    """Consumer of the sidecar pipeline output.
+
+    Passed via ``SidecarPipelineContext.consumer`` so that sidecars can
+    gate extension-specific field injection (e.g. STAC assets) while
+    still performing shared work (e.g. multilanguage resolution).
+    """
+
+    GENERIC = "generic"
+    OGC_FEATURES = "ogc_features"
+    STAC = "stac"
+
 # Columns that belong to the Hub table and must never appear in Feature.properties,
 # regardless of which sidecar is currently running.
 HUB_INTERNAL_COLUMNS: frozenset = frozenset({
@@ -144,11 +157,17 @@ class SidecarPipelineContext:
         context.valid_to    # validity end from attributes sidecar (or None)
     """
 
-    __slots__ = ("lang", "include_internal", "_all_internal_cols", "_sidecar_store", "_store")
+    __slots__ = ("lang", "include_internal", "_all_internal_cols", "_sidecar_store", "_store", "consumer")
 
-    def __init__(self, lang: str = "en", include_internal: bool = False) -> None:
+    def __init__(
+        self,
+        lang: str = "en",
+        include_internal: bool = False,
+        consumer: ConsumerType = ConsumerType.GENERIC,
+    ) -> None:
         self.lang: str = lang
         self.include_internal: bool = include_internal
+        self.consumer: ConsumerType = consumer
         self._all_internal_cols: Set[str] = set()
         self._sidecar_store: Dict[str, Dict[str, Any]] = {}
         self._store: Dict[str, Any] = {}

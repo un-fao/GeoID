@@ -27,9 +27,15 @@ Access Strategies:
 2. get_engine(): Specialized accessor for the most frequent dependency.
 """
 
-from typing import Type, TypeVar, Optional, Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Type, TypeVar, Optional, Any, Union
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.protocols.database import DatabaseProtocol
+
+if TYPE_CHECKING:
+    from sqlalchemy.engine import Engine
+    from sqlalchemy.ext.asyncio import AsyncEngine
 
 T = TypeVar("T")
 
@@ -56,7 +62,7 @@ def resolve(protocol_type: Type[T]) -> T:
     return instance
 
 
-def get_engine(app_state: Optional[Any] = None) -> Any:
+def get_engine(app_state: Optional[Any] = None) -> Optional[Union[AsyncEngine, Engine]]:
     from dynastore.tools.discovery import get_protocols
     providers = get_protocols(DatabaseProtocol)
     for db in providers:

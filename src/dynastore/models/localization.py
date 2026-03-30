@@ -32,7 +32,7 @@ from typing import (
     Protocol,
     runtime_checkable,
 )
-from pydantic import BaseModel, Field, HttpUrl, ConfigDict
+from pydantic import BaseModel, Field, HttpUrl, ConfigDict, model_validator
 from typing_extensions import Self
 
 
@@ -91,6 +91,15 @@ def get_language_object(code: str) -> LanguageObject:
 
 T = TypeVar("T")
 
+# Pre-declare a lightweight language-key check used by the model_validator
+# below.  The public ``is_valid_language_key`` (defined at the bottom of this
+# module) delegates to the same regex.
+import re as _re
+_LANGUAGE_KEY_RE = _re.compile(r"^[a-z]{2}(-[a-zA-Z]{2,8})?$")
+
+def _is_valid_lang_key(key: str) -> bool:
+    return bool(_LANGUAGE_KEY_RE.match(key))
+
 
 class LocalizedDTO(BaseModel, Generic[T]):
     """
@@ -108,6 +117,24 @@ class LocalizedDTO(BaseModel, Generic[T]):
     ar: Optional[T] = None
     it: Optional[T] = None
     de: Optional[T] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_language_keys(cls, values: Any) -> Any:
+        """Reject extra keys that do not look like ISO 639-1 language codes."""
+        if not isinstance(values, dict):
+            return values
+        _known = {"en", "fr", "es", "zh", "ru", "ar", "it", "de"}
+        bad = [
+            k for k in values
+            if k not in _known and not _is_valid_lang_key(k)
+        ]
+        if bad:
+            raise ValueError(
+                f"Invalid language key(s): {bad}. "
+                "Keys must be ISO 639-1 codes (e.g. 'en', 'pt-BR')."
+            )
+        return values
 
     def merge_updates(self, updates: Union[T, Dict[str, T]], lang: str) -> 'LocalizedDTO[T]':
         """
@@ -299,6 +326,17 @@ def localize_dict(data: Dict[str, Any], lang: str) -> Tuple[Dict[str, Any], Set[
 
 
 # === Validation Helpers ===
+
+
+def is_valid_language_key(key: str) -> bool:
+    """Check whether *key* looks like an ISO 639-1 language code.
+
+    Accepts two-letter codes (``en``, ``fr``) and optionally a region or
+    script subtag (``en-US``, ``zh-Hans``).  Rejects arbitrary strings
+    like ``"hello"`` or ``"custom_field"``.
+    """
+    return _is_valid_lang_key(key)
+
 
 def is_multilanguage_input(value: Any) -> bool:
     """

@@ -34,9 +34,14 @@ from typing import (
     runtime_checkable,
 )
 
+from typing import TYPE_CHECKING
+
 from dynastore.models.ogc import Feature
 from dynastore.models.query_builder import QueryRequest, QueryResponse
 from dynastore.models.protocols.configs import ConfigsProtocol
+
+if TYPE_CHECKING:
+    from dynastore.modules.catalog.sidecars.base import ConsumerType
 
 
 @runtime_checkable
@@ -72,6 +77,7 @@ class ItemQueryProtocol(Protocol):
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
         db_resource: Optional[Any] = None,
+        consumer: "ConsumerType" = None,
     ) -> QueryResponse:
         """
         Stream features as an async iterator with O(1) memory footprint.
@@ -79,6 +85,9 @@ class ItemQueryProtocol(Protocol):
         Returns a ``QueryResponse`` whose ``.items`` is an ``AsyncIterator[Feature]``
         and whose ``.total_count`` is populated when ``request.include_total_count``
         is ``True``.
+
+        The ``consumer`` parameter controls which sidecar fields are injected
+        into each Feature (e.g. STAC fields are skipped for OGC Features).
         """
         ...
 

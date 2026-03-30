@@ -156,8 +156,8 @@ async def test_stac_metadata_pruning_verification(
             catalog_id, collection_id, db_resource=conn
         )
 
-        # 1. Check stac_metadata table
-        stac_table = f"{table}_stac_metadata"
+        # 1. Check item_metadata table (formerly stac_metadata)
+        stac_table = f"{table}_item_metadata"
         res = await conn.execute(
             text(f'SELECT title, external_assets FROM "{schema}"."{stac_table}"')
         )

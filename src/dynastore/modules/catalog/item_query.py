@@ -26,7 +26,11 @@ from dynastore.modules.catalog.catalog_config import (
 )
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
-from dynastore.modules.catalog.sidecars.base import SidecarProtocol
+from dynastore.modules.catalog.sidecars.base import (
+    SidecarProtocol,
+    SidecarPipelineContext,
+    ConsumerType,
+)
 from dynastore.tools.discovery import get_protocol
 from dynastore.tools.db import validate_sql_identifier
 from dynastore.models.query_builder import QueryRequest, QueryResponse
@@ -390,6 +394,7 @@ class ItemQueryMixin:
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
         db_resource: Optional[DbResource] = None,
+        consumer: ConsumerType = ConsumerType.GENERIC,
     ) -> QueryResponse:
         """
         Stream search results using an async iterator (O(1) Memory).
@@ -422,13 +427,17 @@ class ItemQueryMixin:
                 ).execute(conn, **(params or {}))
 
         # Stream Generator (O(1) Memory)
+        lang = (request.raw_params or {}).get("lang", "en")
         async def feature_stream():
             # Open a fresh connection/transaction for streaming to ensure isolation and avoid leaks
             async with managed_transaction(self.engine) as stream_conn:
                 # Use a buffer for higher throughput but still O(1) memory
                 stream = await stream_conn.stream(text(sql), params)
                 async for row in stream:
-                    yield self.map_row_to_feature(dict(row._mapping), col_config)
+                    ctx = SidecarPipelineContext(lang=lang, consumer=consumer)
+                    yield self.map_row_to_feature(
+                        dict(row._mapping), col_config, context=ctx,
+                    )
 
         return QueryResponse(
             items=feature_stream(),

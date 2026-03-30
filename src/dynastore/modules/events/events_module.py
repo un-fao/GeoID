@@ -27,6 +27,7 @@ from dynastore.modules import ModuleProtocol, get_protocol
 from dynastore.tools.protocol_helpers import resolve
 from dynastore.modules.db_config.query_executor import (
     DbResource,
+    DbEngine,
     managed_transaction,
     DDLQuery,
     DQLQuery,
@@ -37,7 +38,6 @@ from dynastore.models.protocols import (
     ConfigsProtocol,
     PropertiesProtocol,
     DatabaseProtocol,
-    EventsProtocol,
     EventStorageProtocol,
 )
 from .models import (
@@ -268,7 +268,7 @@ class EventsModule(ModuleProtocol):
     supports_notify: bool = True
 
     def __init__(self, app_state: object):
-        self._engine: Optional[Any] = None
+        self._engine: Optional[DbEngine] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -524,7 +524,7 @@ class EventsModule(ModuleProtocol):
         schema_name: Optional[str] = None,
         collection_id: Optional[str] = None,
         dedup_key: Optional[str] = None,
-        db_resource: Optional[Any] = None,
+        db_resource: Optional[DbResource] = None,
     ) -> Optional[str]:
         """Insert an event into the global outbox. Returns event_id or None (dedup)."""
         import orjson
@@ -779,19 +779,19 @@ async def create_event(event_type: str, payload: Dict[str, Any]) -> None:
 async def subscribe(
     subscription_data: EventSubscriptionCreate, engine: Optional[DbResource] = None
 ) -> EventSubscription:
-    events = get_protocol(EventsProtocol)
+    events = get_protocol(EventStorageProtocol)
     return await events.subscribe(subscription_data, engine)
 
 
 async def unsubscribe(
     subscriber_name: str, event_type: str, engine: Optional[DbResource] = None
 ) -> Optional[EventSubscription]:
-    events = get_protocol(EventsProtocol)
+    events = get_protocol(EventStorageProtocol)
     return await events.unsubscribe(subscriber_name, event_type, engine)
 
 
 async def get_subscriptions_for_event_type(
     event_type: str, engine: Optional[DbResource] = None
 ) -> List[EventSubscription]:
-    events = get_protocol(EventsProtocol)
+    events = get_protocol(EventStorageProtocol)
     return await events.get_subscriptions_for_event_type(event_type, engine)

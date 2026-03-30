@@ -804,7 +804,10 @@ async def create_item_from_feature(
     # Check context metadata first (e.g. from StacItemsSidecar)
     # Sidecars publish to context.metadata, which the ItemMapper attaches to feature.model_extra
     if hasattr(feature, "model_extra") and feature.model_extra:
-        ctx_langs = feature.model_extra.get("stac_available_langs")
+        ctx_langs = (
+            feature.model_extra.get("item_metadata_available_langs")
+            or feature.model_extra.get("stac_available_langs")
+        )
         if ctx_langs:
             available_langs.update(ctx_langs)
     

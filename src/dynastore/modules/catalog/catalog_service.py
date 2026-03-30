@@ -1352,10 +1352,14 @@ class CatalogService(CatalogsProtocol):
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
         db_resource: Optional[Any] = None,
+        consumer: "ConsumerType" = None,
     ) -> QueryResponse:
         """Stream search results using an async iterator."""
+        from dynastore.modules.catalog.sidecars.base import ConsumerType as _CT
         return await self._item_service.stream_items(
-            catalog_id, collection_id, request, config=config, db_resource=db_resource
+            catalog_id, collection_id, request,
+            config=config, db_resource=db_resource,
+            consumer=consumer or _CT.GENERIC,
         )
 
     async def get_collection_fields(

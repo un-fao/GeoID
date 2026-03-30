@@ -89,6 +89,40 @@ def create_landing_page(
     )
 
 
+def _map_validity_to_ogc(properties: Dict[str, Any]) -> None:
+    """Map ``validity`` TSTZRANGE to ``start_datetime`` / ``end_datetime``.
+
+    Mutates *properties* in-place: removes the ``validity`` key and adds
+    the OGC temporal extent properties if parseable.
+    """
+    import re as _re
+
+    v = properties.pop("validity", None)
+    if v is None:
+        return
+    try:
+        if hasattr(v, "lower"):
+            start, end = v.lower, v.upper
+            if start and not getattr(start, "is_infinite", lambda: False)():
+                properties["start_datetime"] = (
+                    start.isoformat() if hasattr(start, "isoformat") else str(start)
+                )
+            if end and not getattr(end, "is_infinite", lambda: False)():
+                properties["end_datetime"] = (
+                    end.isoformat() if hasattr(end, "isoformat") else str(end)
+                )
+        else:
+            match = _re.search(r"[\[\(]([^,]*),\s*([^\]\)]*)", str(v))
+            if match:
+                start, end = match.groups()
+                if start and start.strip() and start.strip() != "-infinity":
+                    properties["start_datetime"] = start.strip().strip('"')
+                if end and end.strip() and end.strip() != "infinity":
+                    properties["end_datetime"] = end.strip().strip('"')
+    except Exception as e:
+        logger.warning(f"Failed to parse validity range {v}: {e}")
+
+
 def _db_row_to_ogc_feature(
     item: Union[Dict, Any],
     catalog_id: str,
@@ -150,31 +184,7 @@ def _db_row_to_ogc_feature(
     for stac_key in STAC_FEATURES_STRIP:
         properties.pop(stac_key, None)
 
-    if "validity" in properties:
-        v = properties.pop("validity", None)
-        if v is not None:
-            try:
-                if hasattr(v, "lower"):
-                    start, end = v.lower, v.upper
-                    if start and not getattr(start, "is_infinite", lambda: False)():
-                        properties["start_datetime"] = (
-                            start.isoformat() if hasattr(start, "isoformat") else str(start)
-                        )
-                    if end and not getattr(end, "is_infinite", lambda: False)():
-                        properties["end_datetime"] = (
-                            end.isoformat() if hasattr(end, "isoformat") else str(end)
-                        )
-                else:
-                    import re
-                    match = re.search(r"[\[\(]([^,]*),\s*([^\]\)]*)", str(v))
-                    if match:
-                        start, end = match.groups()
-                        if start and start.strip() and start.strip() != "-infinity":
-                            properties["start_datetime"] = start.strip().strip('"')
-                        if end and end.strip() and end.strip() != "infinity":
-                            properties["end_datetime"] = end.strip().strip('"')
-            except Exception as e:
-                logger.warning(f"Failed to parse validity range {v}: {e}")
+    _map_validity_to_ogc(properties)
 
     properties.pop("_total_count", None)
 

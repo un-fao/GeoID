@@ -490,7 +490,7 @@ async def search_items(
             # Update mapping for hydration
             sidecar_table = f"{phys_table}_attributes"
             geom_table = f"{phys_table}_geometries"
-            stac_meta_table = f"{phys_table}_stac_metadata"
+            stac_meta_table = f"{phys_table}_item_metadata"
 
             has_attr_sidecar = False
             has_geom_sidecar = False
@@ -504,7 +504,7 @@ async def search_items(
                         has_attr_sidecar = True
                     elif stype in ["geometries", "geometry"]:
                         has_geom_sidecar = True
-                    elif stype in ["stac_metadata"]:
+                    elif stype in ["stac_metadata", "item_metadata"]:
                         has_stac_sidecar = True
 
             collection_table_map[collection_id] = (
