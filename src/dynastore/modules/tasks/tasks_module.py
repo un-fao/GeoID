@@ -362,7 +362,7 @@ async def ensure_task_storage_exists(conn: DbResource, schema: str):
     Called once at startup. The schema is typically 'tasks' (configurable via
     DYNASTORE_TASK_SCHEMA env var).
 
-    Note: events table is now owned by EventsModule (priority=5).
+    Note: events table is now owned by EventsModule (priority=11).
     """
     from dynastore.modules.db_config import maintenance_tools
 

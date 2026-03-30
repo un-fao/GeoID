@@ -261,10 +261,10 @@ class EventsModule(ModuleProtocol):
     - Manage webhook subscriptions (platform.event_subscriptions)
     - Register catalog lifecycle listeners (when CatalogsProtocol is present)
 
-    Priority 5: starts before DBService (10), TasksModule (15), CatalogModule (20).
+    Priority 11: starts after DBService (10), before TasksModule (15) and CatalogModule (20).
     """
 
-    priority: int = 5
+    priority: int = 11
     supports_notify: bool = True
 
     def __init__(self, app_state: object):
