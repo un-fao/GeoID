@@ -118,23 +118,21 @@ class LocalizedDTO(BaseModel, Generic[T]):
     it: Optional[T] = None
     de: Optional[T] = None
 
-    @model_validator(mode="before")
-    @classmethod
-    def _validate_language_keys(cls, values: Any) -> Any:
+    @model_validator(mode="after")
+    def _validate_language_keys(self) -> Self:
         """Reject extra keys that do not look like ISO 639-1 language codes."""
-        if not isinstance(values, dict):
-            return values
-        _known = {"en", "fr", "es", "zh", "ru", "ar", "it", "de"}
-        bad = [
-            k for k in values
-            if k not in _known and not _is_valid_lang_key(k)
-        ]
-        if bad:
-            raise ValueError(
-                f"Invalid language key(s): {bad}. "
-                "Keys must be ISO 639-1 codes (e.g. 'en', 'pt-BR')."
-            )
-        return values
+        if self.model_extra:
+            _known = {"en", "fr", "es", "zh", "ru", "ar", "it", "de"}
+            bad = [
+                k for k in self.model_extra
+                if k not in _known and not _is_valid_lang_key(k)
+            ]
+            if bad:
+                raise ValueError(
+                    f"Invalid language key(s): {bad}. "
+                    "Keys must be ISO 639-1 codes (e.g. 'en', 'pt-BR')."
+                )
+        return self
 
     def merge_updates(self, updates: Union[T, Dict[str, T]], lang: str) -> 'LocalizedDTO[T]':
         """

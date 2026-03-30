@@ -69,7 +69,7 @@ class Link(BaseModel, LocalizableModelMixin):
     type: Optional[str] = None
     title: Optional[LocalizedText] = None
     hreflang: Optional[str] = Field(
-        None,
+        default=None,
         description="The language of the resource at the link destination (RFC 5646).",
     )
 

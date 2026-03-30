@@ -23,7 +23,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 import uuid
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, cast
 from dynastore.tools.geospatial import process_geometry, GeometryProcessingError
 from fastapi import Request, HTTPException, status
 from datetime import datetime, timezone
@@ -154,6 +154,7 @@ def _db_row_to_ogc_feature(
             )
             item = _GeoJSONFeature(type="Feature", geometry=None, properties={})
 
+    item = cast(_GeoJSONFeature, item)
     # -- 2. Extract id (never serialise None as the string 'None') ------------
     feature_id = item.id if item.id is not None else None
 
@@ -266,7 +267,7 @@ async def create_queryables_response(
 
     localized, _ = collection.localize(language)
     return ogc_models.Queryables(
-        id=queryables_url,
+        link=queryables_url,
         title=localized.get("title") or collection_id,
         properties=properties,
     )

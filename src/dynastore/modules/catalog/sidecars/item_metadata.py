@@ -321,21 +321,21 @@ class ItemMetadataSidecar(SidecarProtocol):
                 name="item_title",
                 data_type="jsonb",
                 sql_expression="sc_item_metadata.title",
-                capabilities={FieldCapability.FILTERABLE},
+                capabilities=[FieldCapability.FILTERABLE],
                 description="Item title (internationalized)",
             ),
             "item_description": FieldDefinition(
                 name="item_description",
                 data_type="jsonb",
                 sql_expression="sc_item_metadata.description",
-                capabilities={FieldCapability.FILTERABLE},
+                capabilities=[FieldCapability.FILTERABLE],
                 description="Item description (internationalized)",
             ),
             "external_extensions": FieldDefinition(
                 name="external_extensions",
                 data_type="jsonb",
                 sql_expression="sc_item_metadata.external_extensions",
-                capabilities={FieldCapability.FILTERABLE},
+                capabilities=[FieldCapability.FILTERABLE],
                 description="External extension URIs",
             ),
         }
@@ -388,8 +388,10 @@ class ItemMetadataSidecar(SidecarProtocol):
 
         if isinstance(feature, dict) and "properties" in feature:
             prune_stac_managed_properties(feature["properties"], providers)
-        elif hasattr(feature, "properties") and isinstance(feature.properties, dict):
-            prune_stac_managed_properties(feature.properties, providers)
+        else:
+            props = getattr(feature, "properties", None)
+            if isinstance(props, dict):
+                prune_stac_managed_properties(props, providers)
 
         payload = {
             "geoid": geoid,

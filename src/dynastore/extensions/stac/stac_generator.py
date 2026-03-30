@@ -955,13 +955,15 @@ async def create_item_from_feature(
     # description, etc into `feature.properties` but for extensions and assets
     # `merge_stac_metadata` still expects them in `external_metadata`.
     external_metadata = {}
-    if hasattr(feature, "assets") and feature.assets:
-        external_metadata["external_assets"] = feature.assets
+    feat_assets = getattr(feature, "assets", None)
+    if feat_assets:
+        external_metadata["external_assets"] = feat_assets
     elif "assets" in properties:
         external_metadata["external_assets"] = properties["assets"]
 
-    if hasattr(feature, "stac_extensions") and feature.stac_extensions:
-        external_metadata["external_extensions"] = feature.stac_extensions
+    feat_stac_extensions = getattr(feature, "stac_extensions", None)
+    if feat_stac_extensions:
+        external_metadata["external_extensions"] = feat_stac_extensions
     elif "stac_extensions" in properties:
         external_metadata["external_extensions"] = properties["stac_extensions"]
 
@@ -970,7 +972,7 @@ async def create_item_from_feature(
         catalog_id=catalog_id,
         collection_id=collection_id,
         item_id=item.id,
-        geoid=feat_geoid,
+        geoid=feat_geoid or "",
         lang=lang,
     )
 
@@ -1016,8 +1018,8 @@ async def create_item_collection(
     offset: int,
     stac_config: StacPluginConfig,
     view_mode: str = "standard",
-    catalog_id: str = None,
-    collection_id: str = None,
+    catalog_id: Optional[str] = None,
+    collection_id: Optional[str] = None,
     lang: str = "en",
 ) -> Dict[str, Any]:
     """Generates a STAC ItemCollection for a single collection."""
@@ -1121,8 +1123,8 @@ async def create_search_results_collection(
     stac_items_tasks = []
     for feature in features:
         # Cross-collection tracking injected by search.py
-        cid = feature.properties.get("_catalog_id")
-        tid = feature.properties.get("_collection_id")
+        cid = feature.properties.get("_catalog_id") or ""
+        tid = feature.properties.get("_collection_id") or ""
 
         stac_items_tasks.append(
             create_item_from_feature(request, cid, tid, feature=feature, stac_config=stac_config, lang=lang)

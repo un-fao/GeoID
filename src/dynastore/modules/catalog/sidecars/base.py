@@ -485,13 +485,6 @@ class SidecarProtocol(ABC):
         """
         return None
 
-    @classmethod
-    def get_default_config(cls, context: Dict[str, Any]) -> Optional[SidecarConfig]:
-        """
-        Implementation-specific default configuration generator.
-        """
-        return None
-
     @abstractmethod
     def get_ddl(
         self,

@@ -61,6 +61,7 @@ from dynastore.models.shared_models import (
     Catalog,
     Collection,
 )
+from dynastore.models.ogc import Feature as _OGCFeature
 from dynastore.extensions.tools.url import get_root_url, get_url
 from dynastore.extensions.tools.language_utils import get_language
 from pydantic import BaseModel, Field, ConfigDict, AliasChoices
@@ -377,7 +378,7 @@ class OGCFeaturesService(ExtensionProtocol):
                     status_code=500, detail="Catalogs service not available."
                 )
             self._catalogs_protocol = svc
-        return self._catalogs_protocol
+        return cast(CatalogsProtocol, self._catalogs_protocol)
 
     async def _get_storage_service(self) -> Optional[StorageProtocol]:
         """Helper to get the storage service protocol."""
@@ -413,7 +414,7 @@ class OGCFeaturesService(ExtensionProtocol):
                     status_code=500, detail="Configs service not available."
                 )
             self._configs_protocol = svc
-        return self._configs_protocol
+        return cast(ConfigsProtocol, self._configs_protocol)
 
     async def get_landing_page(
         self, request: Request, language: str = Depends(get_language)
@@ -1180,7 +1181,7 @@ class OGCFeaturesService(ExtensionProtocol):
             or getattr(payload, "type", None) == "Feature"
         ):
             # Single Feature response
-            new_row = created_rows[0]
+            new_row = cast(_OGCFeature, created_rows[0])
             # Use 'id' if available (mapped from external_id or asset_id), else fallback to 'geoid'
             feature_id = (
                 new_row.id
@@ -1236,9 +1237,9 @@ class OGCFeaturesService(ExtensionProtocol):
             # Bulk response
             created_ids = [
                 str(
-                    row.id
-                    or row.properties.get("external_id")
-                    or row.properties.get("geoid")
+                    cast(_OGCFeature, row).id
+                    or cast(_OGCFeature, row).properties.get("external_id")
+                    or cast(_OGCFeature, row).properties.get("geoid")
                 )
                 for row in created_rows
             ]
@@ -1310,13 +1311,9 @@ class OGCFeaturesService(ExtensionProtocol):
                     detail=f"Collection '{collection_id}' not found.",
                 )
 
-            rows_affected = await catalogs_svc.soft_delete_item(
-                phys_schema, phys_table, ext_id=item_id, db_resource=conn
+            rows_affected = await catalogs_svc.delete_item(
+                catalog_id, collection_id, item_id, db_resource=conn
             )
-            if rows_affected > 0:
-                await catalogs_svc.recalculate_and_update_extents(
-                    catalog_id, collection_id, db_resource=conn
-                )
             if rows_affected == 0:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,

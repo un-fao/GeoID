@@ -29,7 +29,7 @@ Access Strategies:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Type, TypeVar, Optional, Any, Union
+from typing import TYPE_CHECKING, Type, TypeVar, Optional, Any, Union, cast
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.protocols.database import DatabaseProtocol
 
@@ -59,13 +59,14 @@ def resolve(protocol_type: Type[T]) -> T:
             f"Required protocol '{protocol_type.__name__}' is not available. "
             "Ensure the responsible module is installed and has been correctly initialized."
         )
-    return instance
+    return cast(T, instance)
 
 
 def get_engine(app_state: Optional[Any] = None) -> Optional[Union[AsyncEngine, Engine]]:
     from dynastore.tools.discovery import get_protocols
     providers = get_protocols(DatabaseProtocol)
-    for db in providers:
+    for db_raw in providers:
+        db = cast(DatabaseProtocol, db_raw)
         try:
             engine = db.engine
             if engine is not None:

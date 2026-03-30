@@ -29,7 +29,10 @@ This service implements CatalogsProtocol and provides:
 import logging
 import json
 import uuid
-from typing import List, Optional, Any, Dict, Union, Set, Callable, Tuple
+from typing import List, Optional, Any, Dict, Union, Set, Callable, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dynastore.modules.catalog.sidecars.base import ConsumerType
 from dynastore.tools.cache import cached
 from sqlalchemy import text
 
@@ -1352,7 +1355,7 @@ class CatalogService(CatalogsProtocol):
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
         db_resource: Optional[Any] = None,
-        consumer: "ConsumerType" = None,
+        consumer: "Optional[ConsumerType]" = None,
     ) -> QueryResponse:
         """Stream search results using an async iterator."""
         from dynastore.modules.catalog.sidecars.base import ConsumerType as _CT
@@ -1400,8 +1403,8 @@ class CatalogService(CatalogsProtocol):
 async def ensure_catalog_exists(
     db_resource: DbResource,
     catalog_id: str,
-    title: LocalizedText = None,
-    description: LocalizedText = None,
+    title: Optional[LocalizedText] = None,
+    description: Optional[LocalizedText] = None,
 ):
     """Standalone helper to ensure a catalog exists."""
     from dynastore.tools.discovery import get_protocol
@@ -1424,8 +1427,8 @@ async def ensure_collection_exists(
     db_resource: DbResource,
     catalog_id: str,
     collection_id: str,
-    title: LocalizedText = None,
-    description: LocalizedText = None,
+    title: Optional[LocalizedText] = None,
+    description: Optional[LocalizedText] = None,
 ):
     """Standalone helper to ensure a collection exists."""
     from dynastore.tools.discovery import get_protocol

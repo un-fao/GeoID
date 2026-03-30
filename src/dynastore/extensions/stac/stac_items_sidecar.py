@@ -261,10 +261,11 @@ class StacItemsSidecar(SidecarProtocol):
         raw_exts = _get("external_extensions")
         exts = _maybe_parse(raw_exts) if raw_exts else []
         if exts:
-            existing = getattr(feature, "stac_extensions", []) or []
+            existing: List[str] = getattr(feature, "stac_extensions", []) or []
             if not existing:
                 existing = feature.properties.get("stac_extensions", []) or []
-            merged_exts = list(set(existing + exts))
+            exts_list: List[str] = exts if isinstance(exts, list) else ([exts] if isinstance(exts, str) else [])
+            merged_exts = list(set([*existing, *exts_list]))
             try:
                 feature.stac_extensions = merged_exts
             except Exception:
@@ -272,7 +273,7 @@ class StacItemsSidecar(SidecarProtocol):
 
         # 2. Assets Merging
         assets = _maybe_parse(_get("external_assets"))
-        if assets:
+        if isinstance(assets, dict):
             try:
                 for asset_key, asset_val in assets.items():
                     if isinstance(asset_val, dict):
@@ -326,7 +327,7 @@ class StacItemsSidecar(SidecarProtocol):
             or _get("stac_extra_fields")
             or _get("extra_fields")
         )
-        if extra:
+        if isinstance(extra, dict):
             top_level_stac = {
                 "stac_version",
                 "stac_extensions",
