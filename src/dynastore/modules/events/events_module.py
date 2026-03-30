@@ -578,7 +578,8 @@ class EventsModule(ModuleProtocol):
         if db_resource is not None:
             return await _run(db_resource)
 
-        engine = self._engine or get_protocol(DatabaseProtocol)
+        from dynastore.tools.protocol_helpers import get_engine
+        engine = self._engine or get_engine()
         async with managed_transaction(engine) as conn:
             return await _run(conn)
 
@@ -592,7 +593,8 @@ class EventsModule(ModuleProtocol):
         batch_size: int = 100,
     ) -> List[Dict[str, Any]]:
         """Claim a batch of PENDING events for *scope* using SKIP LOCKED."""
-        engine = self._engine or get_protocol(DatabaseProtocol)
+        from dynastore.tools.protocol_helpers import get_engine
+        engine = self._engine or get_engine()
         async with managed_transaction(engine) as conn:
             rows = await _consume_query.execute(conn, scope=scope, batch_size=batch_size)
         return rows or []
@@ -601,13 +603,15 @@ class EventsModule(ModuleProtocol):
         """Delete successfully processed events from the outbox."""
         if not event_ids:
             return
-        engine = self._engine or get_protocol(DatabaseProtocol)
+        from dynastore.tools.protocol_helpers import get_engine
+        engine = self._engine or get_engine()
         async with managed_transaction(engine) as conn:
             await _ack_query.execute(conn, event_ids=event_ids)
 
     async def nack(self, event_id: str, error: str) -> None:
         """Increment retry_count; move to DEAD_LETTER when retries exhausted."""
-        engine = self._engine or get_protocol(DatabaseProtocol)
+        from dynastore.tools.protocol_helpers import get_engine
+        engine = self._engine or get_engine()
         async with managed_transaction(engine) as conn:
             await _nack_query.execute(
                 conn,
