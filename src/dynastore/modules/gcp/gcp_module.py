@@ -127,6 +127,8 @@ class GCPModule(
     # In-memory upload ticket store: ticket_id → {asset_id, catalog_id, collection_id, expires_at}
     _upload_tickets: Dict[str, Dict[str, Any]] = {}
 
+    priority: int = 30  # Priority for protocol implementation (lower means higher priority)
+
     @property
     def engine(self) -> DbResource:
         if self._engine:
