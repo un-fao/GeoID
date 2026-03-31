@@ -1,23 +1,22 @@
 #!/bin/bash
-# Pre-commit hook: bumps patch version and stages VERSION into the same commit.
-# No extra commit is created — the version bump is part of your commit.
-#
-# Install: ./scripts/install-hooks.sh
+# Auto-bump patch version on direct commits to main.
+# Skips during rebase to avoid multiple bumps per replayed commit.
+# PR merges to main are handled by .github/workflows/version-bump.yml.
 set -euo pipefail
 
-# Skip if VERSION is already staged (manual bump or merge)
-if git diff --cached --name-only | grep -q '^VERSION$'; then
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# Skip during rebase (replaying commits would bump N times)
+if [ -d "$REPO_ROOT/.git/rebase-merge" ] || \
+   [ -d "$REPO_ROOT/.git/rebase-apply" ]; then
     exit 0
 fi
 
-# Recursion guard
-[ "${GIT_VERSION_BUMP_RUNNING:-}" = "1" ] && exit 0
-export GIT_VERSION_BUMP_RUNNING=1
-
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-BUMP_SCRIPT="${REPO_ROOT}/scripts/bump-version.sh"
-
-if [ -x "$BUMP_SCRIPT" ]; then
-    "$BUMP_SCRIPT"
-    git add "${REPO_ROOT}/VERSION"
+# Only bump on main
+BRANCH="$(git branch --show-current)"
+if [ "$BRANCH" != "main" ]; then
+    exit 0
 fi
+
+"$REPO_ROOT/scripts/bump-version.sh"
+git add "$REPO_ROOT/VERSION"
