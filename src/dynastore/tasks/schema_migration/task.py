@@ -265,8 +265,8 @@ async def _get_physical_table(engine: Any, schema: str, collection_id: str) -> O
         DQLQuery, ResultHandler, managed_transaction
     )
     sql = f"""
-        SELECT physical_table FROM "{schema}".collections
-        WHERE id = :collection_id AND deleted_at IS NULL;
+        SELECT physical_table FROM "{schema}".pg_storage_locations
+        WHERE collection_id = :collection_id;
     """
     async with managed_transaction(engine) as conn:
         row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(

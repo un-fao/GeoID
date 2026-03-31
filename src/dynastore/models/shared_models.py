@@ -300,7 +300,6 @@ class BaseMetadata(LocalizedFieldsBase):
 
     id: str = Field(..., description="A unique logical identifier.")
     physical_schema: Optional[str] = Field(None, description="The physical schema name in the database.", exclude=True)
-    physical_table: Optional[str] = Field(None, description="The physical table name in the database.", exclude=True)
 
     @field_validator("id")
     @classmethod

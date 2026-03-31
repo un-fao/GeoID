@@ -289,20 +289,11 @@ async def evolve_collection(
             status_code=404, detail=f"Catalog '{catalog_id}' not found."
         )
 
-    # Get collection info for physical_table name
-    collection = await catalogs.get_collection(catalog_id, collection_id)
-    if not collection:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Collection '{collection_id}' not found in '{catalog_id}'.",
-        )
-    physical_table = collection.get("physical_table") or collection.get(
-        "physicalTable"
-    )
+    physical_table = await catalogs.resolve_physical_table(catalog_id, collection_id)
     if not physical_table:
         raise HTTPException(
-            status_code=400,
-            detail=f"Collection '{collection_id}' has no physical table.",
+            status_code=404,
+            detail=f"Collection '{collection_id}' not found or has no physical table.",
         )
 
     # Get current config
@@ -396,8 +387,8 @@ async def list_collection_backups(
 
     # Get physical_table name
     sql = f"""
-        SELECT physical_table FROM "{schema}".collections
-        WHERE id = :collection_id AND deleted_at IS NULL;
+        SELECT physical_table FROM "{schema}".pg_storage_locations
+        WHERE collection_id = :collection_id;
     """
     async with managed_transaction(engine) as conn:
         row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
@@ -453,8 +444,8 @@ async def drop_collection_backup(
         raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
 
     sql = f"""
-        SELECT physical_table FROM "{schema}".collections
-        WHERE id = :collection_id AND deleted_at IS NULL;
+        SELECT physical_table FROM "{schema}".pg_storage_locations
+        WHERE collection_id = :collection_id;
     """
     async with managed_transaction(engine) as conn:
         row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(

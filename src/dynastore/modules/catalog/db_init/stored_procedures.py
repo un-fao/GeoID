@@ -26,7 +26,7 @@ BEGIN
     -- master_table_name is the Hub physical table.
     -- We need to find the collection_id for this physical table.
     -- Assuming 1:1 mapping in this schema.
-    SELECT id INTO collection_id_val FROM collections WHERE physical_table = master_table_name LIMIT 1;
+    SELECT collection_id INTO collection_id_val FROM pg_storage_locations WHERE physical_table = master_table_name LIMIT 1;
 
     IF collection_id_val IS NULL THEN
         -- Fallback or error? If we can't find the collection, we can't update metadata.
@@ -78,7 +78,7 @@ BEGIN
     
     -- Resolve Logical Collection ID from Hub Physical Table Name
     -- The collections table is in the same schema (tenant schema).
-    EXECUTE format('SELECT id FROM %I.collections WHERE physical_table = $1 LIMIT 1', TG_TABLE_SCHEMA)
+    EXECUTE format('SELECT collection_id FROM %I.pg_storage_locations WHERE physical_table = $1 LIMIT 1', TG_TABLE_SCHEMA)
     INTO target_collection_id
     USING hub_physical_table;
     
