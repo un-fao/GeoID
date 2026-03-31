@@ -17,38 +17,32 @@ RETURNS TRIGGER AS $$
 DECLARE
     master_table_name TEXT := TG_ARGV[0];
     schema_name TEXT := TG_TABLE_SCHEMA;
-    catalog_id_val TEXT;
     collection_id_val TEXT;
     new_spatial_extent JSONB;
     new_temporal_extent JSONB;
 BEGIN
-    catalog_id_val := schema_name;
-    -- master_table_name is the Hub physical table.
-    -- We need to find the collection_id for this physical table.
-    -- Assuming 1:1 mapping in this schema.
-    SELECT collection_id INTO collection_id_val FROM pg_storage_locations WHERE physical_table = master_table_name LIMIT 1;
+    EXECUTE format('SELECT collection_id FROM %I.pg_storage_locations WHERE physical_table = $1 LIMIT 1', schema_name)
+    INTO collection_id_val
+    USING master_table_name;
 
     IF collection_id_val IS NULL THEN
-        -- Fallback or error? If we can't find the collection, we can't update metadata.
         RETURN NULL;
     END IF;
 
-    -- Recalculate the spatial extent (bounding box) for the entire collection from the master table
     EXECUTE format('SELECT jsonb_build_object(''bbox'', ARRAY[ST_Extent(geom)]) FROM %I.%I', schema_name, master_table_name)
     INTO new_spatial_extent;
 
-    -- Recalculate the temporal extent for the entire collection from the master table
     EXECUTE format('SELECT jsonb_build_object(''interval'', ARRAY[ARRAY[MIN(valid_from), MAX(valid_to)]]) FROM %I.%I', schema_name, master_table_name)
     INTO new_temporal_extent;
 
-    -- Update the metadata JSONB in the collections table
     IF new_spatial_extent IS NOT NULL AND new_temporal_extent IS NOT NULL THEN
-        UPDATE collections
-        SET metadata = jsonb_set(
-                        jsonb_set(metadata, '{{extent,spatial}}', new_spatial_extent),
-                        '{{extent,temporal}}', new_temporal_extent
-                       )
-        WHERE id = collection_id_val AND catalog_id = catalog_id_val;
+        EXECUTE format(
+            'INSERT INTO %I.pg_collection_metadata (collection_id, extent)
+             VALUES ($1, $2)
+             ON CONFLICT (collection_id) DO UPDATE SET extent = EXCLUDED.extent',
+            schema_name
+        ) USING collection_id_val,
+                jsonb_build_object('spatial', new_spatial_extent, 'temporal', new_temporal_extent);
     END IF;
 
     RETURN NULL;
