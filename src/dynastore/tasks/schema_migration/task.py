@@ -308,20 +308,18 @@ async def _recreate_physical_collection(
     physical_table: str,
     col_config: Any,
 ) -> None:
-    """Recreate physical tables using create_physical_collection_impl."""
+    """Recreate physical tables via the write driver's ensure_storage()."""
     from dynastore.modules.db_config.query_executor import managed_transaction
-    from dynastore.modules.catalog.collection_service import (
-        create_physical_collection_impl,
-    )
+    from dynastore.modules.storage.router import get_driver
 
+    driver = await get_driver(catalog_id, collection_id, write=True)
     async with managed_transaction(engine) as conn:
-        await create_physical_collection_impl(
-            conn=conn,
-            schema=schema,
-            catalog_id=catalog_id,
-            collection_id=collection_id,
+        await driver.ensure_storage(
+            catalog_id,
+            collection_id,
             physical_table=physical_table,
             layer_config=col_config,
+            db_resource=conn,
         )
 
 

@@ -2,15 +2,15 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from dynastore.modules.storage.router import _resolve_driver_id, _build_driver_index
-from dynastore.modules.storage.config import StorageRoutingConfig
+from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
 
 
 class TestResolveDriverId:
     """Test the pure function that picks driver_id from routing config."""
 
     def _make_routing(self, primary="postgresql", read_drivers=None, secondary=None):
-        return StorageRoutingConfig(
-            primary_driver=primary,
+        return CollectionPluginConfig(
+            write_driver=primary,
             read_drivers=read_drivers or {},
             secondary_drivers=secondary or [],
         )
@@ -20,57 +20,57 @@ class TestResolveDriverId:
             primary="postgresql",
             read_drivers={"search": "elasticsearch"},
         )
-        assert _resolve_driver_id(routing, hint="search", write=True) == "postgresql"
+        assert _resolve_driver_id(routing, hint="search", write=True, driver_index={}) == "postgresql"
 
     def test_write_ignores_hint(self):
         routing = self._make_routing(
             primary="postgresql",
             read_drivers={"search": "elasticsearch", "default": "duckdb"},
         )
-        assert _resolve_driver_id(routing, hint="analytics", write=True) == "postgresql"
+        assert _resolve_driver_id(routing, hint="analytics", write=True, driver_index={}) == "postgresql"
 
     def test_read_uses_hint(self):
         routing = self._make_routing(
             primary="postgresql",
             read_drivers={"search": "elasticsearch"},
         )
-        assert _resolve_driver_id(routing, hint="search", write=False) == "elasticsearch"
+        assert _resolve_driver_id(routing, hint="search", write=False, driver_index={}) == "elasticsearch"
 
     def test_read_falls_back_to_default_hint(self):
         routing = self._make_routing(
             primary="postgresql",
             read_drivers={"default": "duckdb"},
         )
-        assert _resolve_driver_id(routing, hint="analytics", write=False) == "duckdb"
+        assert _resolve_driver_id(routing, hint="analytics", write=False, driver_index={}) == "duckdb"
 
     def test_read_falls_back_to_primary(self):
         routing = self._make_routing(primary="postgresql")
-        assert _resolve_driver_id(routing, hint="search", write=False) == "postgresql"
+        assert _resolve_driver_id(routing, hint="search", write=False, driver_index={}) == "postgresql"
 
     def test_read_hint_match_beats_default(self):
         routing = self._make_routing(
             primary="postgresql",
             read_drivers={"search": "elasticsearch", "default": "duckdb"},
         )
-        assert _resolve_driver_id(routing, hint="search", write=False) == "elasticsearch"
+        assert _resolve_driver_id(routing, hint="search", write=False, driver_index={}) == "elasticsearch"
 
     def test_read_no_match_uses_default_then_primary(self):
         routing = self._make_routing(
             primary="iceberg",
             read_drivers={"search": "elasticsearch"},
         )
-        assert _resolve_driver_id(routing, hint="analytics", write=False) == "iceberg"
+        assert _resolve_driver_id(routing, hint="analytics", write=False, driver_index={}) == "iceberg"
 
     def test_empty_read_drivers_uses_primary(self):
         routing = self._make_routing(primary="neo4j")
-        assert _resolve_driver_id(routing, hint="default", write=False) == "neo4j"
+        assert _resolve_driver_id(routing, hint="default", write=False, driver_index={}) == "neo4j"
 
     def test_all_documented_hints(self):
         hints = ["default", "search", "features", "graph", "analytics", "cache"]
         read_drivers = {h: f"driver_{h}" for h in hints}
         routing = self._make_routing(primary="postgresql", read_drivers=read_drivers)
         for hint in hints:
-            assert _resolve_driver_id(routing, hint=hint, write=False) == f"driver_{hint}"
+            assert _resolve_driver_id(routing, hint=hint, write=False, driver_index={}) == f"driver_{hint}"
 
 
 class TestBuildDriverIndex:

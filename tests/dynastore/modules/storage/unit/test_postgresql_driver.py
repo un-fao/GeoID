@@ -184,12 +184,13 @@ class TestDeleteEntities:
 
 class TestLifecycleMethods:
     @pytest.mark.asyncio
-    async def test_ensure_storage_delegates(self):
+    async def test_ensure_storage_noop_without_collection(self):
+        """ensure_storage with no collection_id is a no-op."""
         driver = PostgresStorageDriver()
-        with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
-            mock_catalogs = MagicMock()
-            mock_gp.return_value = mock_catalogs
-            await driver.ensure_storage("cat1", "col1")
+        # Should return immediately without touching the DB
+        with patch.object(driver, "_resolve_schema", new_callable=AsyncMock) as mock_resolve:
+            await driver.ensure_storage("cat1")
+            mock_resolve.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_ensure_storage_raises_without_protocol(self):
@@ -197,7 +198,7 @@ class TestLifecycleMethods:
         with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
             mock_gp.return_value = None
             with pytest.raises(RuntimeError, match="CatalogsProtocol not available"):
-                await driver.ensure_storage("cat1")
+                await driver.ensure_storage("cat1", "col1")
 
     @pytest.mark.asyncio
     async def test_drop_storage_collection(self):

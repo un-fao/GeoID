@@ -313,6 +313,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
         self,
         catalog_id: str,
         collection_id: Optional[str] = None,
+        **kwargs,
     ) -> None:
         """Ensure SFEOS index templates and collection index exist."""
         from stac_fastapi.elasticsearch.database_logic import (
@@ -844,6 +845,7 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
         self,
         catalog_id: str,
         collection_id: Optional[str] = None,
+        **kwargs,
     ) -> None:
         from dynastore.modules.elasticsearch.mappings import (
             get_obfuscated_index_name, GEOID_OBFUSCATED_MAPPING,
@@ -1151,7 +1153,7 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
         Capability.STREAMING,
         Capability.FULLTEXT,
     })
-    preferred_for: FrozenSet[str] = frozenset()
+    preferred_for: FrozenSet[str] = frozenset({"search", "assets"})
 
     def is_available(self) -> bool:
         return self._sfeos_available()
@@ -1186,6 +1188,8 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
 
     async def index_asset(
         self, catalog_id: str, asset_doc: Dict[str, Any],
+        *,
+        db_resource: Optional[Any] = None,
     ) -> None:
         """Index a single asset document."""
         from dynastore.modules.elasticsearch.mappings import (
@@ -1208,6 +1212,8 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
 
     async def delete_asset(
         self, catalog_id: str, asset_id: str,
+        *,
+        db_resource: Optional[Any] = None,
     ) -> None:
         """Delete a single asset document from the index."""
         from dynastore.modules.elasticsearch.mappings import get_assets_index_name
@@ -1332,6 +1338,7 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
         self,
         catalog_id: str,
         collection_id: Optional[str] = None,
+        **kwargs,
     ) -> None:
         from dynastore.modules.elasticsearch.mappings import (
             get_assets_index_name, ASSET_MAPPING,
@@ -1463,3 +1470,107 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
             await db.find_collection(collection_id)
             from stac_fastapi.sfeos_helpers.database import update_catalog_in_index_shared
             await update_catalog_in_index_shared(db.client, collection_id, doc)
+
+    # ------------------------------------------------------------------
+    # AssetDriverProtocol read methods
+    # ------------------------------------------------------------------
+
+    async def get_asset(
+        self,
+        catalog_id: str,
+        asset_id: str,
+        *,
+        collection_id: Optional[str] = None,
+        db_resource=None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return a single asset document from ES by its ID, or None."""
+        from dynastore.modules.elasticsearch.mappings import get_assets_index_name
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
+
+        index_name = get_assets_index_name(_get_index_prefix(), catalog_id)
+        es = self._get_client()
+        try:
+            resp = await es.get(index=index_name, id=asset_id)
+            return resp["_source"]
+        except Exception:
+            return None
+
+    # ES DSL top-level query keywords — used to distinguish raw ES DSL from
+    # simple {field: value} filter dicts passed by AssetService.
+    _ES_DSL_KEYWORDS = frozenset({
+        "match_all", "bool", "term", "terms", "match", "range",
+        "exists", "prefix", "wildcard", "regexp", "fuzzy",
+        "ids", "multi_match", "query_string", "nested",
+        "match_phrase", "match_phrase_prefix",
+    })
+
+    @classmethod
+    def _to_es_query(cls, query: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert a simple ``{field: value}`` dict to an ES bool/filter/term query.
+
+        If *query* already looks like ES DSL (contains a known ES keyword as a
+        top-level key), it is returned unchanged.  Otherwise each entry becomes
+        a ``term`` filter clause, supporting dot-notation for nested fields
+        (e.g. ``metadata.license_id``).
+        """
+        if not query:
+            return {"match_all": {}}
+
+        # Detect raw ES DSL — fast path
+        if query.keys() & cls._ES_DSL_KEYWORDS:
+            return query
+
+        # Convert field=value pairs to ES term filters
+        filters = [{"term": {field: value}} for field, value in query.items()]
+        if len(filters) == 1:
+            return filters[0]
+        return {"bool": {"filter": filters}}
+
+    async def search_assets(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        query: Optional[Dict[str, Any]] = None,
+        limit: int = 100,
+        offset: int = 0,
+        db_resource=None,
+    ) -> List[Dict[str, Any]]:
+        """Search asset documents in ES.
+
+        ``query`` may be:
+        - A raw ES query DSL dict (detected by presence of ES keywords like
+          ``bool``, ``term``, ``match``, etc.)
+        - A simple ``{field: value}`` dict — each entry is converted to a
+          ``term`` filter.  Dot-notation (e.g. ``metadata.license_id``) is
+          supported natively by ES for dynamically mapped nested fields.
+        - ``None`` → ``match_all``
+
+        ``collection_id`` is added as an extra ``term`` filter when provided.
+        """
+        from dynastore.modules.elasticsearch.mappings import get_assets_index_name
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
+
+        index_name = get_assets_index_name(_get_index_prefix(), catalog_id)
+        es = self._get_client()
+
+        base_query = self._to_es_query(query or {})
+        if collection_id:
+            base_query = {
+                "bool": {
+                    "must": [base_query],
+                    "filter": [{"term": {"collection_id": collection_id}}],
+                }
+            }
+
+        try:
+            resp = await es.search(
+                index=index_name,
+                query=base_query,
+                size=limit,
+                from_=offset,
+            )
+            return [hit["_source"] for hit in resp["hits"]["hits"]]
+        except Exception as e:
+            logger.error("ElasticsearchAssetsDriver.search_assets failed: %s", e)
+            return []

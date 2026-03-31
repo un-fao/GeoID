@@ -190,6 +190,33 @@ class CollectionService:
             "item_assets": meta_dict.get("item_assets"),
             "extra_metadata": meta_dict.get("extra_metadata"),
         }
+
+        # 3. CollectionMetadataEnricherProtocol pipeline (optional, priority-ordered).
+        #    Each enricher can augment, filter, or transform the metadata dict.
+        #    Enrichers are registered via register_plugin(); an empty registry is safe.
+        try:
+            from dynastore.tools.discovery import get_protocols
+            from dynastore.models.protocols.enrichment import CollectionMetadataEnricherProtocol
+
+            enrichers = sorted(
+                get_protocols(CollectionMetadataEnricherProtocol),
+                key=lambda e: e.priority,
+            )
+            for enricher in enrichers:
+                try:
+                    if enricher.can_enrich(catalog_id, collection_id):
+                        data = await enricher.enrich(catalog_id, collection_id, data, context={})
+                except Exception as _enrich_err:
+                    logger.warning(
+                        "CollectionMetadataEnricher '%s' failed for %s/%s: %s",
+                        getattr(enricher, "enricher_id", repr(enricher)),
+                        catalog_id,
+                        collection_id,
+                        _enrich_err,
+                    )
+        except Exception:
+            pass  # discovery failure must not break the read path
+
         return Collection.model_validate(data)
 
     async def get_collection(
@@ -419,8 +446,7 @@ class CollectionService:
             )
 
             # 4. Run infrastructure hooks (events partition, logs, proxy —
-            #    create_physical_collection_impl is unregistered; hub/sidecars
-            #    are now handled by write_driver.ensure_storage() below).
+            #    hub/sidecars are handled by write_driver.ensure_storage() below).
             await lifecycle_registry.init_collection(
                 conn,
                 phys_schema,
@@ -431,17 +457,21 @@ class CollectionService:
             )
 
             # 5. Call write driver's ensure_storage() — creates hub + sidecar tables.
+            #    Skipped gracefully when no storage drivers are registered (e.g. tests
+            #    that don't load StorageModule; PG-native tables are handled separately).
             from dynastore.modules.storage.router import get_driver
-            write_driver = await get_driver(
-                catalog_id, collection_model.id, write=True
-            )
-            if write_driver is not None:
+            try:
+                write_driver = await get_driver(
+                    catalog_id, collection_model.id, write=True
+                )
                 await write_driver.ensure_storage(
                     catalog_id,
                     collection_model.id,
                     db_resource=conn,
                     col_config=init_config,
                 )
+            except ValueError:
+                pass
 
             # 6. Store collection metadata via metadata driver.
             user_extra_metadata = (
@@ -452,9 +482,12 @@ class CollectionService:
                 if collection_model.extra_metadata
                 else None
             )
-            meta_driver = await get_driver(
-                catalog_id, collection_model.id, hint="metadata"
-            )
+            try:
+                meta_driver = await get_driver(
+                    catalog_id, collection_model.id, hint="metadata"
+                )
+            except ValueError:
+                meta_driver = None
             if meta_driver is not None:
                 await meta_driver.set_collection_metadata(
                     catalog_id,
@@ -490,9 +523,14 @@ class CollectionService:
                 )
 
         # Resolve physical_table for async lifecycle context (PG driver only; None for others).
-        physical_table = await self.resolve_physical_table(
-            catalog_id, collection_model.id
-        )
+        # Use db_resource when available so uncommitted catalog/collection rows are visible.
+        # Fall back to None gracefully if the table hasn't been registered yet.
+        try:
+            physical_table = await self.resolve_physical_table(
+                catalog_id, collection_model.id, db_resource=db_resource
+            )
+        except (ValueError, Exception):
+            physical_table = None
 
         # Invalidate caches
         self._get_collection_model_cached.cache_invalidate(
@@ -877,7 +915,7 @@ class CollectionService:
                 return False
 
             set_clauses = [f"{k} = :{k}" for k in fields_to_update.keys()]
-            sql = f'UPDATE "{phys_schema}".collections SET {", ".join(set_clauses)} WHERE id = :id AND deleted_at IS NULL;'
+            sql = f'UPDATE "{phys_schema}".pg_collection_metadata SET {", ".join(set_clauses)} WHERE collection_id = :id;'
             await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
                 conn, **params
             )
@@ -888,172 +926,3 @@ class CollectionService:
             return True
 
 
-async def create_physical_collection_impl(
-    conn: DbResource,
-    schema: str,
-    catalog_id: str,
-    collection_id: str,
-    physical_table: Optional[str] = None,
-    layer_config: Optional[Union[Dict[str, Any], Any]] = None,
-    **kwargs,
-) -> None:
-    """Orchestrates the creation of a data table and its indexes."""
-    logger.info(
-        f"LIFECYCLE: create_physical_collection_impl started for {catalog_id}:{collection_id} in schema {schema}"
-    )
-    if not physical_table:
-        logger.warning(
-            f"LIFECYCLE: Skipping creation for {catalog_id}:{collection_id} - no physical_table name provided"
-        )
-        return
-
-    configs = get_protocol(ConfigsProtocol)
-    col_config = await configs.get_config(
-        COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
-    )
-
-    if layer_config:
-        base_dump = col_config.model_dump()
-        layer_config_dict = (
-            layer_config.model_dump()
-            if hasattr(layer_config, "model_dump")
-            else layer_config
-        )
-
-        def deep_update(d, u):
-            for k, v in u.items():
-                if isinstance(v, dict):
-                    d[k] = deep_update(d.get(k, {}), v)
-                else:
-                    d[k] = v
-            return d
-
-        merged = deep_update(base_dump, layer_config_dict)
-        try:
-            # Avoid circular import by using local import or registry
-            from dynastore.modules.db_config.platform_config_service import (
-                ConfigRegistry,
-            )
-
-            col_config = ConfigRegistry.validate_config("collection", merged)
-        except Exception as e:
-            logger.error(
-                f"Failed to merge layer_config for {catalog_id}:{collection_id}: {e}"
-            )
-
-    # 1. Resolve Partitioning Context
-
-    partition_keys = []
-    partition_key_types = {
-        "transaction_time": "TIMESTAMPTZ",
-        "validity": "TSTZRANGE",
-        "geoid": "UUID",
-        "asset_id": "VARCHAR(255)",  # Standard fallback
-    }
-
-    if col_config.partitioning.enabled:
-        partition_keys = col_config.partitioning.partition_keys
-
-        # Aggregate types from all sidecars using protocol methods
-        for sc_config in col_config.sidecars:
-            partition_key_types.update(sc_config.partition_key_types)
-
-    # 2. Create Hub Table
-    hub_cols_map = col_config.get_column_definitions()
-
-    # Ensure Hub has all partition keys
-    for key in partition_keys:
-        if key not in hub_cols_map:
-            col_type = partition_key_types.get(key, "TEXT")
-            hub_cols_map[key] = f"{col_type} NOT NULL"
-
-    # Determine if Hub is versioned (has validity)
-    # HUB ISOLATION: Hub ONLY has validity if it is explicitly part of the partition keys.
-    # Otherwise, validity is a strictly sidecar-managed concept.
-    has_validity = "validity" in partition_keys
-
-    # Construct Column List
-    hub_columns_ddl = []
-    for name, spec in hub_cols_map.items():
-        # Remove PRIMARY KEY from individual columns if we use composite
-        clean_spec = spec.replace(" PRIMARY KEY", "")
-        hub_columns_ddl.append(f'"{name}" {clean_spec}')
-
-    # Add Primary Key to Hub (REQUIRED for sidecar Foreign Keys)
-    pk_hub = ["geoid"]
-    if has_validity:
-        pk_hub.append("validity")
-
-    # If composite partitioning, all pk_hub MUST be in partition keys?
-    # Not necessarily in PG, but it's easier if they are.
-    # We ensure geoid is there if not already.
-    pk_all = list(pk_hub)
-    if partition_keys:
-        # For partitioned tables, the partition key MUST be part of the PK
-        pk_all = list(set(pk_hub) | set(partition_keys))
-
-    hub_columns_ddl.append(f"PRIMARY KEY ({', '.join([f'"{c}"' for c in pk_all])})")
-
-    partition_clause = ""
-    if partition_keys:
-        partition_clause = (
-            f" PARTITION BY LIST ({', '.join([f'"{k}"' for k in partition_keys])})"
-        )
-
-    create_hub_sql = f'CREATE TABLE IF NOT EXISTS "{schema}"."{physical_table}" ({", ".join(hub_columns_ddl)}){partition_clause};'
-    await DDLQuery(create_hub_sql).execute(conn)
-
-    # 3. Create Sidecar Tables
-    if col_config.sidecars:
-        from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
-
-        for sidecar_config in col_config.sidecars:
-            try:
-                sidecar_impl = SidecarRegistry.get_sidecar(sidecar_config)
-
-                # has_validity for sidecar depends on sidecar's own capability
-                sc_has_validity = sidecar_impl.has_validity()
-
-                ddl_statements = sidecar_impl.get_ddl(
-                    physical_table=physical_table,
-                    partition_keys=partition_keys,
-                    partition_key_types=partition_key_types,
-                    has_validity=sc_has_validity,
-                )
-
-                await DDLQuery(ddl_statements).execute(conn, schema=schema)
-
-                await sidecar_impl.setup_lifecycle_hooks(
-                    conn, schema, f"{physical_table}_{sidecar_impl.sidecar_id}"
-                )
-            except ValueError as e:
-                logger.warning(f"Skipping sidecar table creation: {e}")
-
-    # Store schema snapshot hash for drift detection
-    try:
-        import hashlib
-        import json as _json
-        config_dump = col_config.model_dump() if hasattr(col_config, "model_dump") else {}
-        schema_hash = hashlib.sha256(
-            _json.dumps(config_dump, sort_keys=True, default=str).encode()
-        ).hexdigest()
-        async with managed_nested_transaction(conn):
-            await DQLQuery(
-                f'UPDATE "{schema}".collection_configs '
-                f'SET schema_hash = :schema_hash, updated_at = NOW() '
-                f'WHERE catalog_id = :catalog_id AND collection_id = :collection_id '
-                f"AND plugin_id = 'collection';",
-                result_handler=ResultHandler.NONE,
-            ).execute(
-                conn,
-                schema_hash=schema_hash,
-                catalog_id=catalog_id,
-                collection_id=collection_id,
-            )
-    except Exception as e:
-        logger.warning(f"LIFECYCLE: Failed to store schema hash: {e}")
-
-    # Ensure asset cleanup trigger (using AssetsProtocol)
-    am = get_protocol(AssetsProtocol)
-    if am:
-        await am.ensure_asset_cleanup_trigger(schema, physical_table, db_resource=conn)

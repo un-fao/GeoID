@@ -74,6 +74,7 @@ class Capability:
 
     # --- I/O ---
     READ = "read"
+    READ_ONLY = "read_only"
     WRITE = "write"
     STREAMING = "streaming"
     EXPORT = "export"
@@ -186,11 +187,20 @@ class CollectionStorageDriverProtocol(Protocol):
         self,
         catalog_id: str,
         collection_id: Optional[str] = None,
-        *,
-        db_resource: Optional[Any] = None,
-        col_config: Optional[Any] = None,
+        **kwargs: Any,
     ) -> None:
-        """Ensure backing storage exists (create table/index/bucket/etc.)."""
+        """Ensure backing storage exists (create table/index/bucket/etc.).
+
+        Each driver resolves its own connection and configuration internally
+        (e.g. via ``ConfigsProtocol``). Drivers may accept driver-specific
+        keyword arguments (e.g. ``physical_table``, ``layer_config``,
+        ``db_resource`` for PostgreSQL).
+
+        Args:
+            catalog_id: The catalog that owns the collection.
+            collection_id: Optional collection within the catalog.
+            **kwargs: Driver-specific options.
+        """
         ...
 
     async def drop_storage(

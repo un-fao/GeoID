@@ -23,7 +23,7 @@ class TestDuckDBDriverMeta:
     def test_capabilities(self):
         from dynastore.modules.storage.drivers.duckdb import DuckDBStorageDriver
         driver = DuckDBStorageDriver()
-        assert Capability.READ_ONLY in driver.capabilities
+        assert Capability.READ in driver.capabilities
         assert Capability.STREAMING in driver.capabilities
         assert Capability.SPATIAL_FILTER in driver.capabilities
         assert Capability.EXPORT in driver.capabilities

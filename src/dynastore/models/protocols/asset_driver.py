@@ -32,6 +32,7 @@ from typing import (
     Any,
     Dict,
     FrozenSet,
+    List,
     Optional,
     Protocol,
     runtime_checkable,
@@ -83,6 +84,8 @@ class AssetDriverProtocol(Protocol):
         self,
         catalog_id: str,
         asset_doc: Dict[str, Any],
+        *,
+        db_resource: Optional[Any] = None,
     ) -> None:
         """Index (upsert) a single asset document."""
         ...
@@ -91,8 +94,50 @@ class AssetDriverProtocol(Protocol):
         self,
         catalog_id: str,
         asset_id: str,
+        *,
+        db_resource: Optional[Any] = None,
     ) -> None:
         """Delete a single asset document by ID."""
+        ...
+
+    async def get_asset(
+        self,
+        catalog_id: str,
+        asset_id: str,
+        *,
+        collection_id: Optional[str] = None,
+        db_resource: Optional[Any] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return a single asset document by ID, or None if not found.
+
+        Required for any driver that can serve as the primary readable store
+        (e.g. Elasticsearch as primary, PostgreSQL as primary).
+        """
+        ...
+
+    async def search_assets(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        query: Optional[Dict[str, Any]] = None,
+        limit: int = 100,
+        offset: int = 0,
+        db_resource: Optional[Any] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return asset documents matching the query.
+
+        Args:
+            catalog_id:    Catalog that owns the assets.
+            collection_id: Optional collection filter.
+            query:         Driver-specific query dict (ES query DSL, SQL filters, etc.).
+            limit:         Maximum number of results.
+            offset:        Skip this many results (for pagination).
+            db_resource:   Optional existing DB connection/session.
+
+        Returns:
+            List of asset dicts (may be empty).
+        """
         ...
 
     # ------------------------------------------------------------------

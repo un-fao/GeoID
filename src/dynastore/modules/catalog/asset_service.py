@@ -139,14 +139,13 @@ Hard-deletion of an ``owned_by`` asset with blocking references raises
     blocking = [r for r in refs if not r.cascade_delete]
 """
 
-import uuid
 import json
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any, Union, Callable, Awaitable, Annotated
+from typing import List, Optional, Dict, Any, Union, Callable, Annotated
 from sqlalchemy import text
 from dynastore.tools.cache import cached
-from pydantic import BaseModel, Field, ConfigDict, AliasChoices
+from pydantic import BaseModel, Field, ConfigDict
 
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
@@ -155,20 +154,12 @@ from dynastore.modules.db_config.query_executor import (
     managed_transaction,
     DbResource,
     DbConnection,
-    PydanticResultHandler,
-    GeoDQLQuery,
 )
-from dynastore.modules.db_config.transactional import transactional
 from dynastore.tools.json import CustomJSONEncoder
 from dynastore.tools.db import validate_sql_identifier
-from dynastore.modules.db_config.locking_tools import acquire_startup_lock
-from dynastore.modules.db_config.partition_tools import (
-    ensure_partition_exists as ensure_partition_tool,
-    ensure_hierarchical_partitions_exist,
-    PartitionDefinition,
-)
 from dynastore.modules.catalog.models import AssetReferenceType, CoreAssetReferenceType, EventType
 from dynastore.models.protocols.assets import AssetsProtocol
+from dynastore.models.protocols.asset_driver import AssetDriverProtocol
 from dynastore.models.query_builder import FilterOperator
 from enum import Enum
 
@@ -511,21 +502,71 @@ class AssetService(AssetsProtocol):
 
     async def _get_asset_db(
         self, catalog_id: str, asset_id: str, collection_id: str
-    ) -> Optional[Asset]:
-        async with managed_transaction(self.engine) as conn:
-            phys_schema = await self._resolve_schema(catalog_id, conn)
-            if not phys_schema:
-                return None
-            # asset_id in DB is VARCHAR now
-            sql = f'SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata, owned_by FROM "{phys_schema}".assets WHERE asset_id = :asset_id AND catalog_id = :catalog_id AND collection_id = :collection_id AND deleted_at IS NULL;'
-            return await DQLQuery(
-                sql, result_handler=PydanticResultHandler.pydantic_one(Asset)
-            ).execute(
-                conn,
-                asset_id=asset_id,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch asset dict from the configured read driver (cached path)."""
+        from dynastore.modules.catalog.asset_router import get_asset_driver
+        driver = await get_asset_driver(catalog_id, collection_id, hint="default")
+        return await driver.get_asset(
+            catalog_id, asset_id,
+            collection_id=collection_id,
+            db_resource=self.engine,
+        )
+
+    async def _apply_enricher_pipeline(
+        self,
+        asset_doc: Dict[str, Any],
+        catalog_id: str,
+        collection_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """Apply AssetEnricherProtocol pipeline to an asset dict."""
+        from dynastore.tools.discovery import get_protocols
+        from dynastore.models.protocols.asset_enricher import AssetEnricherProtocol
+        try:
+            enrichers = sorted(
+                get_protocols(AssetEnricherProtocol), key=lambda e: e.priority
+            )
+            for enricher in enrichers:
+                try:
+                    if enricher.can_enrich(catalog_id, collection_id):
+                        asset_doc = await enricher.enrich_asset(
+                            catalog_id, asset_doc, context={}
+                        )
+                except Exception as err:
+                    logger.warning(
+                        "AssetEnricher '%s' failed for %s/%s: %s",
+                        getattr(enricher, "enricher_id", "?"),
+                        catalog_id, collection_id, err,
+                    )
+        except Exception:
+            pass
+        return asset_doc
+
+    async def _get_secondary_drivers(
+        self, catalog_id: str, collection_id: Optional[str]
+    ) -> List[AssetDriverProtocol]:
+        """Return all configured secondary asset drivers for this catalog/collection."""
+        from dynastore.tools.discovery import get_protocol, get_protocols
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.modules.catalog.asset_config import ASSET_PLUGIN_CONFIG_ID
+        try:
+            configs = get_protocol(ConfigsProtocol)
+            if not configs:
+                return []
+            asset_config = await configs.get_config(
+                ASSET_PLUGIN_CONFIG_ID,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )
+            driver_index = {
+                d.driver_id: d for d in get_protocols(AssetDriverProtocol)
+            }
+            return [
+                driver_index[sid]
+                for sid in asset_config.secondary_driver_ids
+                if sid in driver_index
+            ]
+        except Exception:
+            return []
 
     async def get_asset(
         self,
@@ -534,25 +575,30 @@ class AssetService(AssetsProtocol):
         collection_id: Optional[str] = None,
         db_resource: Optional[DbResource] = None,
     ) -> Optional[Asset]:
-        """
-        Get asset by ID.
-        """
+        """Get asset by ID, routing through the configured read driver."""
+        from dynastore.modules.catalog.asset_router import get_asset_driver
         target_col_id = collection_id if collection_id else CATALOG_LEVEL_COLLECTION_ID
+
         if db_resource:
-            async with managed_transaction(db_resource) as conn:
-                phys_schema = await self._resolve_schema(catalog_id, conn)
-                if not phys_schema:
-                    return None
-                sql = f'SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata, owned_by FROM "{phys_schema}".assets WHERE asset_id = :asset_id AND catalog_id = :catalog_id AND collection_id = :collection_id AND deleted_at IS NULL;'
-                return await DQLQuery(
-                    sql, result_handler=PydanticResultHandler.pydantic_one(Asset)
-                ).execute(
-                    conn,
-                    asset_id=asset_id,
-                    catalog_id=catalog_id,
-                    collection_id=target_col_id,
-                )
-        return await self.get_asset_cached(catalog_id, asset_id, target_col_id)
+            driver = await get_asset_driver(catalog_id, collection_id, hint="default")
+            asset_doc = await driver.get_asset(
+                catalog_id, asset_id,
+                collection_id=target_col_id,
+                db_resource=db_resource,
+            )
+        else:
+            asset_doc = await self.get_asset_cached(catalog_id, asset_id, target_col_id)
+
+        if not asset_doc:
+            return None
+
+        asset_doc = await self._apply_enricher_pipeline(
+            dict(asset_doc), catalog_id, collection_id
+        )
+        asset = Asset.model_validate(asset_doc)
+        if asset.collection_id == CATALOG_LEVEL_COLLECTION_ID:
+            asset.collection_id = None
+        return asset
 
     # Deprecated alias methods for backward compatibility if needed, but we should switch to get_asset using internal logic
     async def get_asset_by_code(
@@ -575,29 +621,26 @@ class AssetService(AssetsProtocol):
         offset: int = 0,
         db_resource: Optional[DbResource] = None,
     ) -> List[Asset]:
+        from dynastore.modules.catalog.asset_router import get_asset_driver
         target_col_id = collection_id if collection_id else CATALOG_LEVEL_COLLECTION_ID
-
-        async with managed_transaction(db_resource or self.engine) as conn:
-            phys_schema = await self._resolve_schema(catalog_id, conn)
-            if not phys_schema:
-                return []
-
-            sql = f"""
-            SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata, owned_by FROM "{phys_schema}".assets
-            WHERE catalog_id = :catalog_id
-              AND collection_id = :collection_id
-              AND deleted_at IS NULL
-            ORDER BY created_at DESC LIMIT :limit OFFSET :offset;
-            """
-            return await DQLQuery(
-                sql, result_handler=PydanticResultHandler.pydantic_all(Asset)
-            ).execute(
-                conn,
-                catalog_id=catalog_id,
-                collection_id=target_col_id,
-                limit=limit,
-                offset=offset,
+        driver = await get_asset_driver(catalog_id, collection_id, hint="default")
+        docs = await driver.search_assets(
+            catalog_id,
+            collection_id=target_col_id,
+            limit=limit,
+            offset=offset,
+            db_resource=db_resource or self.engine,
+        )
+        assets = []
+        for doc in docs:
+            enriched = await self._apply_enricher_pipeline(
+                dict(doc), catalog_id, collection_id
             )
+            asset = Asset.model_validate(enriched)
+            if asset.collection_id == CATALOG_LEVEL_COLLECTION_ID:
+                asset.collection_id = None
+            assets.append(asset)
+        return assets
 
     async def search_assets(
         self,
@@ -610,67 +653,90 @@ class AssetService(AssetsProtocol):
     ) -> List[Asset]:
         """
         Performs a granular search across assets using a list of filters.
-        Supports metadata path extraction (e.g., 'metadata.provider.name').
+
+        EQ-only filters are routed through the hint="search" driver (ES when
+        configured).  Filters with other operators fall back to the default
+        driver (PG) which supports full operator coverage via SQL.
         """
-        async with managed_transaction(db_resource or self.engine) as conn:
-            phys_schema = await self._resolve_schema(catalog_id, conn)
-            if not phys_schema:
-                return []
+        from dynastore.modules.catalog.asset_router import get_asset_driver
+        target_col_id = collection_id if collection_id else CATALOG_LEVEL_COLLECTION_ID
 
-            sql_base = f'SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata, owned_by FROM "{phys_schema}".assets WHERE catalog_id = :catalog_id AND deleted_at IS NULL'
-            params = {"catalog_id": catalog_id, "limit": limit, "offset": offset}
+        # Build simple field=value dict for EQ-only filters (ES-compatible)
+        eq_query: Dict[str, Any] = {}
+        has_complex_filter = False
+        for f in filters:
+            if f.op == FilterOperator.EQ:
+                eq_query[f.field] = f.value
+            else:
+                has_complex_filter = True
+                break
 
-            target_col_id = (
-                collection_id if collection_id else CATALOG_LEVEL_COLLECTION_ID
+        if not has_complex_filter:
+            # Route through the search driver (ES if configured)
+            driver = await get_asset_driver(catalog_id, collection_id, hint="search")
+            docs = await driver.search_assets(
+                catalog_id,
+                collection_id=target_col_id,
+                query=eq_query or None,
+                limit=limit,
+                offset=offset,
+                db_resource=db_resource or self.engine,
             )
-            sql_base += " AND collection_id = :collection_id"
-            params["collection_id"] = target_col_id
+            assets = []
+            for doc in docs:
+                enriched = await self._apply_enricher_pipeline(
+                    dict(doc), catalog_id, collection_id
+                )
+                asset = Asset.model_validate(enriched)
+                if asset.collection_id == CATALOG_LEVEL_COLLECTION_ID:
+                    asset.collection_id = None
+                assets.append(asset)
+            return assets
 
-            op_map = {
-                FilterOperator.EQ: "=",
-                FilterOperator.NE: "!=",
-                FilterOperator.GT: ">",
-                FilterOperator.GTE: ">=",
-                FilterOperator.LT: "<",
-                FilterOperator.LTE: "<=",
-                FilterOperator.LIKE: "LIKE",
-                FilterOperator.ILIKE: "ILIKE",
-                FilterOperator.IN: "IN",
-            }
+        # Complex filters: fall back to default driver (PG SQL with full operators)
+        driver = await get_asset_driver(catalog_id, collection_id, hint="default")
 
-            for i, f in enumerate(filters):
-                # Parse field (handle JSONB paths)
-                if f.field.startswith("metadata."):
-                    parts = f.field.split(".")
-                    root = parts[0]
-                    path = "->".join(f"'{p}'" for p in parts[1:-1])
-                    leaf = f"->>'{parts[-1]}'"
-                    field_expr = f"{root}{'->' + path if path else ''}{leaf}"
-                elif f.field == "id":
-                    field_expr = '"asset_id"'  # Map 'id' filter to 'asset_id' column
-                else:
-                    # Basic fields: uri, asset_type, asset_id
-                    validate_sql_identifier(f.field)
-                    field_expr = f'"{f.field}"'
+        op_map = {
+            FilterOperator.EQ: "=",
+            FilterOperator.NE: "!=",
+            FilterOperator.GT: ">",
+            FilterOperator.GTE: ">=",
+            FilterOperator.LT: "<",
+            FilterOperator.LTE: "<=",
+            FilterOperator.LIKE: "LIKE",
+            FilterOperator.ILIKE: "ILIKE",
+            FilterOperator.IN: "IN",
+        }
 
-                val_key = f"val_{i}"
-                sql_base += f" AND {field_expr} {op_map[f.op]} :{val_key}"
+        # Build PG-compatible query dict with operator encoding for pg_asset_driver
+        pg_query: Dict[str, Any] = {}
+        for i, f in enumerate(filters):
+            if f.field.startswith("metadata."):
+                pg_query[f.field] = f.value
+            elif f.field == "id":
+                pg_query["asset_id"] = f.value
+            else:
+                validate_sql_identifier(f.field)
+                pg_query[f.field] = f.value
 
-                # Formatting for LIKE/ILIKE
-                if f.op in [
-                    FilterOperator.LIKE,
-                    FilterOperator.ILIKE,
-                ] and "%" not in str(f.value):
-                    params[val_key] = f"%{f.value}%"
-                else:
-                    params[val_key] = f.value
-
-            sql_base += " ORDER BY created_at DESC LIMIT :limit OFFSET :offset;"
-
-            query = DQLQuery(
-                sql_base, result_handler=PydanticResultHandler.pydantic_all(Asset)
+        docs = await driver.search_assets(
+            catalog_id,
+            collection_id=target_col_id,
+            query=pg_query,
+            limit=limit,
+            offset=offset,
+            db_resource=db_resource or self.engine,
+        )
+        assets = []
+        for doc in docs:
+            enriched = await self._apply_enricher_pipeline(
+                dict(doc), catalog_id, collection_id
             )
-            return await query.execute(conn, **params)
+            asset = Asset.model_validate(enriched)
+            if asset.collection_id == CATALOG_LEVEL_COLLECTION_ID:
+                asset.collection_id = None
+            assets.append(asset)
+        return assets
 
     # --- Lifecycle ---
 
@@ -681,72 +747,52 @@ class AssetService(AssetsProtocol):
         collection_id: Optional[str] = None,
         db_resource: Optional[DbResource] = None,
     ) -> Asset:
+        from dynastore.modules.catalog.asset_router import get_asset_driver
         target_col_id = collection_id if collection_id else CATALOG_LEVEL_COLLECTION_ID
+        now = datetime.now(timezone.utc)
 
-        async with managed_transaction(db_resource or self.engine) as conn:
-            # Resolve physical schema
-            phys_schema = await self._resolve_schema(catalog_id, conn)
-            if not phys_schema:
-                raise ValueError(
-                    f"Catalog '{catalog_id}' does not exist or has no physical schema."
+        asset_doc: Dict[str, Any] = {
+            "asset_id": asset.asset_id,
+            "catalog_id": catalog_id,
+            "collection_id": target_col_id,
+            "asset_type": asset.asset_type.value,
+            "uri": asset.uri,
+            "created_at": now,
+            "deleted_at": None,
+            "metadata": asset.metadata,
+            "owned_by": asset.owned_by,
+        }
+
+        write_driver = await get_asset_driver(catalog_id, collection_id, write=True)
+        await write_driver.index_asset(catalog_id, asset_doc, db_resource=db_resource)
+
+        # Fan-out to secondary drivers (fire-and-forget — no db_resource)
+        for secondary in await self._get_secondary_drivers(catalog_id, collection_id):
+            try:
+                await secondary.index_asset(catalog_id, asset_doc)
+            except Exception as err:
+                logger.warning(
+                    "Secondary driver '%s' index_asset failed for %s/%s: %s",
+                    secondary.driver_id, catalog_id, asset.asset_id, err,
                 )
 
-            # Ensure partition exists for this collection in the tenant schema
-            # Partitioning by collection_id
-            await ensure_partition_tool(
-                conn,
-                table_name="assets",
-                strategy="LIST",
-                partition_value=target_col_id,
-                schema=phys_schema,
-                parent_table_name="assets",
-                parent_table_schema=phys_schema,
+        # Fetch canonical state from the write driver (captures DB-set timestamps)
+        fetched_doc = await write_driver.get_asset(
+            catalog_id, asset.asset_id,
+            collection_id=target_col_id,
+            db_resource=db_resource,
+        )
+        created = Asset.model_validate(fetched_doc or asset_doc)
+        if created.collection_id == CATALOG_LEVEL_COLLECTION_ID:
+            created.collection_id = None
+
+        self._invalidate_cache(created.asset_id, catalog_id, target_col_id)
+
+        if self._event_emitter:
+            await self._event_emitter(
+                AssetEventType.ASSET_CREATED, created.model_dump()
             )
-
-            # Assign asset_id (it's mandatory from AssetBase)
-            # if provided in AssetBase.asset_id, use it. But AssetBase must have asset_id.
-
-            now = datetime.now(timezone.utc)
-
-            insert_sql = text(f"""
-                INSERT INTO "{phys_schema}".assets
-                    (asset_id, catalog_id, collection_id, asset_type, uri, created_at, metadata, owned_by)
-                VALUES
-                    (:asset_id, :catalog_id, :collection_id, :asset_type, :uri, :created_at, :metadata, :owned_by)
-                ON CONFLICT (collection_id, asset_id) DO UPDATE SET
-                    uri = EXCLUDED.uri,
-                    metadata = EXCLUDED.metadata,
-                    owned_by = EXCLUDED.owned_by,
-                    deleted_at = NULL
-                RETURNING asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata, owned_by;
-            """)
-
-            res_row = await DQLQuery(
-                insert_sql, result_handler=ResultHandler.ONE_DICT
-            ).execute(
-                conn,
-                asset_id=asset.asset_id,
-                catalog_id=catalog_id,
-                collection_id=target_col_id,
-                asset_type=asset.asset_type.value,
-                uri=asset.uri,
-                created_at=now,
-                metadata=json.dumps(asset.metadata, cls=CustomJSONEncoder),
-                owned_by=asset.owned_by,
-            )
-
-            created = Asset.model_validate(res_row)
-
-            if created.collection_id == CATALOG_LEVEL_COLLECTION_ID:
-                created.collection_id = None
-
-            self._invalidate_cache(created.asset_id, catalog_id, target_col_id)
-
-            if self._event_emitter:
-                await self._event_emitter(
-                    AssetEventType.ASSET_CREATED, created.model_dump()
-                )
-            return created
+        return created
 
     async def update_asset(
         self,
@@ -756,60 +802,57 @@ class AssetService(AssetsProtocol):
         collection_id: Optional[str] = None,
         db_resource: Optional[DbResource] = None,
     ) -> Asset:
-        """
-        Updates an existing asset's metadata.
-        """
-        async with managed_transaction(db_resource or self.engine) as conn:
-            # 1. Fetch current asset
-            current = await self.get_asset(
-                asset_id=asset_id,
-                catalog_id=catalog_id,
-                collection_id=collection_id,
-                db_resource=conn,
+        """Updates an existing asset's metadata via the configured write driver."""
+        from dynastore.modules.catalog.asset_router import get_asset_driver
+        target_col_id = collection_id if collection_id else CATALOG_LEVEL_COLLECTION_ID
+
+        # Fetch current asset
+        current = await self.get_asset(
+            asset_id=asset_id,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            db_resource=db_resource,
+        )
+        if not current:
+            raise ValueError(
+                f"Asset '{asset_id}' not found in catalog '{catalog_id}'."
             )
-            if not current:
-                raise ValueError(
-                    f"Asset '{asset_id}' not found in catalog '{catalog_id}'."
+
+        # Build updated doc
+        updated_doc: Dict[str, Any] = current.model_dump()
+        updated_doc["metadata"] = update.metadata
+        updated_doc["collection_id"] = target_col_id
+
+        write_driver = await get_asset_driver(catalog_id, collection_id, write=True)
+        await write_driver.index_asset(catalog_id, updated_doc, db_resource=db_resource)
+
+        # Fan-out to secondary drivers
+        for secondary in await self._get_secondary_drivers(catalog_id, collection_id):
+            try:
+                await secondary.index_asset(catalog_id, updated_doc)
+            except Exception as err:
+                logger.warning(
+                    "Secondary driver '%s' index_asset (update) failed for %s/%s: %s",
+                    secondary.driver_id, catalog_id, asset_id, err,
                 )
 
-            phys_schema = await self._resolve_schema(catalog_id, conn)
+        # Fetch canonical state
+        fetched_doc = await write_driver.get_asset(
+            catalog_id, asset_id,
+            collection_id=target_col_id,
+            db_resource=db_resource,
+        )
+        updated = Asset.model_validate(fetched_doc or updated_doc)
+        if updated.collection_id == CATALOG_LEVEL_COLLECTION_ID:
+            updated.collection_id = None
 
-            # 2. Merge/Replace metadata (we'll replace for PUT)
-            current.metadata = update.metadata
+        self._invalidate_cache(updated.asset_id, catalog_id, target_col_id)
 
-            # 3. Use direct UPDATE for metadata-only modification
-            target_col_id = (
-                collection_id if collection_id else CATALOG_LEVEL_COLLECTION_ID
+        if self._event_emitter:
+            await self._event_emitter(
+                AssetEventType.ASSET_UPDATED, updated.model_dump()
             )
-
-            update_sql = text(f"""
-                UPDATE "{phys_schema}".assets
-                SET metadata = :metadata
-                WHERE asset_id = :asset_id AND catalog_id = :catalog_id AND collection_id = :collection_id
-                RETURNING asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata, owned_by;
-            """)
-
-            res_row = await DQLQuery(
-                update_sql, result_handler=ResultHandler.ONE_DICT
-            ).execute(
-                conn,
-                metadata=json.dumps(current.metadata, cls=CustomJSONEncoder),
-                asset_id=current.asset_id,
-                catalog_id=catalog_id,
-                collection_id=target_col_id,
-            )
-            updated = Asset.model_validate(res_row)
-
-            if updated.collection_id == CATALOG_LEVEL_COLLECTION_ID:
-                updated.collection_id = None
-
-            self._invalidate_cache(updated.asset_id, catalog_id, target_col_id)
-
-            if self._event_emitter:
-                await self._event_emitter(
-                    AssetEventType.ASSET_UPDATED, updated.model_dump()
-                )
-            return updated
+        return updated
 
     def _invalidate_cache(self, asset_id: str, catalog_id: str, collection_id: str):
         """Invalidates related cache entries."""
@@ -825,82 +868,113 @@ class AssetService(AssetsProtocol):
         propagate: bool = False,
         db_resource: Optional[DbResource] = None,
     ) -> int:
+        """Delete assets matching the given criteria.
+
+        Always uses the PG driver for listing candidates and reference guard
+        (catalog-wide coordination via ``asset_references``).  Hard-deletes are
+        fanned out to secondary drivers after the primary deletion.
+        """
+        from dynastore.modules.catalog.asset_router import get_asset_driver
+        from dynastore.modules.catalog.drivers.pg_asset_driver import PostgresAssetDriver
+
         now = datetime.now(timezone.utc)
+
+        # Resolve PG driver for reference guard (always PG regardless of write driver)
+        pg_driver = PostgresAssetDriver(engine=db_resource or self.engine)
+        phys_schema = await pg_driver._resolve_schema(catalog_id, db_resource)
+        if not phys_schema:
+            return 0
+
+        # --- Locate matching assets via PG (canonical listing) ---
+        where_clauses = ["catalog_id = :cat"]
+        params: Dict[str, Any] = {"cat": catalog_id, "now": now}
+        if asset_id:
+            where_clauses.append("asset_id = :aid")
+            params["aid"] = asset_id
+        if collection_id:
+            where_clauses.append("collection_id = :coll")
+            params["coll"] = collection_id
+        elif asset_id:
+            where_clauses.append("collection_id = :coll")
+            params["coll"] = CATALOG_LEVEL_COLLECTION_ID
+
+        where_stmt = " AND ".join(where_clauses)
+
         async with managed_transaction(db_resource or self.engine) as conn:
-            phys_schema = await self._resolve_schema(catalog_id, conn)
-            if not phys_schema:
-                return 0
-
-            where_clauses = ["catalog_id = :cat"]
-            params = {"cat": catalog_id, "now": now}
-            if asset_id:
-                where_clauses.append("asset_id = :aid")
-                params["aid"] = asset_id
-
-            # Determine collection filter
-            if collection_id:
-                where_clauses.append("collection_id = :coll")
-                params["coll"] = collection_id
-            elif asset_id:
-                where_clauses.append("collection_id = :coll")
-                params["coll"] = CATALOG_LEVEL_COLLECTION_ID
-
-            where_stmt = " AND ".join(where_clauses)
-
             fetch_sql = text(
-                f'SELECT asset_id, catalog_id, collection_id, owned_by FROM "{phys_schema}".assets WHERE {where_stmt}'
+                f'SELECT asset_id, catalog_id, collection_id, owned_by '
+                f'FROM "{phys_schema}".assets WHERE {where_stmt}'
             )
-
-            assets = await DQLQuery(
+            asset_rows = await DQLQuery(
                 fetch_sql, result_handler=ResultHandler.ALL_DICTS
             ).execute(conn, **params)
 
-            if not assets:
+            if not asset_rows:
                 return 0
 
-            # --- Reference guard: block hard-delete of owned assets with blocking references ---
-            # Single LEFT JOIN replaces the per-asset loop (eliminates N+1 round trips).
+            # --- Reference guard ---
             if hard:
-                owned_ids = [a["asset_id"] for a in assets if a.get("owned_by")]
+                owned_ids = [a["asset_id"] for a in asset_rows if a.get("owned_by")]
                 if owned_ids:
                     blocking_rows = await self._list_blocking_references_bulk(
                         owned_ids, catalog_id, conn, phys_schema
                     )
                     if blocking_rows:
-                        # Raise on the first asset that has blocking refs.
                         first_asset_id = blocking_rows[0].asset_id
-                        asset_blocking = [r for r in blocking_rows if r.asset_id == first_asset_id]
+                        asset_blocking = [
+                            r for r in blocking_rows if r.asset_id == first_asset_id
+                        ]
                         raise AssetReferencedError(first_asset_id, asset_blocking)
 
+            # --- Execute delete via PG SQL (bulk, efficient) ---
             prefix = (
                 f'DELETE FROM "{phys_schema}".assets'
                 if hard
                 else f'UPDATE "{phys_schema}".assets SET deleted_at = :now'
             )
             final_sql = text(f"{prefix} WHERE {where_stmt}")
-
-            # Use DQLQuery with ROWCOUNT handler for UPDATE/DELETE to ensure sync/async compatibility
-            # For HARD DELETE, DDLQuery could be used but DQL with ROWCOUNT is also fine and returns count
             rowcount = await DQLQuery(
                 final_sql, result_handler=ResultHandler.ROWCOUNT
             ).execute(conn, **params)
 
-            # Invalidate cache
-            for a in assets:
-                self._invalidate_cache(
-                    a["asset_id"], a["catalog_id"], a["collection_id"]
-                )
+        if rowcount == 0:
+            return 0
 
-            # Emit delete events for secondary driver fan-out
-            if self._event_emitter and rowcount > 0:
-                event_type = (
-                    AssetEventType.ASSET_HARD_DELETED if hard
-                    else AssetEventType.ASSET_DELETED
-                )
-                for a in assets:
-                    await self._event_emitter(event_type, dict(a))
+        # Invalidate cache
+        for a in asset_rows:
+            self._invalidate_cache(a["asset_id"], a["catalog_id"], a["collection_id"])
 
-            return rowcount
+        # Fan-out hard-deletes to write driver (if non-PG) and secondary drivers
+        if hard:
+            write_driver = await get_asset_driver(catalog_id, collection_id, write=True)
+            secondaries = await self._get_secondary_drivers(catalog_id, collection_id)
+            drivers_to_notify: List[AssetDriverProtocol] = []
+            if not isinstance(write_driver, PostgresAssetDriver):
+                drivers_to_notify.append(write_driver)
+            drivers_to_notify.extend(secondaries)
+
+            for a in asset_rows:
+                for driver in drivers_to_notify:
+                    try:
+                        await driver.delete_asset(
+                            a["catalog_id"], a["asset_id"]
+                        )
+                    except Exception as err:
+                        logger.warning(
+                            "Driver '%s' delete_asset failed for %s/%s: %s",
+                            driver.driver_id, a["catalog_id"], a["asset_id"], err,
+                        )
+
+        # Emit events
+        if self._event_emitter:
+            event_type = (
+                AssetEventType.ASSET_HARD_DELETED if hard
+                else AssetEventType.ASSET_DELETED
+            )
+            for a in asset_rows:
+                await self._event_emitter(event_type, dict(a))
+
+        return rowcount
 
     async def soft_delete_asset(
         self,
@@ -1041,7 +1115,6 @@ class AssetService(AssetsProtocol):
     # Asset reference CRUD
     # -------------------------------------------------------------------------
 
-    @transactional()
     async def add_asset_reference(
         self,
         asset_id: str,
@@ -1051,32 +1124,19 @@ class AssetService(AssetsProtocol):
         cascade_delete: bool = True,
         db_resource: Optional[DbResource] = None,
     ) -> AssetReference:
-        """Registers a dependency on an asset from *ref_id*."""
-        phys_schema = await self._resolve_schema(catalog_id, db_resource)
-        if not phys_schema:
-            raise ValueError(f"Catalog '{catalog_id}' not found.")
-
-        now = datetime.now(timezone.utc)
-        sql = text(f"""
-            INSERT INTO "{phys_schema}".asset_references
-                (asset_id, catalog_id, ref_type, ref_id, cascade_delete, created_at)
-            VALUES (:asset_id, :catalog_id, :ref_type, :ref_id, :cascade_delete, :created_at)
-            ON CONFLICT (catalog_id, asset_id, ref_type, ref_id) DO UPDATE SET
-                cascade_delete = EXCLUDED.cascade_delete
-            RETURNING asset_id, catalog_id, ref_type, ref_id, cascade_delete, created_at;
-        """)
-        row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
-            db_resource,
+        """Registers a dependency on an asset. Delegates to PostgresAssetDriver."""
+        from dynastore.modules.catalog.drivers.pg_asset_driver import PostgresAssetDriver
+        pg = PostgresAssetDriver(engine=db_resource or self.engine)
+        row = await pg.add_asset_reference(
             asset_id=asset_id,
             catalog_id=catalog_id,
-            ref_type=ref_type.value if hasattr(ref_type, "value") else str(ref_type),
+            ref_type=ref_type,
             ref_id=ref_id,
             cascade_delete=cascade_delete,
-            created_at=now,
+            db_resource=db_resource,
         )
         return AssetReference.model_validate(row)
 
-    @transactional()
     async def remove_asset_reference(
         self,
         asset_id: str,
@@ -1086,25 +1146,16 @@ class AssetService(AssetsProtocol):
         db_resource: Optional[DbResource] = None,
     ) -> None:
         """Removes a previously registered asset reference."""
-        phys_schema = await self._resolve_schema(catalog_id, db_resource)
-        if not phys_schema:
-            return
-        sql = text(f"""
-            DELETE FROM "{phys_schema}".asset_references
-            WHERE catalog_id = :catalog_id
-              AND asset_id   = :asset_id
-              AND ref_type   = :ref_type
-              AND ref_id     = :ref_id;
-        """)
-        await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
-            db_resource,
-            catalog_id=catalog_id,
+        from dynastore.modules.catalog.drivers.pg_asset_driver import PostgresAssetDriver
+        pg = PostgresAssetDriver(engine=db_resource or self.engine)
+        await pg.remove_asset_reference(
             asset_id=asset_id,
-            ref_type=ref_type.value if hasattr(ref_type, "value") else str(ref_type),
+            catalog_id=catalog_id,
+            ref_type=ref_type,
             ref_id=ref_id,
+            db_resource=db_resource,
         )
 
-    @transactional()
     async def list_asset_references(
         self,
         asset_id: str,
@@ -1112,40 +1163,14 @@ class AssetService(AssetsProtocol):
         db_resource: Optional[DbResource] = None,
     ) -> List[AssetReference]:
         """Returns all active references for the given asset."""
-        phys_schema = await self._resolve_schema(catalog_id, db_resource)
-        if not phys_schema:
-            return []
-        sql = f"""
-            SELECT asset_id, catalog_id, ref_type, ref_id, cascade_delete, created_at
-            FROM "{phys_schema}".asset_references
-            WHERE catalog_id = :catalog_id AND asset_id = :asset_id
-            ORDER BY created_at ASC;
-        """
-        rows = await DQLQuery(
-            sql, result_handler=PydanticResultHandler.pydantic_all(AssetReference)
-        ).execute(db_resource, catalog_id=catalog_id, asset_id=asset_id)
-        return rows or []
-
-    async def _list_blocking_references(
-        self,
-        asset_id: str,
-        catalog_id: str,
-        conn: DbConnection,
-        phys_schema: str,
-    ) -> List[AssetReference]:
-        """
-        Returns only the ``cascade_delete=False`` references for a single asset.
-        Uses the partial index for efficiency.
-        """
-        sql = f"""
-            SELECT asset_id, catalog_id, ref_type, ref_id, cascade_delete, created_at
-            FROM "{phys_schema}".asset_references
-            WHERE catalog_id = :catalog_id AND asset_id = :asset_id AND cascade_delete = FALSE;
-        """
-        rows = await DQLQuery(
-            sql, result_handler=PydanticResultHandler.pydantic_all(AssetReference)
-        ).execute(conn, catalog_id=catalog_id, asset_id=asset_id)
-        return rows or []
+        from dynastore.modules.catalog.drivers.pg_asset_driver import PostgresAssetDriver
+        pg = PostgresAssetDriver(engine=db_resource or self.engine)
+        rows = await pg.list_asset_references(
+            asset_id=asset_id,
+            catalog_id=catalog_id,
+            db_resource=db_resource,
+        )
+        return [AssetReference.model_validate(r) for r in rows]
 
     async def _list_blocking_references_bulk(
         self,
@@ -1154,62 +1179,17 @@ class AssetService(AssetsProtocol):
         conn: DbConnection,
         phys_schema: str,
     ) -> List[AssetReference]:
-        """
-        Returns ``cascade_delete=False`` references for *all* given asset IDs in one
-        round trip.  Uses the partial index on ``(catalog_id, asset_id) WHERE
-        cascade_delete = FALSE``.  Called by ``delete_assets`` to replace the
-        per-asset loop.
-        """
-        placeholders = ", ".join(f":aid_{i}" for i in range(len(asset_ids)))
-        params: Dict[str, Any] = {"catalog_id": catalog_id}
-        for i, aid in enumerate(asset_ids):
-            params[f"aid_{i}"] = aid
-        sql = text(f"""
-            SELECT asset_id, catalog_id, ref_type, ref_id, cascade_delete, created_at
-            FROM "{phys_schema}".asset_references
-            WHERE catalog_id = :catalog_id
-              AND asset_id IN ({placeholders})
-              AND cascade_delete = FALSE
-            ORDER BY asset_id, created_at ASC;
-        """)
-        rows = await DQLQuery(
-            sql, result_handler=PydanticResultHandler.pydantic_all(AssetReference)
-        ).execute(conn, **params)
-        return rows or []
+        """Returns cascade_delete=False references for all given asset IDs in one round trip."""
+        from dynastore.modules.catalog.drivers.pg_asset_driver import PostgresAssetDriver
+        pg = PostgresAssetDriver(engine=conn)
+        rows = await pg.check_blocking_references(
+            asset_ids=asset_ids,
+            catalog_id=catalog_id,
+            db_resource=conn,
+        )
+        return [AssetReference.model_validate(r) for r in rows]
 
 
-# ==============================================================================
-# Lifecycle registration — asset_references table
-# ==============================================================================
-
-from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
-
-
-@lifecycle_registry.sync_catalog_initializer(priority=10)
-async def _initialize_asset_refs_tenant_slice(
-    conn: DbResource, schema: str, catalog_id: str
-) -> None:
-    """
-    Idempotently creates ``asset_references`` in every new tenant schema.
-    Runs inside the outer catalog-creation transaction (same SAVEPOINT context as
-    other sync_catalog_initializers) so the table is guaranteed to exist before
-    any lifecycle hook that registers references.
-
-    Priority 10 ensures this runs before module-specific hooks (default priority
-    is 0; stats/events use 50) that may call ``add_asset_reference``.
-    """
-    ddl = f"""
-    CREATE TABLE IF NOT EXISTS "{schema}".asset_references (
-        asset_id       VARCHAR     NOT NULL,
-        catalog_id     VARCHAR     NOT NULL,
-        ref_type       VARCHAR     NOT NULL,
-        ref_id         VARCHAR     NOT NULL,
-        cascade_delete BOOLEAN     NOT NULL DEFAULT TRUE,
-        created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-        PRIMARY KEY (catalog_id, asset_id, ref_type, ref_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_asset_refs_blocking_{schema}
-        ON "{schema}".asset_references (catalog_id, asset_id)
-        WHERE cascade_delete = FALSE;
-    """.strip()
-    await DDLQuery(ddl).execute(conn, schema=schema)
+# assets and asset_references tables are now created by
+# PostgresAssetDriver._pg_asset_driver_init_tenant (priority 5) in
+# modules/catalog/drivers/pg_asset_driver.py

@@ -191,9 +191,7 @@ class PostgresStorageDriver(ModuleProtocol):
         self,
         catalog_id: str,
         collection_id: Optional[str] = None,
-        *,
-        db_resource=None,
-        col_config=None,
+        **kwargs,
     ) -> None:
         """Create PG hub table + sidecar tables for a collection.
 
@@ -203,9 +201,20 @@ class PostgresStorageDriver(ModuleProtocol):
         the mapping in ``pg_storage_locations``.
 
         If ``collection_id`` is None, this is a no-op (catalog-level call).
+
+        PG-specific kwargs:
+            physical_table: Optional explicit table name. If not provided,
+                one is generated automatically.
+            layer_config: Optional config overlay merged on top of the
+                resolved ``CollectionPluginConfig`` before creating storage.
         """
         if not collection_id:
             return
+
+        db_resource = kwargs.get("db_resource")
+        col_config = kwargs.get("col_config")
+        physical_table = kwargs.get("physical_table")
+        layer_config = kwargs.get("layer_config")
 
         from dynastore.modules.db_config.query_executor import (
             DDLQuery, DQLQuery, ResultHandler, managed_transaction, managed_nested_transaction,
@@ -227,13 +236,44 @@ class PostgresStorageDriver(ModuleProtocol):
             configs = get_protocol(ConfigsProtocol)
             if configs:
                 col_config = await configs.get_config(
-                    COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id
+                    COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id,
+                    db_resource=db_resource,
                 )
         if col_config is None:
             col_config = CollectionPluginConfig()
 
-        # --- Generate physical table name ---
-        physical_table = generate_physical_name("t")
+        # Apply layer_config overlay if provided
+        if layer_config:
+            base_dump = col_config.model_dump()
+            layer_config_dict = (
+                layer_config.model_dump()
+                if hasattr(layer_config, "model_dump")
+                else layer_config
+            )
+
+            def deep_update(d, u):
+                for k, v in u.items():
+                    if isinstance(v, dict):
+                        d[k] = deep_update(d.get(k, {}), v)
+                    else:
+                        d[k] = v
+                return d
+
+            merged = deep_update(base_dump, layer_config_dict)
+            try:
+                from dynastore.modules.db_config.platform_config_service import (
+                    ConfigRegistry,
+                )
+                col_config = ConfigRegistry.validate_config("collection", merged)
+            except Exception as e:
+                logger.error(
+                    "Failed to merge layer_config for %s:%s: %s",
+                    catalog_id, collection_id, e,
+                )
+
+        # --- Generate physical table name if not provided ---
+        if not physical_table:
+            physical_table = generate_physical_name("t")
 
         # --- Partition context ---
         partition_keys = []

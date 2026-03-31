@@ -72,10 +72,10 @@ class TestElasticsearchBase:
 class TestIsSecondaryFor:
     @pytest.mark.asyncio
     async def test_returns_true_when_listed(self):
-        from dynastore.modules.storage.config import StorageRoutingConfig
+        from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
 
         mock_configs = AsyncMock()
-        routing = StorageRoutingConfig(secondary_drivers=["elasticsearch"])
+        routing = CollectionPluginConfig(secondary_drivers=["elasticsearch"])
         mock_configs.get_config = AsyncMock(return_value=routing)
 
         with patch("dynastore.tools.discovery.get_protocol", return_value=mock_configs):
@@ -86,10 +86,10 @@ class TestIsSecondaryFor:
 
     @pytest.mark.asyncio
     async def test_returns_false_when_not_listed(self):
-        from dynastore.modules.storage.config import StorageRoutingConfig
+        from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
 
         mock_configs = AsyncMock()
-        routing = StorageRoutingConfig(secondary_drivers=["duckdb"])
+        routing = CollectionPluginConfig(secondary_drivers=["duckdb"])
         mock_configs.get_config = AsyncMock(return_value=routing)
 
         with patch("dynastore.tools.discovery.get_protocol", return_value=mock_configs):

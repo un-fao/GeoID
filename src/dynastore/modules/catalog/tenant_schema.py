@@ -80,24 +80,7 @@ CREATE TABLE IF NOT EXISTS {schema}.pg_collection_metadata (
 );
 """
 
-# 2. ASSETS
-TENANT_ASSETS_DDL = """
-CREATE TABLE IF NOT EXISTS {schema}.assets (
-    asset_id VARCHAR NOT NULL,
-    catalog_id VARCHAR NOT NULL,
-    collection_id VARCHAR NOT NULL DEFAULT '_catalog_',
-    asset_type VARCHAR NOT NULL,
-    uri TEXT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    deleted_at TIMESTAMPTZ DEFAULT NULL,
-    metadata JSONB DEFAULT '{{}}',
-    owned_by VARCHAR DEFAULT NULL,
-    PRIMARY KEY (collection_id, asset_id)
-) PARTITION BY LIST (collection_id);
-CREATE INDEX IF NOT EXISTS idx_assets_created_at ON {schema}.assets (created_at);
-"""
-
-# 3. CONFIGS
+# 2. CONFIGS (assets table is now created by PostgresAssetDriver lifecycle hook)
 TENANT_CATALOG_CONFIGS_DDL = """
 CREATE TABLE IF NOT EXISTS {schema}.catalog_configs (
     catalog_id  VARCHAR NOT NULL,
@@ -157,7 +140,6 @@ async def initialize_tenant_shell(conn: DbResource, schema: str, catalog_id: str
         TENANT_COLLECTIONS_DDL
         + PG_STORAGE_LOCATIONS_DDL
         + PG_COLLECTION_METADATA_DDL
-        + TENANT_ASSETS_DDL
         + TENANT_CATALOG_CONFIGS_DDL
         + TENANT_COLLECTION_CONFIGS_DDL
     ).execute(conn, schema=schema)

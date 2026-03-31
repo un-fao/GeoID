@@ -23,7 +23,7 @@ class TestReadHintEnum:
 
     def test_all_members(self):
         members = list(ReadHint)
-        assert len(members) == 6
+        assert len(members) == 8
 
 
 class TestCustomHintRegistration:

@@ -203,14 +203,17 @@ ASSET_MAPPING: Dict[str, Any] = {
     "dynamic_templates": DYNAMIC_TEMPLATES,
     "numeric_detection": False,
     "properties": {
-        **COMMON_PROPERTIES,
-        "item_id":    {"type": "keyword"},
-        "asset_key":  {"type": "keyword"},   # the dict key under 'assets'
-        "href":       {"type": "keyword", "index": False, "doc_values": False},
-        "roles":      {"type": "keyword"},
-        "media_type": {"type": "keyword"},
-        "created":    {"type": "date"},
-        "updated":    {"type": "date"},
+        "asset_id":      {"type": "keyword"},
+        "catalog_id":    {"type": "keyword"},
+        "collection_id": {"type": "keyword"},
+        "asset_type":    {"type": "keyword"},
+        "uri":           {"type": "keyword", "index": False, "doc_values": False},
+        "owned_by":      {"type": "keyword"},
+        "created_at":    {"type": "date"},
+        "deleted_at":    {"type": "date"},
+        # metadata is dynamic — nested fields (e.g. metadata.license_id)
+        # are auto-mapped by dynamic_templates (strings → keyword, longs → float)
+        "metadata":      {"type": "object", "dynamic": True},
     },
 }
 

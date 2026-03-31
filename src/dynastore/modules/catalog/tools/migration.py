@@ -120,7 +120,7 @@ class OneShotMigrator:
             if target_hub_table != source_table:
                 # We need to create the Hub table mirroring the source but ONLY core columns
                 # For simplicity, we assume we want a standard Hub structure
-                # Actually, CatalogService.create_physical_collection_impl can do this
+                # Routes through the write driver's ensure_storage()
                 await catalogs.create_physical_collection(
                     conn,
                     phys_schema,
@@ -130,7 +130,7 @@ class OneShotMigrator:
                     layer_config={"sidecars": new_sidecars},
                 )
 
-            # Sidecar tables are created by create_physical_collection_impl above!
+            # Sidecar tables are created by the write driver's ensure_storage() above
 
             # 4. Data Distribution
             # We migrate from source_table to the new Hub and Sidecars

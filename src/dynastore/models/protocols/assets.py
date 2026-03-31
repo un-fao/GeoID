@@ -259,9 +259,11 @@ class AssetsProtocol(Protocol):
         """
         Ensures the ``trg_asset_cleanup`` DB trigger is installed on *table*.
 
-        This is called by SQL-backed drivers after creating tables that reference
-        assets, so that row-level cascade cleanup fires automatically on DELETE.
-        Non-SQL implementations may implement this as a no-op.
+        **PostgreSQL-specific** — called by SQL-backed drivers after creating
+        tables that reference assets, so that row-level cascade cleanup fires
+        automatically on DELETE.  Non-SQL implementations (e.g. when
+        Elasticsearch is the primary asset store) should implement this as a
+        no-op.
 
         Args:
             schema: PostgreSQL schema name.

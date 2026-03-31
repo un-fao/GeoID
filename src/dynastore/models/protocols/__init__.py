@@ -69,6 +69,7 @@ from dynastore.models.protocols.indexer import IndexerProtocol
 from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
 from dynastore.models.protocols.asset_driver import AssetDriverProtocol
 from dynastore.models.protocols.enrichment import CollectionMetadataEnricherProtocol
+from dynastore.models.protocols.asset_enricher import AssetEnricherProtocol
 from dynastore.models.protocols.asset_upload import (
     AssetUploadProtocol,
     UploadTicket,
@@ -128,6 +129,7 @@ __all__ = [
     "CollectionStorageDriverProtocol",
     "AssetDriverProtocol",
     "CollectionMetadataEnricherProtocol",
+    "AssetEnricherProtocol",
     "AssetUploadProtocol",
     "UploadTicket",
     "UploadStatus",

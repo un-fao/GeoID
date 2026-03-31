@@ -533,6 +533,7 @@ class IcebergStorageDriver(ModuleProtocol):
         self,
         catalog_id: str,
         collection_id: Optional[str] = None,
+        **kwargs,
     ) -> None:
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
