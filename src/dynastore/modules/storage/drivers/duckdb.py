@@ -446,3 +446,59 @@ class DuckDBStorageDriver(ModuleProtocol):
         if loc:
             return loc
         return FileStorageLocationConfig(driver="duckdb", format="parquet")
+
+    # ------------------------------------------------------------------
+    # Collection metadata (sidecar JSON file alongside the parquet)
+    # ------------------------------------------------------------------
+
+    async def get_collection_metadata(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        db_resource=None,
+    ) -> Optional[Dict[str, Any]]:
+        """Read collection metadata from the sidecar JSON file."""
+        import json
+        import os
+
+        loc = await self._get_location_async(catalog_id, collection_id)
+        if not loc or not loc.path:
+            return None
+
+        sidecar = os.path.join(
+            os.path.dirname(loc.path),
+            f".dynastore_meta_{collection_id}.json",
+        )
+        if not os.path.exists(sidecar):
+            return None
+        try:
+            with open(sidecar, "r") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    async def set_collection_metadata(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        metadata: Dict[str, Any],
+        *,
+        db_resource=None,
+    ) -> None:
+        """Write collection metadata to the sidecar JSON file.
+
+        Sidecar location: ``{dirname(loc.path)}/.dynastore_meta_{collection_id}.json``
+        """
+        import json
+        import os
+
+        loc = await self._get_location_async(catalog_id, collection_id)
+        if not loc or not loc.path:
+            return
+
+        base_dir = os.path.dirname(loc.path)
+        os.makedirs(base_dir, exist_ok=True)
+        sidecar = os.path.join(base_dir, f".dynastore_meta_{collection_id}.json")
+        with open(sidecar, "w") as f:
+            json.dump(metadata, f, default=str)

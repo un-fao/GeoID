@@ -936,3 +936,77 @@ class IcebergStorageDriver(ModuleProtocol):
             fields=fields,
             timestamp=datetime.now(tz=timezone.utc),
         )
+
+    # ------------------------------------------------------------------
+    # Collection metadata (stored in Iceberg table properties)
+    # ------------------------------------------------------------------
+
+    # Namespace prefix for all metadata properties stored on the Iceberg table.
+    _META_PREFIX = "dynastore.meta."
+
+    async def get_collection_metadata(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        db_resource=None,
+    ) -> Optional[Dict[str, Any]]:
+        """Read collection metadata from Iceberg table properties."""
+        import json
+        loc = await self._get_location_async(catalog_id, collection_id)
+        if not loc:
+            return None
+        try:
+            catalog = await self._ensure_catalog(loc, catalog_id)
+            table_id = self._table_identifier(loc, catalog_id, collection_id)
+            table = catalog.load_table(table_id)
+        except Exception:
+            return None
+
+        prefix = self._META_PREFIX
+        metadata: Dict[str, Any] = {}
+        for key, val in table.properties.items():
+            if key.startswith(prefix):
+                field = key[len(prefix):]
+                try:
+                    metadata[field] = json.loads(val)
+                except (json.JSONDecodeError, TypeError):
+                    metadata[field] = val
+        return metadata or None
+
+    async def set_collection_metadata(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        metadata: Dict[str, Any],
+        *,
+        db_resource=None,
+    ) -> None:
+        """Write collection metadata to Iceberg table properties.
+
+        All values are JSON-serialised (Iceberg properties are string-only).
+        """
+        import json
+        loc = await self._get_location_async(catalog_id, collection_id)
+        if not loc:
+            return
+        try:
+            catalog = await self._ensure_catalog(loc, catalog_id)
+            table_id = self._table_identifier(loc, catalog_id, collection_id)
+            table = catalog.load_table(table_id)
+        except Exception:
+            logger.warning(
+                "IcebergStorageDriver.set_collection_metadata: table not found "
+                "for catalog=%s collection=%s", catalog_id, collection_id,
+            )
+            return
+
+        prefix = self._META_PREFIX
+        props = {
+            f"{prefix}{key}": (val if isinstance(val, str) else json.dumps(val, default=str))
+            for key, val in metadata.items()
+            if val is not None
+        }
+        if props:
+            with table.transaction() as tx:
+                tx.set_properties(**props)
