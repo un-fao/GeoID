@@ -1421,7 +1421,10 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
                 catalog_id, asset_id, e,
             )
 
-    # Assets driver indexes asset documents only — not a collection metadata driver.
+    # ------------------------------------------------------------------
+    # Collection metadata (via SFEOS DatabaseLogic — same as full ES driver)
+    # ------------------------------------------------------------------
+
     async def get_collection_metadata(
         self,
         catalog_id: str,
@@ -1429,6 +1432,16 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
         *,
         db_resource=None,
     ) -> Optional[Dict[str, Any]]:
+        """Read collection metadata from the ES collection index via SFEOS."""
+        db = self._get_db_logic()
+        try:
+            doc = await db.find_collection(collection_id)
+            if doc:
+                doc.pop("type", None)
+                doc.pop("id", None)
+                return doc
+        except Exception:
+            pass
         return None
 
     async def set_collection_metadata(
@@ -1439,4 +1452,14 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
         *,
         db_resource=None,
     ) -> None:
-        pass
+        """Upsert collection metadata as a STAC Collection doc in ES via SFEOS."""
+        db = self._get_db_logic()
+        doc = dict(metadata)
+        doc.setdefault("id", collection_id)
+        doc.setdefault("type", "Collection")
+        try:
+            await db.create_collection(doc, refresh=False)
+        except Exception:
+            await db.find_collection(collection_id)
+            from stac_fastapi.sfeos_helpers.database import update_catalog_in_index_shared
+            await update_catalog_in_index_shared(db.client, collection_id, doc)
