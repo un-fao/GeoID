@@ -1,2 +1,2 @@
 -r ${APP_DIR}/src/dynastore/extensions/mvt/requirements.txt
-GDAL==3.11.4
+GDAL==3.12.3

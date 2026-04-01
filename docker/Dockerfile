@@ -1,5 +1,5 @@
 # STAGE 1: Builder (Production dependencies)
-FROM ghcr.io/osgeo/gdal:ubuntu-full-3.11.4 AS builder
+FROM ghcr.io/osgeo/gdal:ubuntu-full-3.12.3 AS builder
 
 LABEL maintainer="carlo.cancellieri@fao.org"
 
@@ -75,7 +75,7 @@ WORKDIR ${APP_DIR}
 EXPOSE 5678 5679
 
 # STAGE 4: Runtime (Production image)
-FROM ghcr.io/osgeo/gdal:ubuntu-full-3.11.4 AS runtime
+FROM ghcr.io/osgeo/gdal:ubuntu-full-3.12.3 AS runtime
 
 ARG APP_USER=dynastore
 ARG APP_UID=1001
