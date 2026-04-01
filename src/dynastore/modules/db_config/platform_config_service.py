@@ -207,6 +207,29 @@ def compute_config_diff(
     return changed
 
 
+# --- Startup resilience ---
+
+
+def _is_undefined_table_error(exc: BaseException) -> bool:
+    """Return ``True`` when *exc* (or its cause chain) wraps a PG 42P01
+    ``UndefinedTableError``, meaning the ``configs.platform_configs`` table
+    has not been created yet.
+    """
+    current: BaseException | None = exc
+    while current is not None:
+        cls_name = type(current).__name__
+        # asyncpg.exceptions.UndefinedTableError
+        if cls_name == "UndefinedTableError":
+            return True
+        # sqlalchemy wraps it as ProgrammingError with pgcode 42P01
+        if cls_name == "ProgrammingError" and getattr(current, "orig", None) is not None:
+            orig = current.orig  # type: ignore[attr-defined]
+            if getattr(orig, "sqlstate", None) == "42P01":
+                return True
+        current = current.__cause__
+    return False
+
+
 # --- Schema (Platform Level Only) ---
 
 PLATFORM_CONFIGS_SCHEMA = """
@@ -460,22 +483,49 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
         return ConfigRegistry.create_default(plugin_id)
 
     async def _get_platform_config_internal_db(self, plugin_id: str) -> Optional[dict]:
-        """Internal fetcher (returned as dict for immutability)."""
-        async with managed_transaction(self.engine) as conn:
-            return await get_platform_config_query.execute(conn, plugin_id=plugin_id)
+        """Internal fetcher (returned as dict for immutability).
+
+        Returns ``None`` when the ``configs.platform_configs`` table does not
+        exist yet (e.g. first startup before ``initialize_storage`` runs),
+        so the caller falls through to code defaults instead of crashing.
+        """
+        try:
+            async with managed_transaction(self.engine) as conn:
+                return await get_platform_config_query.execute(conn, plugin_id=plugin_id)
+        except Exception as exc:
+            if _is_undefined_table_error(exc):
+                logger.debug(
+                    "configs.platform_configs not yet created — returning None for '%s'",
+                    plugin_id,
+                )
+                return None
+            raise
 
     async def _get_platform_config_internal(
         self, plugin_id: str, db_resource: Optional[DbResource] = None
     ) -> Optional[PluginConfig]:
-        """Internal fetcher that respects the provided db_resource, falling back to cache."""
-        if db_resource:
-            # Execute directly on the provided connection - it's already in a transaction
-            data = await get_platform_config_query.execute(
-                db_resource, plugin_id=plugin_id
-            )
-        else:
-            # Fall back to cached version which creates its own transaction
-            data = await self.get_platform_config_internal_cached(plugin_id)
+        """Internal fetcher that respects the provided db_resource, falling back to cache.
+
+        Gracefully returns ``None`` when the platform_configs table does not
+        exist yet, allowing the waterfall to resolve to code defaults.
+        """
+        try:
+            if db_resource:
+                # Execute directly on the provided connection - it's already in a transaction
+                data = await get_platform_config_query.execute(
+                    db_resource, plugin_id=plugin_id
+                )
+            else:
+                # Fall back to cached version which creates its own transaction
+                data = await self.get_platform_config_internal_cached(plugin_id)
+        except Exception as exc:
+            if _is_undefined_table_error(exc):
+                logger.debug(
+                    "configs.platform_configs not yet created — returning None for '%s'",
+                    plugin_id,
+                )
+                return None
+            raise
 
         return ConfigRegistry.validate_config(plugin_id, data) if data else None
 

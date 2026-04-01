@@ -117,12 +117,110 @@ curl http://localhost:8000/configs/plugins?with_schema=true
 }
 ```
 
+## Quick Start — PostgreSQL Defaults
+
+The most common setup is a catalog with PostgreSQL for all storage.
+Use the **bulk-apply** endpoint to configure everything in a single call:
+
+### 1. Configure a new catalog
+
+```bash
+curl -X PUT http://localhost:8000/configs/catalogs/my_catalog/bulk \
+  -H "Content-Type: application/json" \
+  -d '{
+  "configs": {
+    "routing": {
+      "enabled": true,
+      "operations": {
+        "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
+        "READ":  [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}]
+      }
+    },
+    "routing_assets": {
+      "enabled": true,
+      "operations": {
+        "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
+        "READ":  [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}]
+      }
+    },
+    "stac": {
+      "enabled": true,
+      "enabled_extensions": [],
+      "asset_tracking": {"enabled": true, "access_mode": "DIRECT"}
+    },
+    "tiles":    {"enabled": true, "min_zoom": 0, "max_zoom": 12},
+    "features": {"enabled": true},
+    "tasks":    {"enabled": true, "queue_poll_interval": 30.0}
+  }
+}'
+```
+
+### 2. Configure a new collection with PG driver
+
+```bash
+curl -X PUT http://localhost:8000/configs/catalogs/my_catalog/collections/my_collection/bulk \
+  -H "Content-Type: application/json" \
+  -d '{
+  "configs": {
+    "driver:postgresql": {
+      "enabled": true,
+      "collection_type": "VECTOR",
+      "sidecars": [
+        {
+          "sidecar_type": "geometries",
+          "enabled": true,
+          "target_srid": 4326,
+          "target_dimension": "force_2d",
+          "geom_column": "geom",
+          "bbox_column": "bbox_geom",
+          "invalid_geom_policy": "attempt_fix",
+          "srid_mismatch_policy": "transform"
+        },
+        {
+          "sidecar_type": "attributes",
+          "enabled": true,
+          "storage_mode": "automatic",
+          "enable_external_id": true,
+          "enable_asset_id": true,
+          "versioning_behavior": "UPDATE_EXISTING_VERSION"
+        }
+      ],
+      "partitioning": {"enabled": false, "partition_keys": []}
+    },
+    "routing": {
+      "enabled": true,
+      "operations": {
+        "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
+        "READ":  [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}]
+      }
+    },
+    "stac": {
+      "enabled": true,
+      "enabled_extensions": [],
+      "asset_tracking": {"enabled": true, "access_mode": "DIRECT"}
+    }
+  }
+}'
+```
+
+### 3. Browse available examples
+
+```bash
+# All plugins
+curl http://localhost:8000/configs/examples
+
+# Specific plugin
+curl http://localhost:8000/configs/examples/driver:postgresql
+```
+
 ## API Endpoints
 
 This extension provides a RESTful API for managing configurations at all three levels of the hierarchy (Platform, Catalog, and Collection). It includes endpoints for:
 
-*   Listing all explicitly set configurations at a given level.
-*   Getting the final, resolved configuration for a specific plugin and context.
-*   Setting (or overriding) a configuration at a specific level.
+*   **CRUD** — Listing, getting, setting, and deleting configurations at each level.
+*   **Examples** — `GET /configs/examples` and `GET /configs/examples/{plugin_id}` return ready-to-use payloads.
+*   **Bulk apply** — `PUT /configs/catalogs/{id}/bulk` and `PUT /configs/catalogs/{id}/collections/{id}/bulk` apply multiple plugins in one call.
+*   **Search** — `GET /configs/catalogs/{id}/search?q=driver` filters configs by plugin name.
+*   **Schema discovery** — `GET /configs/plugins?with_schema=true` returns JSON Schemas for all registered plugins.
 
-For a detailed list of all endpoints, their parameters, and request/response bodies, please refer to the interactive OpenAPI documentation available at `/docs`.
+For the full interactive documentation, see `/docs`.

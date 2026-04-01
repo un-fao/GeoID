@@ -19,9 +19,9 @@
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, status, Request, Query, FastAPI
+from fastapi import APIRouter, Body, HTTPException, Path, Query, status, Request, FastAPI
 from fastapi.responses import JSONResponse, Response, HTMLResponse
 
 from dynastore.extensions.protocols import ExtensionProtocol
@@ -42,6 +42,17 @@ from dynastore.modules.db_config.exceptions import (
     is_conflict_error,
 )
 
+from .dto import (
+    BulkApplyResponse,
+    BulkApplyResultEntry,
+    ConfigEntry,
+    ConfigListResponse,
+    PluginSchemaInfo,
+    QuickStartConfigSet,
+    WellKnownPlugin,
+    get_plugin_examples,
+    PLUGIN_EXAMPLES,
+)
 from .policies import register_configs_policies
 
 logger = logging.getLogger(__name__)
@@ -188,6 +199,36 @@ class ConfigsService(ExtensionProtocol):
             summary="Delete a collection-level configuration",
             status_code=status.HTTP_204_NO_CONTENT,
         )
+        # Examples & Quick-start
+        self.router.add_api_route(
+            "/examples",
+            self.list_all_examples,
+            methods=["GET"],
+            summary="Get configuration examples for all known plugins",
+            tags=["Configurations", "Examples"],
+        )
+        self.router.add_api_route(
+            "/examples/{plugin_id:path}",
+            self.get_plugin_examples,
+            methods=["GET"],
+            summary="Get configuration examples for a specific plugin",
+            tags=["Configurations", "Examples"],
+        )
+        # Bulk-apply
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/bulk",
+            self.bulk_apply_catalog_configs,
+            methods=["PUT"],
+            summary="Apply multiple configurations to a catalog in one call",
+            tags=["Configurations", "Bulk"],
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/bulk",
+            self.bulk_apply_collection_configs,
+            methods=["PUT"],
+            summary="Apply multiple configurations to a collection in one call",
+            tags=["Configurations", "Bulk"],
+        )
         # Search routes
         self.router.add_api_route(
             "/catalogs/{catalog_id}/search",
@@ -207,29 +248,29 @@ class ConfigsService(ExtensionProtocol):
         return self.get_protocol(ConfigsProtocol)
 
 
-    async def get_config_schemas(self):
-        """
-        Retrieves JSON schemas for all registered configuration models.
-        """
-        schemas = {}
+    async def get_config_schemas(self) -> Dict[str, Any]:
+        """Retrieves JSON schemas for all registered configuration models."""
+        schemas: Dict[str, Any] = {}
         for plugin_id, config_class in ConfigRegistry._registry.items():
             schemas[plugin_id] = config_class.model_json_schema()
         return schemas
 
     # --- Discovery Endpoint ---
 
-
     async def list_registered_plugins(
         self,
         with_schema: bool = Query(
             False,
-            description="If true, includes the JSON schema for each configuration model.",
+            description="If true, includes the JSON schema and description for each plugin.",
         ),
-    ):
-        """
-        Lists all registered configuration plugin IDs.
-        This endpoint provides a discoverable list of all possible `plugin_id`
+    ) -> Any:
+        """Lists all registered configuration plugin IDs.
+
+        This endpoint provides a discoverable list of all possible ``plugin_id``
         values that can be used in other configuration endpoints.
+
+        Use ``?with_schema=true`` to also retrieve each plugin's JSON Schema
+        and docstring, which is useful for building dynamic UIs.
         """
         plugins = ConfigRegistry._registry
         if with_schema:
@@ -469,8 +510,190 @@ class ConfigsService(ExtensionProtocol):
         await self.configs.delete_config(plugin_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-    # --- Search ---
+    # --- Examples & Quick-start ---
 
+    async def list_all_examples(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Returns configuration examples for every well-known plugin.
+
+        Use these payloads as a starting point when setting up a new catalog
+        or collection.  Each example includes a ``summary`` and ``description``
+        explaining the use-case, plus the ready-to-POST ``value`` body.
+        """
+        return PLUGIN_EXAMPLES
+
+    async def get_plugin_examples(
+        self,
+        plugin_id: str = Path(
+            ...,
+            description="Plugin identifier (e.g. ``driver:postgresql``, ``routing``, ``stac``).",
+            examples=["driver:postgresql", "routing", "stac"],
+        ),
+    ) -> List[Dict[str, Any]]:
+        """Returns configuration examples for a specific plugin.
+
+        The returned list contains one or more example payloads that can be
+        sent directly to ``PUT /configs/{plugin_id}`` (or the catalog/collection variant).
+        """
+        examples = get_plugin_examples(plugin_id)
+        if examples is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    f"No examples available for plugin '{plugin_id}'. "
+                    f"Known plugins with examples: {sorted(PLUGIN_EXAMPLES.keys())}"
+                ),
+            )
+        return examples
+
+    # --- Bulk Apply ---
+
+    async def bulk_apply_catalog_configs(
+        self,
+        catalog_id: str,
+        body: QuickStartConfigSet = Body(
+            ...,
+            openapi_examples={
+                "postgresql_defaults": {
+                    "summary": "PostgreSQL quick-start (all defaults)",
+                    "description": (
+                        "Applies routing, driver, STAC, tiles, features, and task configs "
+                        "in a single call.  All values use PostgreSQL defaults."
+                    ),
+                    "value": {
+                        "configs": {
+                            "routing": {
+                                "enabled": True,
+                                "operations": {
+                                    "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
+                                    "READ": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
+                                },
+                            },
+                            "routing_assets": {
+                                "enabled": True,
+                                "operations": {
+                                    "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
+                                    "READ": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
+                                },
+                            },
+                            "stac": {
+                                "enabled": True,
+                                "enabled_extensions": [],
+                                "asset_tracking": {"enabled": True, "access_mode": "DIRECT"},
+                            },
+                            "tiles": {"enabled": True, "min_zoom": 0, "max_zoom": 12},
+                            "features": {"enabled": True},
+                            "tasks": {"enabled": True, "queue_poll_interval": 30.0},
+                        }
+                    },
+                },
+            },
+        ),
+    ) -> BulkApplyResponse:
+        """Apply multiple plugin configurations to a catalog in one call.
+
+        Iterates over every entry in ``configs`` and applies each via
+        ``PUT /configs/catalogs/{catalog_id}/configs/{plugin_id}``.
+        Failures on individual plugins do not abort the entire operation;
+        check the ``results`` array for per-plugin status.
+        """
+        return await self._bulk_apply(body, catalog_id=catalog_id, collection_id=None)
+
+    async def bulk_apply_collection_configs(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        body: QuickStartConfigSet = Body(
+            ...,
+            openapi_examples={
+                "postgresql_vector_collection": {
+                    "summary": "Vector collection with PG defaults",
+                    "description": (
+                        "Configures a vector collection with default geometries + attributes "
+                        "sidecars, no partitioning.  Includes routing and STAC."
+                    ),
+                    "value": {
+                        "configs": {
+                            "driver:postgresql": {
+                                "enabled": True,
+                                "collection_type": "VECTOR",
+                                "sidecars": [
+                                    {
+                                        "sidecar_type": "geometries",
+                                        "enabled": True,
+                                        "target_srid": 4326,
+                                        "target_dimension": "force_2d",
+                                        "geom_column": "geom",
+                                        "bbox_column": "bbox_geom",
+                                        "invalid_geom_policy": "attempt_fix",
+                                        "srid_mismatch_policy": "transform",
+                                    },
+                                    {
+                                        "sidecar_type": "attributes",
+                                        "enabled": True,
+                                        "storage_mode": "automatic",
+                                        "enable_external_id": True,
+                                        "enable_asset_id": True,
+                                        "versioning_behavior": "UPDATE_EXISTING_VERSION",
+                                    },
+                                ],
+                                "partitioning": {"enabled": False, "partition_keys": []},
+                            },
+                            "routing": {
+                                "enabled": True,
+                                "operations": {
+                                    "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
+                                    "READ": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
+                                },
+                            },
+                            "stac": {
+                                "enabled": True,
+                                "enabled_extensions": [],
+                                "asset_tracking": {"enabled": True, "access_mode": "DIRECT"},
+                            },
+                        }
+                    },
+                },
+            },
+        ),
+    ) -> BulkApplyResponse:
+        """Apply multiple plugin configurations to a collection in one call.
+
+        Same semantics as the catalog-level bulk endpoint, but writes to
+        the collection-level config tier.
+        """
+        return await self._bulk_apply(body, catalog_id=catalog_id, collection_id=collection_id)
+
+    async def _bulk_apply(
+        self,
+        payload: QuickStartConfigSet,
+        catalog_id: Optional[str],
+        collection_id: Optional[str],
+    ) -> BulkApplyResponse:
+        """Internal helper for bulk-apply at any hierarchy level."""
+        results: List[BulkApplyResultEntry] = []
+        applied = 0
+        failed = 0
+
+        for plugin_id, config_data in payload.configs.items():
+            try:
+                config_model = ConfigRegistry.validate_config(plugin_id, config_data)
+                await self.configs.set_config(
+                    plugin_id, config_model, catalog_id, collection_id
+                )
+                results.append(BulkApplyResultEntry(plugin_id=plugin_id, status="ok"))
+                applied += 1
+            except Exception as exc:
+                logger.error("Bulk apply failed for %s: %s", plugin_id, exc, exc_info=True)
+                results.append(
+                    BulkApplyResultEntry(
+                        plugin_id=plugin_id, status="error", detail=str(exc)
+                    )
+                )
+                failed += 1
+
+        return BulkApplyResponse(applied=applied, failed=failed, results=results)
+
+    # --- Search ---
 
     async def search_catalog_configs(
         self,

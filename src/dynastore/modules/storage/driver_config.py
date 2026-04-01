@@ -241,7 +241,14 @@ def _default_partitioning() -> Any:
 
 
 class ElasticsearchCollectionDriverConfig(CollectionDriverConfig):
-    """Elasticsearch collection driver config."""
+    """Elasticsearch collection driver config.
+
+    Uses the stac-fastapi-elasticsearch-opensearch (SFEOS) library by
+    convention.  The default ``index_prefix`` matches SFEOS's
+    ``STAC_ITEMS_INDEX_PREFIX`` (``items_``), producing per-collection
+    indexes like ``items_{collection_id}`` that are natively readable by
+    an external SFEOS app running in read-only mode.
+    """
 
     _plugin_id: ClassVar[Optional[str]] = "driver:elasticsearch"
 
@@ -250,9 +257,17 @@ class ElasticsearchCollectionDriverConfig(CollectionDriverConfig):
     capabilities: FrozenSet[str] = Field(
         default=frozenset({DriverCapability.ASYNC}),
     )
-    index_prefix: str = Field("stac_", description="Index name prefix.")
+    index_prefix: str = Field(
+        "items_",
+        description=(
+            "Item index name prefix.  Default ``items_`` matches SFEOS convention "
+            "(env: STAC_ITEMS_INDEX_PREFIX), producing per-collection indexes "
+            "``items_{collection_id}``."
+        ),
+    )
     mapping: Dict[str, Any] = Field(
-        default_factory=dict, description="ES index mapping overrides."
+        default_factory=dict,
+        description="ES index mapping overrides merged with SFEOS defaults.",
     )
 
 
