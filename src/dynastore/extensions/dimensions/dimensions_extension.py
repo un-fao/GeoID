@@ -131,7 +131,7 @@ class DimensionsExtension(ExtensionProtocol):
             generator=IntegerRangeGenerator(step=50),
             description=(
                 "Elevation bands (50 m step, 0–8848 m). "
-                "Bijective, searchable, supports /inverse."
+                "Invertible, searchable, supports /inverse."
             ),
             extent_min="0",
             extent_max="8848",
