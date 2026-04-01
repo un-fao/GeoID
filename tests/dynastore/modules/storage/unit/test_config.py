@@ -89,7 +89,7 @@ class TestCompositePartitionConfig:
 class TestRoutingPluginConfig:
     def test_plugin_id(self):
         assert RoutingPluginConfig._plugin_id == ROUTING_PLUGIN_CONFIG_ID
-        assert ROUTING_PLUGIN_CONFIG_ID == "routing"
+        assert ROUTING_PLUGIN_CONFIG_ID == "storage:collections"
 
     def test_defaults(self):
         cfg = RoutingPluginConfig()
@@ -118,7 +118,7 @@ class TestRoutingPluginConfig:
 class TestAssetRoutingPluginConfig:
     def test_plugin_id(self):
         assert AssetRoutingPluginConfig._plugin_id == ROUTING_ASSETS_PLUGIN_CONFIG_ID
-        assert ROUTING_ASSETS_PLUGIN_CONFIG_ID == "routing_assets"
+        assert ROUTING_ASSETS_PLUGIN_CONFIG_ID == "storage:assets"
 
     def test_defaults(self):
         cfg = AssetRoutingPluginConfig()

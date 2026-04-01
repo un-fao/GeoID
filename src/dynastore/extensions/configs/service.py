@@ -126,6 +126,12 @@ class ConfigsService(ExtensionProtocol):
             summary="List all registered configuration plugins",
         )
         self.router.add_api_route(
+            "/storage/drivers",
+            self.list_storage_drivers,
+            methods=["GET"],
+            summary="List all registered storage drivers with capabilities and hints",
+        )
+        self.router.add_api_route(
             "/",
             self.list_platform_configs,
             methods=["GET"],
@@ -284,6 +290,63 @@ class ConfigsService(ExtensionProtocol):
                 }
             )
         return list(plugins.keys())
+
+    async def list_storage_drivers(self) -> Any:
+        """List all registered storage drivers with capabilities, supported
+        operations, and supported hints.
+
+        Useful for discovering which drivers are available before
+        configuring ``storage:collections`` or ``storage:assets``.
+        """
+        from dynastore.extensions.configs.dto import DriverInfo, DriverListResponse
+        from dynastore.models.protocols.asset_driver import AssetDriverProtocol
+        from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
+        from dynastore.modules.storage.routing_config import derive_supported_operations
+        from dynastore.tools.discovery import get_protocols
+
+        drivers: list = []
+
+        for driver in get_protocols(CollectionStorageDriverProtocol):
+            caps = sorted(getattr(driver, "capabilities", frozenset()))
+            driver_config_caps = []
+            try:
+                dcfg = ConfigRegistry.create_default(f"driver:{driver.driver_id}")
+                driver_config_caps = sorted(getattr(dcfg, "capabilities", frozenset()))
+            except Exception:
+                pass
+            drivers.append(DriverInfo(
+                driver_id=driver.driver_id,
+                domain="collections",
+                capabilities=caps,
+                driver_capabilities=driver_config_caps,
+                supported_operations=sorted(derive_supported_operations(
+                    getattr(driver, "capabilities", frozenset())
+                )),
+                supported_hints=sorted(getattr(driver, "supported_hints", frozenset())),
+                preferred_for=sorted(getattr(driver, "preferred_for", frozenset())),
+            ))
+
+        for driver in get_protocols(AssetDriverProtocol):
+            caps = sorted(getattr(driver, "capabilities", frozenset()))
+            driver_config_caps = []
+            try:
+                dcfg = ConfigRegistry.create_default(f"driver:{driver.driver_id}")
+                driver_config_caps = sorted(getattr(dcfg, "capabilities", frozenset()))
+            except Exception:
+                pass
+            drivers.append(DriverInfo(
+                driver_id=driver.driver_id,
+                domain="assets",
+                capabilities=caps,
+                driver_capabilities=driver_config_caps,
+                supported_operations=sorted(derive_supported_operations(
+                    getattr(driver, "capabilities", frozenset())
+                )),
+                supported_hints=sorted(getattr(driver, "supported_hints", frozenset())),
+                preferred_for=sorted(getattr(driver, "preferred_for", frozenset())),
+            ))
+
+        return DriverListResponse(drivers=drivers)
 
     # --- Configuration Listing Endpoints ---
 

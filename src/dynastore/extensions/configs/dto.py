@@ -122,6 +122,43 @@ class EffectiveConfigResponse(BaseModel):
     )
 
 
+class DriverInfo(BaseModel):
+    """Metadata about a registered storage driver."""
+
+    driver_id: str = Field(..., description="Unique driver identifier.")
+    domain: str = Field(
+        ...,
+        description="Domain this driver serves: 'collections' or 'assets'.",
+        examples=["collections", "assets"],
+    )
+    capabilities: List[str] = Field(
+        default_factory=list,
+        description="What the driver can do (Capability constants: read, write, fulltext, ...).",
+    )
+    driver_capabilities: List[str] = Field(
+        default_factory=list,
+        description="How the driver operates (DriverCapability: SYNC, ASYNC, TRANSACTIONAL, ...).",
+    )
+    supported_operations: List[str] = Field(
+        default_factory=list,
+        description="Operations this driver supports, derived from its capabilities.",
+    )
+    supported_hints: List[str] = Field(
+        default_factory=list,
+        description="Hints this driver accepts in routing config entries.",
+    )
+    preferred_for: List[str] = Field(
+        default_factory=list,
+        description="Hints this driver is optimized for (used for auto-selection).",
+    )
+
+
+class DriverListResponse(BaseModel):
+    """All registered storage drivers with their capabilities and supported hints."""
+
+    drivers: List[DriverInfo] = Field(default_factory=list)
+
+
 class PluginListResponse(BaseModel):
     """List of registered plugin IDs (without schemas)."""
 
@@ -172,20 +209,21 @@ _ROUTING_PG_EXAMPLE: Dict[str, Any] = {
 }
 
 _ROUTING_PG_ES_EXAMPLE: Dict[str, Any] = {
-    "summary": "PostgreSQL write + Elasticsearch search",
+    "summary": "PostgreSQL write + Elasticsearch search (parallel sync)",
     "description": (
-        "Fan-out writes to both PG and ES; reads go to PG, "
-        "searches go to ES for full-text / geo queries."
+        "Fan-out writes to both PG (sync) and ES (async); reads go to PG, "
+        "searches go to ES for full-text / geo queries.  "
+        "ES writes fire after PG commit (fire-and-forget)."
     ),
     "value": {
         "enabled": True,
         "operations": {
             "WRITE": [
-                {"driver_id": "postgresql", "hints": [], "on_failure": "fatal"},
-                {"driver_id": "elasticsearch", "hints": [], "on_failure": "warn"},
+                {"driver_id": "postgresql", "hints": [], "on_failure": "fatal", "write_mode": "sync"},
+                {"driver_id": "elasticsearch", "hints": [], "on_failure": "warn", "write_mode": "async"},
             ],
             "READ": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
-            "SEARCH": [{"driver_id": "elasticsearch", "hints": [], "on_failure": "fatal"}],
+            "SEARCH": [{"driver_id": "elasticsearch", "hints": ["search"], "on_failure": "fatal"}],
         },
     },
 }
@@ -217,11 +255,33 @@ _ROUTING_DUCKDB_ES_EXAMPLE: Dict[str, Any] = {
         "enabled": True,
         "operations": {
             "WRITE": [
-                {"driver_id": "duckdb", "hints": [], "on_failure": "fatal"},
-                {"driver_id": "elasticsearch", "hints": [], "on_failure": "warn"},
+                {"driver_id": "duckdb", "hints": [], "on_failure": "fatal", "write_mode": "sync"},
+                {"driver_id": "elasticsearch", "hints": [], "on_failure": "warn", "write_mode": "async"},
             ],
             "READ": [{"driver_id": "duckdb", "hints": [], "on_failure": "fatal"}],
-            "SEARCH": [{"driver_id": "elasticsearch", "hints": [], "on_failure": "fatal"}],
+            "SEARCH": [{"driver_id": "elasticsearch", "hints": ["search"], "on_failure": "fatal"}],
+        },
+    },
+}
+
+_ROUTING_PG_ES_ICEBERG_EXAMPLE: Dict[str, Any] = {
+    "summary": "PG + ES + Iceberg — triple write (parallel sync)",
+    "description": (
+        "Writes to PostgreSQL and Iceberg in parallel (sync), then fires "
+        "Elasticsearch indexing asynchronously.  Reads from PG, searches "
+        "on ES.  If any sync writer fails, all sync writers that support "
+        "TRANSACTIONAL capability are compensated (rolled back)."
+    ),
+    "value": {
+        "enabled": True,
+        "operations": {
+            "WRITE": [
+                {"driver_id": "postgresql", "hints": [], "on_failure": "fatal", "write_mode": "sync"},
+                {"driver_id": "iceberg", "hints": [], "on_failure": "fatal", "write_mode": "sync"},
+                {"driver_id": "elasticsearch", "hints": [], "on_failure": "warn", "write_mode": "async"},
+            ],
+            "READ": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
+            "SEARCH": [{"driver_id": "elasticsearch", "hints": ["search"], "on_failure": "fatal"}],
         },
     },
 }
@@ -674,6 +734,7 @@ PLUGIN_EXAMPLES: Dict[str, List[Dict[str, Any]]] = {
         _ROUTING_PG_ES_EXAMPLE,
         _ROUTING_ES_ONLY_EXAMPLE,
         _ROUTING_DUCKDB_ES_EXAMPLE,
+        _ROUTING_PG_ES_ICEBERG_EXAMPLE,
         _ROUTING_GEOPARQUET_EXAMPLE,
     ],
     WellKnownPlugin.STORAGE_ASSETS: [
@@ -686,6 +747,7 @@ PLUGIN_EXAMPLES: Dict[str, List[Dict[str, Any]]] = {
         _ROUTING_PG_ES_EXAMPLE,
         _ROUTING_ES_ONLY_EXAMPLE,
         _ROUTING_DUCKDB_ES_EXAMPLE,
+        _ROUTING_PG_ES_ICEBERG_EXAMPLE,
         _ROUTING_GEOPARQUET_EXAMPLE,
     ],
     WellKnownPlugin.ROUTING_ASSETS: [

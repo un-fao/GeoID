@@ -16,6 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
+import asyncio
 import logging
 import json
 from datetime import datetime, timezone
@@ -255,7 +256,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             items_list = [items]
 
         if not items_list:
-            return [] if not is_single else {}
+            raise ValueError("No features provided. A FeatureCollection must contain at least one feature.")
 
         async with managed_transaction(db_resource or self.engine) as conn:
             col_config = await get_pg_collection_config(
@@ -285,11 +286,8 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
 
                 for sc_config in col_config.sidecars:
-                    try:
-                        sc = SidecarRegistry.get_sidecar(sc_config)
-                        sidecars.append(sc)
-                    except ValueError as e:
-                        logger.warning(f"Skipping sidecar instantiation: {e}")
+                    sc = SidecarRegistry.get_sidecar(sc_config)
+                    sidecars.append(sc)
 
             created_rows = []
 
@@ -398,33 +396,171 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             # _execute_distributed_insert / _execute_distributed_update
             # (which call map_row_to_feature internally).
             results = created_rows
-            
-            # Emit Item Events
-            if results:
-                try:
-                    from dynastore.models.protocols.events import EventsProtocol
-                    from dynastore.modules.catalog.event_service import CatalogEventType
-                    events_protocol = get_protocol(EventsProtocol)
-                    if events_protocol:
-                        if is_single:
-                            await events_protocol.emit(
-                                event_type=CatalogEventType.ITEM_CREATION,
-                                catalog_id=catalog_id,
-                                collection_id=collection_id,
-                                item_id=str(results[0].id) if results[0].id else None,
-                                payload=results[0].model_dump(by_alias=True, exclude_unset=True)
-                            )
-                        else:
-                            await events_protocol.emit(
-                                event_type=CatalogEventType.BULK_ITEM_CREATION,
-                                catalog_id=catalog_id,
-                                collection_id=collection_id,
-                                payload={"count": len(results), "items_subset": [r.model_dump(by_alias=True, exclude_none=True) for r in results[:10]]}
-                            )
-                except Exception as e:
-                    logger.warning(f"Failed to emit item creation events: {e}")
 
-            return results[0] if is_single else results
+        # ── Post-commit: fan-out to secondary drivers ──────────────────
+        if results:
+            await self._fan_out_to_secondary_drivers(
+                catalog_id, collection_id, results
+            )
+
+        # ── Post-commit: emit events ──────────────────────────────────
+        if results:
+            try:
+                from dynastore.models.protocols.events import EventsProtocol
+                from dynastore.modules.catalog.event_service import CatalogEventType
+                events_protocol = get_protocol(EventsProtocol)
+                if events_protocol:
+                    if is_single:
+                        await events_protocol.emit(
+                            event_type=CatalogEventType.ITEM_CREATION,
+                            catalog_id=catalog_id,
+                            collection_id=collection_id,
+                            item_id=str(results[0].id) if results[0].id else None,
+                            payload=results[0].model_dump(by_alias=True, exclude_unset=True)
+                        )
+                    else:
+                        await events_protocol.emit(
+                            event_type=CatalogEventType.BULK_ITEM_CREATION,
+                            catalog_id=catalog_id,
+                            collection_id=collection_id,
+                            payload={"count": len(results), "items_subset": [r.model_dump(by_alias=True, exclude_none=True) for r in results[:10]]}
+                        )
+            except Exception as e:
+                logger.warning(f"Failed to emit item creation events: {e}")
+
+        return results[0] if is_single else results
+
+    # ------------------------------------------------------------------
+    # Multi-driver write fan-out
+    # ------------------------------------------------------------------
+
+    async def _fan_out_to_secondary_drivers(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        features: List[Feature],
+    ) -> None:
+        """Fan-out writes to secondary drivers after PG commit.
+
+        Sync drivers run in parallel (``asyncio.gather``).  If any sync
+        driver fails, drivers that succeeded and declare
+        ``DriverCapability.TRANSACTIONAL`` are compensated (delete).
+
+        Async drivers fire after the sync phase succeeds (fire-and-forget).
+        """
+        from dynastore.modules.storage.driver_config import DriverCapability
+        from dynastore.modules.storage.router import get_write_drivers, ResolvedDriver
+        from dynastore.modules.storage.routing_config import FailurePolicy, WriteMode
+
+        try:
+            resolved = await get_write_drivers(catalog_id, collection_id)
+        except Exception:
+            return  # no routing configured — nothing to fan out
+
+        # Position 0 is the primary PG driver — already written
+        secondaries = resolved[1:]
+        if not secondaries:
+            return
+
+        sync_drivers = [r for r in secondaries if r.write_mode == WriteMode.SYNC]
+        async_drivers = [r for r in secondaries if r.write_mode == WriteMode.ASYNC]
+
+        # ── Sync phase: parallel writes ───────────────────────────────
+        if sync_drivers:
+            tasks = [
+                r.driver.write_entities(catalog_id, collection_id, features)
+                for r in sync_drivers
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            succeeded: List[ResolvedDriver] = []
+            has_fatal = False
+            first_fatal_exc: Optional[Exception] = None
+
+            for r, result in zip(sync_drivers, results):
+                if isinstance(result, BaseException):
+                    if r.on_failure == FailurePolicy.FATAL:
+                        has_fatal = True
+                        if first_fatal_exc is None:
+                            first_fatal_exc = result if isinstance(result, Exception) else RuntimeError(str(result))
+                    elif r.on_failure == FailurePolicy.WARN:
+                        logger.warning(
+                            "Secondary sync driver '%s' write failed for %s/%s: %s",
+                            r.driver_id, catalog_id, collection_id, result,
+                        )
+                    # IGNORE: silent
+                else:
+                    succeeded.append(r)
+
+            if has_fatal:
+                # Compensate succeeded sync drivers that support rollback
+                await self._compensate_drivers(
+                    succeeded, catalog_id, collection_id, features
+                )
+                raise first_fatal_exc  # type: ignore[misc]
+
+        # ── Async phase: fire-and-forget ──────────────────────────────
+        for r in async_drivers:
+            asyncio.create_task(
+                self._async_secondary_write(r, catalog_id, collection_id, features)
+            )
+
+    async def _async_secondary_write(
+        self,
+        resolved: "ResolvedDriver",
+        catalog_id: str,
+        collection_id: str,
+        features: List[Feature],
+    ) -> None:
+        """Fire-and-forget wrapper with logging on failure."""
+        from dynastore.modules.storage.routing_config import FailurePolicy
+
+        try:
+            await resolved.driver.write_entities(catalog_id, collection_id, features)
+        except Exception as err:
+            if resolved.on_failure == FailurePolicy.FATAL:
+                logger.error(
+                    "Async secondary driver '%s' FATAL write failed for %s/%s: %s",
+                    resolved.driver_id, catalog_id, collection_id, err,
+                )
+            elif resolved.on_failure == FailurePolicy.WARN:
+                logger.warning(
+                    "Async secondary driver '%s' write failed for %s/%s: %s",
+                    resolved.driver_id, catalog_id, collection_id, err,
+                )
+
+    async def _compensate_drivers(
+        self,
+        drivers: List["ResolvedDriver"],
+        catalog_id: str,
+        collection_id: str,
+        features: List[Feature],
+    ) -> None:
+        """Compensating rollback: delete written entities from drivers that
+        support TRANSACTIONAL capability."""
+        from dynastore.modules.storage.driver_config import DriverCapability
+
+        entity_ids = [str(f.id) for f in features if f.id]
+        if not entity_ids:
+            return
+
+        for r in drivers:
+            driver_caps = getattr(r.driver, "capabilities", frozenset())
+            if DriverCapability.TRANSACTIONAL not in driver_caps:
+                continue
+            try:
+                await r.driver.delete_entities(
+                    catalog_id, collection_id, entity_ids
+                )
+                logger.info(
+                    "Compensated driver '%s' for %s/%s (%d entities)",
+                    r.driver_id, catalog_id, collection_id, len(entity_ids),
+                )
+            except Exception as comp_err:
+                logger.error(
+                    "Compensating rollback failed for driver '%s' on %s/%s: %s",
+                    r.driver_id, catalog_id, collection_id, comp_err,
+                )
 
     # Query methods (get_features, get_item, search_items, stream_items, etc.)
     # are provided by ItemQueryMixin.

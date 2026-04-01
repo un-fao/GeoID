@@ -40,6 +40,7 @@ from dynastore.modules.storage.routing_config import (
     ROUTING_PLUGIN_CONFIG_ID,
     FailurePolicy,
     Operation,
+    WriteMode,
 )
 from dynastore.tools.cache import cached
 
@@ -53,10 +54,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ResolvedDriver:
-    """A driver resolved for a specific operation, with its failure policy."""
+    """A driver resolved for a specific operation, with its failure policy and write mode."""
 
     driver: object  # CollectionStorageDriverProtocol or AssetDriverProtocol
     on_failure: FailurePolicy = FailurePolicy.FATAL
+    write_mode: WriteMode = WriteMode.SYNC
 
     @property
     def driver_id(self) -> str:
@@ -97,7 +99,7 @@ async def _resolve_driver_ids_cached(
     operation: str,
     hint: Optional[str],
 ) -> List[tuple]:
-    """Cached resolution: returns list of (driver_id, on_failure) tuples."""
+    """Cached resolution: returns list of (driver_id, on_failure, write_mode) tuples."""
     from dynastore.models.protocols.configs import ConfigsProtocol
     from dynastore.tools.discovery import get_protocol
 
@@ -116,7 +118,7 @@ async def _resolve_driver_ids_cached(
     if hint:
         entries = [e for e in entries if hint in e.hints]
 
-    return [(e.driver_id, e.on_failure) for e in entries]
+    return [(e.driver_id, e.on_failure, e.write_mode) for e in entries]
 
 
 async def resolve_drivers(
@@ -154,10 +156,10 @@ async def resolve_drivers(
         driver_index = _build_collection_driver_index()
 
     result = []
-    for driver_id, on_failure in resolved_ids:
+    for driver_id, on_failure, write_mode in resolved_ids:
         driver = driver_index.get(driver_id)
         if driver:
-            result.append(ResolvedDriver(driver=driver, on_failure=on_failure))
+            result.append(ResolvedDriver(driver=driver, on_failure=on_failure, write_mode=write_mode))
         else:
             logger.warning(
                 "Driver '%s' for operation '%s' is not registered. Skipping.",

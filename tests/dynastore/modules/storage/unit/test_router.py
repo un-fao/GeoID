@@ -16,6 +16,7 @@ from dynastore.modules.storage.routing_config import (
     Operation,
     OperationDriverEntry,
     RoutingPluginConfig,
+    WriteMode,
 )
 
 
@@ -101,11 +102,11 @@ class TestResolveDrivers:
 
         with (
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached.__wrapped__",
-                  new=AsyncMock(return_value=[("postgresql", FailurePolicy.FATAL), ("elasticsearch", FailurePolicy.FATAL)])) if False else
+                  new=AsyncMock(return_value=[("postgresql", FailurePolicy.FATAL, WriteMode.SYNC), ("elasticsearch", FailurePolicy.FATAL, WriteMode.SYNC)])) if False else
             patch("dynastore.tools.discovery.get_protocol", return_value=mock_configs),
             patch("dynastore.modules.storage.router._build_collection_driver_index", return_value={"postgresql": pg, "elasticsearch": es}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
-                return_value=[("postgresql", FailurePolicy.FATAL), ("elasticsearch", FailurePolicy.FATAL)])),
+                return_value=[("postgresql", FailurePolicy.FATAL, WriteMode.SYNC), ("elasticsearch", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):
             result = await resolve_drivers("WRITE", "cat1", "col1")
             assert len(result) == 2
@@ -120,7 +121,7 @@ class TestResolveDrivers:
         with (
             patch("dynastore.modules.storage.router._build_collection_driver_index", return_value={"postgresql": pg}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
-                return_value=[("postgresql", FailurePolicy.FATAL)])),
+                return_value=[("postgresql", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):
             result = await resolve_drivers("READ", "cat1", "col1")
             assert len(result) == 1
@@ -133,7 +134,7 @@ class TestResolveDrivers:
         with (
             patch("dynastore.modules.storage.router._build_collection_driver_index", return_value={"postgresql": pg}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
-                return_value=[("nonexistent", FailurePolicy.FATAL), ("postgresql", FailurePolicy.FATAL)])),
+                return_value=[("nonexistent", FailurePolicy.FATAL, WriteMode.SYNC), ("postgresql", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):
             result = await resolve_drivers("READ", "cat1")
             assert len(result) == 1
@@ -155,7 +156,7 @@ class TestResolveDrivers:
         with (
             patch("dynastore.modules.storage.router._build_asset_driver_index", return_value={"postgresql": pg}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
-                return_value=[("postgresql", FailurePolicy.FATAL)])),
+                return_value=[("postgresql", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):
             result = await resolve_drivers(
                 "READ", "cat1", routing_plugin_id=ROUTING_ASSETS_PLUGIN_CONFIG_ID,
@@ -170,7 +171,7 @@ class TestResolveDrivers:
         with (
             patch("dynastore.modules.storage.router._build_collection_driver_index", return_value={"postgresql": pg}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
-                return_value=[("postgresql", FailurePolicy.WARN)])),
+                return_value=[("postgresql", FailurePolicy.WARN, WriteMode.SYNC)])),
         ):
             result = await resolve_drivers("WRITE", "cat1")
             assert result[0].on_failure == FailurePolicy.WARN
@@ -189,7 +190,7 @@ class TestGetDriver:
         with (
             patch("dynastore.modules.storage.router._build_collection_driver_index", return_value={"postgresql": pg}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
-                return_value=[("postgresql", FailurePolicy.FATAL)])),
+                return_value=[("postgresql", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):
             result = await get_driver("READ", "cat1", "col1")
             assert result is pg
@@ -210,7 +211,7 @@ class TestGetDriver:
         with (
             patch("dynastore.modules.storage.router._build_collection_driver_index", return_value={"postgresql": pg}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
-                return_value=[("postgresql", FailurePolicy.FATAL)])),
+                return_value=[("postgresql", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):
             result = await get_driver("WRITE", "cat1", "col1")
             assert result is pg
@@ -224,7 +225,7 @@ class TestGetAssetDriver:
         with (
             patch("dynastore.modules.storage.router._build_asset_driver_index", return_value={"postgresql": pg}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
-                return_value=[("postgresql", FailurePolicy.FATAL)])),
+                return_value=[("postgresql", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):
             result = await get_asset_driver("READ", "cat1", "col1")
             assert result is pg
@@ -245,7 +246,7 @@ class TestGetAssetDriver:
         with (
             patch("dynastore.modules.storage.router._build_asset_driver_index", return_value={"postgresql": pg}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
-                return_value=[("postgresql", FailurePolicy.FATAL)])),
+                return_value=[("postgresql", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):
             result = await get_asset_driver("WRITE", "cat1", "col1")
             assert result is pg
@@ -257,7 +258,7 @@ class TestGetAssetDriver:
         with (
             patch("dynastore.modules.storage.router._build_asset_driver_index", return_value={"elasticsearch": es}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
-                return_value=[("elasticsearch", FailurePolicy.FATAL)])),
+                return_value=[("elasticsearch", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):
             result = await get_asset_driver("SEARCH", "cat1", "col1", hint="search")
             assert result is es

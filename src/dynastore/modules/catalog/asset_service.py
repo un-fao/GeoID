@@ -543,21 +543,94 @@ class AssetService(AssetsProtocol):
 
     async def _get_secondary_drivers(
         self, catalog_id: str, collection_id: Optional[str]
-    ) -> List[AssetDriverProtocol]:
+    ) -> List["ResolvedDriver"]:
         """Return non-primary WRITE asset drivers for fan-out.
 
         Uses ``AssetRoutingPluginConfig`` via the router — the primary
         (first) WRITE driver is excluded since the caller handles it
         separately.
+
+        Returns :class:`ResolvedDriver` instances (preserving ``on_failure``
+        and ``write_mode``) instead of raw driver objects.
         """
         from dynastore.modules.storage.router import get_asset_write_drivers
 
         try:
             resolved = await get_asset_write_drivers(catalog_id, collection_id)
             # Skip the first (primary) — caller already handles it
-            return [r.driver for r in resolved[1:]]
+            return resolved[1:]
         except Exception:
             return []
+
+    async def _fan_out_asset_writes(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str],
+        asset_doc: Dict[str, Any],
+        method_name: str,
+    ) -> None:
+        """Fan-out asset writes to secondary drivers, respecting on_failure + write_mode.
+
+        Args:
+            asset_doc: The asset document to write.
+            method_name: Driver method to call (e.g. ``"index_asset"``).
+        """
+        import asyncio
+        from dynastore.modules.storage.routing_config import FailurePolicy, WriteMode
+
+        secondaries = await self._get_secondary_drivers(catalog_id, collection_id)
+        if not secondaries:
+            return
+
+        sync_drivers = [r for r in secondaries if r.write_mode == WriteMode.SYNC]
+        async_drivers = [r for r in secondaries if r.write_mode == WriteMode.ASYNC]
+
+        # Sync phase: parallel writes
+        if sync_drivers:
+            tasks = [
+                getattr(r.driver, method_name)(catalog_id, asset_doc)
+                for r in sync_drivers
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for r, result in zip(sync_drivers, results):
+                if isinstance(result, BaseException):
+                    if r.on_failure == FailurePolicy.FATAL:
+                        raise result if isinstance(result, Exception) else RuntimeError(str(result))
+                    elif r.on_failure == FailurePolicy.WARN:
+                        logger.warning(
+                            "Secondary driver '%s' %s failed for %s: %s",
+                            r.driver_id, method_name, catalog_id, result,
+                        )
+
+        # Async phase: fire-and-forget
+        for r in async_drivers:
+            asyncio.create_task(
+                self._async_asset_write(r, catalog_id, asset_doc, method_name)
+            )
+
+    async def _async_asset_write(
+        self,
+        resolved: "ResolvedDriver",
+        catalog_id: str,
+        asset_doc: Dict[str, Any],
+        method_name: str,
+    ) -> None:
+        """Fire-and-forget wrapper for async asset writes."""
+        from dynastore.modules.storage.routing_config import FailurePolicy
+
+        try:
+            await getattr(resolved.driver, method_name)(catalog_id, asset_doc)
+        except Exception as err:
+            if resolved.on_failure == FailurePolicy.FATAL:
+                logger.error(
+                    "Async asset driver '%s' %s FATAL failure for %s: %s",
+                    resolved.driver_id, method_name, catalog_id, err,
+                )
+            elif resolved.on_failure == FailurePolicy.WARN:
+                logger.warning(
+                    "Async asset driver '%s' %s failed for %s: %s",
+                    resolved.driver_id, method_name, catalog_id, err,
+                )
 
     async def get_asset(
         self,
@@ -760,15 +833,10 @@ class AssetService(AssetsProtocol):
         write_driver = await get_asset_driver("WRITE", catalog_id, collection_id)
         await write_driver.index_asset(catalog_id, asset_doc, db_resource=db_resource)
 
-        # Fan-out to secondary drivers (fire-and-forget — no db_resource)
-        for secondary in await self._get_secondary_drivers(catalog_id, collection_id):
-            try:
-                await secondary.index_asset(catalog_id, asset_doc)
-            except Exception as err:
-                logger.warning(
-                    "Secondary driver '%s' index_asset failed for %s/%s: %s",
-                    secondary.driver_id, catalog_id, asset.asset_id, err,
-                )
+        # Fan-out to secondary drivers respecting on_failure + write_mode
+        await self._fan_out_asset_writes(
+            catalog_id, collection_id, asset_doc, "index_asset",
+        )
 
         # Fetch canonical state from the write driver (captures DB-set timestamps)
         fetched_doc = await write_driver.get_asset(
@@ -820,15 +888,10 @@ class AssetService(AssetsProtocol):
         write_driver = await get_asset_driver("WRITE", catalog_id, collection_id)
         await write_driver.index_asset(catalog_id, updated_doc, db_resource=db_resource)
 
-        # Fan-out to secondary drivers
-        for secondary in await self._get_secondary_drivers(catalog_id, collection_id):
-            try:
-                await secondary.index_asset(catalog_id, updated_doc)
-            except Exception as err:
-                logger.warning(
-                    "Secondary driver '%s' index_asset (update) failed for %s/%s: %s",
-                    secondary.driver_id, catalog_id, asset_id, err,
-                )
+        # Fan-out to secondary drivers respecting on_failure + write_mode
+        await self._fan_out_asset_writes(
+            catalog_id, collection_id, updated_doc, "index_asset",
+        )
 
         # Fetch canonical state
         fetched_doc = await write_driver.get_asset(
@@ -900,24 +963,34 @@ class AssetService(AssetsProtocol):
 
         # Fan-out hard-deletes to write driver (if non-PG) and secondary drivers
         if hard:
+            from dynastore.modules.storage.routing_config import FailurePolicy, WriteMode
+
             write_driver = await get_asset_driver("WRITE", catalog_id, collection_id)
             secondaries = await self._get_secondary_drivers(catalog_id, collection_id)
-            drivers_to_notify: List[AssetDriverProtocol] = []
+
+            # Build drivers to notify: non-PG primary + all secondaries
+            drivers_to_delete = []
             if not isinstance(write_driver, PostgresAssetDriver):
-                drivers_to_notify.append(write_driver)
-            drivers_to_notify.extend(secondaries)
+                from dynastore.modules.storage.router import ResolvedDriver
+                drivers_to_delete.append(
+                    ResolvedDriver(driver=write_driver, on_failure=FailurePolicy.WARN)
+                )
+            drivers_to_delete.extend(secondaries)
 
             for a in asset_rows:
-                for driver in drivers_to_notify:
+                for resolved in drivers_to_delete:
                     try:
-                        await driver.delete_asset(
+                        await resolved.driver.delete_asset(
                             a["catalog_id"], a["asset_id"]
                         )
                     except Exception as err:
-                        logger.warning(
-                            "Driver '%s' delete_asset failed for %s/%s: %s",
-                            driver.driver_id, a["catalog_id"], a["asset_id"], err,
-                        )
+                        if resolved.on_failure == FailurePolicy.FATAL:
+                            raise
+                        elif resolved.on_failure == FailurePolicy.WARN:
+                            logger.warning(
+                                "Driver '%s' delete_asset failed for %s/%s: %s",
+                                resolved.driver_id, a["catalog_id"], a["asset_id"], err,
+                            )
 
         # Emit events
         if self._event_emitter:

@@ -114,6 +114,37 @@ class _ElasticsearchBase:
             return False
 
     @staticmethod
+    async def _is_write_driver_for(
+        driver_id: str, catalog_id: str, collection_id: Optional[str],
+    ) -> bool:
+        """Check if this driver is listed in the WRITE operation of the routing config.
+
+        When True, the router fan-out already handles writes for this
+        collection — event-driven indexing should be skipped to avoid
+        double-indexing.
+        """
+        try:
+            from dynastore.models.protocols.configs import ConfigsProtocol
+            from dynastore.tools.discovery import get_protocol
+            from dynastore.modules.storage.routing_config import (
+                ROUTING_PLUGIN_CONFIG_ID,
+                Operation,
+            )
+
+            configs = get_protocol(ConfigsProtocol)
+            if not configs:
+                return False
+            routing = await configs.get_config(
+                ROUTING_PLUGIN_CONFIG_ID,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+            )
+            write_entries = routing.operations.get(Operation.WRITE, [])
+            return any(e.driver_id == driver_id for e in write_entries)
+        except Exception:
+            return False
+
+    @staticmethod
     def _feature_to_stac_item(
         feature: Any, catalog_id: str, collection_id: str,
     ) -> dict:
@@ -512,6 +543,10 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
             return
         if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
             return
+        # Skip event-driven indexing when driver is in WRITE routing —
+        # the router fan-out already handled this write.
+        if await self._is_write_driver_for(self.driver_id, catalog_id, collection_id):
+            return
         try:
             doc = await self._serialize_item(catalog_id, collection_id, item_id)
             if doc is None:
@@ -535,6 +570,10 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
         if not catalog_id or not collection_id:
             return
         if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
+            return
+        # Skip event-driven indexing when driver is in WRITE routing —
+        # the router fan-out already handled this write.
+        if await self._is_write_driver_for(self.driver_id, catalog_id, collection_id):
             return
 
         items_subset = (payload if isinstance(payload, dict) else {}).get("items_subset", [])
@@ -934,6 +973,8 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
             return
         if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
             return
+        if await self._is_write_driver_for(self.driver_id, catalog_id, collection_id):
+            return
         try:
             from dynastore.modules.elasticsearch.mappings import (
                 get_obfuscated_index_name, GEOID_OBFUSCATED_MAPPING,
@@ -970,6 +1011,8 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
         if not catalog_id or not collection_id:
             return
         if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
+            return
+        if await self._is_write_driver_for(self.driver_id, catalog_id, collection_id):
             return
 
         items_subset = (payload if isinstance(payload, dict) else {}).get("items_subset", [])
