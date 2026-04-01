@@ -562,8 +562,8 @@ class EventService(EventBusProtocol):
         else:
             from dynastore.models.protocols import DatabaseProtocol
 
-            engine = get_protocol(DatabaseProtocol)
-            async with managed_transaction(engine) as txn:
+            db = get_protocol(DatabaseProtocol)
+            async with managed_transaction(db.engine) as txn:
                 await storage.init_catalog_scope(txn, tenant)
 
     async def init_namespace(
@@ -584,8 +584,8 @@ class EventService(EventBusProtocol):
         else:
             from dynastore.models.protocols import DatabaseProtocol
 
-            engine = get_protocol(DatabaseProtocol)
-            async with managed_transaction(engine) as txn:
+            db = get_protocol(DatabaseProtocol)
+            async with managed_transaction(db.engine) as txn:
                 await storage.init_collection_scope(txn, tenant, namespace)
 
     async def drop_events(
@@ -601,8 +601,8 @@ class EventService(EventBusProtocol):
         else:
             from dynastore.models.protocols import DatabaseProtocol
 
-            engine = get_protocol(DatabaseProtocol)
-            async with managed_transaction(engine) as txn:
+            db = get_protocol(DatabaseProtocol)
+            async with managed_transaction(db.engine) as txn:
                 await storage.drop_collection_scope(txn, tenant, namespace)
 
     @asynccontextmanager

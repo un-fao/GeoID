@@ -108,7 +108,7 @@ def _build_stac_item(iso_a3: str, name: str, continent: str, pop_est, gdp_md_est
         "links": [],
         "assets": {
             "source": {
-                "href": "file:///data/countries.parquet",
+                "href": f"file://{_PARQUET_PATH}",
                 "type": "application/geo+parquet",
                 "title": "GeoParquet source",
                 "roles": ["data"],

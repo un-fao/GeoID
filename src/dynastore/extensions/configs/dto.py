@@ -41,6 +41,9 @@ class WellKnownPlugin(StrEnum):
 
     COLLECTION = "collection"
     STAC = "stac"
+    STORAGE_COLLECTIONS = "storage:collections"
+    STORAGE_ASSETS = "storage:assets"
+    # Deprecated aliases — kept for backward compatibility
     ROUTING = "routing"
     ROUTING_ASSETS = "routing_assets"
     DRIVER_POSTGRESQL = "driver:postgresql"
@@ -128,8 +131,8 @@ class PluginListResponse(BaseModel):
             [
                 "collection",
                 "stac",
-                "routing",
-                "routing_assets",
+                "storage:collections",
+                "storage:assets",
                 "driver:postgresql",
                 "driver:postgresql_assets",
                 "tiles",
@@ -217,6 +220,27 @@ _ROUTING_DUCKDB_ES_EXAMPLE: Dict[str, Any] = {
                 {"driver_id": "duckdb", "hints": [], "on_failure": "fatal"},
                 {"driver_id": "elasticsearch", "hints": [], "on_failure": "warn"},
             ],
+            "READ": [{"driver_id": "duckdb", "hints": [], "on_failure": "fatal"}],
+            "SEARCH": [{"driver_id": "elasticsearch", "hints": [], "on_failure": "fatal"}],
+        },
+    },
+}
+
+_ROUTING_GEOPARQUET_EXAMPLE: Dict[str, Any] = {
+    "summary": "GeoParquet collection — PG write + DuckDB read + ES search",
+    "description": (
+        "The GeoParquet use case: a parquet file is registered as a collection "
+        "asset and imported via the STAC Items API (writes to PostgreSQL).  "
+        "Custom pipelines read directly from the parquet via DuckDB.  "
+        "OpenSearch serves full-text and spatial search queries.  "
+        "The OGC Features API always reads from PostgreSQL regardless of "
+        "this routing config — the READ entry is for explicit driver access "
+        "via ``get_driver('READ', ...)`` in import scripts and enrichment tasks."
+    ),
+    "value": {
+        "enabled": True,
+        "operations": {
+            "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
             "READ": [{"driver_id": "duckdb", "hints": [], "on_failure": "fatal"}],
             "SEARCH": [{"driver_id": "elasticsearch", "hints": [], "on_failure": "fatal"}],
         },
@@ -483,6 +507,25 @@ _DRIVER_DUCKDB_CSV_EXAMPLE: Dict[str, Any] = {
     },
 }
 
+_DRIVER_DUCKDB_GEOPARQUET_EXAMPLE: Dict[str, Any] = {
+    "summary": "DuckDB driver — GeoParquet collection asset (read-only)",
+    "description": (
+        "Points DuckDB at a single GeoParquet file registered as a "
+        "collection asset.  DuckDB's spatial extension converts WKB "
+        "geometry to GeoJSON at query time and supports ST_Intersects "
+        "spatial filtering.  No write_path — the parquet is read-only.  "
+        "Pair with routing READ->duckdb + WRITE->postgresql to import "
+        "features via the STAC Items API while keeping direct parquet "
+        "reads available for enrichment pipelines."
+    ),
+    "value": {
+        "enabled": True,
+        "capabilities": ["ASYNC", "BATCH"],
+        "format": "parquet",
+        "path": "/data/countries.parquet",
+    },
+}
+
 # ---- Elasticsearch catalog config ----
 #
 # Per-catalog ES settings managed via plugin_id "elasticsearch".
@@ -626,11 +669,24 @@ _TASKS_EXAMPLE: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 PLUGIN_EXAMPLES: Dict[str, List[Dict[str, Any]]] = {
+    WellKnownPlugin.STORAGE_COLLECTIONS: [
+        _ROUTING_PG_EXAMPLE,
+        _ROUTING_PG_ES_EXAMPLE,
+        _ROUTING_ES_ONLY_EXAMPLE,
+        _ROUTING_DUCKDB_ES_EXAMPLE,
+        _ROUTING_GEOPARQUET_EXAMPLE,
+    ],
+    WellKnownPlugin.STORAGE_ASSETS: [
+        _ROUTING_ASSETS_PG_EXAMPLE,
+        _ROUTING_ASSETS_ES_EXAMPLE,
+    ],
+    # Legacy aliases
     WellKnownPlugin.ROUTING: [
         _ROUTING_PG_EXAMPLE,
         _ROUTING_PG_ES_EXAMPLE,
         _ROUTING_ES_ONLY_EXAMPLE,
         _ROUTING_DUCKDB_ES_EXAMPLE,
+        _ROUTING_GEOPARQUET_EXAMPLE,
     ],
     WellKnownPlugin.ROUTING_ASSETS: [
         _ROUTING_ASSETS_PG_EXAMPLE,
@@ -651,6 +707,7 @@ PLUGIN_EXAMPLES: Dict[str, List[Dict[str, Any]]] = {
     WellKnownPlugin.DRIVER_DUCKDB: [
         _DRIVER_DUCKDB_PARQUET_EXAMPLE,
         _DRIVER_DUCKDB_CSV_EXAMPLE,
+        _DRIVER_DUCKDB_GEOPARQUET_EXAMPLE,
     ],
     WellKnownPlugin.ELASTICSEARCH: [
         _ES_CATALOG_EXAMPLE,
@@ -689,8 +746,8 @@ class QuickStartConfigSet(BaseModel):
         json_schema_extra={
             "examples": [
                 {
-                    "routing": _ROUTING_PG_EXAMPLE["value"],
-                    "routing_assets": _ROUTING_ASSETS_PG_EXAMPLE["value"],
+                    "storage:collections": _ROUTING_PG_EXAMPLE["value"],
+                    "storage:assets": _ROUTING_ASSETS_PG_EXAMPLE["value"],
                     "driver:postgresql": _DRIVER_PG_MINIMAL_EXAMPLE["value"],
                     "driver:postgresql_assets": {"enabled": True},
                     "stac": _STAC_MINIMAL_EXAMPLE["value"],

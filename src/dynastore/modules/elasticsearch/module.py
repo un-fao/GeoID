@@ -205,11 +205,12 @@ class ElasticsearchModule(ModuleProtocol):
                 task_type,
             )
             return
+        engine = db.engine if isinstance(db, DatabaseProtocol) else db
         try:
             from dynastore.modules.tasks import tasks_module
             from dynastore.modules.tasks.models import TaskCreate
             await tasks_module.create_task(
-                engine=db,
+                engine=engine,
                 task_data=TaskCreate(
                     caller_id="system:elasticsearch",
                     task_type=task_type,

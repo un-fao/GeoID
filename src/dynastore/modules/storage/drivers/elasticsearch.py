@@ -174,6 +174,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
         Capability.ATTRIBUTE_FILTER,
     })
     preferred_for: FrozenSet[str] = frozenset({"search"})
+    supported_hints: FrozenSet[str] = frozenset({"search", "fulltext"})
 
     def is_available(self) -> bool:
         return self._sfeos_available()
@@ -700,6 +701,7 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
         Capability.STREAMING,
     })
     preferred_for: FrozenSet[str] = frozenset()
+    supported_hints: FrozenSet[str] = frozenset()
 
     def is_available(self) -> bool:
         return self._sfeos_available()
@@ -1158,6 +1160,7 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
         Capability.FULLTEXT,
     })
     preferred_for: FrozenSet[str] = frozenset({"search", "assets"})
+    supported_hints: FrozenSet[str] = frozenset({"search", "assets"})
 
     def is_available(self) -> bool:
         return self._sfeos_available()

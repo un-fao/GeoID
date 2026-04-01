@@ -147,6 +147,7 @@ class IcebergStorageDriver(ModuleProtocol):
         Capability.SOURCE_REFERENCE,
     })
     preferred_for: FrozenSet[str] = frozenset({"analytics", "features", "write"})
+    supported_hints: FrozenSet[str] = frozenset({"analytics", "features", "write"})
 
     _catalog = None
     _catalog_loc_key: Optional[str] = None

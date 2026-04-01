@@ -39,7 +39,7 @@ Resolution semantics:
 
 import logging
 from enum import StrEnum
-from typing import Any, ClassVar, Dict, List, Optional, Set
+from typing import Any, ClassVar, Dict, FrozenSet, List, Optional, Set
 
 from pydantic import BaseModel, Field
 
@@ -55,8 +55,12 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-ROUTING_PLUGIN_CONFIG_ID = "routing"
-ROUTING_ASSETS_PLUGIN_CONFIG_ID = "routing_assets"
+ROUTING_PLUGIN_CONFIG_ID = "storage:collections"
+ROUTING_ASSETS_PLUGIN_CONFIG_ID = "storage:assets"
+
+# Legacy aliases — existing DB rows may reference these
+_ROUTING_LEGACY_ID = "routing"
+_ROUTING_ASSETS_LEGACY_ID = "routing_assets"
 
 
 class FailurePolicy(StrEnum):
@@ -73,6 +77,48 @@ class Operation(StrEnum):
     WRITE = "WRITE"
     READ = "READ"
     SEARCH = "SEARCH"
+
+
+class WriteMode(StrEnum):
+    """Execution mode for WRITE operations.
+
+    Controls how secondary drivers execute during fan-out:
+
+    - ``sync``: await result; participates in coordinated rollback
+      (all sync writes run in parallel via ``asyncio.gather``)
+    - ``async``: fire-and-forget after all sync writes succeed
+    """
+
+    SYNC = "sync"
+    ASYNC = "async"
+
+
+# ---------------------------------------------------------------------------
+# Capability → Operation mapping
+# ---------------------------------------------------------------------------
+
+
+def derive_supported_operations(capabilities: FrozenSet[str]) -> FrozenSet[str]:
+    """Derive which Operations a driver supports from its Capability set.
+
+    Uses :data:`_CAPABILITY_TO_OPERATIONS` to map driver capabilities to the
+    operations they can handle.  This is used by apply-handler validation and
+    the driver discovery endpoint.
+    """
+    from dynastore.models.protocols.storage_driver import Capability
+
+    mapping: Dict[str, Set[str]] = {
+        Capability.WRITE: {Operation.WRITE},
+        Capability.READ: {Operation.READ},
+        Capability.FULLTEXT: {Operation.SEARCH},
+        Capability.ATTRIBUTE_FILTER: {Operation.SEARCH},
+        Capability.SPATIAL_FILTER: {Operation.SEARCH},
+    }
+    ops: Set[str] = set()
+    for cap in capabilities:
+        if cap in mapping:
+            ops.update(mapping[cap])
+    return frozenset(ops)
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +145,15 @@ class OperationDriverEntry(BaseModel):
         FailurePolicy.FATAL,
         description="What happens if this driver fails: fatal, warn, or ignore.",
     )
+    write_mode: WriteMode = Field(
+        WriteMode.SYNC,
+        description=(
+            "Execution mode for WRITE operations.  "
+            "'sync' = await result (parallel with other sync drivers, participates "
+            "in coordinated rollback).  "
+            "'async' = fire-and-forget after sync phase succeeds."
+        ),
+    )
 
 
 class RoutingPluginConfig(PluginConfig):
@@ -107,7 +162,8 @@ class RoutingPluginConfig(PluginConfig):
     Each operation maps to an ordered list of :class:`OperationDriverEntry`.
     Position in the list determines priority (first = primary).
 
-    Registered as ``plugin_id = "routing"`` in the config waterfall.
+    Registered as ``plugin_id = "storage:collections"`` in the config waterfall.
+    Legacy alias ``"routing"`` is kept for backward compatibility.
     """
 
     _plugin_id: ClassVar[Optional[str]] = ROUTING_PLUGIN_CONFIG_ID
@@ -131,7 +187,8 @@ class AssetRoutingPluginConfig(PluginConfig):
     Same structure as :class:`RoutingPluginConfig` but scoped to
     asset-domain drivers.
 
-    Registered as ``plugin_id = "routing_assets"`` in the config waterfall.
+    Registered as ``plugin_id = "storage:assets"`` in the config waterfall.
+    Legacy alias ``"routing_assets"`` is kept for backward compatibility.
     """
 
     _plugin_id: ClassVar[Optional[str]] = ROUTING_ASSETS_PLUGIN_CONFIG_ID
@@ -150,6 +207,77 @@ class AssetRoutingPluginConfig(PluginConfig):
 # ---------------------------------------------------------------------------
 
 
+def _validate_routing_entries(
+    config: PluginConfig,
+    driver_index: Dict[str, Any],
+    label: str,
+) -> None:
+    """Shared validation for routing config apply handlers.
+
+    Raises ``ValueError`` on:
+    1. Unknown ``driver_id``
+    2. Hint not in ``driver.supported_hints``
+    3. Operation not supported (derived from driver capabilities)
+    4. ``write_mode=async`` on a driver without ``DriverCapability.ASYNC``
+    """
+    from dynastore.modules.storage.driver_config import DriverCapability
+
+    for operation, entries in config.operations.items():
+        for entry in entries:
+            # 1. Unknown driver
+            driver = driver_index.get(entry.driver_id)
+            if driver is None:
+                raise ValueError(
+                    f"{label}: driver '{entry.driver_id}' for operation "
+                    f"'{operation}' is not registered. "
+                    f"Available: {sorted(driver_index)}"
+                )
+
+            # 2. Hint validation
+            driver_hints = getattr(driver, "supported_hints", frozenset())
+            invalid_hints = entry.hints - driver_hints
+            if invalid_hints:
+                raise ValueError(
+                    f"{label}: hints {sorted(invalid_hints)} are not supported "
+                    f"by driver '{entry.driver_id}'. "
+                    f"Supported: {sorted(driver_hints)}"
+                )
+
+            # 3. Operation supported (derived from capabilities)
+            driver_caps = getattr(driver, "capabilities", frozenset())
+            supported_ops = derive_supported_operations(driver_caps)
+            if operation not in supported_ops:
+                raise ValueError(
+                    f"{label}: driver '{entry.driver_id}' does not support "
+                    f"operation '{operation}'. "
+                    f"Supported operations: {sorted(supported_ops)} "
+                    f"(derived from capabilities: {sorted(driver_caps)})"
+                )
+
+            # 4. write_mode compatibility
+            if entry.write_mode == WriteMode.ASYNC:
+                # Fetch driver config to check DriverCapability
+                try:
+                    from dynastore.modules.db_config.platform_config_service import (
+                        ConfigRegistry,
+                    )
+
+                    driver_config = ConfigRegistry.create_default(
+                        f"driver:{entry.driver_id}"
+                    )
+                    config_caps = getattr(driver_config, "capabilities", frozenset())
+                    if DriverCapability.ASYNC not in config_caps:
+                        raise ValueError(
+                            f"{label}: write_mode='async' requires "
+                            f"DriverCapability.ASYNC on driver '{entry.driver_id}'. "
+                            f"Driver capabilities: {sorted(config_caps)}"
+                        )
+                except ValueError:
+                    raise  # re-raise validation errors
+                except Exception:
+                    pass  # driver config may not exist — skip check
+
+
 async def _on_apply_routing_config(
     config: RoutingPluginConfig,
     catalog_id: Optional[str],
@@ -158,24 +286,14 @@ async def _on_apply_routing_config(
 ) -> None:
     """Called after routing config is written.
 
-    Validates that referenced drivers are registered and invalidates
-    the router cache.
+    Validates driver_id, hints, operations, and write_mode, then
+    invalidates the router cache.
     """
     from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
     from dynastore.tools.discovery import get_protocols
 
-    registered = {d.driver_id for d in get_protocols(CollectionStorageDriverProtocol)}
-
-    for operation, entries in config.operations.items():
-        for entry in entries:
-            if entry.driver_id not in registered:
-                logger.warning(
-                    "Routing config: driver '%s' for operation '%s' is not registered. "
-                    "Available: %s",
-                    entry.driver_id,
-                    operation,
-                    sorted(registered),
-                )
+    driver_index = {d.driver_id: d for d in get_protocols(CollectionStorageDriverProtocol)}
+    _validate_routing_entries(config, driver_index, "Collection routing config")
 
     # Invalidate router cache
     try:
@@ -196,18 +314,8 @@ async def _on_apply_asset_routing_config(
     from dynastore.models.protocols.asset_driver import AssetDriverProtocol
     from dynastore.tools.discovery import get_protocols
 
-    registered = {d.driver_id for d in get_protocols(AssetDriverProtocol)}
-
-    for operation, entries in config.operations.items():
-        for entry in entries:
-            if entry.driver_id not in registered:
-                logger.warning(
-                    "Asset routing config: driver '%s' for operation '%s' is not registered. "
-                    "Available: %s",
-                    entry.driver_id,
-                    operation,
-                    sorted(registered),
-                )
+    driver_index = {d.driver_id: d for d in get_protocols(AssetDriverProtocol)}
+    _validate_routing_entries(config, driver_index, "Asset routing config")
 
     # Invalidate router cache
     try:
@@ -223,3 +331,10 @@ from dynastore.modules.db_config.platform_config_service import ConfigRegistry  
 
 ConfigRegistry.register_apply_handler(ROUTING_PLUGIN_CONFIG_ID, _on_apply_routing_config)
 ConfigRegistry.register_apply_handler(ROUTING_ASSETS_PLUGIN_CONFIG_ID, _on_apply_asset_routing_config)
+
+# Legacy aliases — register the same models + handlers under old IDs so that
+# existing DB rows with plugin_id='routing' / 'routing_assets' still deserialize.
+ConfigRegistry.register(_ROUTING_LEGACY_ID, RoutingPluginConfig)
+ConfigRegistry.register(_ROUTING_ASSETS_LEGACY_ID, AssetRoutingPluginConfig)
+ConfigRegistry.register_apply_handler(_ROUTING_LEGACY_ID, _on_apply_routing_config)
+ConfigRegistry.register_apply_handler(_ROUTING_ASSETS_LEGACY_ID, _on_apply_asset_routing_config)

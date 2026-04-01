@@ -76,6 +76,7 @@ class PostgresAssetDriver:
     driver_id: str = "postgresql"
     capabilities: FrozenSet[str] = frozenset({"read", "write", "streaming"})
     preferred_for: FrozenSet[str] = frozenset({"default", "metadata"})
+    supported_hints: FrozenSet[str] = frozenset({"metadata"})
 
     def __init__(self, engine: Optional[DbResource] = None) -> None:
         self.engine = engine

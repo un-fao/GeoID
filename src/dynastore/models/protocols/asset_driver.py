@@ -50,6 +50,7 @@ class AssetDriverProtocol(Protocol):
     driver_id: str
     capabilities: FrozenSet[str]
     preferred_for: FrozenSet[str]
+    supported_hints: FrozenSet[str]
 
     # ------------------------------------------------------------------
     # Lifecycle

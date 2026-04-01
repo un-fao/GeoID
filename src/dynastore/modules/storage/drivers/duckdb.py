@@ -157,6 +157,7 @@ class DuckDBStorageDriver(ModuleProtocol):
         Capability.ATTRIBUTE_FILTER,
     })
     preferred_for: FrozenSet[str] = frozenset({"analytics"})
+    supported_hints: FrozenSet[str] = frozenset({"analytics"})
 
     def is_available(self) -> bool:
         return _duckdb_available()

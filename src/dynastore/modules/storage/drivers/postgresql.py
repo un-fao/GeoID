@@ -65,6 +65,7 @@ class PostgresStorageDriver(ModuleProtocol):
         Capability.ATTRIBUTE_FILTER,
     })
     preferred_for: FrozenSet[str] = frozenset({"features", "write"})
+    supported_hints: FrozenSet[str] = frozenset({"features", "write", "metadata"})
 
     def is_available(self) -> bool:
         from dynastore.tools.discovery import get_protocol

@@ -119,11 +119,15 @@ class CollectionStorageDriverProtocol(Protocol):
 
     ``preferred_for`` declares which routing hints this driver is optimized for.
     The router uses this for auto-selection when no explicit hint mapping exists.
+
+    ``supported_hints`` declares which hints this driver accepts in routing config.
+    Config validation rejects entries with hints not in this set.
     """
 
     driver_id: str
     capabilities: FrozenSet[str]
     preferred_for: FrozenSet[str]
+    supported_hints: FrozenSet[str]
 
     async def write_entities(
         self,

@@ -23,14 +23,17 @@ async def cleanup_catalog(engine):
     try:
         # Target schemas matching the generated physical name format: s_ + 8 base36 chars
         # (see generate_physical_name in catalog_service.py)
+        # NOTE: Use :pattern bind parameter instead of literal regex in the query
+        # string, because TemplateQueryBuilder treats {8} as an identifier placeholder
+        # and silently strips it.
         query = DQLQuery(
             "SELECT nspname FROM pg_namespace "
-            "WHERE nspname ~ '^s_[0-9a-z]{{8}}$';",
+            "WHERE nspname ~ :pattern;",
             result_handler=ResultHandler.ALL_SCALARS
         )
         # Use a fresh connection to get the list of schemas
         async with managed_nested_transaction(engine) as conn:
-            schemas = await query.execute(conn)
+            schemas = await query.execute(conn, pattern=r'^s_[0-9a-z]{8}$')
         
         schemas: list[str] = list(schemas)
         if not schemas:
@@ -87,16 +90,44 @@ async def cleanup_catalog(engine):
 
         if schemas:
             logger.info(f"Finished dropping {len(schemas)} tenant schemas ({len(failed)} fell back to individual drops).")
-        # Step 3: Truncate catalog metadata tables (always runs, even if no tenant schemas were found)
+
+        # Step 3: Remove orphaned pg_cron jobs for dropped tenant schemas
+        if schemas:
+            try:
+                patterns = [f"%{s}%" for s in schemas]
+                async with managed_nested_transaction(engine) as conn:
+                    for pat in patterns:
+                        await DQLQuery(
+                            "DELETE FROM cron.job WHERE jobname LIKE :pat;",
+                            result_handler=ResultHandler.ROWCOUNT,
+                        ).execute(conn, pat=pat)
+                logger.info(f"Removed orphaned cron jobs for {len(schemas)} tenant schemas.")
+            except Exception as e:
+                logger.debug(f"Failed to remove orphaned cron jobs (ignored): {e}")
+
+        # Step 4: Truncate catalog metadata tables (always runs, even if no tenant schemas were found)
         metadata_tables = ["catalogs", "collections"]
         for table in metadata_tables:
             try:
                 async with managed_nested_transaction(engine) as conn:
                     if await check_table_exists(conn, table, "catalog"):
                         logger.info(f"Truncating catalog.{table}...")
-                        await force_truncate_table(conn, f"catalog.{table}")
+                        await force_truncate_table(conn, "catalog", table)
             except Exception as e:
                 logger.debug(f"Failed to truncate catalog.{table} (ignored): {e}")
+
+        # Step 5: Clean up GCP bucket records for dropped catalogs
+        try:
+            async with managed_nested_transaction(engine) as conn:
+                if await check_table_exists(conn, "catalog_buckets", "gcp"):
+                    deleted = await DQLQuery(
+                        "DELETE FROM gcp.catalog_buckets WHERE catalog_id NOT IN (SELECT id FROM catalog.catalogs);",
+                        result_handler=ResultHandler.ROWCOUNT,
+                    ).execute(conn)
+                    if deleted:
+                        logger.info(f"Removed {deleted} orphaned GCP bucket records.")
+        except Exception as e:
+            logger.debug(f"Failed to clean GCP bucket records (ignored): {e}")
 
     except Exception as e:
         logger.error(f"Error during tenant schema discovery: {e}")
