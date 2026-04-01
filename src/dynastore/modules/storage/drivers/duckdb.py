@@ -279,9 +279,41 @@ class DuckDBStorageDriver(ModuleProtocol):
         if not loc or not loc.path:
             return
 
+        import json as _json
+
         conn = self._get_conn()
         reader = self._reader_func(loc.format)
-        base_sql = f"SELECT * FROM {reader}('{loc.path}')"
+        source = f"{reader}('{loc.path}')"
+
+        # Detect geometry column type: GeoParquet stores geometry as WKB bytes.
+        # When the spatial extension is loaded, convert to GeoJSON at query time
+        # so the Feature model receives a dict instead of raw bytes.
+        geo_col: Optional[str] = None
+        if "spatial" in _loaded_extensions:
+            try:
+                schema = conn.execute(
+                    f"DESCRIBE SELECT * FROM {source} LIMIT 0"
+                ).fetchall()
+                for col_name, col_type, *_ in schema:
+                    if "GEOMETRY" in str(col_type).upper():
+                        geo_col = col_name
+                        break
+            except Exception:
+                pass
+
+        if geo_col:
+            # Build SELECT with explicit ST_AsGeoJSON conversion for the geometry column.
+            schema_cols = [row[0] for row in conn.execute(
+                f"DESCRIBE SELECT * FROM {source} LIMIT 0"
+            ).fetchall()]
+            col_exprs = [
+                f"ST_AsGeoJSON({geo_col})::VARCHAR AS {geo_col}"
+                if c == geo_col else f'"{c}"'
+                for c in schema_cols
+            ]
+            base_sql = f"SELECT {', '.join(col_exprs)} FROM {source}"
+        else:
+            base_sql = f"SELECT * FROM {source}"
 
         where_clauses: List[str] = []
         params: List[Any] = []
@@ -300,7 +332,7 @@ class DuckDBStorageDriver(ModuleProtocol):
                 elif f.operator == "bbox" and isinstance(f.value, list) and len(f.value) == 4:
                     minx, miny, maxx, maxy = f.value
                     where_clauses.append(
-                        f"ST_Intersects(geometry, "
+                        f"ST_Intersects({geo_col or 'geometry'}, "
                         f"ST_MakeEnvelope({minx}, {miny}, {maxx}, {maxy}))"
                     )
 
@@ -322,7 +354,14 @@ class DuckDBStorageDriver(ModuleProtocol):
             for row in result.fetchall():
                 row_dict = dict(zip(columns, row))
                 feature_id = row_dict.pop("id", None)
-                geometry = row_dict.pop("geometry", None)
+                geometry = row_dict.pop(geo_col or "geometry", None)
+                if isinstance(geometry, str):
+                    try:
+                        geometry = _json.loads(geometry)
+                    except Exception:
+                        geometry = None
+                elif isinstance(geometry, (bytes, bytearray)):
+                    geometry = None
                 yield Feature(
                     type="Feature",
                     id=feature_id,

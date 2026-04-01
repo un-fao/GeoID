@@ -252,6 +252,11 @@ _hard_delete_catalog_query = DQLQuery(
 
 _drop_schema_query = DDLQuery("DROP SCHEMA IF EXISTS {schema} CASCADE;")
 
+_delete_tenant_cron_jobs_query = DQLQuery(
+    "DELETE FROM cron.job WHERE jobname LIKE :pattern;",
+    result_handler=ResultHandler.ROWCOUNT,
+)
+
 
 from dynastore.modules.catalog.collection_service import CollectionService
 from dynastore.modules.catalog.item_service import ItemService
@@ -1073,10 +1078,26 @@ class CatalogService(CatalogsProtocol):
             # Dropping schema
             if physical_schema:
                 logger.warning(f"DEBUG: delete_catalog: Dropping schema {physical_schema}")
-                # We should probably use a helper that uses DDLQuery with schema
-                # _drop_schema_query is defined above
                 await _drop_schema_query.execute(conn, schema=physical_schema)
                 logger.warning(f"DEBUG: delete_catalog: Schema dropped")
+
+                # Remove all pg_cron jobs associated with this tenant schema.
+                # Jobs use the physical schema name as a suffix or infix, e.g.:
+                #   archive_catalog_events_s_abc12345
+                #   monthly_cleanup_logs_s_abc12345
+                #   prune_s_abc12345_events
+                try:
+                    deleted_jobs = await _delete_tenant_cron_jobs_query.execute(
+                        conn, pattern=f"%{physical_schema}%"
+                    )
+                    if deleted_jobs:
+                        logger.info(
+                            f"Removed {deleted_jobs} cron job(s) for schema {physical_schema}"
+                        )
+                except Exception as cron_err:
+                    logger.warning(
+                        f"Could not remove cron jobs for {physical_schema} (non-fatal): {cron_err}"
+                    )
 
             # Delete from catalogs table
             await _hard_delete_catalog_query.execute(conn, id=catalog_id)

@@ -36,6 +36,32 @@ from httpx import AsyncClient
 from typing import Any, Union
 
 
+def pytest_sessionfinish(session, exitstatus):
+    """
+    Run database cleanup after the full test session.
+
+    With xdist: pytest calls this in the controller process after ALL workers
+    have finished — the only safe place to truncate shared tables without
+    racing against in-progress tests.
+
+    Without xdist: called in the main process after all tests finish.
+    """
+    import asyncio
+
+    # Workers report their own sessionfinish; skip them — only the controller runs cleanup.
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return
+
+    try:
+        from tests.dynastore.test_utils.cleanup_db import cleanup_db
+
+        print("\n[POST-SESSION] Running database cleanup...")
+        asyncio.run(cleanup_db())
+        print("[POST-SESSION] Database cleanup complete.")
+    except Exception as e:
+        print(f"[POST-SESSION] Cleanup warning (non-fatal): {e}")
+
+
 def pytest_load_initial_conftests(early_config, parser, args):
     """
     Ensures that if -n (xdist) is used but the plugin is mission, we don't crash.
