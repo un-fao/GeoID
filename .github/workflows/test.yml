@@ -36,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -74,7 +74,7 @@ jobs:
             --junitxml=/dynastore/workspace/unit-test-results.xml
 
       - name: Report unit tests
-        uses: dorny/test-reporter@v2
+        uses: dorny/test-reporter@v3
         if: always()
         with:
           name: Unit Tests
@@ -110,7 +110,7 @@ jobs:
           docker compose -f docker/docker-compose.test.yml logs test-runner
 
       - name: Report integration tests
-        uses: dorny/test-reporter@v2
+        uses: dorny/test-reporter@v3
         # Only report when the integration step actually ran (produced an XML).
         # When the step is skipped the file does not exist and dorny would fail.
         if: always() && steps.integration.outcome != 'skipped'

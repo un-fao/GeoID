@@ -36,15 +36,15 @@ CollectionStorageDriverProtocol implementation
 ## Quick Start
 
 ```python
-from dynastore.modules.storage import get_driver, ReadHint
+from dynastore.modules.storage import get_driver
 
-# Read — hint selects the right backend
-driver = await get_driver(catalog_id, collection_id, hint="search")
+# Read — operation + hint selects the right backend
+driver = await get_driver("READ", catalog_id, collection_id, hint="search")
 async for feature in driver.read_entities(catalog_id, collection_id, request=query):
     process(feature)
 
-# Write — always goes to primary driver
-driver = await get_driver(catalog_id, collection_id, write=True)
+# Write — operation-based routing to all configured write drivers
+driver = await get_driver("WRITE", catalog_id, collection_id)
 written = await driver.write_entities(catalog_id, collection_id, feature_collection)
 
 # Check capabilities before calling OTF-specific methods
@@ -159,7 +159,7 @@ Lives in the 4-tier `ConfigsProtocol` hierarchy (collection > catalog > platform
 | `primary_driver` | `DriverRef` | `"postgresql"` | Driver for writes and default reads |
 | `read_drivers` | `Dict[str, DriverRef]` | `{}` | Hint-to-driver mapping for reads |
 | `secondary_drivers` | `List[DriverRef]` | `[]` | Async write fan-out via events |
-| `storage_locations` | `Dict[str, StorageLocationConfig]` | `{}` | Per-driver location config |
+| *(driver configs)* | See driver-specific config classes in `driver_config.py` | — | Stored per-driver via `plugin_id="driver:<name>"` |
 
 ### Read Hints
 
@@ -198,7 +198,7 @@ The driver index (`driver_id -> instance`) is rebuilt from the discovery registr
 | **driver_id** | `postgresql` |
 | **priority** | 10 |
 | **capabilities** | `STREAMING`, `SPATIAL_FILTER`, `SOFT_DELETE`, `EXPORT` |
-| **location config** | `PostgresStorageLocationConfig` |
+| **driver config** | `PostgresCollectionDriverConfig` (`plugin_id="driver:postgresql"`) |
 | **dependencies** | Core (always available) |
 
 Wraps existing `ItemCrudProtocol` and `ItemQueryProtocol`. Zero SQL rewrite — all sidecar logic,
@@ -228,7 +228,7 @@ drop_storage    → CatalogsProtocol.delete_collection/catalog()
 | **driver_id** | `iceberg` |
 | **priority** | 20 |
 | **capabilities** | `STREAMING`, `SPATIAL_FILTER`, `EXPORT`, `TIME_TRAVEL`, `VERSIONING`, `SNAPSHOTS`, `SCHEMA_EVOLUTION`, `SOFT_DELETE` |
-| **location config** | `OTFStorageLocationConfig` |
+| **driver config** | `IcebergCollectionDriverConfig` (`plugin_id="driver:iceberg"`) |
 | **dependencies** | `pyiceberg[sql-postgres]>=0.9.0`, `pyarrow>=14.0.0` |
 
 Full Open Table Format support via PyIceberg: ACID transactions, snapshots, time-travel reads,
@@ -242,7 +242,7 @@ and schema evolution — all backed by a real Iceberg catalog.
 
 **Warehouse auto-resolution** (via `_resolve_warehouse()` → `_ensure_catalog()`):
 
-1. **Explicit** — `warehouse_uri` field in `OTFStorageLocationConfig` (manual override)
+1. **Explicit** — `warehouse_uri` field in `IcebergCollectionDriverConfig` (manual override)
 2. **Auto-detected** — from platform `StorageProtocol` (e.g., GCS bucket). When a collection already has a GCP bucket, the driver derives `gs://bucket/.../iceberg/` automatically
 3. **Fallback** — local temp dir (`file:///tmp/iceberg_warehouse`)
 
@@ -312,7 +312,7 @@ pip install dynastore[module_storage_iceberg]
 | **driver_id** | `duckdb` |
 | **priority** | 30 |
 | **capabilities** | `READ_ONLY`, `STREAMING`, `SPATIAL_FILTER`, `EXPORT` |
-| **location config** | `FileStorageLocationConfig` |
+| **driver config** | `DuckDbCollectionDriverConfig` (`plugin_id="driver:duckdb"`) |
 | **dependencies** | `duckdb>=1.0.0` |
 
 File-based analytical reads via DuckDB's built-in readers. Reads from parquet, CSV, JSON, etc.
@@ -351,7 +351,7 @@ pip install dynastore[module_storage_duckdb]
 | **driver_id** | `elasticsearch` |
 | **priority** | 50 |
 | **capabilities** | `STREAMING`, `SPATIAL_FILTER`, `FULLTEXT`, `SOFT_DELETE` |
-| **location config** | `StorageLocationConfig` (base) |
+| **driver config** | `ElasticsearchCollectionDriverConfig` (`plugin_id="driver:elasticsearch"`) |
 | **dependencies** | `stac-fastapi-elasticsearch` (optional) |
 
 Delegates all ES operations to SFEOS `DatabaseLogic`, ensuring full read/write compatibility
@@ -394,30 +394,40 @@ On `drop_storage`, revokes it. On startup (`lifespan`), restores DENY policies.
 
 ---
 
-## Storage Location Config System
+## Driver Config System
 
-Each driver registers its own typed `StorageLocationConfig` subclass via `__init_subclass__`.
-The `StorageLocationConfigRegistry` resolves the correct class for deserialization.
+Each driver has its own typed config class in `driver_config.py` (subclass of `CollectionDriverConfig`).
+Fetch via the config waterfall using the driver's `_plugin_id`:
 
 ```python
-from dynastore.modules.storage.location import StorageLocationConfigRegistry
+from dynastore.modules.storage.driver_config import (
+    PostgresCollectionDriverConfig,
+    DuckDbCollectionDriverConfig,
+    IcebergCollectionDriverConfig,
+)
 
-# Resolve the right config class for a driver
-config_cls = StorageLocationConfigRegistry.resolve("iceberg")
-# → OTFStorageLocationConfig
+# PG config (convenience helper):
+from dynastore.modules.storage.driver_config import get_pg_collection_config
+config = await get_pg_collection_config(catalog_id, collection_id)
 
-# List all registered drivers
-drivers = StorageLocationConfigRegistry.registered_drivers()
-# → {"postgresql": PostgresStorageLocationConfig, "duckdb": FileStorageLocationConfig, ...}
+# Other drivers — use the config service directly:
+from dynastore.tools.discovery import get_protocol
+from dynastore.models.protocols import ConfigsProtocol
+configs = get_protocol(ConfigsProtocol)
+config = await configs.get_config(
+    IcebergCollectionDriverConfig._plugin_id,
+    catalog_id=catalog_id,
+    collection_id=collection_id,
+)
 ```
 
-### Registered Config Types
+### Driver Config Types
 
-| Driver | Config Class | Key Fields |
-|--------|-------------|------------|
-| `postgresql` | `PostgresStorageLocationConfig` | `physical_schema`, `physical_table` |
-| `duckdb` | `FileStorageLocationConfig` | `path`, `format`, `write_path`, `write_format` |
-| `iceberg` | `OTFStorageLocationConfig` | `catalog_name`, `catalog_type`, `catalog_uri`, `catalog_properties`, `warehouse_uri`, `warehouse_scheme`, `namespace`, `table_name` |
+| Driver | Config Class | Plugin ID | Key Fields |
+|--------|-------------|-----------|------------|
+| `postgresql` | `PostgresCollectionDriverConfig` | `driver:postgresql` | `physical_schema`, `physical_table`, `sidecars`, `partitioning` |
+| `duckdb` | `DuckDbCollectionDriverConfig` | `driver:duckdb` | `path`, `format`, `write_path`, `write_format` |
+| `iceberg` | `IcebergCollectionDriverConfig` | `driver:iceberg` | `catalog_name`, `catalog_type`, `catalog_uri`, `catalog_properties`, `warehouse_uri`, `warehouse_scheme`, `namespace`, `table_name` |
 
 ---
 
@@ -565,23 +575,22 @@ class MyDatabaseStorageDriver(ModuleProtocol):
         raise NotImplementedError("Export not supported")
 ```
 
-### Step 2: Create a Location Config (Optional)
+### Step 2: Create a Driver Config (Optional)
 
-If your driver needs custom connection config beyond `uri`, add a subclass in `location.py`:
+If your driver needs custom configuration, add a subclass of `CollectionDriverConfig` in `driver_config.py`:
 
 ```python
-# In src/dynastore/modules/storage/location.py
+# In src/dynastore/modules/storage/driver_config.py
 
-class MyDatabaseStorageLocationConfig(StorageLocationConfig):
+class MyDatabaseCollectionDriverConfig(CollectionDriverConfig):
     """Config for MyDatabase driver."""
 
-    _driver_id: ClassVar[str] = "mydatabase"     # Auto-registers via __init_subclass__
-    driver: str = "mydatabase"
+    _plugin_id: ClassVar[Optional[str]] = "driver:mydatabase"
     connection_pool_size: int = Field(10, description="Connection pool size")
     read_preference: str = Field("primary", description="Read preference")
 ```
 
-This auto-registers in `StorageLocationConfigRegistry` so the routing config can deserialize it.
+Store and retrieve via the config service using `_plugin_id` as the key.
 
 ### Step 3: Register the Entry Point
 
@@ -700,9 +709,8 @@ src/dynastore/
 │   ├── __init__.py                      # Public API exports
 │   ├── protocol.py                      # Re-export convenience
 │   ├── config.py                        # StorageRoutingConfig (PluginConfig)
-│   ├── location.py                      # StorageLocationConfig registry
+│   ├── driver_config.py                 # CollectionDriverConfig hierarchy (PG, DuckDB, Iceberg, ES)
 │   ├── router.py                        # get_driver() with cached resolution
-│   ├── hints.py                         # ReadHint enum + register_hint()
 │   ├── errors.py                        # ReadOnlyDriverError, SoftDeleteNotSupportedError
 │   └── drivers/
 │       ├── __init__.py
