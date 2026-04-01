@@ -196,12 +196,12 @@ async def register_retention_policy(
         BEGIN
             cutoff_date := date_trunc('{interval}', NOW()) - INTERVAL '{retention_period}';
             -- nspname match in pg_namespace is a literal string comparison, so case must match exactly.
-            FOR row IN SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '{schema}' AND c.relkind = 'r' AND c.relname ~ '^{table}_\\d{{{{4}}}}_\\d{{{{2}}}}$' LOOP
+            FOR row IN SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '{schema}' AND c.relkind = 'r' AND c.relname ~ '^{table}_\\d{{4}}_\\d{{2}}$' LOOP
                 DECLARE
                     date_str TEXT;
                     part_date DATE;
                 BEGIN
-                    date_str := substring(row.relname from '\\d{{{{4}}}}_\\d{{{{2}}}}$');
+                    date_str := substring(row.relname from '\\d{{4}}_\\d{{2}}$');
                     part_date := to_date(date_str, 'YYYY_MM');
                     IF part_date < cutoff_date THEN
                         RAISE NOTICE 'Pruning old partition: %.%', '{schema}', row.relname;

@@ -108,15 +108,12 @@ async def test_geojson_ingestion(task_app_state, test_data_loader, data_id):
 
     # FORCE DISABLE PARTITIONING & DROP TABLE to ensure ingestion works without H3 complications
     # which are not auto-handled by simple ingestion yet.
-    config = await configs.get_config(
-        "collection",
-        catalog_id=catalog_id,
-        collection_id=collection_id,
-    )
+    from dynastore.modules.storage.driver_config import get_pg_collection_config, PG_DRIVER_PLUGIN_ID
+    config = await get_pg_collection_config(catalog_id, collection_id)
     if config.partitioning:
         config.partitioning.enabled = False
     await configs.set_config(
-        "collection",
+        PG_DRIVER_PLUGIN_ID,
         config,
         catalog_id=catalog_id,
         collection_id=collection_id,
@@ -252,7 +249,7 @@ async def test_csv_ingestion(task_app_state, test_data_loader, data_id):
         # FORCE DISABLE PARTITIONING & DROP TABLE
         configs = get_protocol(ConfigsProtocol)
         config = await configs.get_config(
-            "collection",
+            "driver:postgresql",
             catalog_id=catalog_id,
             collection_id=collection_id,
             db_resource=conn,
@@ -260,7 +257,7 @@ async def test_csv_ingestion(task_app_state, test_data_loader, data_id):
         if config.partitioning:
             config.partitioning.enabled = False
         await configs.set_config(
-            "collection",
+            "driver:postgresql",
             config,
             catalog_id=catalog_id,
             collection_id=collection_id,
@@ -387,15 +384,12 @@ async def test_csv_pointz_ingestion(task_app_state, test_data_loader, data_id):
     await catalogs.create_collection(catalog_id, col_def)
 
     configs = get_protocol(ConfigsProtocol)
-    config = await configs.get_config(
-        "collection",
-        catalog_id=catalog_id,
-        collection_id=collection_id,
-    )
+    from dynastore.modules.storage.driver_config import get_pg_collection_config, PG_DRIVER_PLUGIN_ID
+    config = await get_pg_collection_config(catalog_id, collection_id)
     if config.partitioning:
         config.partitioning.enabled = False
     await configs.set_config(
-        "collection",
+        PG_DRIVER_PLUGIN_ID,
         config,
         catalog_id=catalog_id,
         collection_id=collection_id,

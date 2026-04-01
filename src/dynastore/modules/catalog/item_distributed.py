@@ -18,10 +18,8 @@ from dynastore.modules.db_config.query_executor import (
     DbResource,
     ResultHandler,
 )
-from dynastore.modules.catalog.catalog_config import (
-    CollectionPluginConfig,
-    COLLECTION_PLUGIN_CONFIG_ID,
-)
+from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
+from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
 from dynastore.modules.catalog.sidecars.attributes_config import VersioningBehaviorEnum
 from dynastore.models.protocols import ConfigsProtocol
 from dynastore.modules.catalog.sidecars.base import SidecarProtocol
@@ -52,7 +50,7 @@ class ItemDistributedMixin:
         collection_id: str,
         hub_payload: Dict[str, Any],
         sidecar_payloads: Dict[str, Dict[str, Any]],
-        col_config: CollectionPluginConfig,
+        col_config: PostgresCollectionDriverConfig,
         sidecars: List[SidecarProtocol],
         processing_context: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:

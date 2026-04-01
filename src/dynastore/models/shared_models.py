@@ -59,15 +59,55 @@ from dynastore.models.localization import (
 logger = logging.getLogger(__name__)
 
 
+def _clean_localized_text_schema(
+    schema: Dict[str, Any],
+    field_names: List[str],
+    examples: List[Dict[str, Any]],
+) -> None:
+    """Override LocalizedText object patterns with plain string type in OpenAPI."""
+    props = schema.get("properties", {})
+    for field_name in field_names:
+        if field_name in props:
+            desc = props[field_name].get("description", "")
+            default = props[field_name].get("default")
+            new_prop: Dict[str, Any] = {"type": "string", "description": desc}
+            if default is not None:
+                new_prop["default"] = default
+            props[field_name] = new_prop
+    schema["examples"] = examples
+
+
 class Link(BaseModel, LocalizableModelMixin):
     """Represents a generic link object, compliant with OGC/STAC standards."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(
+        extra="allow",
+        json_schema_extra=lambda schema: _clean_localized_text_schema(
+            schema,
+            ["title"],
+            [
+                {
+                    "rel": "self",
+                    "href": "https://example.com/stac/catalogs/cat1",
+                    "type": "application/json",
+                    "title": "This catalog",
+                },
+                {
+                    "rel": "license",
+                    "href": "https://creativecommons.org/licenses/by/4.0/",
+                    "type": "text/html",
+                    "title": "CC-BY-4.0 License",
+                },
+            ],
+        ),
+    )
 
     href: str
     rel: str
-    type: Optional[str] = None
-    title: Optional[LocalizedText] = None
+    type: Optional[str] = Field(default=None, description="Media type of the resource.")
+    title: Optional[LocalizedText] = Field(
+        default=None, description="Human-readable title of the link destination."
+    )
     hreflang: Optional[str] = Field(
         default=None,
         description="The language of the resource at the link destination (RFC 5646).",
@@ -106,10 +146,36 @@ Internationalized = Union[Dict[str, ContentT], ContentT]
 
 
 class Provider(BaseModel, LocalizableModelMixin):
-    name: LocalizedText
-    description: Optional[LocalizedText] = None
-    roles: Optional[List[str]] = None
-    url: Optional[HttpUrl] = None
+    model_config = ConfigDict(
+        json_schema_extra=lambda schema: _clean_localized_text_schema(
+            schema,
+            ["name", "description"],
+            [
+                {
+                    "name": "European Space Agency",
+                    "roles": ["producer"],
+                    "url": "https://www.esa.int",
+                },
+                {
+                    "name": "FAO",
+                    "description": "Food and Agriculture Organization",
+                    "roles": ["producer", "host"],
+                    "url": "https://www.fao.org",
+                },
+            ],
+        ),
+    )
+
+    name: LocalizedText = Field(description="Name of the organization or individual.")
+    description: Optional[LocalizedText] = Field(
+        default=None, description="Description of the provider."
+    )
+    roles: Optional[List[str]] = Field(
+        default=None, description="Roles of the provider (e.g. producer, host, licensor)."
+    )
+    url: Optional[HttpUrl] = Field(
+        default=None, description="URL of the provider."
+    )
 
     @field_validator("name", "description", mode="before")
     @classmethod
@@ -174,7 +240,17 @@ class SpatialExtent(BaseModel):
 
 
 class Extent(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "spatial": {"bbox": [[-180, -90, 180, 90]]},
+                    "temporal": {"interval": [["2020-01-01T00:00:00Z", None]]},
+                },
+            ]
+        },
+    )
     spatial: SpatialExtent
     temporal: TemporalExtent
 
@@ -405,7 +481,24 @@ class GeoJSONGeometry(BaseModel):
 
 class Feature(BaseModel):
     model_config = ConfigDict(
-        extra="allow", from_attributes=True, populate_by_name=True
+        extra="allow",
+        from_attributes=True,
+        populate_by_name=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "type": "Feature",
+                    "id": "feature_001",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [12.49, 41.89],
+                    },
+                    "bbox": [12.49, 41.89, 12.49, 41.89],
+                    "properties": {"name": "Rome", "country": "Italy"},
+                    "links": [],
+                }
+            ]
+        },
     )
 
     type: Literal["Feature"] = "Feature"
@@ -416,13 +509,31 @@ class Feature(BaseModel):
     links: Optional[List[Link]] = None
 
 
-
 class FeatureCollection(BaseModel):
     """
     A GeoJSON FeatureCollection, compliant with OGC API - Features Part 1.
     """
     model_config = ConfigDict(
-        extra="allow", from_attributes=True, populate_by_name=True
+        extra="allow",
+        from_attributes=True,
+        populate_by_name=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "id": "feature_001",
+                            "geometry": {"type": "Point", "coordinates": [12.49, 41.89]},
+                            "properties": {"name": "Rome"},
+                        }
+                    ],
+                    "numberMatched": 1,
+                    "numberReturned": 1,
+                }
+            ]
+        },
     )
 
     type: Literal["FeatureCollection"] = "FeatureCollection"

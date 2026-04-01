@@ -504,8 +504,8 @@ class AssetService(AssetsProtocol):
         self, catalog_id: str, asset_id: str, collection_id: str
     ) -> Optional[Dict[str, Any]]:
         """Fetch asset dict from the configured read driver (cached path)."""
-        from dynastore.modules.catalog.asset_router import get_asset_driver
-        driver = await get_asset_driver(catalog_id, collection_id, hint="default")
+        from dynastore.modules.storage.router import get_asset_driver
+        driver = await get_asset_driver("READ", catalog_id, collection_id)
         return await driver.get_asset(
             catalog_id, asset_id,
             collection_id=collection_id,
@@ -544,27 +544,18 @@ class AssetService(AssetsProtocol):
     async def _get_secondary_drivers(
         self, catalog_id: str, collection_id: Optional[str]
     ) -> List[AssetDriverProtocol]:
-        """Return all configured secondary asset drivers for this catalog/collection."""
-        from dynastore.tools.discovery import get_protocol, get_protocols
-        from dynastore.models.protocols.configs import ConfigsProtocol
-        from dynastore.modules.catalog.asset_config import ASSET_PLUGIN_CONFIG_ID
+        """Return non-primary WRITE asset drivers for fan-out.
+
+        Uses ``AssetRoutingPluginConfig`` via the router — the primary
+        (first) WRITE driver is excluded since the caller handles it
+        separately.
+        """
+        from dynastore.modules.storage.router import get_asset_write_drivers
+
         try:
-            configs = get_protocol(ConfigsProtocol)
-            if not configs:
-                return []
-            asset_config = await configs.get_config(
-                ASSET_PLUGIN_CONFIG_ID,
-                catalog_id=catalog_id,
-                collection_id=collection_id,
-            )
-            driver_index = {
-                d.driver_id: d for d in get_protocols(AssetDriverProtocol)
-            }
-            return [
-                driver_index[sid]
-                for sid in asset_config.secondary_driver_ids
-                if sid in driver_index
-            ]
+            resolved = await get_asset_write_drivers(catalog_id, collection_id)
+            # Skip the first (primary) — caller already handles it
+            return [r.driver for r in resolved[1:]]
         except Exception:
             return []
 
@@ -576,11 +567,11 @@ class AssetService(AssetsProtocol):
         db_resource: Optional[DbResource] = None,
     ) -> Optional[Asset]:
         """Get asset by ID, routing through the configured read driver."""
-        from dynastore.modules.catalog.asset_router import get_asset_driver
+        from dynastore.modules.storage.router import get_asset_driver
         target_col_id = collection_id if collection_id else CATALOG_LEVEL_COLLECTION_ID
 
         if db_resource:
-            driver = await get_asset_driver(catalog_id, collection_id, hint="default")
+            driver = await get_asset_driver("READ", catalog_id, collection_id)
             asset_doc = await driver.get_asset(
                 catalog_id, asset_id,
                 collection_id=target_col_id,
@@ -621,9 +612,9 @@ class AssetService(AssetsProtocol):
         offset: int = 0,
         db_resource: Optional[DbResource] = None,
     ) -> List[Asset]:
-        from dynastore.modules.catalog.asset_router import get_asset_driver
+        from dynastore.modules.storage.router import get_asset_driver
         target_col_id = collection_id if collection_id else CATALOG_LEVEL_COLLECTION_ID
-        driver = await get_asset_driver(catalog_id, collection_id, hint="default")
+        driver = await get_asset_driver("READ", catalog_id, collection_id)
         docs = await driver.search_assets(
             catalog_id,
             collection_id=target_col_id,
@@ -658,7 +649,7 @@ class AssetService(AssetsProtocol):
         configured).  Filters with other operators fall back to the default
         driver (PG) which supports full operator coverage via SQL.
         """
-        from dynastore.modules.catalog.asset_router import get_asset_driver
+        from dynastore.modules.storage.router import get_asset_driver
         target_col_id = collection_id if collection_id else CATALOG_LEVEL_COLLECTION_ID
 
         # Build simple field=value dict for EQ-only filters (ES-compatible)
@@ -672,8 +663,11 @@ class AssetService(AssetsProtocol):
                 break
 
         if not has_complex_filter:
-            # Route through the search driver (ES if configured)
-            driver = await get_asset_driver(catalog_id, collection_id, hint="search")
+            # Route through the search driver (ES if configured), fall back to READ
+            try:
+                driver = await get_asset_driver("SEARCH", catalog_id, collection_id, hint="search")
+            except ValueError:
+                driver = await get_asset_driver("READ", catalog_id, collection_id)
             docs = await driver.search_assets(
                 catalog_id,
                 collection_id=target_col_id,
@@ -694,7 +688,7 @@ class AssetService(AssetsProtocol):
             return assets
 
         # Complex filters: fall back to default driver (PG SQL with full operators)
-        driver = await get_asset_driver(catalog_id, collection_id, hint="default")
+        driver = await get_asset_driver("READ", catalog_id, collection_id)
 
         op_map = {
             FilterOperator.EQ: "=",
@@ -747,7 +741,7 @@ class AssetService(AssetsProtocol):
         collection_id: Optional[str] = None,
         db_resource: Optional[DbResource] = None,
     ) -> Asset:
-        from dynastore.modules.catalog.asset_router import get_asset_driver
+        from dynastore.modules.storage.router import get_asset_driver
         target_col_id = collection_id if collection_id else CATALOG_LEVEL_COLLECTION_ID
         now = datetime.now(timezone.utc)
 
@@ -763,7 +757,7 @@ class AssetService(AssetsProtocol):
             "owned_by": asset.owned_by,
         }
 
-        write_driver = await get_asset_driver(catalog_id, collection_id, write=True)
+        write_driver = await get_asset_driver("WRITE", catalog_id, collection_id)
         await write_driver.index_asset(catalog_id, asset_doc, db_resource=db_resource)
 
         # Fan-out to secondary drivers (fire-and-forget — no db_resource)
@@ -803,7 +797,7 @@ class AssetService(AssetsProtocol):
         db_resource: Optional[DbResource] = None,
     ) -> Asset:
         """Updates an existing asset's metadata via the configured write driver."""
-        from dynastore.modules.catalog.asset_router import get_asset_driver
+        from dynastore.modules.storage.router import get_asset_driver
         target_col_id = collection_id if collection_id else CATALOG_LEVEL_COLLECTION_ID
 
         # Fetch current asset
@@ -823,7 +817,7 @@ class AssetService(AssetsProtocol):
         updated_doc["metadata"] = update.metadata
         updated_doc["collection_id"] = target_col_id
 
-        write_driver = await get_asset_driver(catalog_id, collection_id, write=True)
+        write_driver = await get_asset_driver("WRITE", catalog_id, collection_id)
         await write_driver.index_asset(catalog_id, updated_doc, db_resource=db_resource)
 
         # Fan-out to secondary drivers
@@ -870,75 +864,35 @@ class AssetService(AssetsProtocol):
     ) -> int:
         """Delete assets matching the given criteria.
 
-        Always uses the PG driver for listing candidates and reference guard
-        (catalog-wide coordination via ``asset_references``).  Hard-deletes are
-        fanned out to secondary drivers after the primary deletion.
+        Uses the PG driver for candidate lookup, reference guard, and the
+        canonical delete.  Hard-deletes are fanned out to non-PG write driver
+        and secondary drivers.
         """
-        from dynastore.modules.catalog.asset_router import get_asset_driver
+        from dynastore.modules.storage.router import get_asset_driver
         from dynastore.modules.catalog.drivers.pg_asset_driver import PostgresAssetDriver
 
-        now = datetime.now(timezone.utc)
-
-        # Resolve PG driver for reference guard (always PG regardless of write driver)
         pg_driver = PostgresAssetDriver(engine=db_resource or self.engine)
-        phys_schema = await pg_driver._resolve_schema(catalog_id, db_resource)
-        if not phys_schema:
-            return 0
+        rowcount, rows_or_blocking = await pg_driver.delete_assets_bulk(
+            catalog_id,
+            asset_id=asset_id,
+            collection_id=collection_id,
+            hard=hard,
+            db_resource=db_resource,
+        )
 
-        # --- Locate matching assets via PG (canonical listing) ---
-        where_clauses = ["catalog_id = :cat"]
-        params: Dict[str, Any] = {"cat": catalog_id, "now": now}
-        if asset_id:
-            where_clauses.append("asset_id = :aid")
-            params["aid"] = asset_id
-        if collection_id:
-            where_clauses.append("collection_id = :coll")
-            params["coll"] = collection_id
-        elif asset_id:
-            where_clauses.append("collection_id = :coll")
-            params["coll"] = CATALOG_LEVEL_COLLECTION_ID
-
-        where_stmt = " AND ".join(where_clauses)
-
-        async with managed_transaction(db_resource or self.engine) as conn:
-            fetch_sql = text(
-                f'SELECT asset_id, catalog_id, collection_id, owned_by '
-                f'FROM "{phys_schema}".assets WHERE {where_stmt}'
-            )
-            asset_rows = await DQLQuery(
-                fetch_sql, result_handler=ResultHandler.ALL_DICTS
-            ).execute(conn, **params)
-
-            if not asset_rows:
-                return 0
-
-            # --- Reference guard ---
-            if hard:
-                owned_ids = [a["asset_id"] for a in asset_rows if a.get("owned_by")]
-                if owned_ids:
-                    blocking_rows = await self._list_blocking_references_bulk(
-                        owned_ids, catalog_id, conn, phys_schema
-                    )
-                    if blocking_rows:
-                        first_asset_id = blocking_rows[0].asset_id
-                        asset_blocking = [
-                            r for r in blocking_rows if r.asset_id == first_asset_id
-                        ]
-                        raise AssetReferencedError(first_asset_id, asset_blocking)
-
-            # --- Execute delete via PG SQL (bulk, efficient) ---
-            prefix = (
-                f'DELETE FROM "{phys_schema}".assets'
-                if hard
-                else f'UPDATE "{phys_schema}".assets SET deleted_at = :now'
-            )
-            final_sql = text(f"{prefix} WHERE {where_stmt}")
-            rowcount = await DQLQuery(
-                final_sql, result_handler=ResultHandler.ROWCOUNT
-            ).execute(conn, **params)
+        # rowcount == -1 means blocking references were found
+        if rowcount == -1:
+            blocking_rows = [AssetReference.model_validate(r) for r in rows_or_blocking]
+            first_asset_id = blocking_rows[0].asset_id
+            asset_blocking = [
+                r for r in blocking_rows if r.asset_id == first_asset_id
+            ]
+            raise AssetReferencedError(first_asset_id, asset_blocking)
 
         if rowcount == 0:
             return 0
+
+        asset_rows = rows_or_blocking
 
         # Invalidate cache
         for a in asset_rows:
@@ -946,7 +900,7 @@ class AssetService(AssetsProtocol):
 
         # Fan-out hard-deletes to write driver (if non-PG) and secondary drivers
         if hard:
-            write_driver = await get_asset_driver(catalog_id, collection_id, write=True)
+            write_driver = await get_asset_driver("WRITE", catalog_id, collection_id)
             secondaries = await self._get_secondary_drivers(catalog_id, collection_id)
             drivers_to_notify: List[AssetDriverProtocol] = []
             if not isinstance(write_driver, PostgresAssetDriver):

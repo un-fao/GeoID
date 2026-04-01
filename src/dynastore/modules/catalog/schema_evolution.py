@@ -18,7 +18,7 @@
 Schema Evolution Engine for DynaStore collections.
 
 Compares a collection's physical database schema against the DDL that would be
-generated from its current ``CollectionPluginConfig``, and produces a
+generated from its current ``PostgresCollectionDriverConfig``, and produces a
 structured ``EvolutionPlan`` classifying every difference as **safe** or
 **unsafe**.
 
@@ -355,7 +355,7 @@ class SchemaEvolutionEngine:
     def diff(
         self,
         current: CollectionSchema,
-        target_config: Any,  # CollectionPluginConfig
+        target_config: Any,  # PostgresCollectionDriverConfig
         physical_table: str,
         partition_keys: List[str],
         partition_key_types: Dict[str, str],
@@ -365,7 +365,7 @@ class SchemaEvolutionEngine:
 
         Args:
             current: Introspected CollectionSchema.
-            target_config: CollectionPluginConfig with desired state.
+            target_config: PostgresCollectionDriverConfig with desired state.
             physical_table: Physical table base name.
             partition_keys: Resolved partition keys.
             partition_key_types: Map of partition key → SQL type.

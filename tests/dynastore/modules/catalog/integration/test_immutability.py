@@ -5,8 +5,10 @@ from dynastore.modules.catalog.config_service import (
     ConfigService,
     CatalogConfig,
     CollectionConfig,
-    CollectionPluginConfig,
-    COLLECTION_PLUGIN_CONFIG_ID,
+)
+from dynastore.modules.storage.driver_config import (
+    PostgresCollectionDriverConfig,
+    PG_DRIVER_PLUGIN_ID,
 )
 from dynastore.modules.db_config.exceptions import ImmutableConfigError
 
@@ -28,7 +30,7 @@ async def test_collection_config_immutability(
     config_manager = get_protocol(ConfigsProtocol)
 
     # 2. Set initial config
-    initial_config = CollectionPluginConfig()
+    initial_config = PostgresCollectionDriverConfig()
 
     # Configure geometry sidecar
     for sidecar in initial_config.sidecars:
@@ -36,7 +38,7 @@ async def test_collection_config_immutability(
             sidecar.h3_resolutions = [10]
 
     await config_manager.set_config(
-        COLLECTION_PLUGIN_CONFIG_ID,
+        PG_DRIVER_PLUGIN_ID,
         initial_config,
         catalog_id=catalog_id,
         collection_id=collection_id,
@@ -52,7 +54,7 @@ async def test_collection_config_immutability(
 
     with pytest.raises(ImmutableConfigError) as excinfo:
         await config_manager.set_config(
-            COLLECTION_PLUGIN_CONFIG_ID,
+            PG_DRIVER_PLUGIN_ID,
             invalid_config_schema,
             catalog_id=catalog_id,
             collection_id=collection_id,
@@ -67,7 +69,7 @@ async def test_collection_config_immutability(
 
     with pytest.raises(ImmutableConfigError) as excinfo:
         await config_manager.set_config(
-            COLLECTION_PLUGIN_CONFIG_ID,
+            PG_DRIVER_PLUGIN_ID,
             invalid_config,
             catalog_id=catalog_id,
             collection_id=collection_id,
@@ -83,7 +85,7 @@ async def test_collection_config_immutability(
 
     with pytest.raises(ImmutableConfigError) as excinfo:
         await config_manager.set_config(
-            COLLECTION_PLUGIN_CONFIG_ID,
+            PG_DRIVER_PLUGIN_ID,
             invalid_config_partitioning,
             catalog_id=catalog_id,
             collection_id=collection_id,
@@ -97,14 +99,14 @@ async def test_platform_config_immutability(app_lifespan):
     config_manager = get_protocol(ConfigsProtocol)
     platform_manager = config_manager.platform_config_service
 
-    plugin_id = COLLECTION_PLUGIN_CONFIG_ID
+    plugin_id = PG_DRIVER_PLUGIN_ID
 
     # Ensure cleaned up
     await platform_manager.delete_config(plugin_id)
 
     try:
         # 1. Set initial platform config
-        initial_config = CollectionPluginConfig()
+        initial_config = PostgresCollectionDriverConfig()
         for sidecar in initial_config.sidecars:
             if sidecar.sidecar_type == "geometries":
                 sidecar.h3_resolutions = [10]
@@ -156,17 +158,17 @@ async def test_config_deletion(
     # 1. Set collection config
     # Clean first
     await config_manager.delete_config(
-        COLLECTION_PLUGIN_CONFIG_ID, catalog_id=catalog_id, collection_id=collection_id
+        PG_DRIVER_PLUGIN_ID, catalog_id=catalog_id, collection_id=collection_id
     )
 
-    col_config = CollectionPluginConfig()
+    col_config = PostgresCollectionDriverConfig()
     for sidecar in col_config.sidecars:
         if sidecar.sidecar_type == "geometries":
             sidecar.h3_resolutions = [15]
 
     # Partitioning is enabled if we want, but let's stick to resolutions for this test
     await config_manager.set_config(
-        COLLECTION_PLUGIN_CONFIG_ID,
+        PG_DRIVER_PLUGIN_ID,
         col_config,
         catalog_id=catalog_id,
         collection_id=collection_id,
@@ -174,7 +176,7 @@ async def test_config_deletion(
 
     # 2. Verify it's set
     current_config = await config_manager.get_config(
-        COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id
+        PG_DRIVER_PLUGIN_ID, catalog_id, collection_id
     )
     h3_res = next(
         (
@@ -188,7 +190,7 @@ async def test_config_deletion(
 
     # 3. Delete it
     await config_manager.delete_config(
-        COLLECTION_PLUGIN_CONFIG_ID, catalog_id=catalog_id, collection_id=collection_id
+        PG_DRIVER_PLUGIN_ID, catalog_id=catalog_id, collection_id=collection_id
     )
     success = True  # Unified delete_config returns None, but we assume success if no exception
     assert success is True
@@ -196,7 +198,7 @@ async def test_config_deletion(
     # 4. Verify fallback to platform/default (default in this test context is [])
     # If the test expects 12, we should probably set it at platform level first or adjust expectation
     fallback = await config_manager.get_config(
-        COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id
+        PG_DRIVER_PLUGIN_ID, catalog_id, collection_id
     )
     fallback_h3 = next(
         (s.h3_resolutions for s in fallback.sidecars if s.sidecar_type == "geometries"),

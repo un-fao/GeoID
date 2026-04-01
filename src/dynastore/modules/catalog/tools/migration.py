@@ -29,7 +29,10 @@ from dynastore.modules.db_config.query_executor import (
 )
 from dynastore.modules.catalog.catalog_config import (
     COLLECTION_PLUGIN_CONFIG_ID,
-    CollectionPluginConfig,
+)
+from dynastore.modules.storage.driver_config import (
+    PostgresCollectionDriverConfig,
+    get_pg_collection_config,
 )
 from dynastore.modules.catalog.sidecars.geometries_config import (
     GeometriesSidecarConfig,
@@ -67,8 +70,8 @@ class OneShotMigrator:
             configs = get_protocol(ConfigsProtocol)
             catalogs = get_protocol(CatalogsProtocol)
 
-            orig_config: CollectionPluginConfig = await configs.get_config(
-                COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
+            orig_config = await get_pg_collection_config(
+                catalog_id, collection_id, db_resource=conn
             )
 
             if orig_config.sidecars:
@@ -259,7 +262,7 @@ class OneShotMigrator:
                 f"Successfully migrated {catalog_id}.{collection_id} to Sidecar Architecture."
             )
 
-    def _convert_legacy_to_sidecars(self, config: CollectionPluginConfig) -> List[Any]:
+    def _convert_legacy_to_sidecars(self, config: PostgresCollectionDriverConfig) -> List[Any]:
         """Converts legacy fields to new sidecar configs."""
         sidecars = []
 
@@ -424,7 +427,7 @@ class OneShotMigrator:
             await DDLQuery(sql).execute(conn)
 
     async def _cleanup_hub_table(
-        self, conn, schema, table, config: CollectionPluginConfig
+        self, conn, schema, table, config: PostgresCollectionDriverConfig
     ):
         """Drops legacy columns from Hub table."""
         drops = []

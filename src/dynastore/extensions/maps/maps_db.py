@@ -49,9 +49,10 @@ async def get_features_for_rendering(
     3. Performs simplification in PostGIS to reduce I/O and memory usage.
     """
     # Fetch column names and layer config for the first collection to build the query.
+    from dynastore.modules.storage.driver_config import get_pg_collection_config
     table_columns, layer_config = await asyncio.gather(
         shared_queries.get_table_column_names(conn, schema, collections[0]),
-        catalog_manager.get_collection_config(schema, collections[0])
+        get_pg_collection_config(schema, collections[0])
     )
     
     where_clause, bind_params = shared_queries.build_filter_clause(table_columns, datetime_str, subset_params)

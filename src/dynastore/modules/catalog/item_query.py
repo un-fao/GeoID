@@ -20,9 +20,10 @@ from dynastore.modules.db_config.query_executor import (
     managed_transaction,
 )
 from dynastore.modules.catalog.models import Collection
-from dynastore.modules.catalog.catalog_config import (
-    CollectionPluginConfig,
-    COLLECTION_PLUGIN_CONFIG_ID,
+from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
+from dynastore.modules.storage.driver_config import (
+    PostgresCollectionDriverConfig,
+    get_pg_collection_config,
 )
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
@@ -58,15 +59,14 @@ class ItemQueryMixin:
         conn: DbResource,
         catalog_id: str,
         collection_id: str,
-        col_config: Optional[CollectionPluginConfig] = None,
+        col_config: Optional[PostgresCollectionDriverConfig] = None,
         item_ids: Optional[List[str]] = None,
         request: Optional[QueryRequest] = None,
         **kwargs,
     ) -> List[Feature]:
         """Retrieves a list of items via the QueryOptimizer path."""
         if not col_config:
-            catalogs_svc = get_protocol(CatalogsProtocol)
-            col_config = await catalogs_svc.get_collection_config(
+            col_config = await get_pg_collection_config(
                 catalog_id, collection_id, db_resource=conn
             )
 
@@ -88,7 +88,7 @@ class ItemQueryMixin:
         conn: DbResource,
         catalog_id: str,
         collection_id: str,
-        col_config: CollectionPluginConfig,
+        col_config: PostgresCollectionDriverConfig,
         params: Dict[str, Any],
         param_suffix: str = "",
     ) -> Tuple[str, Dict[str, Any]]:
@@ -117,7 +117,7 @@ class ItemQueryMixin:
         return sql, bind_params
 
     def _build_base_query_request(
-        self, params: Dict[str, Any], col_config: CollectionPluginConfig
+        self, params: Dict[str, Any], col_config: PostgresCollectionDriverConfig
     ) -> QueryRequest:
         """Build base QueryRequest from params before transformations"""
         from dynastore.models.query_builder import QueryRequest, FieldSelection
@@ -164,7 +164,7 @@ class ItemQueryMixin:
         context: Dict[str, Any],
         catalog_id: str,
         collection_id: str,
-        col_config: CollectionPluginConfig,
+        col_config: PostgresCollectionDriverConfig,
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Applies registered query transformations and generates optimized SQL.
@@ -325,12 +325,8 @@ class ItemQueryMixin:
             if not phys_schema or not phys_table:
                 return 0
 
-            configs = get_protocol(ConfigsProtocol)
-            col_config = await configs.get_config(
-                COLLECTION_PLUGIN_CONFIG_ID,
-                catalog_id,
-                collection_id,
-                db_resource=conn,
+            col_config = await get_pg_collection_config(
+                catalog_id, collection_id, db_resource=conn,
             )
 
             # ID Resolution Logic: delete ALL active rows for this external_id
@@ -541,8 +537,7 @@ class ItemQueryMixin:
         validate_sql_identifier(collection_id)
 
         async with managed_transaction(db_resource or self.engine) as conn:
-            catalogs = get_protocol(CatalogsProtocol)
-            col_config = await catalogs.get_collection_config(catalog_id, collection_id)
+            col_config = await get_pg_collection_config(catalog_id, collection_id)
             phys_schema = await self._resolve_physical_schema(catalog_id)
             phys_table = await self._resolve_physical_table(catalog_id, collection_id)
 

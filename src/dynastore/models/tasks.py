@@ -221,6 +221,24 @@ class TaskBase(BaseModel):
     collection_id: Optional[str] = None
 
 class TaskCreate(TaskBase):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "task_type": "ingest",
+                    "caller_id": "user@example.com",
+                    "inputs": {
+                        "source": "https://example.com/data.csv",
+                        "collection_id": "stations",
+                    },
+                    "execution_mode": "ASYNCHRONOUS",
+                    "execution_scope": "LOCAL_QUEUE",
+                    "scope": "CATALOG",
+                },
+            ]
+        },
+    )
+
     execution_mode: str = TaskExecutionMode.ASYNCHRONOUS
     execution_scope: str = TaskExecutionScope.LOCAL_QUEUE
     scope: str = TaskScope.CATALOG
@@ -236,6 +254,22 @@ class TaskCreate(TaskBase):
     )
 
 class TaskUpdate(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "status": "RUNNING",
+                    "progress": 50,
+                },
+                {
+                    "status": "COMPLETED",
+                    "progress": 100,
+                    "outputs": {"result_url": "https://example.com/results/output.csv"},
+                },
+            ]
+        },
+    )
+
     status: Optional[TaskStatusEnum] = None
     progress: Optional[int] = Field(None, ge=0, le=100)
     outputs: Optional[Any] = None

@@ -296,10 +296,9 @@ async def evolve_collection(
             detail=f"Collection '{collection_id}' not found or has no physical table.",
         )
 
-    # Get current config
-    col_config = await configs_proto.get_config(
-        COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id
-    )
+    # Get PG driver config (sidecars, partitioning, etc.)
+    from dynastore.modules.storage.driver_config import get_pg_collection_config
+    col_config = await get_pg_collection_config(catalog_id, collection_id)
 
     # Resolve partition context
     partition_keys: List[str] = []

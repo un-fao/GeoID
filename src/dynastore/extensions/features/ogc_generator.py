@@ -35,10 +35,7 @@ from shapely.geometry import shape, mapping
 
 from . import ogc_models
 from dynastore.tools.geospatial import calculate_spatial_indices
-from dynastore.modules.catalog.catalog_config import (
-    CollectionPluginConfig,
-    GeometryStorageConfig,
-)
+from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
 from dynastore.modules.catalog.models import (
     Collection as CoreCollection,
 )  # Import CoreCollection for type hinting
@@ -128,7 +125,7 @@ def _db_row_to_ogc_feature(
     catalog_id: str,
     collection_id: str,
     root_url: str,
-    layer_config: Optional[CollectionPluginConfig] = None,
+    layer_config: Optional[PostgresCollectionDriverConfig] = None,
 ) -> ogc_models.Feature:
     """
     Converts a database row or an already-mapped Feature into an OGC Feature.
@@ -239,27 +236,23 @@ async def create_queryables_response(
         }
     }
 
-    # Fetch configuration to get FieldDefinitions
-    layer_config = await catalogs.get_collection_config(catalog_id, collection_id)
-    if layer_config:
-        all_fields = layer_config.get_all_field_definitions()
-
-        for field_name, field_def in all_fields.items():
+    # Fetch field definitions via ItemIntrospectionProtocol — driver-agnostic.
+    # Both PG and Iceberg item services implement this protocol.
+    items_svc = get_protocol(ItemsProtocol)
+    if items_svc:
+        all_fields = await items_svc.get_collection_fields(catalog_id, collection_id)
+        for field_def in all_fields.values():
             if not field_def.expose:
                 continue
-
             # Use alias as the property key in Queryables (matches Feature output)
             final_name = field_def.alias or field_def.name
-
             properties[final_name] = {
                 "title": str(field_def.title) if field_def.title else final_name,
-                "description": str(field_def.description)
-                if field_def.description
-                else None,
+                "description": str(field_def.description) if field_def.description else None,
                 "type": map_pg_to_json_type(field_def.data_type),
             }
     else:
-        # Fallback to simple column list if no config
+        # Fallback to simple column list when no items service is registered
         for col_name in columns:
             if col_name in ["geoid", "geom"]:
                 continue
@@ -274,7 +267,7 @@ async def create_queryables_response(
 
 
 def _process_feature_for_db(
-    feature: ogc_models.FeatureDefinition, layer_config: CollectionPluginConfig
+    feature: ogc_models.FeatureDefinition, layer_config: PostgresCollectionDriverConfig
 ) -> Dict[str, Any]:
     """
     Validates and prepares a feature for database insertion, raising

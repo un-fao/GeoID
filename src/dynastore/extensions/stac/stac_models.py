@@ -46,6 +46,84 @@ from dynastore.models.shared_models import Link, Provider, Extent, International
 # They allow both standard single-value strings (localized input)
 # AND dictionary values (multilanguage input) via the generic Internationalized alias.
 
+# --- OpenAPI Schema Helpers ---
+# Internationalized[T] = Union[Dict[str, T], T] generates ugly anyOf/additionalProperties
+# schemas in OpenAPI. These helpers rewrite the JSON schema to show clean STAC types
+# while keeping runtime behavior unchanged.
+
+_I18N_STRING = {"type": "string"}
+_I18N_STRING_ARRAY = {"type": "array", "items": {"type": "string"}}
+_I18N_OBJECT = {"type": "object"}
+
+_CATALOG_I18N_FIELDS: Dict[str, Dict[str, Any]] = {
+    "title": _I18N_STRING,
+    "description": _I18N_STRING,
+    "keywords": _I18N_STRING_ARRAY,
+    "license": _I18N_STRING,
+    "extra_metadata": _I18N_OBJECT,
+}
+
+_COLLECTION_I18N_FIELDS: Dict[str, Dict[str, Any]] = {
+    **_CATALOG_I18N_FIELDS,
+}
+
+
+def _clean_internationalized_schema(
+    schema: Dict[str, Any],
+    field_overrides: Dict[str, Dict[str, Any]],
+    examples: List[Dict[str, Any]],
+) -> None:
+    """Override Internationalized[T] anyOf patterns with clean STAC types in OpenAPI."""
+    props = schema.get("properties", {})
+    for field_name, clean_type in field_overrides.items():
+        if field_name in props:
+            desc = props[field_name].get("description", "")
+            default = props[field_name].get("default")
+            new_prop = {**clean_type, "description": desc}
+            if default is not None:
+                new_prop["default"] = default
+            props[field_name] = new_prop
+    schema["examples"] = examples
+
+
+_STAC_CATALOG_EXAMPLES = [
+    {
+        "type": "Catalog",
+        "stac_version": "1.1.0",
+        "id": "my_catalog",
+        "title": "My Geospatial Catalog",
+        "description": "A catalog of satellite imagery and geospatial data.",
+        "links": [],
+    },
+    {
+        "type": "Catalog",
+        "stac_version": "1.1.0",
+        "id": "fao_catalog",
+        "title": "FAO Data Catalog",
+        "description": "Food and Agriculture Organization geospatial data.",
+        "links": [
+            {
+                "rel": "describedby",
+                "href": "https://www.fao.org/data",
+                "type": "text/html",
+                "title": "FAO Data Portal",
+            }
+        ],
+    },
+    {
+        "type": "Catalog",
+        "stac_version": "1.1.0",
+        "id": "multilingual_catalog",
+        "title": {"en": "My Catalog", "fr": "Mon Catalogue", "es": "Mi Catalogo"},
+        "description": {
+            "en": "English description",
+            "fr": "Description en francais",
+        },
+        "keywords": {"en": ["satellite", "imagery"], "fr": ["satellite", "imagerie"]},
+        "links": [],
+    },
+]
+
 
 class STACCatalogRequest(BaseModel):
     """
@@ -55,14 +133,20 @@ class STACCatalogRequest(BaseModel):
     2. A dictionary (treated as full multi-language content)
     """
 
-    model_config = ConfigDict(populate_by_name=True, extra="allow")
+    model_config = ConfigDict(
+        populate_by_name=True,
+        extra="allow",
+        json_schema_extra=lambda schema: _clean_internationalized_schema(
+            schema, _CATALOG_I18N_FIELDS, _STAC_CATALOG_EXAMPLES
+        ),
+    )
 
     type: str = Field("Catalog", description="Must be 'Catalog'.")
     stac_version: str = Field(
         "1.1.0", description="The STAC version the Catalog implements."
     )
     stac_extensions: Optional[List[str]] = Field(
-        None, description="A list of STAC extensions the Catalog implements."
+        None, description="A list of STAC extension URIs the Catalog implements."
     )
 
     id: Annotated[str, Field(description="The ID of the catalog.")]
@@ -70,37 +154,97 @@ class STACCatalogRequest(BaseModel):
     # Use generic Internationalized type for i18n support
     title: Optional[Internationalized[str]] = Field(
         None,
-        description="A short descriptive one-line title for the catalog. Can be a string or a language dictionary.",
+        description="A short descriptive one-line title. Also accepts a {lang: value} dictionary for multilingual input.",
     )
     description: Internationalized[str] = Field(
         ...,
-        description="Detailed multi-line description to fully explain the catalog. Can be a string or a language dictionary.",
+        description="Detailed multi-line description. Also accepts a {lang: value} dictionary for multilingual input.",
     )
 
     keywords: Optional[Internationalized[List[str]]] = Field(
-        None, description="List of keywords describing the catalog."
+        None,
+        description="List of keywords describing the catalog. Also accepts a {lang: [values]} dictionary.",
     )
     license: Internationalized[Any] = Field(
         "proprietary",
-        description="License(s) of the data, as a SPDX License identifier or a complex license object.",
+        description="SPDX License identifier (e.g. 'CC-BY-4.0'). Also accepts a {lang: value} dictionary.",
     )
 
     links: Optional[List[Link]] = Field(
-        default_factory=list, description="A list of references to other documents."
+        default_factory=list,
+        description="Custom links (e.g. rel='license', rel='describedby'). Navigation links (self, root, parent) are generated server-side.",
     )
 
     # Extra metadata container for custom fields
     extra_metadata: Optional[Internationalized[Any]] = Field(
-        None, description="Additional metadata fields."
+        None,
+        description="Additional metadata fields. Also accepts a {lang: value} dictionary.",
     )
+
+
+_STAC_COLLECTION_EXAMPLES = [
+    {
+        "type": "Collection",
+        "stac_version": "1.1.0",
+        "id": "sentinel_2",
+        "title": "Sentinel-2 L2A",
+        "description": "Sentinel-2 Level 2A surface reflectance data.",
+        "license": "CC-BY-4.0",
+        "keywords": ["satellite", "sentinel"],
+        "extent": {
+            "spatial": {"bbox": [[-180, -90, 180, 90]]},
+            "temporal": {"interval": [["2015-06-23T00:00:00Z", None]]},
+        },
+        "providers": [
+            {
+                "name": "ESA",
+                "roles": ["producer"],
+                "url": "https://www.esa.int",
+            }
+        ],
+        "links": [
+            {
+                "rel": "license",
+                "href": "https://creativecommons.org/licenses/by/4.0/",
+                "type": "text/html",
+                "title": "CC-BY-4.0 License",
+            }
+        ],
+    },
+    {
+        "type": "Collection",
+        "stac_version": "1.1.0",
+        "id": "fao_agri",
+        "title": {"en": "Agricultural Data", "fr": "Donnees Agricoles"},
+        "description": {
+            "en": "FAO agricultural statistics.",
+            "fr": "Statistiques agricoles de la FAO.",
+        },
+        "license": "CC-BY-4.0",
+        "extent": {
+            "spatial": {"bbox": [[-180, -90, 180, 90]]},
+            "temporal": {"interval": [["2000-01-01T00:00:00Z", None]]},
+        },
+        "links": [],
+    },
+]
 
 
 class STACCollectionRequest(BaseModel):
     """
     Standard STAC Collection Definition for Creation/Update.
+    Fields like title/description accept either:
+    1. A string (treated as content for the request's active language)
+    2. A dictionary (treated as full multi-language content)
     """
 
-    model_config = ConfigDict(populate_by_name=True, extra="allow")
+    model_config = ConfigDict(
+        populate_by_name=True,
+        extra="allow",
+        json_schema_extra=lambda schema: _clean_internationalized_schema(
+            schema, _COLLECTION_I18N_FIELDS, _STAC_COLLECTION_EXAMPLES
+        ),
+    )
 
     type: str = Field("Collection", description="Must be 'Collection'.")
     stac_version: str = Field(
@@ -114,18 +258,20 @@ class STACCollectionRequest(BaseModel):
 
     # Use generic Internationalized type for i18n support
     title: Optional[Internationalized[str]] = Field(
-        None, description="A short descriptive one-line title for the collection."
+        None,
+        description="A short descriptive one-line title. Also accepts a {lang: value} dictionary for multilingual input.",
     )
     description: Internationalized[str] = Field(
         ...,
-        description="Detailed multi-line description to fully explain the collection.",
+        description="Detailed multi-line description. Also accepts a {lang: value} dictionary for multilingual input.",
     )
     keywords: Optional[Internationalized[List[str]]] = Field(
-        None, description="List of keywords describing the collection."
+        None,
+        description="List of keywords describing the collection. Also accepts a {lang: [values]} dictionary.",
     )
     license: Internationalized[Any] = Field(
         "proprietary",
-        description="License(s) of the data, as a SPDX License identifier.",
+        description="SPDX License identifier (e.g. 'CC-BY-4.0'). Also accepts a {lang: value} dictionary.",
     )
 
     providers: Optional[List[Provider]] = Field(
@@ -149,42 +295,84 @@ class STACCollectionRequest(BaseModel):
     )
 
     links: Optional[List[Link]] = Field(
-        default_factory=list, description="A list of references to other documents."
+        default_factory=list,
+        description="Custom links (e.g. rel='license', rel='describedby'). Navigation links (self, root, parent) are generated server-side.",
     )
 
     # Extra metadata container
     extra_metadata: Optional[Internationalized[Any]] = Field(
-        None, description="Additional metadata fields."
+        None,
+        description="Additional metadata fields. Also accepts a {lang: value} dictionary.",
     )
+
+
+_STAC_CATALOG_UPDATE_EXAMPLES = [
+    {
+        "title": "Updated Catalog Title",
+        "description": "Updated description for the catalog.",
+    },
+    {
+        "title": {"en": "Updated Title", "fr": "Titre mis a jour"},
+        "keywords": {"en": ["updated", "geospatial"], "fr": ["mis a jour", "geospatial"]},
+    },
+]
 
 
 class STACCatalogUpdate(BaseModel):
     """DTO for updating a Catalog. All fields optional."""
 
-    model_config = ConfigDict(populate_by_name=True, extra="allow")
+    model_config = ConfigDict(
+        populate_by_name=True,
+        extra="allow",
+        json_schema_extra=lambda schema: _clean_internationalized_schema(
+            schema, _CATALOG_I18N_FIELDS, _STAC_CATALOG_UPDATE_EXAMPLES
+        ),
+    )
 
-    title: Optional[Internationalized[str]] = None
-    description: Optional[Internationalized[str]] = None
-    keywords: Optional[Internationalized[List[str]]] = None
-    license: Optional[Internationalized[Any]] = None
-    extra_metadata: Optional[Internationalized[Any]] = None
+    title: Optional[Internationalized[str]] = Field(default=None)
+    description: Optional[Internationalized[str]] = Field(default=None)
+    keywords: Optional[Internationalized[List[str]]] = Field(default=None)
+    license: Optional[Internationalized[Any]] = Field(default=None)
+    extra_metadata: Optional[Internationalized[Any]] = Field(default=None)
+
+
+_STAC_COLLECTION_UPDATE_EXAMPLES = [
+    {
+        "title": "Updated Collection Title",
+        "description": "Updated description.",
+        "keywords": ["updated", "satellite"],
+    },
+    {
+        "title": {"en": "Updated Title", "fr": "Titre mis a jour"},
+        "extent": {
+            "spatial": {"bbox": [[-10, -10, 10, 10]]},
+            "temporal": {"interval": [["2020-01-01T00:00:00Z", "2025-12-31T23:59:59Z"]]},
+        },
+    },
+]
 
 
 class STACCollectionUpdate(BaseModel):
     """DTO for updating a Collection. All fields optional."""
 
-    model_config = ConfigDict(populate_by_name=True, extra="allow")
+    model_config = ConfigDict(
+        populate_by_name=True,
+        extra="allow",
+        json_schema_extra=lambda schema: _clean_internationalized_schema(
+            schema, _COLLECTION_I18N_FIELDS, _STAC_COLLECTION_UPDATE_EXAMPLES
+        ),
+    )
 
-    title: Optional[Internationalized[str]] = None
-    description: Optional[Internationalized[str]] = None
-    keywords: Optional[Internationalized[List[str]]] = None
-    license: Optional[Internationalized[Any]] = None
-    providers: Optional[List[Provider]] = None
-    extent: Optional[Extent] = None
-    summaries: Optional[Dict[str, Any]] = None
-    assets: Optional[Dict[str, Any]] = None
-    item_assets: Optional[Dict[str, Any]] = None
-    extra_metadata: Optional[Internationalized[Any]] = None
+    title: Optional[Internationalized[str]] = Field(default=None)
+    description: Optional[Internationalized[str]] = Field(default=None)
+    keywords: Optional[Internationalized[List[str]]] = Field(default=None)
+    license: Optional[Internationalized[Any]] = Field(default=None)
+    providers: Optional[List[Provider]] = Field(default=None)
+    extent: Optional[Extent] = Field(default=None)
+    summaries: Optional[Dict[str, Any]] = Field(default=None)
+    assets: Optional[Dict[str, Any]] = Field(default=None)
+    item_assets: Optional[Dict[str, Any]] = Field(default=None)
+    extra_metadata: Optional[Internationalized[Any]] = Field(default=None)
 
 
 # --- Containers ---
@@ -202,13 +390,64 @@ class Collections(BaseModel):
 from dynastore.models.ogc import Feature
 
 
+_STAC_ITEM_EXAMPLES = [
+    {
+        "type": "Feature",
+        "stac_version": "1.1.0",
+        "id": "item_001",
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
+        },
+        "bbox": [0, 0, 1, 1],
+        "properties": {"datetime": "2024-01-15T00:00:00Z"},
+        "links": [],
+        "assets": {
+            "data": {
+                "href": "https://example.com/data.tif",
+                "type": "image/tiff; application=geotiff",
+                "roles": ["data"],
+            }
+        },
+        "collection": "my_collection",
+    },
+    {
+        "type": "Feature",
+        "stac_version": "1.1.0",
+        "id": "item_002",
+        "geometry": {
+            "type": "Point",
+            "coordinates": [12.49, 41.89],
+        },
+        "bbox": [12.49, 41.89, 12.49, 41.89],
+        "properties": {
+            "datetime": None,
+            "start_datetime": "2024-01-01T00:00:00Z",
+            "end_datetime": "2024-12-31T23:59:59Z",
+        },
+        "links": [],
+        "assets": {
+            "thumbnail": {
+                "href": "https://example.com/thumb.png",
+                "type": "image/png",
+                "roles": ["thumbnail"],
+            }
+        },
+    },
+]
+
+
 class STACItem(Feature):
     """
     A Pydantic model that validates a raw dictionary as a STAC Item.
     Inherits fields (id, type, geometry, properties, links) from Feature.
     """
 
-    model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
+    model_config = ConfigDict(
+        extra="allow",
+        arbitrary_types_allowed=True,
+        json_schema_extra={"examples": _STAC_ITEM_EXAMPLES},
+    )
 
     # Overrides/Extensions
     stac_version: str = Field(
@@ -310,13 +549,84 @@ class STACItem(Feature):
 class STACItemResponse(BaseModel):
     """Response model for STAC Item (open dict)."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(
+        extra="allow",
+        json_schema_extra={
+            "examples": [
+                {
+                    "type": "Feature",
+                    "stac_version": "1.1.0",
+                    "id": "item_001",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
+                    },
+                    "bbox": [0, 0, 1, 1],
+                    "properties": {"datetime": "2024-01-15T00:00:00Z"},
+                    "links": [
+                        {
+                            "rel": "self",
+                            "href": "https://example.com/stac/catalogs/cat1/collections/col1/items/item_001",
+                            "type": "application/geo+json",
+                        },
+                        {
+                            "rel": "collection",
+                            "href": "https://example.com/stac/catalogs/cat1/collections/col1",
+                            "type": "application/json",
+                        },
+                    ],
+                    "assets": {
+                        "data": {
+                            "href": "https://example.com/data.tif",
+                            "type": "image/tiff; application=geotiff",
+                            "roles": ["data"],
+                        }
+                    },
+                    "collection": "col1",
+                }
+            ]
+        },
+    )
 
 
 class STACItemCollectionResponse(BaseModel):
     """Response model for STAC ItemCollection (open dict)."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(
+        extra="allow",
+        json_schema_extra={
+            "examples": [
+                {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "stac_version": "1.1.0",
+                            "id": "item_001",
+                            "geometry": {
+                                "type": "Point",
+                                "coordinates": [12.49, 41.89],
+                            },
+                            "bbox": [12.49, 41.89, 12.49, 41.89],
+                            "properties": {"datetime": "2024-01-15T00:00:00Z"},
+                            "links": [],
+                            "assets": {},
+                            "collection": "col1",
+                        }
+                    ],
+                    "links": [
+                        {
+                            "rel": "self",
+                            "href": "https://example.com/stac/catalogs/cat1/collections/col1/items",
+                            "type": "application/geo+json",
+                        }
+                    ],
+                    "numberMatched": 1,
+                    "numberReturned": 1,
+                }
+            ]
+        },
+    )
 
 
 def inject_stac_language_fields(

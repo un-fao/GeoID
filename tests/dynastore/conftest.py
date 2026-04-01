@@ -83,10 +83,10 @@ def item_id():
 
 @pytest.fixture
 def config_catalog_data():
-    """Generates a config data."""
-    from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
+    """Generates PG driver config data (sidecars, partitioning, etc.)."""
+    from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
 
-    return CollectionPluginConfig().model_dump()
+    return PostgresCollectionDriverConfig().model_dump()
 
 
 @pytest.fixture

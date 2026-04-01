@@ -137,7 +137,7 @@ class PostgresAssetDriver:
             uri           TEXT         NOT NULL,
             created_at    TIMESTAMPTZ  DEFAULT NOW(),
             deleted_at    TIMESTAMPTZ  DEFAULT NULL,
-            metadata      JSONB        DEFAULT '{{{{}}}}'::jsonb,
+            metadata      JSONB        DEFAULT '{{}}'::jsonb,
             owned_by      VARCHAR      DEFAULT NULL,
             PRIMARY KEY (collection_id, asset_id)
         ) PARTITION BY LIST (collection_id);
@@ -442,6 +442,80 @@ class PostgresAssetDriver:
                 sql, result_handler=ResultHandler.ALL_DICTS
             ).execute(conn, **params)
             return rows or []
+
+    async def delete_assets_bulk(
+        self,
+        catalog_id: str,
+        *,
+        asset_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
+        hard: bool = False,
+        db_resource: Optional[DbResource] = None,
+    ) -> tuple:
+        """Bulk delete/soft-delete assets matching the given criteria.
+
+        Handles candidate lookup, reference guard (hard-delete only), and
+        the actual DELETE/UPDATE in a single transaction.
+
+        Returns:
+            ``(rowcount, matched_rows)`` where ``matched_rows`` is a list of
+            dicts with ``asset_id``, ``catalog_id``, ``collection_id``,
+            ``owned_by`` for each matched asset.
+        """
+        schema = await self._resolve_schema(catalog_id, db_resource)
+        if not schema:
+            return 0, []
+
+        now = datetime.now(timezone.utc)
+
+        where_clauses = ["catalog_id = :cat"]
+        params: Dict[str, Any] = {"cat": catalog_id, "now": now}
+        if asset_id:
+            where_clauses.append("asset_id = :aid")
+            params["aid"] = asset_id
+        if collection_id:
+            where_clauses.append("collection_id = :coll")
+            params["coll"] = collection_id
+        elif asset_id:
+            where_clauses.append("collection_id = :coll")
+            params["coll"] = _CATALOG_LEVEL_COLLECTION_ID
+
+        where_stmt = " AND ".join(where_clauses)
+
+        async with managed_transaction(db_resource or self.engine) as conn:
+            fetch_sql = text(
+                f'SELECT asset_id, catalog_id, collection_id, owned_by '
+                f'FROM "{schema}".assets WHERE {where_stmt}'
+            )
+            asset_rows = await DQLQuery(
+                fetch_sql, result_handler=ResultHandler.ALL_DICTS
+            ).execute(conn, **params)
+
+            if not asset_rows:
+                return 0, []
+
+            # Reference guard (hard-delete only)
+            if hard:
+                owned_ids = [a["asset_id"] for a in asset_rows if a.get("owned_by")]
+                if owned_ids:
+                    blocking = await self.check_blocking_references(
+                        owned_ids, catalog_id, db_resource=conn,
+                    )
+                    if blocking:
+                        # Return blocking rows so caller can raise the appropriate error
+                        return -1, blocking
+
+            prefix = (
+                f'DELETE FROM "{schema}".assets'
+                if hard
+                else f'UPDATE "{schema}".assets SET deleted_at = :now'
+            )
+            final_sql = text(f"{prefix} WHERE {where_stmt}")
+            rowcount = await DQLQuery(
+                final_sql, result_handler=ResultHandler.ROWCOUNT
+            ).execute(conn, **params)
+
+        return rowcount, asset_rows
 
     async def add_asset_reference(
         self,

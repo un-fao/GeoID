@@ -46,9 +46,9 @@ from dynastore.tools.geospatial import (
     calculate_spatial_indices,
     process_geometry,
 )
-from dynastore.modules.catalog.catalog_config import (
-    CollectionPluginConfig,
-    GeometryStorageConfig,
+from dynastore.modules.storage.driver_config import (
+    PostgresCollectionDriverConfig,
+    get_pg_collection_config,
 )
 from dynastore.modules.catalog.sidecars.geometries_config import GeometriesSidecarConfig
 from dynastore.modules.stac.stac_config import (
@@ -348,7 +348,7 @@ async def create_collection(
         raise RuntimeError("CatalogsProtocol not available")
     metadata_model, layer_config = await asyncio.gather(
         catalogs_svc.get_collection_model(catalog_id, collection_id),
-        catalogs_svc.get_collection_config(catalog_id, collection_id),
+        get_pg_collection_config(catalog_id, collection_id),
     )
     if not metadata_model:
         return None
@@ -1156,7 +1156,7 @@ async def create_search_results_collection(
 
 
 async def _process_stac_item_for_db(
-    item: pystac.Item, layer_config: CollectionPluginConfig
+    item: pystac.Item, layer_config: PostgresCollectionDriverConfig
 ) -> Dict[str, Any]:
     """Validates and prepares a STAC Item for database insertion."""
     if not item.geometry:

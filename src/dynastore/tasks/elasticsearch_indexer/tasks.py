@@ -88,12 +88,26 @@ async def _reindex_collection(
     from dynastore.modules.elasticsearch.mappings import GEOID_OBFUSCATED_MAPPING
 
     if mode == "catalog":
-        col_config = await catalogs_proto.get_collection_config(catalog_id, collection_id)
-        es_active = (
-            col_config.write_driver_id == "elasticsearch"
-            or "elasticsearch" in col_config.secondary_driver_ids
-            or any(ref.driver_id == "elasticsearch" for ref in col_config.read_drivers.values())
-        )
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.modules.storage.routing_config import ROUTING_PLUGIN_CONFIG_ID
+        from dynastore.tools.discovery import get_protocol as _get_protocol
+
+        configs = _get_protocol(ConfigsProtocol)
+        es_active = False
+        if configs:
+            try:
+                routing = await configs.get_config(
+                    ROUTING_PLUGIN_CONFIG_ID,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                )
+                es_active = any(
+                    entry.driver_id == "elasticsearch"
+                    for entries in routing.operations.values()
+                    for entry in entries
+                )
+            except Exception:
+                pass
         if not es_active:
             logger.debug(
                 "Skipping collection %s/%s — elasticsearch not configured as driver.",

@@ -91,6 +91,8 @@ class CustomJSONEncoder(json.JSONEncoder):
         # For geospatial objects that are already Python objects (e.g., Shapely)
         if hasattr(o, "__geo_interface__"):
             return str(o)
+        if isinstance(o, (set, frozenset)):
+            return sorted(o)
         if isinstance(o, (bytes, bytearray, memoryview)):
             if isinstance(o, memoryview):
                 o = o.tobytes()

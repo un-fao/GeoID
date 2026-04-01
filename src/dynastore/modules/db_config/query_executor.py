@@ -333,7 +333,9 @@ class TemplateQueryBuilder(QueryBuilderStrategy):
                     quoted_identifiers[key] = f'"{val_str.replace('"', '""')}"'
             else:
                 params[key] = value
-        final_query_str = template_str.format(**quoted_identifiers)
+        final_query_str = template_str
+        for key, value in quoted_identifiers.items():
+            final_query_str = final_query_str.replace(f"{{{key}}}", value)
         query_obj = DDL(final_query_str) if is_ddl else text(final_query_str)
         return query_obj, params
 

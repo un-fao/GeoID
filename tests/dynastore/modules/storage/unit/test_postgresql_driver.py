@@ -6,7 +6,7 @@ from dynastore.models.ogc import Feature
 from dynastore.models.protocols.storage_driver import Capability
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
-from dynastore.modules.storage.location import PostgresStorageLocationConfig
+from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
 
 
 class TestPostgresStorageDriverMeta:
@@ -254,7 +254,7 @@ class TestResolveStorageLocation:
 
             mock_gp.side_effect = side_effect
             loc = await driver.resolve_storage_location("cat1", "col1")
-            assert isinstance(loc, PostgresStorageLocationConfig)
+            assert isinstance(loc, PostgresCollectionDriverConfig)
             assert loc.physical_schema == "my_schema"
             assert loc.physical_table == "my_table"
 
@@ -273,6 +273,6 @@ class TestResolveStorageLocation:
 
             mock_gp.side_effect = side_effect
             loc = await driver.resolve_storage_location("cat1")
-            assert isinstance(loc, PostgresStorageLocationConfig)
+            assert isinstance(loc, PostgresCollectionDriverConfig)
             assert loc.physical_schema == "my_schema"
             assert loc.physical_table is None

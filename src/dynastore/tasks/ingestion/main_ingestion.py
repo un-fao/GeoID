@@ -28,7 +28,6 @@ from dynastore.modules.catalog.asset_service import Asset, AssetBase
 from dynastore.modules.catalog.models import CoreAssetReferenceType
 from pydantic import BaseModel
 
-from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
 from dynastore.modules.catalog.tools import recalculate_and_update_extents
 from dynastore.modules.db_config.query_executor import DbEngine
 

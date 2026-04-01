@@ -368,17 +368,16 @@ class CatalogService(CatalogsProtocol):
         catalog_id: str,
         collection_id: str,
         *,
-        hint: str = "default",
-        write: bool = False,
+        operation: str = "READ",
+        hint: Optional[str] = None,
     ):
         """Resolve the best storage driver for a collection.
 
-        Delegates to the storage router which implements the 5-step
-        resolution: write → read_drivers[hint] → read_drivers[default]
-        → preferred_for auto-select → fallback to write_driver.
+        Delegates to the storage router which resolves via
+        ``RoutingPluginConfig`` operation → ordered driver list.
         """
         from dynastore.modules.storage.router import get_driver
-        return await get_driver(catalog_id, collection_id, hint=hint, write=write)
+        return await get_driver(operation, catalog_id, collection_id, hint=hint)
 
     async def resolve_physical_table(
         self,
@@ -919,16 +918,10 @@ class CatalogService(CatalogsProtocol):
         collection_id: str,
         db_resource: Optional[DbResource] = None,
     ):
-        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.modules.storage.driver_config import get_collection_driver_config
 
-        configs = get_protocol(ConfigsProtocol)
-        from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
-
-        return await configs.get_config(
-            COLLECTION_PLUGIN_CONFIG_ID,
-            catalog_id,
-            collection_id,
-            db_resource=db_resource,
+        return await get_collection_driver_config(
+            catalog_id, collection_id, db_resource=db_resource
         )
 
     # --- Collection Operations (delegated) ---
@@ -1219,7 +1212,7 @@ class CatalogService(CatalogsProtocol):
         from dynastore.modules.storage.router import get_driver
 
         try:
-            driver = await get_driver(catalog_id, collection_id, write=True)
+            driver = await get_driver("WRITE", catalog_id, collection_id)
         except ValueError:
             return
         await driver.ensure_storage(

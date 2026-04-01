@@ -22,15 +22,17 @@ Multi-driver storage abstraction layer.
 Public API::
 
     from dynastore.modules.storage import (
-        get_driver, Capability, ReadHint,
+        get_driver, resolve_drivers, Operation, FailurePolicy,
     )
 
-    driver = await get_driver(catalog_id, collection_id, hint=ReadHint.SEARCH)
+    driver = await get_driver("READ", catalog_id, collection_id, hint="search")
     async for entity in driver.read_entities(catalog_id, collection_id):
         ...
 
-Storage routing configuration is now part of ``CollectionPluginConfig``
-in ``dynastore.modules.catalog.catalog_config``.
+Storage routing is controlled by ``RoutingPluginConfig``
+(``plugin_id = "routing"``) via the existing config API.
+Per-driver settings are in ``DriverPluginConfig`` subclasses
+(``plugin_id = "driver:<driver_id>"``).
 """
 
 from dynastore.models.protocols.storage_driver import (
@@ -39,14 +41,31 @@ from dynastore.models.protocols.storage_driver import (
     ReadOnlyDriverMixin,
     StorageLocationResolver,
 )
-from dynastore.modules.storage.config import DriverRef
-from dynastore.modules.storage.errors import ReadOnlyDriverError, SoftDeleteNotSupportedError
-from dynastore.modules.storage.hints import ReadHint, register_hint, get_registered_hints
-from dynastore.modules.storage.location import (
-    StorageLocationConfig,
-    StorageLocationConfigRegistry,
+from dynastore.modules.storage.driver_config import (
+    CollectionDriverConfig,
+    AssetDriverConfig,
+    DriverCapability,
+    DriverPluginConfig,
+    PG_DRIVER_PLUGIN_ID,
+    PostgresCollectionDriverConfig,
+    get_pg_collection_config,
 )
-from dynastore.modules.storage.router import get_driver
+from dynastore.modules.storage.errors import ReadOnlyDriverError, SoftDeleteNotSupportedError
+from dynastore.modules.storage.router import (
+    ResolvedDriver,
+    get_asset_driver,
+    get_asset_write_drivers,
+    get_driver,
+    get_write_drivers,
+    resolve_drivers,
+)
+from dynastore.modules.storage.routing_config import (
+    AssetRoutingPluginConfig,
+    FailurePolicy,
+    Operation,
+    OperationDriverEntry,
+    RoutingPluginConfig,
+)
 
 __all__ = [
     # Protocol
@@ -54,18 +73,25 @@ __all__ = [
     "StorageLocationResolver",
     "Capability",
     "ReadOnlyDriverMixin",
-    # Config
-    "DriverRef",
-    # Hints
-    "ReadHint",
-    "register_hint",
-    "get_registered_hints",
-    # Location
-    "StorageLocationConfig",
-    "StorageLocationConfigRegistry",
+    # Driver configs
+    "DriverPluginConfig",
+    "CollectionDriverConfig",
+    "AssetDriverConfig",
+    "DriverCapability",
+    # Routing configs
+    "RoutingPluginConfig",
+    "AssetRoutingPluginConfig",
+    "OperationDriverEntry",
+    "FailurePolicy",
+    "Operation",
+    # Router
+    "resolve_drivers",
+    "ResolvedDriver",
+    "get_driver",
+    "get_write_drivers",
+    "get_asset_driver",
+    "get_asset_write_drivers",
     # Errors
     "ReadOnlyDriverError",
     "SoftDeleteNotSupportedError",
-    # Router
-    "get_driver",
 ]

@@ -35,9 +35,10 @@ async def test_create_collection_attaches_asset_trigger_integration(app_lifespan
     
     # 3. Verify Trigger Existence in Database
     async with managed_transaction(app_lifespan.engine) as conn:
-        # Check if the trigger exists on the attribute sidecar table
-        # sidecar table is named {collection_id}_attributes
-        sidecar_table = f"{collection_id}_attributes"
+        # Resolve the physical table name (may differ from collection_id).
+        phys_table = await catalogs.resolve_physical_table(catalog_id, collection_id)
+        # Sidecar table is named {physical_table}_attributes
+        sidecar_table = f"{phys_table}_attributes"
         
         trigger_res = await DQLQuery(
             """
