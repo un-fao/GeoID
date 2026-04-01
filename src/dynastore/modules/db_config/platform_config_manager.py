@@ -304,21 +304,14 @@ def register_config(
 # --- Helpers ---
 
 
-def _is_undefined_table_error(exc: BaseException) -> bool:
-    """Return ``True`` when *exc* (or its cause chain) wraps a PG 42P01
-    ``UndefinedTableError``, meaning the ``configs.platform_configs`` table
-    has not been created yet."""
-    for e in (exc, getattr(exc, "__cause__", None), getattr(exc, "orig", None)):
-        if e is None:
-            continue
-        cls_name = type(e).__name__
-        if cls_name == "UndefinedTableError":
-            return True
-        if cls_name == "ProgrammingError":
-            orig = getattr(e, "orig", None) or getattr(e, "__cause__", None)
-            if getattr(orig, "sqlstate", None) == "42P01":
-                return True
-    return False
+async def _platform_table_exists(conn: DbResource) -> bool:
+    """Check whether ``configs.platform_configs`` exists without aborting the
+    current transaction.  Uses ``pg_tables`` (safe information_schema lookup)
+    instead of attempting the real query and catching the error — a failed
+    query in PostgreSQL poisons the entire transaction."""
+    from dynastore.modules.db_config.locking_tools import check_table_exists
+
+    return await check_table_exists(conn, "platform_configs", "configs")
 
 
 # --- Manager ---
@@ -389,18 +382,14 @@ class PlatformConfigManager(ProtocolPlugin[object], PlatformConfigsProtocol):
 
         Returns ``None`` when the ``configs.platform_configs`` table does not
         exist yet, so the waterfall falls through to code defaults.
+
+        Uses ``check_table_exists`` BEFORE querying to avoid aborting the
+        PostgreSQL transaction (a failed query poisons the whole transaction).
         """
-        try:
-            async with managed_transaction(self.engine) as conn:
-                return await get_platform_config_query.execute(conn, plugin_id=plugin_id)
-        except Exception as exc:
-            if _is_undefined_table_error(exc):
-                logger.debug(
-                    "configs.platform_configs not yet created — returning None for '%s'",
-                    plugin_id,
-                )
+        async with managed_transaction(self.engine) as conn:
+            if not await _platform_table_exists(conn):
                 return None
-            raise
+            return await get_platform_config_query.execute(conn, plugin_id=plugin_id)
 
     async def _get_platform_config_internal(
         self, plugin_id: str, db_resource: Optional[DbResource] = None
@@ -408,25 +397,18 @@ class PlatformConfigManager(ProtocolPlugin[object], PlatformConfigsProtocol):
         """Internal fetcher that respects the provided db_resource, falling back to cache.
 
         Gracefully returns ``None`` when the platform_configs table does not
-        exist yet, so the waterfall falls through to code defaults.
+        exist yet.  Uses ``check_table_exists`` BEFORE querying to prevent
+        aborting a shared transaction (``InFailedSQLTransactionError``).
         """
-        try:
-            if db_resource:
-                # Execute directly on the provided connection - it's already in a transaction
-                data = await get_platform_config_query.execute(
-                    db_resource, plugin_id=plugin_id
-                )
-            else:
-                # Fall back to cached version which creates its own transaction
-                data = await self.get_platform_config_internal_cached(plugin_id)
-        except Exception as exc:
-            if _is_undefined_table_error(exc):
-                logger.debug(
-                    "configs.platform_configs not yet created — returning None for '%s'",
-                    plugin_id,
-                )
+        if db_resource:
+            if not await _platform_table_exists(db_resource):
                 return None
-            raise
+            data = await get_platform_config_query.execute(
+                db_resource, plugin_id=plugin_id
+            )
+        else:
+            # Fall back to cached version which creates its own transaction
+            data = await self.get_platform_config_internal_cached(plugin_id)
 
         return ConfigRegistry.validate_config(plugin_id, data) if data else None
 
