@@ -24,6 +24,68 @@ from dynastore.models.shared_models import Link, Extent, Provider, International
 
 # --- OGC API Common / Features DTOs ---
 
+# --- OpenAPI Schema Helpers ---
+
+_I18N_STRING = {"type": "string"}
+_I18N_STRING_ARRAY = {"type": "array", "items": {"type": "string"}}
+_I18N_OBJECT = {"type": "object"}
+
+_OGC_I18N_FIELDS: Dict[str, Dict[str, Any]] = {
+    "title": _I18N_STRING,
+    "description": _I18N_STRING,
+    "keywords": _I18N_STRING_ARRAY,
+    "license": _I18N_STRING,
+    "extra_metadata": _I18N_OBJECT,
+}
+
+
+def _clean_ogc_schema(
+    schema: Dict[str, Any],
+    field_overrides: Dict[str, Dict[str, Any]],
+    examples: List[Dict[str, Any]],
+) -> None:
+    """Override Internationalized[T] anyOf patterns with clean OGC types in OpenAPI."""
+    props = schema.get("properties", {})
+    for field_name, clean_type in field_overrides.items():
+        if field_name in props:
+            desc = props[field_name].get("description", "")
+            default = props[field_name].get("default")
+            new_prop = {**clean_type, "description": desc}
+            if default is not None:
+                new_prop["default"] = default
+            props[field_name] = new_prop
+    schema["examples"] = examples
+
+
+_OGC_CATALOG_EXAMPLES = [
+    {
+        "id": "my_catalog",
+        "title": "My Geospatial Catalog",
+        "description": "A catalog of satellite imagery and geospatial data.",
+        "links": [],
+    },
+    {
+        "id": "multilingual_catalog",
+        "title": {"en": "My Catalog", "fr": "Mon Catalogue"},
+        "description": {"en": "English description", "fr": "Description en francais"},
+        "links": [],
+    },
+]
+
+_OGC_COLLECTION_EXAMPLES = [
+    {
+        "id": "sentinel_2",
+        "title": "Sentinel-2 L2A",
+        "description": "Sentinel-2 Level 2A surface reflectance data.",
+        "license": "CC-BY-4.0",
+        "extent": {
+            "spatial": {"bbox": [[-180, -90, 180, 90]]},
+            "temporal": {"interval": [["2015-06-23T00:00:00Z", None]]},
+        },
+        "providers": [{"name": "ESA", "roles": ["producer"], "url": "https://www.esa.int"}],
+    },
+]
+
 
 class Conformance(BaseModel):
     conformsTo: List[str]
@@ -32,56 +94,98 @@ class Conformance(BaseModel):
 class CatalogDefinition(BaseModel):
     """
     Request body for creating/updating a Catalog via OGC API.
-    Supports both localized strings and multi-language dictionaries via Internationalized generic.
+    Fields like title/description accept either a string or a {lang: value} dictionary for multilingual input.
     """
 
     model_config = ConfigDict(
-        populate_by_name=True, extra="allow", from_attributes=True
+        populate_by_name=True,
+        extra="allow",
+        from_attributes=True,
+        json_schema_extra=lambda schema: _clean_ogc_schema(
+            schema, _OGC_I18N_FIELDS, _OGC_CATALOG_EXAMPLES
+        ),
     )
 
-    id: Optional[str] = Field(None, description="Unique identifier for the catalog.")
+    id: Optional[str] = Field(default=None, description="Unique identifier for the catalog.")
     title: Optional[Internationalized[str]] = Field(
-        None, description="Title of the catalog."
+        default=None, description="Title of the catalog. Also accepts a {lang: value} dictionary."
     )
     description: Optional[Internationalized[str]] = Field(
-        None, description="Description of the catalog."
+        default=None, description="Description of the catalog. Also accepts a {lang: value} dictionary."
     )
     keywords: Optional[Internationalized[List[str]]] = Field(
-        None, description="Keywords."
+        default=None, description="Keywords. Also accepts a {lang: [values]} dictionary."
     )
     license: Optional[Internationalized[Any]] = Field(
-        None, description="License information."
+        default=None, description="SPDX License identifier. Also accepts a {lang: value} dictionary."
     )
     links: Optional[List[Link]] = Field(
-        default_factory=list, description="Links related to the catalog."
+        default_factory=list,
+        description="Custom links. Navigation links are generated server-side.",
     )
 
     # Extra metadata
-    extra_metadata: Optional[Internationalized[Any]] = None
+    extra_metadata: Optional[Internationalized[Any]] = Field(
+        default=None,
+        description="Additional metadata fields. Also accepts a {lang: value} dictionary.",
+    )
 
 
 class CollectionDefinition(BaseModel):
     """
     Request body for creating/updating a Collection via OGC API.
+    Fields like title/description accept either a string or a {lang: value} dictionary for multilingual input.
     """
 
     model_config = ConfigDict(
-        populate_by_name=True, extra="allow", from_attributes=True
+        populate_by_name=True,
+        extra="allow",
+        from_attributes=True,
+        json_schema_extra=lambda schema: _clean_ogc_schema(
+            schema, _OGC_I18N_FIELDS, _OGC_COLLECTION_EXAMPLES
+        ),
     )
 
-    id: Optional[str] = Field(None, description="Unique identifier for the collection.")
-    title: Optional[Internationalized[str]] = Field(None)
-    description: Optional[Internationalized[str]] = Field(None)
-    keywords: Optional[Internationalized[List[str]]] = Field(None)
-    license: Optional[Internationalized[Any]] = Field(None)
+    id: Optional[str] = Field(default=None, description="Unique identifier for the collection.")
+    title: Optional[Internationalized[str]] = Field(
+        default=None, description="Title of the collection. Also accepts a {lang: value} dictionary."
+    )
+    description: Optional[Internationalized[str]] = Field(
+        default=None, description="Description of the collection. Also accepts a {lang: value} dictionary."
+    )
+    keywords: Optional[Internationalized[List[str]]] = Field(
+        default=None, description="Keywords. Also accepts a {lang: [values]} dictionary."
+    )
+    license: Optional[Internationalized[Any]] = Field(
+        default=None, description="SPDX License identifier. Also accepts a {lang: value} dictionary."
+    )
 
-    extent: Optional[Extent] = None
-    providers: Optional[List[Provider]] = None
-    summaries: Optional[Dict[str, Any]] = None
-    extra_metadata: Optional[Internationalized[Any]] = None
+    extent: Optional[Extent] = Field(default=None, description="Spatial and temporal extent.")
+    providers: Optional[List[Provider]] = Field(default=None, description="Data providers.")
+    summaries: Optional[Dict[str, Any]] = Field(default=None, description="Data summaries.")
+    extra_metadata: Optional[Internationalized[Any]] = Field(
+        default=None, description="Additional metadata fields. Also accepts a {lang: value} dictionary."
+    )
 
 
 class LandingPage(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "title": "DynaStore OGC API",
+                    "description": "Access to geospatial data via OGC API Features",
+                    "links": [
+                        {"rel": "self", "href": "https://example.com/", "type": "application/json"},
+                        {"rel": "service-desc", "href": "https://example.com/openapi", "type": "application/vnd.oai.openapi+json;version=3.0"},
+                        {"rel": "conformance", "href": "https://example.com/conformance", "type": "application/json"},
+                        {"rel": "data", "href": "https://example.com/collections", "type": "application/json"},
+                    ],
+                }
+            ]
+        },
+    )
+
     title: str = "DynaStore OGC API"
     description: str = "Access to geospatial data via OGC API Features"
     links: List[Link]
@@ -90,15 +194,37 @@ class LandingPage(BaseModel):
 class OGCCollection(BaseModel):
     """Response model for a Collection."""
 
+    model_config = ConfigDict(
+        populate_by_name=True,
+        extra="allow",
+        json_schema_extra={
+            "examples": [
+                {
+                    "id": "sentinel_2",
+                    "title": "Sentinel-2 L2A",
+                    "description": "Sentinel-2 Level 2A surface reflectance data.",
+                    "links": [
+                        {"rel": "self", "href": "https://example.com/collections/sentinel_2", "type": "application/json"},
+                        {"rel": "items", "href": "https://example.com/collections/sentinel_2/items", "type": "application/geo+json"},
+                    ],
+                    "extent": {
+                        "spatial": {"bbox": [[-180, -90, 180, 90]]},
+                        "temporal": {"interval": [["2015-06-23T00:00:00Z", None]]},
+                    },
+                    "itemType": "feature",
+                    "crs": ["http://www.opengis.net/def/crs/OGC/1.3/CRS84"],
+                }
+            ]
+        },
+    )
+
     id: str = Field(..., description="Collection identifier")
-    title: Optional[str] = None
-    description: Optional[str] = None
+    title: Optional[str] = Field(default=None)
+    description: Optional[str] = Field(default=None)
     links: List[Link] = []
-    extent: Optional[Extent] = None
+    extent: Optional[Extent] = Field(default=None)
     itemType: str = "feature"
     crs: List[str] = ["http://www.opengis.net/def/crs/OGC/1.3/CRS84"]
-
-    model_config = ConfigDict(populate_by_name=True, extra="allow")
 
 
 class Collections(BaseModel):

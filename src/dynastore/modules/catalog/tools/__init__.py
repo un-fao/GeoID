@@ -39,10 +39,7 @@ from dynastore.tools.geospatial import (
     process_geometry,
     calculate_spatial_indices,
 )
-from dynastore.modules.catalog.catalog_config import (
-    CollectionPluginConfig,
-    GeometryStorageConfig,
-)
+from dynastore.modules.storage.driver_config import get_pg_collection_config
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +60,7 @@ async def recalculate_and_update_extents(
         return
 
     async with managed_transaction(db_resource) as conn:
-        layer_config = await catalogs.get_collection_config(
+        layer_config = await get_pg_collection_config(
             catalog_id, collection_id, db_resource=conn
         )
         if not layer_config:

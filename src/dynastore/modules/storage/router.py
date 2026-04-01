@@ -17,158 +17,269 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-Storage Router — resolves the correct ``CollectionStorageDriverProtocol``
-for a given catalog/collection based on ``CollectionPluginConfig``.
+Storage Router — resolves drivers for a given operation + catalog/collection.
 
-Resolution order:
-1. write=True → write_driver (always)
-2. read_drivers[hint] → explicit mapping
-3. Auto-select: driver whose preferred_for includes this hint
-4. Fallback → write_driver
+Resolution is based on ``RoutingPluginConfig`` (operation → ordered driver
+list) with optional hint-based filtering.
 
-Performance: driver lookup is cached (300s TTL, same as config) to
-avoid repeated linear scans on every request.
+For **WRITE**: all matching drivers execute (fan-out), each with its own
+``FailurePolicy``.
+
+For **READ/SEARCH**: the first matching driver is returned.
+
+Performance: resolution is cached (300 s TTL) keyed on
+``(routing_plugin_id, catalog_id, collection_id, operation, hint)``.
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Union
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Protocol, runtime_checkable
 
-from dynastore.models.protocols.storage_driver import (
-    Capability,
-    CollectionStorageDriverProtocol,
+from dynastore.modules.storage.routing_config import (
+    ROUTING_ASSETS_PLUGIN_CONFIG_ID,
+    ROUTING_PLUGIN_CONFIG_ID,
+    FailurePolicy,
+    Operation,
 )
-from dynastore.modules.storage.errors import ReadOnlyDriverError
-from dynastore.modules.storage.hints import ReadHint
 from dynastore.tools.cache import cached
 
 logger = logging.getLogger(__name__)
 
 
-def _build_driver_index() -> Dict[str, CollectionStorageDriverProtocol]:
-    """Build a driver_id -> driver instance lookup dict."""
+# ---------------------------------------------------------------------------
+# Resolved driver container
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ResolvedDriver:
+    """A driver resolved for a specific operation, with its failure policy."""
+
+    driver: object  # CollectionStorageDriverProtocol or AssetDriverProtocol
+    on_failure: FailurePolicy = FailurePolicy.FATAL
+
+    @property
+    def driver_id(self) -> str:
+        return getattr(self.driver, "driver_id", "unknown")
+
+
+# ---------------------------------------------------------------------------
+# Driver index builders
+# ---------------------------------------------------------------------------
+
+
+def _build_collection_driver_index() -> Dict[str, object]:
+    """Build driver_id → driver instance lookup for collection drivers."""
+    from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
     from dynastore.tools.discovery import get_protocols
 
     return {d.driver_id: d for d in get_protocols(CollectionStorageDriverProtocol)}
 
 
-def _get_collection_drivers(
-    col_config: Any,
-    driver_index: Dict[str, CollectionStorageDriverProtocol],
-) -> List[CollectionStorageDriverProtocol]:
-    """Return the write driver + all secondary driver instances for this collection."""
-    drivers = []
-    write_driver = driver_index.get(col_config.write_driver_id)
-    if write_driver:
-        drivers.append(write_driver)
-    for driver_id in col_config.secondary_driver_ids:
-        d = driver_index.get(driver_id)
-        if d:
-            drivers.append(d)
-    return drivers
+def _build_asset_driver_index() -> Dict[str, object]:
+    """Build driver_id → driver instance lookup for asset drivers."""
+    from dynastore.models.protocols.asset_driver import AssetDriverProtocol
+    from dynastore.tools.discovery import get_protocols
+
+    return {d.driver_id: d for d in get_protocols(AssetDriverProtocol)}
 
 
-def _resolve_driver_id(
-    col_config: Any,
-    *,
-    hint: str,
-    write: bool,
-    driver_index: Dict[str, CollectionStorageDriverProtocol],
-) -> str:
-    """Pure function: pick driver_id from collection config + intent.
-
-    Resolution order:
-    1. write=True → write_driver (always)
-    2. read_drivers[hint] → explicit mapping
-    3. read_drivers["default"] → explicit default mapping
-    4. Auto-select: driver whose preferred_for includes this hint
-    5. Fallback → write_driver
-    """
-    if write:
-        return col_config.write_driver_id
-
-    # 1. Explicit hint mapping
-    ref = col_config.read_drivers.get(hint)
-    if ref:
-        return ref.driver_id
-
-    # 2. Explicit default mapping
-    default_ref = col_config.read_drivers.get("default")
-    if default_ref:
-        return default_ref.driver_id
-
-    # 3. Auto-select by preferred_for from available drivers
-    available_drivers = _get_collection_drivers(col_config, driver_index)
-    for driver in available_drivers:
-        preferred = getattr(driver, "preferred_for", frozenset())
-        if hint in preferred:
-            return driver.driver_id
-
-    # 4. Fallback to write_driver
-    return col_config.write_driver_id
+# ---------------------------------------------------------------------------
+# Core resolution
+# ---------------------------------------------------------------------------
 
 
 @cached(maxsize=4096, ttl=300, namespace="storage_router", distributed=False)
-async def _resolve_driver_cached(
+async def _resolve_driver_ids_cached(
+    routing_plugin_id: str,
     catalog_id: str,
     collection_id: Optional[str],
-    hint: str,
-    write: bool,
-) -> str:
-    """Cached resolution: (catalog, collection, hint, write) -> driver_id."""
-    from dynastore.tools.discovery import get_protocol
+    operation: str,
+    hint: Optional[str],
+) -> List[tuple]:
+    """Cached resolution: returns list of (driver_id, on_failure) tuples."""
     from dynastore.models.protocols.configs import ConfigsProtocol
-    from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
+    from dynastore.tools.discovery import get_protocol
 
     configs = get_protocol(ConfigsProtocol)
     if not configs:
         raise RuntimeError("ConfigsProtocol not available — cannot resolve storage routing")
 
-    col_config = await configs.get_config(
-        COLLECTION_PLUGIN_CONFIG_ID,
+    routing_config = await configs.get_config(
+        routing_plugin_id,
         catalog_id=catalog_id,
         collection_id=collection_id,
     )
-    driver_index = _build_driver_index()
-    return _resolve_driver_id(col_config, hint=hint, write=write, driver_index=driver_index)
+
+    entries = routing_config.operations.get(operation, [])
+
+    if hint:
+        entries = [e for e in entries if hint in e.hints]
+
+    return [(e.driver_id, e.on_failure) for e in entries]
 
 
-async def get_driver(
+async def resolve_drivers(
+    operation: str,
     catalog_id: str,
     collection_id: Optional[str] = None,
     *,
-    hint: Union[ReadHint, str] = ReadHint.DEFAULT,
-    write: bool = False,
-) -> CollectionStorageDriverProtocol:
-    """Look up the correct storage driver for a collection.
+    hint: Optional[str] = None,
+    routing_plugin_id: str = ROUTING_PLUGIN_CONFIG_ID,
+) -> List[ResolvedDriver]:
+    """Resolve an ordered list of drivers for the requested operation.
+
+    For **READ/SEARCH**: caller uses the first result.
+    For **WRITE**: caller executes all (fan-out), respecting ``on_failure``.
 
     Args:
-        catalog_id: The catalog that owns the collection.
-        collection_id: Optional collection within the catalog.
-        hint: Read-intent hint (``ReadHint`` enum or custom string).
-            Ignored when ``write=True``.
-        write: If ``True``, always returns the write driver.
+        operation: Required. ``WRITE``, ``READ``, ``SEARCH``, etc.
+        catalog_id: Catalog context.
+        collection_id: Optional collection context.
+        hint: Optional preference to select specific driver(s).
+        routing_plugin_id: Config key — ``"routing"`` for collections,
+            ``"routing_assets"`` for assets.
 
     Returns:
-        A ``CollectionStorageDriverProtocol`` instance.
-
-    Raises:
-        ValueError: If the resolved driver ID is not registered.
-        ReadOnlyDriverError: If ``write=True`` and driver lacks WRITE capability.
+        Ordered list of :class:`ResolvedDriver`. Empty if hint is not
+        satisfiable by any configured driver.
     """
-    hint_str = hint.value if isinstance(hint, ReadHint) else str(hint)
-    driver_id = await _resolve_driver_cached(catalog_id, collection_id, hint_str, write)
+    resolved_ids = await _resolve_driver_ids_cached(
+        routing_plugin_id, catalog_id, collection_id, operation, hint,
+    )
 
-    index = _build_driver_index()
-    driver = index.get(driver_id)
-    if not driver:
+    if routing_plugin_id == ROUTING_ASSETS_PLUGIN_CONFIG_ID:
+        driver_index = _build_asset_driver_index()
+    else:
+        driver_index = _build_collection_driver_index()
+
+    result = []
+    for driver_id, on_failure in resolved_ids:
+        driver = driver_index.get(driver_id)
+        if driver:
+            result.append(ResolvedDriver(driver=driver, on_failure=on_failure))
+        else:
+            logger.warning(
+                "Driver '%s' for operation '%s' is not registered. Skipping.",
+                driver_id,
+                operation,
+            )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Convenience wrappers — collection drivers
+# ---------------------------------------------------------------------------
+
+
+async def get_driver(
+    operation: str,
+    catalog_id: str,
+    collection_id: Optional[str] = None,
+    *,
+    hint: Optional[str] = None,
+):
+    """Single-driver resolution for collection READ/SEARCH.
+
+    Returns the first matching ``CollectionStorageDriverProtocol`` or raises.
+    """
+    resolved = await resolve_drivers(
+        operation, catalog_id, collection_id, hint=hint,
+    )
+    if not resolved:
         raise ValueError(
-            f"Storage driver '{driver_id}' not found or not available. "
-            f"Registered drivers: {list(index.keys())}"
+            f"No collection driver found for operation='{operation}', "
+            f"hint='{hint}', catalog='{catalog_id}', collection='{collection_id}'"
         )
+    return resolved[0].driver
 
-    if write and Capability.WRITE not in driver.capabilities:
-        raise ReadOnlyDriverError(
-            f"Driver '{driver_id}' does not support writes (missing Capability.WRITE)"
+
+async def get_write_drivers(
+    catalog_id: str,
+    collection_id: Optional[str] = None,
+    *,
+    hint: Optional[str] = None,
+) -> List[ResolvedDriver]:
+    """Multi-driver resolution for collection WRITE fan-out."""
+    return await resolve_drivers(
+        Operation.WRITE, catalog_id, collection_id, hint=hint,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Convenience wrappers — asset drivers
+# ---------------------------------------------------------------------------
+
+
+async def get_asset_driver(
+    operation: str,
+    catalog_id: str,
+    collection_id: Optional[str] = None,
+    *,
+    hint: Optional[str] = None,
+):
+    """Single-driver resolution for asset READ/SEARCH.
+
+    Returns the first matching ``AssetDriverProtocol`` or raises.
+    """
+    resolved = await resolve_drivers(
+        operation,
+        catalog_id,
+        collection_id,
+        hint=hint,
+        routing_plugin_id=ROUTING_ASSETS_PLUGIN_CONFIG_ID,
+    )
+    if not resolved:
+        raise ValueError(
+            f"No asset driver found for operation='{operation}', "
+            f"hint='{hint}', catalog='{catalog_id}', collection='{collection_id}'"
         )
+    return resolved[0].driver
 
-    return driver
+
+async def get_asset_write_drivers(
+    catalog_id: str,
+    collection_id: Optional[str] = None,
+    *,
+    hint: Optional[str] = None,
+) -> List[ResolvedDriver]:
+    """Multi-driver resolution for asset WRITE fan-out."""
+    return await resolve_drivers(
+        Operation.WRITE,
+        catalog_id,
+        collection_id,
+        hint=hint,
+        routing_plugin_id=ROUTING_ASSETS_PLUGIN_CONFIG_ID,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Cache invalidation
+# ---------------------------------------------------------------------------
+
+
+def invalidate_router_cache(
+    catalog_id: Optional[str] = None,
+    collection_id: Optional[str] = None,
+) -> None:
+    """Invalidate cached resolution for collection routing."""
+    try:
+        from dynastore.tools.cache import cache_clear
+
+        cache_clear(_resolve_driver_ids_cached)
+    except Exception:
+        pass
+
+
+def invalidate_asset_router_cache(
+    catalog_id: Optional[str] = None,
+    collection_id: Optional[str] = None,
+) -> None:
+    """Invalidate cached resolution for asset routing.
+
+    Note: shares the same underlying cache as collection routing
+    (differentiated by ``routing_plugin_id`` in the cache key).
+    Full cache clear is the safest approach.
+    """
+    invalidate_router_cache(catalog_id, collection_id)

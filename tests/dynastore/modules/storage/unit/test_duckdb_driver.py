@@ -6,7 +6,7 @@ from dynastore.modules.storage.errors import (
     ReadOnlyDriverError,
     SoftDeleteNotSupportedError,
 )
-from dynastore.modules.storage.location import FileStorageLocationConfig
+from dynastore.modules.storage.driver_config import DuckDbCollectionDriverConfig
 
 
 class TestDuckDBDriverMeta:
@@ -61,13 +61,13 @@ class TestDuckDBWritability:
     def test_is_writable_false_by_default(self):
         from dynastore.modules.storage.drivers.duckdb import DuckDBStorageDriver
         driver = DuckDBStorageDriver()
-        loc = FileStorageLocationConfig(format="parquet", path="/data/f.parquet")
+        loc = DuckDbCollectionDriverConfig(format="parquet", path="/data/f.parquet")
         assert driver._is_writable(loc) is False
 
     def test_is_writable_true_with_write_path(self):
         from dynastore.modules.storage.drivers.duckdb import DuckDBStorageDriver
         driver = DuckDBStorageDriver()
-        loc = FileStorageLocationConfig(
+        loc = DuckDbCollectionDriverConfig(
             format="parquet",
             path="/data/f.parquet",
             write_path="/data/w.db",
@@ -81,7 +81,7 @@ class TestDuckDBWriteEntities:
     async def test_write_raises_read_only_without_write_path(self):
         from dynastore.modules.storage.drivers.duckdb import DuckDBStorageDriver
         driver = DuckDBStorageDriver()
-        loc = FileStorageLocationConfig(format="parquet", path="/data/f.parquet")
+        loc = DuckDbCollectionDriverConfig(format="parquet", path="/data/f.parquet")
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=loc):
             with pytest.raises(ReadOnlyDriverError):
                 await driver.write_entities("cat1", "col1", {"id": "1"})
@@ -100,7 +100,7 @@ class TestDuckDBDeleteEntities:
     async def test_delete_raises_read_only_without_write_path(self):
         from dynastore.modules.storage.drivers.duckdb import DuckDBStorageDriver
         driver = DuckDBStorageDriver()
-        loc = FileStorageLocationConfig(format="parquet", path="/data/f.parquet")
+        loc = DuckDbCollectionDriverConfig(format="parquet", path="/data/f.parquet")
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=loc):
             with pytest.raises(ReadOnlyDriverError):
                 await driver.delete_entities("cat1", "col1", ["id1"])
@@ -109,7 +109,7 @@ class TestDuckDBDeleteEntities:
     async def test_soft_delete_raises(self):
         from dynastore.modules.storage.drivers.duckdb import DuckDBStorageDriver
         driver = DuckDBStorageDriver()
-        loc = FileStorageLocationConfig(
+        loc = DuckDbCollectionDriverConfig(
             format="parquet", path="/data/f.parquet",
             write_path="/data/w.db", write_format="sqlite",
         )
@@ -132,10 +132,10 @@ class TestDuckDBResolveLocation:
     async def test_resolve_returns_config(self):
         from dynastore.modules.storage.drivers.duckdb import DuckDBStorageDriver
         driver = DuckDBStorageDriver()
-        loc = FileStorageLocationConfig(format="csv", path="/data/f.csv")
+        loc = DuckDbCollectionDriverConfig(format="csv", path="/data/f.csv")
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=loc):
             result = await driver.resolve_storage_location("cat1", "col1")
-            assert isinstance(result, FileStorageLocationConfig)
+            assert isinstance(result, DuckDbCollectionDriverConfig)
             assert result.format == "csv"
 
     @pytest.mark.asyncio
@@ -144,7 +144,7 @@ class TestDuckDBResolveLocation:
         driver = DuckDBStorageDriver()
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=None):
             result = await driver.resolve_storage_location("cat1")
-            assert isinstance(result, FileStorageLocationConfig)
+            assert isinstance(result, DuckDbCollectionDriverConfig)
             assert result.format == "parquet"
 
 
@@ -160,7 +160,7 @@ class TestDuckDBEnsureStorage:
     async def test_ensure_storage_file_not_found(self):
         from dynastore.modules.storage.drivers.duckdb import DuckDBStorageDriver
         driver = DuckDBStorageDriver()
-        loc = FileStorageLocationConfig(format="parquet", path="/nonexistent/file.parquet")
+        loc = DuckDbCollectionDriverConfig(format="parquet", path="/nonexistent/file.parquet")
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=loc):
             with patch.object(driver, "_get_conn", return_value=MagicMock()):
                 with pytest.raises(FileNotFoundError):

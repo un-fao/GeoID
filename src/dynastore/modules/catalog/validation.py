@@ -1,7 +1,7 @@
 import logging
 from typing import Set, List, Optional
 from dynastore.modules.db_config.exceptions import InternalValidationError
-from dynastore.modules.catalog.catalog_config import CollectionPluginConfig, COLLECTION_PLUGIN_CONFIG_ID
+from dynastore.modules.storage.driver_config import get_pg_collection_config, PG_DRIVER_PLUGIN_ID
 from dynastore.modules.db_config.shared_queries import get_table_column_names, DbResource
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
 from dynastore.tools.discovery import get_protocol
@@ -22,23 +22,17 @@ async def get_valid_properties(conn: DbResource, catalog_id: str, collection_id:
     if phys_schema and phys_table:
         physical_columns = await get_table_column_names(conn, phys_schema, phys_table)
     
-    # 2. Get attribute schema from config
-    configs = get_protocol(ConfigsProtocol)
-    if not configs:
-        logger.error("ConfigsProtocol not found in validation.py!")
-        # Fallback empty config if protocol missing
-        config = None
-    else:
-        config = await configs.get_config(COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn)
-    
+    # 2. Get PG driver config (sidecars, partitioning, etc.)
+    config = await get_pg_collection_config(catalog_id, collection_id, db_resource=conn)
+
     schema_properties = set()
     if config:
         # 2a. Legacy Attribute Schema
-        if config.attribute_schema:
+        if hasattr(config, "attribute_schema") and config.attribute_schema:
             schema_properties.update({entry.name for entry in config.attribute_schema})
 
-        # 2b. Sidecar Fields (New)
-        if hasattr(config, "sidecars") and config.sidecars:
+        # 2b. Sidecar Fields
+        if config.sidecars:
             from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
             for sc_config in config.sidecars:
                 if not sc_config.enabled:

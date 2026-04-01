@@ -129,14 +129,14 @@ class CollectionsProtocol(Protocol):
         catalog_id: str,
         collection_id: str,
         *,
-        hint: str = "default",
-        write: bool = False,
+        operation: str = "READ",
+        hint: Optional[str] = None,
     ) -> Any:
-        """Resolve the best storage driver for a collection based on usage intent.
+        """Resolve the best storage driver for a collection.
 
-        Resolution order:
-        1. write=True → primary/write driver (always)
-        2. read_drivers[hint] → explicit mapping in CollectionPluginConfig
+        Uses ``RoutingPluginConfig`` to resolve the operation → driver mapping.
+        For READ/SEARCH: returns the first matching driver.
+        For WRITE: returns the primary write driver.
         3. Auto-select: driver whose preferred_for includes this hint
         4. Fallback → primary/write driver
 

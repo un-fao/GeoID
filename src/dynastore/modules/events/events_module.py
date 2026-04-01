@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS {_EVENTS_SCHEMA}.events (
     scope         VARCHAR(50)   NOT NULL DEFAULT 'PLATFORM',
     schema_name   VARCHAR(255),
     collection_id VARCHAR(255),
-    payload       JSONB         NOT NULL DEFAULT '{{{{}}}}',
+    payload       JSONB         NOT NULL DEFAULT '{{}}',
     status        VARCHAR       NOT NULL DEFAULT 'PENDING',
     dedup_key     VARCHAR(512),
     created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),

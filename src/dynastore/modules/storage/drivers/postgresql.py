@@ -34,7 +34,7 @@ from dynastore.models.protocols.storage_driver import Capability
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.protocols import ModuleProtocol
 from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
-from dynastore.modules.storage.location import PostgresStorageLocationConfig
+from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +206,7 @@ class PostgresStorageDriver(ModuleProtocol):
             physical_table: Optional explicit table name. If not provided,
                 one is generated automatically.
             layer_config: Optional config overlay merged on top of the
-                resolved ``CollectionPluginConfig`` before creating storage.
+                resolved ``PostgresCollectionDriverConfig`` before creating storage.
         """
         if not collection_id:
             return
@@ -221,9 +221,9 @@ class PostgresStorageDriver(ModuleProtocol):
         )
         from dynastore.tools.discovery import get_protocol
         from dynastore.models.protocols.configs import ConfigsProtocol
-        from dynastore.modules.catalog.catalog_config import (
-            CollectionPluginConfig,
-            COLLECTION_PLUGIN_CONFIG_ID,
+        from dynastore.modules.storage.driver_config import (
+            PostgresCollectionDriverConfig,
+            get_pg_collection_config,
         )
         from dynastore.modules.catalog.catalog_service import generate_physical_name
         from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
@@ -233,14 +233,9 @@ class PostgresStorageDriver(ModuleProtocol):
 
         # Resolve col_config if not provided
         if col_config is None:
-            configs = get_protocol(ConfigsProtocol)
-            if configs:
-                col_config = await configs.get_config(
-                    COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id,
-                    db_resource=db_resource,
-                )
-        if col_config is None:
-            col_config = CollectionPluginConfig()
+            col_config = await get_pg_collection_config(
+                catalog_id, collection_id, db_resource=db_resource,
+            )
 
         # Apply layer_config overlay if provided
         if layer_config:
@@ -261,10 +256,7 @@ class PostgresStorageDriver(ModuleProtocol):
 
             merged = deep_update(base_dump, layer_config_dict)
             try:
-                from dynastore.modules.db_config.platform_config_service import (
-                    ConfigRegistry,
-                )
-                col_config = ConfigRegistry.validate_config("collection", merged)
+                col_config = PostgresCollectionDriverConfig.model_validate(merged)
             except Exception as e:
                 logger.error(
                     "Failed to merge layer_config for %s:%s: %s",
@@ -542,7 +534,7 @@ class PostgresStorageDriver(ModuleProtocol):
         collection_id: Optional[str] = None,
         *,
         db_resource: Optional[Any] = None,
-    ) -> PostgresStorageLocationConfig:
+    ) -> PostgresCollectionDriverConfig:
         """Resolve PG storage coordinates via existing protocol methods."""
         from dynastore.tools.discovery import get_protocol
         from dynastore.models.protocols.catalogs import CatalogsProtocol
@@ -563,7 +555,7 @@ class PostgresStorageDriver(ModuleProtocol):
                     catalog_id, collection_id, db_resource=db_resource
                 )
 
-        return PostgresStorageLocationConfig(
+        return PostgresCollectionDriverConfig(
             physical_schema=schema,
             physical_table=table,
         )

@@ -33,9 +33,11 @@ from dynastore.modules.db_config.query_executor import (
     is_async_resource,
 )
 from dynastore.modules.catalog.models import ItemDataForDB, Collection, Catalog
-from dynastore.modules.catalog.catalog_config import (
-    CollectionPluginConfig,
-    COLLECTION_PLUGIN_CONFIG_ID,
+from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
+from dynastore.modules.storage.driver_config import (
+    PostgresCollectionDriverConfig,
+    PG_DRIVER_PLUGIN_ID,
+    get_pg_collection_config,
 )
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
@@ -114,16 +116,10 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         collection_id: str,
         config_provider: Optional[ConfigsProtocol] = None,
         db_resource: Optional[DbResource] = None,
-    ) -> (
-        Any
-    ):  # Return type should be CollectionConfig from dynastore.modules.catalog.config
-        """Helper to get collection configuration."""
-        configs = config_provider or get_protocol(ConfigsProtocol)
-        return await configs.get_config(
-            COLLECTION_PLUGIN_CONFIG_ID,
-            catalog_id,
-            collection_id,
-            db_resource=db_resource,
+    ) -> PostgresCollectionDriverConfig:
+        """Fetch PG driver config (sidecars, partitioning, collection_type)."""
+        return await get_pg_collection_config(
+            catalog_id, collection_id, db_resource=db_resource,
         )
 
     def map_row_to_feature(
@@ -262,8 +258,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             return [] if not is_single else {}
 
         async with managed_transaction(db_resource or self.engine) as conn:
-            catalogs = get_protocol(CatalogsProtocol)
-            col_config = await catalogs.get_collection_config(
+            col_config = await get_pg_collection_config(
                 catalog_id, collection_id, db_resource=conn
             )
 
@@ -507,7 +502,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         self,
         catalog_id: str,
         collection_id: str,
-        col_config: CollectionPluginConfig,
+        col_config: PostgresCollectionDriverConfig,
         db_resource: Optional[DbResource] = None,
     ):
         async with managed_transaction(db_resource or self.engine) as conn:
@@ -552,7 +547,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         self,
         catalog_id: str,
         collection_id: str,
-        col_config: CollectionPluginConfig,
+        col_config: PostgresCollectionDriverConfig,
         partition_value: Any,
         db_resource: Optional[DbResource] = None,
     ):

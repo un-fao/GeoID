@@ -42,6 +42,22 @@ class TransmissionMode(str, Enum):
     REFERENCE = "reference"
 
 class ProcessSummary(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "id": "ingest",
+                    "title": "Data Ingestion",
+                    "description": "Ingest geospatial data into a collection.",
+                    "version": "1.0.0",
+                    "jobControlOptions": ["async-execute"],
+                    "outputTransmission": ["reference"],
+                    "links": [],
+                }
+            ]
+        },
+    )
+
     id: str
     title: str
     description: Optional[str] = None
@@ -69,11 +85,62 @@ class Process(ProcessSummary):
 # --- OGC API Endpoint Models ---
 
 class ProcessList(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "processes": [
+                        {
+                            "id": "ingest",
+                            "title": "Data Ingestion",
+                            "version": "1.0.0",
+                            "jobControlOptions": ["async-execute"],
+                            "links": [],
+                        }
+                    ],
+                    "links": [
+                        {"rel": "self", "href": "/processes", "type": "application/json"},
+                    ],
+                }
+            ]
+        },
+    )
+
     processes: List[ProcessSummary]
     links: List[Link]
 
 class StatusInfo(BaseModel):
     """OGC API - Processes StatusInfo model for job status responses."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "jobID": "550e8400-e29b-41d4-a716-446655440000",
+                    "status": "running",
+                    "type": "process",
+                    "progress": 45,
+                    "created": "2026-03-30T10:00:00Z",
+                    "links": [
+                        {"rel": "self", "href": "/processes/jobs/550e8400-e29b-41d4-a716-446655440000", "type": "application/json"},
+                    ],
+                },
+                {
+                    "jobID": "550e8400-e29b-41d4-a716-446655440000",
+                    "status": "successful",
+                    "type": "process",
+                    "progress": 100,
+                    "created": "2026-03-30T10:00:00Z",
+                    "updated": "2026-03-30T10:05:00Z",
+                    "links": [
+                        {"rel": "self", "href": "/processes/jobs/550e8400-e29b-41d4-a716-446655440000", "type": "application/json"},
+                        {"rel": "http://www.opengis.net/def/rel/ogc/1.0/results", "href": "/processes/jobs/550e8400-e29b-41d4-a716-446655440000/results", "type": "application/json"},
+                    ],
+                },
+            ]
+        },
+    )
+
     jobID: UUID
     status: str
     message: Optional[str] = None
@@ -94,11 +161,29 @@ class ExecuteRequest(BaseModel):
     This model is designed to be used as the `inputs` type for TaskPayload,
     enabling processes to be executed as tasks.
     """
+
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "inputs": {
+                        "collection_id": "my_collection",
+                        "source": "https://example.com/data.csv",
+                        "format": "csv",
+                    },
+                    "outputs": {
+                        "result": {"transmissionMode": "reference"},
+                    },
+                    "response": "document",
+                },
+            ]
+        },
+    )
+
     inputs: Dict[str, Any]
     outputs: Optional[Dict[str, OutputExecutionRequest]] = None
     response: str = Field("document", pattern="^(document|raw)$")
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 # Type alias for clarity: a process execution task payload
 ProcessTaskPayload = TaskPayload[ExecuteRequest] # This remains for type hinting

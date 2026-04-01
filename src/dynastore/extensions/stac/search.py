@@ -209,8 +209,8 @@ async def search_items(
     ]
 
     async def _check_layer_def(cid):
-        catalogs = get_protocol(CatalogsProtocol)
-        return await catalogs.get_collection_config(
+        from dynastore.modules.storage.driver_config import get_pg_collection_config
+        return await get_pg_collection_config(
             search_request.catalog_id, cid, db_resource=db_resource
         )
 

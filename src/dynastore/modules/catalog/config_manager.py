@@ -505,15 +505,6 @@ class ConfigManager(ConfigsProtocol):
                     f"Could not resolve physical schema for catalog '{catalog_id}'."
                 )
 
-            # First, ensure the collection exists to prevent foreign key violations.
-            collection = await self._get_catalog_manager().get_collection(
-                catalog_id, collection_id, db_resource=conn
-            )
-            if not collection:
-                raise ValueError(
-                    f"Cannot set configuration. Collection '{collection_id}' not found in catalog '{catalog_id}'."
-                )
-
             if check_immutability:
                 sql = f'SELECT config_data FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE catalog_id = :catalog_id AND collection_id = :collection_id AND plugin_id = :plugin_id FOR UPDATE;'
                 current_data = await DQLQuery(

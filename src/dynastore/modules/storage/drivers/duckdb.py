@@ -21,7 +21,7 @@ DuckDB Storage Driver — file-based analytical reads via DuckDB.
 
 Reads from configurable formats (parquet, csv, json, etc.) using DuckDB's
 built-in readers.  Optionally writes to SQLite via DuckDB's ``sqlite``
-extension when ``FileStorageLocationConfig.write_path`` is set.
+extension when ``DuckDbCollectionDriverConfig.write_path`` is set.
 
 Capabilities vary based on configuration:
   - Read-only (default):  ``{READ_ONLY, STREAMING, SPATIAL_FILTER, EXPORT}``
@@ -46,7 +46,7 @@ from dynastore.models.protocols.storage_driver import Capability
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.protocols import ModuleProtocol
 from dynastore.modules.storage.errors import ReadOnlyDriverError, SoftDeleteNotSupportedError
-from dynastore.modules.storage.location import FileStorageLocationConfig
+from dynastore.modules.storage.driver_config import DuckDbCollectionDriverConfig
 
 logger = logging.getLogger(__name__)
 
@@ -175,30 +175,28 @@ class DuckDBStorageDriver(ModuleProtocol):
 
     async def _get_location_async(
         self, catalog_id: str, collection_id: Optional[str] = None
-    ) -> Optional[FileStorageLocationConfig]:
-        """Resolve FileStorageLocationConfig from StorageRoutingConfig."""
+    ) -> Optional[DuckDbCollectionDriverConfig]:
+        """Resolve DuckDbCollectionDriverConfig from the config waterfall."""
         try:
             from dynastore.tools.discovery import get_protocol
             from dynastore.models.protocols.configs import ConfigsProtocol
-            from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
 
             configs = get_protocol(ConfigsProtocol)
             if not configs:
                 return None
-            routing = await configs.get_config(
-                COLLECTION_PLUGIN_CONFIG_ID,
+            config = await configs.get_config(
+                DuckDbCollectionDriverConfig._plugin_id,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )
-            loc = routing.get_location("duckdb")
-            if isinstance(loc, FileStorageLocationConfig):
-                return loc
+            if isinstance(config, DuckDbCollectionDriverConfig):
+                return config
             return None
         except Exception:
             return None
 
     @staticmethod
-    def _is_writable(loc: FileStorageLocationConfig) -> bool:
+    def _is_writable(loc: DuckDbCollectionDriverConfig) -> bool:
         """Check if this location has a write path configured."""
         return loc.write_path is not None
 
@@ -442,11 +440,11 @@ class DuckDBStorageDriver(ModuleProtocol):
         collection_id: Optional[str] = None,
         *,
         db_resource: Optional[Any] = None,
-    ) -> FileStorageLocationConfig:
+    ) -> DuckDbCollectionDriverConfig:
         loc = await self._get_location_async(catalog_id, collection_id)
         if loc:
             return loc
-        return FileStorageLocationConfig(driver="duckdb", format="parquet")
+        return DuckDbCollectionDriverConfig()
 
     # ------------------------------------------------------------------
     # Collection metadata (sidecar JSON file alongside the parquet)

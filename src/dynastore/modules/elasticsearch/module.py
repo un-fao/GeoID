@@ -33,19 +33,22 @@ async def _get_es_catalog_config(catalog_id: str):
 async def _is_es_active(catalog_id: str, collection_id: str) -> bool:
     """Return True when the collection has ES as write, secondary, or read driver."""
     try:
-        from dynastore.models.protocols import CatalogsProtocol
-        catalogs = get_protocol(CatalogsProtocol)
-        if not catalogs:
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.modules.storage.routing_config import ROUTING_PLUGIN_CONFIG_ID
+
+        configs = get_protocol(ConfigsProtocol)
+        if not configs:
             return False
-        col_config = await catalogs.get_collection_config(catalog_id, collection_id)
-        if col_config.write_driver_id == "elasticsearch":
-            return True
-        if "elasticsearch" in col_config.secondary_driver_ids:
-            return True
-        return any(
-            ref.driver_id == "elasticsearch"
-            for ref in col_config.read_drivers.values()
+        routing = await configs.get_config(
+            ROUTING_PLUGIN_CONFIG_ID,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
         )
+        for entries in routing.operations.values():
+            for entry in entries:
+                if entry.driver_id == "elasticsearch":
+                    return True
+        return False
     except Exception as e:
         logger.debug(
             "Could not resolve ES active config for %s/%s: %s",

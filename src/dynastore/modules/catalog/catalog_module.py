@@ -556,11 +556,11 @@ class CatalogModule(ModuleProtocol):
         catalog_id: str,
         collection_id: str,
         *,
-        hint: str = "default",
-        write: bool = False,
+        operation: str = "READ",
+        hint: Optional[str] = None,
     ):
         return await self.catalog_service.resolve_datasource(
-            catalog_id, collection_id, hint=hint, write=write
+            catalog_id, collection_id, operation=operation, hint=hint
         )
 
     async def resolve_physical_table(

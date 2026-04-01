@@ -5,7 +5,6 @@ from dynastore.modules.catalog.config_service import (
     ConfigService,
     CatalogConfig,
     CollectionConfig,
-    CollectionPluginConfig,
 )
 from dynastore.modules.db_config.platform_config_service import (
     PlatformConfigService,

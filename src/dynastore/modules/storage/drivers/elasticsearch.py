@@ -91,21 +91,25 @@ class _ElasticsearchBase:
     async def _is_secondary_for(
         driver_id: str, catalog_id: str, collection_id: Optional[str],
     ) -> bool:
-        """Check if this driver is listed as a secondary for the given scope."""
+        """Check if this driver is listed in the routing config for the given scope."""
         try:
             from dynastore.models.protocols.configs import ConfigsProtocol
             from dynastore.tools.discovery import get_protocol
-            from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
+            from dynastore.modules.storage.routing_config import ROUTING_PLUGIN_CONFIG_ID
 
             configs = get_protocol(ConfigsProtocol)
             if not configs:
                 return False
             routing = await configs.get_config(
-                COLLECTION_PLUGIN_CONFIG_ID,
+                ROUTING_PLUGIN_CONFIG_ID,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )
-            return driver_id in routing.secondary_driver_ids
+            return any(
+                entry.driver_id == driver_id
+                for entries in routing.operations.values()
+                for entry in entries
+            )
         except Exception:
             return False
 

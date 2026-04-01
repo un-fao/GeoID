@@ -30,15 +30,15 @@ USAGE_SHARD_COUNT = 16
 CREATE_PRINCIPALS_TABLE = DDLQuery("""
     CREATE TABLE IF NOT EXISTS {schema}.principals (
         id UUID PRIMARY KEY,
-        identifier VARCHAR(512), -- Legacy/Display Name
+        identifier VARCHAR(512),
         display_name VARCHAR(255), -- V2
         is_active BOOLEAN DEFAULT TRUE,
         valid_until TIMESTAMPTZ,
         roles JSONB DEFAULT '[]'::jsonb,
         custom_policies JSONB DEFAULT '[]'::jsonb,
-        attributes JSONB DEFAULT '{{}}'::jsonb,
-        metadata JSONB DEFAULT '{{}}'::jsonb, -- Legacy support
-        policy JSONB, -- Legacy support
+        attributes JSONB DEFAULT '{}'::jsonb,
+        metadata JSONB DEFAULT '{}'::jsonb,
+        policy JSONB,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW(),
         UNIQUE(identifier)
@@ -109,10 +109,10 @@ CREATE_ROLES_TABLE = DDLQuery("""
         id VARCHAR(128) PRIMARY KEY, -- Renamed from name or separate ID? Assuming ID=Name for simplicity in transition
         name VARCHAR(128) NOT NULL,
         description TEXT,
-        level INTEGER DEFAULT 0, -- Legacy support
+        level INTEGER DEFAULT 0,
         parent_roles JSONB DEFAULT '[]'::jsonb, -- V2 Inheritance
         policies JSONB DEFAULT '[]'::jsonb, -- V2 Policy Links
-        metadata JSONB DEFAULT '{{}}'::jsonb, -- Legacy support
+        metadata JSONB DEFAULT '{}'::jsonb,
         created_at TIMESTAMPTZ DEFAULT NOW()
     );
 """)
@@ -234,7 +234,7 @@ CREATE_IDENTITY_AUTHORIZATION_TABLE = DDLQuery("""
         valid_until TIMESTAMPTZ,
 
         -- ABAC attributes
-        attributes JSONB DEFAULT '{{}}'::jsonb,
+        attributes JSONB DEFAULT '{}'::jsonb,
 
         -- Audit
         created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -668,7 +668,7 @@ REMOVE_ROLE_FROM_PRINCIPALS = DQLQuery(
     SET roles = (
         SELECT jsonb_agg(r)
         FROM jsonb_array_elements(roles) r
-        WHERE r #>> '{{}}' != :role_name
+        WHERE r #>> '{}' != :role_name
     )
     WHERE roles ? :role_name;
     """,

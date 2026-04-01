@@ -19,17 +19,14 @@ from dynastore.modules.catalog.sidecars.attributes_config import (
     AttributeStorageMode,
     VersioningBehaviorEnum,
 )
-from dynastore.modules.catalog.catalog_config import (
-    CollectionPluginConfig,
-    CollectionTypeEnum,
-)
+from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
 
 
 # Mock Sidecar Configs
 @pytest.fixture
 def mock_col_config():
-    return CollectionPluginConfig(
-        collection_type=CollectionTypeEnum.VECTOR,
+    return PostgresCollectionDriverConfig(
+        collection_type="VECTOR",
         sidecars=[
             GeometriesSidecarConfig(
                 sidecar_type="geometries",

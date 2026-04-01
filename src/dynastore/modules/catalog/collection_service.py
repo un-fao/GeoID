@@ -244,13 +244,10 @@ class CollectionService:
     async def get_collection_config(
         self, catalog_id: str, collection_id: str, db_resource: Optional[Any] = None
     ) -> CollectionPluginConfig:
-        """Retrieves the configuration for a collection."""
-        from dynastore.tools.discovery import get_protocol
-        from dynastore.models.protocols.configs import ConfigsProtocol
-        configs = get_protocol(ConfigsProtocol)
-        if not configs:
-            raise RuntimeError("ConfigsProtocol not available")
-        return await configs.get_collection_config(
+        """Retrieves the active write driver config for a collection (via routing config)."""
+        from dynastore.modules.storage.driver_config import get_collection_driver_config
+
+        return await get_collection_driver_config(
             catalog_id, collection_id, db_resource=db_resource
         )
 
@@ -350,14 +347,13 @@ class CollectionService:
                 f"[LIFECYCLE] Creating collection '{catalog_id}:{collection_model.id}' in schema '{phys_schema}'"
             )
 
-            # Get collection config (default/platform config only - collection doesn't exist yet,
+            # Get PG driver config (default/platform config only - collection doesn't exist yet,
             # so we must NOT pass db_resource here; querying collection_configs in a nested
             # transaction before the table may be ready would poison the outer transaction).
-            configs = get_protocol(ConfigsProtocol)
-            collection_config = await configs.get_config(
-                COLLECTION_PLUGIN_CONFIG_ID,
-                catalog_id,
-                collection_model.id,
+            from dynastore.modules.storage.driver_config import get_pg_collection_config
+
+            collection_config = await get_pg_collection_config(
+                catalog_id, collection_model.id,
             )
 
             # Layer config override from input
@@ -381,11 +377,11 @@ class CollectionService:
 
             # Layer config override from input
             if layer_config_override and isinstance(layer_config_override, dict):
-                from dynastore.modules.catalog.catalog_config import (
-                    CollectionPluginConfig,
+                from dynastore.modules.storage.driver_config import (
+                    PostgresCollectionDriverConfig,
                 )
 
-                layer_config_override = CollectionPluginConfig.model_validate(
+                layer_config_override = PostgresCollectionDriverConfig.model_validate(
                     layer_config_override
                 )
 
@@ -462,7 +458,7 @@ class CollectionService:
             from dynastore.modules.storage.router import get_driver
             try:
                 write_driver = await get_driver(
-                    catalog_id, collection_model.id, write=True
+                    "WRITE", catalog_id, collection_model.id
                 )
                 await write_driver.ensure_storage(
                     catalog_id,
@@ -473,7 +469,9 @@ class CollectionService:
             except ValueError:
                 pass
 
-            # 6. Store collection metadata via metadata driver.
+            # 6. Store collection metadata — always write to pg_collection_metadata
+            #    directly so the data is present even when no storage meta_driver exists
+            #    (e.g. in tests or fresh deployments without a registered READ driver).
             user_extra_metadata = (
                 json.dumps(
                     collection_model.extra_metadata.model_dump(exclude_none=True),
@@ -482,9 +480,45 @@ class CollectionService:
                 if collection_model.extra_metadata
                 else None
             )
+            meta_sql = f"""
+                INSERT INTO "{phys_schema}".pg_collection_metadata
+                    (collection_id, title, description, keywords, license,
+                     links, assets, extent, providers, summaries, item_assets, extra_metadata)
+                VALUES
+                    (:id, :title, :description, :keywords, :license,
+                     :links, :assets, :extent, :providers, :summaries, :item_assets, :extra_metadata)
+                ON CONFLICT (collection_id) DO UPDATE SET
+                    title        = EXCLUDED.title,
+                    description  = EXCLUDED.description,
+                    keywords     = EXCLUDED.keywords,
+                    license      = EXCLUDED.license,
+                    links        = EXCLUDED.links,
+                    assets       = EXCLUDED.assets,
+                    extent       = EXCLUDED.extent,
+                    providers    = EXCLUDED.providers,
+                    summaries    = EXCLUDED.summaries,
+                    item_assets  = EXCLUDED.item_assets,
+                    extra_metadata = EXCLUDED.extra_metadata;
+            """
+            await DDLQuery(meta_sql).execute(
+                conn,
+                id=collection_model.id,
+                title=json.dumps(collection_model.title.model_dump(exclude_none=True), cls=CustomJSONEncoder) if collection_model.title else None,
+                description=json.dumps(collection_model.description.model_dump(exclude_none=True), cls=CustomJSONEncoder) if collection_model.description else None,
+                keywords=json.dumps(collection_model.keywords.model_dump(exclude_none=True), cls=CustomJSONEncoder) if collection_model.keywords else None,
+                license=json.dumps(collection_model.license.model_dump(exclude_none=True), cls=CustomJSONEncoder) if collection_model.license else None,
+                links=json.dumps([l.model_dump() for l in collection_model.links], cls=CustomJSONEncoder) if collection_model.links else None,
+                assets=json.dumps(collection_model.assets, cls=CustomJSONEncoder) if collection_model.assets else None,
+                extent=json.dumps(collection_model.extent.model_dump(exclude_none=True), cls=CustomJSONEncoder) if collection_model.extent else None,
+                providers=json.dumps([p.model_dump() for p in (collection_model.providers or [])], cls=CustomJSONEncoder) if collection_model.providers else None,
+                summaries=json.dumps(collection_model.summaries, cls=CustomJSONEncoder) if collection_model.summaries else None,
+                item_assets=json.dumps(getattr(collection_model, 'item_assets', None), cls=CustomJSONEncoder) if getattr(collection_model, 'item_assets', None) else None,
+                extra_metadata=user_extra_metadata,
+            )
+            # Also notify any registered storage meta_driver (e.g. Elasticsearch index).
             try:
                 meta_driver = await get_driver(
-                    catalog_id, collection_model.id, hint="metadata"
+                    "READ", catalog_id, collection_model.id, hint="metadata"
                 )
             except ValueError:
                 meta_driver = None
@@ -507,16 +541,12 @@ class CollectionService:
                     db_resource=conn,
                 )
 
-            # 7. Persist config if override provided.
+            # 7. Persist driver config if override provided.
             if layer_config_override:
-                config_to_save = layer_config_override
-                if isinstance(layer_config_override, dict):
-                    config_to_save = CollectionPluginConfig.model_validate(
-                        layer_config_override
-                    )
+                configs = get_protocol(ConfigsProtocol)
                 await configs.set_config(
-                    COLLECTION_PLUGIN_CONFIG_ID,
-                    config_to_save,
+                    layer_config_override._plugin_id,
+                    layer_config_override,
                     catalog_id=catalog_id,
                     collection_id=collection_model.id,
                     db_resource=conn,

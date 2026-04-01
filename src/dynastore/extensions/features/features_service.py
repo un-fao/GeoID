@@ -75,10 +75,7 @@ from dynastore.extensions.tools.conformance import (
     Conformance,
 )
 import re
-from dynastore.modules.catalog.catalog_config import (
-    CollectionPluginConfig,
-    COLLECTION_PLUGIN_CONFIG_ID,
-)
+from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
 from . import features_db
 from dynastore.extensions.tools.formatters import OutputFormatEnum, format_response
 from dynastore.extensions.tools.query import parse_ogc_query_request, stream_ogc_features

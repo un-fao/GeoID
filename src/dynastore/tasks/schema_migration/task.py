@@ -282,19 +282,14 @@ async def _resolve_config_and_sidecars(
     collection_id: str,
     target_config_dict: Optional[Dict[str, Any]],
 ):
-    """Load CollectionPluginConfig and extract sidecar IDs."""
-    from dynastore.modules import get_protocol
-    from dynastore.extensions.configs.protocols import ConfigsProtocol
+    """Load PostgresCollectionDriverConfig and extract sidecar IDs."""
+    from dynastore.modules.storage.driver_config import get_pg_collection_config, PG_DRIVER_PLUGIN_ID
 
-    COLLECTION_PLUGIN_CONFIG_ID = "collection"
-    configs = get_protocol(ConfigsProtocol)
-    col_config = await configs.get_config(
-        COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id
-    )
+    col_config = await get_pg_collection_config(catalog_id, collection_id)
 
     if target_config_dict:
-        from dynastore.modules.db_config.platform_config_service import ConfigRegistry
-        col_config = ConfigRegistry.validate_config("collection", target_config_dict)
+        from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
+        col_config = PostgresCollectionDriverConfig.model_validate(target_config_dict)
 
     sidecar_ids = [sc.sidecar_id for sc in col_config.sidecars]
     return col_config, sidecar_ids
@@ -312,7 +307,7 @@ async def _recreate_physical_collection(
     from dynastore.modules.db_config.query_executor import managed_transaction
     from dynastore.modules.storage.router import get_driver
 
-    driver = await get_driver(catalog_id, collection_id, write=True)
+    driver = await get_driver("WRITE", catalog_id, collection_id)
     async with managed_transaction(engine) as conn:
         await driver.ensure_storage(
             catalog_id,
