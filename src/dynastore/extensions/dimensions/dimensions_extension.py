@@ -35,13 +35,11 @@ class DimensionsExtension(ExtensionProtocol):
 
         from ogc_dimensions.api.routes import DIMENSIONS, DimensionConfig, router as dimensions_router
         from ogc_dimensions.generators import (
-            DekadalGenerator,
+            DailyPeriodGenerator,
             IntegerRangeGenerator,
-            PentadalAnnualGenerator,
-            PentadalMonthlyGenerator,
             StaticTreeGenerator,
+            LeveledTreeGenerator,
         )
-        from ogc_dimensions.generators.tree import LeveledTreeGenerator
 
         from .use_cases import ADMIN_NODES, INDICATOR_NODES, SPECIES_NODES
 
@@ -57,7 +55,7 @@ class DimensionsExtension(ExtensionProtocol):
         # Reference: https://github.com/ccancellieri/ogc-dimensions/tree/main/spec
 
         DIMENSIONS["temporal-dekadal"] = DimensionConfig(
-            generator=DekadalGenerator(),
+            generator=DailyPeriodGenerator(period_days=10, scheme="monthly"),
             description=(
                 "Dekadal temporal dimension — 10-day periods, 36 per year, "
                 "month-aligned (D1=1–10, D2=11–20, D3=remainder). "
@@ -69,7 +67,7 @@ class DimensionsExtension(ExtensionProtocol):
             extent_max="2050-12-31",
         )
         DIMENSIONS["temporal-pentadal-monthly"] = DimensionConfig(
-            generator=PentadalMonthlyGenerator(),
+            generator=DailyPeriodGenerator(period_days=5, scheme="monthly"),
             description=(
                 "Pentadal-monthly temporal dimension — 5-day periods, 72 per year, "
                 "month-aligned (P1=1–5, P2=6–10, …, P6=26–EOM). "
@@ -82,7 +80,7 @@ class DimensionsExtension(ExtensionProtocol):
             extent_max="2050-12-31",
         )
         DIMENSIONS["temporal-pentadal-annual"] = DimensionConfig(
-            generator=PentadalAnnualGenerator(),
+            generator=DailyPeriodGenerator(period_days=5, scheme="annual"),
             description=(
                 "Pentadal-annual temporal dimension — 5-day periods, 73 per year, "
                 "year-start-aligned (P1=Jan 1–5, …, P73=Dec 27–31). "

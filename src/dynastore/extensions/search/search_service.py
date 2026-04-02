@@ -425,7 +425,7 @@ class SearchService(ExtensionProtocol):
         If `driver` is provided, the task targets only that secondary driver.
         """
         from dynastore.models.protocols import DatabaseProtocol
-        from dynastore.modules.tasks import tasks as tasks_module
+        from dynastore.modules.tasks import tasks_module
         from dynastore.modules.tasks.models import TaskCreate
         from dynastore.tools.discovery import get_protocol
 
@@ -434,13 +434,14 @@ class SearchService(ExtensionProtocol):
         db = get_protocol(DatabaseProtocol)
         if not db:
             raise RuntimeError("DatabaseProtocol not available.")
+        engine = db.engine if isinstance(db, DatabaseProtocol) else db
 
         inputs: Dict[str, Any] = {"catalog_id": catalog_id, "mode": resolved_mode}
         if driver:
             inputs["driver"] = driver
 
         task = await tasks_module.create_task(
-            engine=db,
+            engine=engine,
             task_data=TaskCreate(
                 caller_id="system:search",
                 task_type="elasticsearch_bulk_reindex_catalog",
@@ -448,7 +449,7 @@ class SearchService(ExtensionProtocol):
             ),
             schema=tasks_module.get_task_schema(),
         )
-        return {"task_id": str(task.id), "catalog_id": catalog_id, "mode": resolved_mode, "driver": driver, "status": "queued"}
+        return {"task_id": str(task.task_id), "catalog_id": catalog_id, "mode": resolved_mode, "driver": driver, "status": "queued"}
 
     async def reindex_collection(
         self,
@@ -462,7 +463,7 @@ class SearchService(ExtensionProtocol):
         If `driver` is provided, the task targets only that secondary driver.
         """
         from dynastore.models.protocols import DatabaseProtocol
-        from dynastore.modules.tasks import tasks as tasks_module
+        from dynastore.modules.tasks import tasks_module
         from dynastore.modules.tasks.models import TaskCreate
         from dynastore.tools.discovery import get_protocol
 
@@ -471,13 +472,14 @@ class SearchService(ExtensionProtocol):
         db = get_protocol(DatabaseProtocol)
         if not db:
             raise RuntimeError("DatabaseProtocol not available.")
+        engine = db.engine if isinstance(db, DatabaseProtocol) else db
 
         inputs: Dict[str, Any] = {"catalog_id": catalog_id, "collection_id": collection_id, "mode": resolved_mode}
         if driver:
             inputs["driver"] = driver
 
         task = await tasks_module.create_task(
-            engine=db,
+            engine=engine,
             task_data=TaskCreate(
                 caller_id="system:search",
                 task_type="elasticsearch_bulk_reindex_collection",
@@ -486,7 +488,7 @@ class SearchService(ExtensionProtocol):
             schema=tasks_module.get_task_schema(),
         )
         return {
-            "task_id": str(task.id),
+            "task_id": str(task.task_id),
             "catalog_id": catalog_id,
             "collection_id": collection_id,
             "mode": resolved_mode,

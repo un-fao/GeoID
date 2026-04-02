@@ -354,7 +354,7 @@ class ObfuscatedIndexTask(TaskProtocol):
         await es.index(
             index=index_name,
             id=inputs.geoid,
-            document={
+            body={
                 "geoid": inputs.geoid,
                 "catalog_id": inputs.catalog_id,
                 "collection_id": inputs.collection_id,
