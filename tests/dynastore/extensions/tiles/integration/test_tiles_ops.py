@@ -1,14 +1,14 @@
 import pytest
 import asyncio
 from httpx import AsyncClient
-from uuid import uuid4
+from dynastore.tools.identifiers import generate_id_hex
 
 @pytest.mark.gcp
 @pytest.mark.asyncio
 @pytest.mark.enable_modules("db_config", "db", "catalog", "tiles", "gcp")
 @pytest.mark.enable_extensions("tiles", "assets", "features", "configs")
 async def test_tiles_from_bulk_ingested_data(in_process_client: AsyncClient):
-    catalog_id = f"c_{uuid4().hex[:8]}"
+    catalog_id = f"c_{generate_id_hex()[:8]}"
     collection_id = "test_tiles_collection"
     
     # 1. Setup Catalog and Collection
@@ -87,7 +87,7 @@ async def test_tiles_with_pg_storage(in_process_client: AsyncClient):
     Verifies that tiles can be generated and cached using the PostgreSQL storage provider.
     This test does not depend on GCP resources.
     """
-    catalog_id = f"c_pg_{uuid4().hex[:8]}"
+    catalog_id = f"c_pg_{generate_id_hex()[:8]}"
     collection_id = "test_pg_tiles_collection"
     
     # 1. Setup Catalog and Collection

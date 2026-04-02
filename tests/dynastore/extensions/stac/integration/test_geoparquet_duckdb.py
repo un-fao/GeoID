@@ -15,7 +15,7 @@ examples/geoparquet-duckdb-opensearch/README.md:
 """
 
 import json
-import uuid
+from dynastore.tools.identifiers import generate_id_hex
 from pathlib import Path
 
 import pytest
@@ -49,7 +49,7 @@ pytestmark = [
 
 @pytest.fixture
 def run_id():
-    return uuid.uuid4().hex[:8]
+    return generate_id_hex()[:8]
 
 
 @pytest.fixture
@@ -165,7 +165,7 @@ async def test_geoparquet_duckdb_pipeline(
         }
     }
     r = await in_process_client.put(
-        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/configs/routing",
+        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/configs/storage:collections",
         json=routing_config,
     )
     assert r.status_code in (200, 201), f"Routing config failed: {r.text}"

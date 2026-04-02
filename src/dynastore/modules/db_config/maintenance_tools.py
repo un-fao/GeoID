@@ -394,27 +394,25 @@ async def ensure_global_cron_cleanup(
     CREATE OR REPLACE FUNCTION platform.cleanup_orphaned_cron_jobs() RETURNS void AS $$
     DECLARE
         job_rec RECORD;
-        parts TEXT[];
         target_schema TEXT;
         schema_exists BOOLEAN;
     BEGIN
         FOR job_rec IN SELECT jobid, jobname FROM cron.job LOOP
-            -- Try to parse 'prune_[schema]_[table]' or 'partcreate_[schema]_[table]'
-            -- We look for jobs starting with 'prune_' or 'partcreate_'
-            IF job_rec.jobname LIKE 'prune_%' OR job_rec.jobname LIKE 'partcreate_%' THEN
-                parts := string_to_array(job_rec.jobname, '_');
-                -- Assuming format: prune_schemaname_tablename...
-                -- Minimum parts: prune, schema, table (3 parts)
-                IF array_length(parts, 1) >= 3 THEN
-                    target_schema := parts[2];
-                    
-                    -- Check if schema exists
-                    SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname = target_schema) INTO schema_exists;
-                    
-                    IF NOT schema_exists THEN
-                        RAISE NOTICE 'Removing orphaned cron job % (Schema % not found)', job_rec.jobname, target_schema;
-                        PERFORM cron.unschedule(job_rec.jobid);
-                    END IF;
+            -- Extract tenant schema name (s_ + 8 base36 chars) from anywhere in the job name.
+            -- Tenant cron jobs use formats like:
+            --   prune_s_abc12345_access_logs
+            --   partcreate_s_abc12345_stats_aggregates
+            --   monthly_cleanup_logs_s_abc12345
+            --   archive_catalog_events_s_abc12345
+            -- Expanded [0-9a-z] x8 avoids {8} which clashes with TemplateQueryBuilder
+            target_schema := (regexp_match(job_rec.jobname, '(^|_)(s_[0-9a-z][0-9a-z][0-9a-z][0-9a-z][0-9a-z][0-9a-z][0-9a-z][0-9a-z])(_|$)'))[2];
+
+            IF target_schema IS NOT NULL THEN
+                SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname = target_schema) INTO schema_exists;
+
+                IF NOT schema_exists THEN
+                    RAISE NOTICE 'Removing orphaned cron job % (schema % gone)', job_rec.jobname, target_schema;
+                    PERFORM cron.unschedule(job_rec.jobid);
                 END IF;
             END IF;
         END LOOP;
@@ -433,9 +431,11 @@ async def ensure_global_cron_cleanup(
     SELECT cron.schedule('{job_name}', '{schedule_cron}', $CMD$SELECT platform.{func_name}()$CMD$);
     """
 
+    # Always execute: CREATE OR REPLACE FUNCTION must run to update the function
+    # body if it changed. The cron.schedule() call inside uses IF EXISTS + unschedule
+    # to handle idempotency.
     await DDLQuery(
         cleanup_ddl,
-        check_query=check_cleanup_job_exists,
         lock_key=f"global_cleanup_{job_name}",
     ).execute(conn)
     logger.info("Registered global orphaned cron job cleanup task.")

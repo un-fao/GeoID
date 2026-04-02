@@ -23,8 +23,8 @@ async def test_stats_driver_flush_optional_conn(task_app_state, db_reset_session
         await CREATE_ACCESS_LOGS_TABLE.execute(conn, schema="catalog")
         await CREATE_AGGREGATES_TABLE.execute(conn, schema="catalog")
 
-    from uuid import uuid4
-    test_path = f"/test/stats/{uuid4().hex[:8]}"
+    from dynastore.tools.identifiers import generate_id_hex
+    test_path = f"/test/stats/{generate_id_hex()[:8]}"
 
     # 1. Create a dummy record
     record = AccessRecord(

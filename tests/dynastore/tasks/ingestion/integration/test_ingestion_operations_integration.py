@@ -3,7 +3,7 @@ import os
 import asyncio
 import logging
 from unittest.mock import MagicMock, patch, AsyncMock
-from uuid import uuid4
+from dynastore.tools.identifiers import generate_task_id
 from sqlalchemy import text
 
 # Use the correct models for catalog
@@ -87,7 +87,7 @@ async def test_operation_sequential_execution(task_app_state, test_data_loader, 
         async def post_op(self, **kwargs): pass
 
     payload = TaskPayload(
-        task_id=uuid4(),
+        task_id=generate_task_id(),
         caller_id="test_user",
         inputs=ExecuteRequest(
             inputs={

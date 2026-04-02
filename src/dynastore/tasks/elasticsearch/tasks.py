@@ -44,7 +44,7 @@ class ElasticsearchIndexTask(TaskProtocol):
         response = await es.index(
             index=index_name,
             id=inputs.entity_id,
-            document=inputs.payload
+            body=inputs.payload
         )
 
         logger.debug(f"Elasticsearch indexing response: {response}")

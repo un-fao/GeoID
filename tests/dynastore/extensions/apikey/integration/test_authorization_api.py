@@ -22,7 +22,7 @@ import pytest
 import pytest_asyncio
 from types import SimpleNamespace
 from httpx import AsyncClient
-from uuid import uuid4
+from dynastore.tools.identifiers import generate_id_hex, generate_uuidv7
 
 import logging
 from dynastore.tools.discovery import get_protocol
@@ -39,8 +39,8 @@ async def created_user_email(sysadmin_in_process_client: AsyncClient) -> str:
     storage = apikey_protocol.storage
     assert storage is not None
 
-    email = f"test_{uuid4().hex[:12]}@example.com"
-    username = f"user_{uuid4().hex[:8]}"
+    email = f"test_{generate_id_hex()[:12]}@example.com"
+    username = f"user_{generate_id_hex()[:8]}"
 
     logger.info(f"Fixture creating user {username} ({email}) in 'users' schema")
 
@@ -48,7 +48,7 @@ async def created_user_email(sysadmin_in_process_client: AsyncClient) -> str:
     # await storage.initialize(conn=None, schema="users")
 
     user = await storage.create_local_user(
-        user_id=uuid4(),
+        user_id=generate_uuidv7(),
         username=username,
         email=email,
         password_hash="test",
@@ -66,7 +66,7 @@ async def created_user_email(sysadmin_in_process_client: AsyncClient) -> str:
 @pytest_asyncio.fixture(scope="function")
 async def setup_catalogs(sysadmin_in_process_client: AsyncClient):
     """Ensure test catalogs exist for the class, cleaned up after use."""
-    catalog_ids = [f"cat_{uuid4().hex[:8]}", f"cat_{uuid4().hex[:8]}"]
+    catalog_ids = [f"cat_{generate_id_hex()[:8]}", f"cat_{generate_id_hex()[:8]}"]
     for catalog_id in catalog_ids:
         payload = {
             "id": catalog_id,
@@ -334,7 +334,7 @@ async def admin_token(
     sysadmin_in_process_client: AsyncClient, in_process_client: AsyncClient
 ):
     """Creates a test principal with admin role, an API key, and returns a JWT token."""
-    subj_id = f"int_admin_user_{uuid4().hex[:8]}"
+    subj_id = f"int_admin_user_{generate_id_hex()[:8]}"
     principal_payload = {
         "provider": "local",
         "subject_id": subj_id,
@@ -376,7 +376,7 @@ async def user_token(
     sysadmin_in_process_client: AsyncClient, in_process_client: AsyncClient
 ):
     """Creates a test principal with no special roles, an API key, and returns a JWT token."""
-    subj_id = f"int_user_{uuid4().hex[:8]}"
+    subj_id = f"int_user_{generate_id_hex()[:8]}"
     principal_payload = {
         "provider": "local",
         "subject_id": subj_id,
@@ -639,7 +639,7 @@ async def user_token(
 # @pytest_asyncio.fixture
 # async def admin_token(sysadmin_in_process_client: AsyncClient, in_process_client: AsyncClient):
 #     """Creates a test principal with admin role, an API key, and returns a JWT token."""
-#     subj_id = f"int_admin_user_{uuid4().hex[:8]}"
+#     subj_id = f"int_admin_user_{generate_id_hex()[:8]}"
 #     principal_payload = {
 #         "provider": "local",
 #         "subject_id": subj_id,
@@ -671,7 +671,7 @@ async def user_token(
 # @pytest_asyncio.fixture
 # async def user_token(sysadmin_in_process_client: AsyncClient, in_process_client: AsyncClient):
 #     """Creates a test principal with no special roles, an API key, and returns a JWT token."""
-#     subj_id = f"int_user_{uuid4().hex[:8]}"
+#     subj_id = f"int_user_{generate_id_hex()[:8]}"
 #     principal_payload = {
 #         "provider": "local",
 #         "subject_id": subj_id,

@@ -1,5 +1,5 @@
 import pytest
-import uuid
+from dynastore.tools.identifiers import generate_geoid, generate_id_hex
 
 # --- Test Data Fixtures ---
 
@@ -7,19 +7,19 @@ import uuid
 @pytest.fixture
 def catalog_id():
     """Generate a unique catalog ID for testing."""
-    return f"cat_{uuid.uuid4().hex}"
+    return f"cat_{generate_id_hex()}"
 
 
 @pytest.fixture
 def collection_id():
     """Generate a unique collection ID for testing."""
-    return f"coll_{uuid.uuid4().hex}"
+    return f"coll_{generate_id_hex()}"
 
 
 @pytest.fixture
 def item_id():
     """Generate a unique item ID for testing."""
-    return f"item_{uuid.uuid4().hex}"
+    return generate_geoid()
 
 
 @pytest.fixture

@@ -240,6 +240,9 @@ class CatalogModule(ModuleProtocol):
                 # Centralized system-level maintenance initialization
                 await initialize_system_logs(conn)
 
+                from dynastore.modules.db_config.maintenance_tools import ensure_global_cron_cleanup
+                await ensure_global_cron_cleanup(conn)
+
                 await DDLQuery(CATALOGS_TABLE_DDL + SHARED_PROPERTIES_SCHEMA).execute(conn)
 
                 # Ensure stored procedures (replacing init.sql)

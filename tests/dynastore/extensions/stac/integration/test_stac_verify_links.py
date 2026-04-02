@@ -1,6 +1,6 @@
 import pytest
-import uuid
 from fastapi import status
+from dynastore.tools.identifiers import generate_id_hex
 
 # asyncio_mode=auto in pytest.ini handles async test discovery
 
@@ -13,7 +13,7 @@ async def test_stac_link_verification_scenario(sysadmin_in_process_client):
     client = sysadmin_in_process_client
 
     # --- Step 1: Create Catalog ---
-    cat_id = f"aa_cat_verify_{uuid.uuid4().hex[:8]}"
+    cat_id = f"aa_cat_verify_{generate_id_hex()[:8]}"
     create_res = await client.post(
         "/stac/catalogs",
         json={
@@ -55,7 +55,7 @@ async def test_stac_link_verification_scenario(sysadmin_in_process_client):
     assert cat_single.get("foo") == "bar"
 
     # --- Step 4: Create Collection ---
-    col_id = f"col_verify_{uuid.uuid4().hex[:8]}"
+    col_id = f"col_verify_{generate_id_hex()[:8]}"
     create_col = await client.post(
         f"/stac/catalogs/{cat_id}/collections",
         json={

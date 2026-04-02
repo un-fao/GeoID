@@ -1,7 +1,7 @@
 import pytest
 import os
 from sqlalchemy import text
-from uuid import uuid4
+from dynastore.tools.identifiers import generate_task_id, generate_id_hex
 from dynastore.tasks.ingestion.ingestion_task import IngestionTask
 from dynastore.modules.tasks.models import TaskPayload
 from dynastore.modules.processes.models import ExecuteRequest
@@ -15,8 +15,8 @@ async def test_geojson_ingestion_with_lang_en(task_app_state, test_data_loader, 
     Reproduction test for GeoJSON ingestion with lang='en'.
     This should not fail with ValueError: Conflicting language parameters.
     """
-    catalog_id = f"cat_lang_{data_id}_{uuid4().hex[:6]}"
-    collection_id = f"test_lang_en_{uuid4().hex[:6]}"
+    catalog_id = f"cat_lang_{data_id}_{generate_id_hex()[:6]}"
+    collection_id = f"test_lang_en_{generate_id_hex()[:6]}"
 
     # Minimal GeoJSON snippet
     geojson_content = '{"type": "Feature","geometry": {"type": "Point","coordinates": [125.6, 10.1]},"properties": {"name": "Dinagat Islands"}}'
@@ -37,7 +37,7 @@ async def test_geojson_ingestion_with_lang_en(task_app_state, test_data_loader, 
         # Prepare Task with explicit lang='en'
         task = IngestionTask(task_app_state)
         payload = TaskPayload(
-            task_id=uuid4(),
+            task_id=generate_task_id(),
             caller_id="test_user",
             inputs=ExecuteRequest(
                 inputs={

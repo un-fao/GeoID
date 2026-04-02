@@ -1,5 +1,5 @@
 import pytest
-from uuid import uuid4
+from dynastore.tools.identifiers import generate_id_hex
 from dynastore.modules.db_config.query_executor import managed_transaction
 from dynastore.modules.catalog.config_service import (
     ConfigService,
@@ -21,7 +21,7 @@ async def test_hierarchical_config_cache_invalidation(app_lifespan, data_id):
     invalidates/updates the effective configuration seen at the collection level.
     """
     catalog_id = f"cat_cache_{data_id}"
-    collection_id = f"coll_cache_{uuid4().hex[:8]}"
+    collection_id = f"coll_cache_{generate_id_hex()[:8]}"
     plugin_id = "tiles"
     
     from dynastore.tools.discovery import get_protocol

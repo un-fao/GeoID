@@ -1,5 +1,5 @@
 import pytest
-import uuid
+from dynastore.tools.identifiers import generate_id_hex
 
 
 @pytest.mark.asyncio
@@ -14,7 +14,7 @@ async def test_virtual_stac_endpoints(in_process_client, test_data_loader, base_
     """
     Integration test for STAC Virtual View and Source Tracking using STAC API inputs.
     """
-    run_id = str(uuid.uuid4())[:8]
+    run_id = generate_id_hex()[:8]
     catalog_id = f"cat_{run_id}"
     collection_id = f"col_{run_id}"
     asset_id = f"test_asset_{run_id}"

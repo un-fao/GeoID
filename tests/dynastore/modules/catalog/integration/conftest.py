@@ -1,6 +1,6 @@
 import pytest
-import uuid
 import os
+from dynastore.tools.identifiers import generate_id_hex
 
 @pytest.fixture
 def dynastore_extensions():
@@ -9,11 +9,11 @@ def dynastore_extensions():
 
 @pytest.fixture
 def catalog_id():
-    return f"cat_{uuid.uuid4().hex}"
+    return f"cat_{generate_id_hex()}"
 
 @pytest.fixture
 def collection_id():
-    return f"coll_{uuid.uuid4().hex}"
+    return f"coll_{generate_id_hex()}"
 
 @pytest.fixture
 def catalog_data(catalog_id):

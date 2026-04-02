@@ -2,6 +2,8 @@ import pytest
 import pytest_asyncio
 import os
 import asyncio
+import uuid
+from dynastore.tools.identifiers import generate_geoid, generate_id_hex, generate_task_id
 
 # Must configure testing environment variables before ANY Pydantic models are imported!
 os.environ["DYNASTORE_QUEUE_POLL_INTERVAL"] = "0.5"
@@ -58,27 +60,27 @@ async def db_cleanup():
 
 
 @pytest.fixture
-def catalog_id():
+def catalog_id() -> str:
     """Generates a unique catalog ID."""
-    import uuid
-
-    return f"it_{uuid.uuid4().hex}"
+    return f"it_{generate_id_hex()}"
 
 
 @pytest.fixture
-def collection_id():
+def collection_id() -> str:
     """Generates a unique collection ID."""
-    import uuid
-
-    return f"col_{uuid.uuid4().hex}"
+    return f"col_{generate_id_hex()}"
 
 
 @pytest.fixture
-def item_id():
-    """Generates a unique item ID (must be UUID for geoid queries)."""
-    import uuid
+def item_id() -> str:
+    """Generates a unique item ID (UUIDv7 string, matching server-side geoid format)."""
+    return generate_geoid()
 
-    return str(uuid.uuid4())
+
+@pytest.fixture
+def task_id() -> uuid.UUID:
+    """Generates a unique task ID (UUIDv7)."""
+    return generate_task_id()
 
 
 @pytest.fixture

@@ -1,6 +1,6 @@
 import pytest
 from httpx import AsyncClient
-from uuid import uuid4
+from dynastore.tools.identifiers import generate_id_hex
 
 @pytest.mark.asyncio
 @pytest.mark.enable_modules("db_config", "db", "catalog", "tiles")
@@ -10,7 +10,7 @@ async def test_tiles_with_non_existent_collection(in_process_client: AsyncClient
     Reproduces the TypeError: object Response can't be used in 'await' expression
     by requesting a tile for a non-existent collection.
     """
-    catalog_id = f"c_{uuid4().hex[:8]}"
+    catalog_id = f"c_{generate_id_hex()[:8]}"
     
     # Create the catalog first
     await in_process_client.post(

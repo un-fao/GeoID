@@ -3,7 +3,7 @@ converted to Pydantic models for all task types, including those that
 inherit from Protocol-based generics (ProcessTaskProtocol)."""
 
 import pytest
-from uuid import uuid4
+from dynastore.tools.identifiers import generate_task_id
 
 from dynastore.tasks import hydrate_task_payload
 from dynastore.tasks.tiles_preseed.task import TilePreseedTask
@@ -26,7 +26,7 @@ from dynastore.tasks.gcp.gcp_catalog_cleanup_task import (
 
 def _make_raw_payload(inputs: dict) -> dict:
     return {
-        "task_id": str(uuid4()),
+        "task_id": str(generate_task_id()),
         "caller_id": "test",
         "inputs": inputs,
     }

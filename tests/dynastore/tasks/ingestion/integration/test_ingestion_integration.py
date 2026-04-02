@@ -19,7 +19,7 @@
 import pytest
 import os
 from sqlalchemy import text
-from uuid import uuid4
+from dynastore.tools.identifiers import generate_task_id, generate_id_hex
 from dynastore.tasks.ingestion.ingestion_task import IngestionTask
 from dynastore.modules.tasks.models import TaskPayload
 from dynastore.modules.processes.models import ExecuteRequest
@@ -135,7 +135,7 @@ async def test_geojson_ingestion(task_app_state, test_data_loader, data_id):
     task = IngestionTask(task_app_state)
 
     payload = TaskPayload(
-        task_id=uuid4(),
+        task_id=generate_task_id(),
         caller_id="test_user",
         inputs=ExecuteRequest(
             inputs={
@@ -279,7 +279,7 @@ async def test_csv_ingestion(task_app_state, test_data_loader, data_id):
     task = IngestionTask(task_app_state)
 
     payload = TaskPayload(
-        task_id=uuid4(),
+        task_id=generate_task_id(),
         caller_id="test_user",
         inputs=ExecuteRequest(
             inputs={
@@ -335,8 +335,8 @@ async def test_csv_pointz_ingestion(task_app_state, test_data_loader, data_id):
     """
     Integration test for CSV ingestion with PointZ support.
     """
-    catalog_id = f"cat_csvz_{uuid4().hex}"
-    collection_id = f"test_points_csvz_{uuid4().hex}"
+    catalog_id = f"cat_csvz_{generate_id_hex()}"
+    collection_id = f"test_points_csvz_{generate_id_hex()}"
 
     csv_path = os.path.join(os.path.dirname(__file__), "data", "points_z.csv")
 
@@ -398,7 +398,7 @@ async def test_csv_pointz_ingestion(task_app_state, test_data_loader, data_id):
     # 2. Prepare Task
     task = IngestionTask(task_app_state)
     payload = TaskPayload(
-        task_id=uuid4(),
+        task_id=generate_task_id(),
         caller_id="test_user",
         inputs=ExecuteRequest(
             inputs={

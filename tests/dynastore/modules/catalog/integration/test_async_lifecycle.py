@@ -1,4 +1,5 @@
 import pytest
+from dynastore.tools.identifiers import generate_id_hex
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.catalog.models import Catalog
@@ -40,7 +41,7 @@ async def test_create_catalog_triggers_async_init(app_lifespan, tracker):
     """
     import uuid
 
-    catalog_id = f"test_async_init_{uuid.uuid4().hex[:8]}"
+    catalog_id = f"test_async_init_{generate_id_hex()[:8]}"
 
     catalogs = get_protocol(CatalogsProtocol)
     cat = Catalog(id=catalog_id, title={"en": "Test Async Init"})
@@ -63,7 +64,7 @@ async def test_hard_delete_catalog_triggers_async_destroy(app_lifespan, tracker)
     """
     import uuid
 
-    catalog_id = f"test_async_dest_{uuid.uuid4().hex[:8]}"
+    catalog_id = f"test_async_dest_{generate_id_hex()[:8]}"
 
     catalogs = get_protocol(CatalogsProtocol)
     # Setup: Create catalog first

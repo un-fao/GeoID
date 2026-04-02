@@ -26,14 +26,14 @@ Tests validate:
 
 import pytest
 import json
-from uuid import uuid4
+from dynastore.tools.identifiers import generate_id_hex
 from dynastore.models.shared_models import Catalog, Collection, LocalizedText, LocalizedKeywords
 
 
 @pytest.mark.asyncio
 async def test_create_catalog_with_string_localization(sysadmin_in_process_client, db_engine, db_cleanup):
     """Test creating a catalog with simple string values that get localized to 'en'."""
-    catalog_id = f"cat_lang_{uuid4().hex[:8]}"
+    catalog_id = f"cat_lang_{generate_id_hex()[:8]}"
     payload = {
         "id": catalog_id,
         "description": "A test catalog in English"
@@ -56,7 +56,7 @@ async def test_create_catalog_with_string_localization(sysadmin_in_process_clien
 @pytest.mark.asyncio
 async def test_create_catalog_with_multilanguage_dict(sysadmin_in_process_client):
     """Test creating a catalog with explicit multi-language dictionary."""
-    catalog_id = f"cat_lang_multi_{uuid4().hex[:8]}"
+    catalog_id = f"cat_lang_multi_{generate_id_hex()[:8]}"
     payload = {
         "id": catalog_id,
         "description": {
@@ -81,7 +81,7 @@ async def test_create_catalog_with_multilanguage_dict(sysadmin_in_process_client
 @pytest.mark.asyncio
 async def test_get_catalog_with_language_resolution(sysadmin_in_process_client):
     """Test retrieving catalog with language-specific content resolution."""
-    catalog_id = f"cat_lang_res_{uuid4().hex[:8]}"
+    catalog_id = f"cat_lang_res_{generate_id_hex()[:8]}"
     # First create a multi-language catalog
     payload = {
         "id": catalog_id,
@@ -136,7 +136,7 @@ async def test_get_catalog_with_language_resolution(sysadmin_in_process_client):
 @pytest.mark.asyncio
 async def test_language_metadata_injection(sysadmin_in_process_client):
     """Test that language and languages metadata fields are injected."""
-    catalog_id = f"cat_lang_meta_{uuid4().hex[:8]}"
+    catalog_id = f"cat_lang_meta_{generate_id_hex()[:8]}"
     payload = {
         "id": catalog_id,
         "description": {
@@ -173,7 +173,7 @@ async def test_language_metadata_injection(sysadmin_in_process_client):
 @pytest.mark.asyncio
 async def test_partial_language_update(sysadmin_in_process_client):
     """Test partial updates that merge new language data without overwriting others."""
-    catalog_id = f"cat_lang_partial_{uuid4().hex[:8]}"
+    catalog_id = f"cat_lang_partial_{generate_id_hex()[:8]}"
     # Create initial catalog
     payload = {
         "id": catalog_id,
@@ -218,7 +218,7 @@ async def test_partial_language_update(sysadmin_in_process_client):
 @pytest.mark.asyncio
 async def test_language_deletion_with_full_replacement(sysadmin_in_process_client):
     """Test that PUT with lang=* performs full replacement, allowing language deletion."""
-    catalog_id = f"cat_lang_del_{uuid4().hex[:8]}"
+    catalog_id = f"cat_lang_del_{generate_id_hex()[:8]}"
     # Create initial catalog
     payload = {
         "id": catalog_id,
@@ -267,7 +267,7 @@ async def test_language_deletion_with_full_replacement(sysadmin_in_process_clien
 @pytest.mark.asyncio
 async def test_collection_language_support(sysadmin_in_process_client):
     """Test that Collections also support STAC Language Extension."""
-    catalog_id = f"cat_coll_lang_{uuid4().hex[:8]}"
+    catalog_id = f"cat_coll_lang_{generate_id_hex()[:8]}"
     # First create a catalog
     catalog_payload = {
         "id": catalog_id,
@@ -313,7 +313,7 @@ async def test_collection_language_support(sysadmin_in_process_client):
 @pytest.mark.asyncio
 async def test_keywords_language_support(sysadmin_in_process_client):
     """Test that keywords also support multilingual content."""
-    catalog_id = f"cat_kw_lang_{uuid4().hex[:8]}"
+    catalog_id = f"cat_kw_lang_{generate_id_hex()[:8]}"
     payload = {
         "id": catalog_id,
         "description": "Test keywords localization",
@@ -345,7 +345,7 @@ async def test_keywords_language_support(sysadmin_in_process_client):
 @pytest.mark.asyncio
 async def test_license_language_support(sysadmin_in_process_client):
     """Test that license information can be localized."""
-    catalog_id = f"cat_lic_lang_{uuid4().hex[:8]}"
+    catalog_id = f"cat_lic_lang_{generate_id_hex()[:8]}"
     payload = {
         "id": catalog_id,
         "description": "Test license localization",
@@ -380,7 +380,7 @@ async def test_license_language_support(sysadmin_in_process_client):
 @pytest.mark.asyncio
 async def test_language_fallback_resolution(sysadmin_in_process_client):
     """Test that language resolution falls back correctly when exact match not found."""
-    catalog_id = f"cat_fall_lang_{uuid4().hex[:8]}"
+    catalog_id = f"cat_fall_lang_{generate_id_hex()[:8]}"
     payload = {
         "id": catalog_id,
         "description": {
@@ -412,7 +412,7 @@ async def test_language_fallback_resolution(sysadmin_in_process_client):
 @pytest.mark.asyncio
 async def test_stac_extensions_includes_language_extension(sysadmin_in_process_client):
     """Test that STAC Extensions list includes the Language Extension URI."""
-    catalog_id = f"cat_ext_lang_{uuid4().hex[:8]}"
+    catalog_id = f"cat_ext_lang_{generate_id_hex()[:8]}"
     payload = {
         "id": catalog_id,
         "description": {

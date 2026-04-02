@@ -1,11 +1,11 @@
 import pytest
-import uuid
+from dynastore.tools.identifiers import generate_id_hex
 
 
 @pytest.fixture
 def catalog_id(data_id):
     # Use unique ID per test to avoid partition overlapping issues during rapid create/delete
-    return f"cat_{uuid.uuid4().hex}"
+    return f"cat_{generate_id_hex()}"
 
 
 @pytest.fixture

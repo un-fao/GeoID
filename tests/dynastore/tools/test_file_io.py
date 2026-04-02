@@ -1,6 +1,6 @@
 
 import pytest
-from uuid import uuid4
+from dynastore.tools.identifiers import generate_uuidv7
 from shapely.geometry import Point
 from shapely import wkb
 from dynastore.tools.file_io import _process_records_for_writing
@@ -11,7 +11,7 @@ def test_process_records_for_writing_with_dict():
     geom = Point(0, 0)
     records = [
         {
-            "geoid": uuid4(),
+            "geoid": generate_uuidv7(),
             "attributes": {"attr1": "val1"},
             "geom": wkb.dumps(geom),
             "external_id": "ext-1"
@@ -28,7 +28,7 @@ def test_process_records_for_writing_with_dict():
 
 def test_process_records_for_writing_with_pydantic():
     """Test _process_records_for_writing with a Pydantic model."""
-    geoid = uuid4()
+    geoid = generate_uuidv7()
     geom = Point(1, 1)
     feature = Feature(
         geoid=geoid,
@@ -53,7 +53,7 @@ def test_write_shapefile_with_dict():
     geom = Point(0, 0)
     records = [
         {
-            "geoid": uuid4(),
+            "geoid": generate_uuidv7(),
             "attributes": {"attr1": "val1"},
             "geom": wkb.dumps(geom),
             "external_id": "ext-1"

@@ -1,7 +1,7 @@
 
 import pytest
 import asyncio
-from uuid import uuid4
+from dynastore.tools.identifiers import generate_id_hex
 from dynastore.tasks.tiles_preseed.task import TilePreseedTask
 from dynastore.tasks.tiles_preseed.models import TilePreseedRequest
 from dynastore.modules.tasks.models import TaskPayload, TaskStatusEnum, TaskCreate
@@ -21,8 +21,8 @@ async def test_tile_preseed_task_run_integration(app_lifespan, in_process_client
     Integration test for TilePreseedTask.
     Verifies that tiles are correctly generated and stored in Postgres ('pg' provider).
     """
-    catalog_id = f"cat_preseed_{uuid4().hex[:12]}"
-    collection_id = f"coll_preseed_{uuid4().hex[:12]}"
+    catalog_id = f"cat_preseed_{generate_id_hex()[:12]}"
+    collection_id = f"coll_preseed_{generate_id_hex()[:12]}"
     
     # 1. Setup Catalog and Collection via API
     resp = await in_process_client.post(

@@ -1,6 +1,6 @@
 import pytest
 import os
-from uuid import uuid4
+from dynastore.tools.identifiers import generate_id_hex
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import create_async_engine
 from types import SimpleNamespace
@@ -27,7 +27,7 @@ async def apikey_manager(app_lifespan):
 @pytest.mark.asyncio
 async def test_apikey_v3_features(apikey_manager):
     # 1. Create Principal with Roles
-    test_subject = f"test_{uuid4().hex[:8]}"
+    test_subject = f"test_{generate_id_hex()[:8]}"
     principal = Principal(
         provider="local",
         subject_id=test_subject,
