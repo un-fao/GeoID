@@ -2,8 +2,7 @@ import pytest
 import uuid
 from fastapi import status
 
-# Use the same setup as other integration tests
-pytestmark = pytest.mark.anyio
+# asyncio_mode=auto in pytest.ini handles async test discovery
 
 
 async def test_stac_link_verification_scenario(sysadmin_in_process_client):
