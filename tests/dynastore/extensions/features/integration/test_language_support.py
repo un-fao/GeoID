@@ -22,6 +22,8 @@ Tests validate:
 4. Full multi-language response (lang=*)
 """
 
+import uuid
+
 import pytest
 
 
@@ -51,7 +53,7 @@ async def test_landing_page_respects_language_param(sysadmin_in_process_client):
 @pytest.mark.asyncio
 async def test_create_catalog_with_language_parameter(sysadmin_in_process_client):
     """Test creating a catalog through OGC Features API with language parameter."""
-    catalog_id = "ogc_test_catalog_create"
+    catalog_id = f"ogc_create_{uuid.uuid4().hex[:8]}"
     payload = {
         "id": catalog_id,
         "title": "OGC Test Catalog",
@@ -81,7 +83,7 @@ async def test_create_catalog_with_language_parameter(sysadmin_in_process_client
 async def test_get_catalog_with_language_resolution(in_process_client):
     """Test retrieving catalog with language-specific content."""
     # Create multilingual catalog
-    catalog_id = "ogc_lang_test_resolution"
+    catalog_id = f"ogc_lang_{uuid.uuid4().hex[:8]}"
     payload = {
         "id": catalog_id,
         "title": {"en": "OGC English Title", "fr": "OGC Titre Français"},
@@ -170,7 +172,7 @@ async def test_list_catalogs_with_language(in_process_client):
 @pytest.mark.asyncio
 async def test_create_collection_with_language(in_process_client):
     """Test creating a collection with language support."""
-    catalog_id = "ogc_coll_test_unique"
+    catalog_id = f"ogc_coll_{uuid.uuid4().hex[:8]}"
     collection_id = "ogc_collection_unique_1"
     
     try:
@@ -211,7 +213,7 @@ async def test_create_collection_with_language(in_process_client):
 @pytest.mark.asyncio
 async def test_get_collection_with_language(in_process_client):
     """Test retrieving collection with language parameter."""
-    catalog_id = "ogc_getcoll_test_unique"
+    catalog_id = f"ogc_getcoll_{uuid.uuid4().hex[:8]}"
     collection_id = "test_get_coll_unique"
     
     try:
@@ -256,7 +258,7 @@ async def test_get_collection_with_language(in_process_client):
 @pytest.mark.asyncio
 async def test_update_collection_with_language(in_process_client):
     """Test updating collection and merging language data."""
-    catalog_id = "ogc_update_test_unique"
+    catalog_id = f"ogc_update_{uuid.uuid4().hex[:8]}"
     collection_id = "update_coll_unique"
     
     try:
@@ -298,7 +300,7 @@ async def test_update_collection_with_language(in_process_client):
 @pytest.mark.asyncio
 async def test_queryables_respects_language(in_process_client):
     """Test that queryables endpoint respects language parameter."""
-    catalog_id = "ogc_query_test_unique"
+    catalog_id = f"ogc_query_{uuid.uuid4().hex[:8]}"
     collection_id = "query_coll_unique"
     
     try:

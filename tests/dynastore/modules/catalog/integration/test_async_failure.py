@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 import asyncio
 from dynastore.models.protocols import CatalogsProtocol
@@ -16,7 +18,7 @@ async def test_async_hard_deletion_failure(app_lifespan):
     2. A CATALOG_HARD_DELETION_FAILURE event is emitted.
     """
 
-    catalog_id = "test_async_fail"
+    catalog_id = f"async_fail_{uuid.uuid4().hex[:8]}"
 
     from dynastore.modules.concurrency import await_all_background_tasks
 
@@ -30,8 +32,10 @@ async def test_async_hard_deletion_failure(app_lifespan):
     # Register a failing lifecycle destroyer for the ASYNC phase
     from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
 
+    _expected_catalog_id = catalog_id
+
     async def failing_async_destroyer(catalog_id, context):
-        if catalog_id == "test_async_fail":
+        if catalog_id == _expected_catalog_id:
             logger.info(f"Failing Async Destroyer Triggered for {catalog_id}!")
             raise RuntimeError("Async Cleanup Failed!")
 
@@ -56,7 +60,7 @@ async def test_async_hard_deletion_failure(app_lifespan):
         await await_all_background_tasks()
 
         # The sync listener should have captured the failure event
-        assert "test_async_fail" in failure_events, (
+        assert catalog_id in failure_events, (
             "Should have received a CATALOG_HARD_DELETION_FAILURE event"
         )
     finally:

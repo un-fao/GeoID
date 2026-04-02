@@ -12,6 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
+import uuid
+
 import pytest
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import CatalogsProtocol
@@ -23,7 +25,7 @@ async def test_multilanguage_validation_conflicts(app_lifespan):
     """Tests that providing multilanguage dict with specific lang raises ValueError."""
     catalogs = get_protocol(CatalogsProtocol)
 
-    catalog_id = "test_val_conflict"
+    catalog_id = f"val_conflict_{uuid.uuid4().hex[:8]}"
 
     # Clean up if exists
     await catalogs.delete_catalog(catalog_id, force=True)
@@ -52,7 +54,7 @@ async def test_convenience_methods(app_lifespan):
     """Tests create_catalog_localized and create_catalog_multilanguage."""
     catalogs = get_protocol(CatalogsProtocol)
 
-    catalog_id = "test_conv_methods"
+    catalog_id = f"conv_methods_{uuid.uuid4().hex[:8]}"
     await catalogs.delete_catalog(catalog_id, force=True)
 
     # Localized create
@@ -91,7 +93,7 @@ async def test_language_deletion(app_lifespan):
     print(f"DEBUG: catalogs type: {type(catalogs)}")
     print(f"DEBUG: catalogs dir: {dir(catalogs)}")
 
-    catalog_id = "test_lang_del"
+    catalog_id = f"lang_del_{uuid.uuid4().hex[:8]}"
     await catalogs.delete_catalog(catalog_id, force=True)
 
     await catalogs.create_catalog(

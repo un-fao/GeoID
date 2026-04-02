@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 from typing import Any, Dict, Optional
 from dynastore.models.protocols.catalogs import CatalogsProtocol
@@ -36,8 +38,8 @@ async def test_logical_item_retrieval(app_lifespan):
 
     catalogs_svc: CatalogsProtocol = get_protocol(CatalogsProtocol)
 
-    catalog_id = "test_logical_cat"
-    collection_id = "test_coll"
+    catalog_id = f"logical_cat_{uuid.uuid4().hex[:8]}"
+    collection_id = f"logical_coll_{uuid.uuid4().hex[:8]}"
 
     # Setup
     if await catalogs_svc.get_catalog_model(catalog_id):
