@@ -41,7 +41,11 @@ def orjson_default(obj: Any) -> Any:
     if isinstance(obj, uuid.UUID):
         return str(obj)
     if isinstance(obj, Decimal):
-        return str(obj)
+        # Preserve numeric type in JSON output (not string).
+        # Use int when the value has no fractional part for cleaner output.
+        if obj == obj.to_integral_value():
+            return int(obj)
+        return float(obj)
     if hasattr(obj, "__geo_interface__"):
         return str(obj)
     if isinstance(obj, bytes):
@@ -73,7 +77,7 @@ class CustomJSONEncoder(json.JSONEncoder):
 
     This encoder handles common problematic types:
     - datetime and date objects (converts to ISO 8601 format).
-    - UUID and Decimal objects (converts to string).
+    - UUID objects (converts to string), Decimal objects (converts to int/float).
     - Geospatial objects (like Shapely) with a `__geo_interface__` are
       converted to their string representation (e.g., WKT for Shapely).
     - `bytes` objects are decoded as UTF-8, falling back to hex for binary data.
@@ -87,7 +91,9 @@ class CustomJSONEncoder(json.JSONEncoder):
         if isinstance(o, uuid.UUID):
             return str(o)
         if isinstance(o, Decimal):
-            return str(o)
+            if o == o.to_integral_value():
+                return int(o)
+            return float(o)
         # For geospatial objects that are already Python objects (e.g., Shapely)
         if hasattr(o, "__geo_interface__"):
             return str(o)
