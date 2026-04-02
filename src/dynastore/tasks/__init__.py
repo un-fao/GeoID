@@ -163,13 +163,33 @@ def get_task_instance(name: str) -> TaskProtocol | None:
         logger.error(f"Failed to instantiate task '{name}': {e}")
         return None
 
+def _extract_inputs_type(payload_hint):
+    """Extract the InputsType T from a TaskPayload[T] type annotation.
+
+    ``typing.get_args`` returns ``()`` for Pydantic v2 concrete generics
+    because Pydantic creates real subclasses instead of ``typing`` aliases.
+    Fall back to ``__pydantic_generic_metadata__['args']`` in that case.
+    """
+    from typing import get_args
+    args = get_args(payload_hint)
+    if args:
+        return args[0]
+    # Pydantic v2 concrete generic: TaskPayload[T] is a ModelMetaclass subclass
+    meta = getattr(payload_hint, '__pydantic_generic_metadata__', None)
+    if meta:
+        pydantic_args = meta.get('args', ())
+        if pydantic_args:
+            return pydantic_args[0]
+    return None
+
+
 def hydrate_task_payload(task_instance: TaskProtocol, raw_payload: Dict[str, Any]) -> TaskPayload:
     """
     Hydrates a raw payload dictionary into a strongly-typed TaskPayload instance,
     using the type hints from the task's run method to determine the expected input type.
     """
     import inspect
-    from typing import get_type_hints, get_args
+    from typing import get_type_hints
     from pydantic import BaseModel
 
     # 1. Determine the expected input type from the task's run method
@@ -179,10 +199,7 @@ def hydrate_task_payload(task_instance: TaskProtocol, raw_payload: Dict[str, Any
         hints = get_type_hints(task_instance.run)
         payload_hint = hints.get('payload')
         if payload_hint:
-            # TaskPayload[T] -> get T
-            args = get_args(payload_hint)
-            if args:
-                input_model = args[0]
+            input_model = _extract_inputs_type(payload_hint)
     except Exception as e:
         logger.debug(f"Failed to extract input model for task {task_instance.__class__.__name__}: {e}")
 
