@@ -265,13 +265,23 @@ class FeatureCollectionDefinition(FeatureCollection):
     features: List[FeatureDefinition]
 
 
-from pydantic import RootModel
+from pydantic import Discriminator, Tag
+from typing import Annotated
 
 
-class FeatureOrFeatureCollection(RootModel):
-    """Union wrapper for input handling."""
+def _discriminate_feature_type(v: Any) -> str:
+    if isinstance(v, dict):
+        return v.get("type", "Feature")
+    return getattr(v, "type", "Feature")
 
-    root: Union[FeatureDefinition, FeatureCollectionDefinition]
+
+FeatureOrFeatureCollection = Annotated[
+    Union[
+        Annotated[FeatureDefinition, Tag("Feature")],
+        Annotated[FeatureCollectionDefinition, Tag("FeatureCollection")],
+    ],
+    Discriminator(_discriminate_feature_type),
+]
 
 
 class BulkCreationResponse(BaseModel):

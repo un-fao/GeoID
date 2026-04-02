@@ -259,6 +259,18 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             raise ValueError("No features provided. A FeatureCollection must contain at least one feature.")
 
         async with managed_transaction(db_resource or self.engine) as conn:
+            # Fetch generic collection config (driver-agnostic)
+            collection_config = await get_protocol(ConfigsProtocol).get_config(
+                COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
+            )
+            max_bulk = getattr(collection_config, "max_bulk_features", 10000)
+            if len(items_list) > max_bulk:
+                raise ValueError(
+                    f"FeatureCollection contains {len(items_list)} features, "
+                    f"exceeding the maximum of {max_bulk}. "
+                    f"Split into smaller batches."
+                )
+
             col_config = await get_pg_collection_config(
                 catalog_id, collection_id, db_resource=conn
             )
@@ -356,11 +368,6 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                     await self.ensure_partition_exists(
                         catalog_id, collection_id, col_config, p_val, db_resource=conn
                     )
-
-                # Resolve Generic Identity (from context, populated by sidecars)
-                # Sidecars already populated the context in prepare_upsert_payload.
-                # We no longer need to extract specific fields like 'external_id' here.
-                pass
 
                 # Add partition keys to hub if missing
                 hub_payload.update(partition_values)

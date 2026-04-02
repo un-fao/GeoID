@@ -1135,9 +1135,7 @@ class OGCFeaturesService(ExtensionProtocol):
         self,
         catalog_id: str,
         collection_id: str,
-        payload: Union[
-            ogc_models.FeatureDefinition, ogc_models.FeatureCollectionDefinition
-        ],
+        payload: ogc_models.FeatureOrFeatureCollection,
         request: Request,
         response: Response,
         conn: AsyncConnection = Depends(get_async_connection),
@@ -1160,9 +1158,15 @@ class OGCFeaturesService(ExtensionProtocol):
         # 2. Upsert (Discrimination happens inside ItemService or via payload type)
         # Note: valid payload types here are FeatureDefinition or FeatureCollectionDefinition
 
-        created = await catalogs_svc.upsert(
-            catalog_id, collection_id, items=payload, db_resource=conn
-        )
+        try:
+            created = await catalogs_svc.upsert(
+                catalog_id, collection_id, items=payload, db_resource=conn
+            )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            )
 
         created_rows = created if isinstance(created, list) else [created]
 
@@ -1173,54 +1177,37 @@ class OGCFeaturesService(ExtensionProtocol):
             )
 
         # 4. Return appropriate response
+        def _resolve_feature_id(row: _OGCFeature) -> str:
+            """Resolve the logical ID from an upsert result row."""
+            fid = (
+                row.id
+                or row.properties.get("external_id")
+                or row.properties.get("geoid")
+            )
+            if (
+                not fid
+                and isinstance(row.properties.get("attributes"), dict)
+            ):
+                fid = row.properties["attributes"].get(
+                    "id"
+                ) or row.properties["attributes"].get("external_id")
+            if not fid and row.properties.get("geoid"):
+                fid = row.properties["geoid"]
+            if fid and not isinstance(fid, str):
+                fid = str(fid)
+            if not fid:
+                raise RuntimeError(
+                    f"Could not determine feature ID from upsert result: {row.properties} - Values: {row.id}"
+                )
+            return fid
+
         if (
             isinstance(payload, ogc_models.FeatureDefinition)
             or getattr(payload, "type", None) == "Feature"
         ):
             # Single Feature response
             new_row = cast(_OGCFeature, created_rows[0])
-            # Use 'id' if available (mapped from external_id or asset_id), else fallback to 'geoid'
-            feature_id = (
-                new_row.id
-                or new_row.properties.get("external_id")
-                or new_row.properties.get("geoid")
-            )
-            # Try to get id from attributes if not found
-            if (
-                not feature_id
-                and new_row.properties.get("attributes")
-                and isinstance(new_row.properties.get("attributes"), dict)
-            ):
-                feature_id = new_row.properties["attributes"].get(
-                    "id"
-                ) or new_row.properties["attributes"].get("external_id")
-
-            # Fallback to geoid if external_id is missing (and ID resolution failed)
-            # This handles cases where external_id is enabled but optional/null
-            if not feature_id and new_row.properties.get("geoid"):
-                feature_id = str(new_row.properties.get("geoid"))
-
-            # Last resort: ensure we have something string-like for UUIDs
-            if feature_id and not isinstance(feature_id, str):
-                feature_id = str(feature_id)
-
-            if not feature_id:
-                raise RuntimeError(
-                    f"Could not determine feature ID from upsert result: {new_row.properties} - Values: {new_row.id}"
-                )
-            if not feature_id:
-                # If row has attributes (dict), try to get id from there
-                if new_row.properties.get("attributes") and isinstance(
-                    new_row.properties.get("attributes"), dict
-                ):
-                    feature_id = new_row.properties["attributes"].get("id") or new_row[
-                        "attributes"
-                    ].get("external_id")
-
-            if not feature_id:
-                raise RuntimeError(
-                    f"Could not determine feature ID from upsert result: {new_row.properties}"
-                )
+            feature_id = _resolve_feature_id(new_row)
 
             location_url = f"{root_url}/features/catalogs/{catalog_id}/collections/{collection_id}/items/{feature_id}"
             return JSONResponse(
@@ -1233,11 +1220,7 @@ class OGCFeaturesService(ExtensionProtocol):
         else:
             # Bulk response
             created_ids = [
-                str(
-                    cast(_OGCFeature, row).id
-                    or cast(_OGCFeature, row).properties.get("external_id")
-                    or cast(_OGCFeature, row).properties.get("geoid")
-                )
+                _resolve_feature_id(cast(_OGCFeature, row))
                 for row in created_rows
             ]
             return JSONResponse(

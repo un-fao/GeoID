@@ -89,5 +89,10 @@ class CollectionPluginConfig(PluginConfig):
 
     model_config = {"extra": "allow"}
 
+    max_bulk_features: int = Field(
+        default=10000,
+        description="Maximum number of features allowed in a single bulk insert.",
+    )
+
 
 CollectionPluginConfig.model_rebuild()

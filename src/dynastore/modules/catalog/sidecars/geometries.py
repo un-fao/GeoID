@@ -1062,11 +1062,11 @@ class GeometriesSidecar(SidecarProtocol):
             if not geometry:
                 raise ValueError("Feature must have a geometry")
 
-            logger.warning(f"GeometrySidecar Input Geom: {geometry}")
+            logger.debug(f"GeometrySidecar Input Geom: {geometry}")
             geom_data = self.prepare_geometry_for_upsert(
                 geometry, source_srid=source_srid
             )
-            logger.warning(
+            logger.debug(
                 f"GeometrySidecar Processed WKB: {geom_data['wkb_hex_processed']}"
             )
             shapely_geom = geom_data.get("shapely_geom")
