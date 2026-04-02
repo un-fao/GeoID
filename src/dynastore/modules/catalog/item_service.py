@@ -413,9 +413,9 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         # ── Post-commit: emit events ──────────────────────────────────
         if results:
             try:
-                from dynastore.models.protocols.events import EventsProtocol
+                from dynastore.models.protocols.event_bus import EventBusProtocol
                 from dynastore.modules.catalog.event_service import CatalogEventType
-                events_protocol = get_protocol(EventsProtocol)
+                events_protocol = get_protocol(EventBusProtocol)
                 if events_protocol:
                     if is_single:
                         await events_protocol.emit(

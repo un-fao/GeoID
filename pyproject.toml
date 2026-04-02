@@ -80,6 +80,7 @@ extension_wfs = ["dynastore[extension_base,geospatial_core]"]
 extension_admin = ["dynastore[extension_base,extension_apikey]"]
 extension_assets = ["dynastore[extension_base]"]
 extension_notebooks = ["dynastore[extension_base,module_notebooks]"]
+extension_records = ["dynastore[extension_base]"]
 extension_search = ["dynastore[extension_base]"]
 extension_gcp_bucket = ["dynastore[extension_base,module_gcp]"]
 extension_geoid = ["dynastore[extension_base,extension_web]", "user-agents>=2.2.0"]
@@ -155,7 +156,7 @@ db_sync = ["dynastore[db_config,datastore]"]
 # DOMAIN GROUPS — major functional areas, composable independently
 #
 #   0. core         — async DB, web framework, system config & events
-#   1. catalog_grp  — data catalog, features, STAC, assets, search
+#   1. catalog_grp  — data catalog, features, STAC, assets, search, records
 #   2. maps_grp     — rendering: WFS, tiles, CRS, styles, maps
 #   3. google_grp   — GCP storage, BigQuery DWH
 #   4. auth_grp     — apikey + auth + admin  (always the LAST wrapper)
@@ -166,7 +167,7 @@ db_sync = ["dynastore[db_config,datastore]"]
 #
 # ==========================================================================
 core = ["dynastore[db_async,web,configs,events,storage]"]
-catalog_grp = ["dynastore[geospatial_core,catalog,features,stac,assets,search]"]
+catalog_grp = ["dynastore[geospatial_core,catalog,features,stac,assets,search,extension_records]"]
 maps_grp = ["dynastore[styles,maps,extension_wfs,tiles,crs,gdal]"]
 google_grp = ["dynastore[gcp,extension_dwh]"]
 auth_grp = ["dynastore[apikey,auth,extension_admin]"]
@@ -195,7 +196,7 @@ task_gdal_job = ["dynastore[task_base,gdal]"]
 #   ├──────────────────────────────────────────────────────────┤
 #   │  core        = db_async + web + configs + events         │
 #   │  catalog_grp = geospatial + catalog + features + stac    │
-#   │               + assets + search                          │
+#   │               + assets + search + records                │
 #   │  maps_grp    = styles + maps + wfs + tiles + crs + gdal  │
 #   │  google_grp  = gcp + dwh                                 │
 #   │  tools_grp   = httpx + template                          │

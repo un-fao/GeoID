@@ -367,9 +367,9 @@ class ItemQueryMixin:
                 await recalculate_and_update_extents(conn, catalog_id, collection_id)
 
                 try:
-                    from dynastore.models.protocols.events import EventsProtocol
+                    from dynastore.models.protocols.event_bus import EventBusProtocol
                     from dynastore.modules.catalog.event_service import CatalogEventType
-                    events_protocol = get_protocol(EventsProtocol)
+                    events_protocol = get_protocol(EventBusProtocol)
                     if events_protocol:
                         await events_protocol.emit(
                             event_type=CatalogEventType.ITEM_DELETION,

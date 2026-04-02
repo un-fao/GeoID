@@ -556,7 +556,7 @@ class ElasticsearchModule(ModuleProtocol):
                 collection_id=collection_id,
                 item_id=item_id,
                 payload=doc,
-            ).model_dump(),
+            ).model_dump(mode="json"),
         )
 
     async def _on_item_bulk_upsert(

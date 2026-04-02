@@ -17,7 +17,9 @@ Mode values:
   "catalog"    — write to the normal items index; skips collections with search_index=False
 """
 
+import json
 import logging
+from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel
@@ -26,6 +28,14 @@ from dynastore.tasks.protocols import TaskProtocol
 from dynastore.modules.tasks.models import TaskPayload
 
 logger = logging.getLogger(__name__)
+
+
+def _json_default(obj: Any) -> Any:
+    """Fallback serializer for Decimal and other non-JSON types."""
+    if isinstance(obj, Decimal):
+        return float(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
 
 # ---------------------------------------------------------------------------
 # Input models
@@ -119,13 +129,13 @@ async def _reindex_collection(
     offset = 0
 
     while True:
-        features = await catalogs_proto.get_features(
-            catalogs_proto,   # conn: ItemsProtocol impls accept self as the resource
+        result = await catalogs_proto.search(
             catalog_id,
             collection_id,
             limit=page_size,
             offset=offset,
         )
+        features = result.get("features", [])
         if not features:
             break
 
@@ -146,15 +156,15 @@ async def _reindex_collection(
                 }
             else:
                 index_name = stac_index
-                doc = (
-                    feature.model_dump(by_alias=True, exclude_none=True)
-                    if hasattr(feature, "model_dump")
-                    else dict(feature)
-                )
+                if hasattr(feature, "model_dump"):
+                    doc = feature.model_dump(by_alias=True, exclude_none=True, mode="json")
+                else:
+                    doc = json.loads(json.dumps(dict(feature), default=_json_default))
                 doc["catalog_id"] = catalog_id
                 doc["collection_id"] = collection_id
 
-            bulk_body.append({"index": {"_index": index_name, "_id": item_id}})
+            doc_id = f"{catalog_id}:{collection_id}:{item_id}"
+            bulk_body.append({"index": {"_index": index_name, "_id": doc_id}})
             bulk_body.append(doc)
 
         if bulk_body:
