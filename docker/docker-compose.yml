@@ -27,7 +27,7 @@ services:
     container_name: geoid_db
     restart: always
     env_file: .env
-    command: postgres -c max_locks_per_transaction=256 -c shared_preload_libraries='pg_cron' -c cron.database_name='${POSTGRES_DB:-gis_dev}'
+    command: postgres -c max_connections=200 -c max_locks_per_transaction=256 -c shared_preload_libraries='pg_cron' -c cron.database_name='${POSTGRES_DB:-gis_dev}'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
