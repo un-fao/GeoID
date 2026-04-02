@@ -172,6 +172,29 @@ class PostgresCollectionDriverConfig(CollectionDriverConfig):
             return CompositePartitionConfig.model_validate(v)
         return v
 
+    @model_validator(mode="before")
+    @classmethod
+    def strip_geometry_for_records(cls, data: Any) -> Any:
+        """RECORDS collections have no spatial component — strip geometry from defaults.
+
+        Runs before field assignment so the Immutable guard is not violated.
+        Only affects new construction (from dict/defaults); existing DB-loaded
+        RECORDS configs should already lack a geometry sidecar.
+        """
+        if isinstance(data, dict) and data.get("collection_type") == "RECORDS":
+            sidecars = data.get("sidecars")
+            if sidecars and isinstance(sidecars, list):
+                from dynastore.modules.catalog.sidecars.geometries_config import (
+                    GeometriesSidecarConfig,
+                )
+                data["sidecars"] = [
+                    s for s in sidecars if not (
+                        isinstance(s, GeometriesSidecarConfig)
+                        or (isinstance(s, dict) and s.get("sidecar_type") == "geometries")
+                    )
+                ]
+        return data
+
     @model_validator(mode="after")
     def validate_composite_partitioning(self) -> "PostgresCollectionDriverConfig":
         """Validate partition keys are provided by configured sidecars."""

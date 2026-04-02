@@ -102,7 +102,12 @@ class GeometriesSidecar(SidecarProtocol):
 
     @classmethod
     def get_default_config(cls, context: Dict[str, Any]) -> Optional[GeometriesSidecarConfig]:
-        """Auto-inject geometries sidecar by default."""
+        """Auto-inject geometries sidecar by default.
+
+        Skipped for RECORDS collections which have no spatial component.
+        """
+        if context.get("collection_type") == "RECORDS":
+            return None
         return GeometriesSidecarConfig()
 
     @property

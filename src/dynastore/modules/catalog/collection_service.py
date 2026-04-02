@@ -390,11 +390,14 @@ class CollectionService:
 
             # Aggregate context for injection (including kwargs like stac_context)
             injection_context = dict(kwargs)
+            # Resolve effective collection_type (override takes precedence)
+            effective_config = layer_config_override or collection_config
             injection_context.update(
                 {
                     "catalog_id": catalog_id,
                     "collection_id": collection_model.id,
                     "schema": phys_schema,
+                    "collection_type": getattr(effective_config, "collection_type", "VECTOR"),
                 }
             )
 

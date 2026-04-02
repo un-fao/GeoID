@@ -60,6 +60,7 @@ class ConsumerType(str, Enum):
     GENERIC = "generic"
     OGC_FEATURES = "ogc_features"
     STAC = "stac"
+    OGC_RECORDS = "ogc_records"
 
 # Columns that belong to the Hub table and must never appear in Feature.properties,
 # regardless of which sidecar is currently running.

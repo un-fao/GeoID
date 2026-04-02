@@ -347,6 +347,7 @@ notebooks = "dynastore.extensions.notebooks.notebooks_extension:NotebooksExtensi
 stats = "dynastore.extensions.stats.extension:StatsExtension"
 tiles = "dynastore.extensions.tiles.tiles_service:TilesService"
 dimensions = "dynastore.extensions.dimensions.dimensions_extension:DimensionsExtension"
+records = "dynastore.extensions.records.records_service:RecordsService"
 
 [project.entry-points."dynastore.tasks"]
 gdal = "dynastore.tasks.gdal.gdalinfo_task:GdalInfoTask"

@@ -38,6 +38,7 @@ from dynastore.modules.catalog.sidecars.attributes_config import (
 class CollectionTypeEnum(str, Enum):
     VECTOR = "VECTOR"
     RASTER = "RASTER"
+    RECORDS = "RECORDS"
 
 
 # Legacy alias
