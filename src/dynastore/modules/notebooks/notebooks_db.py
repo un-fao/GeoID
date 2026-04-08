@@ -27,10 +27,19 @@ CREATE TABLE IF NOT EXISTS {schema}.notebooks (
 async def init_notebooks_storage(conn: AsyncConnection, schema: str, catalog_id: str):
     """
     Initialize the notebooks storage for a specific tenant schema.
-    This is called by the tenant initialization hook.
+    Called automatically via lifecycle_registry on catalog creation.
     """
-    ddl = NOTEBOOKS_DDL.format(schema=schema)
-    await DDLQuery(ddl).execute(conn)
+    await DDLQuery(NOTEBOOKS_DDL).execute(conn, schema=schema)
+
+
+from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
+from dynastore.modules.db_config.query_executor import DbResource
+
+
+@lifecycle_registry.sync_catalog_initializer
+async def _initialize_notebooks_tenant(conn: DbResource, schema: str, catalog_id: str):
+    """Create notebooks table during catalog provisioning."""
+    await DDLQuery(NOTEBOOKS_DDL).execute(conn, schema=schema)
 
 async def get_notebook(conn: AsyncConnection, schema: str, notebook_id: str) -> Dict[str, Any]:
     """Retrieve a notebook by notebook_id from the specific schema"""
@@ -54,6 +63,16 @@ async def list_notebooks(conn: AsyncConnection, schema: str) -> List[Dict[str, A
         ORDER BY updated_at DESC
     """)
     return await DQLQuery(query, result_handler=ResultHandler.ALL_DICTS).execute(conn)
+
+async def delete_notebook(conn: AsyncConnection, schema: str, notebook_id: str) -> None:
+    """Delete a notebook by notebook_id from the specific schema."""
+    query = text(f"""
+        DELETE FROM {schema}.notebooks WHERE notebook_id = :notebook_id
+    """)
+    result = await conn.execute(query, {"notebook_id": notebook_id})
+    if result.rowcount == 0:
+        raise ResourceNotFoundError(f"Notebook '{notebook_id}' not found")
+
 
 async def save_notebook(conn: AsyncConnection, schema: str, catalog_id: str, notebook: NotebookCreate) -> Dict[str, Any]:
     """Save or update a notebook"""

@@ -132,6 +132,7 @@ storage = ["dynastore[module_storage]"]
 auth = ["dynastore[extension_auth]"]
 template = ["dynastore[extension_template]"]
 dimensions = ["dynastore[extension_dimensions]"]
+notebooks = ["dynastore[extension_notebooks]"]
 
 # ==========================================================================
 # PRIMITIVES
@@ -171,7 +172,7 @@ catalog_grp = ["dynastore[geospatial_core,catalog,features,stac,assets,search,ex
 maps_grp = ["dynastore[styles,maps,extension_wfs,tiles,crs,gdal]"]
 google_grp = ["dynastore[gcp,extension_dwh]"]
 auth_grp = ["dynastore[apikey,auth,extension_admin]"]
-tools_grp = ["dynastore[extension_httpx,template,dimensions]"]
+tools_grp = ["dynastore[extension_httpx,template,dimensions,notebooks]"]
 monitor_grp = ["dynastore[stats,logs]"]
 index_grp = ["dynastore[elasticsearch,task_elasticsearch_indexer]"]
 
@@ -271,13 +272,13 @@ worker_local = ["dynastore[worker_service,monitor_grp]"]
 # Prefixed with scope_ to avoid collision with module-level extras above.
 # ==========================================================================
 # scope_catalog: catalog API without auth — open for local testing
-scope_catalog = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,task_gcp_provision,module_cache]"]
+scope_catalog = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,task_gcp_provision,module_cache,notebooks]"]
 # scope_geoid: catalog + geoid UI + auth/apikey — maps to geospatial-auth in cloud
 scope_geoid = ["dynastore[scope_catalog,extension_geoid,auth_grp]"]
 # scope_worker: background task processor — all tasks + monitoring UI
 scope_worker = ["dynastore[core,catalog_grp,google_grp,index_grp,tasks,processes,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision,monitor_grp,module_cache]"]
 # scope_tools: proxy + template tools service — no auth
-scope_tools = ["dynastore[core,template,module_cache]"]
+scope_tools = ["dynastore[core,template,notebooks,module_cache]"]
 # scope_maps: map tiles/styles service — no auth
 scope_maps = ["dynastore[core,catalog_grp,google_grp,maps_grp,monitor_grp,module_cache]"]
 
@@ -376,7 +377,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # Include all .html and .sql files found within any package
-"*" = ["*.html", "*.sql", "*.md", "*.css", "*.js", "*.txt", "*.png", "*.jpg", "*.jpeg", "*.gif", "static/**"]
+"*" = ["*.html", "*.sql", "*.md", "*.css", "*.js", "*.txt", "*.png", "*.jpg", "*.jpeg", "*.gif", "*.ipynb", "static/**"]
 
 [project.urls]
 Homepage = "https://github.com/un-fao/dynastore/"

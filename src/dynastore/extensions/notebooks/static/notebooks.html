@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Notebooks</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #21262d;
+    --border: #30363d;
+    --primary: #58a6ff;
+    --primary-dark: #1f6feb;
+    --success: #3fb950;
+    --danger: #f85149;
+    --warning: #d29922;
+    --text: #c9d1d9;
+    --text-dim: #8b949e;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+  .panel { max-width: 1200px; margin: 0 auto; padding: 24px 20px; }
+  h1 { font-size: 1.6rem; font-weight: 700; color: #fff; margin-bottom: 4px; }
+  h1 i { color: var(--primary); margin-right: 10px; }
+  .subtitle { color: var(--text-dim); font-size: 0.9rem; margin-bottom: 24px; }
+
+  .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  .search-box {
+    flex: 1; min-width: 200px; padding: 8px 12px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--text); font-size: 0.85rem; outline: none;
+  }
+  .search-box:focus { border-color: var(--primary); }
+
+  .btn {
+    padding: 8px 16px; border-radius: var(--radius); border: none; cursor: pointer;
+    font-family: 'Inter', sans-serif; font-size: 0.85rem; font-weight: 500;
+    display: inline-flex; align-items: center; gap: 7px; transition: all .2s;
+  }
+  .btn-primary { background: var(--primary-dark); color: #fff; }
+  .btn-primary:hover { background: var(--primary); }
+  .btn-sm { padding: 5px 10px; font-size: 0.8rem; }
+  .btn-outline { background: transparent; color: var(--primary); border: 1px solid var(--primary); }
+  .btn-outline:hover { background: var(--primary); color: #fff; }
+  .btn-danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+  .btn-danger:hover { background: var(--danger); color: #fff; }
+  .btn-ghost { background: transparent; color: var(--text-dim); border: none; }
+  .btn-ghost:hover { color: var(--text); }
+
+  .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 20px; }
+  .tab {
+    padding: 10px 20px; cursor: pointer; font-size: 0.9rem; font-weight: 500;
+    color: var(--text-dim); border-bottom: 2px solid transparent; transition: all .2s;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 20px; transition: all .2s; cursor: pointer; position: relative;
+  }
+  .card:hover { border-color: var(--primary); transform: translateY(-2px); }
+  .card-title { font-size: 1rem; font-weight: 600; color: #fff; margin-bottom: 6px; }
+  .card-desc { font-size: 0.85rem; color: var(--text-dim); margin-bottom: 12px; line-height: 1.4; }
+  .card-meta { display: flex; align-items: center; gap: 12px; font-size: 0.78rem; color: var(--text-dim); }
+  .card-meta i { width: 14px; text-align: center; }
+  .card-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.72rem;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .badge-example { background: #1a3a2a; color: var(--success); }
+  .badge-catalog { background: #1a2a3a; color: var(--primary); }
+
+  .card-actions { position: absolute; top: 12px; right: 12px; display: flex; gap: 4px; opacity: 0; transition: opacity .2s; }
+  .card:hover .card-actions { opacity: 1; }
+
+  .empty { text-align: center; padding: 60px 20px; color: var(--text-dim); }
+  .empty i { font-size: 3rem; margin-bottom: 16px; display: block; opacity: 0.3; }
+  .empty p { font-size: 0.9rem; }
+
+  /* Viewer panel */
+  .viewer-overlay {
+    display: none; position: fixed; inset: 0; z-index: 100;
+    background: rgba(0,0,0,0.7); backdrop-filter: blur(4px);
+  }
+  .viewer-overlay.open { display: flex; justify-content: center; align-items: center; }
+  .viewer-panel {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+    width: 90vw; max-width: 1100px; height: 85vh; display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .viewer-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px; border-bottom: 1px solid var(--border);
+  }
+  .viewer-header h2 { font-size: 1.1rem; font-weight: 600; color: #fff; }
+  .viewer-body { flex: 1; overflow-y: auto; padding: 24px; }
+
+  /* Notebook cell rendering */
+  .nb-cell { margin-bottom: 16px; }
+  .nb-cell-md { line-height: 1.6; }
+  .nb-cell-md h1 { font-size: 1.4rem; margin: 16px 0 8px; color: #fff; }
+  .nb-cell-md h2 { font-size: 1.2rem; margin: 14px 0 6px; color: #fff; }
+  .nb-cell-md h3 { font-size: 1.05rem; margin: 12px 0 4px; color: #fff; }
+  .nb-cell-md p { margin: 6px 0; }
+  .nb-cell-md ul, .nb-cell-md ol { margin: 6px 0 6px 20px; }
+  .nb-cell-md table { border-collapse: collapse; margin: 8px 0; width: 100%; }
+  .nb-cell-md th, .nb-cell-md td { padding: 6px 10px; border: 1px solid var(--border); font-size: 0.85rem; }
+  .nb-cell-md th { background: var(--surface2); font-weight: 600; color: #fff; }
+  .nb-cell-md code { background: var(--surface2); padding: 2px 5px; border-radius: 3px; font-size: 0.85em; }
+  .nb-cell-md a { color: var(--primary); text-decoration: none; }
+  .nb-cell-md a:hover { text-decoration: underline; }
+  .nb-cell-code {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    overflow-x: auto;
+  }
+  .nb-cell-code pre {
+    padding: 12px 16px; font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.82rem; line-height: 1.5; color: var(--text); white-space: pre; margin: 0;
+  }
+  .nb-cell-label {
+    font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 4px; font-weight: 600;
+  }
+
+  #toast {
+    position: fixed; bottom: 24px; right: 24px; z-index: 200;
+    padding: 12px 20px; border-radius: var(--radius); font-size: 0.85rem;
+    opacity: 0; transition: opacity .3s; pointer-events: none; max-width: 320px;
+  }
+  #toast.show { opacity: 1; }
+  #toast.ok { background: #1e3a25; border: 1px solid var(--success); color: var(--success); }
+  #toast.err { background: #3a1a1a; border: 1px solid var(--danger); color: var(--danger); }
+</style>
+<script src="../website/context-selector.js"></script>
+<!-- Markdown rendering (sanitized by marked.js defaults — no raw HTML passthrough) -->
+<script src="https://cdn.jsdelivr.net/npm/marked@14/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+</head>
+<body>
+<div class="panel">
+  <h1><i class="fa-solid fa-book-open"></i> Notebooks</h1>
+  <p class="subtitle">Interactive documentation and how-to guides. Browse examples or manage catalog notebooks.</p>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="examples" onclick="switchTab('examples')">
+      <i class="fa-solid fa-graduation-cap"></i> Examples
+    </div>
+    <div class="tab" data-tab="catalog" onclick="switchTab('catalog')">
+      <i class="fa-solid fa-database"></i> Catalog Notebooks
+    </div>
+  </div>
+
+  <div id="tab-examples">
+    <div class="toolbar">
+      <input class="search-box" id="search-examples" placeholder="Search examples..." oninput="filterCards('examples')">
+    </div>
+    <div class="card-grid" id="grid-examples">
+      <div class="empty" id="empty-examples"><i class="fa-solid fa-box-open"></i><p>No example notebooks found.</p></div>
+    </div>
+  </div>
+
+  <div id="tab-catalog" style="display:none">
+    <div class="toolbar">
+      <input class="search-box" id="search-catalog" placeholder="Search catalog notebooks..." oninput="filterCards('catalog')">
+      <button class="btn btn-primary" onclick="copyExample()"><i class="fa-solid fa-copy"></i> Copy Examples to Catalog</button>
+    </div>
+    <div class="card-grid" id="grid-catalog">
+      <div class="empty" id="empty-catalog"><i class="fa-solid fa-box-open"></i><p>No notebooks in this catalog. Copy an example to get started.</p></div>
+    </div>
+  </div>
+</div>
+
+<!-- Viewer overlay -->
+<div class="viewer-overlay" id="viewer">
+  <div class="viewer-panel">
+    <div class="viewer-header">
+      <h2 id="viewer-title">Notebook</h2>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-outline btn-sm" id="btn-copy-to-catalog" onclick="copyCurrentToCatalog()" title="Copy to catalog"><i class="fa-solid fa-copy"></i> Copy to Catalog</button>
+        <button class="btn btn-ghost" onclick="closeViewer()"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+    </div>
+    <div class="viewer-body" id="viewer-body"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* global marked, DOMPurify */
+
+// Configure marked to not allow raw HTML passthrough (XSS prevention)
+if (typeof marked !== 'undefined') {
+  marked.setOptions({ breaks: true, gfm: true });
+}
+
+/** Sanitize HTML string through DOMPurify */
+function sanitize(html) {
+  if (typeof DOMPurify !== 'undefined') return DOMPurify.sanitize(html);
+  // Fallback: strip all tags
+  var d = document.createElement('div');
+  d.textContent = html;
+  return d.textContent;
+}
+
+const API_BASE = (function() {
+  const p = window.location.pathname;
+  const idx = p.indexOf('/web/');
+  return idx >= 0 ? p.substring(0, idx) : '';
+})();
+
+let currentTab = 'examples';
+let exampleNotebooks = [];
+let catalogNotebooks = [];
+let currentNotebook = null;
+let currentNotebookSource = null;
+
+function getSelectedCatalog() {
+  if (window.DynaStoreContext && window.DynaStoreContext.catalog) return window.DynaStoreContext.catalog;
+  const sel = document.getElementById('context-catalog-select');
+  return sel ? sel.value : null;
+}
+
+function getAuthHeaders() {
+  const h = { 'Content-Type': 'application/json' };
+  if (window.DynaStoreContext && window.DynaStoreContext.token) {
+    h['Authorization'] = 'Bearer ' + window.DynaStoreContext.token;
+  }
+  return h;
+}
+
+// --- Tab switching ---
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach(function(t) { t.classList.toggle('active', t.dataset.tab === tab); });
+  document.getElementById('tab-examples').style.display = tab === 'examples' ? '' : 'none';
+  document.getElementById('tab-catalog').style.display = tab === 'catalog' ? '' : 'none';
+  if (tab === 'catalog') loadCatalogNotebooks();
+}
+
+// --- Loading ---
+async function loadExamples() {
+  try {
+    var r = await fetch(API_BASE + '/notebooks/examples');
+    if (!r.ok) throw new Error(r.statusText);
+    exampleNotebooks = await r.json();
+    renderGrid('examples', exampleNotebooks);
+  } catch (e) {
+    console.error('Failed to load examples:', e);
+    renderGrid('examples', []);
+  }
+}
+
+async function loadCatalogNotebooks() {
+  var cat = getSelectedCatalog();
+  if (!cat) { renderGrid('catalog', []); return; }
+  try {
+    var r = await fetch(API_BASE + '/notebooks/' + encodeURIComponent(cat), { headers: getAuthHeaders() });
+    if (!r.ok) throw new Error(r.statusText);
+    catalogNotebooks = await r.json();
+    renderGrid('catalog', catalogNotebooks);
+  } catch (e) {
+    console.error('Failed to load catalog notebooks:', e);
+    renderGrid('catalog', []);
+  }
+}
+
+// --- Rendering ---
+function renderGrid(type, items) {
+  var grid = document.getElementById('grid-' + type);
+  var empty = document.getElementById('empty-' + type);
+  // Remove existing cards only (keep empty placeholder)
+  Array.from(grid.querySelectorAll('.card')).forEach(function(c) { c.remove(); });
+
+  if (!items.length) { empty.style.display = ''; return; }
+  empty.style.display = 'none';
+
+  items.forEach(function(nb) {
+    var card = document.createElement('div');
+    card.className = 'card';
+
+    var isExample = type === 'examples' || nb.source === 'bundled';
+
+    // Build card content using safe DOM methods
+    if (type === 'catalog') {
+      var actionsDiv = document.createElement('div');
+      actionsDiv.className = 'card-actions';
+      var delBtn = document.createElement('button');
+      delBtn.className = 'btn btn-danger btn-sm';
+      delBtn.title = 'Delete';
+      var delIcon = document.createElement('i');
+      delIcon.className = 'fa-solid fa-trash';
+      delBtn.appendChild(delIcon);
+      var nbId = nb.notebook_id;
+      delBtn.addEventListener('click', (function(id) { return function(ev) { ev.stopPropagation(); deleteNotebook(id); }; })(nbId));
+      actionsDiv.appendChild(delBtn);
+      card.appendChild(actionsDiv);
+    }
+
+    var headerDiv = document.createElement('div');
+    headerDiv.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:6px;';
+    var badge = document.createElement('span');
+    badge.className = 'card-badge ' + (isExample ? 'badge-example' : 'badge-catalog');
+    badge.textContent = isExample ? 'Example' : 'Catalog';
+    headerDiv.appendChild(badge);
+    var title = document.createElement('span');
+    title.className = 'card-title';
+    title.textContent = nb.title || nb.notebook_id;
+    headerDiv.appendChild(title);
+    card.appendChild(headerDiv);
+
+    var desc = document.createElement('div');
+    desc.className = 'card-desc';
+    desc.textContent = nb.description || '';
+    card.appendChild(desc);
+
+    var meta = document.createElement('div');
+    meta.className = 'card-meta';
+    if (nb.updated_at) {
+      var d = new Date(nb.updated_at);
+      var span = document.createElement('span');
+      var clockIcon = document.createElement('i');
+      clockIcon.className = 'fa-regular fa-clock';
+      span.appendChild(clockIcon);
+      span.appendChild(document.createTextNode(' ' + d.toLocaleDateString()));
+      meta.appendChild(span);
+    }
+    card.appendChild(meta);
+
+    var notebookId = nb.notebook_id;
+    card.addEventListener('click', (function(t, id) { return function() { openNotebook(t, id); }; })(type, notebookId));
+    grid.appendChild(card);
+  });
+}
+
+function filterCards(type) {
+  var q = document.getElementById('search-' + type).value.toLowerCase();
+  var items = type === 'examples' ? exampleNotebooks : catalogNotebooks;
+  var filtered = items.filter(function(nb) {
+    return (nb.title || '').toLowerCase().indexOf(q) >= 0 ||
+           (nb.notebook_id || '').toLowerCase().indexOf(q) >= 0 ||
+           (nb.description || '').toLowerCase().indexOf(q) >= 0;
+  });
+  renderGrid(type, filtered);
+}
+
+// --- Viewer ---
+async function openNotebook(type, notebookId) {
+  currentNotebookSource = type;
+  try {
+    var url;
+    if (type === 'examples') {
+      url = API_BASE + '/notebooks/examples/' + encodeURIComponent(notebookId);
+    } else {
+      var cat = getSelectedCatalog();
+      url = API_BASE + '/notebooks/' + encodeURIComponent(cat) + '/' + encodeURIComponent(notebookId);
+    }
+    var r = await fetch(url, { headers: getAuthHeaders() });
+    if (!r.ok) throw new Error(r.statusText);
+    var data = await r.json();
+    // Catalog notebooks wrap content in a .content field
+    if (data.content && data.content.cells) data = data.content;
+    currentNotebook = { id: notebookId, data: data };
+    renderNotebook(data);
+    document.getElementById('viewer-title').textContent = (data.metadata && data.metadata.title) || notebookId;
+    document.getElementById('btn-copy-to-catalog').style.display = type === 'examples' ? '' : 'none';
+    document.getElementById('viewer').classList.add('open');
+  } catch (e) {
+    toast('Failed to load notebook: ' + e.message, true);
+  }
+}
+
+function renderNotebook(nb) {
+  var body = document.getElementById('viewer-body');
+  // Clear using safe method
+  while (body.firstChild) body.removeChild(body.firstChild);
+
+  if (!nb.cells) {
+    var emptyDiv = document.createElement('div');
+    emptyDiv.className = 'empty';
+    var emptyP = document.createElement('p');
+    emptyP.textContent = 'Invalid notebook format.';
+    emptyDiv.appendChild(emptyP);
+    body.appendChild(emptyDiv);
+    return;
+  }
+
+  nb.cells.forEach(function(cell) {
+    var div = document.createElement('div');
+    div.className = 'nb-cell';
+    var src = Array.isArray(cell.source) ? cell.source.join('') : (cell.source || '');
+
+    if (cell.cell_type === 'markdown') {
+      div.className += ' nb-cell-md';
+      // Render markdown through marked, then sanitize with DOMPurify
+      var rawHtml = typeof marked !== 'undefined' ? marked.parse(src) : src;
+      div.appendChild(createSanitizedFragment(rawHtml));
+    } else if (cell.cell_type === 'code') {
+      var label = document.createElement('div');
+      label.className = 'nb-cell-label';
+      label.textContent = 'Python';
+      div.appendChild(label);
+
+      var codeWrap = document.createElement('div');
+      codeWrap.className = 'nb-cell-code';
+      var pre = document.createElement('pre');
+      pre.textContent = src;  // textContent is safe against XSS
+      codeWrap.appendChild(pre);
+      div.appendChild(codeWrap);
+    }
+    body.appendChild(div);
+  });
+}
+
+/** Create a DocumentFragment from sanitized HTML */
+function createSanitizedFragment(html) {
+  var clean = sanitize(html);
+  var template = document.createElement('template');
+  template.innerHTML = clean;
+  return template.content;
+}
+
+function closeViewer() {
+  document.getElementById('viewer').classList.remove('open');
+  currentNotebook = null;
+}
+
+// --- CRUD operations ---
+async function copyCurrentToCatalog() {
+  var cat = getSelectedCatalog();
+  if (!cat) { toast('Select a catalog first', true); return; }
+  if (!currentNotebook) return;
+
+  try {
+    var r = await fetch(API_BASE + '/notebooks/' + encodeURIComponent(cat) + '/' + encodeURIComponent(currentNotebook.id), {
+      method: 'PUT',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(currentNotebook.data),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    toast('Copied to catalog: ' + cat);
+    if (currentTab === 'catalog') loadCatalogNotebooks();
+  } catch (e) {
+    toast('Copy failed: ' + e.message, true);
+  }
+}
+
+async function copyExample() {
+  var cat = getSelectedCatalog();
+  if (!cat) { toast('Select a catalog first', true); return; }
+  if (!exampleNotebooks.length) { toast('No examples available', true); return; }
+
+  var ok = 0;
+  for (var i = 0; i < exampleNotebooks.length; i++) {
+    var ex = exampleNotebooks[i];
+    try {
+      var r = await fetch(API_BASE + '/notebooks/examples/' + encodeURIComponent(ex.notebook_id));
+      if (!r.ok) continue;
+      var nb = await r.json();
+      var s = await fetch(API_BASE + '/notebooks/' + encodeURIComponent(cat) + '/' + encodeURIComponent(ex.notebook_id), {
+        method: 'PUT',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(nb),
+      });
+      if (s.ok) ok++;
+    } catch (e) { /* skip */ }
+  }
+  toast('Copied ' + ok + '/' + exampleNotebooks.length + ' examples to ' + cat);
+  loadCatalogNotebooks();
+}
+
+async function deleteNotebook(notebookId) {
+  if (!confirm('Delete notebook "' + notebookId + '"?')) return;
+  var cat = getSelectedCatalog();
+  if (!cat) return;
+  try {
+    var r = await fetch(API_BASE + '/notebooks/' + encodeURIComponent(cat) + '/' + encodeURIComponent(notebookId), {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    toast('Deleted: ' + notebookId);
+    loadCatalogNotebooks();
+  } catch (e) {
+    toast('Delete failed: ' + e.message, true);
+  }
+}
+
+// --- Helpers ---
+function toast(msg, err) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'show ' + (err ? 'err' : 'ok');
+  setTimeout(function() { t.className = ''; }, 3000);
+}
+
+// --- Context change listener ---
+if (window.addEventListener) {
+  window.addEventListener('dynastore-context-change', function() {
+    if (currentTab === 'catalog') loadCatalogNotebooks();
+  });
+}
+
+// --- Init ---
+loadExamples();
+</script>
+</body>
+</html>
