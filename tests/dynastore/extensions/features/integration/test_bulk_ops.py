@@ -1,14 +1,14 @@
 import pytest
 
 from httpx import AsyncClient
-from dynastore.tools.identifiers import generate_id_hex
+from tests.dynastore.test_utils import generate_test_id
 
 # Increase timeout for the endpoint specifically if needed, 
 # or use a custom client with longer timeout.
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("features", "assets", "stac", "config")
 async def test_bulk_item_creation_success(sysadmin_in_process_client: AsyncClient, test_data_loader):
-    catalog_id = f"c_{generate_id_hex()[:8]}"
+    catalog_id = f"c_{generate_test_id()}"
     collection_id = "test_bulk_collection"
     
     # 1. Create Catalog
@@ -49,7 +49,7 @@ async def test_bulk_item_creation_success(sysadmin_in_process_client: AsyncClien
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("features", "assets", "stac", "config")
 async def test_bulk_item_creation_atomicity(sysadmin_in_process_client: AsyncClient, test_data_loader):
-    catalog_id = f"c_{generate_id_hex()[:8]}"
+    catalog_id = f"c_{generate_test_id()}"
     collection_id = "test_atomic_collection"
     
     # Create Catalog and Collection
@@ -87,7 +87,7 @@ async def test_bulk_item_creation_atomicity(sysadmin_in_process_client: AsyncCli
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("features", "assets", "stac", "config")
 async def test_single_item_creation_with_extra_fields(sysadmin_in_process_client: AsyncClient, test_data_loader):
-    catalog_id = f"c_{generate_id_hex()[:8]}"
+    catalog_id = f"c_{generate_test_id()}"
     collection_id = "test_fix_collection"
     
     catalog_data = test_data_loader("catalog_fix.json")
@@ -117,7 +117,7 @@ async def test_single_item_creation_with_extra_fields(sysadmin_in_process_client
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("features", "assets", "stac", "config")
 async def test_filter_with_unknown_property(sysadmin_in_process_client: AsyncClient, test_data_loader):
-    catalog_id = f"c_{generate_id_hex()[:8]}"
+    catalog_id = f"c_{generate_test_id()}"
     collection_id = "test_filter_collection"
     
     catalog_data = test_data_loader("catalog_filter.json")

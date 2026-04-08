@@ -27,7 +27,7 @@ Covers (real DB required):
 
 import pytest
 from httpx import AsyncClient, ASGITransport
-from dynastore.tools.identifiers import generate_id_hex
+from tests.dynastore.test_utils import generate_test_id
 
 from dynastore.models.protocols import CatalogsProtocol, AssetsProtocol
 from dynastore.tools.discovery import get_protocol
@@ -84,7 +84,7 @@ async def test_asset_references_lifecycle(app_lifespan, catalog_obj, catalog_id,
     await catalogs.create_catalog(catalog_obj)
     await catalogs.create_collection(catalog_id, collection_obj)
 
-    asset_id = f"owned_{generate_id_hex()[:8]}"
+    asset_id = f"owned_{generate_test_id()}"
 
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -102,7 +102,7 @@ async def test_asset_references_lifecycle(app_lifespan, catalog_obj, catalog_id,
 
             # 3. Add a blocking reference via protocol (simulates a DuckDB driver)
             ref_type_value = "duckdb:table"
-            ref_id = f"tbl_{generate_id_hex()[:6]}"
+            ref_id = f"tbl_{generate_test_id(6)}"
             await assets_protocol.add_asset_reference(
                 asset_id=asset_id,
                 catalog_id=catalog_id,
@@ -168,8 +168,8 @@ async def test_cascade_true_reference_does_not_block_hard_delete(
     await catalogs.delete_catalog(catalog_id, force=True)
     await catalogs.create_catalog(catalog_obj)
 
-    asset_id = f"owned_{generate_id_hex()[:8]}"
-    ref_id = f"coll_{generate_id_hex()[:6]}"
+    asset_id = f"owned_{generate_test_id()}"
+    ref_id = f"coll_{generate_test_id(6)}"
 
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -216,8 +216,8 @@ async def test_unowned_asset_hard_delete_not_blocked(
     await catalogs.delete_catalog(catalog_id, force=True)
     await catalogs.create_catalog(catalog_obj)
 
-    asset_id = f"unowned_{generate_id_hex()[:8]}"
-    ref_id = f"tbl_{generate_id_hex()[:6]}"
+    asset_id = f"unowned_{generate_test_id()}"
+    ref_id = f"tbl_{generate_test_id(6)}"
 
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -274,7 +274,7 @@ async def test_upload_initiation_no_backend_returns_503(app_lifespan, catalog_ob
                     "filename": "scene.tif",
                     "content_type": "image/tiff",
                     "asset": {
-                        "asset_id": f"scene_{generate_id_hex()[:8]}",
+                        "asset_id": f"scene_{generate_test_id()}",
                         "asset_type": "RASTER",
                         "metadata": {},
                     },

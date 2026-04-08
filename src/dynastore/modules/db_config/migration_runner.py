@@ -454,17 +454,23 @@ BEGIN
     END IF;
 
     -- Move stored procedures from public to platform
-    IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'update_collection_extents') THEN
+    IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'update_collection_extents')
+       AND NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'platform' AND p.proname = 'update_collection_extents')
+    THEN
         ALTER FUNCTION public.update_collection_extents() SET SCHEMA platform;
         RAISE NOTICE 'Moved public.update_collection_extents -> platform';
     END IF;
 
-    IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'asset_cleanup') THEN
+    IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'asset_cleanup')
+       AND NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'platform' AND p.proname = 'asset_cleanup')
+    THEN
         ALTER FUNCTION public.asset_cleanup() SET SCHEMA platform;
         RAISE NOTICE 'Moved public.asset_cleanup -> platform';
     END IF;
 
-    IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'cleanup_orphaned_cron_jobs') THEN
+    IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'cleanup_orphaned_cron_jobs')
+       AND NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'platform' AND p.proname = 'cleanup_orphaned_cron_jobs')
+    THEN
         ALTER FUNCTION public.cleanup_orphaned_cron_jobs() SET SCHEMA platform;
         RAISE NOTICE 'Moved public.cleanup_orphaned_cron_jobs -> platform';
     END IF;

@@ -27,7 +27,6 @@ from dynastore.modules import get_protocol
 from dynastore.models.protocols import DatabaseProtocol
 from dynastore.modules.stats.storage import (
     AbstractStatsDriver,
-    PostgresStatsDriver,
     AccessRecord,
 )
 

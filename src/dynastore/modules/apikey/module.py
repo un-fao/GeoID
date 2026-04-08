@@ -78,41 +78,25 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
             await stack.enter_async_context(self._apikey_manager.lifespan(app_state))
 
             # Register Identity Providers (Configured via Env)
-            from .identity_providers.local_db_identity import LocalDBIdentityProvider
             from .identity_providers.keycloak_identity import KeycloakIdentityProvider
             import os
-
-            # Always register LocalDB provider for internal JWT tokens
-            local_provider = LocalDBIdentityProvider(
-                storage=self.storage,
-                jwt_secret=None,  # Temporary, will be updated below
-            )
 
             # Global initialization
             try:
                 db = get_protocol(DatabaseProtocol)
                 engine = db.engine if db else None
                 async with managed_transaction(engine) as conn:
-                    # Use the new private initialization methods
                     await self.storage._initialize_schema(conn, schema="apikey")
                     await policy_storage._initialize_schema(conn, schema="apikey")
 
                     # Provision default global policies
                     await self._policy_service.provision_default_policies(conn=conn)
 
-                    # Initialize users schema for identity management
-                    await self.storage._initialize_schema(conn, schema="users")
-
-                    # Sync JWT secret
-                    jwt_secret = await self._apikey_manager.get_jwt_secret()
-                    local_provider.jwt_secret = jwt_secret
-
             except Exception as e:
                 logger.error(f"Failed to initialize ApiKeyModule: {e}", exc_info=True)
 
-            # Register other plugins
+            # Register plugins
             register_plugin(self._apikey_manager)
-            register_plugin(local_provider)
 
             keycloak_url = os.environ.get("KEYCLOAK_URL")
             if keycloak_url:
@@ -125,9 +109,8 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
                 )
 
             yield
-            
+
             # Unregister plugins on exit
-            unregister_plugin(local_provider)
             unregister_plugin(self._apikey_manager)
             # ApiKeyService stops via AsyncExitStack
         

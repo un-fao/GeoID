@@ -1,6 +1,6 @@
 import pytest
 from httpx import AsyncClient
-from dynastore.tools.identifiers import generate_id_hex
+from tests.dynastore.test_utils import generate_test_id
 
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("features", "assets", "config")
@@ -9,7 +9,7 @@ async def test_item_properties_serialization_alignment(sysadmin_in_process_clien
     Verifies that item properties are correctly serialized and NOT null when queried via OGC Features.
     This tests the alignment with ItemsProtocol.
     """
-    catalog_id = f"c_{generate_id_hex()[:8]}"
+    catalog_id = f"c_{generate_test_id()}"
     collection_id = "serialization_test_coll"
     
     # 1. Create Catalog

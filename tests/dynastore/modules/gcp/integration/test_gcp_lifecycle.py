@@ -5,7 +5,7 @@ from dynastore.tools.discovery import get_protocol
 from dynastore.modules.gcp.gcp_module import GCPModule
 from google.api_core.exceptions import NotFound
 from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
-from dynastore.tools.identifiers import generate_id_hex
+from tests.dynastore.test_utils import generate_test_id
 
 
 @pytest.mark.gcp
@@ -33,7 +33,7 @@ async def test_gcp_resource_lifecycle(app_lifespan, catalog_obj, catalog_id, mon
         pytest.skip("GCP storage client not available (no credentials).")
 
     # Override catalog_id with a shorter one to respect GCS bucket name limits (63 chars)
-    short_catalog_id = f"it_{generate_id_hex()[:12]}"
+    short_catalog_id = f"it_{generate_test_id(12)}"
     catalog_obj.id = short_catalog_id
     test_catalog_id = short_catalog_id
 
@@ -100,7 +100,7 @@ async def test_gcp_resource_lifecycle(app_lifespan, catalog_obj, catalog_id, mon
                 print(f"Verified: Bucket {bucket_name} already deleted by lifecycle hooks.")
 
     # 7. Verify auto_create=False behavior
-    mock_catalog_id = f"mock_{generate_id_hex()[:8]}"
+    mock_catalog_id = f"mock_{generate_test_id()}"
     result = await gcp_module.get_bucket_service().ensure_storage_for_catalog(
         mock_catalog_id, auto_create=False
     )

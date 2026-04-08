@@ -98,9 +98,6 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             steps=[
                 CREATE_PRINCIPALS_TABLE,
                 CREATE_IDENTITY_LINKS_TABLE,
-                CREATE_IDENTITY_AUTHORIZATION_TABLE,
-                CREATE_IDENTITY_ROLES_TABLE,
-                CREATE_IDENTITY_POLICIES_TABLE,
                 CREATE_ROLES_TABLE,
                 CREATE_ROLE_HIERARCHY_TABLE,
                 CREATE_API_KEYS_TABLE,
@@ -112,18 +109,8 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             ],
         ).execute(conn, schema=schema)
 
-        # 2. Auth tables (users/apikey schemas only)
-        if schema in ["users", "apikey"]:
-            await DDLBatch(
-                sentinel=CREATE_OAUTH_TOKENS_TABLE,
-                steps=[
-                    CREATE_USERS_TABLE,
-                    CREATE_OAUTH_CODES_TABLE,
-                    CREATE_OAUTH_TOKENS_TABLE,
-                ],
-            ).execute(conn, schema=schema)
-
-            # Partition tables (IF NOT EXISTS in SQL handles idempotency)
+        # Partition tables (IF NOT EXISTS in SQL handles idempotency)
+        if schema in ["apikey"]:
             await CREATE_PARTITION_GLOBAL.execute(conn, schema=schema)
 
         # 2. Maintenance (System Schema Only)
@@ -1055,143 +1042,18 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
 
     # --- Local Authentication Methods ---
 
-    async def create_local_user(
-        self,
-        user_id: UUID,
-        username: str,
-        password_hash: str,
-        email: str,
-        schema: str = "apikey",
-    ) -> Dict[str, Any]:
-        """Creates a new local user."""
-        logger.info(f"Creating local user: {username} ({email}) in schema {schema}")
-        async with managed_transaction(self.engine) as db:
-            result = await INSERT_USER.execute(
-                db,
-                schema=schema,
-                id=user_id,
-                username=username,
-                password_hash=password_hash,
-                email=email,
-                is_active=True,
+    # ------------------------------------------------------------------
+    # Principal-backed compatibility methods (replaced IAG tables in v1.0)
+    # ------------------------------------------------------------------
+
+    async def _resolve_principal_by_identity(
+        self, provider: str, subject_id: str, conn: Optional[DbResource] = None,
+    ) -> Optional["Principal"]:
+        """Resolve (provider, subject_id) → Principal via identity_links."""
+        async with managed_transaction(conn or self.engine) as db:
+            return await GET_PRINCIPAL_BY_IDENTITY.execute(
+                conn=db, schema="apikey", provider=provider, subject_id=subject_id,
             )
-            logger.info(f"Created user result: {result}")
-            return result
-
-    async def get_local_user_by_username(
-        self, username: str, schema: str = "apikey"
-    ) -> Optional[Dict[str, Any]]:
-        """Retrieves a local user by username."""
-        async with managed_transaction(self.engine) as db:
-            return await GET_USER_BY_USERNAME.execute(
-                db, schema=schema, username=username
-            )
-
-    async def get_local_user_by_id(
-        self, user_id: UUID, schema: str = "apikey"
-    ) -> Optional[Dict[str, Any]]:
-        """Retrieves a local user by ID."""
-        async with managed_transaction(self.engine) as db:
-            return await GET_USER_BY_ID.execute(db, schema=schema, id=user_id)
-
-    async def create_oauth_code(
-        self,
-        code: str,
-        user_id: UUID,
-        redirect_uri: str,
-        scope: Optional[str],
-        expires_at: datetime,
-        schema: str = "apikey",
-    ) -> Dict[str, Any]:
-        """Creates an OAuth2 authorization code."""
-        async with managed_transaction(self.engine) as db:
-            return await INSERT_OAUTH_CODE.execute(
-                db,
-                schema=schema,
-                code=code,
-                user_id=user_id,
-                redirect_uri=redirect_uri,
-                scope=scope,
-                expires_at=expires_at,
-            )
-
-    async def get_oauth_code(
-        self, code: str, schema: str = "apikey"
-    ) -> Optional[Dict[str, Any]]:
-        """Retrieves an OAuth2 authorization code."""
-        async with managed_transaction(self.engine) as db:
-            return await GET_OAUTH_CODE.execute(db, schema=schema, code=code)
-
-    async def delete_oauth_code(self, code: str, schema: str = "apikey") -> bool:
-        """Deletes an OAuth2 authorization code."""
-        async with managed_transaction(self.engine) as db:
-            await DELETE_OAUTH_CODE.execute(db, schema=schema, code=code)
-            return True
-
-    async def create_oauth_token(
-        self,
-        user_id: UUID,
-        token_hash: str,
-        token_type: str,
-        expires_at: datetime,
-        schema: str = "apikey",
-    ) -> Dict[str, Any]:
-        """Creates an OAuth2 token."""
-        async with managed_transaction(self.engine) as db:
-            return await INSERT_OAUTH_TOKEN.execute(
-                db,
-                schema=schema,
-                user_id=user_id,
-                token_hash=token_hash,
-                token_type=token_type,
-                expires_at=expires_at,
-            )
-
-    async def get_oauth_token_by_hash(
-        self, token_hash: str, schema: str = "apikey"
-    ) -> Optional[Dict[str, Any]]:
-        """Retrieves an OAuth2 token by hash."""
-        async with managed_transaction(self.engine) as db:
-            return await GET_OAUTH_TOKEN_BY_HASH.execute(
-                db, schema=schema, token_hash=token_hash, token_type="refresh"
-            )
-
-    async def delete_expired_oauth_tokens(self, schema: str = "apikey") -> int:
-        """Deletes expired OAuth2 tokens."""
-        async with managed_transaction(self.engine) as db:
-            await DELETE_EXPIRED_OAUTH_TOKENS.execute(db, schema=schema)
-            return 0  # TODO: Return count
-
-    # --- Simplified IAG Methods (v2.1) ---
-
-    async def resolve_identity(self, email: str) -> tuple[str, str]:
-        """Resolve email to (provider, subject_id)."""
-        logger.info(f"Resolving identity for email: {email}")
-        async with managed_transaction(self.engine) as db:
-            user = await GET_USER_BY_EMAIL.execute(db, schema="users", email=email)
-            if user:
-                logger.info(f"Found identity for {email}: {user['username']}")
-                return ("local", user["username"])
-
-            # Fallback: Check 'apikey' schema for legacy/dev environments
-            user = await GET_USER_BY_EMAIL.execute(db, schema="apikey", email=email)
-            if user:
-                logger.info(
-                    f"Found identity for {email} in apikey schema: {user['username']}"
-                )
-                return ("local", user["username"])
-
-            logger.warning(f"No identity found for email: {email}")
-            raise ValueError(f"No identity found for email: {email}")
-
-    async def get_user_by_email(
-        self, email: str, schema: str = "users"
-    ) -> Optional[Dict[str, Any]]:
-        """Get user by email address."""
-        async with managed_transaction(self.engine) as db:
-            result = await GET_USER_BY_EMAIL.execute(db, schema=schema, email=email)
-            logger.info(f"get_user_by_email({email}, schema={schema}) -> {result}")
-            return result
 
     async def get_identity_roles(
         self,
@@ -1200,15 +1062,11 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         schema: str = "apikey",
         conn: Optional[DbResource] = None,
     ) -> List[str]:
-        """Get roles for an identity in a specific schema."""
-        async with managed_transaction(conn or self.engine) as db:
-            # Check if table exists to avoid noisy ERROR logs in PG
-            if not await self.table_exists(schema, "identity_roles", conn=db):
-                return []
-            roles = await GET_IDENTITY_ROLES.execute(
-                conn=db, schema=schema, provider=provider, subject_id=subject_id
-            )
-            return roles or []
+        """Get roles for an identity. Backed by principals.roles JSONB."""
+        principal = await self._resolve_principal_by_identity(provider, subject_id, conn)
+        if principal and principal.roles:
+            return list(principal.roles)
+        return []
 
     async def grant_roles(
         self,
@@ -1219,43 +1077,18 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         granted_by: Optional[str] = None,
         conn: Optional[DbResource] = None,
     ) -> None:
-        """Grant roles to an identity."""
+        """Grant roles to an identity by updating principal.roles."""
+        principal = await self._resolve_principal_by_identity(provider, subject_id, conn)
+        if not principal:
+            logger.warning(f"No principal found for {provider}:{subject_id}")
+            return
+        existing = set(principal.roles or [])
+        existing.update(roles)
         async with managed_transaction(conn or self.engine) as db:
-            for role_name in roles:
-                await INSERT_IDENTITY_ROLE.execute(
-                    conn=db,
-                    schema=schema,
-                    provider=provider,
-                    subject_id=subject_id,
-                    role_name=role_name,
-                    granted_by=granted_by,
-                )
-
-    async def set_identity_authorization(
-        self,
-        provider: str,
-        subject_id: str,
-        display_name: Optional[str] = None,
-        is_active: bool = True,
-        valid_from: Optional[datetime] = None,
-        valid_until: Optional[datetime] = None,
-        attributes: Optional[Dict[str, Any]] = None,
-        schema: str = "apikey",
-        conn: Optional[DbResource] = None,
-    ) -> Dict[str, Any]:
-        """Set authorization metadata for an identity."""
-        async with managed_transaction(conn or self.engine) as db:
-            return await UPSERT_IDENTITY_AUTHORIZATION.execute(
-                db,
-                schema=schema,
-                provider=provider,
-                subject_id=subject_id,
-                display_name=display_name,
-                is_active=is_active,
-                valid_from=valid_from or datetime.now(timezone.utc),
-                valid_until=valid_until,
-                attributes=json.dumps(attributes or {}),
-            )
+            await DQLQuery(
+                "UPDATE {schema}.principals SET roles = :roles, updated_at = NOW() WHERE id = :id;",
+                result_handler=ResultHandler.ROWCOUNT,
+            ).execute(db, schema="apikey", roles=json.dumps(list(existing)), id=principal.id)
 
     async def revoke_role(
         self,
@@ -1265,15 +1098,16 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         schema: str = "apikey",
         conn: Optional[DbResource] = None,
     ) -> None:
-        """Revoke a role from an identity."""
+        """Revoke a role from an identity by updating principal.roles."""
+        principal = await self._resolve_principal_by_identity(provider, subject_id, conn)
+        if not principal:
+            return
+        updated = [r for r in (principal.roles or []) if r != role_name]
         async with managed_transaction(conn or self.engine) as db:
-            await DELETE_IDENTITY_ROLE.execute(
-                conn=db,
-                schema=schema,
-                provider=provider,
-                subject_id=subject_id,
-                role_name=role_name,
-            )
+            await DQLQuery(
+                "UPDATE {schema}.principals SET roles = :roles, updated_at = NOW() WHERE id = :id;",
+                result_handler=ResultHandler.ROWCOUNT,
+            ).execute(db, schema="apikey", roles=json.dumps(updated), id=principal.id)
 
     async def get_identity_authorization(
         self,
@@ -1282,14 +1116,19 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         schema: str = "apikey",
         conn: Optional[DbResource] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Get authorization metadata for an identity (optional)."""
-        async with managed_transaction(conn or self.engine) as db:
-            # Check if table exists to avoid noisy ERROR logs in PG
-            if not await self.table_exists(schema, "identity_authorization", conn=db):
-                return None
-            return await GET_IDENTITY_AUTHORIZATION.execute(
-                conn=db, schema=schema, provider=provider, subject_id=subject_id
-            )
+        """Get authorization metadata for an identity. Backed by principals table."""
+        principal = await self._resolve_principal_by_identity(provider, subject_id, conn)
+        if not principal:
+            return None
+        return {
+            "provider": provider,
+            "subject_id": subject_id,
+            "display_name": principal.display_name,
+            "is_active": principal.is_active,
+            "valid_from": getattr(principal, "valid_from", None),
+            "valid_until": principal.valid_until,
+            "attributes": principal.attributes or {},
+        }
 
     async def get_identity_policies(
         self,
@@ -1297,146 +1136,40 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         subject_id: str,
         schema: str = "apikey",
         conn: Optional[DbResource] = None,
-    ) -> List[Dict[str, Any]]:
-        """Get custom policies for an identity."""
-        async with managed_transaction(conn or self.engine) as db:
-            # Check if table exists to avoid noisy ERROR logs in PG
-            if not await self.table_exists(schema, "identity_policies", conn=db):
-                return []
-            policies = await GET_IDENTITY_POLICIES.execute(
-                conn=db, schema=schema, provider=provider, subject_id=subject_id
-            )
-            return policies or []
-
-    async def add_identity_policy(
-        self,
-        provider: str,
-        subject_id: str,
-        policy_name: Optional[str],
-        actions: List[str],
-        resources: List[str],
-        effect: str = "ALLOW",
-        conditions: Optional[List[Dict[str, Any]]] = None,
-        schema: str = "apikey",
-        conn: Optional[DbResource] = None,
-    ) -> Dict[str, Any]:
-        """Add a custom policy to an identity."""
-        async with managed_transaction(conn or self.engine) as db:
-            return await INSERT_IDENTITY_POLICY.execute(
-                conn=db,
-                schema=schema,
-                provider=provider,
-                subject_id=subject_id,
-                policy_name=policy_name,
-                actions=actions,
-                resources=resources,
-                effect=effect,
-                conditions=json.dumps(conditions or []),
-            )
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Get custom policies for an identity. Backed by principals.policies JSONB."""
+        principal = await self._resolve_principal_by_identity(provider, subject_id, conn)
+        if not principal:
+            return None
+        policies = getattr(principal, "policies", None)
+        if not policies:
+            return []
+        if isinstance(policies, str):
+            import json
+            return json.loads(policies)
+        return policies
 
     async def get_catalogs_for_identity(
         self, provider: str, subject_id: str
     ) -> List[str]:
-        """Get list of catalog codes where identity has any roles in any schema."""
-        # This query finds all schemas (physical_schema) where an identity_roles table 
-        # exists and contains at least one record for the given identity.
-        # It excludes the base 'apikey' schema as we want actual catalog schemas.
-        query = """
-        SELECT DISTINCT c.id
-        FROM catalog.catalogs c
-        JOIN information_schema.tables t ON c.physical_schema = t.table_schema
-        WHERE t.table_name = 'identity_roles'
-        AND EXISTS (
-            SELECT 1 
-            FROM information_schema.columns col 
-            WHERE col.table_schema = c.physical_schema 
-            AND col.table_name = 'identity_roles' 
-            AND col.column_name = 'subject_id'
-        )
-        AND (
-            SELECT count(*) > 0 
-            FROM (
-                SELECT 1 FROM pg_catalog.pg_namespace n
-                JOIN pg_catalog.pg_class c_idx ON n.oid = c_idx.relnamespace
-                WHERE n.nspname = c.physical_schema AND c_idx.relname = 'identity_roles'
-            ) exists_check
-        )
-        """
-        # The above complex SQL is to safely check across schemas. 
-        # However, a simpler approach is to iterate over known schemas if the above is too slow or complex.
-        # Let's use a more direct catalog-driven approach.
-        
+        """Get catalog IDs where identity has access (global roles → all catalogs)."""
+        principal = await self._resolve_principal_by_identity(provider, subject_id)
+        if not principal or not principal.roles:
+            return []
         async with managed_transaction(self.engine) as db:
-            # 1. Get all active catalogs and their physical schemas
-            catalogs_res = await DQLQuery(
-                "SELECT id, physical_schema FROM catalog.catalogs WHERE deleted_at IS NULL;",
-                result_handler=ResultHandler.ALL_DICTS
+            catalogs = await DQLQuery(
+                "SELECT id FROM catalog.catalogs WHERE deleted_at IS NULL ORDER BY id;",
+                result_handler=ResultHandler.ALL_SCALARS,
             ).execute(conn=db)
-            
-            if not catalogs_res:
-                return []
-
-            matching_catalogs = []
-            logger.info(f"get_catalogs_for_identity: Searching {len(catalogs_res)} catalogs for {provider}:{subject_id}")
-            
-            # Step 1: Find all catalogs that have the identity_roles table
-            # We do this in one shot to avoid noisy logs and improve performance
-            schema_names = [cat["physical_schema"] for cat in catalogs_res]
-            if not schema_names:
-                return []
-
-            # Check which of these schemas actually have the table
-            # Using pg_catalog for speed and accuracy
-            valid_schemas_query = DQLQuery(
-                """
-                SELECT n.nspname
-                FROM pg_catalog.pg_class c
-                JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                WHERE n.nspname = ANY(:schemas)
-                AND c.relname = 'identity_roles'
-                AND c.relkind IN ('r', 'v', 'm', 'f');
-                """,
-                result_handler=ResultHandler.ALL_SCALARS
-            )
-            
-            valid_schemas = set(await valid_schemas_query.execute(conn=db, schemas=schema_names))
-
-            # Step 2: Query only the valid ones
-            import re as _re
-            _safe_schema = _re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,62}$")
-            for cat in catalogs_res:
-                cat_id = cat["id"]
-                schema = cat["physical_schema"]
-
-                if schema not in valid_schemas:
-                    continue
-                if not _safe_schema.match(schema):
-                    logger.warning(f"get_catalogs_for_identity: skipping catalog {cat_id} with unsafe schema name: {schema!r}")
-                    continue
-
-                try:
-                    # Even if it exists, use a nested transaction to be safe
-                    # against concurrent drops (rare but possible in tests)
-                    async with managed_nested_transaction(db) as nested:
-                        exists = await DQLQuery(
-                            f'SELECT 1 FROM "{schema}".identity_roles WHERE provider = :provider AND subject_id = :subject_id LIMIT 1;',
-                            result_handler=ResultHandler.SCALAR_ONE_OR_NONE
-                        ).execute(conn=nested, provider=provider, subject_id=subject_id)
-                        
-                        if exists:
-                            matching_catalogs.append(cat_id)
-                except Exception as e:
-                    logger.debug(f"get_catalogs_for_identity: skipping catalog {cat_id} (schema {schema}): {e}")
-                    continue
-                    
-            return matching_catalogs
+            return catalogs or []
 
     async def get_catalog_users(self, schema: str = "apikey") -> List[Dict[str, Any]]:
-        """Get all users with access to a catalog."""
+        """Get all users (principals with identity links)."""
         async with managed_transaction(self.engine) as db:
-            return await GET_CATALOG_USERS.execute(conn=db, schema=schema)
-
-    async def table_exists(self, schema: str, table_name: str, conn: Optional[DbResource] = None) -> bool:
-        """Checks if a table exists in a specific schema."""
-        async with managed_transaction(conn or self.engine) as db:
-            return await CHECK_TABLE_EXISTS.execute(db, schema=schema, table_name=table_name)
+            return await DQLQuery(
+                """SELECT DISTINCT l.provider, l.subject_id, p.display_name, p.is_active
+                   FROM {schema}.identity_links l
+                   JOIN {schema}.principals p ON l.principal_id = p.id
+                   ORDER BY p.display_name;""",
+                result_handler=ResultHandler.ALL_DICTS,
+            ).execute(conn=db, schema="apikey")

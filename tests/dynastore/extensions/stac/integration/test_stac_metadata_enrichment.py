@@ -1,6 +1,6 @@
 import pytest
 import pystac
-from dynastore.tools.identifiers import generate_id_hex
+from tests.dynastore.test_utils import generate_test_id
 
 
 @pytest.mark.asyncio
@@ -9,7 +9,7 @@ async def test_stac_metadata_enrichment_vector(in_process_client, test_data_load
     """
     Test that a virtual asset collection is enriched with Vector GDAL/OGR metadata.
     """
-    run_id = generate_id_hex()[:8]
+    run_id = generate_test_id()
     catalog_id = f"cat_v_{run_id}"
     collection_id = f"col_v_{run_id}"
     asset_id = f"vector_asset_{run_id}"
@@ -99,7 +99,7 @@ async def test_stac_metadata_enrichment_raster(in_process_client, test_data_load
     """
     Test that a virtual asset collection is enriched with Raster GDAL metadata.
     """
-    run_id = generate_id_hex()[:8]
+    run_id = generate_test_id()
     catalog_id = f"cat_r_{run_id}"
     collection_id = f"col_r_{run_id}"
     asset_id = f"raster_asset_{run_id}"

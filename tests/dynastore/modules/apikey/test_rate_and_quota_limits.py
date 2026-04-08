@@ -24,7 +24,7 @@ Covers:
 """
 
 import pytest
-from dynastore.tools.identifiers import generate_id_hex
+from tests.dynastore.test_utils import generate_test_id
 from datetime import datetime, timezone, timedelta
 from dynastore.modules.apikey.apikey_service import ApiKeyService as ApiKeyManager
 from dynastore.modules.apikey.models import (
@@ -67,7 +67,7 @@ async def apikey_manager(app_lifespan, db_cleanup):
     catalogs = get_protocol(CatalogsProtocol)
 
     # Catalog A
-    manager.test_catalog_a_id = f"rate_cat_a_{generate_id_hex()[:8]}"
+    manager.test_catalog_a_id = f"rate_cat_a_{generate_test_id()}"
     async with managed_transaction(app_lifespan.engine) as conn:
         # This also initializes the catalog schema
         await catalogs.create_catalog(
@@ -85,7 +85,7 @@ async def apikey_manager(app_lifespan, db_cleanup):
             await storage.initialize(conn, schema=schema_a)
 
     # Catalog B
-    manager.test_catalog_b_id = f"rate_cat_b_{generate_id_hex()[:8]}"
+    manager.test_catalog_b_id = f"rate_cat_b_{generate_test_id()}"
     async with managed_transaction(app_lifespan.engine) as conn:
         await catalogs.create_catalog(
             {"id": manager.test_catalog_b_id, "title": {"en": "Catalog B"}},
@@ -133,7 +133,7 @@ async def test_rate_limit_enforcement_100_per_minute(apikey_manager):
     # Create principal
     principal = Principal(
         provider="local",
-        subject_id=f"rate_test_{generate_id_hex()[:8]}",
+        subject_id=f"rate_test_{generate_test_id()}",
         roles=["user"],
         attributes={"name": "Rate Test User"},
     )
@@ -187,7 +187,7 @@ async def test_quota_limit_enforcement(apikey_manager):
     # Create principal
     principal = Principal(
         provider="local",
-        subject_id=f"quota_test_{generate_id_hex()[:8]}",
+        subject_id=f"quota_test_{generate_test_id()}",
         roles=["user"],
         attributes={"name": "Quota Test User"},
     )
@@ -229,7 +229,7 @@ async def test_combined_rate_and_quota_limits(apikey_manager):
     # Create principal
     principal = Principal(
         provider="local",
-        subject_id=f"combined_test_{generate_id_hex()[:8]}",
+        subject_id=f"combined_test_{generate_test_id()}",
         roles=["user"],
         attributes={"name": "Combined Limits User"},
     )
@@ -278,7 +278,7 @@ async def test_catalog_scoped_rate_limit(apikey_manager):
     # Create principal
     principal = Principal(
         provider="local",
-        subject_id=f"catalog_rate_{generate_id_hex()[:8]}",
+        subject_id=f"catalog_rate_{generate_test_id()}",
         roles=["user"],
         attributes={"name": "Catalog Rate Test"},
     )
@@ -336,7 +336,7 @@ async def test_time_expiration_condition(apikey_manager):
     # Create principal
     principal = Principal(
         provider="local",
-        subject_id=f"expiry_test_{generate_id_hex()[:8]}",
+        subject_id=f"expiry_test_{generate_test_id()}",
         roles=["user"],
         attributes={"name": "Expiry Test User"},
     )
@@ -369,7 +369,7 @@ async def test_time_window_condition(apikey_manager):
     # Create principal
     principal = Principal(
         provider="local",
-        subject_id=f"window_test_{generate_id_hex()[:8]}",
+        subject_id=f"window_test_{generate_test_id()}",
         roles=["user"],
         attributes={"name": "Time Window Test"},
     )
@@ -405,7 +405,7 @@ async def test_read_write_separate_rate_limits(apikey_manager):
     # Create principal
     principal = Principal(
         provider="local",
-        subject_id=f"rw_rate_{generate_id_hex()[:8]}",
+        subject_id=f"rw_rate_{generate_test_id()}",
         roles=["user"],
         attributes={"name": "Read/Write Rate Test"},
     )

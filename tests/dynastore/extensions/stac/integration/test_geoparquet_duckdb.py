@@ -15,7 +15,7 @@ examples/geoparquet-duckdb-opensearch/README.md:
 """
 
 import json
-from dynastore.tools.identifiers import generate_id_hex
+from tests.dynastore.test_utils import generate_test_id
 from pathlib import Path
 
 import pytest
@@ -49,7 +49,7 @@ pytestmark = [
 
 @pytest.fixture
 def run_id():
-    return generate_id_hex()[:8]
+    return generate_test_id()
 
 
 @pytest.fixture

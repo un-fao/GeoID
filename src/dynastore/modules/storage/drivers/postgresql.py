@@ -196,7 +196,7 @@ class PostgresStorageDriver(ModuleProtocol):
     ) -> None:
         """Create PG hub table + sidecar tables for a collection.
 
-        Creates ``pg_storage_locations`` and ``pg_collection_metadata``
+        Creates ``pg_storage_locations`` and ``metadata``
         if they don't already exist, generates a unique ``physical_table``
         name, creates the hub table, creates sidecar tables, and registers
         the mapping in ``pg_storage_locations``.
@@ -383,14 +383,14 @@ class PostgresStorageDriver(ModuleProtocol):
         *,
         db_resource=None,
     ) -> Optional[Dict[str, Any]]:
-        """Read collection metadata from pg_collection_metadata."""
+        """Read collection metadata from metadata."""
         from dynastore.modules.db_config.query_executor import (
             DQLQuery, ResultHandler, managed_transaction,
         )
         import json
 
         schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
-        query_sql = f'SELECT * FROM "{schema}".pg_collection_metadata WHERE collection_id = :collection_id;'
+        query_sql = f'SELECT * FROM "{schema}".metadata WHERE collection_id = :collection_id;'
 
         async def _query(conn):
             row = await DQLQuery(
@@ -429,7 +429,7 @@ class PostgresStorageDriver(ModuleProtocol):
         *,
         db_resource=None,
     ) -> None:
-        """Upsert collection metadata into pg_collection_metadata."""
+        """Upsert collection metadata into metadata."""
         from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
         import json
 
@@ -443,7 +443,7 @@ class PostgresStorageDriver(ModuleProtocol):
             return json.dumps(val, default=str)
 
         upsert_sql = f"""
-            INSERT INTO "{schema}".pg_collection_metadata
+            INSERT INTO "{schema}".metadata
                 (collection_id, title, description, keywords, license,
                  extent, providers, summaries, links, assets, item_assets,
                  extra_metadata)

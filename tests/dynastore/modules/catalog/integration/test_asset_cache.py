@@ -10,7 +10,7 @@ Verifies that:
 """
 
 import pytest
-from dynastore.tools.identifiers import generate_id_hex
+from tests.dynastore.test_utils import generate_test_id
 
 from dynastore.modules.catalog.asset_service import (
     AssetService,
@@ -41,14 +41,14 @@ async def test_asset_cache_targeted_invalidation(
 
     # Create two assets
     asset1 = AssetBase(
-        asset_id=f"cache_test_1_{generate_id_hex()[:8]}",
+        asset_id=f"cache_test_1_{generate_test_id()}",
         uri="gs://test/asset1.tif",
         asset_type=AssetTypeEnum.RASTER,
         metadata={"version": 1},
     )
 
     asset2 = AssetBase(
-        asset_id=f"cache_test_2_{generate_id_hex()[:8]}",
+        asset_id=f"cache_test_2_{generate_test_id()}",
         uri="gs://test/asset2.tif",
         asset_type=AssetTypeEnum.RASTER,
         metadata={"version": 1},
@@ -139,7 +139,7 @@ async def test_asset_cache_bypassed_with_db_resource(
 
     # Create an asset
     asset = AssetBase(
-        asset_id=f"txn_test_{generate_id_hex()[:8]}",
+        asset_id=f"txn_test_{generate_test_id()}",
         uri="gs://test/txn.tif",
         asset_type=AssetTypeEnum.RASTER,
         metadata={"value": 1},
@@ -203,7 +203,7 @@ async def test_asset_cache_invalidation_on_delete(
 
     # Create and cache an asset
     asset = AssetBase(
-        asset_id=f"delete_test_{generate_id_hex()[:8]}",
+        asset_id=f"delete_test_{generate_test_id()}",
         uri="gs://test/delete.tif",
         asset_type=AssetTypeEnum.RASTER,
         metadata={"temp": True},
@@ -254,7 +254,7 @@ async def test_asset_cache_performance_improvement(
     assets = []
     for i in range(10):
         asset = AssetBase(
-            asset_id=f"perf_test_{i}_{generate_id_hex()[:8]}",
+            asset_id=f"perf_test_{i}_{generate_test_id()}",
             uri=f"gs://test/perf_{i}.tif",
             asset_type=AssetTypeEnum.RASTER,
             metadata={"index": i},

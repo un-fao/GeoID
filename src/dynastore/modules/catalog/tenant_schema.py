@@ -61,8 +61,8 @@ CREATE TABLE IF NOT EXISTS {schema}.pg_storage_locations (
 );
 """
 
-PG_COLLECTION_METADATA_DDL = """
-CREATE TABLE IF NOT EXISTS {schema}.pg_collection_metadata (
+METADATA_DDL = """
+CREATE TABLE IF NOT EXISTS {schema}.metadata (
     collection_id VARCHAR NOT NULL PRIMARY KEY,
     title JSONB,
     description JSONB,
@@ -139,7 +139,7 @@ async def initialize_tenant_shell(conn: DbResource, schema: str, catalog_id: str
     await DDLQuery(
         TENANT_COLLECTIONS_DDL
         + PG_STORAGE_LOCATIONS_DDL
-        + PG_COLLECTION_METADATA_DDL
+        + METADATA_DDL
         + TENANT_CATALOG_CONFIGS_DDL
         + TENANT_COLLECTION_CONFIGS_DDL
     ).execute(conn, schema=schema)

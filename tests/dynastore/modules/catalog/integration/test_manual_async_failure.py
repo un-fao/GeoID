@@ -25,9 +25,9 @@ def cleanup_listeners():
 @pytest_asyncio.fixture
 async def sample_catalog(app_lifespan):
     catalogs = get_protocol(CatalogsProtocol)
-    from dynastore.tools.identifiers import generate_id_hex
+    from tests.dynastore.test_utils import generate_test_id
 
-    uid = f"tr_{generate_id_hex()[:8]}"
+    uid = f"tr_{generate_test_id()}"
     c = Catalog(id=uid, description={"en": "Test Rollback"})
     try:
         await catalogs.create_catalog(c)

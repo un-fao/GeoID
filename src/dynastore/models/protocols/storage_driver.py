@@ -266,7 +266,7 @@ class CollectionStorageDriverProtocol(Protocol):
         """Store collection metadata in this driver's storage.
 
         Each driver persists in its own format:
-        - PG: ``pg_collection_metadata`` table (UPSERT)
+        - PG: ``metadata`` table (UPSERT)
         - Iceberg: table properties via ``table.transaction().set_properties()``
         - DuckDB: sidecar JSON file or parquet metadata
         - ES: index settings/mappings or ``_meta`` field

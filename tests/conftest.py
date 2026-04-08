@@ -28,7 +28,7 @@ if "DATABASE_URL" not in os.environ:
     )
 
 import json
-from dynastore.tools.identifiers import generate_id_hex
+from tests.dynastore.test_utils import generate_test_id
 import pytest
 import pytest_asyncio
 import requests
@@ -175,7 +175,7 @@ def wait_for_db():
 @pytest.fixture(scope="session")
 def data_id():
     """Returns a unique session ID to avoid naming collisions in the database."""
-    return generate_id_hex()[:8]
+    return generate_test_id(16)
 
 
 @pytest.fixture

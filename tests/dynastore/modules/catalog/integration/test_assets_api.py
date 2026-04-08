@@ -6,7 +6,7 @@ from dynastore.modules.catalog.asset_service import (
     AssetBase,
     AssetTypeEnum,
 )
-from dynastore.tools.identifiers import generate_id_hex
+from tests.dynastore.test_utils import generate_test_id
 
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("assets")
@@ -29,7 +29,7 @@ async def test_assets_api_crud(app_lifespan, catalog_obj, catalog_id, collection
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             
             # --- Catalog Asset ---
-            cat_asset_id = f"CAT_ASSET_{generate_id_hex()[:8]}"
+            cat_asset_id = f"CAT_ASSET_{generate_test_id()}"
             cat_asset_payload = {
                 "asset_id": cat_asset_id,
                 "uri": "gs://bucket/cat_asset.tif",
@@ -62,7 +62,7 @@ async def test_assets_api_crud(app_lifespan, catalog_obj, catalog_id, collection
             assert resp.json()["metadata"]["updated"] is True
 
             # --- Collection Asset ---
-            coll_asset_id = f"COLL_ASSET_{generate_id_hex()[:8]}"
+            coll_asset_id = f"COLL_ASSET_{generate_test_id()}"
             coll_asset_payload = {
                 "asset_id": coll_asset_id,
                 "uri": "gs://bucket/coll_asset.tif",

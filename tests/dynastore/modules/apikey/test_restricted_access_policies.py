@@ -24,7 +24,7 @@ Covers:
 """
 
 import pytest
-from dynastore.tools.identifiers import generate_id_hex
+from tests.dynastore.test_utils import generate_test_id
 from dynastore.modules.apikey.apikey_service import ApiKeyService as ApiKeyManager
 from dynastore.modules.apikey.models import (
     ApiKeyCreate, Principal, Policy, Condition
@@ -60,7 +60,7 @@ async def test_restricted_collection_post_only(apikey_manager):
     # Create principal with restricted policy
     principal = Principal(
         provider="local",
-        subject_id=f"restricted_{generate_id_hex()[:8]}",
+        subject_id=f"restricted_{generate_test_id()}",
         roles=[],  # No roles, only custom policies
         attributes={"name": "Restricted User"}
     )
@@ -68,7 +68,7 @@ async def test_restricted_collection_post_only(apikey_manager):
     
     # Create restrictive policy: only POST to /features/catalogs/demo_catalog/collections/demo_collection/items
     restricted_policy = Policy(
-        id=f"restricted_post_{generate_id_hex()[:8]}",
+        id=f"restricted_post_{generate_test_id()}",
         effect="allow",
         actions=["POST"],
         resources=[
@@ -128,7 +128,7 @@ async def test_item_level_get_access(apikey_manager):
     # Create principal
     principal = Principal(
         provider="local",
-        subject_id=f"item_reader_{generate_id_hex()[:8]}",
+        subject_id=f"item_reader_{generate_test_id()}",
         roles=[],
         attributes={"name": "Item Reader"}
     )
@@ -136,7 +136,7 @@ async def test_item_level_get_access(apikey_manager):
     
     # Policy: only GET /features/catalogs/demo_catalog/collections/demo_collection/items/{item_id}
     get_item_policy = Policy(
-        id=f"get_item_{generate_id_hex()[:8]}",
+        id=f"get_item_{generate_test_id()}",
         effect="allow",
         actions=["GET"],
         resources=[
@@ -190,7 +190,7 @@ async def test_query_parameter_enforcement(apikey_manager):
     # Create principal
     principal = Principal(
         provider="local",
-        subject_id=f"query_enforced_{generate_id_hex()[:8]}",
+        subject_id=f"query_enforced_{generate_test_id()}",
         roles=[],
         attributes={"name": "Query Enforced User"}
     )
@@ -198,7 +198,7 @@ async def test_query_parameter_enforcement(apikey_manager):
     
     # Policy: DELETE only with force=false
     delete_policy = Policy(
-        id=f"delete_safe_{generate_id_hex()[:8]}",
+        id=f"delete_safe_{generate_test_id()}",
         effect="allow",
         actions=["DELETE"],
         resources=[
@@ -240,7 +240,7 @@ async def test_deny_all_except_specific_operations(apikey_manager):
     # Create principal with minimal permissions
     principal = Principal(
         provider="local",
-        subject_id=f"minimal_{generate_id_hex()[:8]}",
+        subject_id=f"minimal_{generate_test_id()}",
         roles=[],
         attributes={"name": "Minimal User"}
     )
@@ -248,7 +248,7 @@ async def test_deny_all_except_specific_operations(apikey_manager):
     
     # Only allow: POST to collection and GET specific items
     post_policy = Policy(
-        id=f"post_only_{generate_id_hex()[:8]}",
+        id=f"post_only_{generate_test_id()}",
         effect="allow",
         actions=["POST"],
         resources=[
@@ -257,7 +257,7 @@ async def test_deny_all_except_specific_operations(apikey_manager):
     )
     
     get_policy = Policy(
-        id=f"get_item_only_{generate_id_hex()[:8]}",
+        id=f"get_item_only_{generate_test_id()}",
         effect="allow",
         actions=["GET"],
         resources=[
@@ -314,7 +314,7 @@ async def test_cross_catalog_access_denial(apikey_manager):
     # Create principal restricted to one catalog
     principal = Principal(
         provider="local",
-        subject_id=f"single_catalog_{generate_id_hex()[:8]}",
+        subject_id=f"single_catalog_{generate_test_id()}",
         roles=[],
         attributes={"name": "Single Catalog User"}
     )
@@ -322,7 +322,7 @@ async def test_cross_catalog_access_denial(apikey_manager):
     
     # Policy: only access demo_catalog
     catalog_policy = Policy(
-        id=f"demo_catalog_only_{generate_id_hex()[:8]}",
+        id=f"demo_catalog_only_{generate_test_id()}",
         effect="allow",
         actions=["GET", "POST", "PUT", "DELETE"],
         resources=[
@@ -370,7 +370,7 @@ async def test_no_list_operations_allowed(apikey_manager):
     # Create principal
     principal = Principal(
         provider="local",
-        subject_id=f"no_list_{generate_id_hex()[:8]}",
+        subject_id=f"no_list_{generate_test_id()}",
         roles=[],
         attributes={"name": "No List User"}
     )
@@ -378,7 +378,7 @@ async def test_no_list_operations_allowed(apikey_manager):
     
     # Policy: only GET specific items, no listing
     item_only_policy = Policy(
-        id=f"item_only_{generate_id_hex()[:8]}",
+        id=f"item_only_{generate_test_id()}",
         effect="allow",
         actions=["GET"],
         resources=[

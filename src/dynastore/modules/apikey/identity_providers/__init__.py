@@ -16,14 +16,15 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""Identity Provider SPIs for DynaStore IAG Framework v2.0"""
+"""Identity Provider SPIs for DynaStore v1.0
 
-from .local_db_identity import LocalDBIdentityProvider
+Local OAuth removed in v1.0 — use Keycloak as on-premise IdP.
+"""
+
 from .keycloak_identity import KeycloakIdentityProvider
 from .apikey_identity import ApiKeyIdentityProvider
 
 __all__ = [
-    "LocalDBIdentityProvider",
     "KeycloakIdentityProvider",
     "ApiKeyIdentityProvider",
 ]

@@ -1,4 +1,4 @@
-from dynastore.tools.identifiers import generate_id_hex
+from tests.dynastore.test_utils import generate_test_id
 
 import pytest
 import asyncio
@@ -18,7 +18,7 @@ async def test_async_hard_deletion_failure(app_lifespan):
     2. A CATALOG_HARD_DELETION_FAILURE event is emitted.
     """
 
-    catalog_id = f"async_fail_{generate_id_hex()[:8]}"
+    catalog_id = f"async_fail_{generate_test_id()}"
 
     from dynastore.modules.concurrency import await_all_background_tasks
 

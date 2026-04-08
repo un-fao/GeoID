@@ -46,8 +46,3 @@ class ProxyProtocol(Protocol):
         """Public API function to delete a short URL."""
         ...
 
-    async def initialize_partitions(self, engine: Any, for_date: datetime) -> None:
-        """Public API function to initialize partitions for a given date."""
-        ...
-
-    

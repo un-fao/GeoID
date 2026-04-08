@@ -1,4 +1,4 @@
-from dynastore.tools.identifiers import generate_id_hex
+from tests.dynastore.test_utils import generate_test_id
 
 import pytest
 from typing import Any, Dict, Optional
@@ -38,8 +38,8 @@ async def test_logical_item_retrieval(app_lifespan):
 
     catalogs_svc: CatalogsProtocol = get_protocol(CatalogsProtocol)
 
-    catalog_id = f"logical_cat_{generate_id_hex()[:8]}"
-    collection_id = f"logical_coll_{generate_id_hex()[:8]}"
+    catalog_id = f"logical_cat_{generate_test_id()}"
+    collection_id = f"logical_coll_{generate_test_id()}"
 
     # Setup
     if await catalogs_svc.get_catalog_model(catalog_id):

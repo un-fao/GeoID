@@ -37,7 +37,7 @@ BEGIN
 
     IF new_spatial_extent IS NOT NULL AND new_temporal_extent IS NOT NULL THEN
         EXECUTE format(
-            'INSERT INTO %I.pg_collection_metadata (collection_id, extent)
+            'INSERT INTO %I.metadata (collection_id, extent)
              VALUES ($1, $2)
              ON CONFLICT (collection_id) DO UPDATE SET extent = EXCLUDED.extent',
             schema_name

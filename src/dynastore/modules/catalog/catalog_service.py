@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS {schema}.collections (
 
 # Internal PG driver tables — always created alongside collections.
 # pg_storage_locations: maps collection_id → physical_table (PG hub table name).
-# pg_collection_metadata: stores all descriptive metadata for collections.
+# metadata: stores all descriptive metadata for collections.
 PG_STORAGE_LOCATIONS_DDL = """
 CREATE TABLE IF NOT EXISTS {schema}.pg_storage_locations (
     collection_id VARCHAR NOT NULL PRIMARY KEY,
@@ -99,8 +99,8 @@ CREATE TABLE IF NOT EXISTS {schema}.pg_storage_locations (
 );
 """
 
-PG_COLLECTION_METADATA_DDL = """
-CREATE TABLE IF NOT EXISTS {schema}.pg_collection_metadata (
+METADATA_DDL = """
+CREATE TABLE IF NOT EXISTS {schema}.metadata (
     collection_id VARCHAR NOT NULL PRIMARY KEY,
     title JSONB,
     description JSONB,
@@ -164,11 +164,11 @@ async def initialize_core_tenant_tables(conn: DbResource, schema: str, catalog_i
     await DDLQuery(
         TENANT_COLLECTIONS_DDL
         + PG_STORAGE_LOCATIONS_DDL
-        + PG_COLLECTION_METADATA_DDL
+        + METADATA_DDL
         + TENANT_CATALOG_CONFIGS_DDL
         + TENANT_COLLECTION_CONFIGS_DDL
     ).execute(conn, schema=schema)
-    logger.info(f"Core tenant tables (collections, configs, pg_storage_locations, pg_collection_metadata) initialized for {schema}.")
+    logger.info(f"Core tenant tables (collections, configs, pg_storage_locations, metadata) initialized for {schema}.")
 
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.query_builder import QueryRequest, QueryResponse
@@ -539,7 +539,7 @@ class CatalogService(CatalogsProtocol):
             await DDLQuery(
                 TENANT_COLLECTIONS_DDL
                 + PG_STORAGE_LOCATIONS_DDL
-                + PG_COLLECTION_METADATA_DDL
+                + METADATA_DDL
                 + TENANT_CATALOG_CONFIGS_DDL
                 + TENANT_COLLECTION_CONFIGS_DDL
             ).execute(conn, schema=physical_schema)

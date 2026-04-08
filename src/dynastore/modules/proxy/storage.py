@@ -25,7 +25,7 @@ from typing import Optional, List, AsyncGenerator
 from dynastore.modules.db_config.query_executor import DbConnection, DbResource
 from dynastore.tools.plugin import ProtocolPlugin
 
-from .models import ShortURL, AnalyticsPage, URLAnalytics
+from .models import ShortURL, AnalyticsPage
 
 
 class AbstractProxyStorage(ProtocolPlugin[object]):
@@ -55,10 +55,6 @@ class AbstractProxyStorage(ProtocolPlugin[object]):
         yield
 
     @abc.abstractmethod
-    async def setup_partitions(self, conn: DbConnection, for_date: datetime.date):
-        raise NotImplementedError
-
-    @abc.abstractmethod
     async def insert_short_url(self, conn: DbResource, schema: str, long_url: str, custom_key: Optional[str] = None, collection_id: Optional[str] = None, comment: Optional[str] = None) -> ShortURL:
         raise NotImplementedError
 
@@ -71,16 +67,17 @@ class AbstractProxyStorage(ProtocolPlugin[object]):
         raise NotImplementedError
 
     @abc.abstractmethod
-    async def insert_redirect_log(self, conn: DbResource, schema: str, short_key: str, ip_address: str, user_agent: str, referrer: str, timestamp: datetime.datetime):
+    async def insert_redirect_log(self, schema: str, short_key: str, ip_address: str, user_agent: str, referrer: str, timestamp: datetime.datetime):
+        """Buffer a redirect log. Analytics are stored in Elasticsearch."""
         raise NotImplementedError
 
     @abc.abstractmethod
-    async def flush(self, conn: DbResource):
-        """Flushes any buffered logs to the database."""
+    async def flush(self):
+        """Flushes any buffered analytics to Elasticsearch."""
         raise NotImplementedError
 
     @abc.abstractmethod
-    async def select_analytics(self, conn: DbResource, schema: str, short_key: str, cursor: Optional[str] = None, page_size: int = 100, aggregate: bool = False, start_date: Optional[datetime.datetime] = None, end_date: Optional[datetime.datetime] = None) -> AnalyticsPage:
+    async def select_analytics(self, schema: str, short_key: str, cursor: Optional[str] = None, page_size: int = 100, aggregate: bool = False, start_date: Optional[datetime.datetime] = None, end_date: Optional[datetime.datetime] = None) -> AnalyticsPage:
         raise NotImplementedError
 
     @abc.abstractmethod

@@ -2,7 +2,7 @@ import pytest
 import logging
 import os
 import asyncio
-from dynastore.tools.identifiers import generate_id_hex
+from tests.dynastore.test_utils import generate_test_id
 
 logger = logging.getLogger(__name__)
 from dynastore.modules.gcp.gcp_module import GCPModule
@@ -26,7 +26,7 @@ async def test_gcp_event_filtering_multiple_prefixes(app_lifespan, monkeypatch):
     """
     import uuid
 
-    catalog_id = f"test_event_multi_{generate_id_hex()[:12]}"
+    catalog_id = f"test_event_multi_{generate_test_id(12)}"
     from dynastore.models.protocols import StorageProtocol, EventingProtocol, ConfigsProtocol
     from dynastore.modules import get_protocol
     gcp_module = get_protocol(StorageProtocol)
@@ -159,7 +159,7 @@ async def test_gcp_event_filtering_custom_prefixes(app_lifespan, monkeypatch):
     """
     import uuid
 
-    catalog_id = f"test_event_custom_{generate_id_hex()[:12]}"
+    catalog_id = f"test_event_custom_{generate_test_id(12)}"
     from dynastore.models.protocols import StorageProtocol, ConfigsProtocol
     from dynastore.modules import get_protocol
     gcp_module = get_protocol(StorageProtocol)

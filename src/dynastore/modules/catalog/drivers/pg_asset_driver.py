@@ -24,7 +24,7 @@ Owns the DDL and all SQL operations for:
 - ``{schema}.asset_references`` — cascade-delete coordination table
 
 Also implements ``get_collection_metadata()`` / ``set_collection_metadata()``
-by reading/upserting ``{schema}.pg_collection_metadata`` — the same table used
+by reading/upserting ``{schema}.metadata`` — the same table used
 by ``PostgresStorageDriver`` — enabling ``CollectionMetadataEnricherProtocol``
 to enrich collection descriptors with asset-derived statistics (counts, last
 ingestion timestamp, coverage bounds).
@@ -610,7 +610,7 @@ class PostgresAssetDriver:
             return rows or []
 
     # ------------------------------------------------------------------
-    # Collection metadata (reuses pg_collection_metadata)
+    # Collection metadata (reuses metadata)
     # ------------------------------------------------------------------
 
     async def get_collection_metadata(
@@ -620,7 +620,7 @@ class PostgresAssetDriver:
         *,
         db_resource: Optional[Any] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Read collection metadata from ``pg_collection_metadata``.
+        """Read collection metadata from ``metadata``.
 
         The same table is used by ``PostgresStorageDriver`` for feature
         collection metadata — scoped to ``collection_id``.
@@ -631,7 +631,7 @@ class PostgresAssetDriver:
 
         sql = f"""
             SELECT *
-            FROM "{schema}".pg_collection_metadata
+            FROM "{schema}".metadata
             WHERE collection_id = :collection_id
         """
         async with managed_transaction(db_resource or self.engine) as conn:
@@ -647,7 +647,7 @@ class PostgresAssetDriver:
         *,
         db_resource: Optional[Any] = None,
     ) -> None:
-        """Upsert collection metadata into ``pg_collection_metadata``."""
+        """Upsert collection metadata into ``metadata``."""
         schema = await self._resolve_schema(catalog_id, db_resource)
         if not schema:
             return
@@ -674,7 +674,7 @@ class PostgresAssetDriver:
         update_list = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in columns)
 
         sql = text(f"""
-            INSERT INTO "{schema}".pg_collection_metadata (collection_id, {col_list})
+            INSERT INTO "{schema}".metadata (collection_id, {col_list})
             VALUES (:collection_id, {val_list})
             ON CONFLICT (collection_id) DO UPDATE SET {update_list}
         """)

@@ -18,12 +18,11 @@
 
 import logging
 import datetime
-from typing import AsyncGenerator, Optional, cast, List, Any
+from typing import AsyncGenerator, Optional, List, Any
 from dynastore.modules import ModuleProtocol, get_protocol
 from dynastore.models.protocols import ProxyProtocol, DatabaseProtocol
 from .storage import AbstractProxyStorage
 from dynastore.modules.proxy.models import ShortURL, AnalyticsPage
-from . import queries
 from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
 from dynastore.modules.db_config.query_executor import managed_transaction, DbResource
 logger = logging.getLogger(__name__)
@@ -54,55 +53,21 @@ CREATE TABLE IF NOT EXISTS {schema}.short_urls_catalog PARTITION OF {schema}.sho
 FOR VALUES IN ('_catalog_');
 """
 
-TENANT_URL_ANALYTICS_DDL = """
-CREATE TABLE IF NOT EXISTS {schema}.url_analytics (
-    id BIGSERIAL,
-    short_key_ref VARCHAR(20) NOT NULL,
-    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    ip_address INET,
-    user_agent TEXT,
-    referrer TEXT,
-    country_code VARCHAR(2),
-    PRIMARY KEY (timestamp, id)
-) PARTITION BY RANGE (timestamp);
-"""
-
 @lifecycle_registry.sync_catalog_initializer
 async def _initialize_proxy_tenant_slice(conn: DbResource, schema: str, catalog_id: str):
-    """Initializes the proxy module's slice of the tenant schema."""
-    from dynastore.modules.db_config.locking_tools import execute_safe_ddl, check_table_exists
+    """Initializes the proxy module's slice of the tenant schema (URL shortening only)."""
     from dynastore.modules.db_config.query_executor import DDLQuery
     from .queries import CREATE_SHORT_URL_SEQUENCE, CREATE_BASE62_FUNCTION, CREATE_OBFUSCATE_FUNCTION
-    
-    # 1. Ensure the sequence and parent tables exist
+
     await CREATE_SHORT_URL_SEQUENCE.execute(conn, schema=schema)
     await CREATE_BASE62_FUNCTION.execute(conn, schema=schema)
     await CREATE_OBFUSCATE_FUNCTION.execute(conn, schema=schema)
-    
+
     logger.info(f"PROXY_INIT: Creating short_urls table for schema: {schema}")
     await DDLQuery(TENANT_SHORT_URLS_DDL).execute(conn, schema=schema)
     logger.info(f"PROXY_INIT: Creating short_urls_catalog partition for schema: {schema}")
     await DDLQuery(TENANT_SHORT_URLS_CATALOG_PARTITION_DDL).execute(conn, schema=schema)
-    
-    async def table_exists_check():
-        return await check_table_exists(conn, "url_analytics", schema)
 
-    # 2. Partitioned Tables (Analytics)
-    logger.info(f"Creating url_analytics table for schema '{schema}'...")
-    if not await table_exists_check():
-        await DDLQuery(TENANT_URL_ANALYTICS_DDL).execute(conn, schema=schema)
-    
-    logger.info(f"Creating url_analytics partitions for schema '{schema}'...")
-    await maintenance_tools.ensure_future_partitions(conn, schema=schema, table="url_analytics", interval="monthly", periods_ahead=12)
-    await maintenance_tools.register_retention_policy(conn, schema=schema, table="url_analytics", policy="prune", interval="daily", retention_period="1 month", column="timestamp")
-    await maintenance_tools.register_partition_creation_policy(conn, schema=schema, table="url_analytics", interval="monthly", periods_ahead=3)
-    
-    # 3. Aggregates Table (for optimized analytics queries)
-    from .queries import CREATE_PROXY_AGGREGATES_TABLE, CREATE_PROXY_AGGREGATES_INDEX_KEY_PERIOD, CREATE_PROXY_AGGREGATES_INDEX_PERIOD_BRIN
-    await CREATE_PROXY_AGGREGATES_TABLE.execute(conn, schema=schema)
-    await CREATE_PROXY_AGGREGATES_INDEX_KEY_PERIOD.execute(conn, schema=schema)
-    await CREATE_PROXY_AGGREGATES_INDEX_PERIOD_BRIN.execute(conn, schema=schema)
-    
     logger.info(f"Proxy tenant slice initialization complete for schema '{schema}'")
 
 
@@ -178,26 +143,29 @@ class ProxyModule(ModuleProtocol, ProxyProtocol):
             return await self.storage_driver.select_long_url(tx_engine, schema, short_key)
 
     async def log_redirect(self, engine: Any, catalog_id: str, short_key: str, ip_address: str, user_agent: str, referrer: str, timestamp: datetime.datetime) -> None:
-        """ProxyProtocol: Logs a redirect event."""
+        """ProxyProtocol: Logs a redirect event to Elasticsearch."""
         from dynastore.models.protocols import CatalogsProtocol
         catalogs = get_protocol(CatalogsProtocol)
-        # Resolve schema early
         async with managed_transaction(engine) as tx_engine:
             schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=tx_engine)
             if not schema:
                 logger.warning(f"Could not log redirect: Catalog '{catalog_id}' not found.")
                 return
-        await self.storage_driver.insert_redirect_log(engine, schema, short_key, ip_address, user_agent, referrer, timestamp)
+        await self.storage_driver.insert_redirect_log(schema, short_key, ip_address, user_agent, referrer, timestamp)
 
     async def get_analytics(self, engine: Any, catalog_id: str, short_key: str, cursor: Optional[str] = None, page_size: int = 100, aggregate: bool = False, start_date: Optional[datetime.datetime] = None, end_date: Optional[datetime.datetime] = None) -> AnalyticsPage:
-        """ProxyProtocol: Gets analytics for a short URL."""
+        """ProxyProtocol: Gets analytics from Elasticsearch."""
         from dynastore.models.protocols import CatalogsProtocol
         catalogs = get_protocol(CatalogsProtocol)
         async with managed_transaction(engine) as tx_engine:
             schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=tx_engine)
             if not schema:
                 return AnalyticsPage(data=[], long_url=None)
-            return await self.storage_driver.select_analytics(tx_engine, schema, short_key, cursor, page_size, aggregate, start_date, end_date)
+            page = await self.storage_driver.select_analytics(schema, short_key, cursor, page_size, aggregate, start_date, end_date)
+            # Enrich with long_url from PG
+            if not page.long_url:
+                page.long_url = await self.storage_driver.select_long_url(tx_engine, schema, short_key)
+            return page
 
     async def delete_short_url(self, engine: Any, catalog_id: str, short_key: str) -> Optional[str]:
         """ProxyProtocol: Deletes a short URL."""
@@ -208,17 +176,6 @@ class ProxyModule(ModuleProtocol, ProxyProtocol):
             if not schema:
                 return None
             return await self.storage_driver.drop_short_url(tx_engine, schema, short_key)
-
-    async def initialize_partitions(self, engine: Any, for_date: datetime.date) -> None:
-        """ProxyProtocol: Initializes partitions for a given date."""
-        from dynastore.modules.db_config.query_executor import DQLQuery
-        async with managed_transaction(engine) as tx_engine:
-            records = await DQLQuery("SELECT physical_schema FROM catalog.catalogs WHERE deleted_at IS NULL").execute(tx_engine)
-            if records:
-                for r in records:
-                    schema = dict(r).get("physical_schema") if hasattr(r, "keys") else getattr(r, "physical_schema", None)
-                    if schema:
-                        await self.storage_driver.setup_partitions(tx_engine, schema, for_date)
 
     @asynccontextmanager
     async def lifespan(self, app_state: object) -> AsyncGenerator[None, None]:
@@ -264,25 +221,11 @@ class ProxyModule(ModuleProtocol, ProxyProtocol):
             # Let the driver initialise its schema/tables via its own lifespan
             await stack.enter_async_context(self.storage_driver.lifespan(app_state))
 
-            async with managed_transaction(engine) as conn:
-                async with maintenance_tools.acquire_startup_lock(conn, "proxy_module"):
-                    await maintenance_tools.ensure_future_partitions(
-                        conn, schema="proxy", table="url_analytics", interval="monthly", periods_ahead=1
-                    )
-                    await maintenance_tools.register_retention_policy(
-                        conn, schema="proxy", table="url_analytics",
-                        retention_period="6 months", schedule_cron="30 3 * * 0"
-                    )
-                    await maintenance_tools.register_partition_creation_policy(
-                        conn, schema="proxy", table="url_analytics",
-                        interval="monthly", periods_ahead=3,
-                    )
-
             yield
 
-        # Graceful Shutdown: Flush remaining logs in buffer
+        # Graceful Shutdown: Flush remaining analytics to ES
         if hasattr(self.storage_driver, 'flush'):
-            await self.storage_driver.flush(engine)
+            await self.storage_driver.flush()
 
 # --- Public API ---
 
@@ -319,6 +262,3 @@ async def delete_short_url(engine: DbResource, catalog_id: str, short_key: str) 
     """Public API function to delete a short URL."""
     return await _get_proxy_module().delete_short_url(engine, catalog_id, short_key)
 
-async def initialize_partitions(engine: DbResource, for_date: datetime.date):
-    """Public API function to initialize partitions for a given date."""
-    await _get_proxy_module().initialize_partitions(engine, for_date)

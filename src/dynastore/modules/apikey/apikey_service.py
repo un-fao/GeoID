@@ -474,16 +474,6 @@ class ApiKeyService(ApiKeyProtocol):
                 schema=schema,
             )
 
-            # B. Sync to new v2.1 Identity Authorization tables
-            await self.storage.set_identity_authorization(
-                provider=principal.provider,
-                subject_id=principal.subject_id,
-                display_name=principal.display_name,
-                is_active=principal.is_active,
-                valid_until=principal.valid_until,
-                attributes=principal.attributes,
-                schema=schema,
-            )
             # Grant roles
             if principal.roles:
                 await self.storage.grant_roles(
@@ -810,7 +800,7 @@ class ApiKeyService(ApiKeyProtocol):
             "scope": "api_access",
             "iat": now,
             "exp": expires_at,
-            "token_type": "access",  # Required for LocalDBIdentitySPI validation
+            "token_type": "access",
         }
 
         if scoped_policy:
@@ -1081,25 +1071,15 @@ class ApiKeyService(ApiKeyProtocol):
         )
 
         if success:
-            # 2. Sync roles and metadata to new identity tables
+            # Sync roles to identity tables if principal has roles
             principal = await self.storage.get_principal(principal_id, schema=schema)
-            if principal:
-                await self.storage.set_identity_authorization(
+            if principal and principal.roles:
+                await self.storage.grant_roles(
                     provider=provider,
                     subject_id=subject_id,
-                    display_name=principal.display_name or email,
-                    is_active=principal.is_active,
-                    valid_until=principal.valid_until,
-                    attributes=principal.attributes,
+                    roles=principal.roles,
                     schema=schema,
                 )
-                if principal.roles:
-                    await self.storage.grant_roles(
-                        provider=provider,
-                        subject_id=subject_id,
-                        roles=principal.roles,
-                        schema=schema,
-                    )
         return success
 
     async def list_identity_links(
