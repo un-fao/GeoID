@@ -86,6 +86,99 @@ async def test_bulk_item_creation_atomicity(sysadmin_in_process_client: AsyncCli
 
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("features", "assets", "stac", "config")
+async def test_single_feature_post_returns_geojson(sysadmin_in_process_client: AsyncClient, test_data_loader):
+    """POST /items with a single Feature must return a valid GeoJSON Feature (not a string repr)."""
+    catalog_id = f"c_{generate_test_id()}"
+    collection_id = "test_single_response"
+
+    catalog_data = test_data_loader("catalog.json")
+    catalog_data["id"] = catalog_id
+    r = await sysadmin_in_process_client.post("/features/catalogs", json=catalog_data, timeout=60.0)
+    assert r.status_code == 201
+
+    collection_data = test_data_loader("collection.json")
+    collection_data["id"] = collection_id
+    r = await sysadmin_in_process_client.post(
+        f"/features/catalogs/{catalog_id}/collections", json=collection_data, timeout=60.0
+    )
+    assert r.status_code == 201
+
+    single_payload = {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [12.5, 41.9]},
+        "properties": {"name": "Single Item", "value": 99},
+    }
+
+    r = await sysadmin_in_process_client.post(
+        f"/features/catalogs/{catalog_id}/collections/{collection_id}/items",
+        json=single_payload,
+        timeout=60.0,
+    )
+    assert r.status_code == 201
+    assert "Location" in r.headers
+
+    data = r.json()
+    # Must be a valid GeoJSON Feature dict, not a string
+    assert isinstance(data, dict), f"Expected dict, got {type(data)}: {str(data)[:200]}"
+    assert data["type"] == "Feature"
+    assert "id" in data
+    assert "geometry" in data
+    assert "properties" in data
+    assert data["geometry"]["type"] == "Point"
+    assert data["properties"]["name"] == "Single Item"
+    assert data["properties"]["value"] == 99
+
+
+@pytest.mark.asyncio
+@pytest.mark.enable_extensions("features", "assets", "stac", "config")
+async def test_feature_collection_post_returns_ids(sysadmin_in_process_client: AsyncClient, test_data_loader):
+    """POST /items with a FeatureCollection must return a BulkCreationResponse with ids."""
+    catalog_id = f"c_{generate_test_id()}"
+    collection_id = "test_bulk_response"
+
+    catalog_data = test_data_loader("catalog.json")
+    catalog_data["id"] = catalog_id
+    r = await sysadmin_in_process_client.post("/features/catalogs", json=catalog_data, timeout=60.0)
+    assert r.status_code == 201
+
+    collection_data = test_data_loader("collection.json")
+    collection_data["id"] = collection_id
+    r = await sysadmin_in_process_client.post(
+        f"/features/catalogs/{catalog_id}/collections", json=collection_data, timeout=60.0
+    )
+    assert r.status_code == 201
+
+    bulk_payload = test_data_loader("bulk_items.json")
+
+    r = await sysadmin_in_process_client.post(
+        f"/features/catalogs/{catalog_id}/collections/{collection_id}/items",
+        json=bulk_payload,
+        timeout=60.0,
+    )
+    assert r.status_code == 201
+
+    data = r.json()
+    assert isinstance(data, dict), f"Expected dict, got {type(data)}: {str(data)[:200]}"
+    assert "ids" in data
+    assert isinstance(data["ids"], list)
+    assert len(data["ids"]) == 2
+    # Each id must be a non-empty string
+    for fid in data["ids"]:
+        assert isinstance(fid, str) and len(fid) > 0
+
+    # Verify the created items are retrievable and match
+    for fid in data["ids"]:
+        r = await sysadmin_in_process_client.get(
+            f"/features/catalogs/{catalog_id}/collections/{collection_id}/items/{fid}"
+        )
+        assert r.status_code == 200
+        item = r.json()
+        assert item["type"] == "Feature"
+        assert item["id"] == fid
+
+
+@pytest.mark.asyncio
+@pytest.mark.enable_extensions("features", "assets", "stac", "config")
 async def test_single_item_creation_with_extra_fields(sysadmin_in_process_client: AsyncClient, test_data_loader):
     catalog_id = f"c_{generate_test_id()}"
     collection_id = "test_fix_collection"

@@ -22,7 +22,8 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Path, Query, status, Request, FastAPI
-from fastapi.responses import JSONResponse, Response, HTMLResponse
+from fastapi.responses import Response, HTMLResponse
+from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.tools.conflict_handler import conflict_to_409

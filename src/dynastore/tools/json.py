@@ -22,6 +22,8 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+from pydantic import BaseModel
+
 def _wkb_loads(data: bytes):
     """Lazy import of shapely.wkb.loads to avoid hard dependency."""
     from shapely import wkb
@@ -46,8 +48,10 @@ def orjson_default(obj: Any) -> Any:
         if obj == obj.to_integral_value():
             return int(obj)
         return float(obj)
+    if isinstance(obj, BaseModel):
+        return obj.model_dump(exclude_none=True)
     if hasattr(obj, "__geo_interface__"):
-        return str(obj)
+        return obj.__geo_interface__
     if isinstance(obj, bytes):
         try:
             return _wkb_loads(obj).wkt
@@ -56,10 +60,6 @@ def orjson_default(obj: Any) -> Any:
                 return obj.decode("utf-8")
             except UnicodeDecodeError:
                 return obj.hex()
-    if hasattr(obj, "model_dump") and callable(obj.model_dump):
-        return obj.model_dump(exclude_none=True)
-    if hasattr(obj, "dict") and callable(obj.dict):
-        return obj.dict(exclude_none=True)
 
     # For any other type that orjson can't handle, it will raise a TypeError.
     # We catch this and fall back to a simple string representation.
@@ -94,9 +94,15 @@ class CustomJSONEncoder(json.JSONEncoder):
             if o == o.to_integral_value():
                 return int(o)
             return float(o)
-        # For geospatial objects that are already Python objects (e.g., Shapely)
+        # Pydantic models MUST be checked before __geo_interface__ because
+        # geojson_pydantic models (Feature, Point, …) expose both
+        # model_dump() and __geo_interface__; str(o) on those produces the
+        # repr, not valid JSON.
+        if isinstance(o, BaseModel):
+            return o.model_dump(exclude_none=True)
+        # For geospatial objects (e.g., Shapely) return the GeoJSON dict
         if hasattr(o, "__geo_interface__"):
-            return str(o)
+            return o.__geo_interface__
         if isinstance(o, (set, frozenset)):
             return sorted(o)
         if isinstance(o, (bytes, bytearray, memoryview)):
@@ -114,10 +120,6 @@ class CustomJSONEncoder(json.JSONEncoder):
                 except UnicodeDecodeError:
                     # It's truly binary data, so represent as hex.
                     return o.hex()
-        if hasattr(o, "model_dump") and callable(o.model_dump):
-            return o.model_dump(exclude_none=True)
-        if hasattr(o, "dict") and callable(o.dict):
-            return o.dict(exclude_none=True)
 
         # Let the base class default method raise the TypeError for other
         # unserializable types, with a fallback to string representation.

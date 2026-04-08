@@ -1127,8 +1127,11 @@ class OGCFeaturesService(ExtensionProtocol):
             catalog_id, collection_id, db_resource=conn
         )
         root_url = get_root_url(request)
-        return ogc_generator._db_row_to_ogc_feature(
+        ogc_feature = ogc_generator._db_row_to_ogc_feature(
             feature, catalog_id, collection_id, root_url, layer_config
+        )
+        return JSONResponse(
+            content=ogc_feature.model_dump(exclude_none=True, by_alias=True),
         )
 
     async def add_item(
@@ -1210,10 +1213,11 @@ class OGCFeaturesService(ExtensionProtocol):
             feature_id = _resolve_feature_id(new_row)
 
             location_url = f"{root_url}/features/catalogs/{catalog_id}/collections/{collection_id}/items/{feature_id}"
+            feature = ogc_generator._db_row_to_ogc_feature(
+                new_row, catalog_id, collection_id, root_url
+            )
             return JSONResponse(
-                content=ogc_generator._db_row_to_ogc_feature(
-                    new_row, catalog_id, collection_id, root_url
-                ),
+                content=feature.model_dump(exclude_none=True, by_alias=True),
                 status_code=status.HTTP_201_CREATED,
                 headers={"Location": location_url},
             )

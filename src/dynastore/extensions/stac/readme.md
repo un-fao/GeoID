@@ -536,6 +536,127 @@ Define multidimensional data structures.
 - `sql_query`: Custom SQL query
 - `static`: Fixed values
 
+### Dimension Pagination (OGC Dimensions)
+
+When a dimension has too many members to embed inline as a `values` array
+(e.g. dekadal periods over 42 years = 1,512 members), three additional
+properties enable paginated access:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `size` | integer | Total member count — clients can assess cardinality without downloading |
+| `href` | string (URI) | Link to a paginated endpoint returning members via OGC API conventions |
+| `generator` | object | Algorithmic generation metadata (type, config, invertible, capabilities) |
+
+Small dimensions (season, land cover) keep inline `values`. Large dimensions
+use `size` + `href` + `generator`. Legacy clients ignore these properties per
+standard JSON processing rules.
+
+**Real-world example: FAO ASIS (Agricultural Stress Index, Dekadal)**
+
+The ASI-D collection has 5 dimensions: a large dekadal temporal dimension
+plus two small nominal dimensions, plus spatial axes.
+
+```json
+PUT /configs/catalogs/asis/collections/ASI-D/stac
+
+{
+  "enabled": true,
+  "enabled_extensions": ["datacube"],
+  "cube_dimensions": {
+    "time": {
+      "type": "temporal",
+      "description": "Dekadal temporal dimension — 10-day periods, 36/year. D1=1-10, D2=11-20, D3=21-end.",
+      "extent": ["1984-01-01T00:00:00Z", "2026-03-10T00:00:00Z"],
+      "step": null,
+      "unit": "dekad",
+      "size": 1512,
+      "href": "/dimensions/temporal-dekadal/members",
+      "generator": {
+        "type": "daily-period",
+        "config": {"period_days": 10, "scheme": "monthly"},
+        "invertible": true,
+        "capabilities": ["generate", "extent", "inverse", "search"],
+        "search_protocols": ["exact", "range"]
+      }
+    },
+    "season": {
+      "type": "nominal",
+      "description": "Growing season",
+      "values": ["GS1", "GS2"]
+    },
+    "land_cover": {
+      "type": "nominal",
+      "description": "Land cover type",
+      "values": ["LC-C", "LC-G"]
+    },
+    "x": {
+      "type": "spatial",
+      "axis": "x",
+      "extent": [-180.0, 179.996],
+      "reference_system": 4326
+    },
+    "y": {
+      "type": "spatial",
+      "axis": "y",
+      "extent": [-56.004, 75.004],
+      "reference_system": 4326
+    }
+  }
+}
+```
+
+The resulting STAC collection at `GET /stac/.../collections/ASI-D` includes:
+
+```json
+"cube:dimensions": {
+  "time": {
+    "type": "temporal",
+    "extent": ["1984-01-01T00:00:00Z", "2026-03-10T00:00:00Z"],
+    "unit": "dekad",
+    "size": 1512,
+    "href": "/dimensions/temporal-dekadal/members",
+    "generator": { "type": "daily-period", "config": {"period_days": 10, "scheme": "monthly"}, "invertible": true, ... }
+  },
+  "season": { "type": "nominal", "values": ["GS1", "GS2"] },
+  "land_cover": { "type": "nominal", "values": ["LC-C", "LC-G"] },
+  "x": { "type": "spatial", "axis": "x", ... },
+  "y": { "type": "spatial", "axis": "y", ... }
+}
+```
+
+**How clients navigate paginated dimensions:**
+
+1. Read `cube:dimensions.time.size` → 1,512 members
+2. Follow `href` → `GET /dimensions/temporal-dekadal/members?limit=100`
+3. Response is an OGC Records FeatureCollection:
+   ```json
+   {
+     "type": "FeatureCollection",
+     "numberMatched": 1512,
+     "numberReturned": 100,
+     "features": [
+       {"type": "Feature", "id": "1984-K01", "geometry": null,
+        "properties": {"dimension:type": "temporal", "dimension:code": "1984-K01",
+          "dimension:start": "1984-01-01", "dimension:end": "1984-01-10",
+          "time": {"interval": ["1984-01-01", "1984-01-10"]}}},
+       ...
+     ],
+     "links": [{"rel": "next", "href": "...?limit=100&offset=100"}]
+   }
+   ```
+4. Follow `rel:next` links for subsequent pages
+5. Call `/inverse?value=2024-01-15` → `{"valid": true, "member": "2024-K02"}` for ingestion validation
+
+**Pentadal variant:** Same pattern with `"config": {"period_days": 5, "scheme": "monthly"}` (72/year, used by CHIRPS/FAO) or `"scheme": "annual"` (73/year, used by GPCP/NOAA). The two pentadal systems are incompatible — pentad #12 refers to different calendar intervals depending on the scheme.
+
+**Generator endpoints** (provided by the OGC Dimensions extension):
+- `/dimensions/{id}/members` — paginated member enumeration
+- `/dimensions/{id}/extent` — cardinality and bounds
+- `/dimensions/{id}/inverse` — value-to-member mapping (ingestion validation)
+- `/dimensions/{id}/search` — query members (exact, range, like)
+- `/dimensions/{id}/children` — hierarchical navigation (admin boundaries, indicator trees)
+
 ### Variables
 
 ```json

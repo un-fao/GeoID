@@ -108,7 +108,12 @@ def collection_to_records_collection(
     catalog_id: str,
     root_url: str,
 ) -> rm.RecordsCatalogCollection:
-    """Convert an internal Collection model to a Records collection descriptor."""
+    """Convert an internal Collection model to a Records collection descriptor.
+
+    For dimension collections (those whose ``extra_metadata`` carries
+    ``cube:dimensions``), the generator metadata and dimension-specific
+    links (queryables, members, inverse) are surfaced in the response.
+    """
     coll_dict = collection if isinstance(collection, dict) else collection.model_dump(exclude_none=True)
 
     coll_id = coll_dict.get("id", "")
@@ -124,6 +129,53 @@ def collection_to_records_collection(
         ),
     ]
 
+    # Extract cube:dimensions from extra_metadata (set by DimensionsExtension)
+    extra_meta = coll_dict.get("extra_metadata") or {}
+    cube_dimensions = extra_meta.get("cube:dimensions")
+
+    # Add dimension-specific links when cube:dimensions is present
+    if cube_dimensions:
+        dim_base = f"{root_url}/dimensions/{coll_id}"
+        links.append(
+            Link(
+                href=f"{dim_base}/members",
+                rel="items",
+                type="application/geo+json",
+                title="Dimension members (generator API)",
+            ),
+        )
+        links.append(
+            Link(
+                href=f"{dim_base}/queryables",
+                rel="queryables",
+                type="application/schema+json",
+                title="Queryable member properties",
+            ),
+        )
+        # Check generator capabilities for inverse/hierarchical links
+        for dim_meta in cube_dimensions.values():
+            gen_meta = dim_meta.get("generator", {})
+            if gen_meta.get("invertible"):
+                links.append(
+                    Link(
+                        href=f"{dim_base}/inverse",
+                        rel="describedby",
+                        type="application/json",
+                        title="Value-to-member inverse mapping",
+                    ),
+                )
+            caps = gen_meta.get("capabilities", [])
+            if "children" in caps or "hierarchical" in caps:
+                links.append(
+                    Link(
+                        href=f"{dim_base}/children",
+                        rel="children",
+                        type="application/geo+json",
+                        title="Hierarchical children navigation",
+                    ),
+                )
+            break  # single dimension per collection
+
     return rm.RecordsCatalogCollection(
         id=coll_id,
         title=coll_dict.get("title"),
@@ -132,6 +184,7 @@ def collection_to_records_collection(
         keywords=coll_dict.get("keywords"),
         links=links,
         itemType="record",
+        cube_dimensions=cube_dimensions,
     )
 
 

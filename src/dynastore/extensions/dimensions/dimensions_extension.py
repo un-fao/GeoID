@@ -102,8 +102,11 @@ def _member_to_feature(
         "dimension:index": member.index,
     }
 
-    # Temporal interval
-    if member.start and member.end:
+    # Temporal interval — OGC Records time object + dimension:start/end
+    if member.start is not None and member.end is not None:
+        props["time"] = {"interval": [str(member.start), str(member.end)]}
+        props["dimension:start"] = str(member.start)
+        props["dimension:end"] = str(member.end)
         props["valid_from"] = str(member.start)
         props["valid_to"] = str(member.end)
 
@@ -156,6 +159,48 @@ def _infer_dim_type(generator: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
+# cube:dimensions metadata builder
+# ---------------------------------------------------------------------------
+
+
+def _build_provider(generator: Any) -> Dict[str, Any]:
+    """Build the full provider object (stored at collection level).
+
+    Mirrors the ``provider`` block produced by the ogc-dimensions reference
+    implementation's ``_dimension_to_collection()``.
+    """
+    provider: Dict[str, Any] = {
+        "type": getattr(generator, "generator_type", type(generator).__name__),
+        "invertible": getattr(generator, "invertible", False),
+        "hierarchical": getattr(generator, "hierarchical", False),
+    }
+    if hasattr(generator, "config_as_dict"):
+        provider["config"] = generator.config_as_dict()
+    if hasattr(generator, "search_protocols"):
+        provider["search"] = [s.value for s in generator.search_protocols]
+    return provider
+
+
+def _build_cube_dimensions(
+    dim_name: str,
+    dim_type: str,
+    generator: Any,
+) -> Dict[str, Any]:
+    """Build the slim ``cube:dimensions`` entry for STAC clients.
+
+    Only carries ``type`` and a slim ``provider: {type}`` reference.
+    Full provider details live at the collection level under ``provider``.
+    """
+    provider_type = getattr(generator, "generator_type", type(generator).__name__)
+    return {
+        dim_name: {
+            "type": dim_type,
+            "provider": {"type": provider_type},
+        }
+    }
+
+
+# ---------------------------------------------------------------------------
 # Materialization helpers
 # ---------------------------------------------------------------------------
 
@@ -204,19 +249,43 @@ async def _materialize_dimension(
     generator = dim_config.generator
     dim_type = _infer_dim_type(generator)
 
+    # Build provider objects: full at collection level, slim inside cube:dimensions
+    provider = _build_provider(generator)
+    cube_dimensions = _build_cube_dimensions(dim_name, dim_type, generator)
+
+    # Build extent for temporal dimensions
+    extent = None
+    if dim_type == "temporal" and dim_config.extent_min and dim_config.extent_max:
+        extent = {
+            "temporal": {
+                "interval": [
+                    [f"{dim_config.extent_min}T00:00:00Z", f"{dim_config.extent_max}T00:00:00Z"]
+                ]
+            }
+        }
+
     # Create RECORDS collection (idempotent — skips if exists)
     existing = await catalogs.get_collection(
         DIMENSIONS_CATALOG_ID, dim_name, lang="en",
     )
     if not existing:
+        collection_def: Dict[str, Any] = {
+            "id": dim_name,
+            "title": dim_name.replace("-", " ").title(),
+            "description": dim_config.description,
+            "layer_config": {"collection_type": "RECORDS"},
+            "extra_metadata": {
+                "provider": provider,
+                "cube:dimensions": cube_dimensions,
+                "itemType": "record",
+            },
+        }
+        if extent:
+            collection_def["extent"] = extent
+
         await catalogs.create_collection(
             DIMENSIONS_CATALOG_ID,
-            {
-                "id": dim_name,
-                "title": dim_name.replace("-", " ").title(),
-                "description": dim_config.description,
-                "layer_config": {"collection_type": "RECORDS"},
-            },
+            collection_def,
             db_resource=db_resource,
         )
         logger.info("Created RECORDS collection: %s/%s", DIMENSIONS_CATALOG_ID, dim_name)

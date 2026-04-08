@@ -32,6 +32,12 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - dynastore_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-gis_dev}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   catalog:
     build:
@@ -197,8 +203,8 @@ services:
       KC_DB_USERNAME: ${POSTGRES_USER:-postgres}
       KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       KC_DB_SCHEMA: keycloak
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
       KC_HOSTNAME_STRICT: "false"
       KC_HTTP_ENABLED: "true"
       KC_PROXY_HEADERS: xforwarded
@@ -206,9 +212,10 @@ services:
     volumes:
       - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
     ports:
-      - "${HOST_PORT_KEYCLOAK:-8180}:8080"
+      - "${HOST_PORT_KEYCLOAK:-8181}:8080"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     networks:
       - dynastore_net
     healthcheck:
