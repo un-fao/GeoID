@@ -130,20 +130,32 @@ class KeycloakIdentityProvider(IdentityProviderProtocol):
                 }
             )
             
+            # Detect service account (client_credentials grant):
+            # Keycloak sets client_id claim but typically no email for service accounts
+            azp = claims.get("azp")
+            client_id_claim = claims.get("client_id")
+            is_service_account = client_id_claim is not None and not claims.get("email")
+
             # Extract identity information
             identity = {
-                "provider": "keycloak",
+                "provider": "keycloak:service_account" if is_service_account else "keycloak",
                 "sub": claims.get("sub"),
                 "email": claims.get("email"),
-                "name": claims.get("name") or claims.get("preferred_username"),
+                "name": claims.get("name") or claims.get("preferred_username") or client_id_claim,
                 "email_verified": claims.get("email_verified", False),
                 "groups": claims.get("groups", []),
                 "realm_roles": claims.get("realm_access", {}).get("roles", []),
                 "client_roles": claims.get("resource_access", {}).get(self.client_id, {}).get("roles", []),
-                "raw_claims": claims
+                "azp": azp,
+                "client_id": client_id_claim,
+                "is_service_account": is_service_account,
+                "raw_claims": claims,
             }
-            
-            logger.debug(f"Validated Keycloak token for user: {identity.get('email')}")
+
+            logger.debug(
+                f"Validated Keycloak token for {'service account' if is_service_account else 'user'}: "
+                f"{identity.get('email') or client_id_claim}"
+            )
             return identity
             
         except ExpiredSignatureError:

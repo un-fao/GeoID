@@ -12,6 +12,11 @@ services:
       retries: 15
       start_period: 10s
 
+  keycloak:
+    extends:
+      file: docker-compose.yml
+      service: keycloak
+
   catalog:
     extends:
       file: docker-compose.yml
@@ -27,6 +32,8 @@ services:
     env_file: .env
     depends_on:
       db:
+        condition: service_healthy
+      keycloak:
         condition: service_healthy
     environment:
       - LOG_LEVEL=DEBUG
@@ -97,6 +104,8 @@ services:
       - ../pytest.ini:/dynastore/pytest.ini
     depends_on:
       db:
+        condition: service_healthy
+      keycloak:
         condition: service_healthy
       catalog:
         condition: service_healthy

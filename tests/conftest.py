@@ -336,6 +336,40 @@ async def sysadmin_in_process_client(app_lifespan):
 
 
 @pytest_asyncio.fixture(loop_scope="function")
+async def authenticated_api_client(app_lifespan, base_url):
+    """
+    Creates a Principal with 'admin' role and an API key.
+    No Keycloak required — exercises the API key auth path directly.
+    Yields (client, principal, raw_key) tuple.
+    """
+    from dynastore.tools.discovery import get_protocol
+    from dynastore.models.protocols.apikey import ApiKeyProtocol
+    from dynastore.models.auth import Principal
+    from dynastore.modules.apikey.models import ApiKeyCreate
+
+    apikey_svc = get_protocol(ApiKeyProtocol)
+    if not apikey_svc:
+        pytest.skip("ApiKeyProtocol not available")
+
+    principal = Principal(
+        provider="test",
+        subject_id=f"test-user-{generate_test_id()}",
+        roles=["admin"],
+    )
+    created = await apikey_svc.create_principal(principal)
+
+    key_create = ApiKeyCreate(
+        principal_id=created.id,
+        name="test-key",
+    )
+    _, raw_key = await apikey_svc.create_key(key_create)
+
+    headers = {"Authorization": f"Bearer {raw_key}"}
+    async with AsyncClient(base_url=base_url, timeout=120.0, headers=headers) as client:
+        yield client, created, raw_key
+
+
+@pytest_asyncio.fixture(loop_scope="function")
 async def async_worker_client(worker_url):
     """Asynchronous HTTP client for testing."""
     async with AsyncClient(base_url=worker_url, timeout=120.0) as client:

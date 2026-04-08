@@ -411,6 +411,15 @@ class ApiKeyService(ApiKeyProtocol):
             f"Auto-registering new principal: {provider}:{subject_id} in {catalog_id}"
         )
 
+        # Build attributes — enrich for service accounts
+        attributes: Dict[str, Any] = {}
+        if identity.get("is_service_account"):
+            attributes["service_account"] = True
+            if identity.get("client_id"):
+                attributes["client_id"] = identity["client_id"]
+            if identity.get("azp"):
+                attributes["azp"] = identity["azp"]
+
         # Create principal with default user role
         new_principal = Principal(
             id=uuid4(),
@@ -420,7 +429,7 @@ class ApiKeyService(ApiKeyProtocol):
             roles=["user"],  # Default role for authenticated users
             is_active=True,
             custom_policies=[],
-            attributes={},
+            attributes=attributes,
         )
 
         # Resolve schema
@@ -447,11 +456,19 @@ class ApiKeyService(ApiKeyProtocol):
         self, identity: Dict[str, Any], schema: str
     ) -> Principal:
         """Helper to onboard a valid identity into a new tenant context."""
+        attributes: Dict[str, Any] = {"source": "auto_registration"}
+        if identity.get("is_service_account"):
+            attributes["service_account"] = True
+            if identity.get("client_id"):
+                attributes["client_id"] = identity["client_id"]
+            if identity.get("azp"):
+                attributes["azp"] = identity["azp"]
+
         new_p = Principal(
             id=uuid4(),
             display_name=identity.get("email", "Unknown"),
             roles=["viewer"],  # Default role
-            attributes={"source": "auto_registration"},
+            attributes=attributes,
         )
         return await self.storage.create_principal_link(new_p, identity, schema)
 

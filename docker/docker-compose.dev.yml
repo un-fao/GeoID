@@ -12,6 +12,11 @@ services:
       retries: 15
       start_period: 10s
 
+  keycloak:
+    extends:
+      file: docker-compose.yml
+      service: keycloak
+
   catalog:
     extends:
       file: docker-compose.yml
@@ -29,6 +34,8 @@ services:
       db:
         condition: service_healthy
       elasticsearch:
+        condition: service_healthy
+      keycloak:
         condition: service_healthy
     environment:
       UVICORN_WORKERS: 1
@@ -55,6 +62,8 @@ services:
       db:
         condition: service_healthy
       elasticsearch:
+        condition: service_healthy
+      keycloak:
         condition: service_healthy
     environment:
       UVICORN_WORKERS: 1

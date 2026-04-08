@@ -461,6 +461,9 @@ class ConditionRegistry:
         self.register(LogicalAndHandler())
         self.register(LogicalOrHandler())
         self.register(LogicalNotHandler())
+        # Filter inspection framework (geospatial, temporal, etc.)
+        from dynastore.modules.apikey.filter_inspectors import filter_handler
+        self.register(filter_handler)
 
     def register(self, handler: ConditionHandler):
         self._handlers[handler.type] = handler
