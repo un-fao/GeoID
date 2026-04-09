@@ -74,6 +74,17 @@ from dynastore.modules.tiles.tiles_models import (
 from dynastore.modules.tiles.tms_definitions import BUILTIN_TILE_MATRIX_SETS
 
 logger = logging.getLogger(__name__)
+
+OGC_API_TILES_URIS = [
+    "http://www.opengis.net/spec/ogcapi-tiles-1/1.0/conf/core",
+    "http://www.opengis.net/spec/ogcapi-tiles-1/1.0/conf/tileset",
+    "http://www.opengis.net/spec/ogcapi-tiles-1/1.0/conf/tilesets-list",
+    "http://www.opengis.net/spec/tms/2.0/conf/tilematrixset",
+    "http://www.opengis.net/spec/tms/2.0/conf/json-tilematrixset",
+    "http://www.opengis.net/spec/ogcapi-tiles-1/1.0/conf/mvt",
+]
+
+
 class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
     priority: int = 100
     """
@@ -170,8 +181,10 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
         """Manages the Tiles Service configuration."""
+        from dynastore.extensions.tools.conformance import register_conformance_uris
+        register_conformance_uris(OGC_API_TILES_URIS)
         register_tiles_policies()
-        logger.info("Tiles Service startup: Policies registered.")
+        logger.info("Tiles Service startup: Conformance and policies registered.")
         yield
         logger.info("Tiles Service shutdown.")
 

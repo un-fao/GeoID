@@ -46,6 +46,14 @@ from dynastore.modules.tiles.tms_definitions import BUILTIN_TILE_MATRIX_SETS
 
 logger = logging.getLogger(__name__)
 
+OGC_API_MAPS_URIS = [
+    "http://www.opengis.net/spec/ogcapi-maps-1/1.0/conf/core",
+    "http://www.opengis.net/spec/ogcapi-maps-1/1.0/conf/dataset-map",
+    "http://www.opengis.net/spec/ogcapi-maps-1/1.0/conf/styled-map",
+    "http://www.opengis.net/spec/ogcapi-maps-1/1.0/conf/png",
+    "http://www.opengis.net/spec/ogcapi-maps-1/1.0/conf/tilesets-map",
+]
+
 # --- Helpers ---
 
 async def _get_style_to_render(conn: AsyncConnection, dataset: str, collection_id: Optional[str], style_name: Optional[str]) -> Optional[Any]:
@@ -133,8 +141,10 @@ class MapsService(ExtensionProtocol):
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
+        from dynastore.extensions.tools.conformance import register_conformance_uris
+        register_conformance_uris(OGC_API_MAPS_URIS)
         register_maps_policies()
-        logger.info("Maps Service startup: creating process pool...")
+        logger.info("Maps Service startup: Conformance and process pool starting...")
         MapsService.process_pool = ProcessPoolExecutor()
         app.state.maps_config = MapsConfig()
         yield
