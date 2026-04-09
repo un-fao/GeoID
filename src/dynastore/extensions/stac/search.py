@@ -254,7 +254,10 @@ async def search_items(
     if hierarchy_params:
         params.update(hierarchy_params)
 
-    # Resolve physical schema
+    # Resolve physical schema via routing
+    from dynastore.modules.storage.router import get_driver
+    from dynastore.modules.storage.routing_config import Operation
+
     catalogs = get_protocol(CatalogsProtocol)
     phys_schema = await catalogs.resolve_physical_schema(
         search_request.catalog_id, db_resource=db_resource
@@ -458,10 +461,14 @@ async def search_items(
             offset=None,
         )
 
-        catalogs = get_protocol(CatalogsProtocol)
-        phys_table = await catalogs.resolve_physical_table(
-            search_request.catalog_id, collection_id, db_resource=db_resource
-        )
+        try:
+            _driver = await get_driver(Operation.READ, search_request.catalog_id, collection_id)
+            _location = await _driver.resolve_storage_location(
+                search_request.catalog_id, collection_id, db_resource=db_resource
+            )
+            phys_table = getattr(_location, "physical_table", None)
+        except (ValueError, Exception):
+            phys_table = None
         if not phys_table:
             continue
 

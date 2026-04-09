@@ -33,6 +33,23 @@ from dynastore.models.protocols import CatalogsProtocol
 logger = logging.getLogger(__name__)
 
 
+async def _resolve_physical_table(
+    catalog_id: str, collection_id: str, *, db_resource=None
+) -> Optional[str]:
+    """Resolve physical table name via the storage routing system."""
+    from dynastore.modules.storage.router import get_driver
+    from dynastore.modules.storage.routing_config import Operation
+
+    try:
+        driver = await get_driver(Operation.READ, catalog_id, collection_id)
+        location = await driver.resolve_storage_location(
+            catalog_id, collection_id, db_resource=db_resource
+        )
+        return getattr(location, "physical_table", None)
+    except (ValueError, Exception):
+        return None
+
+
 @cached(
     maxsize=256,
     ttl=300,
@@ -177,7 +194,7 @@ async def _execute_term_aggregation(
     required = filter_hints | {"attributes"}
     select_fragments = []
     for collection_id in collection_ids:
-        phys_table = await catalogs.resolve_physical_table(
+        phys_table = await _resolve_physical_table(
             catalog_id, collection_id, db_resource=conn
         )
         if not phys_table:
@@ -246,7 +263,7 @@ async def _execute_stats_aggregation(
     required = filter_hints | {"attributes"}
     select_fragments = []
     for collection_id in collection_ids:
-        phys_table = await catalogs.resolve_physical_table(
+        phys_table = await _resolve_physical_table(
             catalog_id, collection_id, db_resource=conn
         )
         if not phys_table:
@@ -323,7 +340,7 @@ async def _execute_geohash_aggregation(
     required = filter_hints | {"geometry"}
     select_fragments = []
     for collection_id in collection_ids:
-        phys_table = await catalogs.resolve_physical_table(
+        phys_table = await _resolve_physical_table(
             catalog_id, collection_id, db_resource=conn
         )
         if not phys_table:
@@ -394,7 +411,7 @@ async def _execute_datetime_aggregation(
     required = filter_hints | {"attributes"}
     select_fragments = []
     for collection_id in collection_ids:
-        phys_table = await catalogs.resolve_physical_table(
+        phys_table = await _resolve_physical_table(
             catalog_id, collection_id, db_resource=conn
         )
         if not phys_table:
@@ -459,7 +476,7 @@ async def _execute_bbox_aggregation(
     required = filter_hints | {"geometry"}
     select_fragments = []
     for collection_id in collection_ids:
-        phys_table = await catalogs.resolve_physical_table(
+        phys_table = await _resolve_physical_table(
             catalog_id, collection_id, db_resource=conn
         )
         if not phys_table:
@@ -524,7 +541,7 @@ async def _execute_temporal_extent_aggregation(
     required = filter_hints | {"attributes"}
     select_fragments = []
     for collection_id in collection_ids:
-        phys_table = await catalogs.resolve_physical_table(
+        phys_table = await _resolve_physical_table(
             catalog_id, collection_id, db_resource=conn
         )
         if not phys_table:

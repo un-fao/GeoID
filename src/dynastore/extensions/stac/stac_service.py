@@ -595,68 +595,30 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin):
                     status_code=404, detail=f"Collection '{collection_id}' not found."
                 )
 
-            # Resolve physical mapping
-            phys_schema = await catalogs_svc.resolve_physical_schema(
-                catalog_id, db_resource=conn
-            )
-            phys_table = await catalogs_svc.resolve_physical_table(
-                catalog_id, collection_id, db_resource=conn
-            )
+            # Driver-agnostic path: dispatch through ItemsProtocol
+            from dynastore.models.query_builder import QueryRequest
+            from dynastore.models.protocols import ItemsProtocol
 
-            # When phys_table is None the collection uses a non-PG primary driver.
-            # Dispatch through ItemsProtocol so the router resolves the correct driver.
-            if not phys_schema or not phys_table:
-                from dynastore.models.query_builder import QueryRequest
-                from dynastore.tools.discovery import get_protocol
-                from dynastore.models.protocols import ItemsProtocol
-
-                items_svc = get_protocol(ItemsProtocol)
-                if items_svc is None:
-                    return stac_generator.create_empty_item_collection(
-                        request, limit, offset
-                    )
-                query_response = await items_svc.stream_items(
-                    catalog_id,
-                    collection_id,
-                    QueryRequest(limit=limit, offset=offset),
-                )
-                items_list = [
-                    stac_generator.build_stac_item(f, collection_metadata, {})
-                    async for f in query_response.items
-                ]
-                return JSONResponse(content={
-                    "type": "FeatureCollection",
-                    "features": items_list,
-                    "numberReturned": len(items_list),
-                    "links": [],
-                })
-
-            # PG path — check physical table existence
-            exists = await shared_queries.table_exists_query.execute(
-                conn, schema=phys_schema, table=phys_table
-            )
-            if not exists:
+            items_svc = get_protocol(ItemsProtocol)
+            if items_svc is None:
                 return stac_generator.create_empty_item_collection(
                     request, limit, offset
                 )
-
-            stac_config = await self._get_stac_config(
-                catalog_id, collection_id, db_resource=conn
+            query_response = await items_svc.stream_items(
+                catalog_id,
+                collection_id,
+                QueryRequest(limit=limit, offset=offset),
             )
-
-            items_dict = await stac_generator.create_item_collection(
-                request,
-                conn,
-                phys_schema,
-                phys_table,
-                limit,
-                offset,
-                stac_config,
-                catalog_id=catalog_id,
-                collection_id=collection_id,
-                lang=language,
-            )
-            return JSONResponse(content=items_dict)
+            items_list = [
+                stac_generator.build_stac_item(f, collection_metadata, {})
+                async for f in query_response.items
+            ]
+            return JSONResponse(content={
+                "type": "FeatureCollection",
+                "features": items_list,
+                "numberReturned": len(items_list),
+                "links": [],
+            })
 
     async def _get_item_with_row(
         self,

@@ -30,7 +30,6 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncConnection
 from contextlib import asynccontextmanager
 
-from dynastore.modules.db_config import shared_queries
 from dynastore.modules.db_config.query_executor import managed_transaction
 
 from dynastore.extensions import get_extension_instance
@@ -417,26 +416,8 @@ class WFSService(ExtensionProtocol):
             )
             return Response(content=xml, media_type="application/xml", status_code=400)
 
-        # Resolve physical schema for introspection
-        catalogs_svc = await self._get_catalogs_service()
+        # Introspect using logical IDs; ItemService handles sidecar aggregation.
         async with managed_transaction(conn) as db_conn:
-            phys_schema = await catalogs_svc.resolve_physical_schema(
-                schema_prefix, db_resource=db_conn
-            )
-            phys_table = await catalogs_svc.resolve_physical_table(
-                schema_prefix, collection_id, db_resource=db_conn
-            )
-            if not phys_schema or not phys_table:
-                xml = wfs_generator.create_exception_report(
-                    "InvalidParameterValue",
-                    "TYPENAME",
-                    f"Catalog mapping for '{schema_prefix}' not found.",
-                )
-                return Response(
-                    content=xml, media_type="application/xml", status_code=404
-                )
-
-            # Introspect using logical IDs; ItemService handles sidecar aggregation.
             feature_schema = await wfs_db.introspect_feature_type_schema(
                 db_conn,
                 catalog_id=schema_prefix,
@@ -558,48 +539,7 @@ class WFSService(ExtensionProtocol):
             )
             return Response(content=xml, media_type="application/xml", status_code=400)
 
-        # Resolve physical mapping
         catalogs_svc = await self._get_catalogs_service()
-        configs_svc = await self._get_configs_service()
-        phys_schema = await catalogs_svc.resolve_physical_schema(
-            schema_prefix, db_resource=conn
-        )
-        phys_table = await catalogs_svc.resolve_physical_table(
-            schema_prefix, collection_id, db_resource=conn
-        )
-
-        if not phys_schema or not phys_table:
-            xml = wfs_generator.create_exception_report(
-                "InvalidParameterValue",
-                "TYPENAME",
-                f"Catalog '{schema_prefix}' not found.",
-            )
-            return Response(content=xml, media_type="application/xml", status_code=404)
-
-        # Check table existence manually
-        if not await shared_queries.table_exists_query.execute(
-            conn, schema=phys_schema, table=phys_table
-        ):
-            logger.info(
-                f"Physical table '{phys_schema}.{phys_table}' does not exist for WFS query. Returning empty collection."
-            )
-            return await wfs_generator.create_empty_feature_collection_response(
-                request, schema_prefix, collection_id, format_enum
-            )
-
-        from dynastore.modules.storage.driver_config import get_pg_collection_config
-        layer_config = await get_pg_collection_config(
-            schema_prefix, collection_id, db_resource=conn
-        )
-
-        if not layer_config:
-            # This case should be rare if the previous check passed, but it's good practice.
-            xml = wfs_generator.create_exception_report(
-                "NoApplicableCode",
-                "TYPENAME",
-                f"Could not load configuration for feature type '{typename}'.",
-            )
-            return Response(content=xml, media_type="application/xml", status_code=500)
 
         # --- Parameter Mapping (WFS KVPs to Unified OGC Params) ---
         bbox_parts = bbox_str.split(",") if bbox_str else []

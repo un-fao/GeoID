@@ -289,7 +289,9 @@ async def evolve_collection(
             status_code=404, detail=f"Catalog '{catalog_id}' not found."
         )
 
-    physical_table = await catalogs.resolve_physical_table(catalog_id, collection_id)
+    from dynastore.modules.catalog.collection_service import CollectionService
+    collection_svc = CollectionService()
+    physical_table = await collection_svc.resolve_physical_table(catalog_id, collection_id)
     if not physical_table:
         raise HTTPException(
             status_code=404,

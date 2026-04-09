@@ -126,10 +126,14 @@ async def run_ingestion_task(
             ingestion_config=ingestion_config,
         )
 
-        # --- Ensure Physical Table Exists ---
-        await catalog_module.ensure_physical_table_exists(
-            catalog_id, collection_id, catalog_config, db_resource=engine
-        )
+        # --- Ensure Storage Exists (all write drivers) ---
+        from dynastore.modules.storage.router import get_write_drivers
+        write_drivers = await get_write_drivers(catalog_id, collection_id)
+        for resolved in write_drivers:
+            await resolved.driver.ensure_storage(
+                catalog_id, collection_id,
+                col_config=catalog_config, db_resource=engine,
+            )
 
         asset_manager = catalog_module.assets
 

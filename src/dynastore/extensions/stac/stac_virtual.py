@@ -245,15 +245,7 @@ class StacVirtualMixin:
                 catalog_id, collection_id, db_resource=conn
             )
 
-            phys_schema = await catalogs_svc.resolve_physical_schema(
-                catalog_id, db_resource=conn
-            )
-            phys_table = await catalogs_svc.resolve_physical_table(
-                catalog_id, collection_id, db_resource=conn
-            )
-
-            # Optimized query with limit/offset and total count
-            # We use ItemsProtocol.stream_features to leverage standard filtering and sidecar logic
+            # Use ItemsProtocol.stream_items to leverage standard filtering and sidecar logic
             from dynastore.models.protocols import ItemsProtocol
 
             items_svc = get_protocol(ItemsProtocol)

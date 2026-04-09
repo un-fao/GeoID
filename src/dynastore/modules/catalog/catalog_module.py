@@ -573,6 +573,17 @@ class CatalogModule(ModuleProtocol):
             catalog_id, collection_id, db_resource=db_resource
         )
 
+    async def set_physical_table(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        physical_table: str,
+        db_resource: Optional[Any] = None,
+    ) -> None:
+        return await self.catalog_service.set_physical_table(
+            catalog_id, collection_id, physical_table, db_resource=db_resource
+        )
+
     async def ensure_catalog_exists(
         self, catalog_id: str, lang: str = "en", db_resource: Optional[Any] = None
     ) -> None:

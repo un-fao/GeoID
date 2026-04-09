@@ -1,27 +1,32 @@
 import logging
-from typing import Set, List, Optional
+from typing import Set, List
 from dynastore.modules.db_config.exceptions import InternalValidationError
-from dynastore.modules.storage.driver_config import get_pg_collection_config, PG_DRIVER_PLUGIN_ID
-from dynastore.modules.db_config.shared_queries import get_table_column_names, DbResource
-from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
-from dynastore.tools.discovery import get_protocol
+from dynastore.modules.storage.driver_config import get_pg_collection_config
+from dynastore.modules.db_config.query_executor import DbResource
 
 logger = logging.getLogger(__name__)
 
 async def get_valid_properties(conn: DbResource, catalog_id: str, collection_id: str) -> Set[str]:
     """
-    Returns a set of all valid property names for a collection, 
+    Returns a set of all valid property names for a collection,
     including physical columns and schema-defined attributes.
     """
-    # 1. Get physical columns using logical IDs
-    catalogs = get_protocol(CatalogsProtocol)
-    phys_schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
-    phys_table = await catalogs.resolve_physical_table(catalog_id, collection_id, db_resource=conn)
-    
-    physical_columns = set()
-    if phys_schema and phys_table:
-        physical_columns = await get_table_column_names(conn, phys_schema, phys_table)
-    
+    from dynastore.modules.storage.router import get_driver
+    from dynastore.modules.storage.routing_config import Operation
+    from dynastore.models.protocols.storage_driver import Capability
+
+    # 1. Get physical columns via driver introspection
+    physical_columns: Set[str] = set()
+    try:
+        driver = await get_driver(Operation.READ, catalog_id, collection_id)
+        if hasattr(driver, "capabilities") and Capability.INTROSPECTION in driver.capabilities:
+            schema_info = await driver.introspect_schema(
+                catalog_id, collection_id, db_resource=conn
+            )
+            physical_columns = {entry["name"] for entry in schema_info} if schema_info else set()
+    except (ValueError, Exception):
+        pass
+
     # 2. Get PG driver config (sidecars, partitioning, etc.)
     config = await get_pg_collection_config(catalog_id, collection_id, db_resource=conn)
 

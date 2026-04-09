@@ -119,18 +119,6 @@ class CatalogsProtocol(ItemCrudProtocol, ItemQueryProtocol, ItemIntrospectionPro
         """
         ...
 
-    async def ensure_physical_table_exists(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        config: Any,
-        db_resource: Optional[Any] = None,
-    ) -> None:
-        """
-        Ensures that a physical table exists for a collection.
-        """
-        ...
-
     async def ensure_partition_exists(
         self,
         catalog_id: str,

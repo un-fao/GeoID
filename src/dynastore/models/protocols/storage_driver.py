@@ -109,6 +109,11 @@ class Capability:
     EXTERNAL_ID_TRACKING = "external_id_tracking"  # driver tracks external_id per feature
     TEMPORAL_VALIDITY = "temporal_validity"          # driver tracks valid_from / valid_to
 
+    # --- Analytics & introspection ---
+    INTROSPECTION = "introspection"  # schema discovery (field names, types)
+    COUNT = "count"                  # efficient entity counting
+    AGGREGATION = "aggregation"      # aggregation queries (terms, stats, histogram)
+
 
 @runtime_checkable
 class CollectionStorageDriverProtocol(Protocol):
@@ -293,6 +298,89 @@ class CollectionStorageDriverProtocol(Protocol):
         - Iceberg: table properties via ``table.transaction().set_properties()``
         - DuckDB: sidecar JSON file or parquet metadata
         - ES: index settings/mappings or ``_meta`` field
+        """
+        ...
+
+    async def count_entities(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        request: Optional[Any] = None,
+        db_resource: Optional[Any] = None,
+    ) -> int:
+        """Count entities matching the optional query request.
+
+        Requires ``Capability.COUNT``. Returns 0 if collection has no data.
+        """
+        ...
+
+    async def introspect_schema(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> List[Dict[str, Any]]:
+        """Discover the field schema for a collection.
+
+        Requires ``Capability.INTROSPECTION``.
+
+        Returns a list of field descriptors::
+
+            [{"name": "temperature", "type": "numeric"},
+             {"name": "station_id", "type": "string"}, ...]
+
+        Field types are driver-agnostic strings: ``"string"``, ``"numeric"``,
+        ``"integer"``, ``"boolean"``, ``"datetime"``, ``"geometry"``, ``"json"``,
+        ``"array"``, ``"unknown"``.
+        """
+        ...
+
+    async def compute_extents(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Compute spatial and temporal extents for a collection.
+
+        Requires ``Capability.STATISTICS``.
+
+        Returns::
+
+            {
+                "spatial": {"bbox": [[-180, -90, 180, 90]]},
+                "temporal": {"interval": [["2020-01-01T00:00:00Z", None]]}
+            }
+
+        Returns None if the collection has no data or extents cannot be computed.
+        """
+        ...
+
+    async def aggregate(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        aggregation_type: str,
+        field: Optional[str] = None,
+        request: Optional[Any] = None,
+        db_resource: Optional[Any] = None,
+    ) -> Any:
+        """Run an aggregation query on the collection.
+
+        Requires ``Capability.AGGREGATION``.
+
+        Common ``aggregation_type`` values:
+          - ``"terms"``: unique values + counts for ``field``
+          - ``"stats"``: min/max/avg/sum for ``field``
+          - ``"datetime_range"``: earliest/latest datetime
+          - ``"bbox"``: bounding box of all geometries
+
+        The ``request`` parameter optionally filters the aggregation scope.
+        Return type varies by ``aggregation_type``.
         """
         ...
 

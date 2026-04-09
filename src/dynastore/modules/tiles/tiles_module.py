@@ -877,21 +877,28 @@ async def get_collection_source_srid(
                     f"Failed to resolve custom CRS URI '{source_crs_uri}' for {collection_id}: {e}"
                 )
 
-        # Fallback to physical lookup
-        phys_schema = await catalogs.resolve_physical_schema(
-            catalog_id, db_resource=conn
-        )
-        phys_table = await catalogs.resolve_physical_table(
-            catalog_id, collection_id, db_resource=conn
-        )
+        # Fallback to physical lookup via driver
+        from dynastore.modules.storage.router import get_driver
+        from dynastore.modules.storage.routing_config import Operation
+
+        try:
+            driver = await get_driver(Operation.READ, catalog_id, collection_id)
+            location = await driver.resolve_storage_location(
+                catalog_id, collection_id, db_resource=conn
+            )
+        except (ValueError, Exception):
+            return 4326
+
+        phys_schema = getattr(location, "physical_schema", None)
+        phys_table = getattr(location, "physical_table", None)
 
         if not phys_schema or not phys_table:
             return None
 
         srid_query = text("""
-            SELECT srid FROM geometry_columns 
-            WHERE f_table_schema = :schema 
-            AND f_table_name IN (:table, :sidecar) 
+            SELECT srid FROM geometry_columns
+            WHERE f_table_schema = :schema
+            AND f_table_name IN (:table, :sidecar)
             AND f_geometry_column = 'geom'
             LIMIT 1;
         """)
@@ -899,7 +906,6 @@ async def get_collection_source_srid(
         srid = await DQLQuery(
             srid_query, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
         ).execute(conn, schema=phys_schema, table=phys_table, sidecar=sidecar_table)
-        # Fallback to 4326 if 0 (not found) or None
         if not srid:
             return 4326
         return srid
@@ -919,12 +925,19 @@ async def get_tile_resolution_params(
         catalogs = get_protocol(CatalogsProtocol)
         if not catalogs:
             return {}
-        phys_schema = await catalogs.resolve_physical_schema(
-            catalog_id, db_resource=conn
-        )
-        phys_table = await catalogs.resolve_physical_table(
-            catalog_id, collection_id, db_resource=conn
-        )
+        from dynastore.modules.storage.router import get_driver
+        from dynastore.modules.storage.routing_config import Operation
+
+        try:
+            driver = await get_driver(Operation.READ, catalog_id, collection_id)
+            location = await driver.resolve_storage_location(
+                catalog_id, collection_id, db_resource=conn
+            )
+        except (ValueError, Exception):
+            return {}
+
+        phys_schema = getattr(location, "physical_schema", None)
+        phys_table = getattr(location, "physical_table", None)
 
         if not phys_schema or not phys_table:
             return {}

@@ -89,7 +89,9 @@ class OneShotMigrator:
             source_table = collection_id
 
             # Determine if a physical table already exists (shouldn't if it's legacy monolithic)
-            target_hub_table = await catalogs.resolve_physical_table(
+            from dynastore.modules.catalog.collection_service import CollectionService
+            collection_svc = CollectionService()
+            target_hub_table = await collection_svc.resolve_physical_table(
                 catalog_id, collection_id, db_resource=conn
             )
             if not target_hub_table or target_hub_table == source_table:
@@ -101,7 +103,7 @@ class OneShotMigrator:
                 target_hub_table = generate_physical_name(
                     "t"
                 )  # Using 't' prefix for tables
-                await catalogs.set_physical_table(
+                await collection_svc.set_physical_table(
                     catalog_id, collection_id, target_hub_table, db_resource=conn
                 )
 

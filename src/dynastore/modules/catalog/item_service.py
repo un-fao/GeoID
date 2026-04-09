@@ -106,10 +106,20 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         collection_id: str,
         db_resource: Optional[DbResource] = None,
     ) -> Optional[str]:
-        catalogs = get_protocol(CatalogsProtocol)
-        return await catalogs.resolve_physical_table(
-            catalog_id, collection_id, db_resource=db_resource
+        phys_schema = await self._resolve_physical_schema(
+            catalog_id, db_resource=db_resource
         )
+        if not phys_schema:
+            return None
+        query_sql = f'SELECT physical_table FROM "{phys_schema}".pg_storage_locations WHERE collection_id = :collection_id;'
+        if db_resource:
+            return await DQLQuery(
+                query_sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
+            ).execute(db_resource, collection_id=collection_id)
+        async with managed_transaction(self.engine) as conn:
+            return await DQLQuery(
+                query_sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
+            ).execute(conn, collection_id=collection_id)
 
     async def _get_collection_config(
         self,
@@ -727,18 +737,21 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                     catalog_id, collection_id, db_resource=conn
                 )
                 force_create = False
+                catalogs = get_protocol(CatalogsProtocol)
                 if not phys_table:
                     logger.info(
                         f"Promoting collection {catalog_id}:{collection_id} to physical storage."
                     )
                     phys_table = collection_id
                     force_create = True
-                    catalogs = get_protocol(CatalogsProtocol)
-                    await catalogs.set_physical_table(
-                        catalog_id, collection_id, phys_table, db_resource=conn
-                    )
-                else:
-                    catalogs = get_protocol(CatalogsProtocol)
+                    set_table_sql = f"""
+                        INSERT INTO "{phys_schema}".pg_storage_locations (collection_id, physical_table)
+                        VALUES (:collection_id, :physical_table)
+                        ON CONFLICT (collection_id) DO UPDATE SET physical_table = EXCLUDED.physical_table;
+                    """
+                    await DQLQuery(
+                        set_table_sql, result_handler=ResultHandler.NONE
+                    ).execute(conn, collection_id=collection_id, physical_table=phys_table)
 
                 if force_create or not await shared_queries.table_exists_query.execute(
                     conn, schema=phys_schema, table=phys_table

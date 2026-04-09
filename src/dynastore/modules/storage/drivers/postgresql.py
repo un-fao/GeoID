@@ -63,6 +63,9 @@ class PostgresStorageDriver(ModuleProtocol):
         Capability.SPATIAL_INDEX,
         Capability.ASSET_TRACKING,
         Capability.ATTRIBUTE_FILTER,
+        Capability.INTROSPECTION,
+        Capability.COUNT,
+        Capability.AGGREGATION,
     })
     preferred_for: FrozenSet[str] = frozenset({"features", "write"})
     supported_hints: FrozenSet[str] = frozenset({"features", "write", "metadata"})
@@ -529,6 +532,421 @@ class PostgresStorageDriver(ModuleProtocol):
             "for async export via the task runner system."
         )
 
+    async def count_entities(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        request: Optional[Any] = None,
+        db_resource: Optional[Any] = None,
+    ) -> int:
+        from dynastore.modules.db_config.query_executor import (
+            DQLQuery, ResultHandler, managed_transaction,
+        )
+
+        schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
+        table = await self.resolve_physical_table(
+            catalog_id, collection_id, db_resource=db_resource,
+        )
+        if not table:
+            return 0
+
+        query_sql = f'SELECT COUNT(*) FROM "{schema}"."{table}" WHERE deleted_at IS NULL;'
+
+        async def _query(conn):
+            return await DQLQuery(
+                query_sql, result_handler=ResultHandler.SCALAR_ONE
+            ).execute(conn)
+
+        if db_resource is not None:
+            return await _query(db_resource) or 0
+        from dynastore.tools.discovery import get_protocol
+        from dynastore.models.protocols.database import DatabaseProtocol
+        db_proto = get_protocol(DatabaseProtocol)
+        if not db_proto:
+            return 0
+        async with managed_transaction(db_proto.engine) as conn:
+            return await _query(conn) or 0
+
+    async def introspect_schema(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> List[Dict[str, Any]]:
+        from dynastore.modules.db_config.query_executor import (
+            DQLQuery, ResultHandler, managed_transaction,
+        )
+        from dynastore.modules.db_config import shared_queries
+
+        schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
+        table = await self.resolve_physical_table(
+            catalog_id, collection_id, db_resource=db_resource,
+        )
+        if not table:
+            return []
+
+        # Map PG types to driver-agnostic type strings
+        pg_type_map = {
+            "integer": "integer", "bigint": "integer", "smallint": "integer",
+            "numeric": "numeric", "real": "numeric", "double precision": "numeric",
+            "boolean": "boolean",
+            "character varying": "string", "text": "string", "character": "string",
+            "uuid": "string", "varchar": "string",
+            "timestamp with time zone": "datetime", "timestamp without time zone": "datetime",
+            "date": "datetime", "time with time zone": "datetime",
+            "tstzrange": "datetime",
+            "jsonb": "json", "json": "json",
+            "ARRAY": "array",
+            "USER-DEFINED": "geometry",
+        }
+
+        query_sql = """
+            SELECT column_name, data_type, udt_name
+            FROM information_schema.columns
+            WHERE table_schema = :schema AND table_name = :table
+            ORDER BY ordinal_position;
+        """
+
+        async def _query(conn):
+            # Check table exists first
+            exists = await shared_queries.table_exists_query.execute(
+                conn, schema=schema, table=table
+            )
+            if not exists:
+                return []
+
+            rows = await DQLQuery(
+                query_sql, result_handler=ResultHandler.ALL_DICT
+            ).execute(conn, schema=schema, table=table)
+
+            # Also collect fields from attribute sidecar (JSONB keys)
+            from dynastore.modules.storage.driver_config import get_pg_collection_config
+            col_config = await get_pg_collection_config(
+                catalog_id, collection_id, db_resource=conn,
+            )
+
+            fields = []
+            internal_cols = {"geoid", "deleted_at", "transaction_time", "geom", "bbox_geom", "asset_id"}
+            for row in (rows or []):
+                col_name = row["column_name"]
+                if col_name in internal_cols:
+                    continue
+                data_type = row.get("data_type", "unknown")
+                mapped = pg_type_map.get(data_type, "unknown")
+                if mapped == "geometry":
+                    mapped = "geometry"
+                fields.append({"name": col_name, "type": mapped})
+
+            # Add sidecar attribute fields if available
+            if col_config and col_config.sidecars:
+                attr_table = f"{table}_attributes"
+                attr_exists = await shared_queries.table_exists_query.execute(
+                    conn, schema=schema, table=attr_table
+                )
+                if attr_exists:
+                    attr_rows = await DQLQuery(
+                        query_sql, result_handler=ResultHandler.ALL_DICT
+                    ).execute(conn, schema=schema, table=attr_table)
+                    for row in (attr_rows or []):
+                        col_name = row["column_name"]
+                        if col_name in internal_cols or col_name == "attributes":
+                            continue
+                        data_type = row.get("data_type", "unknown")
+                        mapped = pg_type_map.get(data_type, "unknown")
+                        fields.append({"name": col_name, "type": mapped})
+
+                    # Also extract keys from JSONB attributes column via sample
+                    try:
+                        sample_sql = f"""
+                            SELECT DISTINCT jsonb_object_keys(attributes) AS key
+                            FROM "{schema}"."{attr_table}"
+                            WHERE attributes IS NOT NULL
+                            LIMIT 1000;
+                        """
+                        key_rows = await DQLQuery(
+                            sample_sql, result_handler=ResultHandler.ALL
+                        ).execute(conn)
+                        existing_names = {f["name"] for f in fields}
+                        for key_row in (key_rows or []):
+                            key_name = key_row[0]
+                            if key_name not in existing_names and key_name not in internal_cols:
+                                fields.append({"name": key_name, "type": "string"})
+                    except Exception:
+                        pass
+
+            return fields
+
+        if db_resource is not None:
+            return await _query(db_resource)
+        from dynastore.tools.discovery import get_protocol
+        from dynastore.models.protocols.database import DatabaseProtocol
+        db_proto = get_protocol(DatabaseProtocol)
+        if not db_proto:
+            return []
+        async with managed_transaction(db_proto.engine) as conn:
+            return await _query(conn)
+
+    async def compute_extents(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> Optional[Dict[str, Any]]:
+        from dynastore.modules.db_config.query_executor import (
+            DQLQuery, ResultHandler, managed_transaction,
+        )
+        from dynastore.modules.storage.driver_config import get_pg_collection_config
+
+        schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
+        table = await self.resolve_physical_table(
+            catalog_id, collection_id, db_resource=db_resource,
+        )
+        if not table:
+            return None
+
+        async def _query(conn):
+            layer_config = await get_pg_collection_config(
+                catalog_id, collection_id, db_resource=conn,
+            )
+            if not layer_config:
+                return None
+
+            geom_alias = "h"
+            geom_col = "geom"
+            storage_srid = 4326
+            temporal_alias = "h"
+            joins = []
+
+            if layer_config.sidecars:
+                from dynastore.modules.catalog.sidecars.geometries_config import (
+                    GeometriesSidecarConfig,
+                )
+                from dynastore.modules.catalog.sidecars.attributes_config import (
+                    FeatureAttributeSidecarConfig,
+                )
+
+                geom_sc = next(
+                    (sc for sc in layer_config.sidecars if isinstance(sc, GeometriesSidecarConfig)),
+                    None,
+                )
+                if geom_sc:
+                    geom_source = f"{table}_{geom_sc.sidecar_id}"
+                    geom_alias = "g"
+                    storage_srid = geom_sc.target_srid
+                    joins.append(
+                        f'JOIN "{schema}"."{geom_source}" {geom_alias} ON h.geoid = {geom_alias}.geoid'
+                    )
+
+                attr_sc = next(
+                    (sc for sc in layer_config.sidecars if isinstance(sc, FeatureAttributeSidecarConfig)),
+                    None,
+                )
+                if attr_sc and attr_sc.enable_validity:
+                    temporal_source = f"{table}_{attr_sc.sidecar_id}"
+                    temporal_alias = "a"
+                    if temporal_source != (f"{table}_{geom_sc.sidecar_id}" if geom_sc else ""):
+                        joins.append(
+                            f'JOIN "{schema}"."{temporal_source}" {temporal_alias} ON h.geoid = {temporal_alias}.geoid'
+                        )
+                    else:
+                        temporal_alias = geom_alias
+
+            elif layer_config.geometry_storage:
+                storage_srid = layer_config.geometry_storage.target_srid
+
+            if storage_srid == 4326:
+                spatial_expr = f"ST_Extent({geom_alias}.{geom_col})"
+            else:
+                spatial_expr = f"ST_Transform(ST_SetSRID(ST_Extent({geom_alias}.{geom_col}),{storage_srid}), 4326)"
+
+            join_clause = "\n" + "\n".join(joins) if joins else ""
+
+            sql = f"""
+                WITH calculated_extents AS (
+                    SELECT
+                        {spatial_expr} AS combined_geom,
+                        MIN(lower({temporal_alias}.validity)) AS min_validity,
+                        MAX(upper({temporal_alias}.validity)) AS max_validity
+                    FROM "{schema}"."{table}" h
+                    {join_clause}
+                    WHERE h.deleted_at IS NULL AND {geom_alias}.{geom_col} IS NOT NULL
+                )
+                SELECT
+                    ST_XMin(combined_geom),
+                    ST_YMin(combined_geom),
+                    ST_XMax(combined_geom),
+                    ST_YMax(combined_geom),
+                    CASE WHEN min_validity = '-infinity' THEN NULL ELSE min_validity END,
+                    CASE WHEN max_validity = 'infinity' THEN NULL ELSE max_validity END
+                FROM calculated_extents;
+            """
+
+            row = await DQLQuery(sql, result_handler=ResultHandler.ONE).execute(conn)
+
+            if row and row[0] is not None:
+                bbox = [
+                    max(-180.0, min(180.0, row[0])),
+                    max(-90.0, min(90.0, row[1])),
+                    max(-180.0, min(180.0, row[2])),
+                    max(-90.0, min(90.0, row[3])),
+                ]
+            else:
+                bbox = [-180.0, -90.0, 180.0, 90.0]
+
+            min_time = row[4] if row else None
+            max_time = row[5] if row else None
+
+            return {
+                "spatial": {"bbox": [list(bbox)]},
+                "temporal": {"interval": [[min_time, max_time]]},
+            }
+
+        if db_resource is not None:
+            return await _query(db_resource)
+        from dynastore.tools.discovery import get_protocol
+        from dynastore.models.protocols.database import DatabaseProtocol
+        db_proto = get_protocol(DatabaseProtocol)
+        if not db_proto:
+            return None
+        async with managed_transaction(db_proto.engine) as conn:
+            return await _query(conn)
+
+    async def aggregate(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        aggregation_type: str,
+        field: Optional[str] = None,
+        request: Optional[Any] = None,
+        db_resource: Optional[Any] = None,
+    ) -> Any:
+        from dynastore.modules.db_config.query_executor import (
+            DQLQuery, ResultHandler, managed_transaction,
+        )
+        from dynastore.modules.storage.driver_config import get_pg_collection_config
+
+        schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
+        table = await self.resolve_physical_table(
+            catalog_id, collection_id, db_resource=db_resource,
+        )
+        if not table:
+            return None
+
+        async def _query(conn):
+            layer_config = await get_pg_collection_config(
+                catalog_id, collection_id, db_resource=conn,
+            )
+
+            # Resolve attribute sidecar table
+            attr_table = f"{table}_attributes"
+            attr_alias = "s"
+            attr_join = f'JOIN "{schema}"."{attr_table}" {attr_alias} ON h.geoid = {attr_alias}.geoid'
+
+            # Resolve geometry sidecar table
+            geom_table = f"{table}_geometries"
+            geom_alias = "g"
+            geom_join = f'JOIN "{schema}"."{geom_table}" {geom_alias} ON h.geoid = {geom_alias}.geoid'
+
+            base_where = "h.deleted_at IS NULL"
+
+            if aggregation_type == "terms" and field:
+                sql = f"""
+                    SELECT {attr_alias}.attributes->>'{field}' AS val, COUNT(*) AS cnt
+                    FROM "{schema}"."{table}" h
+                    {attr_join}
+                    WHERE {base_where} AND {attr_alias}.attributes ? '{field}'
+                    GROUP BY val
+                    ORDER BY cnt DESC
+                    LIMIT 100;
+                """
+                rows = await DQLQuery(sql, result_handler=ResultHandler.ALL_DICT).execute(conn)
+                return [{"value": r["val"], "count": r["cnt"]} for r in (rows or [])]
+
+            elif aggregation_type == "stats" and field:
+                sql = f"""
+                    SELECT
+                        MIN(CAST({attr_alias}.attributes->>'{field}' AS NUMERIC)) AS min_val,
+                        MAX(CAST({attr_alias}.attributes->>'{field}' AS NUMERIC)) AS max_val,
+                        AVG(CAST({attr_alias}.attributes->>'{field}' AS NUMERIC)) AS avg_val,
+                        SUM(CAST({attr_alias}.attributes->>'{field}' AS NUMERIC)) AS sum_val,
+                        COUNT(*) AS cnt
+                    FROM "{schema}"."{table}" h
+                    {attr_join}
+                    WHERE {base_where}
+                      AND {attr_alias}.attributes ? '{field}'
+                      AND {attr_alias}.attributes->>'{field}' ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                """
+                row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(conn)
+                return row
+
+            elif aggregation_type == "datetime_range":
+                sql = f"""
+                    SELECT
+                        MIN(lower({attr_alias}.validity)) AS min_dt,
+                        MAX(upper({attr_alias}.validity)) AS max_dt
+                    FROM "{schema}"."{table}" h
+                    {attr_join}
+                    WHERE {base_where};
+                """
+                row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(conn)
+                return row
+
+            elif aggregation_type == "bbox":
+                storage_srid = 4326
+                geom_source = geom_alias
+                join_sql = geom_join
+                if layer_config and layer_config.sidecars:
+                    from dynastore.modules.catalog.sidecars.geometries_config import (
+                        GeometriesSidecarConfig,
+                    )
+                    geom_sc = next(
+                        (sc for sc in layer_config.sidecars if isinstance(sc, GeometriesSidecarConfig)),
+                        None,
+                    )
+                    if geom_sc:
+                        storage_srid = geom_sc.target_srid
+
+                if storage_srid == 4326:
+                    expr = f"ST_Extent({geom_source}.geom)"
+                else:
+                    expr = f"ST_Transform(ST_SetSRID(ST_Extent({geom_source}.geom),{storage_srid}),4326)"
+
+                sql = f"""
+                    SELECT
+                        ST_XMin(ext), ST_YMin(ext), ST_XMax(ext), ST_YMax(ext)
+                    FROM (
+                        SELECT {expr} AS ext
+                        FROM "{schema}"."{table}" h
+                        {join_sql}
+                        WHERE {base_where} AND {geom_source}.geom IS NOT NULL
+                    ) sub;
+                """
+                row = await DQLQuery(sql, result_handler=ResultHandler.ONE).execute(conn)
+                if row and row[0] is not None:
+                    return [row[0], row[1], row[2], row[3]]
+                return None
+
+            elif aggregation_type == "count":
+                sql = f'SELECT COUNT(*) FROM "{schema}"."{table}" WHERE {base_where};'
+                return await DQLQuery(sql, result_handler=ResultHandler.SCALAR_ONE).execute(conn)
+
+            else:
+                raise ValueError(f"Unsupported aggregation_type: {aggregation_type}")
+
+        if db_resource is not None:
+            return await _query(db_resource)
+        from dynastore.tools.discovery import get_protocol
+        from dynastore.models.protocols.database import DatabaseProtocol
+        db_proto = get_protocol(DatabaseProtocol)
+        if not db_proto:
+            return None
+        async with managed_transaction(db_proto.engine) as conn:
+            return await _query(conn)
+
     async def resolve_storage_location(
         self,
         catalog_id: str,
@@ -536,25 +954,13 @@ class PostgresStorageDriver(ModuleProtocol):
         *,
         db_resource: Optional[Any] = None,
     ) -> PostgresCollectionDriverConfig:
-        """Resolve PG storage coordinates via existing protocol methods."""
-        from dynastore.tools.discovery import get_protocol
-        from dynastore.models.protocols.catalogs import CatalogsProtocol
-        from dynastore.models.protocols.collections import CollectionsProtocol
-
-        catalogs = get_protocol(CatalogsProtocol)
-        if not catalogs:
-            raise RuntimeError("CatalogsProtocol not available")
-
-        schema = await catalogs.resolve_physical_schema(
-            catalog_id, db_resource=db_resource
-        )
+        """Resolve PG storage coordinates using internal methods."""
+        schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
         table = None
         if collection_id:
-            collections = get_protocol(CollectionsProtocol)
-            if collections:
-                table = await collections.resolve_physical_table(
-                    catalog_id, collection_id, db_resource=db_resource
-                )
+            table = await self.resolve_physical_table(
+                catalog_id, collection_id, db_resource=db_resource,
+            )
 
         return PostgresCollectionDriverConfig(
             physical_schema=schema,

@@ -67,7 +67,6 @@ from dynastore.extensions.tools.language_utils import get_language
 from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.tools.db import get_async_connection, get_async_engine
-from dynastore.modules.db_config import shared_queries
 from dynastore.modules.db_config.tools import managed_transaction
 from dynastore.modules.db_config.query_executor import DbResource
 from dynastore.extensions.tools.conformance import (
@@ -664,31 +663,20 @@ class OGCFeaturesService(ExtensionProtocol):
         language: str = Depends(get_language),
     ):
         """Returns the filterable properties for a collection as a JSON Schema (Part 3)."""  # type: ignore
-        catalogs_svc = await self._get_catalogs_service()
-        # Resolve physical mapping
-        phys_schema = await catalogs_svc.resolve_physical_schema(
-            catalog_id, db_resource=conn
-        )
-        phys_table = await catalogs_svc.resolve_physical_table(
-            catalog_id, collection_id, db_resource=conn
-        )
+        from dynastore.modules.storage.router import get_driver
+        from dynastore.modules.storage.routing_config import Operation
+        from dynastore.models.protocols.storage_driver import Capability
 
-        if not phys_schema or not phys_table:
-            return await ogc_generator.create_queryables_response(
-                request, catalog_id, collection_id, []
-            )
-
-        table_exists = await shared_queries.table_exists_query.execute(
-            conn, schema=phys_schema, table=phys_table
-        )
-        if not table_exists:
-            # If no table, there are no queryable properties yet, but we can return a base schema.
-            columns = []
-        else:
-            columns_result = await shared_queries.get_table_column_names_query.execute(
-                conn, schema=phys_schema, table=phys_table
-            )
-            columns = [col[0] for col in columns_result]
+        columns: list = []
+        try:
+            driver = await get_driver(Operation.READ, catalog_id, collection_id)
+            if hasattr(driver, "capabilities") and Capability.INTROSPECTION in driver.capabilities:
+                schema_info = await driver.introspect_schema(
+                    catalog_id, collection_id, db_resource=conn
+                )
+                columns = [entry["name"] for entry in schema_info] if schema_info else []
+        except (ValueError, Exception):
+            pass
 
         return await ogc_generator.create_queryables_response(
             request, catalog_id, collection_id, columns, language=language
@@ -934,45 +922,6 @@ class OGCFeaturesService(ExtensionProtocol):
                     )
 
         try:
-            # Resolve physical mapping
-            phys_schema = await catalogs_svc.resolve_physical_schema(
-                catalog_id, db_resource=conn
-            )
-            if not phys_schema:
-                raise HTTPException(status_code=404, detail="Catalog schema not found.")
-
-            phys_table = await catalogs_svc.resolve_physical_table(
-                catalog_id, collection_id, db_resource=conn
-            )
-
-            if not phys_table:
-                return ogc_models.FeatureCollection(
-                    links=[
-                        Link(
-                            href=str(request.url),
-                            rel="self",
-                            type="application/geo+json",
-                        )
-                    ],
-                    features=[],
-                )
-
-            # Check table existence
-            table_exists = await shared_queries.table_exists_query.execute(
-                conn, schema=phys_schema, table=phys_table
-            )
-            if not table_exists:
-                return ogc_models.FeatureCollection(
-                    links=[
-                        Link(
-                            href=str(request.url),
-                            rel="self",
-                            type="application/geo+json",
-                        )
-                    ],
-                    features=[],
-                )
-
             # --- Argument Parsing & SRID Resolution ---
 
             target_crs_srid = await self._resolve_crs_srid(conn, catalog_id, crs)
@@ -1281,20 +1230,6 @@ class OGCFeaturesService(ExtensionProtocol):
     ):
         catalogs_svc = await self._get_catalogs_service()
         async with managed_transaction(engine) as conn:
-            # Resolve physical mapping
-            phys_schema = await catalogs_svc.resolve_physical_schema(
-                catalog_id, db_resource=conn
-            )
-            phys_table = await catalogs_svc.resolve_physical_table(
-                catalog_id, collection_id, db_resource=conn
-            )
-
-            if not phys_schema or not phys_table:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Collection '{collection_id}' not found.",
-                )
-
             rows_affected = await catalogs_svc.delete_item(
                 catalog_id, collection_id, item_id, db_resource=conn
             )

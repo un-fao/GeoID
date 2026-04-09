@@ -149,26 +149,6 @@ class CollectionsProtocol(Protocol):
         """
         ...
 
-    async def resolve_physical_table(
-        self, catalog_id: str, collection_id: str, db_resource: Optional[Any] = None
-    ) -> Optional[str]:
-        """
-        Resolves the physical table name for a collection.
-        """
-        ...
-
-    async def set_physical_table(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        physical_table: str,
-        db_resource: Optional[Any] = None,
-    ) -> None:
-        """
-        Sets the physical table name for a collection.
-        """
-        ...
-
     async def get_collection_config(
         self, catalog_id: str, collection_id: str, db_resource: Optional[Any] = None
     ) -> "CollectionPluginConfig":
