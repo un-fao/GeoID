@@ -1,4 +1,5 @@
 # src/dynastore/extensions/notebooks/notebooks_extension.py
+from contextlib import asynccontextmanager
 from fastapi import APIRouter, FastAPI, Depends, HTTPException, Request
 from fastapi.responses import Response
 from typing import List, Optional, Any, Dict
@@ -37,6 +38,13 @@ class NotebooksExtension(ExtensionProtocol):
         self.app = app
         self._static_dir = os.path.join(os.path.dirname(__file__), "static")
         self._register_routes()
+
+    @asynccontextmanager
+    async def lifespan(self, app: FastAPI):
+        from .policies import register_notebooks_policies
+        register_notebooks_policies()
+        logger.info("NotebooksExtension: Policies registered.")
+        yield
 
     def _register_routes(self):
         # Platform notebooks (global, cross-tenant)

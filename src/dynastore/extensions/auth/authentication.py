@@ -77,22 +77,24 @@ def _derive_fernet_key(jwt_secret: str) -> bytes:
     return base64.urlsafe_b64encode(raw)
 
 
-# OAuth2 configuration
-# JWT_SECRET will be loaded from shared properties (managed by sysadmin)
-KEYCLOAK_ISSUER_URL = os.getenv("KEYCLOAK_ISSUER_URL")
-KEYCLOAK_CLIENT_ID = os.getenv("KEYCLOAK_CLIENT_ID")
-KEYCLOAK_PUBLIC_URL = os.getenv("KEYCLOAK_PUBLIC_URL")
+# Identity Provider configuration.
+# IDP_* are the canonical names; KEYCLOAK_* are accepted as aliases for
+# backward compatibility with existing deployments.
+IDP_ISSUER_URL    = os.getenv("IDP_ISSUER_URL")    or os.getenv("KEYCLOAK_ISSUER_URL")
+IDP_CLIENT_ID     = os.getenv("IDP_CLIENT_ID")     or os.getenv("KEYCLOAK_CLIENT_ID")
+IDP_CLIENT_SECRET = os.getenv("IDP_CLIENT_SECRET") or os.getenv("KEYCLOAK_CLIENT_SECRET")
+IDP_PUBLIC_URL    = os.getenv("IDP_PUBLIC_URL")    or os.getenv("KEYCLOAK_PUBLIC_URL")
 
 
 class Authentication(ExtensionProtocol):
     priority: int = 110  # Must run after IamModule (100) which owns users schema init
     """
-    Authentication Extension - OAuth2 Identity Validation
+    Authentication Extension - OAuth2 / OIDC Identity Validation
 
     Responsibilities:
     - Validate OAuth2 tokens (JWT)
     - Provide OAuth2 endpoints (/authorize, /token, /userinfo, /refresh)
-    - Support multiple identity providers (LocalDB, Keycloak)
+    - Support any OIDC-compliant identity provider
     - Return validated Identity objects
 
     Does NOT handle:
@@ -102,10 +104,8 @@ class Authentication(ExtensionProtocol):
 
     router: APIRouter = APIRouter(tags=["Authentication"], prefix="/auth")
 
-    # Identifiers for protocols are used late in lifespan
-
-    # Identity Providers (Keycloak only — local OAuth removed in v1.0)
-    keycloak_identity_provider = None
+    # Active identity provider instance (set during lifespan)
+    identity_provider = None
 
     @expose_static("auth")
     def _provide_auth_static(self) -> List[str]:
@@ -144,27 +144,24 @@ class Authentication(ExtensionProtocol):
             provider: Optional[str] = None,
         ):
             """
-            OAuth2 Authorization Endpoint
+            OAuth2 Authorization Endpoint.
 
-            Selection Logic:
-            1. If provider='keycloak' and it is configured, use it.
-            2. Otherwise, default to 'local' provider.
+            Redirects the browser to the configured identity provider's login page.
             """
-            # Resolve relative redirect_uri to absolute URL so Keycloak can
-            # match it against its client whitelist.
+            # Resolve relative redirect_uri to absolute URL so the IdP can
+            # match it against its allowed redirect URIs.
             if redirect_uri.startswith("/"):
                 root_url = get_root_url(request)
                 redirect_uri = f"{root_url}{redirect_uri}"
 
-            # Keycloak is the only IdP in v1.0
-            if self.keycloak_identity_provider:
-                auth_url = await self.keycloak_identity_provider.get_authorization_url(
+            if self.identity_provider:
+                auth_url = await self.identity_provider.get_authorization_url(
                     redirect_uri=redirect_uri, state=state, scope=scope
                 )
                 return RedirectResponse(url=auth_url)
 
             raise HTTPException(
-                501, "No identity provider configured. Set KEYCLOAK_ISSUER_URL."
+                501, "No identity provider configured. Set IDP_ISSUER_URL."
             )
 
         @self.router.get("/userinfo")
@@ -179,14 +176,69 @@ class Authentication(ExtensionProtocol):
 
             token = authorization[7:]
 
-            if self.keycloak_identity_provider:
+            if self.identity_provider:
                 try:
-                    user_info = await self.keycloak_identity_provider.get_user_info(token)
+                    user_info = await self.identity_provider.get_user_info(token)
                     return user_info
                 except Exception as e:
-                    logger.debug(f"Keycloak userinfo failed: {e}")
+                    logger.debug("IdP userinfo failed: %s", e)
 
             raise HTTPException(401, "Invalid access token")
+
+        @self.router.post("/token")
+        async def token_exchange(request: Request):
+            """
+            OAuth2 Token Exchange Endpoint.
+            Exchanges an authorization code for an access token via Keycloak.
+            """
+            form = await request.form()
+            code = form.get("code")
+            redirect_uri = form.get("redirect_uri", "")
+            client_id = form.get("client_id", "")
+
+            if not code:
+                raise HTTPException(400, "Missing authorization code")
+
+            # Resolve relative redirect_uri to absolute
+            if redirect_uri.startswith("/"):
+                root_url = get_root_url(request)
+                redirect_uri = f"{root_url}{redirect_uri}"
+
+            if self.identity_provider:
+                try:
+                    token_data = await self.identity_provider.exchange_code_for_token(
+                        code=code, redirect_uri=redirect_uri,
+                    )
+                    return token_data
+                except Exception as e:
+                    logger.error("Token exchange failed: %s", e)
+                    raise HTTPException(400, f"Token exchange failed: {e}")
+
+            raise HTTPException(501, "No identity provider configured.")
+
+        @self.router.post("/refresh")
+        async def refresh_token(request: Request):
+            """
+            OAuth2 Token Refresh Endpoint.
+            Exchanges a refresh token for a new access token via Keycloak.
+            """
+            form = await request.form()
+            refresh_token_str = form.get("refresh_token")
+
+            if not refresh_token_str:
+                raise HTTPException(400, "Missing refresh_token")
+
+            if self.identity_provider:
+                try:
+                    token_data = await self.identity_provider.refresh_token(
+                        refresh_token=refresh_token_str,
+                    )
+                    return token_data
+                except Exception as e:
+                    logger.error("Token refresh failed: %s", e)
+                    raise HTTPException(400, f"Token refresh failed: {e}")
+
+            raise HTTPException(501, "No identity provider configured.")
 
         @self.router.get("/logout")
         async def logout(request: Request, redirect_uri: Optional[str] = None):
@@ -210,9 +262,9 @@ class Authentication(ExtensionProtocol):
             token = authorization[7:]
             user_info = None
 
-            if self.keycloak_identity_provider:
+            if self.identity_provider:
                 try:
-                    user_info = await self.keycloak_identity_provider.get_user_info(token)
+                    user_info = await self.identity_provider.get_user_info(token)
                 except Exception:
                     pass
 
@@ -221,32 +273,27 @@ class Authentication(ExtensionProtocol):
 
             return {
                 "identity_providers": {
-                    "keycloak": "enabled"
-                    if self.keycloak_identity_provider
-                    else "disabled",
+                    "oidc": "enabled" if self.identity_provider else "disabled",
                 },
             }
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
-        """Initialize identity providers during lifespan."""
-        logger.info("Authentication Extension: Initializing identity providers")
+        """Initialize the identity provider during lifespan."""
+        logger.info("Authentication Extension: Initializing identity provider")
         self.app_state = app
 
-        from dynastore.modules.iam.identity_providers import KeycloakIdentityProvider
-
-        # Initialize IdP (Keycloak is the default implementation)
-        if KEYCLOAK_ISSUER_URL and KEYCLOAK_CLIENT_ID:
-            self.keycloak_identity_provider = KeycloakIdentityProvider(
-                issuer_url=KEYCLOAK_ISSUER_URL,
-                client_id=KEYCLOAK_CLIENT_ID,
-                public_url=KEYCLOAK_PUBLIC_URL,
+        if IDP_ISSUER_URL and IDP_CLIENT_ID:
+            from dynastore.modules.iam.identity_providers import OidcIdentityProvider
+            self.identity_provider = OidcIdentityProvider(
+                issuer_url=IDP_ISSUER_URL,
+                client_id=IDP_CLIENT_ID,
+                client_secret=IDP_CLIENT_SECRET,
+                public_url=IDP_PUBLIC_URL,
             )
-            logger.info(
-                f"✓ Keycloak identity provider initialized: {KEYCLOAK_ISSUER_URL}"
-            )
+            logger.info("✓ OIDC identity provider initialized: %s", IDP_ISSUER_URL)
         else:
-            logger.info("⊘ Keycloak not configured (optional)")
+            logger.info("⊘ No identity provider configured (IDP_ISSUER_URL not set)")
 
         # Setup routes after providers are initialized
         self._setup_routes()

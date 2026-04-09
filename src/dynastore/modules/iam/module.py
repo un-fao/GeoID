@@ -77,8 +77,6 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             # Manage manager lifespan
             await stack.enter_async_context(self._iam_manager.lifespan(app_state))
 
-            # Register Identity Providers (Configured via Env)
-            from .identity_providers.keycloak_identity import KeycloakIdentityProvider
             import os
 
             # Global initialization
@@ -98,14 +96,47 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             # Register plugins
             register_plugin(self._iam_manager)
 
-            keycloak_url = os.environ.get("KEYCLOAK_URL")
-            if keycloak_url:
+            # IdP factory — IDP_TYPE selects the backend (default: oidc)
+            # KEYCLOAK_* vars are read as fallbacks for backward compatibility.
+            # See modules/iam/identity_providers/README.md for adding new types.
+            idp_type = os.environ.get("IDP_TYPE", "oidc").lower()
+            idp_issuer = (
+                os.environ.get("IDP_ISSUER_URL")
+                or os.environ.get("KEYCLOAK_ISSUER_URL")
+            )
+            if idp_type == "oidc" and idp_issuer:
+                from .identity_providers.oidc_identity import OidcIdentityProvider
                 register_plugin(
-                    KeycloakIdentityProvider(
-                        issuer_url=keycloak_url,
-                        client_id=os.environ.get("KEYCLOAK_CLIENT_ID", "dynastore-api"),
-                        audience=os.environ.get("KEYCLOAK_AUDIENCE"),
+                    OidcIdentityProvider(
+                        issuer_url=idp_issuer,
+                        client_id=(
+                            os.environ.get("IDP_CLIENT_ID")
+                            or os.environ.get("KEYCLOAK_CLIENT_ID", "dynastore-api")
+                        ),
+                        client_secret=(
+                            os.environ.get("IDP_CLIENT_SECRET")
+                            or os.environ.get("KEYCLOAK_CLIENT_SECRET")
+                        ),
+                        audience=(
+                            os.environ.get("IDP_AUDIENCE")
+                            or os.environ.get("KEYCLOAK_AUDIENCE")
+                        ),
+                        public_url=(
+                            os.environ.get("IDP_PUBLIC_URL")
+                            or os.environ.get("KEYCLOAK_PUBLIC_URL")
+                        ),
                     )
+                )
+                logger.info("Registered OIDC identity provider: %s", idp_issuer)
+            elif idp_type == "saml2":
+                logger.warning(
+                    "IDP_TYPE=saml2 is not yet implemented; no IdP registered. "
+                    "See modules/iam/identity_providers/README.md."
+                )
+            elif idp_issuer:
+                logger.warning(
+                    "Unknown IDP_TYPE=%r with IDP_ISSUER_URL set; no IdP registered.",
+                    idp_type,
                 )
 
             yield

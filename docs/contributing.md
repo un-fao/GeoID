@@ -49,16 +49,34 @@ git checkout -b feature/your-feature-name
 
 ### Running Tests
 
+First start the test database (port 54320, separate from production on 5432):
+
 ```bash
-# Run all tests
-pytest tests/
+cd docker && docker compose -f docker-compose.test.yml up -d db && cd ..
+```
+
+```bash
+# Run all tests (parallel, default)
+.venv/bin/pytest tests/
+
+# Run sequentially (required for some integration tests)
+.venv/bin/pytest tests/ -p no:xdist -o "addopts="
 
 # Run specific test file
-pytest tests/path/to/test_file.py
+.venv/bin/pytest tests/path/to/test_file.py
 
-# Run with coverage
-pytest tests/ --cov=dynastore --cov-report=html
+# Run with coverage report
+.venv/bin/pytest tests/ -p no:xdist -o "addopts=" \
+    --cov=src/dynastore --cov-report=term --cov-report=html
+
+# Run only unit tests (no DB required — note: wait_for_db fixture still needs DB)
+.venv/bin/pytest tests/dynastore/modules/storage/unit \
+                 tests/dynastore/extensions/tools/unit \
+                 tests/dynastore/tools/
 ```
+
+Current baseline coverage: **~50%** (stable) / **~34%** (refactor in progress).  
+See the [Coverage Report](testing/coverage-report.md) for per-module breakdown and improvement priorities.
 
 ### Code Quality
 
