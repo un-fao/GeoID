@@ -1,10 +1,9 @@
 # DynaStore Test Coverage Report
 
 > **Last run:** 2026-04-09  
-> **Baseline (stable branch):** ~50% — 39,588 statements  
-> **Current (apikey→iam refactor in progress):** ~34% — 38,883 statements  
-> **Test suite:** 565 collected | 526 passed | 15–38 errors (refactor-related) | 1 skipped  
-> **Runtime:** ~25 min sequential (`-p no:xdist`); ~8 min parallel (`-n auto`)
+> **Coverage:** **50%** — 38,924 statements, 19,512 missed  
+> **Test suite:** 565 collected | 506 passed | 24 failed | 39 errors | 2 skipped  
+> **Runtime:** ~39 min sequential (`-p no:xdist`); ~8 min parallel (`-n auto`)
 
 ---
 
@@ -154,23 +153,21 @@ cd docker && docker compose -f docker-compose.test.yml up --build
 ## Test Results (Current Run)
 
 ```
-3 failed | 526 passed | 2 skipped | ~538 errors (DB/refactor)
+506 passed | 24 failed | 39 errors | 2 skipped
 ```
 
 ### Failures
 
-| Test | Reason |
-|------|--------|
-| `test_keycloak_auth` (3 tests) | Keycloak not in test compose stack |
-| Iceberg driver tests (2 failed + 21 errors) | In-memory catalog session management |
+| Test | Count | Reason |
+|------|------:|--------|
+| `test_keycloak_auth` | 3 | Keycloak not in test compose stack |
+| `modules/iam/test_filter_inspectors.py` | 20 | IAM rename — module still uses old apikey paths |
+| `modules/catalog/test_search_api.py` | 1 | Search catalog query regression |
+| `modules/storage/unit/test_iceberg_driver.py` | 2 | In-memory catalog session scope |
 
-### Known Errors (Refactor-related)
+### Errors (39 total)
 
-The `apikey → iam` rename introduced import errors in tests that still reference the old `apikey` module paths. These resolve once the refactor is complete:
-
-- `tests/dynastore/extensions/iam/integration/test_authorization_api.py` — fixture setup fails
-- `tests/dynastore/extensions/iam/integration/test_web_access_repro.py`
-- Many tests importing from `dynastore.modules.apikey.*`
+All from `test_iceberg_driver.py` — fixture `in_memory_catalog` uses `scope="session"` but the Iceberg catalog object is not thread-safe across multiple test classes. Fix: change fixture scope to `"function"` or use `scope="module"` with a single class.
 
 ---
 
