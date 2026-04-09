@@ -34,5 +34,8 @@ A key innovation is the database architecture, which leverages advanced features
 - [Example Project Template](examples/my-project/) — starter kit for downstream projects
 - [Roadmap](docs/roadmap.md)
 
+**Testing**
+- [Coverage Report](docs/testing/coverage-report.md) — per-module coverage, priorities, duplication analysis
+
 ---
 *For AI guidelines and constraints, see `.ai_context.md` files localized within specific source directories.*
