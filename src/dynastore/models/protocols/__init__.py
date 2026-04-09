@@ -70,6 +70,9 @@ from dynastore.models.protocols.storage_driver import CollectionStorageDriverPro
 from dynastore.models.protocols.asset_driver import AssetDriverProtocol
 from dynastore.models.protocols.enrichment import CollectionMetadataEnricherProtocol
 from dynastore.models.protocols.asset_enricher import AssetEnricherProtocol
+from dynastore.models.protocols.catalog_enricher import CatalogEnricherProtocol
+from dynastore.models.protocols.item_enricher import ItemEnricherProtocol
+from dynastore.models.protocols.bigquery import BigQueryProtocol
 from dynastore.models.protocols.asset_upload import (
     AssetUploadProtocol,
     UploadTicket,

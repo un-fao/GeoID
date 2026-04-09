@@ -603,13 +603,35 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin):
                 catalog_id, collection_id, db_resource=conn
             )
 
+            # When phys_table is None the collection uses a non-PG primary driver.
+            # Dispatch through ItemsProtocol so the router resolves the correct driver.
             if not phys_schema or not phys_table:
-                return stac_generator.create_empty_item_collection(
-                    request, limit, offset
-                )
+                from dynastore.models.query_builder import QueryRequest
+                from dynastore.tools.discovery import get_protocol
+                from dynastore.models.protocols import ItemsProtocol
 
-            # Check physical existence using protocol or shared tools if needed
-            # For now, catalogs_svc.validate_collection_access can be used if available, or stay with shared_queries
+                items_svc = get_protocol(ItemsProtocol)
+                if items_svc is None:
+                    return stac_generator.create_empty_item_collection(
+                        request, limit, offset
+                    )
+                query_response = await items_svc.stream_items(
+                    catalog_id,
+                    collection_id,
+                    QueryRequest(limit=limit, offset=offset),
+                )
+                items_list = [
+                    stac_generator.build_stac_item(f, collection_metadata, {})
+                    async for f in query_response.items
+                ]
+                return JSONResponse(content={
+                    "type": "FeatureCollection",
+                    "features": items_list,
+                    "numberReturned": len(items_list),
+                    "links": [],
+                })
+
+            # PG path — check physical table existence
             exists = await shared_queries.table_exists_query.execute(
                 conn, schema=phys_schema, table=phys_table
             )

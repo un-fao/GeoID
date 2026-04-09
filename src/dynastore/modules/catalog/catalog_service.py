@@ -692,8 +692,50 @@ class CatalogService(CatalogsProtocol):
         if db_resource:
             async with managed_transaction(db_resource) as conn:
                 result = await _get_catalog_query.execute(conn, id=catalog_id)
-                return self._unpack_catalog_row(result)
-        return await self._get_catalog_model_cached(catalog_id)
+                catalog = self._unpack_catalog_row(result)
+        else:
+            catalog = await self._get_catalog_model_cached(catalog_id)
+
+        if catalog is None:
+            return None
+
+        return await self._run_catalog_enrichers(catalog_id, catalog)
+
+    async def _run_catalog_enrichers(
+        self, catalog_id: str, catalog: Catalog
+    ) -> Catalog:
+        """Apply CatalogEnricherProtocol pipeline (optional, priority-ordered).
+
+        Each enricher can augment, filter, or transform the catalog metadata
+        dict.  Enrichers are registered via ``register_plugin()``; an empty
+        registry is safe.
+        """
+        try:
+            from dynastore.tools.discovery import get_protocols
+            from dynastore.models.protocols.catalog_enricher import CatalogEnricherProtocol
+
+            enrichers = sorted(
+                get_protocols(CatalogEnricherProtocol),
+                key=lambda e: e.priority,
+            )
+            if not enrichers:
+                return catalog
+
+            data = catalog.model_dump(by_alias=True, exclude_none=True)
+            for enricher in enrichers:
+                try:
+                    if enricher.can_enrich(catalog_id):
+                        data = await enricher.enrich(catalog_id, data, context={})
+                except Exception as _enrich_err:
+                    logger.warning(
+                        "CatalogEnricher '%s' failed for %s: %s",
+                        getattr(enricher, "enricher_id", repr(enricher)),
+                        catalog_id,
+                        _enrich_err,
+                    )
+            return Catalog.model_validate(data)
+        except Exception:
+            return catalog  # discovery failure must not break the read path
 
     async def update_catalog(
         self,

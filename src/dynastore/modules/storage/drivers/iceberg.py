@@ -145,6 +145,8 @@ class IcebergStorageDriver(ModuleProtocol):
         Capability.ASSET_TRACKING,
         Capability.ATTRIBUTE_FILTER,
         Capability.SOURCE_REFERENCE,
+        Capability.EXTERNAL_ID_TRACKING,
+        Capability.TEMPORAL_VALIDITY,
     })
     preferred_for: FrozenSet[str] = frozenset({"analytics", "features", "write"})
     supported_hints: FrozenSet[str] = frozenset({"analytics", "features", "write"})
@@ -340,8 +342,25 @@ class IcebergStorageDriver(ModuleProtocol):
         collection_id: str,
         entities: Union[Feature, FeatureCollection, Dict[str, Any], List[Dict[str, Any]]],
         *,
+        context: Optional[Dict[str, Any]] = None,
         db_resource: Optional[Any] = None,
     ) -> List[Feature]:
+        """Write entities to an Iceberg table respecting CollectionWritePolicy.
+
+        Policy semantics on Iceberg (append-only table format):
+
+        - ``UPDATE``: delete existing rows with matching ``external_id``, then append.
+          Produces a new snapshot each time, preserving time-travel history.
+        - ``NEW_VERSION``: append unconditionally (natural Iceberg operation).
+          No deletes — each write is a new temporal version, full time-travel history.
+        - ``IGNORE``: skip rows whose ``external_id`` already exists in the table.
+        - ``REFUSE``: raise ``ConflictError`` if any row's ``external_id`` is found.
+
+        Context keys honoured (only if ``enable_validity=True`` in policy):
+          - ``asset_id``: stored as ``_asset_id`` column
+          - ``valid_from``: stored as ``_valid_from``; defaults to now()
+          - ``valid_to``: stored as ``_valid_to``
+        """
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
             raise RuntimeError(
@@ -349,12 +368,50 @@ class IcebergStorageDriver(ModuleProtocol):
             )
 
         import pyarrow as pa
+        from pyiceberg.io.pyarrow import schema_to_pyarrow
         from dynastore.modules.storage.drivers._duckdb_helpers import (
             normalize_to_dicts,
             dicts_to_features,
         )
+        from dynastore.modules.storage.driver_config import (
+            CollectionWritePolicy,
+            WriteConflictPolicy,
+            WRITE_POLICY_PLUGIN_ID,
+        )
 
         rows = normalize_to_dicts(entities)
+        if not rows:
+            return []
+
+        # Resolve write policy from config waterfall.
+        policy = await self._resolve_write_policy(catalog_id, collection_id)
+
+        # Extract ingestion context (not part of the feature payload).
+        ctx = context or {}
+        asset_id: Optional[str] = ctx.get("asset_id")
+        valid_from = ctx.get("valid_from")
+        valid_to = ctx.get("valid_to")
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        # Enrich rows with tracking columns.
+        for row in rows:
+            ext_id = self._extract_external_id(row, policy.external_id_field)
+            if policy.require_external_id and not ext_id:
+                logger.warning(
+                    "Iceberg write_entities: external_id required but missing — skipped"
+                )
+                rows = [r for r in rows if self._extract_external_id(r, policy.external_id_field)]
+                break
+            if ext_id:
+                row["_external_id"] = ext_id
+            if asset_id is not None:
+                row["_asset_id"] = asset_id
+            if policy.enable_validity:
+                row["_valid_from"] = valid_from or now_iso
+                if valid_to is not None:
+                    row["_valid_to"] = valid_to
+
         if not rows:
             return []
 
@@ -362,14 +419,93 @@ class IcebergStorageDriver(ModuleProtocol):
         table_id = self._table_identifier(loc, catalog_id, collection_id)
         table = catalog.load_table(table_id)
 
-        # Use the Iceberg table's Arrow schema to avoid pa.null() for missing columns
-        from pyiceberg.io.pyarrow import schema_to_pyarrow
+        on_conflict = policy.on_conflict
+
+        if on_conflict in (WriteConflictPolicy.IGNORE, WriteConflictPolicy.REFUSE):
+            # Collect external_ids that already exist in the table.
+            ext_ids = [
+                row["_external_id"] for row in rows if "_external_id" in row
+            ]
+            if ext_ids:
+                from pyiceberg.expressions import In
+                existing = table.scan().filter(
+                    In("_external_id", ext_ids)
+                ).to_arrow()
+                existing_ids = set(existing.column("_external_id").to_pylist()) if existing.num_rows > 0 else set()
+
+                if on_conflict == WriteConflictPolicy.REFUSE and existing_ids:
+                    from dynastore.modules.storage.errors import ConflictError
+                    raise ConflictError(
+                        f"Iceberg: external_id(s) {sorted(existing_ids)} already exist "
+                        f"in {catalog_id}/{collection_id} (policy=refuse)"
+                    )
+
+                if on_conflict == WriteConflictPolicy.IGNORE:
+                    rows = [r for r in rows if r.get("_external_id") not in existing_ids]
+                    if not rows:
+                        return []
+
+        elif on_conflict == WriteConflictPolicy.UPDATE:
+            # Delete existing rows with matching external_ids, then append fresh rows.
+            ext_ids = [
+                row["_external_id"] for row in rows if "_external_id" in row
+            ]
+            if ext_ids:
+                from pyiceberg.expressions import In
+                try:
+                    table.delete(delete_filter=In("_external_id", ext_ids))
+                except Exception as e:
+                    logger.warning(
+                        "Iceberg UPDATE: delete of existing external_ids failed — "
+                        "appending anyway. Error: %s", e,
+                    )
+
+        # NEW_VERSION and UPDATE (after delete): append all rows as a new snapshot.
         arrow_schema = schema_to_pyarrow(table.schema())
-        pa_table = pa.Table.from_pylist(rows, schema=arrow_schema)
+        # Only include columns present in the Iceberg schema to avoid pa.null() errors.
+        schema_names = set(arrow_schema.names)
+        filtered_rows = [
+            {k: v for k, v in row.items() if k in schema_names}
+            for row in rows
+        ]
+        pa_table = pa.Table.from_pylist(filtered_rows, schema=arrow_schema)
         table.append(pa_table)
         del pa_table  # release memory early (Cloud Run)
 
         return dicts_to_features(rows)
+
+    @staticmethod
+    async def _resolve_write_policy(catalog_id: str, collection_id: str):
+        """Resolve CollectionWritePolicy from the config waterfall."""
+        from dynastore.modules.storage.driver_config import (
+            CollectionWritePolicy,
+            WRITE_POLICY_PLUGIN_ID,
+        )
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.tools.discovery import get_protocol
+
+        try:
+            configs = get_protocol(ConfigsProtocol)
+            if configs:
+                return await configs.get_config(
+                    WRITE_POLICY_PLUGIN_ID,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                )
+        except Exception:
+            pass
+        return CollectionWritePolicy()
+
+    @staticmethod
+    def _extract_external_id(row: dict, field_path: str) -> Optional[str]:
+        """Extract external_id using dot-notation path from a row dict."""
+        val = row
+        for part in field_path.split("."):
+            if isinstance(val, dict):
+                val = val.get(part)
+            else:
+                return None
+        return str(val) if val is not None else None
 
     async def read_entities(
         self,
@@ -378,6 +514,7 @@ class IcebergStorageDriver(ModuleProtocol):
         *,
         entity_ids: Optional[List[str]] = None,
         request: Optional[QueryRequest] = None,
+        context: Optional[Dict[str, Any]] = None,
         limit: int = 100,
         offset: int = 0,
         db_resource: Optional[Any] = None,

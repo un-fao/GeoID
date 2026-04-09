@@ -155,6 +155,8 @@ class DuckDBStorageDriver(ModuleProtocol):
         Capability.GEOSPATIAL,
         Capability.SOURCE_REFERENCE,
         Capability.ATTRIBUTE_FILTER,
+        Capability.EXTERNAL_ID_TRACKING,
+        Capability.TEMPORAL_VALIDITY,
     })
     preferred_for: FrozenSet[str] = frozenset({"analytics"})
     supported_hints: FrozenSet[str] = frozenset({"analytics"})
@@ -211,12 +213,25 @@ class DuckDBStorageDriver(ModuleProtocol):
         """Load the sqlite extension if not already loaded."""
         _try_load_extension("sqlite")
 
+    @staticmethod
+    def _extract_external_id(row: Dict[str, Any], field: str) -> Optional[str]:
+        """Extract external_id from a row dict using dot-notation field path."""
+        parts = field.split(".")
+        val = row
+        for p in parts:
+            if isinstance(val, dict):
+                val = val.get(p)
+            else:
+                return None
+        return str(val) if val is not None else None
+
     async def write_entities(
         self,
         catalog_id: str,
         collection_id: str,
         entities: Union[Feature, FeatureCollection, Dict[str, Any], List[Dict[str, Any]]],
         *,
+        context: Optional[Dict[str, Any]] = None,
         db_resource: Optional[Any] = None,
     ) -> List[Feature]:
         loc = await self._get_location_async(catalog_id, collection_id)
@@ -229,10 +244,42 @@ class DuckDBStorageDriver(ModuleProtocol):
             normalize_to_dicts,
             dicts_to_features,
         )
+        from dynastore.modules.storage.driver_config import (
+            CollectionWritePolicy, WriteConflictPolicy, WRITE_POLICY_PLUGIN_ID,
+        )
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.tools.discovery import get_protocol
 
         rows = normalize_to_dicts(entities)
         if not rows:
             return []
+
+        # Resolve write policy
+        ctx = context or {}
+        policy: CollectionWritePolicy = CollectionWritePolicy()
+        try:
+            _configs = get_protocol(ConfigsProtocol)
+            if _configs:
+                _p = await _configs.get_config(
+                    WRITE_POLICY_PLUGIN_ID, catalog_id=catalog_id, collection_id=collection_id
+                )
+                if _p is not None:
+                    policy = _p
+        except Exception:
+            pass
+
+        # Enrich rows with context metadata (asset_id, validity)
+        asset_id = ctx.get("asset_id")
+        valid_from = ctx.get("valid_from")
+        valid_to = ctx.get("valid_to")
+        for row in rows:
+            if policy.track_asset_id and asset_id:
+                row.setdefault("asset_id", asset_id)
+            if policy.enable_validity:
+                if valid_from:
+                    row.setdefault("valid_from", str(valid_from))
+                if valid_to:
+                    row.setdefault("valid_to", str(valid_to))
 
         conn = self._get_conn()
 
@@ -245,17 +292,59 @@ class DuckDBStorageDriver(ModuleProtocol):
             conn.execute(f"ATTACH '{loc.write_path}' AS write_db (TYPE SQLITE)")
             try:
                 table_name = f"write_db.{collection_id}"
+                # Ensure table exists (idempotent after ensure_storage)
                 conn.execute(
-                    f"CREATE TABLE IF NOT EXISTS {table_name} AS "
-                    f"SELECT * FROM (VALUES {','.join(['(?)']*len(rows))}) LIMIT 0"
+                    f"CREATE TABLE IF NOT EXISTS {table_name} "
+                    f"(id VARCHAR PRIMARY KEY, geometry VARCHAR, properties VARCHAR, "
+                    f"external_id VARCHAR, asset_id VARCHAR, "
+                    f"valid_from VARCHAR, valid_to VARCHAR)"
                 )
                 for row in rows:
-                    cols = ", ".join(row.keys())
-                    placeholders = ", ".join(["?"] * len(row))
-                    conn.execute(
-                        f"INSERT OR REPLACE INTO {table_name} ({cols}) VALUES ({placeholders})",
-                        list(row.values()),
+                    ext_id = (
+                        ctx.get("external_id_override")
+                        or self._extract_external_id(row, policy.external_id_field)
                     )
+                    if policy.require_external_id and not ext_id:
+                        raise ValueError(
+                            f"DuckDB write_entities: external_id required but missing "
+                            f"(field='{policy.external_id_field}')"
+                        )
+
+                    on_conflict = policy.on_conflict
+                    if on_conflict == WriteConflictPolicy.IGNORE and ext_id:
+                        existing = conn.execute(
+                            f"SELECT id FROM {table_name} WHERE external_id = ?", [ext_id]
+                        ).fetchone()
+                        if existing:
+                            continue
+                    elif on_conflict == WriteConflictPolicy.REFUSE and ext_id:
+                        existing = conn.execute(
+                            f"SELECT id FROM {table_name} WHERE external_id = ?", [ext_id]
+                        ).fetchone()
+                        if existing:
+                            from dynastore.modules.storage.errors import ConflictError
+                            raise ConflictError(
+                                f"DuckDB: external_id '{ext_id}' already exists in "
+                                f"{catalog_id}/{collection_id} (policy=refuse)"
+                            )
+
+                    row_with_ext = dict(row)
+                    if ext_id:
+                        row_with_ext["external_id"] = ext_id
+
+                    cols = ", ".join(f'"{k}"' for k in row_with_ext.keys())
+                    placeholders = ", ".join(["?"] * len(row_with_ext))
+                    if on_conflict == WriteConflictPolicy.NEW_VERSION:
+                        # Always insert a new row (no conflict clause)
+                        conn.execute(
+                            f"INSERT INTO {table_name} ({cols}) VALUES ({placeholders})",
+                            list(row_with_ext.values()),
+                        )
+                    else:
+                        conn.execute(
+                            f"INSERT OR REPLACE INTO {table_name} ({cols}) VALUES ({placeholders})",
+                            list(row_with_ext.values()),
+                        )
             finally:
                 conn.execute("DETACH write_db")
         else:
@@ -419,23 +508,64 @@ class DuckDBStorageDriver(ModuleProtocol):
         collection_id: Optional[str] = None,
         **kwargs,
     ) -> None:
+        """Ensure backing storage exists, creating it if necessary.
+
+        SQLite write backend (``write_path``): creates the parent directory and
+        initialises the collection table with the canonical schema.
+
+        Read-only parquet/csv (``path``): remote paths are skipped; local paths
+        that don't exist yet are logged as info — they will be populated by an
+        external ETL process or the first ``write_entities()`` call.
+        """
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
-            logger.warning(
+            logger.info(
                 "DuckDBStorageDriver.ensure_storage: no location config for "
-                "catalog=%s collection=%s", catalog_id, collection_id,
+                "catalog=%s collection=%s — nothing to provision",
+                catalog_id, collection_id,
             )
             return
 
         import os
-        if loc.path and not loc.path.startswith(("s3://", "gs://", "http")):
-            if not os.path.exists(loc.path):
-                raise FileNotFoundError(
-                    f"DuckDB source file not found: {loc.path}"
-                )
 
         # Trigger singleton creation + extension loading
-        self._get_conn()
+        conn = self._get_conn()
+
+        # --- SQLite write backend: create dir + table ---
+        if loc.write_path:
+            write_dir = os.path.dirname(loc.write_path)
+            if write_dir:
+                os.makedirs(write_dir, exist_ok=True)
+
+            write_fmt = loc.write_format or "sqlite"
+            if write_fmt == "sqlite" and collection_id:
+                from dynastore.tools.db import validate_sql_identifier
+                validate_sql_identifier(collection_id)
+
+                self._ensure_sqlite_extension()
+                conn.execute(f"ATTACH '{loc.write_path}' AS write_db (TYPE SQLITE)")
+                try:
+                    conn.execute(
+                        f"CREATE TABLE IF NOT EXISTS write_db.{collection_id} "
+                        f"(id VARCHAR PRIMARY KEY, geometry VARCHAR, properties VARCHAR, "
+                        f"external_id VARCHAR, asset_id VARCHAR, "
+                        f"valid_from VARCHAR, valid_to VARCHAR)"
+                    )
+                    logger.info(
+                        "DuckDB: initialised SQLite table '%s' in %s",
+                        collection_id, loc.write_path,
+                    )
+                finally:
+                    conn.execute("DETACH write_db")
+
+        # --- Read-only source: warn if local path missing ---
+        if loc.path and not loc.path.startswith(("s3://", "gs://", "http")):
+            if not os.path.exists(loc.path):
+                logger.info(
+                    "DuckDB: source path %s does not exist yet — "
+                    "it will be populated by an external ETL process or first write",
+                    loc.path,
+                )
 
     async def drop_storage(
         self,

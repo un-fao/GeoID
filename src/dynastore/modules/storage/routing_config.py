@@ -72,11 +72,19 @@ class FailurePolicy(StrEnum):
 
 
 class Operation(StrEnum):
-    """Standard operations."""
+    """Standard operations.
+
+    - WRITE  : fan-out to all configured drivers (position 0 = primary)
+    - READ   : single-driver for browsing/pagination (streaming)
+    - SEARCH : single-driver for filtered queries (bbox, attributes, fulltext)
+    - METADATA: single-driver for collection metadata persistence/retrieval.
+                Falls back to primary WRITE driver if not configured.
+    """
 
     WRITE = "WRITE"
     READ = "READ"
     SEARCH = "SEARCH"
+    METADATA = "METADATA"
 
 
 class WriteMode(StrEnum):
@@ -277,6 +285,35 @@ def _validate_routing_entries(
                 except Exception:
                     pass  # driver config may not exist — skip check
 
+    # 5. Primary driver capability check
+    #    Position 0 in WRITE must support WRITE; position 0 in READ/SEARCH/METADATA
+    #    must support READ.  Warn only — don't hard-fail for forward-compat.
+    from dynastore.models.protocols.storage_driver import Capability
+
+    _op_required_cap = {
+        Operation.WRITE: Capability.WRITE,
+        Operation.READ: Capability.READ,
+        Operation.SEARCH: Capability.READ,
+        Operation.METADATA: Capability.READ,
+    }
+    for operation, entries in config.operations.items():
+        if not entries:
+            continue
+        primary_id = entries[0].driver_id
+        primary_driver = driver_index.get(primary_id)
+        if primary_driver is None:
+            continue
+        required_cap = _op_required_cap.get(operation)
+        if required_cap is None:
+            continue
+        driver_caps = getattr(primary_driver, "capabilities", frozenset())
+        if required_cap not in driver_caps:
+            logger.warning(
+                "%s: primary driver '%s' for operation '%s' lacks capability '%s'. "
+                "This may cause runtime errors.",
+                label, primary_id, operation, required_cap,
+            )
+
 
 async def _on_apply_routing_config(
     config: RoutingPluginConfig,
@@ -303,6 +340,26 @@ async def _on_apply_routing_config(
     except Exception:
         pass
 
+    # Call ensure_storage() on all referenced drivers (idempotent).
+    # Skipped for platform-level configs where catalog/collection are absent.
+    if catalog_id and collection_id:
+        seen_ids: set[str] = set()
+        for entries in config.operations.values():
+            for entry in entries:
+                seen_ids.add(entry.driver_id)
+        for did in seen_ids:
+            driver = driver_index.get(did)
+            if driver and hasattr(driver, "ensure_storage"):
+                try:
+                    await driver.ensure_storage(
+                        catalog_id, collection_id, db_resource=db_resource,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "ensure_storage failed for driver '%s' on %s/%s: %s",
+                        did, catalog_id, collection_id, exc,
+                    )
+
 
 async def _on_apply_asset_routing_config(
     config: AssetRoutingPluginConfig,
@@ -324,6 +381,25 @@ async def _on_apply_asset_routing_config(
         invalidate_asset_router_cache(catalog_id, collection_id)
     except Exception:
         pass
+
+    # Call ensure_storage() on all referenced asset drivers (idempotent).
+    if catalog_id and collection_id:
+        seen_ids: set[str] = set()
+        for entries in config.operations.values():
+            for entry in entries:
+                seen_ids.add(entry.driver_id)
+        for did in seen_ids:
+            driver = driver_index.get(did)
+            if driver and hasattr(driver, "ensure_storage"):
+                try:
+                    await driver.ensure_storage(
+                        catalog_id, collection_id, db_resource=db_resource,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "ensure_storage failed for asset driver '%s' on %s/%s: %s",
+                        did, catalog_id, collection_id, exc,
+                    )
 
 
 # Register handlers

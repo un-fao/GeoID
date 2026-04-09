@@ -258,6 +258,67 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         if not items_list:
             raise ValueError("No features provided. A FeatureCollection must contain at least one feature.")
 
+        # ── Branch A: non-PG primary write driver ─────────────────────────
+        # When the primary WRITE driver is not postgresql, delegate the entire
+        # write to that driver.  PG-specific logic (sidecars, hub table, sidecar
+        # payloads, QueryOptimizer) is skipped — the driver owns its own write path.
+        # Post-commit fan-out and event emission still run after this branch.
+        try:
+            from dynastore.modules.storage.router import get_write_drivers
+            resolved_drivers = await get_write_drivers(catalog_id, collection_id)
+            primary = resolved_drivers[0] if resolved_drivers else None
+        except Exception:
+            primary = None
+
+        if primary is not None and primary.driver.driver_id != "postgresql":
+            results = await primary.driver.write_entities(
+                catalog_id,
+                collection_id,
+                items_list,
+                context=processing_context,
+            )
+            results = results or []
+
+            # Fan-out to secondary drivers (positions 1+)
+            if results:
+                await self._fan_out_to_secondary_drivers(
+                    catalog_id, collection_id, results, _primary_already_written=True,
+                )
+
+            # Emit events
+            if results:
+                try:
+                    from dynastore.models.protocols.event_bus import EventBusProtocol
+                    from dynastore.modules.catalog.event_service import CatalogEventType
+                    events_protocol = get_protocol(EventBusProtocol)
+                    if events_protocol:
+                        if is_single:
+                            await events_protocol.emit(
+                                event_type=CatalogEventType.ITEM_CREATION,
+                                catalog_id=catalog_id,
+                                collection_id=collection_id,
+                                item_id=str(results[0].id) if results[0].id else None,
+                                payload=results[0].model_dump(by_alias=True, exclude_unset=True),
+                            )
+                        else:
+                            await events_protocol.emit(
+                                event_type=CatalogEventType.BULK_ITEM_CREATION,
+                                catalog_id=catalog_id,
+                                collection_id=collection_id,
+                                payload={
+                                    "count": len(results),
+                                    "items_subset": [
+                                        r.model_dump(by_alias=True, exclude_none=True)
+                                        for r in results[:10]
+                                    ],
+                                },
+                            )
+                except Exception as e:
+                    logger.warning("Failed to emit item creation events: %s", e)
+
+            return results[0] if is_single else results
+
+        # ── Branch B: PostgreSQL primary (existing path, untouched) ──────
         async with managed_transaction(db_resource or self.engine) as conn:
             # Fetch generic collection config (driver-agnostic)
             collection_config = await get_protocol(ConfigsProtocol).get_config(
@@ -446,8 +507,13 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         catalog_id: str,
         collection_id: str,
         features: List[Feature],
+        *,
+        _primary_already_written: bool = True,
     ) -> None:
-        """Fan-out writes to secondary drivers after PG commit.
+        """Fan-out writes to secondary drivers after the primary commit.
+
+        ``_primary_already_written=True`` (default) skips position 0 (primary)
+        since it was already written by the caller (Branch A or B in ``upsert``).
 
         Sync drivers run in parallel (``asyncio.gather``).  If any sync
         driver fails, drivers that succeeded and declare
@@ -464,8 +530,8 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         except Exception:
             return  # no routing configured — nothing to fan out
 
-        # Position 0 is the primary PG driver — already written
-        secondaries = resolved[1:]
+        # Position 0 is the primary driver — already written by the caller.
+        secondaries = resolved[1:] if _primary_already_written else resolved
         if not secondaries:
             return
 

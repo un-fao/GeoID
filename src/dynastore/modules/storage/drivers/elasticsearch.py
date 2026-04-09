@@ -55,6 +55,10 @@ from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
 
 logger = logging.getLogger(__name__)
 
+# One-time flag: index templates are global, not per-collection.
+# Avoids redundant template API calls on every ensure_storage().
+_templates_created: bool = False
+
 
 # ---------------------------------------------------------------------------
 # Shared base
@@ -203,6 +207,8 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
         Capability.FULLTEXT,
         Capability.SOFT_DELETE,
         Capability.ATTRIBUTE_FILTER,
+        Capability.EXTERNAL_ID_TRACKING,
+        Capability.TEMPORAL_VALIDITY,
     })
     preferred_for: FrozenSet[str] = frozenset({"search"})
     supported_hints: FrozenSet[str] = frozenset({"search", "fulltext"})
@@ -249,34 +255,168 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
         collection_id: str,
         entities: Union[Feature, FeatureCollection, Dict[str, Any], List[Dict[str, Any]]],
         *,
+        context: Optional[Dict[str, Any]] = None,
         db_resource: Optional[Any] = None,
     ) -> List[Feature]:
+        """Write/upsert entities to Elasticsearch respecting CollectionWritePolicy.
+
+        Applies ``WriteConflictPolicy`` per entity when ``external_id`` is present.
+        Stores ``asset_id``, ``valid_from``, ``valid_to`` from ``context`` in ES ``_source``.
+
+        Conflict policies:
+        - UPDATE: index with stable doc_id (existing ES behaviour).
+        - IGNORE: skip if a doc with the same external_id already exists.
+        - REFUSE: raise ``ConflictError`` if external_id already exists.
+        - NEW_VERSION: index with a timestamped doc_id suffix; stores ``valid_from``/``valid_to``.
+        """
+        from datetime import datetime, timezone
+
         db = self._get_db_logic()
         items = self._normalize_entities(entities)
         if not items:
             return []
 
-        # Serialize to STAC item dicts
-        stac_items = []
+        # Resolve write policy from the config waterfall.
+        policy = await self._resolve_write_policy(catalog_id, collection_id)
+
+        # Extract context fields (ingestion metadata — not part of feature payload).
+        ctx = context or {}
+        asset_id: Optional[str] = ctx.get("asset_id")
+        valid_from = ctx.get("valid_from")
+        valid_to = ctx.get("valid_to")
+
+        written: List = []
+        prepped_bulk: list = []
+
         for item in items:
             stac_doc = self._feature_to_stac_item(item, catalog_id, collection_id)
-            stac_items.append(stac_doc)
 
-        if len(stac_items) == 1:
-            await db.create_item(stac_items[0], exist_ok=True)
-        else:
-            # Prep items for bulk insert
-            prepped = []
-            for doc in stac_items:
-                prepped_item = await db.bulk_async_prep_create_item(
-                    doc, base_url="", exist_ok=True,
+            # Resolve external_id from the configured field path.
+            external_id = self._extract_external_id_from_doc(stac_doc, policy.external_id_field)
+            if policy.require_external_id and not external_id:
+                logger.warning(
+                    "ES write_entities: external_id required but missing for item in %s/%s — skipped",
+                    catalog_id, collection_id,
                 )
-                if prepped_item is not None:
-                    prepped.append(prepped_item)
-            if prepped:
-                await db.bulk_async(collection_id, prepped, refresh=False)
+                continue
 
-        return items if isinstance(items, list) else list(items)
+            # Attach tracking fields to ES document _source.
+            if asset_id is not None:
+                stac_doc["_asset_id"] = asset_id
+            if valid_from is not None:
+                stac_doc["_valid_from"] = valid_from
+            if valid_to is not None:
+                stac_doc["_valid_to"] = valid_to
+            if external_id is not None:
+                stac_doc["_external_id"] = external_id
+
+            # Build the ES doc_id based on conflict policy.
+            from dynastore.modules.storage.driver_config import WriteConflictPolicy
+
+            base_id = external_id or stac_doc.get("id")
+
+            if policy.on_conflict == WriteConflictPolicy.IGNORE:
+                if external_id and await self._es_doc_exists_by_external_id(
+                    db, collection_id, external_id,
+                ):
+                    logger.debug(
+                        "ES write_entities(IGNORE): external_id '%s' exists — skipped",
+                        external_id,
+                    )
+                    continue
+
+            elif policy.on_conflict == WriteConflictPolicy.REFUSE:
+                if external_id and await self._es_doc_exists_by_external_id(
+                    db, collection_id, external_id,
+                ):
+                    from dynastore.modules.storage.errors import ConflictError
+                    raise ConflictError(
+                        f"ES driver: external_id '{external_id}' already exists "
+                        f"in {catalog_id}/{collection_id}"
+                    )
+
+            elif policy.on_conflict == WriteConflictPolicy.NEW_VERSION:
+                # Each version gets a unique doc_id. Store validity window.
+                ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+                stac_doc["id"] = f"{base_id}_{ts}" if base_id else ts
+                if valid_from is None:
+                    stac_doc["_valid_from"] = datetime.now(timezone.utc).isoformat()
+
+            # Default (UPDATE): stable doc_id from external_id or item id.
+            # ES `exist_ok=True` (create_item) → upsert in place.
+
+            prepped_item = await db.bulk_async_prep_create_item(
+                stac_doc, base_url="", exist_ok=True,
+            )
+            if prepped_item is not None:
+                prepped_bulk.append(prepped_item)
+            written.append(item)
+
+        if len(prepped_bulk) == 1:
+            # For single items prefer direct create for cleaner error reporting.
+            await db.create_item(
+                self._feature_to_stac_item(written[0], catalog_id, collection_id)
+                if not prepped_bulk else prepped_bulk[0],
+                exist_ok=True,
+            )
+            # Re-index using the prepared doc to honour policy mutations.
+            prepped_bulk = []  # already written via create_item
+
+        if prepped_bulk:
+            await db.bulk_async(collection_id, prepped_bulk, refresh=False)
+
+        return written
+
+    @staticmethod
+    async def _resolve_write_policy(
+        catalog_id: str, collection_id: str,
+    ):
+        """Resolve CollectionWritePolicy from the config waterfall."""
+        from dynastore.modules.storage.driver_config import (
+            CollectionWritePolicy,
+            WRITE_POLICY_PLUGIN_ID,
+        )
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.tools.discovery import get_protocol
+
+        try:
+            configs = get_protocol(ConfigsProtocol)
+            if configs:
+                return await configs.get_config(
+                    WRITE_POLICY_PLUGIN_ID,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                )
+        except Exception:
+            pass
+        return CollectionWritePolicy()
+
+    @staticmethod
+    def _extract_external_id_from_doc(doc: dict, field_path: str) -> Optional[str]:
+        """Extract external_id using a dot-notation path from an ES document."""
+        val = doc
+        for part in field_path.split("."):
+            if isinstance(val, dict):
+                val = val.get(part)
+            else:
+                return None
+        return str(val) if val is not None else None
+
+    @staticmethod
+    async def _es_doc_exists_by_external_id(
+        db, collection_id: str, external_id: str,
+    ) -> bool:
+        """Check if any ES document with _external_id == external_id exists."""
+        try:
+            from stac_fastapi.sfeos_helpers.database import index_alias_by_collection_id
+            alias = index_alias_by_collection_id(collection_id)
+            resp = await db.client.count(
+                index=alias,
+                body={"query": {"term": {"_external_id": external_id}}},
+            )
+            return resp.get("count", 0) > 0
+        except Exception:
+            return False
 
     async def read_entities(
         self,
@@ -285,6 +425,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
         *,
         entity_ids: Optional[List[str]] = None,
         request: Optional[QueryRequest] = None,
+        context: Optional[Dict[str, Any]] = None,
         limit: int = 100,
         offset: int = 0,
         db_resource: Optional[Any] = None,
@@ -351,13 +492,47 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
         collection_id: Optional[str] = None,
         **kwargs,
     ) -> None:
-        """Ensure SFEOS index templates and collection index exist."""
+        """Ensure SFEOS index templates exist (once) and create per-collection items index.
+
+        Global index templates are created only on first call across the process
+        lifetime (``_templates_created`` flag). Per-collection index creation is
+        idempotent — SFEOS ``create_collection_index`` is a no-op if it already exists.
+        """
+        global _templates_created
         from stac_fastapi.elasticsearch.database_logic import (
             create_index_templates,
             create_collection_index,
         )
-        await create_index_templates()
+
+        if not _templates_created:
+            await create_index_templates()
+            _templates_created = True
+            logger.debug("ElasticsearchStorageDriver: global index templates created.")
+
+        # Always ensure the collections meta-index.
         await create_collection_index()
+
+        if collection_id:
+            # Create the per-collection items index (idempotent).
+            db = self._get_db_logic()
+            try:
+                from stac_fastapi.sfeos_helpers.database import index_alias_by_collection_id
+                index_name = index_alias_by_collection_id(collection_id)
+                if not await db.client.indices.exists(index=index_name):
+                    await db.client.indices.create(
+                        index=index_name,
+                        ignore=400,  # 400 = index already exists — safe to ignore
+                    )
+                    logger.info(
+                        "ElasticsearchStorageDriver: created items index '%s'.",
+                        index_name,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "ElasticsearchStorageDriver: ensure_storage collection index "
+                    "creation failed for '%s': %s",
+                    collection_id, e,
+                )
 
     async def drop_storage(
         self,
@@ -782,6 +957,7 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
         collection_id: str,
         entities: Union[Feature, FeatureCollection, Dict[str, Any], List[Dict[str, Any]]],
         *,
+        context: Optional[Dict[str, Any]] = None,
         db_resource: Optional[Any] = None,
     ) -> List[Feature]:
         from dynastore.modules.elasticsearch.mappings import (
@@ -800,6 +976,7 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
                 ignore=400,
             )
 
+        # Obfuscated driver: only stores geoid — context fields are intentionally omitted.
         bulk_body: list = []
         for item in items:
             geoid = self._extract_item_id(item)
@@ -825,6 +1002,7 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
         *,
         entity_ids: Optional[List[str]] = None,
         request: Optional[QueryRequest] = None,
+        context: Optional[Dict[str, Any]] = None,
         limit: int = 100,
         offset: int = 0,
         db_resource: Optional[Any] = None,
@@ -1286,6 +1464,7 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
         collection_id: str,
         entities: Union[Feature, FeatureCollection, Dict[str, Any], List[Dict[str, Any]]],
         *,
+        context: Optional[Dict[str, Any]] = None,
         db_resource: Optional[Any] = None,
     ) -> List[Feature]:
         from dynastore.modules.elasticsearch.mappings import (
@@ -1328,6 +1507,7 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
         *,
         entity_ids: Optional[List[str]] = None,
         request: Optional[QueryRequest] = None,
+        context: Optional[Dict[str, Any]] = None,
         limit: int = 100,
         offset: int = 0,
         db_resource: Optional[Any] = None,

@@ -151,7 +151,7 @@ class CollectionService:
         if not phys_schema:
             return None
 
-        # 1. Verify existence in thin registry
+        # 1. Verify existence in thin PG registry (always PG — thin registry is authoritative).
         exists_sql = f'SELECT id FROM "{phys_schema}".collections WHERE id = :id AND deleted_at IS NULL;'
         exists = await DQLQuery(
             exists_sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
@@ -159,11 +159,28 @@ class CollectionService:
         if not exists:
             return None
 
-        # 2. Read metadata from metadata
-        meta_sql = f'SELECT * FROM "{phys_schema}".metadata WHERE collection_id = :id;'
-        meta_dict = await DQLQuery(
-            meta_sql, result_handler=ResultHandler.ONE_DICT
-        ).execute(conn, id=collection_id) or {}
+        # 2. Read metadata — prefer the METADATA operation driver if configured.
+        #    Falls back to PG `metadata` table when no METADATA driver is registered
+        #    or when the METADATA driver is postgresql.
+        meta_dict = None
+        try:
+            from dynastore.modules.storage.router import get_driver
+            from dynastore.modules.storage.routing_config import Operation
+
+            meta_driver = await get_driver(Operation.METADATA, catalog_id, collection_id)
+            if meta_driver is not None and meta_driver.driver_id != "postgresql":
+                meta_dict = await meta_driver.get_collection_metadata(
+                    catalog_id, collection_id,
+                )
+        except Exception:
+            pass  # no routing config or driver error — fall through to PG
+
+        if meta_dict is None:
+            # PG metadata fallback (always available)
+            meta_sql = f'SELECT * FROM "{phys_schema}".metadata WHERE collection_id = :id;'
+            meta_dict = await DQLQuery(
+                meta_sql, result_handler=ResultHandler.ONE_DICT
+            ).execute(conn, id=collection_id) or {}
 
         # Deserialize JSONB columns
         for key in ["title", "description", "keywords", "license", "links", "assets",
@@ -518,30 +535,26 @@ class CollectionService:
                 item_assets=json.dumps(getattr(collection_model, 'item_assets', None), cls=CustomJSONEncoder) if getattr(collection_model, 'item_assets', None) else None,
                 extra_metadata=user_extra_metadata,
             )
-            # Also notify any registered storage meta_driver (e.g. Elasticsearch index).
+            # Also persist to the METADATA operation driver when configured and non-PG.
+            # The PG `metadata` table SQL upsert above is always performed (authoritative).
+            # This additional call lets non-PG METADATA drivers (e.g. ES, Iceberg props) stay in sync.
             try:
+                from dynastore.modules.storage.routing_config import Operation
+
                 meta_driver = await get_driver(
-                    "READ", catalog_id, collection_model.id, hint="metadata"
+                    Operation.METADATA, catalog_id, collection_model.id
                 )
-            except ValueError:
-                meta_driver = None
-            if meta_driver is not None:
-                await meta_driver.set_collection_metadata(
-                    catalog_id,
-                    collection_model.id,
-                    {
-                        "title": json.dumps(collection_model.title.model_dump(exclude_none=True), cls=CustomJSONEncoder) if collection_model.title else None,
-                        "description": json.dumps(collection_model.description.model_dump(exclude_none=True), cls=CustomJSONEncoder) if collection_model.description else None,
-                        "keywords": json.dumps(collection_model.keywords.model_dump(exclude_none=True), cls=CustomJSONEncoder) if collection_model.keywords else None,
-                        "license": json.dumps(collection_model.license.model_dump(exclude_none=True), cls=CustomJSONEncoder) if collection_model.license else None,
-                        "links": json.dumps([l.model_dump() for l in collection_model.links], cls=CustomJSONEncoder) if collection_model.links else None,
-                        "assets": json.dumps(collection_model.assets, cls=CustomJSONEncoder) if collection_model.assets else None,
-                        "extent": json.dumps(collection_model.extent.model_dump(exclude_none=True), cls=CustomJSONEncoder) if collection_model.extent else None,
-                        "providers": json.dumps([p.model_dump() for p in (collection_model.providers or [])], cls=CustomJSONEncoder) if collection_model.providers else None,
-                        "summaries": json.dumps(collection_model.summaries, cls=CustomJSONEncoder) if collection_model.summaries else None,
-                        "extra_metadata": user_extra_metadata,
-                    },
-                    db_resource=conn,
+                if meta_driver is not None and meta_driver.driver_id != "postgresql":
+                    await meta_driver.set_collection_metadata(
+                        catalog_id,
+                        collection_model.id,
+                        collection_model.model_dump(by_alias=True, exclude_none=True),
+                    )
+            except Exception as _meta_e:
+                logger.warning(
+                    "create_collection: METADATA driver set_collection_metadata failed "
+                    "for %s/%s: %s",
+                    catalog_id, collection_model.id, _meta_e,
                 )
 
             # 7. Persist driver config if override provided.

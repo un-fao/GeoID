@@ -105,6 +105,10 @@ class Capability:
     # --- Cross-driver composition ---
     ENRICHMENT = "enrichment"  # can provide filter keys + extra attrs for cross-driver join
 
+    # --- Write-time identity & versioning ---
+    EXTERNAL_ID_TRACKING = "external_id_tracking"  # driver tracks external_id per feature
+    TEMPORAL_VALIDITY = "temporal_validity"          # driver tracks valid_from / valid_to
+
 
 @runtime_checkable
 class CollectionStorageDriverProtocol(Protocol):
@@ -135,9 +139,28 @@ class CollectionStorageDriverProtocol(Protocol):
         collection_id: str,
         entities: Union[Feature, FeatureCollection, Dict[str, Any], List[Dict[str, Any]]],
         *,
+        context: Optional[Dict[str, Any]] = None,
         db_resource: Optional[Any] = None,
     ) -> List[Feature]:
-        """Write/upsert entities. Returns written Feature models."""
+        """Write/upsert entities. Returns written Feature models.
+
+        Args:
+            entities: One or more features to write.
+            context: Runtime write context — carries ingestion-pipeline metadata
+                that is not part of the feature payload itself:
+
+                - ``asset_id``             — source asset URN (from ingestion)
+                - ``external_id_override`` — explicit external_id bypassing field extraction
+                - ``valid_from``           — validity range start (datetime or ISO-8601 str)
+                - ``valid_to``             — validity range end (None = open-ended)
+
+                Drivers that declare ``Capability.EXTERNAL_ID_TRACKING`` or
+                ``Capability.TEMPORAL_VALIDITY`` MUST honour these keys and apply
+                the ``CollectionWritePolicy`` (plugin_id ``"write_policy"``) retrieved
+                from ``ConfigsProtocol``.
+
+            db_resource: Optional connection/transaction to reuse (PG only).
+        """
         ...
 
     async def read_entities(

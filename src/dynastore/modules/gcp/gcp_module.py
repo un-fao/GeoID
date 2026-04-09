@@ -298,9 +298,27 @@ class GCPModule(
                 self._on_async_destroy_collection
             )
 
+            # Register BigQueryService and BigQueryCollectionEnricher
+            from dynastore.modules.gcp.bigquery_service import BigQueryService
+            from dynastore.modules.gcp.bq_collection_enricher import BigQueryCollectionEnricher
+            from dynastore.tools.discovery import register_plugin
+
+            self._bq_service = BigQueryService()
+            self._bq_collection_enricher = BigQueryCollectionEnricher()
+            register_plugin(self._bq_service)
+            register_plugin(self._bq_collection_enricher)
+
             yield
         finally:
             logger.info("GCP Module: Exiting lifespan - closing all clients.")
+            # Unregister BigQuery plugins
+            from dynastore.tools.discovery import unregister_plugin
+
+            for attr in ("_bq_service", "_bq_collection_enricher"):
+                obj = getattr(self, attr, None)
+                if obj:
+                    unregister_plugin(obj)
+                    setattr(self, attr, None)
             await self.close()
             logger.info("GCP Module: Lifespan shutdown complete.")
 

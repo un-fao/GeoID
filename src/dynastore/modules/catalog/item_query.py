@@ -51,6 +51,120 @@ async def _run_query(conn, stmt, params=None):
     return result
 
 
+# ---------------------------------------------------------------------------
+# Non-PG driver dispatch helpers
+# ---------------------------------------------------------------------------
+
+def _pick_operation(request: Optional[QueryRequest]) -> str:
+    """Choose the routing operation based on query content.
+
+    Filtered requests (bbox, attribute filters, fulltext) → SEARCH operation.
+    Browsing/pagination without filters → READ operation.
+    """
+    from dynastore.modules.storage.routing_config import Operation
+
+    if request and (
+        getattr(request, "filters", None)
+        or getattr(request, "cql_filter", None)
+    ):
+        return Operation.SEARCH
+    return Operation.READ
+
+
+async def _try_driver_dispatch(
+    catalog_id: str,
+    collection_id: str,
+    operation: str,
+    request: Optional[QueryRequest],
+    limit: int,
+    offset: int,
+    entity_ids: Optional[List[str]] = None,
+) -> Optional[QueryResponse]:
+    """Try to resolve and dispatch to a non-PG storage driver.
+
+    Returns a ``QueryResponse`` backed by the driver's streaming
+    ``AsyncIterator[Feature]``, or ``None`` when the PG path should be used.
+
+    ``None`` is returned when:
+    - No routing config exists for this collection (legacy PG-only setup).
+    - The resolved driver is ``postgresql`` (PG path is the correct path).
+    - Driver resolution raises any exception.
+    """
+    try:
+        from dynastore.modules.storage.router import get_driver
+    except ImportError:
+        return None
+
+    try:
+        resolved = await get_driver(operation, catalog_id, collection_id)
+    except Exception:
+        return None
+
+    if resolved is None or resolved.driver_id == "postgresql":
+        return None
+
+    effective_limit = (request.limit if request and request.limit else limit) or limit
+    effective_offset = (request.offset if request and request.offset else offset) or offset
+
+    items: AsyncIterator[Feature] = resolved.read_entities(
+        catalog_id,
+        collection_id,
+        entity_ids=entity_ids,
+        request=request,
+        limit=effective_limit,
+        offset=effective_offset,
+    )
+
+    return QueryResponse(
+        items=_apply_item_enrichers(items, catalog_id, collection_id),
+        total_count=None,  # non-PG drivers do not provide a total count
+        catalog_id=catalog_id,
+        collection_id=collection_id,
+    )
+
+
+async def _apply_item_enrichers(
+    items: AsyncIterator,
+    catalog_id: str,
+    collection_id: str,
+    context: Optional[Dict[str, Any]] = None,
+) -> AsyncIterator:
+    """Wrap item stream with ItemEnricherProtocol pipeline (streaming).
+
+    The ``can_enrich()`` guard is evaluated once per query, not per item.
+    If no enrichers are active, the stream passes through with zero overhead.
+    """
+    try:
+        from dynastore.models.protocols.item_enricher import ItemEnricherProtocol
+        from dynastore.tools.discovery import get_protocols
+
+        enrichers = sorted(
+            get_protocols(ItemEnricherProtocol), key=lambda e: e.priority,
+        )
+        active = [e for e in enrichers if e.can_enrich(catalog_id, collection_id)]
+    except Exception:
+        active = []
+
+    if not active:
+        async for item in items:
+            yield item
+        return
+
+    ctx = context or {}
+    async for item in items:
+        doc = item
+        for enricher in active:
+            try:
+                doc = await enricher.enrich_item(catalog_id, collection_id, doc, ctx)
+            except Exception as err:
+                logger.warning(
+                    "ItemEnricher '%s' failed for %s/%s: %s",
+                    getattr(enricher, "enricher_id", "?"),
+                    catalog_id, collection_id, err,
+                )
+        yield doc
+
+
 class ItemQueryMixin:
     """Query, search and streaming methods for ItemService."""
 
@@ -275,6 +389,18 @@ class ItemQueryMixin:
     ) -> Optional[Feature]:
         validate_sql_identifier(catalog_id)
         validate_sql_identifier(collection_id)
+
+        # --- Non-PG driver dispatch ---
+        driver_response = await _try_driver_dispatch(
+            catalog_id, collection_id, _pick_operation(None),
+            None, 1, 0, entity_ids=[item_id],
+        )
+        if driver_response is not None:
+            async for feature in driver_response.items:
+                return feature
+            return None
+
+        # --- PG path ---
         async with managed_transaction(db_resource or self.engine) as conn:
             col_config = await self._get_collection_config(
                 catalog_id, collection_id, db_resource=conn
@@ -394,7 +520,22 @@ class ItemQueryMixin:
     ) -> QueryResponse:
         """
         Stream search results using an async iterator (O(1) Memory).
+
+        Dispatches to the configured storage driver first.  Falls back to the
+        PostgreSQL path when no routing config exists or when ``postgresql``
+        is the configured driver.
         """
+        # --- Non-PG driver dispatch (streaming, O(1) memory) ---
+        operation = _pick_operation(request)
+        limit = request.limit if request and request.limit else 100
+        offset = request.offset if request and request.offset else 0
+        driver_response = await _try_driver_dispatch(
+            catalog_id, collection_id, operation, request, limit, offset,
+        )
+        if driver_response is not None:
+            return driver_response
+
+        # --- PG path (unchanged) ---
         # Metadata Resolution
         async with managed_transaction(db_resource or self.engine) as conn:
             col_config = await self._get_collection_config(catalog_id, collection_id, config, db_resource=conn)
@@ -436,7 +577,7 @@ class ItemQueryMixin:
                     )
 
         return QueryResponse(
-            items=feature_stream(),
+            items=_apply_item_enrichers(feature_stream(), catalog_id, collection_id),
             total_count=total_count,
             catalog_id=catalog_id,
             collection_id=collection_id,
@@ -485,7 +626,27 @@ class ItemQueryMixin:
     ) -> List[Dict[str, Any]]:
         """
         Search and retrieve items using optimized query generation.
+
+        Dispatches to the SEARCH-capable storage driver first.  Falls back
+        to the PostgreSQL path when no routing config exists or when
+        ``postgresql`` is the configured driver.
+
+        Note: returns a list for backwards compatibility.  Callers that need
+        streaming should use ``stream_items()`` instead.
         """
+        from dynastore.modules.storage.routing_config import Operation
+
+        # --- Non-PG driver dispatch ---
+        limit = request.limit if request and request.limit else 100
+        offset = request.offset if request and request.offset else 0
+        driver_response = await _try_driver_dispatch(
+            catalog_id, collection_id, Operation.SEARCH, request, limit, offset,
+        )
+        if driver_response is not None:
+            # Collect the async stream into a list (search_items contract returns List).
+            return [feature async for feature in driver_response.items]
+
+        # --- PG path ---
         async with self._prepare_search(
             catalog_id, collection_id, request, config, db_resource
         ) as (query, conn, params):

@@ -25,3 +25,8 @@ class ReadOnlyDriverError(Exception):
 
 class SoftDeleteNotSupportedError(Exception):
     """Soft delete requested but driver doesn't support it."""
+
+
+class ConflictError(Exception):
+    """Write refused because an entity with the same external_id already exists
+    and the collection write policy is ``REFUSE``."""

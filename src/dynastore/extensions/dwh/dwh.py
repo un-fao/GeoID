@@ -31,7 +31,6 @@ from fastapi import (
     APIRouter,
 )
 from dynastore.models.shared_models import OutputFormatEnum
-from google.cloud import bigquery
 
 from dynastore.extensions.dwh.models import (
     DWHJoinRequest,
@@ -40,7 +39,7 @@ from dynastore.extensions.dwh.models import (
 )
 from dynastore.extensions.tools.formatters import format_response
 from dynastore.models.protocols import (
-    CloudIdentityProtocol,
+    BigQueryProtocol,
     CatalogsProtocol,
     ItemsProtocol,
 )
@@ -66,8 +65,8 @@ logger = logging.getLogger(__name__)
 async def execute_bigquery_async(
     query: str, join_column: str, project_id: str
 ) -> Dict[Any, Dict[str, Any]]:
-    """
-    Executes a BigQuery query asynchronously.
+    """Execute a BigQuery query via BigQueryProtocol and index results by join column.
+
     Cached to optimize repeated lookups for the same query.
     """
     if not project_id:
@@ -76,32 +75,33 @@ async def execute_bigquery_async(
             detail="GOOGLE_CLOUD_PROJECT is not configured.",
         )
 
-    identity_provider = get_protocol(CloudIdentityProtocol)
-    if not identity_provider:
-        raise RuntimeError("CloudIdentityProtocol not found or not enabled.")
-
-    credentials = identity_provider.get_credentials_object()
-    client = bigquery.Client(project=project_id, credentials=credentials)
+    bq = get_protocol(BigQueryProtocol)
+    if not bq:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="BigQuery service not available (GCP module not loaded).",
+        )
 
     try:
-        logger.info(f"Executing BQ Query (cache miss): {query[:200]}...")
-        # We assume result sets are small enough to fit in memory (keys for joining)
-        # BQ also caches results internally, so this local cache avoids network roundtrips.
-        df = client.query(query).to_dataframe()
+        logger.info("Executing BQ Query (cache miss): %s...", query[:200])
+        records = await bq.execute_query(query, project_id)
 
-        if join_column not in df.columns:
+        if not records:
+            return {}
+
+        if join_column not in records[0]:
             raise HTTPException(
                 status_code=400,
                 detail=f"Join column '{join_column}' not found in BigQuery results.",
             )
 
-        return {row[join_column]: row for row in df.to_dict("records")}
+        return {row[join_column]: row for row in records}
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"BigQuery query failed: {e}", exc_info=True)
+        logger.error("BigQuery query failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"BigQuery query error: {str(e)}")
-    finally:
-        client.close()
 
 
 from dynastore.models.query_builder import QueryRequest, FieldSelection, FilterCondition

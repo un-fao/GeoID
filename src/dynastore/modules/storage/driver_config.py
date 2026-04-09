@@ -61,6 +61,80 @@ class DriverCapability(StrEnum):
 
 
 # ---------------------------------------------------------------------------
+# Collection-level write policy — driver-agnostic, applies to all drivers
+# ---------------------------------------------------------------------------
+
+
+class WriteConflictPolicy(StrEnum):
+    """What to do when a feature with the same external_id already exists.
+
+    Drivers that declare ``Capability.EXTERNAL_ID_TRACKING`` read this policy
+    from ``CollectionWritePolicy`` via the config waterfall and apply it during
+    ``write_entities()``.  Drivers without that capability fall back to their
+    native behaviour (typically UPDATE).
+
+    Mapping to PG ``VersioningBehaviorEnum``:
+    - UPDATE      ↔ UPDATE_EXISTING_VERSION
+    - NEW_VERSION ↔ CREATE_NEW_VERSION / ARCHIVE_AND_NEW_VERSION
+    - IGNORE      ↔ REJECT_NEW_VERSION (skip silently)
+    - REFUSE      ↔ REFUSE_ON_ASSET_ID_COLLISION / hard reject
+    """
+
+    UPDATE = "update"           # overwrite in place (default)
+    NEW_VERSION = "new_version" # create a new temporal version
+    IGNORE = "ignore"           # skip silently if external_id exists
+    REFUSE = "refuse"           # raise ConflictError if external_id exists
+
+
+class CollectionWritePolicy(PluginConfig):
+    """Collection-level write behaviour, applied by all capable drivers.
+
+    Registered as ``plugin_id = "write_policy"`` in the config waterfall
+    (collection > catalog > platform > code default).
+
+    Drivers read this config during ``write_entities()`` via::
+
+        configs = get_protocol(ConfigsProtocol)
+        policy = await configs.get_config(
+            "write_policy", catalog_id=catalog_id, collection_id=collection_id
+        )
+
+    The ``context`` dict passed to ``write_entities()`` carries runtime values
+    that override config defaults:
+    - ``asset_id``           — source asset reference (from ingestion pipeline)
+    - ``external_id_override`` — explicit external_id bypassing field extraction
+    - ``valid_from``         — validity range start (ISO-8601 or datetime)
+    - ``valid_to``           — validity range end (None = open-ended)
+    """
+
+    _plugin_id: ClassVar[Optional[str]] = "write_policy"
+
+    on_conflict: WriteConflictPolicy = Field(
+        WriteConflictPolicy.UPDATE,
+        description="Conflict policy when external_id already exists.",
+    )
+    track_asset_id: bool = Field(
+        True,
+        description="Store asset_id from write context in the feature document.",
+    )
+    enable_validity: bool = Field(
+        False,
+        description="Track valid_from / valid_to temporal range per feature.",
+    )
+    external_id_field: str = Field(
+        "id",
+        description=(
+            "Dot-notation path to extract external_id from the feature. "
+            "E.g. 'id' (Feature.id), 'properties.code', 'properties.src_id'."
+        ),
+    )
+    require_external_id: bool = Field(
+        False,
+        description="Refuse feature if external_id cannot be extracted.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Base hierarchy
 # ---------------------------------------------------------------------------
 
@@ -391,6 +465,12 @@ class ElasticsearchAssetDriverConfig(AssetDriverConfig):
 # ---------------------------------------------------------------------------
 
 PG_DRIVER_PLUGIN_ID = "driver:postgresql"
+WRITE_POLICY_PLUGIN_ID = "write_policy"
+
+# Register CollectionWritePolicy so the waterfall can look it up
+from dynastore.modules.db_config.platform_config_service import ConfigRegistry as _CR  # noqa: E402
+
+_CR.register(WRITE_POLICY_PLUGIN_ID, CollectionWritePolicy)
 
 
 async def get_collection_driver_config(
