@@ -80,8 +80,10 @@ app = FastAPI(
     root_path=os.getenv("API_ROOT_PATH", "/"),
     title=os.getenv("TITLE", "Agro-Informatics Platform - Catalog Services API"),
     description=os.getenv(
-        "DESCRIPTION", 
-        "Agro-Informatics Platform - Catalog Services is an enterprise-grade, cloud-native platform for geospatial data.",
+        "DESCRIPTION",
+        "Multi-tenant, OGC-compliant geospatial data platform implementing OGC API Features (Parts 1-4), "
+        "STAC API 1.0.0, Processes, Records, Tiles, Maps, and Dimensions with CQL2 filtering, "
+        "multi-CRS support, and transaction capabilities.",
     ),
     version=VERSION,
     docs_url=None, # We will serve custom docs

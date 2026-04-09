@@ -542,6 +542,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // --- Bootstrapping Platform & Auth ---
     bootstrap();
 
+    // --- Load OGC Compliance Data ---
+    loadOgcCompliance();
+
 });
 
 function executeScripts(container) {
@@ -973,5 +976,106 @@ async function updatePassword() {
     } catch (e) {
         console.error('Password update error:', e);
         alert(e.message);
+    }
+}
+
+// --- OGC Compliance ---
+
+function _ogcBadgeColor(name) {
+    const map = {
+        'OGC API Features': ['bg-blue-500/20', 'text-blue-400', 'border-blue-500/30'],
+        'STAC API': ['bg-emerald-500/20', 'text-emerald-400', 'border-emerald-500/30'],
+        'OGC API Processes': ['bg-purple-500/20', 'text-purple-400', 'border-purple-500/30'],
+        'OGC API Records': ['bg-yellow-500/20', 'text-yellow-400', 'border-yellow-500/30'],
+        'OGC API Tiles': ['bg-cyan-500/20', 'text-cyan-400', 'border-cyan-500/30'],
+        'OGC API Maps': ['bg-orange-500/20', 'text-orange-400', 'border-orange-500/30'],
+        'OGC Dimensions': ['bg-pink-500/20', 'text-pink-400', 'border-pink-500/30'],
+        'OGC API Styles': ['bg-indigo-500/20', 'text-indigo-400', 'border-indigo-500/30'],
+    };
+    return map[name] || ['bg-slate-500/20', 'text-slate-400', 'border-slate-500/30'];
+}
+
+function _createBadge(text, colorClasses) {
+    const span = document.createElement('span');
+    span.className = `px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${colorClasses.join(' ')}`;
+    span.textContent = text;
+    return span;
+}
+
+async function loadOgcCompliance() {
+    try {
+        const resp = await fetch(`${_SCRIPT_ROOT}/web/dashboard/ogc-compliance`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        // Populate compact badges in Platform Capabilities card
+        const badgesEl = document.getElementById('ogc-compliance-badges');
+        if (badgesEl && data.standards) {
+            badgesEl.replaceChildren();
+            for (const s of data.standards) {
+                badgesEl.appendChild(_createBadge(`${s.name} (${s.implemented})`, _ogcBadgeColor(s.name)));
+            }
+        }
+
+        const countEl = document.getElementById('ogc-conformance-count');
+        if (countEl) {
+            countEl.textContent = `${data.total_conformance_classes} conformance classes registered across ${data.standards.length} standard families`;
+        }
+
+        // Populate detail panel
+        const detailEl = document.getElementById('ogc-compliance-detail');
+        if (detailEl) detailEl.classList.remove('hidden');
+
+        const tsEl = document.getElementById('ogc-report-timestamp');
+        if (tsEl && data.timestamp) {
+            tsEl.textContent = 'Generated: ' + new Date(data.timestamp).toLocaleString();
+        }
+
+        const gridEl = document.getElementById('ogc-standards-grid');
+        if (gridEl && data.standards) {
+            gridEl.replaceChildren();
+            for (const s of data.standards) {
+                const colors = _ogcBadgeColor(s.name);
+                const card = document.createElement('div');
+                card.className = `glass-panel rounded-lg p-4 border-l-4 ${colors[0].replace('/20', '/40')}`;
+
+                const header = document.createElement('div');
+                header.className = 'flex items-center justify-between mb-2';
+                const title = document.createElement('h4');
+                title.className = 'text-sm font-bold text-white';
+                title.textContent = s.name;
+                const badge = document.createElement('span');
+                badge.className = `px-2 py-0.5 rounded text-[10px] font-bold border ${colors.join(' ')}`;
+                badge.textContent = s.implemented;
+                header.appendChild(title);
+                header.appendChild(badge);
+                card.appendChild(header);
+
+                const ul = document.createElement('ul');
+                ul.className = 'space-y-1';
+                for (const uri of s.uris) {
+                    const li = document.createElement('li');
+                    li.className = 'text-[10px] text-slate-500 truncate';
+                    li.title = uri;
+                    li.textContent = uri.replace(/^https?:\/\/[^/]+\/spec\//, '').replace(/\/conf\//, ' / ');
+                    ul.appendChild(li);
+                }
+                card.appendChild(ul);
+                gridEl.appendChild(card);
+            }
+        }
+
+        const notImplEl = document.getElementById('ogc-not-impl-list');
+        if (notImplEl && data.not_implemented) {
+            notImplEl.replaceChildren();
+            for (const name of data.not_implemented) {
+                const span = document.createElement('span');
+                span.className = 'px-2 py-0.5 rounded-full text-[10px] font-medium text-slate-600 border border-slate-700';
+                span.textContent = name;
+                notImplEl.appendChild(span);
+            }
+        }
+    } catch (e) {
+        console.warn('Failed to load OGC compliance data:', e);
     }
 }

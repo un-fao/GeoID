@@ -81,7 +81,7 @@ def create_landing_page(
     ]
     return ogc_models.LandingPage(
         title="DynaStore OGC API Features",
-        description="Access to geospatial data via OGC API - Features",
+        description="OGC API Features (Parts 1-4) with CQL2 filtering, multi-CRS support, queryables, sorting, and full CRUD transactions.",
         links=links,
     )
 

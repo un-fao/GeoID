@@ -1465,6 +1465,18 @@ async function demoAction(action) {
                 return events
             return []
 
+        @self.router.get(
+            "/dashboard/ogc-compliance",
+            response_class=JSONResponse,
+            tags=["Web Dashboard"],
+        )
+        async def get_ogc_compliance():
+            """Return a structured OGC API compliance summary grouped by standard."""
+            from dynastore.extensions.tools.conformance import get_conformance_summary
+
+            summary = get_conformance_summary()
+            return summary.model_dump()
+
         @self.router.get("/{prefix}/{filename:path}", include_in_schema=False)
         async def serve_static_content(prefix: str, filename: str):
             # Resolve the provider callable for this prefix
