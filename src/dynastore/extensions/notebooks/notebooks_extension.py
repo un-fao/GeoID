@@ -1,14 +1,16 @@
+# src/dynastore/extensions/notebooks/notebooks_extension.py
 from fastapi import APIRouter, FastAPI, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import Response
 from typing import List, Optional, Any, Dict
+
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.web import expose_static, expose_web_page
 from dynastore.modules.notebooks import notebooks_module as notebook_service
-from dynastore.modules.notebooks.models import NotebookCreate, Notebook
+from dynastore.modules.notebooks.models import NotebookCreate, Notebook, PlatformNotebookCreate, PlatformNotebook, OwnerType
 from dynastore.extensions.auth.dependencies import get_current_active_user
-from dynastore.modules.apikey.models import Principal as User
+from dynastore.extensions.iam.service import require_sysadmin_privileges
+from dynastore.modules.iam.models import Principal as User
 
-import json
 import logging
 import os
 
@@ -19,12 +21,12 @@ class NotebooksExtension(ExtensionProtocol):
     priority: int = 100
     """
     Extension that exposes notebook management endpoints and a web-based
-    notebook browser.  Bridges the JupyterLite frontend with the cellular
-    database backend for notebook persistence.
+    notebook browser.
 
     Provides:
-    - REST API for notebook CRUD (per tenant/catalog)
-    - System-level example notebooks (bundled with the platform)
+    - Platform-level notebook REST API (cross-tenant, module-registered + sysadmin)
+    - Tenant-level notebook CRUD (per catalog, user-owned)
+    - Copy from platform to tenant
     - Web page for browsing, viewing and managing notebooks
     - JupyterLite static assets for in-browser execution
     """
@@ -34,23 +36,43 @@ class NotebooksExtension(ExtensionProtocol):
         super().__init__()
         self.app = app
         self._static_dir = os.path.join(os.path.dirname(__file__), "static")
-        self._examples_dir = os.path.join(os.path.dirname(__file__), "examples")
         self._register_routes()
 
     def _register_routes(self):
-        # System-level example notebooks (read-only, bundled)
+        # Platform notebooks (global, cross-tenant)
         self.router.add_api_route(
-            "/examples",
-            self.list_example_notebooks,
+            "/platform",
+            self.list_platform_notebooks,
             methods=["GET"],
             response_model=List[Dict[str, Any]],
-            summary="List bundled example notebooks",
+            summary="List platform notebooks",
         )
         self.router.add_api_route(
-            "/examples/{notebook_code}",
-            self.get_example_notebook,
+            "/platform/{notebook_id}",
+            self.get_platform_notebook,
             methods=["GET"],
-            summary="Get a bundled example notebook",
+            summary="Get a platform notebook",
+        )
+        self.router.add_api_route(
+            "/platform/{notebook_id}",
+            self.save_platform_notebook,
+            methods=["PUT"],
+            response_model=PlatformNotebook,
+            summary="Create or update a platform notebook (sysadmin)",
+        )
+        self.router.add_api_route(
+            "/platform/{notebook_id}",
+            self.delete_platform_notebook,
+            methods=["DELETE"],
+            summary="Soft-delete a platform notebook (sysadmin)",
+        )
+        # Copy platform -> tenant
+        self.router.add_api_route(
+            "/{catalog_id}/copy/{platform_notebook_id}",
+            self.copy_platform_notebook,
+            methods=["POST"],
+            response_model=Notebook,
+            summary="Copy a platform notebook into a tenant catalog",
         )
         # Tenant CRUD
         self.router.add_api_route(
@@ -78,7 +100,7 @@ class NotebooksExtension(ExtensionProtocol):
             "/{catalog_id}/{notebook_code}",
             self.delete_notebook,
             methods=["DELETE"],
-            summary="Delete a notebook",
+            summary="Soft-delete a notebook",
         )
 
     # ------------------------------------------------------------------
@@ -101,45 +123,60 @@ class NotebooksExtension(ExtensionProtocol):
             return Response(content=f.read(), media_type="text/html")
 
     # ------------------------------------------------------------------
-    # System-level example notebooks (read-only, shipped with platform)
+    # Platform notebook endpoints
     # ------------------------------------------------------------------
 
-    async def list_example_notebooks(self) -> List[Dict[str, Any]]:
-        """List bundled example notebooks (no auth required)."""
-        examples = []
-        if not os.path.isdir(self._examples_dir):
-            return examples
-        for fname in sorted(os.listdir(self._examples_dir)):
-            if not fname.endswith(".ipynb"):
-                continue
-            fpath = os.path.join(self._examples_dir, fname)
-            try:
-                with open(fpath, "r", encoding="utf-8") as f:
-                    nb = json.load(f)
-                notebook_id = fname.replace(".ipynb", "")
-                title = nb.get("metadata", {}).get("title", notebook_id)
-                cell_count = len(nb.get("cells", []))
-                examples.append({
-                    "notebook_id": notebook_id,
-                    "title": title,
-                    "description": f"Example notebook ({cell_count} cells)",
-                    "source": "bundled",
-                })
-            except (json.JSONDecodeError, OSError) as exc:
-                logger.warning("Skipping malformed example %s: %s", fname, exc)
-        return examples
+    async def list_platform_notebooks(self) -> List[Dict[str, Any]]:
+        """List active platform notebooks (no auth required)."""
+        return await notebook_service.list_platform_notebooks()
 
-    async def get_example_notebook(self, notebook_code: str):
-        """Return a bundled example notebook by code (filename without .ipynb)."""
-        fpath = os.path.join(self._examples_dir, f"{notebook_code}.ipynb")
-        if not os.path.isfile(fpath):
-            raise HTTPException(status_code=404, detail=f"Example notebook '{notebook_code}' not found")
-        # Prevent path traversal
-        real = os.path.realpath(fpath)
-        if not real.startswith(os.path.realpath(self._examples_dir)):
-            raise HTTPException(status_code=404, detail="Not found")
-        with open(real, "r", encoding="utf-8") as f:
-            return json.load(f)
+    async def get_platform_notebook(self, notebook_id: str):
+        """Get a platform notebook by ID (no auth required)."""
+        return await notebook_service.get_platform_notebook(notebook_id)
+
+    async def save_platform_notebook(
+        self,
+        notebook_id: str,
+        content: Dict[str, Any],
+        current_user=Depends(require_sysadmin_privileges),
+    ):
+        """Create or update a platform notebook (sysadmin only)."""
+        title = content.get("metadata", {}).get("title", notebook_id)
+        notebook_model = PlatformNotebookCreate(
+            notebook_id=notebook_id,
+            title=title,
+            description=content.get("metadata", {}).get("description"),
+            content=content,
+            metadata=content.get("metadata", {}),
+            registered_by="sysadmin",
+            owner_type=OwnerType.SYSADMIN,
+        )
+        return await notebook_service.save_platform_notebook(notebook_model)
+
+    async def delete_platform_notebook(
+        self,
+        notebook_id: str,
+        current_user=Depends(require_sysadmin_privileges),
+    ):
+        """Soft-delete a platform notebook (sysadmin only)."""
+        await notebook_service.delete_platform_notebook(notebook_id)
+        return {"status": "deleted", "notebook_id": notebook_id}
+
+    # ------------------------------------------------------------------
+    # Copy platform -> tenant
+    # ------------------------------------------------------------------
+
+    async def copy_platform_notebook(
+        self,
+        catalog_id: str,
+        platform_notebook_id: str,
+        current_user: User = Depends(get_current_active_user),
+    ):
+        """Copy a platform notebook into a tenant catalog."""
+        owner_id = str(current_user.id) if hasattr(current_user, "id") else None
+        return await notebook_service.copy_from_platform(
+            catalog_id, platform_notebook_id, owner_id
+        )
 
     # ------------------------------------------------------------------
     # Tenant notebook CRUD
@@ -150,7 +187,7 @@ class NotebooksExtension(ExtensionProtocol):
         catalog_id: str,
         current_user: User = Depends(get_current_active_user),
     ):
-        """List all notebooks in a catalog."""
+        """List all active notebooks in a catalog."""
         return await notebook_service.list_notebooks(catalog_id)
 
     async def get_notebook(
@@ -169,7 +206,7 @@ class NotebooksExtension(ExtensionProtocol):
         content: Dict[str, Any],
         current_user: User = Depends(get_current_active_user),
     ):
-        """Save a notebook (compatible with JupyterLite save mechanism)."""
+        """Save a notebook."""
         title = content.get("metadata", {}).get("title", notebook_code)
         notebook_model = NotebookCreate(
             notebook_id=notebook_code,
@@ -177,7 +214,8 @@ class NotebooksExtension(ExtensionProtocol):
             content=content,
             metadata=content.get("metadata", {}),
         )
-        return await notebook_service.save_notebook(catalog_id, notebook_model)
+        owner_id = str(current_user.id) if hasattr(current_user, "id") else None
+        return await notebook_service.save_notebook(catalog_id, notebook_model, owner_id=owner_id)
 
     async def delete_notebook(
         self,
@@ -185,7 +223,7 @@ class NotebooksExtension(ExtensionProtocol):
         notebook_code: str,
         current_user: User = Depends(get_current_active_user),
     ):
-        """Delete a notebook from a catalog."""
+        """Soft-delete a notebook from a catalog."""
         await notebook_service.delete_notebook(catalog_id, notebook_code)
         return {"status": "deleted", "notebook_id": notebook_code}
 
