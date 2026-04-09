@@ -108,6 +108,7 @@ db_config = ["dynastore[module_db_config]"]
 iam = ["dynastore[module_iam,extension_iam]"]
 db = ["dynastore[module_db]"]
 crs = ["dynastore[module_crs,extension_crs]"]
+cache = ["dynastore[module_cache]"]
 events = ["dynastore[module_events,extension_events]"]
 elasticsearch = ["dynastore[module_elasticsearch,task_elasticsearch]"]
 gdal = ["dynastore[module_gdal,extension_gdal,task_gdal]"]
@@ -276,7 +277,7 @@ scope_geoid = ["dynastore[scope_catalog,extension_geoid,auth_grp]"]
 # scope_worker: background task processor — all tasks + monitoring UI
 scope_worker = ["dynastore[core,catalog_grp,google_grp,index_grp,tasks,processes,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision,monitor_grp,module_cache]"]
 # scope_tools: proxy + template tools service — no auth
-scope_tools = ["dynastore[core,template,notebooks,module_cache]"]
+scope_tools = ["dynastore[core,template,notebooks,module]"]
 # scope_maps: map tiles/styles service — no auth
 scope_maps = ["dynastore[core,catalog_grp,google_grp,maps_grp,monitor_grp,module_cache,notebooks]"]
 
