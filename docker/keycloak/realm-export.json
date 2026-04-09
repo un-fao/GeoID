@@ -1,0 +1,202 @@
+{
+  "realm": "geoid",
+  "enabled": true,
+  "displayName": "GeoID",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "sslRequired": "none",
+  "roles": {
+    "realm": [
+      {
+        "name": "admin",
+        "description": "Full administrative access to catalogs and collections",
+        "composite": false
+      },
+      {
+        "name": "user",
+        "description": "Standard authenticated user",
+        "composite": false
+      },
+      {
+        "name": "viewer",
+        "description": "Read-only access",
+        "composite": false
+      }
+    ],
+    "client": {
+      "geoid-api": [
+        {
+          "name": "catalog_admin",
+          "description": "Full access to catalog management"
+        },
+        {
+          "name": "catalog_viewer",
+          "description": "Read-only access to catalogs"
+        }
+      ]
+    }
+  },
+  "clients": [
+    {
+      "clientId": "geoid-api",
+      "name": "GeoID API",
+      "description": "Confidential client for backend API access and service accounts",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "geoid-api-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "authorizationServicesEnabled": false,
+      "redirectUris": [
+        "http://localhost:80/*",
+        "http://localhost:8080/*",
+        "http://catalog:80/*"
+      ],
+      "webOrigins": [
+        "http://localhost:80",
+        "http://localhost:8080",
+        "+"
+      ],
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "email"
+      ],
+      "protocolMappers": [
+        {
+          "name": "client_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usersessionmodel-note-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.session.note": "client_id",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "client_id",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "audience-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "geoid-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "geoid-web",
+      "name": "GeoID Web",
+      "description": "Public client for SPA / web frontend",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:8080/*",
+        "http://localhost:3000/*"
+      ],
+      "webOrigins": [
+        "http://localhost:8080",
+        "http://localhost:3000",
+        "+"
+      ],
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "email"
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "testadmin",
+      "enabled": true,
+      "email": "testadmin@geoid.local",
+      "emailVerified": true,
+      "firstName": "Test",
+      "lastName": "Admin",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "testpassword",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "admin",
+        "default-roles-geoid"
+      ],
+      "clientRoles": {
+        "geoid-api": [
+          "catalog_admin"
+        ]
+      }
+    },
+    {
+      "username": "testuser",
+      "enabled": true,
+      "email": "testuser@geoid.local",
+      "emailVerified": true,
+      "firstName": "Test",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "testpassword",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "user",
+        "default-roles-geoid"
+      ]
+    },
+    {
+      "username": "testviewer",
+      "enabled": true,
+      "email": "testviewer@geoid.local",
+      "emailVerified": true,
+      "firstName": "Test",
+      "lastName": "Viewer",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "testpassword",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "viewer",
+        "default-roles-geoid"
+      ]
+    }
+  ],
+  "scopeMappings": [
+    {
+      "client": "geoid-api",
+      "roles": [
+        "admin",
+        "user",
+        "viewer"
+      ]
+    }
+  ]
+}

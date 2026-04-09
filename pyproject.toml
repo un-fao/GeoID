@@ -11,8 +11,6 @@ dependencies = [ # Minimal Core Framework
     "pydantic-extra-types>=2.10.6",
     "python-dotenv>=1.0.0",
     "python-dateutil",
-    "cachetools",
-    "async-lru",
     "orjson>=3.9.0",
 ]
 requires-python = ">=3.12"
@@ -35,11 +33,11 @@ build-backend = "setuptools.build_meta"
 module_storage = []
 module_storage_duckdb = ["duckdb>=1.0.0"]
 module_storage_iceberg = ["pyiceberg[sql-postgres]>=0.9.0", "pyarrow>=14.0.0"]
-module_catalog = ["dynastore[geospatial_core]", "sqlalchemy>=2.0.0", "async-lru>=2.0.0"]
+module_catalog = ["dynastore[geospatial_core]", "sqlalchemy>=2.0.0"]
 module_gcp = ["gcloud-aio-storage==9.6.0", "google-cloud-bigquery==3.24.0", "google-cloud-run", "google-cloud-storage>=3.1.0", "google-cloud-pubsub", "gcsfs>=2024.5.0", "charset-normalizer", "httpx"]
 module_datastore = ["dynastore[db_sync]", "psycopg2-binary>=2.9.7"]
-module_db_config = ["async-lru", "psycopg2-binary>=2.9.7", "sqlalchemy", "geoalchemy2", "h3>=4.4.2", "s2sphere>=0.2.5", "python-dateutil"]
-module_apikey = ["pydantic[email]", "argon2-cffi", "bcrypt", "PyJWT>=2.0.0"]
+module_db_config = ["psycopg2-binary>=2.9.7", "sqlalchemy", "geoalchemy2", "h3>=4.4.2", "s2sphere>=0.2.5", "python-dateutil"]
+module_iam = ["pydantic[email]", "PyJWT>=2.0.0"]
 module_db = ["dynastore[db_async]", "sqlalchemy[asyncio]", "asyncpg"]
 module_crs = ["dynastore[geospatial_core]", "pyproj>=3.0.0"]
 module_events = ["psycopg[binary,pool]"]
@@ -70,14 +68,14 @@ extension_tasks = ["dynastore[extension_base,module_tasks]"]
 extension_proxy = ["dynastore[extension_base,module_proxy]"]
 extension_gdal = ["dynastore[extension_base,module_gdal]"]
 extension_styles = ["dynastore[extension_base,module_styles]"]
-extension_apikey = ["dynastore[extension_base,module_apikey]"]
+extension_iam = ["dynastore[extension_base,module_iam]"]
 extension_logs = ["dynastore[extension_base]"]
 extension_configs = ["dynastore[extension_base]"]
 extension_stats = ["dynastore[extension_base,module_stats]"]
 extension_crs = ["dynastore[extension_base,module_crs]"]
 extension_events = ["dynastore[extension_base,module_events]"]
 extension_wfs = ["dynastore[extension_base,geospatial_core]"]
-extension_admin = ["dynastore[extension_base,extension_apikey]"]
+extension_admin = ["dynastore[extension_base,extension_iam]"]
 extension_assets = ["dynastore[extension_base]"]
 extension_notebooks = ["dynastore[extension_base,module_notebooks]"]
 extension_records = ["dynastore[extension_base]"]
@@ -107,7 +105,7 @@ catalog = ["dynastore[module_catalog,extension_catalog]"]
 gcp = ["dynastore[module_gcp,extension_gcp_bucket]"]
 datastore = ["dynastore[module_datastore]"]
 db_config = ["dynastore[module_db_config]"]
-apikey = ["dynastore[module_apikey,extension_apikey]"]
+iam = ["dynastore[module_iam,extension_iam]"]
 db = ["dynastore[module_db]"]
 crs = ["dynastore[module_crs,extension_crs]"]
 events = ["dynastore[module_events,extension_events]"]
@@ -160,7 +158,7 @@ db_sync = ["dynastore[db_config,datastore]"]
 #   1. catalog_grp  — data catalog, features, STAC, assets, search, records
 #   2. maps_grp     — rendering: WFS, tiles, CRS, styles, maps
 #   3. google_grp   — GCP storage, BigQuery DWH
-#   4. auth_grp     — apikey + auth + admin  (always the LAST wrapper)
+#   4. auth_grp     — iam + auth + admin  (always the LAST wrapper)
 #   5. tools_grp    — HTTP client, templating (proxy is opt-in for catalog/maps)
 #   6. monitor_grp  — stats, logs
 #   7. index_grp    — Elasticsearch full-text search
@@ -171,7 +169,7 @@ core = ["dynastore[db_async,web,configs,events,storage]"]
 catalog_grp = ["dynastore[geospatial_core,catalog,features,stac,assets,search,extension_records]"]
 maps_grp = ["dynastore[styles,maps,extension_wfs,tiles,crs,gdal]"]
 google_grp = ["dynastore[gcp,extension_dwh]"]
-auth_grp = ["dynastore[apikey,auth,extension_admin]"]
+auth_grp = ["dynastore[iam,auth,extension_admin]"]
 tools_grp = ["dynastore[extension_httpx,template,dimensions,notebooks]"]
 monitor_grp = ["dynastore[stats,logs]"]
 index_grp = ["dynastore[elasticsearch,task_elasticsearch_indexer]"]
@@ -212,7 +210,7 @@ task_gdal_job = ["dynastore[task_base,gdal]"]
 #   ├──────────────────────────────────────────────────────────┤
 #   │  Auth wrapper (added LAST)                               │
 #   ├──────────────────────────────────────────────────────────┤
-#   │  auth_grp    = apikey + auth + admin                     │
+#   │  auth_grp    = iam + auth + admin                        │
 #   ├──────────────────────────────────────────────────────────┤
 #   │  Deployable services                                     │
 #   ├──────────────────────────────────────────────────────────┤
@@ -273,14 +271,14 @@ worker_local = ["dynastore[worker_service,monitor_grp]"]
 # ==========================================================================
 # scope_catalog: catalog API without auth — open for local testing
 scope_catalog = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,task_gcp_provision,module_cache,notebooks]"]
-# scope_geoid: catalog + geoid UI + auth/apikey — maps to geospatial-auth in cloud
+# scope_geoid: catalog + geoid UI + auth/iam — maps to geospatial-auth in cloud
 scope_geoid = ["dynastore[scope_catalog,extension_geoid,auth_grp]"]
 # scope_worker: background task processor — all tasks + monitoring UI
 scope_worker = ["dynastore[core,catalog_grp,google_grp,index_grp,tasks,processes,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision,monitor_grp,module_cache]"]
 # scope_tools: proxy + template tools service — no auth
 scope_tools = ["dynastore[core,template,notebooks,module_cache,cache]"]
 # scope_maps: map tiles/styles service — no auth
-scope_maps = ["dynastore[core,catalog_grp,google_grp,maps_grp,monitor_grp,module_cache]"]
+scope_maps = ["dynastore[core,catalog_grp,google_grp,maps_grp,monitor_grp,module_cache,notebooks]"]
 
 # ==========================================================================
 # DEVELOPMENT & TESTING
@@ -305,7 +303,7 @@ tiles = "dynastore.modules.tiles.tiles_module:TilesModule"
 datastore = "dynastore.modules.datastore.datastore_service:DatastoreModule"
 styles = "dynastore.modules.styles.styles_module:StylesModule"
 db_config = "dynastore.modules.db_config.db_config_service:DBConfigModule"
-apikey = "dynastore.modules.apikey.module:ApiKeyModule"
+iam = "dynastore.modules.iam.module:IamModule"
 db = "dynastore.modules.db.db_service:DBService"
 crs = "dynastore.modules.crs.crs_module:CRSModule"
 events = "dynastore.modules.events.events_module:EventsModule"
@@ -338,7 +336,7 @@ gcp_bucket = "dynastore.extensions.gcp.bucket_service:BucketService"
 search = "dynastore.extensions.search.search_service:SearchService"
 styles = "dynastore.extensions.styles.styles_service:StylesService"
 httpx = "dynastore.extensions.httpx.httpx_service:HttpxExtension"
-apikey = "dynastore.extensions.apikey.service:ApiKeyExtension"
+iam = "dynastore.extensions.iam.service:IamExtension"
 logs = "dynastore.extensions.logs.log_extension:LogExtension"
 configs = "dynastore.extensions.configs.service:ConfigsService"
 crs = "dynastore.extensions.crs.crs_extension:CRSExtension"

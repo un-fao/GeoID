@@ -75,7 +75,7 @@
     display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.72rem;
     font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
   }
-  .badge-example { background: #1a3a2a; color: var(--success); }
+  .badge-platform { background: #1a3a2a; color: var(--success); }
   .badge-catalog { background: #1a2a3a; color: var(--primary); }
 
   .card-actions { position: absolute; top: 12px; right: 12px; display: flex; gap: 4px; opacity: 0; transition: opacity .2s; }
@@ -150,27 +150,27 @@
   <p class="subtitle">Interactive documentation and how-to guides. Browse examples or manage catalog notebooks.</p>
 
   <div class="tabs">
-    <div class="tab active" data-tab="examples" onclick="switchTab('examples')">
-      <i class="fa-solid fa-graduation-cap"></i> Examples
+    <div class="tab active" data-tab="platform" onclick="switchTab('platform')">
+      <i class="fa-solid fa-graduation-cap"></i> Platform
     </div>
     <div class="tab" data-tab="catalog" onclick="switchTab('catalog')">
       <i class="fa-solid fa-database"></i> Catalog Notebooks
     </div>
   </div>
 
-  <div id="tab-examples">
+  <div id="tab-platform">
     <div class="toolbar">
-      <input class="search-box" id="search-examples" placeholder="Search examples..." oninput="filterCards('examples')">
+      <input class="search-box" id="search-platform" placeholder="Search platform notebooks..." oninput="filterCards('platform')">
     </div>
-    <div class="card-grid" id="grid-examples">
-      <div class="empty" id="empty-examples"><i class="fa-solid fa-box-open"></i><p>No example notebooks found.</p></div>
+    <div class="card-grid" id="grid-platform">
+      <div class="empty" id="empty-platform"><i class="fa-solid fa-box-open"></i><p>No platform notebooks found.</p></div>
     </div>
   </div>
 
   <div id="tab-catalog" style="display:none">
     <div class="toolbar">
       <input class="search-box" id="search-catalog" placeholder="Search catalog notebooks..." oninput="filterCards('catalog')">
-      <button class="btn btn-primary" onclick="copyExample()"><i class="fa-solid fa-copy"></i> Copy Examples to Catalog</button>
+      <button class="btn btn-primary" onclick="copyAllPlatform()"><i class="fa-solid fa-copy"></i> Copy All to Catalog</button>
     </div>
     <div class="card-grid" id="grid-catalog">
       <div class="empty" id="empty-catalog"><i class="fa-solid fa-box-open"></i><p>No notebooks in this catalog. Copy an example to get started.</p></div>
@@ -217,8 +217,8 @@ const API_BASE = (function() {
   return idx >= 0 ? p.substring(0, idx) : '';
 })();
 
-let currentTab = 'examples';
-let exampleNotebooks = [];
+let currentTab = 'platform';
+let platformNotebooks = [];
 let catalogNotebooks = [];
 let currentNotebook = null;
 let currentNotebookSource = null;
@@ -241,21 +241,21 @@ function getAuthHeaders() {
 function switchTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.tab').forEach(function(t) { t.classList.toggle('active', t.dataset.tab === tab); });
-  document.getElementById('tab-examples').style.display = tab === 'examples' ? '' : 'none';
+  document.getElementById('tab-platform').style.display = tab === 'platform' ? '' : 'none';
   document.getElementById('tab-catalog').style.display = tab === 'catalog' ? '' : 'none';
   if (tab === 'catalog') loadCatalogNotebooks();
 }
 
 // --- Loading ---
-async function loadExamples() {
+async function loadPlatformNotebooks() {
   try {
-    var r = await fetch(API_BASE + '/notebooks/examples');
+    var r = await fetch(API_BASE + '/notebooks/platform');
     if (!r.ok) throw new Error(r.statusText);
-    exampleNotebooks = await r.json();
-    renderGrid('examples', exampleNotebooks);
+    platformNotebooks = await r.json();
+    renderGrid('platform', platformNotebooks);
   } catch (e) {
-    console.error('Failed to load examples:', e);
-    renderGrid('examples', []);
+    console.error('Failed to load platform notebooks:', e);
+    renderGrid('platform', []);
   }
 }
 
@@ -287,12 +287,23 @@ function renderGrid(type, items) {
     var card = document.createElement('div');
     card.className = 'card';
 
-    var isExample = type === 'examples' || nb.source === 'bundled';
+    var isExample = type === 'platform' || nb.source === 'bundled';
 
     // Build card content using safe DOM methods
+    var actionsDiv = document.createElement('div');
+    actionsDiv.className = 'card-actions';
+    if (type === 'platform') {
+      var copyBtn = document.createElement('button');
+      copyBtn.className = 'btn btn-outline btn-sm';
+      copyBtn.title = 'Copy to Catalog';
+      var copyIcon = document.createElement('i');
+      copyIcon.className = 'fa-solid fa-copy';
+      copyBtn.appendChild(copyIcon);
+      var nbIdCopy = nb.notebook_id;
+      copyBtn.addEventListener('click', (function(id) { return function(ev) { ev.stopPropagation(); copyToCatalog(id); }; })(nbIdCopy));
+      actionsDiv.appendChild(copyBtn);
+    }
     if (type === 'catalog') {
-      var actionsDiv = document.createElement('div');
-      actionsDiv.className = 'card-actions';
       var delBtn = document.createElement('button');
       delBtn.className = 'btn btn-danger btn-sm';
       delBtn.title = 'Delete';
@@ -302,14 +313,14 @@ function renderGrid(type, items) {
       var nbId = nb.notebook_id;
       delBtn.addEventListener('click', (function(id) { return function(ev) { ev.stopPropagation(); deleteNotebook(id); }; })(nbId));
       actionsDiv.appendChild(delBtn);
-      card.appendChild(actionsDiv);
     }
+    card.appendChild(actionsDiv);
 
     var headerDiv = document.createElement('div');
     headerDiv.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:6px;';
     var badge = document.createElement('span');
-    badge.className = 'card-badge ' + (isExample ? 'badge-example' : 'badge-catalog');
-    badge.textContent = isExample ? 'Example' : 'Catalog';
+    badge.className = 'card-badge ' + (isExample ? 'badge-platform' : 'badge-catalog');
+    badge.textContent = isExample ? 'Platform' : 'Catalog';
     headerDiv.appendChild(badge);
     var title = document.createElement('span');
     title.className = 'card-title';
@@ -343,7 +354,7 @@ function renderGrid(type, items) {
 
 function filterCards(type) {
   var q = document.getElementById('search-' + type).value.toLowerCase();
-  var items = type === 'examples' ? exampleNotebooks : catalogNotebooks;
+  var items = type === 'platform' ? platformNotebooks : catalogNotebooks;
   var filtered = items.filter(function(nb) {
     return (nb.title || '').toLowerCase().indexOf(q) >= 0 ||
            (nb.notebook_id || '').toLowerCase().indexOf(q) >= 0 ||
@@ -357,8 +368,8 @@ async function openNotebook(type, notebookId) {
   currentNotebookSource = type;
   try {
     var url;
-    if (type === 'examples') {
-      url = API_BASE + '/notebooks/examples/' + encodeURIComponent(notebookId);
+    if (type === 'platform') {
+      url = API_BASE + '/notebooks/platform/' + encodeURIComponent(notebookId);
     } else {
       var cat = getSelectedCatalog();
       url = API_BASE + '/notebooks/' + encodeURIComponent(cat) + '/' + encodeURIComponent(notebookId);
@@ -371,7 +382,7 @@ async function openNotebook(type, notebookId) {
     currentNotebook = { id: notebookId, data: data };
     renderNotebook(data);
     document.getElementById('viewer-title').textContent = (data.metadata && data.metadata.title) || notebookId;
-    document.getElementById('btn-copy-to-catalog').style.display = type === 'examples' ? '' : 'none';
+    document.getElementById('btn-copy-to-catalog').style.display = type === 'platform' ? '' : 'none';
     document.getElementById('viewer').classList.add('open');
   } catch (e) {
     toast('Failed to load notebook: ' + e.message, true);
@@ -440,10 +451,9 @@ async function copyCurrentToCatalog() {
   if (!currentNotebook) return;
 
   try {
-    var r = await fetch(API_BASE + '/notebooks/' + encodeURIComponent(cat) + '/' + encodeURIComponent(currentNotebook.id), {
-      method: 'PUT',
+    var r = await fetch(API_BASE + '/notebooks/' + encodeURIComponent(cat) + '/copy/' + encodeURIComponent(currentNotebook.id), {
+      method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify(currentNotebook.data),
     });
     if (!r.ok) throw new Error(await r.text());
     toast('Copied to catalog: ' + cat);
@@ -453,27 +463,23 @@ async function copyCurrentToCatalog() {
   }
 }
 
-async function copyExample() {
+async function copyAllPlatform() {
   var cat = getSelectedCatalog();
   if (!cat) { toast('Select a catalog first', true); return; }
-  if (!exampleNotebooks.length) { toast('No examples available', true); return; }
+  if (!platformNotebooks.length) { toast('No platform notebooks available', true); return; }
 
   var ok = 0;
-  for (var i = 0; i < exampleNotebooks.length; i++) {
-    var ex = exampleNotebooks[i];
+  for (var i = 0; i < platformNotebooks.length; i++) {
+    var nb = platformNotebooks[i];
     try {
-      var r = await fetch(API_BASE + '/notebooks/examples/' + encodeURIComponent(ex.notebook_id));
-      if (!r.ok) continue;
-      var nb = await r.json();
-      var s = await fetch(API_BASE + '/notebooks/' + encodeURIComponent(cat) + '/' + encodeURIComponent(ex.notebook_id), {
-        method: 'PUT',
+      var s = await fetch(API_BASE + '/notebooks/' + encodeURIComponent(cat) + '/copy/' + encodeURIComponent(nb.notebook_id), {
+        method: 'POST',
         headers: getAuthHeaders(),
-        body: JSON.stringify(nb),
       });
       if (s.ok) ok++;
     } catch (e) { /* skip */ }
   }
-  toast('Copied ' + ok + '/' + exampleNotebooks.length + ' examples to ' + cat);
+  toast('Copied ' + ok + '/' + platformNotebooks.length + ' platform notebooks to ' + cat);
   loadCatalogNotebooks();
 }
 
@@ -494,6 +500,23 @@ async function deleteNotebook(notebookId) {
   }
 }
 
+// --- Copy single platform notebook to catalog ---
+async function copyToCatalog(platformNotebookId) {
+  var cat = getSelectedCatalog();
+  if (!cat) { toast('Select a catalog first', true); return; }
+  try {
+    var r = await fetch(API_BASE + '/notebooks/' + encodeURIComponent(cat) + '/copy/' + encodeURIComponent(platformNotebookId), {
+      method: 'POST',
+      headers: getAuthHeaders(),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    toast('Copied to catalog: ' + cat);
+    if (currentTab === 'catalog') loadCatalogNotebooks();
+  } catch (e) {
+    toast('Copy failed: ' + e.message, true);
+  }
+}
+
 // --- Helpers ---
 function toast(msg, err) {
   var t = document.getElementById('toast');
@@ -510,7 +533,7 @@ if (window.addEventListener) {
 }
 
 // --- Init ---
-loadExamples();
+loadPlatformNotebooks();
 </script>
 </body>
 </html>

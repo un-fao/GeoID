@@ -16,7 +16,7 @@ def _make_feature(join_col_val, extra=None):
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "stats", "apikey", "gcp")
+@pytest.mark.enable_modules("db_config", "db", "catalog", "stats", "iam", "gcp")
 @pytest.mark.enable_extensions("dwh")
 async def test_dwh_join_resolution_repro(sysadmin_in_process_client):
     """
@@ -75,7 +75,7 @@ async def test_dwh_join_resolution_repro(sysadmin_in_process_client):
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "stats", "apikey", "gcp")
+@pytest.mark.enable_modules("db_config", "db", "catalog", "stats", "iam", "gcp")
 @pytest.mark.enable_extensions("dwh")
 async def test_dwh_catalog_join_endpoint(sysadmin_in_process_client):
     """

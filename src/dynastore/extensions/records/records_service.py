@@ -28,7 +28,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Union, cast
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response, status
-from fastapi.responses import JSONResponse
+from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from dynastore.extensions.protocols import ExtensionProtocol
@@ -369,7 +369,10 @@ class RecordsService(ExtensionProtocol):
             catalog_id, collection_id, db_resource=conn,
         )
         root_url = get_root_url(request)
-        return gen.db_row_to_record(feature, catalog_id, collection_id, root_url, layer_config)
+        record = gen.db_row_to_record(feature, catalog_id, collection_id, root_url, layer_config)
+        return JSONResponse(
+            content=record.model_dump(exclude_none=True),
+        )
 
     async def add_records(
         self,

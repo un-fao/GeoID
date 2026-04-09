@@ -391,9 +391,9 @@ CREATE TABLE IF NOT EXISTS platform.schema_migrations (
 _APP_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS platform.app_state (
     app_key            VARCHAR(200) PRIMARY KEY,
-    module_manifest    JSONB        NOT NULL DEFAULT '{{}}',
+    module_manifest    JSONB        NOT NULL DEFAULT '{}',
     manifest_hash      VARCHAR(16)  NOT NULL DEFAULT '',
-    tenant_manifest    JSONB        NOT NULL DEFAULT '{{}}',
+    tenant_manifest    JSONB        NOT NULL DEFAULT '{}',
     tenant_hash        VARCHAR(16)  NOT NULL DEFAULT '',
     app_version        VARCHAR(50),
     last_seen_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()

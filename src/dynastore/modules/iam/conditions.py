@@ -1,0 +1,367 @@
+#    Copyright 2025 FAO
+# 
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+# 
+#        http://www.apache.org/licenses/LICENSE-2.0
+# 
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+# 
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
+# File: dynastore/modules/iam/conditions.py
+
+import abc
+import re
+import logging
+from datetime import datetime, timezone
+from typing import Dict, Any, Optional, List
+from dataclasses import dataclass, field
+from starlette.requests import Request
+
+from .models import Condition
+from .exceptions import IamError
+from dynastore.modules.iam.iam_storage import AbstractIamStorage
+
+logger = logging.getLogger(__name__)
+
+@dataclass
+class EvaluationContext:
+    request: Optional[Request]
+    storage: AbstractIamStorage
+    manager: Optional[Any] = None # IamService
+    token_identifier: Optional[str] = None # The ID of the specific Token/Session
+    principal_id: Optional[str] = None # The User ID
+    path: str = ""
+    method: str = ""
+    query_params: Dict[str, str] = None
+    requested_ttl: int = 0 
+    schema: str = "catalog" # Default to global/catalog schema
+    catalog_id: Optional[str] = None
+    extras: Dict[str, Any] = field(default_factory=dict)
+
+class ConditionHandler(abc.ABC):
+    @property
+    @abc.abstractmethod
+    def type(self) -> str: pass
+
+    @abc.abstractmethod
+    async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
+        pass
+
+    async def inspect(self, config: Dict[str, Any], ctx: EvaluationContext) -> Optional[Dict[str, Any]]:
+        """
+        Returns the current status of the condition (e.g., current usage vs limit).
+        Returns None if the condition is stateless or not trackable.
+        """
+        return None
+
+# --- Condition Handlers ---
+
+class RateLimitHandler(ConditionHandler):
+    """
+    Rate limiting condition handler.
+
+    NOTE: The usage-counter storage backend (API key usage tables) was removed
+    in Phase 1 of the IAM refactor.  This handler is kept as a no-op stub so
+    that condition configs referencing "rate_limit" do not crash at runtime.
+    A new rate-limiting backend (e.g. Redis/Valkey sliding window) can be
+    plugged in here in the future.
+    """
+
+    @property
+    def type(self) -> str: return "rate_limit"
+
+    async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
+        # Usage-counter storage removed — allow all requests and log once.
+        logger.debug(
+            "rate_limit condition evaluated but no usage-counter backend is configured; allowing request."
+        )
+        return True
+
+class MaxCountHandler(ConditionHandler):
+    """
+    Lifetime quota condition handler.
+
+    NOTE: The usage-counter storage backend (API key usage tables) was removed
+    in Phase 1 of the IAM refactor.  This handler is kept as a no-op stub so
+    that condition configs referencing "max_count" do not crash at runtime.
+    A new quota backend can be plugged in here in the future.
+    """
+
+    @property
+    def type(self) -> str: return "max_count"
+
+    async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
+        # Usage-counter storage removed — allow all requests and log once.
+        logger.debug(
+            "max_count condition evaluated but no usage-counter backend is configured; allowing request."
+        )
+        return True
+
+    async def inspect(self, config: Dict[str, Any], ctx: EvaluationContext) -> Optional[Dict[str, Any]]:
+        max_count = config.get("max_count", 0)
+        scope = config.get("scope", "iam")
+        return {
+            "type": "max_count",
+            "scope": scope,
+            "limit": max_count,
+            "used": 0,
+            "remaining": max_count,
+            "note": "Usage-counter backend not configured.",
+        }
+
+class QueryParamHandler(ConditionHandler):
+    @property
+    def type(self) -> str: return "query_match"
+
+    async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
+        if not ctx.query_params: return True
+        param_key = config.get("param")
+        pattern = config.get("pattern")
+        if not param_key or not pattern: return True
+        
+        val = ctx.query_params.get(param_key)
+        if val is None: return False
+        if not re.fullmatch(pattern, val): return False
+        return True
+
+class TimeWindowHandler(ConditionHandler):
+    @property
+    def type(self) -> str: return "time_window"
+
+    async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
+        now = datetime.now(timezone.utc)
+        
+        # Absolute ISO windows
+        start_str = config.get("start")
+        end_str = config.get("end")
+        if start_str:
+            try:
+                start_dt = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
+                if now < start_dt:
+                    raise IamError(f"Key is outside of its valid time window (valid from {start_dt.isoformat()}).")
+            except ValueError: pass
+        if end_str:
+            try:
+                end_dt = datetime.fromisoformat(end_str.replace('Z', '+00:00'))
+                if now > end_dt:
+                    raise IamError(f"Key is outside of its valid time window (expired at {end_dt.isoformat()}).")
+            except ValueError: pass
+
+        # Hour-based recurring windows
+        start_h = config.get("start_hour", 0)
+        end_h = config.get("end_hour", 24)
+        weekdays_only = config.get("weekdays_only", False)
+        
+        if weekdays_only and now.weekday() > 4:
+            raise IamError("Key is outside of its valid time window (only valid on weekdays).")
+        if not (start_h <= now.hour < end_h):
+            raise IamError(f"Key is outside of its valid time window (only valid between {start_h}:00 and {end_h}:00 UTC).")
+        return True
+
+class TimeExpirationHandler(ConditionHandler):
+    @property
+    def type(self) -> str: return "expiration"
+
+    async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
+        exp_str = config.get("expires_at")
+        if not exp_str: return True
+        try:
+            exp_date = datetime.fromisoformat(exp_str.replace('Z', '+00:00'))
+            now = datetime.now(timezone.utc)
+            if now > exp_date:
+                raise IamError(f"Key expired at {exp_date.isoformat()}.")
+        except ValueError:
+            logger.error(f"Invalid date format in policy: {exp_str}")
+            raise IamError("Invalid expiration date format in policy.")
+        return True
+    
+    async def inspect(self, config: Dict[str, Any], ctx: EvaluationContext) -> Optional[Dict[str, Any]]:
+        exp_str = config.get("expires_at")
+        return {"type": "expiration", "expires_at": exp_str}
+
+class MaxTokenTTLHandler(ConditionHandler):
+    @property
+    def type(self) -> str: return "max_token_ttl"
+
+    async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
+        if ctx.requested_ttl <= 0: return True
+        max_ttl = config.get("max_ttl_seconds", 3600)
+        if ctx.requested_ttl > max_ttl: return False
+        return True
+
+# --- Logical and Support Handlers ---
+
+class AttributeMatchHandler(ConditionHandler):
+    """
+    Matches an attribute from the context against a value.
+    Syntax for attribute: 'query.param_name', 'header.header-name', 'path', 'method', 'principal.id', 'principal.attributes.key'.
+    """
+    @property
+    def type(self) -> str: return "match"
+
+    def _get_value(self, path: str, ctx: EvaluationContext) -> Any:
+        try:
+            if path.startswith("query."):
+                return ctx.query_params.get(path[6:]) if ctx.query_params else None
+            elif path.startswith("header."):
+                return ctx.request.headers.get(path[7:]) if ctx.request and ctx.request.headers else None
+            elif path == "path":
+                return ctx.path
+            elif path == "method":
+                return ctx.method
+            elif path == "principal.id":
+                return ctx.principal_id
+            elif path.startswith("principal.attributes."):
+                # We need to access principal object from extras or somewhere
+                # For now assume it's in extras['principal_obj']
+                p_obj = ctx.extras.get("principal_obj")
+                if p_obj and hasattr(p_obj, "attributes"):
+                     return p_obj.attributes.get(path[21:])
+                return None
+            elif path.startswith("extras."):
+                return ctx.extras.get(path[7:])
+        except Exception:
+            return None
+        return None
+
+    def _compare(self, actual: Any, operator: str, expected: Any) -> bool:
+        if operator == "eq": return str(actual) == str(expected)
+        if operator == "neq": return str(actual) != str(expected)
+        if operator == "contains": return str(expected) in str(actual)
+        if operator == "regex": return bool(re.match(str(expected), str(actual)))
+        if operator == "gt": 
+            try: return float(actual) > float(expected)
+            except Exception: return False
+        if operator == "lt":
+            try: return float(actual) < float(expected)
+            except Exception: return False
+        if operator == "in":
+            if isinstance(expected, list): return actual in expected
+            return actual in str(expected).split(",")
+        return False
+
+    async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
+        attr_path = config.get("attribute")
+        if not attr_path: return True
+        
+        actual_value = self._get_value(attr_path, ctx)
+        if actual_value is None: return False
+        
+        operator = config.get("operator", "eq")
+        expected_value = config.get("value")
+        
+        return self._compare(actual_value, operator, expected_value)
+
+class LogicalAndHandler(ConditionHandler):
+    @property
+    def type(self) -> str: return "and"
+
+    async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
+        conditions_cfg = config.get("conditions", [])
+        for c_cfg in conditions_cfg:
+            c = Condition(**c_cfg)
+            if not await evaluate_condition(c, ctx):
+                return False
+        return True
+
+class LogicalOrHandler(ConditionHandler):
+    @property
+    def type(self) -> str: return "or"
+
+    async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
+        conditions_cfg = config.get("conditions", [])
+        if not conditions_cfg: return True
+        for c_cfg in conditions_cfg:
+            c = Condition(**c_cfg)
+            if await evaluate_condition(c, ctx):
+                return True
+        return False
+
+class LogicalNotHandler(ConditionHandler):
+    @property
+    def type(self) -> str: return "not"
+
+    async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
+        c_cfg = config.get("condition")
+        if not c_cfg: return True
+        c = Condition(**c_cfg)
+        return not await evaluate_condition(c, ctx)
+
+# --- Registry ---
+
+class ConditionRegistry:
+    def __init__(self):
+        self._handlers: Dict[str, ConditionHandler] = {}
+        self.register(RateLimitHandler())
+        self.register(MaxCountHandler())
+        self.register(QueryParamHandler())
+        self.register(TimeWindowHandler())
+        self.register(TimeExpirationHandler())
+        self._handlers["time_expiration"] = self._handlers["expiration"] # Alias
+        self.register(MaxTokenTTLHandler())
+        self.register(AttributeMatchHandler())
+        self.register(LogicalAndHandler())
+        self.register(LogicalOrHandler())
+        self.register(LogicalNotHandler())
+        # Filter inspection framework (geospatial, temporal, etc.)
+        from dynastore.modules.iam.filter_inspectors import filter_handler
+        self.register(filter_handler)
+
+    def register(self, handler: ConditionHandler):
+        self._handlers[handler.type] = handler
+
+    async def evaluate_all(self, conditions: List[Condition], ctx: EvaluationContext) -> bool:
+        if not conditions: return True
+        for condition in conditions:
+            handler = self._handlers.get(condition.type)
+            if not handler:
+                logger.warning(f"Unknown condition type: {condition.type}. Skipping.")
+                continue
+            allowed = await handler.evaluate(condition.config, ctx)
+            if not allowed: return False
+        return True
+    
+    async def inspect_all(self, conditions: List[Condition], ctx: EvaluationContext) -> List[Dict[str, Any]]:
+        results = []
+        if not conditions: return results
+        
+        for condition in conditions:
+            handler = self._handlers.get(condition.type)
+            if handler:
+                status = await handler.inspect(condition.config, ctx)
+                if status:
+                    results.append(status)
+        return results
+
+condition_registry = ConditionRegistry()
+
+# --- Legacy Aliases ---
+ConditionManager = ConditionRegistry
+condition_manager = condition_registry
+
+async def evaluate_condition(condition: Condition, ctx: EvaluationContext) -> bool:
+    """Helper to evaluate a single condition."""
+    return await condition_registry.evaluate_all([condition], ctx)
+
+async def evaluate_conditions(conditions: List[Condition], ctx: EvaluationContext) -> bool:
+    """Helper to evaluate a list of conditions."""
+    return await condition_registry.evaluate_all(conditions, ctx)
+
+def register_condition_handler(handler: ConditionHandler):
+    """
+    Public SPI to register custom condition handlers.
+    Example:
+        from dynastore.modules.iam.conditions import register_condition_handler, ConditionHandler
+        class MyHandler(ConditionHandler): ...
+        register_condition_handler(MyHandler())
+    """
+    condition_registry.register(handler)

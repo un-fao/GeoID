@@ -63,6 +63,20 @@ class DynamicSource(BaseModel):
     custom_query: Optional[str] = None
 
 class DatacubeDimension(BaseModel):
+    """STAC Datacube dimension with OGC Dimensions pagination support.
+
+    Standard STAC Datacube fields (type, extent, values, step, unit) describe
+    the dimension.  For large dimensions that cannot be enumerated inline,
+    three additional fields enable paginated access:
+
+    - ``size``: total member count (allows cardinality check without download)
+    - ``href``: link to a paginated OGC API endpoint returning members
+    - ``generator``: algorithmic generation metadata (type, config, invertible)
+
+    Small dimensions (< ~1 000 members) should use ``values`` directly.
+    Large dimensions (dekadal over decades, indicator catalogs, admin trees)
+    should set ``size`` + ``href`` and optionally ``generator``.
+    """
     type: DatacubeDimensionType
     description: Optional[str] = None
     axis: Optional[str] = None
@@ -72,6 +86,32 @@ class DatacubeDimension(BaseModel):
     unit: Optional[str] = None
     reference_system: Optional[Union[str, int, dict]] = 4326
     dynamic_source: Optional[DynamicSource] = None
+
+    # OGC Dimensions pagination properties
+    size: Optional[int] = Field(
+        None,
+        description=(
+            "Total number of discrete members in the dimension. "
+            "Allows clients to assess cardinality without downloading values."
+        ),
+    )
+    href: Optional[str] = Field(
+        None,
+        description=(
+            "Link to a paginated endpoint returning dimension members "
+            "following OGC API - Common Part 2 pagination conventions "
+            "(limit/offset query params, rel:next/prev links)."
+        ),
+    )
+    generator: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Generator object describing algorithmic rules for producing "
+            "dimension members. Contains type (e.g. 'daily-period'), config, "
+            "invertible flag, capabilities, and search_protocols. "
+            "See ogc-dimensions spec/schema/generator.json for the full schema."
+        ),
+    )
 
 class HierarchyRule(BaseModel):
     """Defines a specific hierarchy level rule based on row content."""

@@ -51,7 +51,7 @@ from dynastore.modules.tasks.models import (
 )
 from dynastore.modules.tasks.execution import execution_engine
 from dynastore.modules.processes import models
-from dynastore.modules.apikey.models import Principal, SYSTEM_USER_ID
+from dynastore.modules.iam.models import Principal, SYSTEM_USER_ID
 
 
 logger = logging.getLogger(__name__)

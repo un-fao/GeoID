@@ -39,7 +39,7 @@ async def get_principal(
     
     It attempts to find the Principal in the following order:
     1. Request state (if Middleware already resolved it).
-    2. Lazy-loaded authentication via ApiKeyModule (if available and enabled).
+    2. Lazy-loaded authentication via IamModule (if available and enabled).
     
     If authentication fails or is not configured, it returns None (Anonymous).
     """
@@ -61,7 +61,7 @@ async def get_principal(
         )
 
     # 3. Fallback: Try to use any module implementing AuthenticationProtocol
-    # This decouples the security tool from specific implementations (like ApiKeyModule).
+    # This decouples the security tool from specific implementations (like IamModule).
     try:
         provider = get_protocol(AuthenticationProtocol)
         if not provider:

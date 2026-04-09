@@ -25,7 +25,7 @@ from typing import Optional
 from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from dynastore.modules.apikey.security_config import (
+from dynastore.modules.iam.security_config import (
     SECURITY_PLUGIN_CONFIG_ID,
     SecurityPluginConfig,
 )

@@ -23,14 +23,12 @@ This module contains platform-level models for authentication, authorization,
 and identity management. These models are used across multiple modules and
 extensions.
 
-Models migrated from dynastore.modules.apikey.models:
+Models:
 - Role: Role definitions with hierarchy support
 - IdentityLink: Links external identities to principals
 - IdentityAuthorization: Authorization metadata for identities (IAG v2.1)
-- ApiKey, ApiKeyCreate, ApiKeyStatus, ApiKeyValidationRequest, ApiKeyStatusFilter
 - RefreshToken: Refresh token model
 - TokenResponse, TokenExchangeRequest: Token exchange models
-- ApiKeyPolicy: Policy collection for API keys
 """
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -47,10 +45,10 @@ SYSTEM_USER_ID = "system:platform"
 
 # --- 1. Policy & Rule Definitions ---
 
-class ApiKeyPolicy(BaseModel):
+class PolicyBundle(BaseModel):
     """
-    A collection of policy statements (Legacy compatibility).
-    Used as an embedded policy in Keys or Principals.
+    A collection of policy statements.
+    Used as an embedded policy set in Principals.
     """
     version: str = "2024-01-01"
     statements: List[Policy] = Field(default_factory=list)
@@ -151,93 +149,12 @@ class TokenResponse(BaseModel):
     principal_id: UUID
     scope: Optional[str] = None
 
-# --- 5. Credential Definitions (API Keys & Refresh Tokens) ---
-
-class ApiKey(BaseModel):
-    """
-    A long-lived credential linked to a Principal.
-    """
-    key_hash: str
-    key_prefix: str
-    principal_id: UUID
-    name: Optional[str] = None
-    note: Optional[str] = None
-    is_active: bool = True
-    expires_at: Optional[datetime] = None
-    max_usage: Optional[int] = None
-    
-    # Scoping
-    allowed_domains: List[str] = Field(default_factory=list)
-    referer_match: Optional[str] = None
-    catalog_match: Optional[str] = None
-    collection_match: Optional[str] = None
-    
-    # Policy statements
-    policy: Optional[ApiKeyPolicy] = Field(default=None)
-    
-    # Standalone conditions (V1/V2 legacy)
-    conditions: Optional[List[Condition]] = Field(default_factory=list)
-    
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class ApiKeyCreate(BaseModel):
-    principal_id: Optional[UUID] = None
-    principal_identifier: Optional[str] = None
-    provider: Optional[str] = None
-    subject_id: Optional[str] = None
-    name: Optional[str] = None
-    note: Optional[str] = None
-    expires_at: Optional[datetime] = None
-    max_usage: Optional[int] = None
-    allowed_domains: Optional[List[str]] = None
-    referer_match: Optional[str] = None
-    catalog_match: Optional[str] = None
-    collection_match: Optional[str] = None
-    policy: Optional[ApiKeyPolicy] = None
-    conditions: Optional[List[Condition]] = None
-
-    @model_validator(mode='before')
-    @classmethod
-    def check_principal(cls, values: Any) -> Any:
-        if isinstance(values, dict):
-            pid = values.get('principal_id')
-            pident = values.get('principal_identifier')
-            
-            # Map provider:subject_id to principal_identifier if provided
-            if not pident and values.get("provider") and values.get("subject_id"):
-                pident = f"{values['provider']}:{values['subject_id']}"
-                values["principal_identifier"] = pident
-
-            # Validate that at least one identifier is provided
-            if not pid and not pident:
-                # We can't raise error here if we want to allow empty for some reasons, 
-                # but usually we need one.
-                pass
-
-            if pid is not None and pident is not None:
-                 raise ValueError('Provide either principal_id or principal_identifier, not both.')
-
-        return values
-
-class ApiKeyStatus(BaseModel):
-    is_valid: bool
-    status: str
-    expires_at: Optional[datetime] = None
-    principal_id: Optional[UUID] = None
-
-class ApiKeyValidationRequest(BaseModel):
-    api_key: str
-
-class ApiKeyStatusFilter(str, Enum):
-    ALL = "all"
-    ACTIVE = "active"
-    EXPIRED = "expired"
+# --- 5. Refresh Tokens ---
 
 class RefreshToken(BaseModel):
     id: str
     key_hash: str
     principal_id: UUID
-    api_key_hash: Optional[str] = None
     family_id: Optional[str] = Field(
         None, description="Token family for rotation tracking. All tokens in a chain share the same family_id."
     )

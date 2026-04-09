@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from dynastore.models.shared_models import Extent, Link
+from dynastore.models.shared_models import Link
 
 
 # ---------------------------------------------------------------------------
@@ -124,18 +124,28 @@ class RecordCollection(BaseModel):
 
 
 class RecordsCatalogCollection(BaseModel):
-    """A collection descriptor within the Records API."""
+    """A collection descriptor within the Records API.
 
-    model_config = ConfigDict(extra="allow")
+    For dimension collections this includes ``cube:dimensions`` metadata
+    from the OGC Dimensions profile, serialised with a JSON field alias
+    so the colon is preserved on the wire.
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     id: str
     title: Optional[str] = None
     description: Optional[str] = None
     links: Optional[List[Link]] = None
-    extent: Optional[Extent] = None
+    extent: Optional[Dict[str, Any]] = Field(None, description="OGC extent (spatial/temporal).")
     itemType: str = Field("record", description="Item type is always 'record'.")
     crs: Optional[List[str]] = None
     keywords: Optional[List[str]] = None
+    cube_dimensions: Optional[Dict[str, Any]] = Field(
+        None,
+        alias="cube:dimensions",
+        description="STAC Datacube Extension dimension metadata with generator config.",
+    )
 
 
 class RecordsCatalogCollections(BaseModel):

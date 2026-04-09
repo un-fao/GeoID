@@ -6,7 +6,7 @@ live database, using the sysadmin_in_process_client fixture which already
 implies app_lifespan startup.
 
 Enabled extensions: web, logs, features, stac
-Enabled modules:    db_config, db, catalog, stats, apikey
+Enabled modules:    db_config, db, catalog, stats, iam
 
 Fixture notes:
 - sysadmin_in_process_client  — authenticated HTTP client; implicitly starts app
@@ -22,7 +22,7 @@ from dynastore.modules.catalog.models import Catalog
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.enable_extensions("web", "logs", "features", "stac"),
-    pytest.mark.enable_modules("db_config", "db", "catalog", "stats", "apikey"),
+    pytest.mark.enable_modules("db_config", "db", "catalog", "stats", "iam"),
 ]
 
 

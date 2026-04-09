@@ -178,7 +178,7 @@ No application table may reside in the `public` schema. All objects are organize
 |--------|-------|----------|
 | `platform` | `db_config` | Global tracking: `schema_migrations`, `app_state`, `event_subscriptions`. Shared stored procedures: `update_collection_extents()`, `asset_cleanup()`, `cleanup_orphaned_cron_jobs()`. |
 | `catalog` | `catalog` | `catalogs` (the registry of all tenants), `shared_properties`. |
-| `apikey` | `apikey` | Global auth: `api_keys`, `policies`, `roles`, `users`, `jwt_config`. |
+| `iam` | `iam` | Global auth: `principals`, `identity_links`, `policies`, `roles`, `role_hierarchy`, `refresh_tokens`, `audit_log`. |
 | `tasks` | `tasks` | Global task queue: `tasks` (RANGE-partitioned), `events` (RANGE-partitioned). |
 | `configs` | `configs` | Platform-level configuration overrides. |
 | `tiles` | `tiles` | Tile cache metadata and statistics. |

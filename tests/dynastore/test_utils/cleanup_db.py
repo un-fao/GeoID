@@ -16,7 +16,7 @@ from tests.dynastore.test_utils.cleanup_registry import CleanupRegistry
 # Import modules from tests/ to register their cleanup handlers
 try:
     import tests.dynastore.extensions.auth.cleanup
-    import tests.dynastore.modules.apikey.cleanup
+    import tests.dynastore.modules.iam.cleanup
     import tests.dynastore.modules.catalog.cleanup
 except ImportError:
     pass

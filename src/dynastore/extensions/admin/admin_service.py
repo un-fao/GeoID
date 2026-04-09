@@ -25,9 +25,8 @@ from contextlib import asynccontextmanager
 
 from dynastore.extensions import ExtensionProtocol
 from dynastore.modules import get_protocol
-from dynastore.models.protocols import ApiKeyProtocol, WebModuleProtocol
+from dynastore.models.protocols import IamProtocol, WebModuleProtocol
 from dynastore.models.protocols.policies import PermissionProtocol, Policy, Role, Principal
-from dynastore.models.auth_models import ApiKeyCreate
 
 from .models import (
     UserCreate, UserUpdate, UserResponse,
@@ -57,14 +56,14 @@ def _require_admin(request: Request):
     return principal
 
 
-def _get_apikey_manager():
-    """Dependency: returns the ApiKeyService from the protocol registry."""
-    mgr = get_protocol(ApiKeyProtocol)
+def _get_iam_manager():
+    """Dependency: returns the IamService from the protocol registry."""
+    mgr = get_protocol(IamProtocol)
     if not mgr:
         raise HTTPException(status_code=503, detail="Auth service not available.")
     # The protocol instance may be the service directly (registered via register_plugin)
-    # or a module wrapper with _apikey_manager attribute.
-    return getattr(mgr, "_apikey_manager", mgr)
+    # or a module wrapper with _iam_manager attribute.
+    return getattr(mgr, "_iam_manager", mgr)
 class AdminService(ExtensionProtocol):
     priority: int = 200
     """Admin REST API — user, role, policy, and catalog assignment management."""
@@ -101,7 +100,7 @@ class AdminService(ExtensionProtocol):
         limit: int = Query(50, ge=1, le=500),
         offset: int = Query(0, ge=0),
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         principals = await mgr.list_principals(limit=limit, offset=offset)
         # Filter to local (system) principals only
@@ -122,7 +121,7 @@ class AdminService(ExtensionProtocol):
     async def create_user(
         body: UserCreate,
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         # Resolve the local identity provider
         providers = mgr.get_identity_providers()
@@ -167,7 +166,7 @@ class AdminService(ExtensionProtocol):
     async def get_user(
         principal_id: UUID,
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         p = await mgr.get_principal(principal_id)
         if not p:
@@ -182,7 +181,7 @@ class AdminService(ExtensionProtocol):
         principal_id: UUID,
         body: UserUpdate,
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         p = await mgr.get_principal(principal_id)
         if not p:
@@ -201,7 +200,7 @@ class AdminService(ExtensionProtocol):
     async def delete_user(
         principal_id: UUID,
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         deleted = await mgr.delete_principal(principal_id)
         if not deleted:
@@ -219,7 +218,7 @@ class AdminService(ExtensionProtocol):
         limit: int = Query(50, ge=1, le=500),
         offset: int = Query(0, ge=0),
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         results = await mgr.search_principals(
             identifier=identifier, role=role, limit=limit, offset=offset, catalog_id=catalog_id
@@ -237,7 +236,7 @@ class AdminService(ExtensionProtocol):
         principal_id: UUID,
         body: AssignRoleRequest,
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         p = await mgr.get_principal(principal_id)
         if not p:
@@ -251,7 +250,7 @@ class AdminService(ExtensionProtocol):
         principal_id: UUID,
         role_name: str,
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         p = await mgr.get_principal(principal_id)
         if not p:
@@ -265,7 +264,7 @@ class AdminService(ExtensionProtocol):
         catalog_id: str,
         body: AssignRoleRequest,
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         p = await mgr.get_principal(principal_id)
         if not p:
@@ -288,7 +287,7 @@ class AdminService(ExtensionProtocol):
         catalog_id: str,
         role_name: str,
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         p = await mgr.get_principal(principal_id)
         if not p:
@@ -313,7 +312,7 @@ class AdminService(ExtensionProtocol):
     async def list_roles(
         catalog_id: Optional[str] = Query(None),
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         roles = await mgr.list_roles(catalog_id=catalog_id)
         return [
@@ -331,7 +330,7 @@ class AdminService(ExtensionProtocol):
         body: RoleCreate,
         catalog_id: Optional[str] = Query(None),
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         role = Role(
             name=body.name,
@@ -351,7 +350,7 @@ class AdminService(ExtensionProtocol):
         body: RoleUpdate,
         catalog_id: Optional[str] = Query(None),
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         roles = await mgr.list_roles(catalog_id=catalog_id)
         existing = next((r for r in roles if r.name == role_name), None)
@@ -376,7 +375,7 @@ class AdminService(ExtensionProtocol):
         role_name: str,
         catalog_id: Optional[str] = Query(None),
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         roles = await mgr.list_roles(catalog_id=catalog_id)
         existing = next((r for r in roles if r.name == role_name), None)
@@ -394,7 +393,7 @@ class AdminService(ExtensionProtocol):
     async def list_policies(
         catalog_id: Optional[str] = Query(None),
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         pm = mgr.get_policy_service()
         if not pm:
@@ -413,7 +412,7 @@ class AdminService(ExtensionProtocol):
         body: PolicyCreate,
         catalog_id: Optional[str] = Query(None),
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         pm = mgr.get_policy_service()
         if not pm:
@@ -440,7 +439,7 @@ class AdminService(ExtensionProtocol):
         body: PolicyUpdate,
         catalog_id: Optional[str] = Query(None),
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         pm = mgr.get_policy_service()
         if not pm:
@@ -467,7 +466,7 @@ class AdminService(ExtensionProtocol):
         policy_id: str,
         catalog_id: Optional[str] = Query(None),
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         pm = mgr.get_policy_service()
         if not pm:
@@ -484,7 +483,7 @@ class AdminService(ExtensionProtocol):
     async def reset_defaults(
         catalog_id: Optional[str] = Query(None, description="Catalog ID for tenant-scoped reset, or None for global"),
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         if "sysadmin" not in (principal.roles or []):
             raise HTTPException(status_code=403, detail="Only sysadmin can reset defaults.")
@@ -497,7 +496,7 @@ class AdminService(ExtensionProtocol):
     @router.post("/rotate-jwt-secret", summary="Rotate JWT signing secret")
     async def rotate_jwt_secret(
         principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
+        mgr=Depends(_get_iam_manager),
     ):
         if "sysadmin" not in (principal.roles or []):
             raise HTTPException(status_code=403, detail="Only sysadmin can rotate JWT secrets.")
@@ -505,75 +504,6 @@ class AdminService(ExtensionProtocol):
             raise HTTPException(status_code=503, detail="JWT rotation not supported.")
         await mgr.rotate_jwt_secret()
         return {"message": "JWT secret rotated. Previous secret remains valid for existing tokens."}
-
-    # -------------------------------------------------------------------------
-    # API Key Management (/admin/apikeys)
-    # -------------------------------------------------------------------------
-
-    @router.get("/apikeys", summary="List all API Keys")
-    async def list_apikeys(
-        principal_id: Optional[UUID] = Query(None),
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
-    ):
-        keys = await mgr.search_keys(principal_id=principal_id)
-        return [
-            {
-                "key_hash": k.key_hash,
-                "key_prefix": k.key_prefix,
-                "principal_id": k.principal_id,
-                "name": k.name,
-                "is_active": k.is_active,
-                "expires_at": k.expires_at,
-                "max_usage": k.max_usage
-            }
-            for k in keys
-        ]
-
-    @router.post("/apikeys", summary="Create an API Key", status_code=201)
-    async def create_apikey(
-        body: ApiKeyCreate,
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
-    ):
-        if not body.principal_id and not body.principal_identifier:
-            raise HTTPException(status_code=400, detail="Principal ID or identifier is required.")
-        
-        # Verify principal exists
-        p = None
-        if body.principal_id:
-            p = await mgr.get_principal(body.principal_id)
-        elif body.principal_identifier:
-             p = await mgr.get_principal(identifier=body.principal_identifier)
-             
-        if not p:
-            raise HTTPException(status_code=404, detail="Principal not found.")
-
-        # Ensure we bind by ID explicitly
-        body.principal_id = p.id
-        
-        try:
-            apikey_str, apikey_obj = await mgr.create_api_key(body)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-            
-        return {
-            "api_key": apikey_str,
-            "key_hash": apikey_obj.key_hash,
-            "key_prefix": apikey_obj.key_prefix,
-            "principal_id": apikey_obj.principal_id,
-            "name": apikey_obj.name,
-        }
-
-    @router.delete("/apikeys/{key_hash}", status_code=204, summary="Delete an API Key")
-    async def delete_apikey(
-        key_hash: str,
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_apikey_manager),
-    ):
-        deleted = await mgr.delete_api_key(key_hash)
-        if not deleted:
-            raise HTTPException(status_code=404, detail="API Key not found.")
 
     # -------------------------------------------------------------------------
     # Migrations Dashboard (/web/pages/migrations_panel)
