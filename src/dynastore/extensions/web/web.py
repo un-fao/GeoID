@@ -1271,9 +1271,9 @@ async function demoAction(action) {
                                 principal_id = info.get("subject_id") or info.get("principal_id")
                                 break
                         except Exception:
-                                continue
-                    except Exception as e:
-                        logger.debug(f"Dashboard catalogs: could not resolve identity: {e}")
+                            continue
+                except Exception as e:
+                    logger.debug(f"Dashboard catalogs: could not resolve identity: {e}")
 
             catalogs_provider: CatalogsProtocol = get_protocol(CatalogsProtocol)
             if not catalogs_provider:
