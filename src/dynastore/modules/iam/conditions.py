@@ -16,32 +16,28 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-# File: dynastore/modules/apikey/conditions.py
+# File: dynastore/modules/iam/conditions.py
 
 import abc
 import re
 import logging
-import asyncio
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 from starlette.requests import Request
-from cachetools import LRUCache
 
 from .models import Condition
-from .exceptions import RateLimitExceededError, QuotaExceededError, ApiKeyInvalidError
-from dynastore.modules.apikey.apikey_storage import AbstractApiKeyStorage
+from .exceptions import IamError
+from dynastore.modules.iam.iam_storage import AbstractIamStorage
 
 logger = logging.getLogger(__name__)
 
 @dataclass
 class EvaluationContext:
-    request: Optional[Request] 
-    storage: AbstractApiKeyStorage
-    usage_cache: LRUCache
-    manager: Optional[Any] = None # ApiKeyService for buffered increments
-    api_key_hash: Optional[str] = None # The ID of the API Key (Parent)
-    token_identifier: Optional[str] = None # The ID of the specific Token (Child)
+    request: Optional[Request]
+    storage: AbstractIamStorage
+    manager: Optional[Any] = None # IamService
+    token_identifier: Optional[str] = None # The ID of the specific Token/Session
     principal_id: Optional[str] = None # The User ID
     path: str = ""
     method: str = ""
@@ -67,204 +63,59 @@ class ConditionHandler(abc.ABC):
         """
         return None
 
-# --- Helper for Scoped Identity Resolution ---
-
-def resolve_tracking_key(ctx: EvaluationContext, scope: str, metric_name: str) -> Optional[str]:
-    """
-    Determines the database key for tracking usage based on the requested scope.
-    """
-    identity = None
-    if scope == "token":
-        identity = ctx.token_identifier or ctx.api_key_hash
-    elif scope == "apikey":
-        identity = ctx.api_key_hash
-    elif scope == "principal":
-        identity = ctx.principal_id
-    elif scope == "catalog":
-        # The key should be unique per logical catalog for a given principal/key
-        if not ctx.api_key_hash:
-            return None # Cannot track catalog scope without a key context
-        # Use the logical catalog_id for tracking, not the physical schema
-        logical_id = ctx.catalog_id or "global"
-        identity = f"{ctx.api_key_hash}:{logical_id}"
-    elif scope == "global":
-        identity = "global"
-    
-    # Auto-detect if scope not specified
-    if not identity:
-        if ctx.api_key_hash: identity = ctx.api_key_hash
-        elif ctx.principal_id: identity = f"principal:{ctx.principal_id}"
-
-    if not identity:
-        return None
-        
-    return f"{metric_name}:{scope}:{identity}"
-
-# --- Existing Handlers ---
-
-BATCH_SIZE = 10  # Local batching threshold
+# --- Condition Handlers ---
 
 class RateLimitHandler(ConditionHandler):
+    """
+    Rate limiting condition handler.
+
+    NOTE: The usage-counter storage backend (API key usage tables) was removed
+    in Phase 1 of the IAM refactor.  This handler is kept as a no-op stub so
+    that condition configs referencing "rate_limit" do not crash at runtime.
+    A new rate-limiting backend (e.g. Redis/Valkey sliding window) can be
+    plugged in here in the future.
+    """
+
     @property
     def type(self) -> str: return "rate_limit"
 
-    def _get_window_start(self, period_sec: int, now: datetime) -> datetime:
-        """Calculates the start of the time window based on the period duration."""
-        timestamp = now.timestamp()
-        
-        # For standard small periods (minute, hour, day), simple division works
-        if period_sec <= 86400: # <= 1 Day
-            window_key = int(timestamp / period_sec)
-            return datetime.fromtimestamp(window_key * period_sec, tz=timezone.utc)
-        
-        # For longer periods (month, year), we align to calendar boundaries
-        # This is crucial because "1 year" is not exactly 365*24*60*60 seconds (leap years)
-        # and users expect quotas to reset on Jan 1st.
-        if period_sec >= 31536000: # ~1 Year
-            return datetime(now.year, 1, 1, tzinfo=timezone.utc)
-        elif period_sec >= 2592000: # ~1 Month
-            return datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-        
-        # Fallback
-        window_key = int(timestamp / period_sec)
-        return datetime.fromtimestamp(window_key * period_sec, tz=timezone.utc)
-
     async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
-        limit = config.get("limit") or config.get("max_requests") or 1000
-        period_sec = config.get("period_seconds", 60)
-        scope = config.get("scope", "apikey")
-        
-        tracking_key = resolve_tracking_key(ctx, scope, "rl")
-        if not tracking_key: 
-            return True
-
-        now_utc = datetime.now(timezone.utc)
-        
-        # Calculate the bucket start time based on the period logic
-        period_start = self._get_window_start(period_sec, now_utc)
-        
-        # Cache key includes the specific window start time
-        cache_key = f"{tracking_key}:{period_start.isoformat()}"
-        current_count = ctx.usage_cache.get(cache_key)
-
-        if current_count is None:
-             # Cache miss: fetch from DB (sum of shards)
-             # Note: get_usage sums up the counts for this key and period_start
-             db_count = await ctx.storage.get_usage(tracking_key, period_start, schema=ctx.schema)
-             current_count = db_count
-             ctx.usage_cache[cache_key] = current_count
-
-        if current_count >= limit: 
-            raise RateLimitExceededError(f"Rate limit of {limit} requests per {period_sec}s exceeded for scope '{scope}'.")
-        
-        # Increment local cache
-        ctx.usage_cache[cache_key] = current_count + 1
-        
-        # Optimized: uses internal buffering and aggregation
-        if (current_count + 1) % BATCH_SIZE == 0:
-            if ctx.manager:
-                await ctx.manager.increment_usage(
-                    key_hash=tracking_key, 
-                    period_start=period_start, 
-                    amount=BATCH_SIZE,
-                    schema=ctx.schema
-                )
-            else:
-                # Fallback to fire-and-forget background task
-                from dynastore.modules.concurrency import run_in_background
-                run_in_background(ctx.storage.increment_usage(
-                    key_hash=tracking_key, 
-                    period_start=period_start, 
-                    amount=BATCH_SIZE,
-                    last_access=now_utc,
-                    schema=ctx.schema
-                ), name="fallback_rl_increment")
-            
+        # Usage-counter storage removed — allow all requests and log once.
+        logger.debug(
+            "rate_limit condition evaluated but no usage-counter backend is configured; allowing request."
+        )
         return True
 
 class MaxCountHandler(ConditionHandler):
+    """
+    Lifetime quota condition handler.
+
+    NOTE: The usage-counter storage backend (API key usage tables) was removed
+    in Phase 1 of the IAM refactor.  This handler is kept as a no-op stub so
+    that condition configs referencing "max_count" do not crash at runtime.
+    A new quota backend can be plugged in here in the future.
+    """
+
     @property
     def type(self) -> str: return "max_count"
 
     async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
-        max_count = config.get("max_count", 0)
-        scope = config.get("scope", "apikey")
-        if max_count <= 0: return True
-        
-        tracking_key = resolve_tracking_key(ctx, scope, "quota")
-        if not tracking_key: return True
-
-        now_utc = datetime.now(timezone.utc)
-        epoch_start = datetime.fromtimestamp(0, tz=timezone.utc)
-        cache_key = f"quota:{tracking_key}"
-        usage_data = ctx.usage_cache.get(cache_key)
-        
-        if not usage_data:
-             db_count = await ctx.storage.get_usage(tracking_key, epoch_start, schema=ctx.schema)
-             usage_data = [db_count]
-             ctx.usage_cache[cache_key] = usage_data
-
-        # If current usage is already >= limit, reject.
-        # This logic assumes we check BEFORE incrementing or increment is separate.
-        # But here we are incrementing as well.
-        # The key question: Is 'max_count' the number of ALLOWED requests?
-        # If max=5, can I make 5 requests? Yes.
-        # If I have made 5 requests, used=5. Next request (6th) should be rejected.
-        # So: if usage >= max_count -> Reject.
-        if usage_data[0] >= max_count: 
-            raise QuotaExceededError(f"Total quota of {max_count} requests exceeded for scope '{scope}'.")
-
-        # Increment local cache
-        usage_data[0] += 1
-
-        # Optimized: uses internal buffering and aggregation
-        # We flush periodically based on BATCH_SIZE or via background aggregator.
-        # If this is the Nth request, we add 1 to pending buffer.
-        
-        # NOTE: If we are running in a test where we manually incremented using increment_key_usage,
-        # the DB count might be ahead of local cache if cache was not refreshed.
-        # However, increment_key_usage goes through storage/aggregator directly.
-        # ctx.usage_cache is local to this context (if created per request) or shared (if passed from manager).
-        # ApiKeyService passes self.usage_cache.
-        
-        if ctx.manager:
-            await ctx.manager.increment_usage(
-                key_hash=tracking_key, 
-                period_start=epoch_start, 
-                amount=1, # Increment by 1 for this request
-                schema=ctx.schema
-            )
-        else:
-             # Fallback to fire-and-forget background task
-            from dynastore.modules.concurrency import run_in_background
-            run_in_background(ctx.storage.increment_usage(
-                key_hash=tracking_key, 
-                period_start=epoch_start, 
-                amount=1,
-                last_access=now_utc,
-                schema=ctx.schema
-            ), name="fallback_quota_increment")
-            
+        # Usage-counter storage removed — allow all requests and log once.
+        logger.debug(
+            "max_count condition evaluated but no usage-counter backend is configured; allowing request."
+        )
         return True
 
     async def inspect(self, config: Dict[str, Any], ctx: EvaluationContext) -> Optional[Dict[str, Any]]:
         max_count = config.get("max_count", 0)
-        scope = config.get("scope", "apikey")
-        tracking_key = resolve_tracking_key(ctx, scope, "quota")
-        
-        if not tracking_key: return None
-
-        epoch_start = datetime.fromtimestamp(0, tz=timezone.utc)
-        
-        # For inspection, force a DB read if not in cache to be accurate
-        db_count = await ctx.storage.get_usage(tracking_key, epoch_start, schema=ctx.schema)
-        
+        scope = config.get("scope", "iam")
         return {
             "type": "max_count",
             "scope": scope,
             "limit": max_count,
-            "used": db_count,
-            "remaining": max(0, max_count - db_count)
+            "used": 0,
+            "remaining": max_count,
+            "note": "Usage-counter backend not configured.",
         }
 
 class QueryParamHandler(ConditionHandler):
@@ -296,13 +147,13 @@ class TimeWindowHandler(ConditionHandler):
             try:
                 start_dt = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
                 if now < start_dt:
-                    raise ApiKeyInvalidError(f"Key is outside of its valid time window (valid from {start_dt.isoformat()}).")
+                    raise IamError(f"Key is outside of its valid time window (valid from {start_dt.isoformat()}).")
             except ValueError: pass
         if end_str:
             try:
                 end_dt = datetime.fromisoformat(end_str.replace('Z', '+00:00'))
                 if now > end_dt:
-                    raise ApiKeyInvalidError(f"Key is outside of its valid time window (expired at {end_dt.isoformat()}).")
+                    raise IamError(f"Key is outside of its valid time window (expired at {end_dt.isoformat()}).")
             except ValueError: pass
 
         # Hour-based recurring windows
@@ -311,9 +162,9 @@ class TimeWindowHandler(ConditionHandler):
         weekdays_only = config.get("weekdays_only", False)
         
         if weekdays_only and now.weekday() > 4:
-            raise ApiKeyInvalidError("Key is outside of its valid time window (only valid on weekdays).")
+            raise IamError("Key is outside of its valid time window (only valid on weekdays).")
         if not (start_h <= now.hour < end_h):
-            raise ApiKeyInvalidError(f"Key is outside of its valid time window (only valid between {start_h}:00 and {end_h}:00 UTC).")
+            raise IamError(f"Key is outside of its valid time window (only valid between {start_h}:00 and {end_h}:00 UTC).")
         return True
 
 class TimeExpirationHandler(ConditionHandler):
@@ -327,10 +178,10 @@ class TimeExpirationHandler(ConditionHandler):
             exp_date = datetime.fromisoformat(exp_str.replace('Z', '+00:00'))
             now = datetime.now(timezone.utc)
             if now > exp_date:
-                raise ApiKeyInvalidError(f"Key expired at {exp_date.isoformat()}.")
+                raise IamError(f"Key expired at {exp_date.isoformat()}.")
         except ValueError:
             logger.error(f"Invalid date format in policy: {exp_str}")
-            raise ApiKeyInvalidError("Invalid expiration date format in policy.")
+            raise IamError("Invalid expiration date format in policy.")
         return True
     
     async def inspect(self, config: Dict[str, Any], ctx: EvaluationContext) -> Optional[Dict[str, Any]]:
@@ -462,7 +313,7 @@ class ConditionRegistry:
         self.register(LogicalOrHandler())
         self.register(LogicalNotHandler())
         # Filter inspection framework (geospatial, temporal, etc.)
-        from dynastore.modules.apikey.filter_inspectors import filter_handler
+        from dynastore.modules.iam.filter_inspectors import filter_handler
         self.register(filter_handler)
 
     def register(self, handler: ConditionHandler):
@@ -509,7 +360,7 @@ def register_condition_handler(handler: ConditionHandler):
     """
     Public SPI to register custom condition handlers.
     Example:
-        from dynastore.modules.apikey.conditions import register_condition_handler, ConditionHandler
+        from dynastore.modules.iam.conditions import register_condition_handler, ConditionHandler
         class MyHandler(ConditionHandler): ...
         register_condition_handler(MyHandler())
     """

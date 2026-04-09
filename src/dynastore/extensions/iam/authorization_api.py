@@ -28,7 +28,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 from dynastore.modules import get_protocol
-from dynastore.models.protocols import ApiKeyProtocol, CatalogsProtocol
+from dynastore.models.protocols import IamProtocol, CatalogsProtocol
 from dynastore.models.auth import Principal
 from dynastore.extensions.tools.exception_handlers import http_errors
 
@@ -96,12 +96,12 @@ class CatalogAccessResponse(BaseModel):
 
 async def get_storage():
     """Get storage instance."""
-    apikey_protocol = get_protocol(ApiKeyProtocol)
-    if not apikey_protocol:
+    iam_protocol = get_protocol(IamProtocol)
+    if not iam_protocol:
         raise HTTPException(
-            status_code=500, detail="ApiKey protocol implementation not available"
+            status_code=500, detail="IAM protocol implementation not available"
         )
-    return apikey_protocol.storage
+    return iam_protocol.storage
 
 
 async def get_catalogs_protocol() -> CatalogsProtocol:
@@ -159,7 +159,7 @@ async def get_available_roles(
     storage = await get_storage()
     await get_current_identity(request)  # Require authentication
 
-    schema = "apikey"
+    schema = "iam"
     if catalog_id:
         schema = await resolve_catalog_schema(catalog_id)
 
@@ -181,7 +181,7 @@ async def get_my_global_roles(request: Request):
     provider = identity.get("provider")
     subject_id = identity.get("sub")
 
-    roles = await storage.get_identity_roles(provider, subject_id, schema="apikey")
+    roles = await storage.get_identity_roles(provider, subject_id, schema="iam")
     return roles
 
 
@@ -210,7 +210,7 @@ async def get_my_catalogs(request: Request):
 
     # Get global roles
     global_roles = await storage.get_identity_roles(
-        provider, subject_id, schema="apikey"
+        provider, subject_id, schema="iam"
     )
 
     # Get catalog-specific access
@@ -263,7 +263,7 @@ async def get_my_effective_authorization(request: Request, catalog_id: str):
     # Get global and catalog roles
     catalog_schema = await resolve_catalog_schema(catalog_id)
     global_roles = await storage.get_identity_roles(
-        provider, subject_id, schema="apikey"
+        provider, subject_id, schema="iam"
     )
     catalog_roles = await storage.get_identity_roles(
         provider, subject_id, schema=catalog_schema
@@ -275,7 +275,7 @@ async def get_my_effective_authorization(request: Request, catalog_id: str):
     )
     if not auth:
         auth = await storage.get_identity_authorization(
-            provider, subject_id, schema="apikey"
+            provider, subject_id, schema="iam"
         )
 
     return EffectiveAuthorizationResponse(
@@ -305,7 +305,7 @@ async def grant_global_roles(email: EmailStr, request: RoleGrantRequest):
         provider=provider,
         subject_id=subject_id,
         roles=request.roles,
-        schema="apikey",
+        schema="iam",
         granted_by=request.granted_by,
     )
 
@@ -320,7 +320,7 @@ async def get_user_global_roles(email: EmailStr):
     async with http_errors({ValueError: 404}):
         provider, subject_id = await storage.resolve_identity(email)
 
-    roles = await storage.get_identity_roles(provider, subject_id, schema="apikey")
+    roles = await storage.get_identity_roles(provider, subject_id, schema="iam")
     return roles
 
 
@@ -332,7 +332,7 @@ async def revoke_global_role(email: EmailStr, role: str):
     async with http_errors({ValueError: 404}):
         provider, subject_id = await storage.resolve_identity(email)
 
-    await storage.revoke_role(provider, subject_id, role, schema="apikey")
+    await storage.revoke_role(provider, subject_id, role, schema="iam")
     return None
 
 
@@ -403,7 +403,7 @@ async def get_user_catalogs(email: EmailStr):
 
     # Get global roles
     global_roles = await storage.get_identity_roles(
-        provider, subject_id, schema="apikey"
+        provider, subject_id, schema="iam"
     )
     if global_roles:
         result.append(CatalogAccessResponse(catalog_id="*", roles=global_roles))
@@ -444,7 +444,7 @@ async def get_user_effective_authorization(email: EmailStr, catalog_id: str):
 
     # Get global and catalog roles
     global_roles = await storage.get_identity_roles(
-        provider, subject_id, schema="apikey"
+        provider, subject_id, schema="iam"
     )
     catalog_roles = await storage.get_identity_roles(
         provider, subject_id, schema=catalog_schema
@@ -456,7 +456,7 @@ async def get_user_effective_authorization(email: EmailStr, catalog_id: str):
     )
     if not auth:
         auth = await storage.get_identity_authorization(
-            provider, subject_id, schema="apikey"
+            provider, subject_id, schema="iam"
         )
 
     return EffectiveAuthorizationResponse(

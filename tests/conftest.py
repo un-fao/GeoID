@@ -189,7 +189,7 @@ def dynastore_modules(request):
     # on every catalog operation, adding ~30 s per test.
     # Tests that require GCP behaviour must opt in explicitly:
     #   @pytest.mark.enable_modules("db_config", "db", "catalog", "gcp", ...)
-    return ["db_config", "db", "catalog", "stats", "apikey"]
+    return ["db_config", "db", "catalog", "stats", "iam"]
 
 
 @pytest.fixture
@@ -264,25 +264,37 @@ async def async_api_client(base_url):
         yield client
 
 
+async def _mint_test_jwt(iam_svc, roles: list[str], subject: str = "test-sysadmin") -> str:
+    """Mint a short-lived HS256 JWT for test fixtures."""
+    import jwt as pyjwt
+    from datetime import datetime, timezone, timedelta
+
+    secret = await iam_svc.get_jwt_secret()
+    payload = {
+        "sub": subject,
+        "roles": roles,
+        "iat": datetime.now(timezone.utc),
+        "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+        "iss": "dynastore-test",
+    }
+    return pyjwt.encode(payload, secret, algorithm="HS256")
+
+
 @pytest_asyncio.fixture(loop_scope="function")
 async def sysadmin_api_client(base_url, app_lifespan):
     """
     Asynchronous HTTP client for testing with SYSADMIN privileges.
-    Uses OAuth2 login flow to obtain a Bearer token.
+    Mints a JWT with sysadmin role via IamService.
     """
     from dynastore.tools.discovery import get_protocol
-    from dynastore.models.protocols.apikey import ApiKeyProtocol
+    from dynastore.models.protocols.iam import IamProtocol
 
-    # Get the apikey service via protocol
-    apikey_svc = get_protocol(ApiKeyProtocol)
-    if not apikey_svc:
-        raise RuntimeError("ApiKeyProtocol not available")
+    iam_svc = get_protocol(IamProtocol)
+    if not iam_svc:
+        raise RuntimeError("IamProtocol not available")
 
-    # Get system admin key
-    system_key = await apikey_svc.get_system_admin_key()
-
-    # Use the system key as Bearer token (it's recognized by middleware)
-    headers = {"Authorization": f"Bearer {system_key}"}
+    token = await _mint_test_jwt(iam_svc, roles=["sysadmin"])
+    headers = {"Authorization": f"Bearer {token}"}
 
     async with AsyncClient(base_url=base_url, timeout=120.0, headers=headers) as client:
         yield client
@@ -306,27 +318,18 @@ async def in_process_client(app_lifespan):
 async def sysadmin_in_process_client(app_lifespan):
     """
     In-process HTTP client with SYSADMIN privileges.
-    Uses OAuth2 Bearer token from system admin key.
+    Mints a JWT with sysadmin role via IamService.
     """
     from httpx import AsyncClient, ASGITransport
     from dynastore.tools.discovery import get_protocol
-    from dynastore.models.protocols.apikey import ApiKeyProtocol
+    from dynastore.models.protocols.iam import IamProtocol
 
-    # Get the apikey service via protocol
-    apikey_svc = get_protocol(ApiKeyProtocol)
+    iam_svc = get_protocol(IamProtocol)
     headers = {}
 
-    if apikey_svc:
-        system_key = await apikey_svc.get_system_admin_key()
-        if system_key:
-            headers = {"Authorization": f"Bearer {system_key}"}
-
-    # Fallback: strictly use environment variable if module not present
-    if not headers:
-        import os
-
-        system_key = os.getenv("DYNASTORE_SYSTEM_ADMIN_KEY", "test-system-key")
-        headers = {"Authorization": f"Bearer {system_key}"}
+    if iam_svc:
+        token = await _mint_test_jwt(iam_svc, roles=["sysadmin"])
+        headers = {"Authorization": f"Bearer {token}"}
 
     transport = ASGITransport(app=app_lifespan.app)
     async with AsyncClient(
@@ -338,35 +341,30 @@ async def sysadmin_in_process_client(app_lifespan):
 @pytest_asyncio.fixture(loop_scope="function")
 async def authenticated_api_client(app_lifespan, base_url):
     """
-    Creates a Principal with 'admin' role and an API key.
-    No Keycloak required — exercises the API key auth path directly.
-    Yields (client, principal, raw_key) tuple.
+    Creates a Principal with 'admin' role and mints a JWT for it.
+    No Keycloak required.
+    Yields (client, principal) tuple.
     """
     from dynastore.tools.discovery import get_protocol
-    from dynastore.models.protocols.apikey import ApiKeyProtocol
+    from dynastore.models.protocols.iam import IamProtocol
     from dynastore.models.auth import Principal
-    from dynastore.modules.apikey.models import ApiKeyCreate
 
-    apikey_svc = get_protocol(ApiKeyProtocol)
-    if not apikey_svc:
-        pytest.skip("ApiKeyProtocol not available")
+    iam_svc = get_protocol(IamProtocol)
+    if not iam_svc:
+        pytest.skip("IamProtocol not available")
 
+    subject_id = f"test-user-{generate_test_id()}"
     principal = Principal(
         provider="test",
-        subject_id=f"test-user-{generate_test_id()}",
+        subject_id=subject_id,
         roles=["admin"],
     )
-    created = await apikey_svc.create_principal(principal)
+    created = await iam_svc.create_principal(principal)
 
-    key_create = ApiKeyCreate(
-        principal_id=created.id,
-        name="test-key",
-    )
-    _, raw_key = await apikey_svc.create_key(key_create)
-
-    headers = {"Authorization": f"Bearer {raw_key}"}
+    token = await _mint_test_jwt(iam_svc, roles=["admin"], subject=subject_id)
+    headers = {"Authorization": f"Bearer {token}"}
     async with AsyncClient(base_url=base_url, timeout=120.0, headers=headers) as client:
-        yield client, created, raw_key
+        yield client, created
 
 
 @pytest_asyncio.fixture(loop_scope="function")
@@ -826,7 +824,7 @@ async def app_lifespan_module(request):
     modules_marker = request.module.__dict__.get("pytestmark", [])
 
     # Default module list (mirrors the function-scoped fixture)
-    modules_list = ["db_config", "db", "catalog", "stats", "apikey"]
+    modules_list = ["db_config", "db", "catalog", "stats", "iam"]
     extensions_list = ["features", "web"]
     tasks_list: list = []
 

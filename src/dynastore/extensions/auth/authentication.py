@@ -10,7 +10,7 @@ from dynastore.extensions import (
     ExtensionProtocol,
 )
 from dynastore.extensions.web import expose_static
-from dynastore.extensions.tools.url import build_sibling_redirect
+from dynastore.extensions.tools.url import build_sibling_redirect, get_root_url
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import (
     CatalogsProtocol,
@@ -81,10 +81,11 @@ def _derive_fernet_key(jwt_secret: str) -> bytes:
 # JWT_SECRET will be loaded from shared properties (managed by sysadmin)
 KEYCLOAK_ISSUER_URL = os.getenv("KEYCLOAK_ISSUER_URL")
 KEYCLOAK_CLIENT_ID = os.getenv("KEYCLOAK_CLIENT_ID")
+KEYCLOAK_PUBLIC_URL = os.getenv("KEYCLOAK_PUBLIC_URL")
 
 
 class Authentication(ExtensionProtocol):
-    priority: int = 110  # Must run after ApiKeyModule (100) which owns users schema init
+    priority: int = 110  # Must run after IamModule (100) which owns users schema init
     """
     Authentication Extension - OAuth2 Identity Validation
 
@@ -95,7 +96,7 @@ class Authentication(ExtensionProtocol):
     - Return validated Identity objects
 
     Does NOT handle:
-    - Principal management (that's in apikey module)
+    - Principal management (that's in iam module)
     - Permission checking (that's authorization, not authentication)
     """
 
@@ -134,6 +135,7 @@ class Authentication(ExtensionProtocol):
 
         @self.router.get("/authorize")
         async def authorize(
+            request: Request,
             response_type: str,
             client_id: str,
             redirect_uri: str,
@@ -148,6 +150,12 @@ class Authentication(ExtensionProtocol):
             1. If provider='keycloak' and it is configured, use it.
             2. Otherwise, default to 'local' provider.
             """
+            # Resolve relative redirect_uri to absolute URL so Keycloak can
+            # match it against its client whitelist.
+            if redirect_uri.startswith("/"):
+                root_url = get_root_url(request)
+                redirect_uri = f"{root_url}{redirect_uri}"
+
             # Keycloak is the only IdP in v1.0
             if self.keycloak_identity_provider:
                 auth_url = await self.keycloak_identity_provider.get_authorization_url(
@@ -225,45 +233,14 @@ class Authentication(ExtensionProtocol):
         logger.info("Authentication Extension: Initializing identity providers")
         self.app_state = app
 
-        from dynastore.modules.apikey.identity_providers import KeycloakIdentityProvider
-        from dynastore.modules.apikey.postgres_apikey_storage import PostgresApiKeyStorage
+        from dynastore.modules.iam.identity_providers import KeycloakIdentityProvider
 
-        storage = PostgresApiKeyStorage(app_state=app)
-
-        # --- Auto-provision sysadmin principal (principals-only, no local users) ---
-        try:
-            from dynastore.modules.apikey.models import Principal as _P
-            from uuid import uuid5, NAMESPACE_DNS
-            from dynastore.modules.db_config.query_executor import managed_transaction
-            from dynastore.models.protocols import DatabaseProtocol
-
-            _sa_id = uuid5(NAMESPACE_DNS, "sysadmin.dynastore.local")
-            db = get_protocol(DatabaseProtocol)
-            if db and db.engine:
-                async with managed_transaction(db.engine) as conn:
-                    existing = await storage.get_principal(_sa_id, schema="apikey", conn=conn)
-                    if not existing:
-                        await storage.create_principal(
-                            _P(
-                                id=_sa_id,
-                                identifier="sysadmin",
-                                display_name="System Administrator",
-                                roles=["sysadmin"],
-                                is_active=True,
-                            ),
-                            schema="apikey",
-                            conn=conn,
-                        )
-                        logger.info(f"Provisioned sysadmin principal (id={_sa_id})")
-                    else:
-                        logger.info(f"sysadmin principal already exists (id={_sa_id})")
-        except Exception as _e:
-            logger.error(f"Failed to provision sysadmin: {_e}", exc_info=True)
-
-        # Keycloak provider — primary IdP for v1.0
+        # Initialize IdP (Keycloak is the default implementation)
         if KEYCLOAK_ISSUER_URL and KEYCLOAK_CLIENT_ID:
             self.keycloak_identity_provider = KeycloakIdentityProvider(
-                issuer_url=KEYCLOAK_ISSUER_URL, client_id=KEYCLOAK_CLIENT_ID
+                issuer_url=KEYCLOAK_ISSUER_URL,
+                client_id=KEYCLOAK_CLIENT_ID,
+                public_url=KEYCLOAK_PUBLIC_URL,
             )
             logger.info(
                 f"✓ Keycloak identity provider initialized: {KEYCLOAK_ISSUER_URL}"

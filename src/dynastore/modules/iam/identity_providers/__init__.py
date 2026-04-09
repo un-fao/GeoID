@@ -22,9 +22,7 @@ Local OAuth removed in v1.0 — use Keycloak as on-premise IdP.
 """
 
 from .keycloak_identity import KeycloakIdentityProvider
-from .apikey_identity import ApiKeyIdentityProvider
 
 __all__ = [
     "KeycloakIdentityProvider",
-    "ApiKeyIdentityProvider",
 ]

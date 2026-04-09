@@ -25,7 +25,7 @@ from dynastore.modules import get_protocol
 from dynastore.modules.tasks import runners
 from dynastore.modules.tasks.models import TaskExecutionMode
 from dynastore.modules.processes import models
-from dynastore.modules.apikey.models import SYSTEM_USER_ID
+from dynastore.modules.iam.models import SYSTEM_USER_ID
 from dynastore.tasks import get_definitions_by_type
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.models.auth import AuthorizationProtocol, Principal, Action

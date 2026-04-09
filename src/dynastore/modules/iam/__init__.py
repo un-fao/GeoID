@@ -18,4 +18,4 @@
 
 from dynastore.modules.db_config.migration_runner import register_module_migrations
 
-register_module_migrations("apikey", "dynastore.modules.apikey.migrations")
+register_module_migrations("iam", "dynastore.modules.iam.migrations")

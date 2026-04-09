@@ -4,7 +4,7 @@ from httpx import AsyncClient
 @pytest.fixture
 def dynastore_extensions():
     # Ensure web extension is loaded
-    return ["auth", "apikey", "web", "features"]
+    return ["auth", "iam", "web", "features"]
 
 @pytest.mark.asyncio
 # @pytest.mark.skip()

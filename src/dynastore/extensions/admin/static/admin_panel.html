@@ -129,7 +129,6 @@
       <button class="tab-btn" onclick="switchTab('principals')"><i class="fa-solid fa-fingerprint"></i> Principals</button>
       <button class="tab-btn" onclick="switchTab('roles')"><i class="fa-solid fa-user-tag"></i> Roles</button>
       <button class="tab-btn" onclick="switchTab('policies')"><i class="fa-solid fa-file-shield"></i> Policies</button>
-      <button class="tab-btn" onclick="switchTab('apikeys')"><i class="fa-solid fa-key"></i> API Keys</button>
     </div>
 
   <!-- ── USERS TAB ── -->
@@ -190,20 +189,6 @@
     </div>
   </div>
 
-  <!-- ── API KEYS TAB ── -->
-  <div id="tab-apikeys" class="tab-pane">
-    <div class="toolbar">
-      <input class="search-box" id="apikey-search" placeholder="Search by principal ID…">
-      <button class="btn btn-primary" onclick="openApiKeyModal()"><i class="fa-solid fa-plus"></i> New API Key</button>
-      <button class="btn btn-primary" onclick="loadApiKeys()"><i class="fa-solid fa-rotate"></i></button>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Name</th><th>Prefix</th><th>Principal ID</th><th>Status</th><th>Expires At</th><th>Usage</th><th>Actions</th></tr></thead>
-        <tbody id="apikeys-tbody"><tr><td colspan="7" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr></tbody>
-      </table>
-    </div>
-  </div>
 
 </div>
 
@@ -273,20 +258,6 @@
   </div>
 </div>
 
-<!-- New API Key Modal -->
-<div id="apikey-modal" class="modal-bg hidden">
-  <div class="modal">
-    <h2><i class="fa-solid fa-key" style="color:var(--primary);margin-right:8px"></i>Create API Key</h2>
-    <div class="form-row"><label>Principal ID *</label><input id="akm-principal" placeholder="UUID of the principal"/></div>
-    <div class="form-row"><label>Name / Description</label><input id="akm-name" placeholder="e.g. My App Key"/></div>
-    <div class="form-row"><label>Max Usage (Call limit)</label><input type="number" id="akm-max-usage" placeholder="e.g. 1000"/></div>
-    <div class="form-row"><label>Expires At (UTC Timestamp)</label><input type="datetime-local" id="akm-expires"/></div>
-    <div class="form-actions">
-      <button class="btn" onclick="document.getElementById('apikey-modal').classList.add('hidden')" style="color:var(--text-dim)">Cancel</button>
-      <button class="btn btn-primary" onclick="createApiKey()"><i class="fa-solid fa-check"></i> Create</button>
-    </div>
-  </div>
-</div>
 
 <div id="toast"></div><script>
 // Derive API root from the page URL so paths work behind any prefix proxy.
@@ -338,7 +309,6 @@ function switchTab(name) {
   if (name === 'principals') loadPrincipals();
   if (name === 'roles') loadRoles();
   if (name === 'policies') loadPolicies();
-  if (name === 'apikeys') loadApiKeys();
 }
 
 // ── USERS ──
@@ -522,70 +492,6 @@ async function deletePolicy(id) {
   try {
     await apiFetch(`/policies/${id}`, { method:'DELETE' });
     toast('Policy deleted.'); loadPolicies();
-  } catch(e) { toast(e.message, false); }
-}
-
-// ── API KEYS ──
-let _allApiKeys = [];
-async function loadApiKeys() {
-  const tb = document.getElementById('apikeys-tbody');
-  tb.innerHTML = '<tr><td colspan="7" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr>';
-  try {
-    _allApiKeys = await apiFetch('/apikeys');
-    renderApiKeys(_allApiKeys);
-  } catch(e) { tb.innerHTML = `<tr><td colspan="7" class="empty">Error: ${e.message}</td></tr>`; }
-}
-function renderApiKeys(list) {
-  const tb = document.getElementById('apikeys-tbody');
-  if (!list.length) { tb.innerHTML = '<tr><td colspan="7" class="empty">No API keys found.</td></tr>'; return; }
-  let html = '';
-  for (const k of list) {
-    const expires = k.expires_at ? new Date(k.expires_at).toLocaleString() : 'Never';
-    const usage = k.max_usage ? (k.usage || 0) + ' / ' + k.max_usage : 'Unlimited';
-    const activeClass = k.is_active ? 'badge-ok' : 'badge-off';
-    const activeText = k.is_active ? 'Active' : 'Inactive';
-    html += '<tr>' +
-      '<td><strong>' + (k.name || '—') + '</strong></td>' +
-      '<td style="font-family:monospace">' + k.key_prefix + '***</td>' +
-      '<td style="font-family:monospace;font-size:0.8rem">' + k.principal_id + '</td>' +
-      '<td><span class="badge ' + activeClass + '">' + activeText + '</span></td>' +
-      '<td>' + expires + '</td>' +
-      '<td>' + usage + '</td>' +
-      '<td>' +
-        '<button class="btn btn-sm btn-danger" onclick="deleteApiKey(\'' + k.key_hash + '\')"><i class="fa-solid fa-trash"></i></button>' +
-      '</td>' +
-    '</tr>';
-  }
-  tb.innerHTML = html;
-}
-function openApiKeyModal() { document.getElementById('apikey-modal').classList.remove('hidden'); }
-async function createApiKey() {
-  const principal_id = document.getElementById('akm-principal').value.trim();
-  const name = document.getElementById('akm-name').value.trim();
-  const max_usage_val = document.getElementById('akm-max-usage').value;
-  const max_usage = max_usage_val ? parseInt(max_usage_val) : null;
-  const expires_val = document.getElementById('akm-expires').value;
-  const expires_at = expires_val ? new Date(expires_val).toISOString() : null;
-  
-  if (!principal_id) { toast('Principal ID is required.', false); return; }
-  
-  try {
-    const res = await apiFetch('/apikeys', { 
-        method:'POST', 
-        body: JSON.stringify({principal_id, name, max_usage, expires_at}) 
-    });
-    // Show the key to the user
-    // In a real app, use a proper modal for this. For simplicity here:
-    prompt("API Key created! Please copy it now as it won't be shown again:", res.api_key);
-    document.getElementById('apikey-modal').classList.add('hidden'); 
-    loadApiKeys();
-  } catch(e) { toast(e.message, false); }
-}
-async function deleteApiKey(key_hash) {
-  if (!confirm(`Revoke and delete this API key?`)) return;
-  try {
-    await apiFetch(`/apikeys/${key_hash}`, { method:'DELETE' });
-    toast('API Key deleted.'); loadApiKeys();
   } catch(e) { toast(e.message, false); }
 }
 

@@ -12,27 +12,18 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-class ApiKeyError(Exception):
-    """Base exception for ApiKey module."""
+class IamError(Exception):
+    """Base exception for IAM module."""
     status_code = 500
 
-class PrincipalNotFoundError(ApiKeyError):
+class PrincipalNotFoundError(IamError):
     status_code = 404
 
-class ApiKeyNotFoundError(ApiKeyError):
-    status_code = 404
-
-class ApiKeyInvalidError(ApiKeyError):
-    status_code = 401
-
-class ApiKeyExpiredError(ApiKeyError):
-    status_code = 401
-
-class RateLimitExceededError(ApiKeyError):
+class RateLimitExceededError(IamError):
     status_code = 429
 
-class QuotaExceededError(ApiKeyError):
+class QuotaExceededError(IamError):
     status_code = 403
 
-class ConflictingResourceError(ApiKeyError):
+class ConflictingResourceError(IamError):
     status_code = 409

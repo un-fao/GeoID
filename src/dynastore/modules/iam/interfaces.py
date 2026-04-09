@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme d' Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-# File: dynastore/modules/apikey/interfaces.py
+# File: dynastore/modules/iam/interfaces.py
 
 from typing import Optional, List, Dict, Any, Protocol, runtime_checkable
 from dynastore.models.auth import Principal

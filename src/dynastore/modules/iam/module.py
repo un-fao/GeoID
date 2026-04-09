@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-# File: dynastore/modules/apikey/module.py
+# File: dynastore/modules/iam/module.py
 
 import asyncio
 import logging
@@ -27,8 +27,8 @@ from dynastore.models.auth import (
     AuthorizationProtocol,
     Principal,
 )
-from .apikey_service import ApiKeyService
-from .apikey_storage import AbstractApiKeyStorage
+from .iam_service import IamService
+from .iam_storage import AbstractIamStorage
 from .policies import PolicyService
 from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
 from dynastore.modules.db_config import maintenance_tools
@@ -40,11 +40,11 @@ logger = logging.getLogger(__name__)
 
 
 from dynastore.models.protocols.policies import PermissionProtocol
-class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, PermissionProtocol):
+class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, PermissionProtocol):
     priority: int = 100
-    _apikey_manager: Optional[ApiKeyService] = None
+    _iam_manager: Optional[IamService] = None
     _policy_service: Optional[PolicyService] = None
-    storage: Optional[AbstractApiKeyStorage] = None
+    storage: Optional[AbstractIamStorage] = None
     _pending_tasks: list = []
 
     def __init__(self, *args, **kwargs):
@@ -56,26 +56,26 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
 
     @asynccontextmanager
     async def lifespan(self, app_state: object) -> AsyncGenerator[None, None]:
-        from .postgres_apikey_storage import PostgresApiKeyStorage
+        from .postgres_iam_storage import PostgresIamStorage
         from .postgres_policy_storage import PostgresPolicyStorage
         from contextlib import AsyncExitStack
         from dynastore.modules.db_config.query_executor import managed_transaction
         from dynastore.models.protocols import DatabaseProtocol
 
-        self.storage = PostgresApiKeyStorage(app_state)
+        self.storage = PostgresIamStorage(app_state)
         policy_storage = PostgresPolicyStorage(app_state)
         self._policy_service = PolicyService(
-            app_state, storage=policy_storage, apikey_storage=self.storage
+            app_state, storage=policy_storage, iam_storage=self.storage
         )
-        self._apikey_manager = ApiKeyService(
+        self._iam_manager = IamService(
             self.storage, self._policy_service, app_state=app_state
         )
         # Register early to avoid race conditions in middleware discovery
-        register_plugin(self._apikey_manager)
+        register_plugin(self._iam_manager)
 
         async with AsyncExitStack() as stack:
             # Manage manager lifespan
-            await stack.enter_async_context(self._apikey_manager.lifespan(app_state))
+            await stack.enter_async_context(self._iam_manager.lifespan(app_state))
 
             # Register Identity Providers (Configured via Env)
             from .identity_providers.keycloak_identity import KeycloakIdentityProvider
@@ -86,17 +86,17 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
                 db = get_protocol(DatabaseProtocol)
                 engine = db.engine if db else None
                 async with managed_transaction(engine) as conn:
-                    await self.storage._initialize_schema(conn, schema="apikey")
-                    await policy_storage._initialize_schema(conn, schema="apikey")
+                    await self.storage._initialize_schema(conn, schema="iam")
+                    await policy_storage._initialize_schema(conn, schema="iam")
 
                     # Provision default global policies
                     await self._policy_service.provision_default_policies(conn=conn)
 
             except Exception as e:
-                logger.error(f"Failed to initialize ApiKeyModule: {e}", exc_info=True)
+                logger.error(f"Failed to initialize IamModule: {e}", exc_info=True)
 
             # Register plugins
-            register_plugin(self._apikey_manager)
+            register_plugin(self._iam_manager)
 
             keycloak_url = os.environ.get("KEYCLOAK_URL")
             if keycloak_url:
@@ -111,8 +111,8 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
             yield
 
             # Unregister plugins on exit
-            unregister_plugin(self._apikey_manager)
-            # ApiKeyService stops via AsyncExitStack
+            unregister_plugin(self._iam_manager)
+            # IamService stops via AsyncExitStack
         
         # Finally unregister self
         unregister_plugin(self)
@@ -122,14 +122,14 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
         Implementation of AuthenticationProtocol.
         Validates credentials directly, avoiding HTTP layer dependencies.
         """
-        if not self._apikey_manager:
+        if not self._iam_manager:
             return None
 
-        # Support only string credentials (Bearer tokens / API Keys)
+        # Support only string credentials (Bearer tokens via JWT/Keycloak)
         if isinstance(credentials, str):
             try:
-                principal, _, _ = await self._apikey_manager.authenticate_apikey(
-                    credentials
+                roles, principal = await self._iam_manager.authenticate_and_get_role(
+                    type("Request", (), {"headers": {"Authorization": f"Bearer {credentials}"}, "state": type("State", (), {"catalog_id": None})()})()
                 )
                 return principal
             except Exception:
@@ -157,7 +157,7 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
             engine = db.engine if db else None
 
             async with managed_transaction(engine) as conn:
-                await self._policy_service.storage.update_policy(policy, schema="apikey", conn=conn)
+                await self._policy_service.storage.update_policy(policy, schema="iam", conn=conn)
                 logger.debug(f"Persisted policy: {policy.id}")
                 self._policy_service.invalidate_cache()
         except Exception as e:
@@ -178,14 +178,14 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
                 engine = db.engine if db else None
 
                 async with managed_transaction(engine) as conn:
-                    existing = await self.storage.get_role(role.name, schema="apikey", conn=conn)
+                    existing = await self.storage.get_role(role.name, schema="iam", conn=conn)
                     if existing:
                         # Merge policies
                         merged_policies = list(set(existing.policies + role.policies))
                         role = role.model_copy(update={"policies": merged_policies})
-                        await self.storage.update_role(role, schema="apikey", conn=conn)
+                        await self.storage.update_role(role, schema="iam", conn=conn)
                     else:
-                        await self.storage.create_role(role, schema="apikey", conn=conn)
+                        await self.storage.create_role(role, schema="iam", conn=conn)
                     logger.debug(f"Persisted role: {role.name}")
                     self._policy_service.invalidate_cache()
             except Exception as e:
@@ -231,16 +231,16 @@ class ApiKeyModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol
 
 
 @lifecycle_registry.sync_catalog_initializer
-async def initialize_apikey_tenant(conn: DbResource, schema: str, catalog_id: str):
-    """Initializes API Key and Policy tables within a tenant schema."""
+async def initialize_iam_tenant(conn: DbResource, schema: str, catalog_id: str):
+    """Initializes IAM and Policy tables within a tenant schema."""
     logger.info(
-        f"Initializing ApiKey tables for tenant: {catalog_id} in schema {schema}"
+        f"Initializing IAM tables for tenant: {catalog_id} in schema {schema}"
     )
 
-    from .postgres_apikey_storage import PostgresApiKeyStorage
+    from .postgres_iam_storage import PostgresIamStorage
     from .postgres_policy_storage import PostgresPolicyStorage
 
-    storage = PostgresApiKeyStorage()
+    storage = PostgresIamStorage()
     policy_storage = PostgresPolicyStorage()
 
     await policy_storage._initialize_schema(conn, schema=schema)
@@ -250,7 +250,7 @@ async def initialize_apikey_tenant(conn: DbResource, schema: str, catalog_id: st
     from .policies import PolicyService
 
     policy_service = PolicyService(
-        None, storage=policy_storage, apikey_storage=storage
+        None, storage=policy_storage, iam_storage=storage
     )  # app_state not strictly needed for provisioning with explicit conn
     await policy_service.provision_default_policies(
         catalog_id, conn=conn, schema=schema

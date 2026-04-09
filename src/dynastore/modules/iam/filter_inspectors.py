@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
-from dynastore.modules.apikey.conditions import ConditionHandler, EvaluationContext
+from dynastore.modules.iam.conditions import ConditionHandler, EvaluationContext
 
 logger = logging.getLogger(__name__)
 

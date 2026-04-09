@@ -16,19 +16,16 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-# File: dynastore/modules/apikey/postgres_apikey_storage.py
+# File: dynastore/modules/iam/postgres_iam_storage.py
 
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
 from uuid import UUID
 import json
-import secrets
-import hashlib
-import random
 import logging
 import time
 
-from dynastore.modules.db_config.exceptions import ForeignKeyViolationError, TableNotFoundError
+from dynastore.modules.db_config.exceptions import TableNotFoundError
 from dynastore.modules.db_config.query_executor import (
     DDLQuery,
     DQLQuery,
@@ -37,31 +34,27 @@ from dynastore.modules.db_config.query_executor import (
     managed_transaction,
     managed_nested_transaction,
 )
-from dynastore.modules.db_config.partition_tools import ensure_partition_exists
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import DatabaseProtocol
 from dynastore.modules.db_config import maintenance_tools
 from dynastore.tools.protocol_helpers import get_engine
 from .models import (
     Principal,
-    ApiKey,
-    ApiKeyCreate,
-    ApiKeyStatusFilter,
     Role,
     RefreshToken,
     IdentityLink,
     Policy,
 )
 from .exceptions import PrincipalNotFoundError
-from .apikey_storage import AbstractApiKeyStorage
+from .iam_storage import AbstractIamStorage
 from .interfaces import AuthorizationStorageProtocol
 
 logger = logging.getLogger(__name__)
 
-from .apikey_queries import *
+from .iam_queries import *
 
 
-class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol):
+class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
     engine: Optional[DbResource] = None
 
     _ROLE_HIERARCHY_TTL = 60  # seconds
@@ -72,20 +65,21 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         self._known_partitions = set()
         self._role_hierarchy_cache: Dict[tuple, tuple] = {}  # (roles_key, schema) -> (result, timestamp)
 
-    async def initialize(self, conn: DbResource, schema: str = "apikey"):
+    async def initialize(self, conn: DbResource, schema: str = "iam"):
         """Compatibility alias for _initialize_schema."""
         return await self._initialize_schema(conn, schema=schema)
 
-    async def _initialize_schema(self, conn: DbResource, schema: str = "apikey"):
+    async def _initialize_schema(self, conn: DbResource, schema: str = "iam"):
         """
-        Initializes the API Key storage backend for a specific schema.
-        Includes V1 (Keys) and V2 (Identity/RBAC) tables.
+        Initializes the IAM storage backend for a specific schema.
+        Creates principals, identity links, roles, policies, and audit tables.
+        Uses DDLBatch sentinel check — on warm start, 1 query confirms all tables exist.
         """
         # Strip quotes just in case, to prevent double quoting
         schema = schema.strip('"')
 
         logger.info(
-            f"Initializing PostgresApiKeyStorage schemas and tables for '{schema}'..."
+            f"Initializing PostgresIamStorage schemas and tables for '{schema}'..."
         )
 
         # 0. Ensure Schema
@@ -100,9 +94,6 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
                 CREATE_IDENTITY_LINKS_TABLE,
                 CREATE_ROLES_TABLE,
                 CREATE_ROLE_HIERARCHY_TABLE,
-                CREATE_API_KEYS_TABLE,
-                CREATE_USAGE_COUNTERS_TABLE,
-                CREATE_QUOTA_COUNTERS_TABLE,
                 CREATE_REFRESH_TOKENS_TABLE,
                 CREATE_POLICIES_TABLE,
                 CREATE_AUDIT_LOG_TABLE,
@@ -110,40 +101,12 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         ).execute(conn, schema=schema)
 
         # Partition tables (IF NOT EXISTS in SQL handles idempotency)
-        if schema in ["apikey"]:
+        if schema in ["iam"]:
             await CREATE_PARTITION_GLOBAL.execute(conn, schema=schema)
 
         # 2. Maintenance (System Schema Only)
-        if schema == "apikey":
-            # 3. Proactive Maintenance (Usage Counters)
-            await maintenance_tools.ensure_future_partitions(
-                conn,
-                schema=schema,
-                table="usage_counters",
-                interval="monthly",
-                periods_ahead=2,
-            )
-
-            # 4. Register Partition Creation Policy (ongoing, via pg_cron)
-            await maintenance_tools.register_partition_creation_policy(
-                conn,
-                schema=schema,
-                table="usage_counters",
-                interval="monthly",
-                periods_ahead=2,
-                schedule_cron="0 2 1 * *",
-            )
-
-            # 5. Register Retention Policy (prune old partitions)
-            await maintenance_tools.register_retention_policy(
-                conn,
-                schema=schema,
-                table="usage_counters",
-                retention_period="24 months",
-                schedule_cron="15 3 * * 0",
-            )
-
-            # 6. Register nightly pruning of expired rows in flat tables
+        if schema == "iam":
+            # Register nightly pruning of expired rows in flat tables
             _prune_job_name = f"prune_expired_{schema}"
             _prune_func_name = f"prune_expired_rows_{schema}"
 
@@ -154,10 +117,6 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             _prune_ddl = f"""
             CREATE OR REPLACE FUNCTION "{schema}"."{_prune_func_name}"() RETURNS void AS $$
             BEGIN
-                -- Expired + deactivated API keys
-                DELETE FROM "{schema}".api_keys
-                WHERE expires_at IS NOT NULL AND expires_at < NOW() AND is_active = FALSE;
-
                 -- Expired refresh tokens
                 DELETE FROM "{schema}".refresh_tokens WHERE expires_at < NOW();
 
@@ -187,70 +146,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
                 lock_key=f"prune_expired_rows_{schema}",
             ).execute(conn)
 
-        logger.info(f"PostgresApiKeyStorage initialization complete for '{schema}'.")
-
-    async def initialize_partitions(
-        self, conn: DbResource, for_date: datetime, schema: str = "apikey"
-    ):
-        await self._ensure_partition_for_timestamp(conn, for_date, schema=schema)
-
-    async def _ensure_partition_for_timestamp(
-        self, conn: DbResource, timestamp: datetime, schema: str = "apikey"
-    ):
-        """Proactive JIT Partition Creation for Usage Counters (Monthly)."""
-        year, month = timestamp.year, timestamp.month
-        partition_key = f"{schema}_{year}_{month:02d}"
-
-        if partition_key in self._known_partitions:
-            return
-
-        start_of_month = timestamp.replace(
-            day=1, hour=0, minute=0, second=0, microsecond=0
-        )
-
-        await ensure_partition_exists(
-            conn,
-            table_name="usage_counters",
-            schema=schema,
-            strategy="RANGE",
-            partition_value=start_of_month,
-            interval="monthly",
-        )
-        self._known_partitions.add(partition_key)
-
-    async def list_keys(
-        self,
-        principal_id: Optional[UUID] = None,
-        is_active: Optional[bool] = None,
-        limit: int = 100,
-        offset: int = 0,
-        conn: Optional[DbResource] = None,
-        schema: str = "apikey",
-    ) -> List[ApiKey]:
-        """Lists API keys with filtering."""
-        async with managed_transaction(conn or self.engine) as db:
-            rows = await DQLQuery(
-                LIST_KEYS_FILTERED, result_handler=ResultHandler.ALL_DICTS
-            ).execute(
-                db,
-                schema=schema,
-                principal_id=principal_id,
-                is_active=is_active,
-                limit=limit,
-                offset=offset,
-            )
-            return [ApiKey(**row) for row in rows]
-
-    async def prune_stale_keys(
-        self,
-        retention_period: str = "30 days",
-        conn: Optional[DbResource] = None,
-        schema: str = "apikey",
-    ) -> int:
-        async with managed_transaction(conn or self.engine) as db:
-            return await DELETE_STALE_KEYS.execute(
-                db, schema=schema, retention=retention_period
-            )
+        logger.info(f"PostgresIamStorage initialization complete for '{schema}'.")
 
     # --- Standard CRUD Implementation ---
 
@@ -258,7 +154,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         self,
         principal: Principal,
         conn: Optional[DbResource] = None,
-        schema: str = "apikey",
+        schema: str = "iam",
     ) -> Principal:
         async with managed_transaction(conn or self.engine) as db:
             # Map Pydantic model to DB columns. V2 Principal has new fields.
@@ -294,7 +190,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         self,
         principal_id: UUID,
         conn: Optional[DbResource] = None,
-        schema: str = "apikey",
+        schema: str = "iam",
     ) -> Optional[Principal]:
         async with managed_transaction(conn or self.engine) as db:
             return await GET_PRINCIPAL_BY_ID.execute(db, schema=schema, id=principal_id)
@@ -303,7 +199,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         self,
         principal: Principal,
         conn: Optional[DbResource] = None,
-        schema: str = "apikey",
+        schema: str = "iam",
     ) -> Optional[Principal]:
         async with managed_transaction(conn or self.engine) as db:
             return await UPDATE_PRINCIPAL.execute(
@@ -322,7 +218,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             )
 
     async def get_principal_by_identifier(
-        self, identifier: str, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, identifier: str, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> Optional[Principal]:
         async with managed_transaction(conn or self.engine) as db:
             return await GET_PRINCIPAL_BY_IDENTIFIER.execute(
@@ -333,92 +229,14 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         self,
         principal_id: UUID,
         conn: Optional[DbResource] = None,
-        schema: str = "apikey",
+        schema: str = "iam",
     ) -> bool:
         async with managed_transaction(conn or self.engine) as db:
             count = await DELETE_PRINCIPAL.execute(db, schema=schema, id=principal_id)
             return count > 0
 
-    async def create_api_key(
-        self,
-        key_data: ApiKeyCreate,
-        conn: Optional[DbResource] = None,
-        schema: str = "apikey",
-    ) -> tuple[ApiKey, str]:
-        raw_key = f"sk_{secrets.token_urlsafe(32)}"
-        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-        key_prefix = raw_key[:6]
-
-        async with managed_transaction(conn or self.engine) as db:
-            principal_uuid = key_data.principal_id
-            if key_data.principal_identifier:
-                principal_uuid = await GET_PRINCIPAL_ID_BY_IDENTIFIER.execute(
-                    db, schema=schema, identifier=key_data.principal_identifier
-                )
-                if not principal_uuid:
-                    raise PrincipalNotFoundError(
-                        f"Principal '{key_data.principal_identifier}' not found."
-                    )
-
-            policy_json = key_data.policy.model_dump_json() if key_data.policy else None
-            conditions_json = (
-                json.dumps([c.model_dump() for c in key_data.conditions])
-                if key_data.conditions
-                else None
-            )
-
-            try:
-                api_key = await INSERT_API_KEY.execute(
-                    db,
-                    schema=schema,
-                    key_hash=key_hash,
-                    key_prefix=key_prefix,
-                    principal_id=principal_uuid,
-                    name=key_data.name,
-                    note=key_data.note,
-                    expires_at=key_data.expires_at,
-                    policy=policy_json,
-                    conditions=conditions_json,
-                    max_usage=key_data.max_usage,
-                    allowed_domains=json.dumps(key_data.allowed_domains)
-                    if key_data.allowed_domains
-                    else "[]",
-                    referer_match=key_data.referer_match,
-                    catalog_match=key_data.catalog_match,
-                    collection_match=key_data.collection_match,
-                )
-                return api_key, raw_key
-            except ForeignKeyViolationError as e:
-                raise PrincipalNotFoundError(
-                    f"Principal '{key_data.principal_id}' not found."
-                ) from e
-
-    async def delete_api_key(
-        self, key_hash: str, conn: Optional[DbResource] = None, schema: str = "apikey"
-    ) -> bool:
-        async with managed_transaction(conn or self.engine) as db:
-            count = await DELETE_KEY.execute(db, schema=schema, key_hash=key_hash)
-            return count > 0
-
-    async def get_key_metadata(
-        self, key_hash: str, conn: Optional[DbResource] = None, schema: str = "apikey"
-    ) -> Optional[ApiKey]:
-        async with managed_transaction(conn or self.engine) as db:
-            return await GET_KEY_METADATA.execute(db, schema=schema, key_hash=key_hash)
-
-    async def list_keys_for_principal(
-        self,
-        principal_id: UUID,
-        conn: Optional[DbResource] = None,
-        schema: str = "apikey",
-    ) -> List[ApiKey]:
-        async with managed_transaction(conn or self.engine) as db:
-            return await LIST_KEYS_BY_PRINCIPAL.execute(
-                db, schema=schema, principal_id=principal_id
-            )
-
     async def get_principal_id_by_identifier(
-        self, identifier: str, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, identifier: str, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> Optional[UUID]:
         async with managed_transaction(conn or self.engine) as db:
             return await GET_PRINCIPAL_ID_BY_IDENTIFIER.execute(
@@ -430,109 +248,12 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         offset: int,
         limit: int,
         conn: Optional[DbResource] = None,
-        schema: str = "apikey",
+        schema: str = "iam",
     ) -> List[Principal]:
         async with managed_transaction(conn or self.engine) as db:
             return await LIST_PRINCIPALS.execute(
                 db, schema=schema, offset=offset, limit=limit
             )
-
-    async def increment_usage(
-        self,
-        key_hash: str,
-        period_start: datetime,
-        amount: int = 1,
-        last_access: Optional[datetime] = None,
-        conn: Optional[DbResource] = None,
-        schema: str = "apikey",
-    ):
-        shard_id = random.randint(0, USAGE_SHARD_COUNT - 1)
-        if not last_access:
-            last_access = datetime.now(timezone.utc)
-
-        async with managed_transaction(conn or self.engine) as db:
-            if period_start.year == 1970:
-                await INCREMENT_QUOTA.execute(
-                    db,
-                    schema=schema,
-                    key_hash=key_hash,
-                    shard_id=shard_id,
-                    amount=amount,
-                    last_access=last_access,
-                )
-            else:
-                await self._ensure_partition_for_timestamp(
-                    db, period_start, schema=schema
-                )
-                await INCREMENT_USAGE.execute(
-                    db,
-                    schema=schema,
-                    key_hash=key_hash,
-                    period_start=period_start,
-                    shard_id=shard_id,
-                    amount=amount,
-                    last_access=last_access,
-                )
-
-    async def get_usage(
-        self,
-        key_hash: str,
-        period_start: datetime,
-        conn: Optional[DbResource] = None,
-        schema: str = "apikey",
-    ) -> int:
-        async with managed_transaction(conn or self.engine) as db:
-            if period_start.year == 1970:
-                count = await CHECK_QUOTA.execute(db, schema=schema, key_hash=key_hash)
-            else:
-                count = await CHECK_USAGE.execute(
-                    db, schema=schema, key_hash=key_hash, period_start=period_start
-                )
-            return int(count) if count else 0
-
-    async def regenerate_api_key(
-        self, key_hash: str, conn: Optional[DbResource] = None, schema: str = "apikey"
-    ) -> tuple[Optional[ApiKey], Optional[str]]:
-        async with managed_transaction(conn or self.engine) as db:
-            old_key = await GET_KEY_METADATA.execute(
-                db, schema=schema, key_hash=key_hash
-            )
-            if not old_key:
-                return None, None
-
-            raw_key = f"sk_{secrets.token_urlsafe(32)}"
-            new_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-            new_prefix = raw_key[:6]
-
-            await MIGRATE_USAGE.execute(
-                db, schema=schema, old_hash=key_hash, new_hash=new_hash
-            )
-            await MIGRATE_QUOTA.execute(
-                db, schema=schema, old_hash=key_hash, new_hash=new_hash
-            )
-
-            await DELETE_KEY.execute(db, schema=schema, key_hash=key_hash)
-
-            policy_json = old_key.policy.model_dump_json() if old_key.policy else None
-
-            new_key_obj = await INSERT_API_KEY.execute(
-                db,
-                schema=schema,
-                key_hash=new_hash,
-                key_prefix=new_prefix,
-                principal_id=old_key.principal_id,
-                name=old_key.name,
-                note=old_key.note,
-                expires_at=old_key.expires_at,
-                policy=policy_json,
-                max_usage=old_key.max_usage,
-                allowed_domains=json.dumps(old_key.allowed_domains),
-                referer_match=old_key.referer_match,
-                catalog_match=old_key.catalog_match,
-                collection_match=old_key.collection_match,
-            )
-
-            return new_key_obj, raw_key
 
     # --- Enhanced Methods ---
 
@@ -543,7 +264,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         limit: int = 100,
         offset: int = 0,
         conn: Optional[DbResource] = None,
-        schema: str = "apikey",
+        schema: str = "iam",
     ) -> List[Principal]:
         query, params = build_search_principals_query(
             identifier, role, limit, offset, schema=schema
@@ -551,50 +272,10 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         async with managed_transaction(conn or self.engine) as db:
             return await query.execute(db, **params)
 
-    async def search_keys(
-        self,
-        principal_id: Optional[UUID] = None,
-        status_filter: ApiKeyStatusFilter = ApiKeyStatusFilter.ALL,
-        limit: int = 100,
-        offset: int = 0,
-        conn: Optional[DbResource] = None,
-        schema: str = "apikey",
-    ) -> List[ApiKey]:
-        is_active_param = None
-        if status_filter == ApiKeyStatusFilter.ACTIVE:
-            is_active_param = True
-
-        query, params = build_search_keys_query(
-            principal_id, is_active_param, limit, offset, schema=schema
-        )
-
-        async with managed_transaction(conn or self.engine) as db:
-            keys = await query.execute(db, **params)
-
-            if status_filter == ApiKeyStatusFilter.EXPIRED:
-                now = datetime.now(timezone.utc)
-                return [k for k in keys if k.expires_at and k.expires_at < now]
-            elif status_filter == ApiKeyStatusFilter.ACTIVE:
-                now = datetime.now(timezone.utc)
-                return [
-                    k
-                    for k in keys
-                    if k.is_active and (k.expires_at is None or k.expires_at > now)
-                ]
-
-            return keys
-
-    async def invalidate_api_key(
-        self, key_hash: str, conn: Optional[DbResource] = None, schema: str = "apikey"
-    ) -> bool:
-        async with managed_transaction(conn or self.engine) as db:
-            result = await INVALIDATE_KEY.execute(db, schema=schema, key_hash=key_hash)
-            return result is not None
-
     # --- RBAC & Refresh Token SPI Implementation ---
 
     async def create_role(
-        self, role: Role, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, role: Role, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> Role:
         async with managed_transaction(conn or self.engine) as db:
             result = await INSERT_ROLE.execute(
@@ -614,7 +295,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             return result
 
     async def get_role(
-        self, name: str, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, name: str, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> Optional[Role]:
         try:
             async with managed_transaction(conn or self.engine) as db:
@@ -623,13 +304,13 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             return None
 
     async def list_roles(
-        self, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> List[Role]:
         async with managed_transaction(conn or self.engine) as db:
             return await LIST_ROLES.execute(db, schema=schema)
 
     async def update_role(
-        self, role: Role, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, role: Role, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> Optional[Role]:
         async with managed_transaction(conn or self.engine) as db:
             result = await UPDATE_ROLE.execute(
@@ -650,7 +331,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         name: str,
         cascade: bool = False,
         conn: Optional[DbResource] = None,
-        schema: str = "apikey",
+        schema: str = "iam",
     ) -> bool:
         async with managed_transaction(conn or self.engine) as db:
             if cascade:
@@ -669,7 +350,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         parent_role: str,
         child_role: str,
         conn: Optional[DbResource] = None,
-        schema: str = "apikey",
+        schema: str = "iam",
     ):
         async with managed_transaction(conn or self.engine) as db:
             await INSERT_ROLE_HIERARCHY.execute(
@@ -682,7 +363,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         parent_role: str,
         child_role: str,
         conn: Optional[DbResource] = None,
-        schema: str = "apikey",
+        schema: str = "iam",
     ) -> bool:
         async with managed_transaction(conn or self.engine) as db:
             count = await DELETE_ROLE_HIERARCHY.execute(
@@ -691,7 +372,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             self.invalidate_role_hierarchy_cache(schema)
             return count > 0
 
-    def invalidate_role_hierarchy_cache(self, schema: str = "apikey") -> None:
+    def invalidate_role_hierarchy_cache(self, schema: str = "iam") -> None:
         """Clear role hierarchy cache entries for a schema (call on role CRUD)."""
         self._role_hierarchy_cache = {
             k: v for k, v in self._role_hierarchy_cache.items() if k[1] != schema
@@ -701,7 +382,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         self,
         role_names: List[str],
         conn: Optional[DbResource] = None,
-        schema: str = "apikey",
+        schema: str = "iam",
     ) -> List[str]:
         if not role_names:
             return []
@@ -725,7 +406,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         self,
         token: RefreshToken,
         conn: Optional[DbResource] = None,
-        schema: str = "apikey",
+        schema: str = "iam",
     ) -> RefreshToken:
         async with managed_transaction(conn or self.engine) as db:
             return await INSERT_REFRESH_TOKEN.execute(
@@ -734,19 +415,18 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
                 id=token.id,
                 key_hash=token.key_hash,
                 principal_id=token.principal_id,
-                api_key_hash=token.api_key_hash,
                 family_id=token.family_id,
                 expires_at=token.expires_at,
             )
 
     async def get_refresh_token(
-        self, token_id: str, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, token_id: str, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> Optional[RefreshToken]:
         async with managed_transaction(conn or self.engine) as db:
             return await GET_REFRESH_TOKEN.execute(db, schema=schema, id=token_id)
 
     async def invalidate_refresh_token(
-        self, token_id: str, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, token_id: str, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> bool:
         async with managed_transaction(conn or self.engine) as db:
             result = await INVALIDATE_REFRESH_TOKEN.execute(
@@ -755,7 +435,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             return result is not None
 
     async def invalidate_token_family(
-        self, family_id: str, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, family_id: str, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> int:
         """Invalidate all active refresh tokens in a family (reuse detection)."""
         async with managed_transaction(conn or self.engine) as db:
@@ -771,7 +451,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         ip_address: Optional[str] = None,
         detail: Optional[Dict[str, Any]] = None,
         conn: Optional[DbResource] = None,
-        schema: str = "apikey",
+        schema: str = "iam",
     ) -> None:
         """Write a structured audit log entry."""
         try:
@@ -788,21 +468,19 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             logger.debug("audit log write failed (table may not exist yet)", exc_info=True)
 
     async def run_maintenance(
-        self, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> dict:
         """Runs storage-specific maintenance (e.g. pruning expired tokens)."""
         logger.info(
-            f"Running maintenance for PostgresApiKeyStorage (schema: {schema})..."
+            f"Running maintenance for PostgresIamStorage (schema: {schema})..."
         )
         async with managed_transaction(conn or self.engine) as db:
             pruned_tokens = await PRUNE_EXPIRED_REFRESH_TOKENS.execute(
                 db, schema=schema
             )
-            pruned_keys = await PRUNE_EXPIRED_KEYS.execute(db, schema=schema)
 
             return {
                 "pruned_refresh_tokens": pruned_tokens,
-                "pruned_expired_inactive_keys": pruned_keys,
             }
 
     # --- SPI V2 Implementation ---
@@ -869,7 +547,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
     # --- Policy Management ---
 
     async def create_policy(
-        self, policy: Policy, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, policy: Policy, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> Policy:
         """Creates a new policy."""
         async with managed_transaction(conn or self.engine) as db:
@@ -887,7 +565,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             )
 
     async def get_policy(
-        self, policy_id: str, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, policy_id: str, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> Optional[Policy]:
         """Retrieves a policy by ID."""
         async with managed_transaction(conn or self.engine) as db:
@@ -898,7 +576,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         limit: int = 100,
         offset: int = 0,
         conn: Optional[DbResource] = None,
-        schema: str = "apikey",
+        schema: str = "iam",
     ) -> List[Policy]:
         """Lists all policies with pagination."""
         async with managed_transaction(conn or self.engine) as db:
@@ -907,7 +585,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             )
 
     async def update_policy(
-        self, policy: Policy, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, policy: Policy, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> Optional[Policy]:
         """Updates an existing policy."""
         async with managed_transaction(conn or self.engine) as db:
@@ -924,7 +602,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             )
 
     async def delete_policy(
-        self, policy_id: str, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, policy_id: str, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> bool:
         """Deletes a policy."""
         async with managed_transaction(conn or self.engine) as db:
@@ -940,7 +618,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         subject_id: str,
         email: Optional[str] = None,
         conn: Optional[DbResource] = None,
-        schema: str = "apikey",
+        schema: str = "iam",
     ) -> bool:
         """Creates an identity link for a principal."""
         async with managed_transaction(conn or self.engine) as db:
@@ -958,7 +636,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         self,
         principal_id: UUID,
         conn: Optional[DbResource] = None,
-        schema: str = "apikey",
+        schema: str = "iam",
     ) -> List[IdentityLink]:
         """Lists all identity links for a principal."""
         async with managed_transaction(conn or self.engine) as db:
@@ -971,7 +649,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         provider: str,
         subject_id: str,
         conn: Optional[DbResource] = None,
-        schema: str = "apikey",
+        schema: str = "iam",
     ) -> bool:
         """Deletes an identity link."""
         async with managed_transaction(conn or self.engine) as db:
@@ -983,7 +661,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
     # --- Role Management (Enhanced) ---
 
     async def create_role(
-        self, role: Role, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, role: Role, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> Role:
         """Creates a new role."""
         async with managed_transaction(conn or self.engine) as db:
@@ -1000,7 +678,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             )
 
     async def get_role(
-        self, role_id: str, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, role_id: str, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> Optional[Role]:
         """Retrieves a role by ID."""
         try:
@@ -1010,14 +688,14 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             return None
 
     async def list_roles(
-        self, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> List[Role]:
         """Lists all roles."""
         async with managed_transaction(conn or self.engine) as db:
             return await LIST_ROLES.execute(db, schema=schema)
 
     async def update_role(
-        self, role: Role, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, role: Role, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> Optional[Role]:
         """Updates an existing role."""
         async with managed_transaction(conn or self.engine) as db:
@@ -1033,7 +711,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             )
 
     async def delete_role(
-        self, role_id: str, conn: Optional[DbResource] = None, schema: str = "apikey"
+        self, role_id: str, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> bool:
         """Deletes a role."""
         async with managed_transaction(conn or self.engine) as db:
@@ -1052,14 +730,14 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         """Resolve (provider, subject_id) → Principal via identity_links."""
         async with managed_transaction(conn or self.engine) as db:
             return await GET_PRINCIPAL_BY_IDENTITY.execute(
-                conn=db, schema="apikey", provider=provider, subject_id=subject_id,
+                conn=db, schema="iam", provider=provider, subject_id=subject_id,
             )
 
     async def get_identity_roles(
         self,
         provider: str,
         subject_id: str,
-        schema: str = "apikey",
+        schema: str = "iam",
         conn: Optional[DbResource] = None,
     ) -> List[str]:
         """Get roles for an identity. Backed by principals.roles JSONB."""
@@ -1073,7 +751,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         provider: str,
         subject_id: str,
         roles: List[str],
-        schema: str = "apikey",
+        schema: str = "iam",
         granted_by: Optional[str] = None,
         conn: Optional[DbResource] = None,
     ) -> None:
@@ -1088,14 +766,14 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             await DQLQuery(
                 "UPDATE {schema}.principals SET roles = :roles, updated_at = NOW() WHERE id = :id;",
                 result_handler=ResultHandler.ROWCOUNT,
-            ).execute(db, schema="apikey", roles=json.dumps(list(existing)), id=principal.id)
+            ).execute(db, schema="iam", roles=json.dumps(list(existing)), id=principal.id)
 
     async def revoke_role(
         self,
         provider: str,
         subject_id: str,
         role_name: str,
-        schema: str = "apikey",
+        schema: str = "iam",
         conn: Optional[DbResource] = None,
     ) -> None:
         """Revoke a role from an identity by updating principal.roles."""
@@ -1107,13 +785,13 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             await DQLQuery(
                 "UPDATE {schema}.principals SET roles = :roles, updated_at = NOW() WHERE id = :id;",
                 result_handler=ResultHandler.ROWCOUNT,
-            ).execute(db, schema="apikey", roles=json.dumps(updated), id=principal.id)
+            ).execute(db, schema="iam", roles=json.dumps(updated), id=principal.id)
 
     async def get_identity_authorization(
         self,
         provider: str,
         subject_id: str,
-        schema: str = "apikey",
+        schema: str = "iam",
         conn: Optional[DbResource] = None,
     ) -> Optional[Dict[str, Any]]:
         """Get authorization metadata for an identity. Backed by principals table."""
@@ -1134,7 +812,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
         self,
         provider: str,
         subject_id: str,
-        schema: str = "apikey",
+        schema: str = "iam",
         conn: Optional[DbResource] = None,
     ) -> Optional[List[Dict[str, Any]]]:
         """Get custom policies for an identity. Backed by principals.policies JSONB."""
@@ -1163,7 +841,7 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
             ).execute(conn=db)
             return catalogs or []
 
-    async def get_catalog_users(self, schema: str = "apikey") -> List[Dict[str, Any]]:
+    async def get_catalog_users(self, schema: str = "iam") -> List[Dict[str, Any]]:
         """Get all users (principals with identity links)."""
         async with managed_transaction(self.engine) as db:
             return await DQLQuery(
@@ -1172,4 +850,4 @@ class PostgresApiKeyStorage(AbstractApiKeyStorage, AuthorizationStorageProtocol)
                    JOIN {schema}.principals p ON l.principal_id = p.id
                    ORDER BY p.display_name;""",
                 result_handler=ResultHandler.ALL_DICTS,
-            ).execute(conn=db, schema="apikey")
+            ).execute(conn=db, schema="iam")

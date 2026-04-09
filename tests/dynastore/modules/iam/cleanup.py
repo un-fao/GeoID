@@ -6,32 +6,32 @@ import logging
 logger = logging.getLogger(__name__)
 
 @CleanupRegistry.register
-async def cleanup_apikey(engine):
+async def cleanup_iam(engine):
     """
-    Cleans up the apikey and users schemas.
+    Cleans up the iam and users schemas.
     """
     # CRITICAL: In parallel execution (pytest-xdist), we skip truncation of shared tables
     # because one worker finishing a module would destroy the state for other active workers.
     import os
     if os.environ.get("PYTEST_XDIST_WORKER"):
-        logger.info("Parallel worker detected. Skipping shared table truncation for apikey/users.")
+        logger.info("Parallel worker detected. Skipping shared table truncation for iam/users.")
         return
 
     async with managed_nested_transaction(engine) as conn:
-        logger.info("Cleaning up apikey and users schemas...")
-        
+        logger.info("Cleaning up iam and users schemas...")
+
         # Tables to truncate in order of dependency
         tables = [
-            ("apikey", "identity_policies"),
-            ("apikey", "identity_roles"),
-            ("apikey", "identity_authorization"),
-            ("apikey", "refresh_tokens"),
-            ("apikey", "api_keys"),
-            ("apikey", "identity_links"),
-            ("apikey", "principals"),
-            ("apikey", "role_hierarchy"),
-            ("apikey", "roles"),
-            ("apikey", "policies"),
+            ("iam", "identity_policies"),
+            ("iam", "identity_roles"),
+            ("iam", "identity_authorization"),
+            ("iam", "refresh_tokens"),
+            ("iam", "api_keys"),
+            ("iam", "identity_links"),
+            ("iam", "principals"),
+            ("iam", "role_hierarchy"),
+            ("iam", "roles"),
+            ("iam", "policies"),
             ("users", "oauth_tokens"),
             ("users", "oauth_codes"),
             ("users", "users")

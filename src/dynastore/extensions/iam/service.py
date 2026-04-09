@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-# File: dynastore/extensions/apikey/service.py
+# File: dynastore/extensions/iam/service.py
 
 import logging
 import uuid
@@ -36,34 +36,28 @@ from fastapi import (
     Query,
 )
 from fastapi.openapi.utils import get_openapi
-import hashlib
 from typing import List, Optional, Any, Dict, Literal
 from datetime import datetime
 from uuid import UUID
-from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 import os
 from fastapi.responses import HTMLResponse
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.web import expose_web_page
-from dynastore.models.protocols import ApiKeyProtocol, WebModuleProtocol
+from dynastore.models.protocols import IamProtocol, WebModuleProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.db_config.tools import normalize_db_url
 from dynastore.modules.db_config.query_executor import DbResource
 
-from dynastore.modules.apikey.models import (
+from dynastore.modules.iam.models import (
     Principal,
     Role,
     Policy,
-    ApiKey,
-    ApiKeyCreate,
-    ApiKeyPolicy,
-    ApiKeyValidationRequest,
+    PolicyBundle,
     TokenExchangeRequest,
     TokenResponse,
     RefreshToken,
-    ApiKeyStatus,
-    ApiKeyStatusFilter,
     Condition,
 )
 # TODO: move to StatsProtocol to eliminate cross-module layer violation
@@ -73,25 +67,25 @@ from dynastore.modules.stats.storage import (
     AccessLogPage,
     StatsSummary,
 )
-from dynastore.models.protocols import ApiKeyProtocol
+from dynastore.models.protocols import IamProtocol
 from dynastore.modules import get_protocol
 from dynastore.models.protocols.policies import PermissionProtocol
-from dynastore.modules.apikey.exceptions import (
+from dynastore.modules.iam.exceptions import (
     ConflictingResourceError,
     PrincipalNotFoundError,
 )
-from dynastore.extensions.apikey.middleware import ApiKeyMiddleware
+from dynastore.extensions.iam.middleware import IamMiddleware
 logger = logging.getLogger(__name__)
 
 
-def register_apikey_service_policies():
+def register_iam_service_policies():
     """Register policies for authorization API endpoints via PermissionProtocol."""
     from dynastore.models.protocols.policies import PermissionProtocol
     from dynastore.tools.discovery import get_protocol as _get_protocol
 
     pm = _get_protocol(PermissionProtocol)
     if not pm:
-        logger.warning("PermissionProtocol not available; apikey service policies not registered.")
+        logger.warning("PermissionProtocol not available; IAM service policies not registered.")
         return
 
     pm.register_policy(
@@ -120,27 +114,13 @@ def register_apikey_service_policies():
     pm.register_role(Role(name="sysadmin", policies=["admin_authorization_api"]))
     pm.register_role(Role(name="user", policies=["self_service_authorization_api"]))
 
-    logger.debug("ApiKey service policies registered via PermissionProtocol.")
+    logger.debug("IAM service policies registered via PermissionProtocol.")
 
 
 # Security Schemes
 http_bearer = HTTPBearer(auto_error=False, scheme_name="HTTPBearer")
 
 # --- DTOs (Data Transfer Objects) ---
-
-
-class TokenCreateRequest(BaseModel):
-    """Input model for token generation. Hides api_key string."""
-
-    ttl_seconds: int = Field(default=3600, ge=60, le=2592000)  # Max 30 days
-    scoped_policy: Optional[ApiKeyPolicy] = None
-
-
-class LoginRequest(BaseModel):
-    """Standardized login request."""
-
-    api_key: str
-    ttl_seconds: int = Field(default=3600, ge=60, le=2592000)
 
 
 class TokenRefreshRequest(BaseModel):
@@ -194,7 +174,7 @@ class PrincipalCreateRequest(BaseModel):
         default_factory=list, description="Roles assigned to this principal."
     )
     attributes: Dict[str, Any] = Field(default_factory=dict)
-    policy: Optional[ApiKeyPolicy] = None
+    policy: Optional[PolicyBundle] = None
 
 
 class PrincipalUpdateRequest(BaseModel):
@@ -202,7 +182,7 @@ class PrincipalUpdateRequest(BaseModel):
 
     roles: Optional[List[str]] = None
     attributes: Optional[Dict[str, Any]] = None
-    policy: Optional[ApiKeyPolicy] = None
+    policy: Optional[PolicyBundle] = None
 
 
 # --- Robust Security Dependencies ---
@@ -213,7 +193,7 @@ async def require_admin_privileges(
     bearer: Optional[HTTPAuthorizationCredentials] = Security(http_bearer),
 ):
     """
-    Guards Administrative Endpoints (The /apikey/admin/* scope).
+    Guards Administrative Endpoints (The /iam/admin/* scope).
     Allows access if:
     1. Valid Bearer Token belongs to SYSADMIN or ADMIN role.
     2. OR, Valid Bearer Token is the System Admin Key.
@@ -251,7 +231,7 @@ async def require_sysadmin_privileges(
     bearer: Optional[HTTPAuthorizationCredentials] = Security(http_bearer),
 ):
     """
-    Guards System Bootstrap Endpoints (The /apikey/sysadmin/* scope).
+    Guards System Bootstrap Endpoints (The /iam/sysadmin/* scope).
     Strictly requires a Principal explicitly marked as SYSADMIN or the System Key.
     """
     # Sysadmin Role Check (from Middleware)
@@ -277,9 +257,7 @@ async def require_sysadmin_privileges(
         detail="System Administrator privileges required.",
     )
 
-from dynastore.extensions.registry import get_extension_instance
-
-async def get_apikey_principal(
+async def get_iam_principal(
     request: Request,
     bearer: Optional[HTTPAuthorizationCredentials] = Security(http_bearer),
 ) -> Principal:
@@ -301,26 +279,13 @@ async def get_apikey_principal(
             },
         )
 
-    # Fallback
-    key = bearer.credentials if bearer else None
-    if not key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing credentials."
-        )
-
-    ext = get_extension_instance("apikey")
-    if not ext or not hasattr(ext, "apikey_manager"):
-        raise RuntimeError("ApiKeyExtension or its manager not initialized.")
-
-    principal, _, _ = await ext.apikey_manager.authenticate_apikey(key)
-    if not principal:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials."
-        )
-    return principal
+    # Fallback — no valid authentication found
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing credentials."
+    )
 
 
-async def get_apikey_principal_optional(
+async def get_iam_principal_optional(
     request: Request,
     bearer: Optional[HTTPAuthorizationCredentials] = Security(http_bearer),
 ) -> Optional[Principal]:
@@ -345,20 +310,7 @@ async def get_apikey_principal_optional(
             },
         )
 
-    # Fallback (Manual Check)
-    key = bearer.credentials if bearer else None
-    if key:
-        try:
-            # We need the extension instance here. This is slightly tricky for functions outside of classes.
-            # But the middleware usually handles this. If needed, we can get it from app.state.
-            from dynastore.extensions.registry import get_extension_instance
-            ext = get_extension_instance("apikey")
-            if ext and hasattr(ext, "apikey_manager"):
-                principal, _, _ = await ext.apikey_manager.authenticate_apikey(key)
-                return principal
-        except Exception:
-            pass
-
+    # Fallback — no valid authentication found
     return None
 
 
@@ -383,11 +335,11 @@ def ensure_sysadmin_if_targeting_admin(request: Request, target_role: str):
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient privileges: Only System Administrators can manage Admin accounts.",
         )
-class ApiKeyExtension(ExtensionProtocol):
+class IamExtension(ExtensionProtocol):
     priority: int = 100
     # Base router for high-level categorization
     router: APIRouter = APIRouter(
-        prefix="/apikey", tags=["Identity & Access Governance"]
+        prefix="/iam", tags=["Identity & Access Governance"]
     )
 
     # Standardized Auth Endpoints (OIDC/OAuth2 compatible)
@@ -396,13 +348,13 @@ class ApiKeyExtension(ExtensionProtocol):
     # Governance Endpoints (Principals, Roles, Policies)
     gov_router: APIRouter = APIRouter(prefix="/governance", tags=["IAM Governance"])
 
-    # Credential Endpoints (API Keys, Machines)
-    cred_router: APIRouter = APIRouter(prefix="/credentials", tags=["Credentials"])
+    # Stats Endpoints (kept from removed credentials router)
+    stats_router: APIRouter = APIRouter(prefix="/credentials", tags=["Credentials"])
 
     def __init__(self, app: Optional[FastAPI] = None):
         super().__init__()
         self.app = app
-        self._apikey_manager: Optional[ApiKeyProtocol] = None
+        self._iam_manager: Optional[IamProtocol] = None
         self._policy_service: Optional[PermissionProtocol] = None
         self._engine: Optional[DbResource] = None
 
@@ -411,10 +363,10 @@ class ApiKeyExtension(ExtensionProtocol):
         # Include divided routers into the main router
         self.router.include_router(self.auth_router)
         self.router.include_router(self.gov_router)
-        self.router.include_router(self.cred_router)
+        self.router.include_router(self.stats_router)
 
         # Include new simplified IAG routers
-        from dynastore.extensions.apikey.authorization_api import (
+        from dynastore.extensions.iam.authorization_api import (
             router as admin_router,
             me_router,
         )
@@ -423,20 +375,8 @@ class ApiKeyExtension(ExtensionProtocol):
 
     def _register_routes(self):
         # Public / Auth
-        self.router.add_api_route(
-            "/token", self.create_token_for_client, methods=["POST"], response_model=TokenResponse
-        )
-        self.auth_router.add_api_route(
-            "/login", self.login, methods=["POST"], response_model=TokenResponse
-        )
-        self.auth_router.add_api_route(
-            "/token/refresh", self.refresh_token, methods=["POST"], response_model=TokenResponse
-        )
         self.auth_router.add_api_route(
             "/jwks.json", self.get_jwks, methods=["GET"]
-        )
-        self.router.add_api_route(
-            "/usage", self.get_my_usage_and_quotas, methods=["GET"], response_model=Dict[str, Any]
         )
 
         # Governance
@@ -486,44 +426,17 @@ class ApiKeyExtension(ExtensionProtocol):
             "/principals/{principal_id}", self.delete_principal, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin_privileges)]
         )
 
-        # Credentials
-        self.cred_router.add_api_route(
-            "/validate", self.validate_key, methods=["POST"], response_model=ApiKeyStatus, dependencies=[Depends(require_admin_privileges)]
-        )
-        self.cred_router.add_api_route(
-            "/keys", self.create_key, methods=["POST"], dependencies=[Depends(require_admin_privileges)]
-        )
-        self.cred_router.add_api_route(
-            "/keys", self.search_keys, methods=["GET"], response_model=List[ApiKey], dependencies=[Depends(require_admin_privileges)]
-        )
-        self.cred_router.add_api_route(
-            "/keys/{key_hash}/invalidate", self.invalidate_key, methods=["POST"], status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin_privileges)]
-        )
-        self.cred_router.add_api_route(
-            "/keys/{key_hash}", self.delete_key, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin_privileges)]
-        )
-
         # Stats
-        self.cred_router.add_api_route(
+        self.stats_router.add_api_route(
             "/stats/summary", self.get_system_stats_summary, methods=["GET"], response_model=StatsSummary, dependencies=[Depends(require_admin_privileges)]
         )
-        self.cred_router.add_api_route(
+        self.stats_router.add_api_route(
             "/stats/logs", self.get_system_access_logs, methods=["GET"], response_model=AccessLogPage, dependencies=[Depends(require_admin_privileges)]
         )
 
-        # Sysadmin
-        self.cred_router.add_api_route(
-            "/sysadmin/keys/{key_hash}/regenerate", self.regenerate_key, methods=["PUT"], dependencies=[Depends(require_sysadmin_privileges)]
-        )
-        self.cred_router.add_api_route(
-            "/sysadmin/properties/system_admin_key", self.get_system_admin_key_property, methods=["GET"], response_model=dict, dependencies=[Depends(require_sysadmin_privileges)]
-        )
-        self.cred_router.add_api_route(
-            "/sysadmin/properties/system_admin_key", self.regenerate_system_admin_key_property, methods=["PUT"], response_model=dict, dependencies=[Depends(require_sysadmin_privileges)]
-        )
 
     def configure_app(self, app: FastAPI):
-        app.add_middleware(ApiKeyMiddleware)
+        app.add_middleware(IamMiddleware)
 
         def custom_openapi():
             if app.openapi_schema:
@@ -640,11 +553,11 @@ class ApiKeyExtension(ExtensionProtocol):
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
-        logger.info("ApiKeyExtension: Initializing lifecycle.")
+        logger.info("IamExtension: Initializing lifecycle.")
         
         # Initialize instance attributes
-        self._apikey_manager = await self._get_apikey_manager()
-        self._policy_service = self._apikey_manager.get_policy_service()
+        self._iam_manager = await self._get_iam_manager()
+        self._policy_service = self._iam_manager.get_policy_service()
         
         from dynastore.models.protocols import DatabaseProtocol
         db_protocol = get_protocol(DatabaseProtocol)
@@ -654,36 +567,36 @@ class ApiKeyExtension(ExtensionProtocol):
 
         # Seed default policies (idempotent)
         try:
-            # Seed both global (apikey) and system (catalog) schemas
+            # Seed both global (iam) and system (catalog) schemas
             await self._policy_service.provision_default_policies(catalog_id=None)
             await self._policy_service.provision_default_policies(catalog_id="_system_")
         except Exception as e:
             logger.error(f"Failed to seed default policies: {e}")
 
-        # Register apikey service policies via protocol
-        register_apikey_service_policies()
+        # Register IAM service policies via protocol
+        register_iam_service_policies()
 
         yield
 
-    async def _get_apikey_manager(self) -> ApiKeyProtocol:
-        if self._apikey_manager is None:
-            svc = get_protocol(ApiKeyProtocol)
+    async def _get_iam_manager(self) -> IamProtocol:
+        if self._iam_manager is None:
+            svc = get_protocol(IamProtocol)
             if not svc:
-                raise RuntimeError("ApiKey protocol implementation not found")
-            self._apikey_manager = svc
-        return self._apikey_manager
+                raise RuntimeError("IAM protocol implementation not found")
+            self._iam_manager = svc
+        return self._iam_manager
 
     @property
-    def apikey_manager(self) -> ApiKeyProtocol:
-        if self._apikey_manager is None:
+    def iam_manager(self) -> IamProtocol:
+        if self._iam_manager is None:
              # This might happen if accessed before lifespan, try to resolve
              import asyncio
              try:
                  # We can't use await in property, but we can return the protocol if available
-                 return get_protocol(ApiKeyProtocol)
+                 return get_protocol(IamProtocol)
              except Exception:
                  pass
-        return self._apikey_manager
+        return self._iam_manager
 
     @property
     def policy_service(self) -> PermissionProtocol:
@@ -693,98 +606,14 @@ class ApiKeyExtension(ExtensionProtocol):
     # 1. PUBLIC / SELF-SERVICE (Any Auth User)
     # ==========================================
 
-    async def create_token_for_client(
-        self,
-        token_req: TokenCreateRequest,
-        request: Request,
-        _: Principal = Depends(get_apikey_principal),
-    ):
-        """Exchange the current API Key for a short-lived Bearer Token."""
-        api_key_hash = getattr(request.state, "api_key_hash", None)
-        catalog_id = getattr(request.state, "catalog_id", None)
-        if not api_key_hash:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Authentication via API Key required.",
-            )
-
-        try:
-            return await self.apikey_manager.exchange_token(
-                api_key_hash=api_key_hash,
-                ttl_seconds=token_req.ttl_seconds,
-                scoped_policy=token_req.scoped_policy,
-                catalog_id=catalog_id,
-            )
-        except ValueError as e:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
-
-    # --- New IAG Standardized Auth Endpoints ---
-
-    async def login(self, request: Request, login_req: LoginRequest):
-        """Standardized login endpoint using API Key."""
-        catalog_id = getattr(request.state, "catalog_id", None)
-        key_hash = hashlib.sha256(login_req.api_key.encode()).hexdigest()
-
-        try:
-            return await self.apikey_manager.exchange_token(
-                api_key_hash=key_hash,
-                ttl_seconds=login_req.ttl_seconds,
-                scoped_policy=None,
-                catalog_id=catalog_id,
-            )
-        except ValueError as e:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
-
-    async def refresh_token(self, request: Request, refresh_req: TokenRefreshRequest):
-        """Standardized refresh token endpoint."""
-        catalog_id = getattr(request.state, "catalog_id", None)
-        try:
-            return await self.apikey_manager.refresh_token_exchange(
-                refresh_token=refresh_req.refresh_token,
-                ttl_seconds=refresh_req.ttl_seconds,
-                catalog_id=catalog_id,
-            )
-        except ValueError as e:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
-
     async def get_jwks(self):
         """Public endpoint for JWKS discovery."""
-        return await self.apikey_manager.get_jwks()
-
-    async def get_my_usage_and_quotas(
-        self,
-        request: Request, principal: Principal = Depends(get_apikey_principal)
-    ):
-        """Check quotas and rate limits for the current user."""
-        api_key_hash = getattr(request.state, "api_key_hash", None)
-        catalog_id = getattr(request.state, "catalog_id", None)
-
-        if not api_key_hash:
-            # Try to extract 'kid' from JWT if present
-            auth = request.headers.get("Authorization")
-            if auth and auth.lower().startswith("bearer "):
-                import jwt
-
-                try:
-                    token = auth.split(" ")[1]
-                    payload = jwt.decode(token, options={"verify_signature": False})
-                    api_key_hash = payload.get("kid")
-                except Exception:
-                    pass
-
-        return await self.apikey_manager.get_usage_status(
-            principal, api_key_hash, catalog_id=catalog_id
-        )
+        return await self.iam_manager.get_jwks()
 
     # ==========================================
-    # 2. ADMIN OPERATIONS (/apikey/admin)
+    # 2. ADMIN OPERATIONS (/iam/admin)
     # Accessible by: Sysadmin, Admin
     # ==========================================
-
-    async def validate_key(self, request: Request, validation_req: ApiKeyValidationRequest):
-        """Checks validity of an API key string."""
-        catalog_id = getattr(request.state, "catalog_id", None)
-        return await self.apikey_manager.validate_key(validation_req, catalog_id=catalog_id)
 
     # --- Policies ---
 
@@ -875,42 +704,42 @@ class ApiKeyExtension(ExtensionProtocol):
     async def list_roles(self, request: Request):
         """Lists all dynamic roles."""
         catalog_id = getattr(request.state, "catalog_id", None)
-        return await self.apikey_manager.list_roles(catalog_id=catalog_id)
+        return await self.iam_manager.list_roles(catalog_id=catalog_id)
 
     async def create_role(self, role_req: Role, request: Request):
         """Creates a new dynamic role."""
         catalog_id = getattr(request.state, "catalog_id", None)
-        return await self.apikey_manager.create_role(role_req, catalog_id=catalog_id)
+        return await self.iam_manager.create_role(role_req, catalog_id=catalog_id)
 
     async def update_role(self, name: str, role_req: Role, request: Request):
         """Updates an existing role."""
         catalog_id = getattr(request.state, "catalog_id", None)
         role_req.name = name  # Ensure name matches path
-        return await self.apikey_manager.update_role(role_req, catalog_id=catalog_id)
+        return await self.iam_manager.update_role(role_req, catalog_id=catalog_id)
 
     async def delete_role(self, name: str, request: Request, cascade: bool = False):
         """Deletes a role with optional cascading removal from principals."""
         catalog_id = getattr(request.state, "catalog_id", None)
-        await self.apikey_manager.delete_role(name, cascade=cascade, catalog_id=catalog_id)
+        await self.iam_manager.delete_role(name, cascade=cascade, catalog_id=catalog_id)
 
     # --- Hierarchy ---
 
     async def add_role_hierarchy(self, parent: str, child: str, request: Request):
         """Links two roles in a parent-child inheritance relationship."""
         catalog_id = getattr(request.state, "catalog_id", None)
-        await self.apikey_manager.add_role_hierarchy(parent, child, catalog_id=catalog_id)
+        await self.iam_manager.add_role_hierarchy(parent, child, catalog_id=catalog_id)
 
     async def remove_role_hierarchy(self, parent: str, child: str, request: Request):
         """Removes a parent-child inheritance relationship."""
         catalog_id = getattr(request.state, "catalog_id", None)
-        await self.apikey_manager.remove_role_hierarchy(
+        await self.iam_manager.remove_role_hierarchy(
             parent, child, catalog_id=catalog_id
         )
 
     async def get_role_hierarchy(self, role_name: str, request: Request):
         """Gets all effective roles (descendants) for a given role."""
         catalog_id = getattr(request.state, "catalog_id", None)
-        return await self.apikey_manager.get_role_hierarchy(
+        return await self.iam_manager.get_role_hierarchy(
             role_name, catalog_id=catalog_id
         )
 
@@ -938,7 +767,7 @@ class ApiKeyExtension(ExtensionProtocol):
             else [],
         )
         try:
-            return await self.apikey_manager.create_principal(
+            return await self.iam_manager.create_principal(
                 principal_model, catalog_id=catalog_id
             )
         except Exception as e:
@@ -955,10 +784,10 @@ class ApiKeyExtension(ExtensionProtocol):
     ):
         """Updates an existing Principal."""
         catalog_id = getattr(request.state, "catalog_id", None)
-        schema = await self.apikey_manager._resolve_schema(catalog_id)
+        schema = await self.iam_manager._resolve_schema(catalog_id)
 
         # 1. Fetch existing
-        existing = await self.apikey_manager.storage.get_principal(
+        existing = await self.iam_manager.storage.get_principal(
             principal_id, schema=schema
         )
         if not existing:
@@ -979,7 +808,7 @@ class ApiKeyExtension(ExtensionProtocol):
         updated_model = existing.model_copy(update=update_data)
 
         try:
-            result = await self.apikey_manager.update_principal(
+            result = await self.iam_manager.update_principal(
                 updated_model, catalog_id=catalog_id
             )
             if not result:
@@ -1004,7 +833,7 @@ class ApiKeyExtension(ExtensionProtocol):
         offset: int = 0,
     ):
         catalog_id = getattr(request.state, "catalog_id", None)
-        return await self.apikey_manager.search_principals(
+        return await self.iam_manager.search_principals(
             identifier=identifier,
             role=role,
             limit=limit,
@@ -1018,8 +847,8 @@ class ApiKeyExtension(ExtensionProtocol):
         SECURITY: Admin cannot delete another Admin/Sysadmin.
         """
         catalog_id = getattr(request.state, "catalog_id", None)
-        schema = await self.apikey_manager._resolve_schema(catalog_id)
-        principal = await self.apikey_manager.storage.get_principal(
+        schema = await self.iam_manager._resolve_schema(catalog_id)
+        principal = await self.iam_manager.storage.get_principal(
             principal_id, schema=schema
         )
         if principal:
@@ -1027,127 +856,11 @@ class ApiKeyExtension(ExtensionProtocol):
             if target_role:
                 ensure_sysadmin_if_targeting_admin(request, target_role)
 
-        deleted = await self.apikey_manager.delete_principal( # Changed _apikey_manager to self.apikey_manager
+        deleted = await self.iam_manager.delete_principal( # Changed _iam_manager to self.iam_manager
             principal_id, catalog_id=catalog_id
         )
         if not deleted:
             raise HTTPException(status_code=404, detail="Principal not found")
-
-    # --- Keys ---
-
-    async def create_key(self, key_req: ApiKeyCreate, request: Request): # Added self
-        """
-        Issues a new API Key.
-        SECURITY: Admin cannot issue keys for another Admin/Sysadmin.
-        """
-        catalog_id = getattr(request.state, "catalog_id", None)
-        schema = await self.apikey_manager._resolve_schema(catalog_id)
-
-        # Resolve Target
-        target_principal = None
-        if key_req.principal_id:
-            logger.info(
-                f"Resolving principal by ID: {key_req.principal_id} in schema: {schema}"
-            )
-            target_principal = await self.apikey_manager.storage.get_principal( # Changed _apikey_manager to self.apikey_manager
-                key_req.principal_id, schema=schema
-            )
-        elif key_req.provider and key_req.subject_id:
-            logger.info(
-                f"Resolving principal by identity: {key_req.provider}:{key_req.subject_id} in schema: {schema}"
-            )
-            target_principal = await self.apikey_manager.storage.get_principal_by_identity( # Changed _apikey_manager to self.apikey_manager
-                provider=key_req.provider, subject_id=key_req.subject_id, schema=schema
-            )
-        elif key_req.principal_identifier:
-            logger.info(
-                f"Resolving principal by identifier: {key_req.principal_identifier} in schema: {schema}"
-            )
-            target_principal = (
-                await self.apikey_manager.storage.get_principal_by_identifier( # Changed _apikey_manager to self.apikey_manager
-                    key_req.principal_identifier, schema=schema
-                )
-            )
-
-        if not target_principal:
-            identifier_msg = (
-                f"ID: {key_req.principal_id}"
-                if key_req.principal_id
-                else f"Identity: {key_req.provider}:{key_req.subject_id}"
-                if (key_req.provider and key_req.subject_id)
-                else f"Identifier: {key_req.principal_identifier}"
-            )
-            logger.warning(f"Principal NOT found. {identifier_msg}, Schema: {schema}")
-            raise HTTPException(
-                status_code=404,
-                detail=f"Principal not found. {identifier_msg}, Schema: {schema}",
-            )
-
-        # Check Privilege
-        target_role = target_principal.attributes.get("role")
-        if target_role:
-            ensure_sysadmin_if_targeting_admin(request, target_role)
-
-        try:
-            api_key, raw_key = await self.apikey_manager.create_key( # Changed _apikey_manager to self.apikey_manager
-                key_req, catalog_id=catalog_id
-            )
-            return {"api_key": api_key, "raw_key": raw_key}
-        except Exception as e:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-
-    async def search_keys(
-        self, # Added self
-        principal_identifier: Optional[str] = None,
-        status: ApiKeyStatusFilter = ApiKeyStatusFilter.ALL,
-        limit: int = 100,
-        offset: int = 0,
-    ):
-        catalog_id = getattr(request.state, "catalog_id", None)
-        try:
-            return await self.apikey_manager.search_keys( # Changed _apikey_manager to self.apikey_manager
-                principal_identifier=principal_identifier,
-                status_filter=status,
-                limit=limit,
-                offset=offset,
-                catalog_id=catalog_id,
-            )
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
-    async def invalidate_key(self, key_hash: str, request: Request): # Added self
-        """
-        Invalidates a key (Soft Delete).
-        SECURITY: Admin cannot invalidate an Admin/Sysadmin key.
-        """
-        key_metadata = await self.apikey_manager.storage.get_key_metadata(key_hash)
-        if not key_metadata:
-            raise HTTPException(status_code=404, detail="Key not found")
-
-        owner = await self.apikey_manager.storage.get_principal(key_metadata.principal_id)
-        if owner and owner.metadata.get("role"):
-            ensure_sysadmin_if_targeting_admin(request, owner.metadata.get("role"))
-
-        success = await self.apikey_manager.invalidate_key(key_hash, catalog_id=catalog_id)
-        if not success:
-            raise HTTPException(status_code=404, detail="Key not found")
-
-    async def delete_key(self, key_hash: str, request: Request): # Added self
-        """
-        Permanently deletes a key.
-        SECURITY: Admin cannot delete an Admin/Sysadmin key.
-        """
-        key_metadata = await self.apikey_manager.storage.get_key_metadata(key_hash)
-        if not key_metadata:
-            raise HTTPException(status_code=404, detail="Key not found")
-
-        owner = await self.apikey_manager.storage.get_principal(key_metadata.principal_id)
-        if owner and owner.metadata.get("role"):
-            ensure_sysadmin_if_targeting_admin(request, owner.metadata.get("role"))
-
-        deleted = await self.apikey_manager.delete_api_key(key_hash, catalog_id=catalog_id)
-        if not deleted:
-            raise HTTPException(status_code=404, detail="Key not found")
 
     # --- Stats ---
 
@@ -1160,7 +873,7 @@ class ApiKeyExtension(ExtensionProtocol):
         end_date: Optional[datetime] = None,
     ):
         catalog_id = getattr(request.state, "catalog_id", None)
-        schema = await self.apikey_manager._resolve_schema(catalog_id)
+        schema = await self.iam_manager._resolve_schema(catalog_id)
         return await get_stats_summary(
             self._engine, # Changed _engine to self._engine
             principal_id=principal_id,
@@ -1181,7 +894,7 @@ class ApiKeyExtension(ExtensionProtocol):
         page_size: int = 100,
     ):
         catalog_id = getattr(request.state, "catalog_id", None)
-        schema = await self.apikey_manager._resolve_schema(catalog_id)
+        schema = await self.iam_manager._resolve_schema(catalog_id)
         return await get_access_logs(
             self._engine, # Changed _engine to self._engine
             principal_id=principal_id,
@@ -1193,33 +906,3 @@ class ApiKeyExtension(ExtensionProtocol):
             schema=schema,
         )
 
-    # ==========================================
-    # 3. SYSADMIN OPERATIONS (/apikey/sysadmin)
-    # Accessible by: Sysadmin Only
-    # ==========================================
-
-    async def regenerate_key(self, key_hash: str):
-        """Emergency key rotation (Bypass standard checks)."""
-        try:
-            new_key_obj, raw_key = await self.apikey_manager.storage.regenerate_api_key(
-                key_hash, conn=self._engine
-            )
-            if not new_key_obj:
-                raise HTTPException(status_code=404, detail="Key not found")
-            return {"api_key": new_key_obj, "raw_key": raw_key}
-        except Exception as e:
-            logger.error(f"Error regenerating key: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error")
-
-    async def get_system_admin_key_property(self):
-        key_value = await self.apikey_manager.get_system_admin_key()
-        if not key_value:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="System admin key property not found.",
-            )
-        return {"value": key_value}
-
-    async def regenerate_system_admin_key_property(self):
-        new_key = await self.apikey_manager.regenerate_system_admin_key()
-        return {"value": new_key}

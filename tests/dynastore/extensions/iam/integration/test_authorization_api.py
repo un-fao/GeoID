@@ -27,7 +27,7 @@ from tests.dynastore.test_utils import generate_test_id
 
 import logging
 from dynastore.tools.discovery import get_protocol
-from dynastore.models.protocols.apikey import ApiKeyProtocol
+from dynastore.models.protocols.iam import IamProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +35,9 @@ logger = logging.getLogger(__name__)
 @pytest_asyncio.fixture
 async def created_user_email(sysadmin_in_process_client: AsyncClient) -> str:
     """Creates a principal with identity link and returns their email."""
-    apikey_protocol = get_protocol(ApiKeyProtocol)
-    assert apikey_protocol is not None
-    storage = apikey_protocol.storage
+    iam_protocol = get_protocol(IamProtocol)
+    assert iam_protocol is not None
+    storage = iam_protocol.storage
     assert storage is not None
 
     email = f"test_{generate_test_id(12)}@example.com"
@@ -46,7 +46,7 @@ async def created_user_email(sysadmin_in_process_client: AsyncClient) -> str:
     logger.info(f"Fixture creating principal for {email}")
 
     # Create principal
-    from dynastore.modules.apikey.models import Principal
+    from dynastore.modules.iam.models import Principal
     principal = Principal(
         id=generate_uuidv7(),
         identifier=email,
@@ -58,10 +58,10 @@ async def created_user_email(sysadmin_in_process_client: AsyncClient) -> str:
     from dynastore.models.protocols import DatabaseProtocol
     db = get_protocol(DatabaseProtocol)
     async with managed_transaction(db.engine) as conn:
-        await storage.create_principal(principal, schema="apikey", conn=conn)
+        await storage.create_principal(principal, schema="iam", conn=conn)
         await storage.create_identity_link(
             provider="local", subject_id=subject_id,
-            principal_id=principal.id, schema="apikey", conn=conn,
+            principal_id=principal.id, schema="iam", conn=conn,
         )
 
     logger.info(f"Principal {principal.id} created with email {email}")
@@ -109,7 +109,7 @@ class TestAuthorizationAPI:
         print(f"\nDEBUG: Using principal-based identity for {email}")
 
         response = await in_process_client.post(
-            f"/apikey/admin/users/{email}/roles/global",
+            f"/iam/admin/users/{email}/roles/global",
             json={"roles": ["DataSteward", "Auditor"]},
             headers={"Authorization": f"Bearer {admin_token}"},
         )
@@ -127,14 +127,14 @@ class TestAuthorizationAPI:
 
         # Grant roles first
         await in_process_client.post(
-            f"/apikey/admin/users/{email}/roles/global",
+            f"/iam/admin/users/{email}/roles/global",
             json={"roles": ["DataSteward"]},
             headers={"Authorization": f"Bearer {admin_token}"},
         )
 
         # Get roles
         response = await in_process_client.get(
-            f"/apikey/admin/users/{email}/roles/global",
+            f"/iam/admin/users/{email}/roles/global",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
 
@@ -149,7 +149,7 @@ class TestAuthorizationAPI:
 
         # Grant roles
         await in_process_client.post(
-            f"/apikey/admin/users/{email}/roles/global",
+            f"/iam/admin/users/{email}/roles/global",
             json={"roles": ["DataSteward", "Auditor"]},
             headers={"Authorization": f"Bearer {admin_token}"},
         )
@@ -157,7 +157,7 @@ class TestAuthorizationAPI:
         # Revoke one role
         role = "Auditor"
         response = await in_process_client.delete(
-            f"/apikey/admin/users/{email}/roles/global/{role}",
+            f"/iam/admin/users/{email}/roles/global/{role}",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
 
@@ -165,7 +165,7 @@ class TestAuthorizationAPI:
 
         # Verify
         response = await in_process_client.get(
-            f"/apikey/admin/users/{email}/roles/global",
+            f"/iam/admin/users/{email}/roles/global",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         assert "DataSteward" in response.json()
@@ -183,7 +183,7 @@ class TestAuthorizationAPI:
         catalog_id = setup_catalogs[0]
 
         response = await in_process_client.post(
-            f"/apikey/admin/users/{email}/roles/catalogs/{catalog_id}",
+            f"/iam/admin/users/{email}/roles/catalogs/{catalog_id}",
             json={"roles": ["Editor", "Viewer"]},
             headers={"Authorization": f"Bearer {admin_token}"},
         )
@@ -203,14 +203,14 @@ class TestAuthorizationAPI:
 
         # Grant global roles
         await in_process_client.post(
-            f"/apikey/admin/users/{email}/roles/global",
+            f"/iam/admin/users/{email}/roles/global",
             json={"roles": ["DataSteward"]},
             headers={"Authorization": f"Bearer {admin_token}"},
         )
 
         # Grant catalog roles
         resp = await in_process_client.post(
-            f"/apikey/admin/users/{email}/roles/catalogs/{setup_catalogs[1]}",
+            f"/iam/admin/users/{email}/roles/catalogs/{setup_catalogs[1]}",
             json={"roles": ["Editor"]},
             headers={"Authorization": f"Bearer {admin_token}"},
         )
@@ -218,7 +218,7 @@ class TestAuthorizationAPI:
 
         # Get catalogs
         response = await in_process_client.get(
-            f"/apikey/admin/users/{email}/catalogs",
+            f"/iam/admin/users/{email}/catalogs",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
 
@@ -243,19 +243,19 @@ class TestAuthorizationAPI:
 
         # Grant global and catalog roles
         await in_process_client.post(
-            f"/apikey/admin/users/{email}/roles/global",
+            f"/iam/admin/users/{email}/roles/global",
             json={"roles": ["DataSteward"]},
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         await in_process_client.post(
-            f"/apikey/admin/users/{email}/roles/catalogs/{catalog_id}",
+            f"/iam/admin/users/{email}/roles/catalogs/{catalog_id}",
             json={"roles": ["Editor"]},
             headers={"Authorization": f"Bearer {admin_token}"},
         )
 
         # Get effective authorization
         response = await in_process_client.get(
-            f"/apikey/admin/users/{email}/catalogs/{catalog_id}",
+            f"/iam/admin/users/{email}/catalogs/{catalog_id}",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
 
@@ -272,7 +272,7 @@ class TestAuthorizationAPI:
     ):
         """Test API with non-existent email."""
         response = await in_process_client.get(
-            "/apikey/admin/users/nonexistent@example.com/roles/global",
+            "/iam/admin/users/nonexistent@example.com/roles/global",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
 
@@ -290,7 +290,7 @@ class TestSelfServiceAPI:
     ):
         """Test getting my own global roles."""
         response = await in_process_client.get(
-            "/apikey/me/roles/global", headers={"Authorization": f"Bearer {user_token}"}
+            "/iam/me/roles/global", headers={"Authorization": f"Bearer {user_token}"}
         )
 
         assert response.status_code == 200
@@ -302,7 +302,7 @@ class TestSelfServiceAPI:
     ):
         """Test getting my accessible catalogs."""
         response = await in_process_client.get(
-            "/apikey/me/catalogs", headers={"Authorization": f"Bearer {user_token}"}
+            "/iam/me/catalogs", headers={"Authorization": f"Bearer {user_token}"}
         )
 
         assert response.status_code == 200
@@ -313,7 +313,7 @@ class TestSelfServiceAPI:
     ):
         """Test getting my roles in a specific catalog."""
         response = await in_process_client.get(
-            f"/apikey/me/roles/catalogs/{setup_catalogs[0]}",
+            f"/iam/me/roles/catalogs/{setup_catalogs[0]}",
             headers={"Authorization": f"Bearer {user_token}"},
         )
 
@@ -322,7 +322,7 @@ class TestSelfServiceAPI:
 
     async def test_unauthenticated_access(self, in_process_client: AsyncClient):
         """Test that unauthenticated requests are rejected."""
-        response = await in_process_client.get("/apikey/me/roles/global")
+        response = await in_process_client.get("/iam/me/roles/global")
 
         assert response.status_code in [401, 403]
 
@@ -346,7 +346,7 @@ async def admin_token(
     }
 
     resp = await sysadmin_in_process_client.post(
-        "/apikey/governance/principals", json=principal_payload
+        "/iam/governance/principals", json=principal_payload
     )
     assert resp.status_code in [200, 201, 409]
 
@@ -357,7 +357,7 @@ async def admin_token(
     }
 
     resp = await sysadmin_in_process_client.post(
-        "/apikey/credentials/keys", json=key_payload
+        "/iam/credentials/keys", json=key_payload
     )
     assert resp.status_code in [200, 201]
 
@@ -365,7 +365,7 @@ async def admin_token(
     assert raw_key
 
     login_resp = await in_process_client.post(
-        "/apikey/auth/login", json={"api_key": raw_key, "ttl_seconds": 3600}
+        "/iam/auth/login", json={"api_key": raw_key, "ttl_seconds": 3600}
     )
     assert login_resp.status_code == 200
 
@@ -388,7 +388,7 @@ async def user_token(
     }
 
     resp = await sysadmin_in_process_client.post(
-        "/apikey/governance/principals", json=principal_payload
+        "/iam/governance/principals", json=principal_payload
     )
     assert resp.status_code in [200, 201, 409]
 
@@ -399,7 +399,7 @@ async def user_token(
     }
 
     resp = await sysadmin_in_process_client.post(
-        "/apikey/credentials/keys", json=key_payload
+        "/iam/credentials/keys", json=key_payload
     )
     assert resp.status_code in [200, 201]
 
@@ -407,7 +407,7 @@ async def user_token(
     assert raw_key
 
     login_resp = await in_process_client.post(
-        "/apikey/auth/login", json={"api_key": raw_key, "ttl_seconds": 3600}
+        "/iam/auth/login", json={"api_key": raw_key, "ttl_seconds": 3600}
     )
     assert login_resp.status_code == 200
 
@@ -648,7 +648,7 @@ async def user_token(
 #         "attributes": {"description": "Integration test admin user for authorization API"}
 #     }
 
-#     resp = await sysadmin_in_process_client.post("/apikey/governance/principals", json=principal_payload)
+#     resp = await sysadmin_in_process_client.post("/iam/governance/principals", json=principal_payload)
 #     assert resp.status_code in [200, 201, 409]
 
 #     key_payload = {
@@ -657,13 +657,13 @@ async def user_token(
 #         "description": "Integration test admin API key"
 #     }
 
-#     resp = await sysadmin_in_process_client.post("/apikey/credentials/keys", json=key_payload)
+#     resp = await sysadmin_in_process_client.post("/iam/credentials/keys", json=key_payload)
 #     assert resp.status_code in [200, 201]
 
 #     raw_key = resp.json().get("raw_key")
 #     assert raw_key
 
-#     login_resp = await in_process_client.post("/apikey/auth/login", json={"api_key": raw_key, "ttl_seconds": 3600})
+#     login_resp = await in_process_client.post("/iam/auth/login", json={"api_key": raw_key, "ttl_seconds": 3600})
 #     assert login_resp.status_code == 200
 
 #     return login_resp.json()["access_token"]
@@ -680,7 +680,7 @@ async def user_token(
 #         "attributes": {"description": "Integration test regular user for authorization API"}
 #     }
 
-#     resp = await sysadmin_in_process_client.post("/apikey/governance/principals", json=principal_payload)
+#     resp = await sysadmin_in_process_client.post("/iam/governance/principals", json=principal_payload)
 #     assert resp.status_code in [200, 201, 409]
 
 #     key_payload = {
@@ -689,13 +689,13 @@ async def user_token(
 #         "description": "Integration test user API key"
 #     }
 
-#     resp = await sysadmin_in_process_client.post("/apikey/credentials/keys", json=key_payload)
+#     resp = await sysadmin_in_process_client.post("/iam/credentials/keys", json=key_payload)
 #     assert resp.status_code in [200, 201]
 
 #     raw_key = resp.json().get("raw_key")
 #     assert raw_key
 
-#     login_resp = await in_process_client.post("/apikey/auth/login", json={"api_key": raw_key, "ttl_seconds": 3600})
+#     login_resp = await in_process_client.post("/iam/auth/login", json={"api_key": raw_key, "ttl_seconds": 3600})
 #     assert login_resp.status_code == 200
 
 #     return login_resp.json()["access_token"]

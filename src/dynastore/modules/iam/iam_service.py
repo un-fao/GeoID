@@ -16,13 +16,11 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-# File: dynastore/modules/apikey/apikey_service.py
+# File: dynastore/modules/iam/iam_service.py
 
 import logging
 import secrets
-import hashlib
 import os
-import re
 import jwt
 from contextlib import asynccontextmanager
 from typing import List, Optional, Tuple, Any, Dict, Union, AsyncGenerator
@@ -31,34 +29,26 @@ from uuid import UUID, uuid4
 
 from .models import (
     Principal,
-    ApiKey,
-    ApiKeyCreate,
-    ApiKeyStatus,
-    ApiKeyValidationRequest,
-    ApiKeyStatusFilter,
     TokenResponse,
     Role,
     RefreshToken,
     Policy,
 )
-from .apikey_storage import AbstractApiKeyStorage
-from .postgres_apikey_storage import PostgresApiKeyStorage
+from .iam_storage import AbstractIamStorage
+from .postgres_iam_storage import PostgresIamStorage
 from .interfaces import IdentityProviderProtocol, AuthorizationStorageProtocol
 from .policies import PolicyService
 from .exceptions import (
     PrincipalNotFoundError,
-    ApiKeyNotFoundError,
-    ApiKeyInvalidError,
-    ApiKeyExpiredError,
     RateLimitExceededError,
     QuotaExceededError,
-    ApiKeyError,
+    IamError,
 )
 
 from dynastore.modules.db_config.tools import managed_transaction
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import (
-    ApiKeyProtocol,
+    IamProtocol,
     PropertiesProtocol,
     DatabaseProtocol,
     CatalogsProtocol,
@@ -69,7 +59,7 @@ from dynastore.models.protocols.policies import PermissionProtocol
 logger = logging.getLogger(__name__)
 
 
-class ApiKeyService(ApiKeyProtocol):
+class IamService(IamProtocol):
     """
     Business Logic Layer for IAG v2.0.
     Handles the Identity -> Context -> Principal resolution and API Key management.
@@ -79,41 +69,30 @@ class ApiKeyService(ApiKeyProtocol):
 
     def __init__(
         self,
-        storage: Optional[AbstractApiKeyStorage] = None,
+        storage: Optional[AbstractIamStorage] = None,
         policy_service: Optional[object] = None,
         app_state: Optional[object] = None,
     ):
-        from cachetools import LRUCache
-        from dynastore.tools.async_utils import KeyValueAggregator
-
-        # In V2, we prefer PostgresApiKeyStorage which implements both interfaces
-        self.storage: Union[AbstractApiKeyStorage, AuthorizationStorageProtocol] = (
-            storage or PostgresApiKeyStorage(app_state=app_state)
+        # In V2, we prefer PostgresIamStorage which implements both interfaces
+        self.storage: Union[AbstractIamStorage, AuthorizationStorageProtocol] = (
+            storage or PostgresIamStorage(app_state=app_state)
         )
         self.policy_service = policy_service
         self.app_state = app_state
-        self.usage_cache = LRUCache(maxsize=1024)
-
-        self._usage_aggregator = KeyValueAggregator(
-            flush_callback=self._flush_usage_increments,
-            threshold=int(os.environ.get("USAGE_BUFFER_THRESHOLD", 100)),
-            interval=float(os.environ.get("USAGE_BUFFER_INTERVAL", 5.0)),
-            name="api_usage",
-        )
         self._jwt_secret: Optional[str] = None
 
     async def get_jwt_secret(self) -> str:
         """Retrieves or generates the active JWT secret."""
         props = get_protocol(PropertiesProtocol)
         if props:
-            secret = await props.get_property("apikey_jwt_secret")
+            secret = await props.get_property("iam_jwt_secret")
             if secret:
                 self._jwt_secret = secret
                 return secret
 
         secret = os.environ.get("JWT_SECRET", secrets.token_urlsafe(32))
         if props:
-            await props.set_property("apikey_jwt_secret", secret, "apikey_extension")
+            await props.set_property("iam_jwt_secret", secret, "iam_extension")
         else:
             logger.warning("PropertiesProtocol not available. Cannot persist new JWT secret.")
 
@@ -127,7 +106,7 @@ class ApiKeyService(ApiKeyProtocol):
         current = await self.get_jwt_secret()
         result.append(current)
         if props:
-            prev = await props.get_property("apikey_jwt_secret_prev")
+            prev = await props.get_property("iam_jwt_secret_prev")
             if prev:
                 result.append(prev)
         return result
@@ -139,8 +118,8 @@ class ApiKeyService(ApiKeyProtocol):
             raise RuntimeError("PropertiesProtocol required for secret rotation.")
         current = await self.get_jwt_secret()
         new_secret = secrets.token_urlsafe(32)
-        await props.set_property("apikey_jwt_secret_prev", current, "apikey_extension")
-        await props.set_property("apikey_jwt_secret", new_secret, "apikey_extension")
+        await props.set_property("iam_jwt_secret_prev", current, "iam_extension")
+        await props.set_property("iam_jwt_secret", new_secret, "iam_extension")
         self._jwt_secret = new_secret
         logger.info("JWT secret rotated successfully.")
         return new_secret
@@ -151,7 +130,7 @@ class ApiKeyService(ApiKeyProtocol):
         # But we could return a placeholder or information about the issuer.
         return {
             "keys": [],
-            "info": "DynaStore Uses HS256 for internal tokens. Use /apikey/auth/validate for verification.",
+            "info": "DynaStore Uses HS256 for internal tokens. Use /iam/auth/validate for verification.",
         }
 
     async def resolve_schema(
@@ -160,17 +139,17 @@ class ApiKeyService(ApiKeyProtocol):
         """
         Determines the database schema.
         If catalog_id is provided, resolves the physical tenant schema.
-        Otherwise, defaults to the global 'apikey' schema.
+        Otherwise, defaults to the global 'iam' schema.
         """
         if not catalog_id or catalog_id == "_system_":
-            return "apikey"
+            return "iam"
 
         catalogs = get_protocol(CatalogsProtocol)
         if not catalogs:
             logger.warning(
-                f"CatalogsProtocol not available for schema resolution of '{catalog_id}'. Falling back to 'apikey'."
+                f"CatalogsProtocol not available for schema resolution of '{catalog_id}'. Falling back to 'iam'."
             )
-            return "apikey"
+            return "iam"
 
         # We use the CatalogsProtocol to resolve the schema.
         # It handles caching and physical schema lookup.
@@ -182,10 +161,10 @@ class ApiKeyService(ApiKeyProtocol):
                 return res
         except Exception as e:
             logger.warning(
-                f"Error resolving schema for '{catalog_id}': {e}. Falling back to 'apikey'."
+                f"Error resolving schema for '{catalog_id}': {e}. Falling back to 'iam'."
             )
 
-        return "apikey"
+        return "iam"
 
     # Internal alias used by extensions and multi_catalog_helpers
     _resolve_schema = resolve_schema
@@ -237,7 +216,7 @@ class ApiKeyService(ApiKeyProtocol):
 
         # 1. Get global roles from catalog schema
         global_roles = await self.storage.get_identity_roles(
-            provider=provider, subject_id=subject_id, schema="apikey", conn=conn
+            provider=provider, subject_id=subject_id, schema="iam", conn=conn
         )
 
         # 2. Get catalog-specific roles
@@ -254,7 +233,7 @@ class ApiKeyService(ApiKeyProtocol):
 
         if not auth_metadata:
             auth_metadata = await self.storage.get_identity_authorization(
-                provider=provider, subject_id=subject_id, schema="apikey", conn=conn
+                provider=provider, subject_id=subject_id, schema="iam", conn=conn
             )
 
         # 4. If no roles and no metadata, user has no access
@@ -266,7 +245,7 @@ class ApiKeyService(ApiKeyProtocol):
 
         # 6. Get custom policies (optional)
         global_policies = await self.storage.get_identity_policies(
-            provider=provider, subject_id=subject_id, schema="apikey", conn=conn
+            provider=provider, subject_id=subject_id, schema="iam", conn=conn
         )
         catalog_policies = await self.storage.get_identity_policies(
             provider=provider, subject_id=subject_id, schema=catalog_schema, conn=conn
@@ -288,51 +267,8 @@ class ApiKeyService(ApiKeyProtocol):
 
     @asynccontextmanager
     async def lifespan(self, app_state: Any) -> AsyncGenerator[None, None]:
-        """Manages the lifecycle of background tasks and buffers."""
-        await self._usage_aggregator.start()
-        try:
-            yield
-        finally:
-            await self._usage_aggregator.stop()
-
-    async def flush(self):
-        """Manually triggers and awaits a flush of the usage buffer."""
-        await self._usage_aggregator._trigger_flush(wait=True)
-
-    # --- Usage & Aggregation ---
-
-    async def increment_usage(
-        self,
-        key_hash: str,
-        period_start: datetime,
-        catalog_id: Optional[str] = None,
-        amount: int = 1,
-        schema: Optional[str] = None,
-    ) -> None:
-        """
-        Increments usage/quota in a buffered/aggregated way.
-        """
-        target_schema = schema or await self._resolve_schema(catalog_id)
-        # We group by (schema, key_hash, period_start)
-        aggregation_key = (target_schema, key_hash, period_start)
-        await self._usage_aggregator.add_increment(aggregation_key, amount)
-
-    async def _flush_usage_increments(
-        self, batches: List[Tuple[Tuple[str, str, datetime], int]]
-    ):
-        """Callback for the usage aggregator to perform batch writes."""
-        for (schema, key_hash, period_start), amount in batches:
-            try:
-                await self.storage.increment_usage(
-                    key_hash=key_hash,
-                    period_start=period_start,
-                    amount=amount,
-                    schema=schema,
-                )
-            except Exception as e:
-                logger.error(
-                    f"Failed to flush usage increment for {key_hash[:8]} in {schema}: {e}"
-                )
+        """Manages the lifecycle of the service."""
+        yield
 
     # --- IAG V2: Core Identity Logic ---
 
@@ -540,460 +476,6 @@ class ApiKeyService(ApiKeyProtocol):
             identifier=identifier, role=role, limit=limit, offset=offset, schema=schema
         )
 
-    # --- API Key Management ---
-
-    async def create_key(
-        self, key_data: Any, catalog_id: Optional[str] = None
-    ) -> Any:
-        """Alias for create_api_key for protocol compliance."""
-        return await self.create_api_key(key_data, catalog_id=catalog_id)
-
-    async def create_api_key(
-        self, key_data: ApiKeyCreate, catalog_id: Optional[str] = None
-    ) -> Tuple[ApiKey, str]:
-        schema = await self._resolve_schema(catalog_id)
-
-        if key_data.max_usage is not None:
-            if key_data.conditions is None:
-                key_data.conditions = []
-
-            # Check if a max_count condition already exists to avoid duplicates
-            if not any(c.type == "max_count" for c in key_data.conditions):
-                from .models import Condition
-
-                max_count_condition = Condition(
-                    type="max_count",
-                    config={"max_count": key_data.max_usage, "scope": "apikey"},
-                )
-                key_data.conditions.append(max_count_condition)
-
-            # We've converted it, so don't store it in the legacy field.
-            key_data.max_usage = None
-
-        return await self.storage.create_api_key(key_data, schema=schema)
-
-
-    async def get_system_admin_key(self) -> str:
-        # Check if sysadmin key is stored in DB
-        props = get_protocol(PropertiesProtocol)
-        if props:
-            try:
-                stored_key = await props.get_property("sysadmin_key")
-                if stored_key:
-                    return stored_key
-            except Exception:
-                pass
-
-        # Fallback to env var
-        return os.getenv("DYNASTORE_SYSTEM_ADMIN_KEY", "test_sysadmin_key")
-
-    async def delete_api_key(
-        self, key_hash: str, catalog_id: Optional[str] = None
-    ) -> bool:
-        schema = await self._resolve_schema(catalog_id)
-        return await self.storage.delete_api_key(key_hash, schema=schema)
-
-    async def get_key_metadata(
-        self, key_hash: str, catalog_id: Optional[str] = None
-    ) -> Optional[ApiKey]:
-        schema = await self._resolve_schema(catalog_id)
-        return await self.storage.get_key_metadata(key_hash, schema=schema)
-
-    async def list_keys_for_principal(
-        self, principal_id: UUID, catalog_id: Optional[str] = None
-    ) -> List[ApiKey]:
-        schema = await self._resolve_schema(catalog_id)
-        return await self.storage.list_keys_for_principal(principal_id, schema=schema)
-
-    async def search_keys(
-        self,
-        principal_id: Optional[UUID] = None,
-        status_filter: ApiKeyStatusFilter = ApiKeyStatusFilter.ALL,
-        limit: int = 100,
-        offset: int = 0,
-        catalog_id: Optional[str] = None,
-    ) -> List[ApiKey]:
-        schema = await self._resolve_schema(catalog_id)
-        return await self.storage.search_keys(
-            principal_id=principal_id,
-            status_filter=status_filter,
-            limit=limit,
-            offset=offset,
-            schema=schema,
-        )
-
-    async def invalidate_api_key(
-        self, key_hash: str, catalog_id: Optional[str] = None
-    ) -> bool:
-        schema = await self._resolve_schema(catalog_id)
-        return await self.storage.invalidate_api_key(key_hash, schema=schema)
-
-    async def invalidate_key(
-        self, key_hash: str, catalog_id: Optional[str] = None
-    ) -> bool:
-        """Alias for invalidate_api_key for protocol compliance."""
-        return await self.invalidate_api_key(key_hash, catalog_id=catalog_id)
-
-    async def regenerate_api_key(
-        self, key_hash: str, catalog_id: Optional[str] = None
-    ) -> Tuple[Optional[ApiKey], Optional[str]]:
-        schema = await self._resolve_schema(catalog_id)
-        return await self.storage.regenerate_api_key(key_hash, schema=schema)
-
-    # --- Authentication & Validation (Legacy + Hybrid) ---
-
-    async def authenticate_apikey(
-        self,
-        api_key: str,
-        catalog_id: Optional[str] = None,
-        origin: Optional[str] = None,
-    ) -> Tuple[Principal, ApiKey, Optional[str]]:
-        """
-        Authenticates an API Key and returns (Principal, Metadata, ErrorReason).
-        """
-        schema = await self._resolve_schema(catalog_id)
-        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
-        principal_schema = schema
-
-        # 1. Fetch Key Metadata
-        # Try catalog-specific schema first, then fall back to global 'apikey' schema
-        metadata = await self.storage.get_key_metadata(key_hash, schema=schema)
-        if not metadata:
-            if schema != "apikey":
-                metadata = await self.storage.get_key_metadata(
-                    key_hash, schema="apikey"
-                )
-                if metadata:
-                    principal_schema = (
-                        "apikey"  # The principal is in the same schema as the key
-                    )
-            if not metadata:
-                return None, None, "Key not found."
-
-        # 2. Check Expiry/Status
-        if not metadata.is_active:
-            return None, metadata, "Key is revoked."
-
-        if metadata.expires_at and metadata.expires_at < datetime.now(timezone.utc):
-            return None, metadata, "Key expired."
-
-        # 3. Check Scope (Catalog)
-        if metadata.catalog_match and catalog_id:
-            if not re.match(metadata.catalog_match, catalog_id):
-                return (
-                    None,
-                    metadata,
-                    f"Catalog scope violation: requested {catalog_id}, allowed {metadata.catalog_match}",
-                )
-
-        # 4. Check Domains
-        if metadata.allowed_domains and origin:
-            if origin not in metadata.allowed_domains:
-                return (
-                    None,
-                    metadata,
-                    f"Domain violation: origin {origin} not in allowed list",
-                )
-
-        # 6. Check Conditions
-        if metadata.conditions:
-            from .conditions import EvaluationContext, evaluate_conditions
-
-            ctx = EvaluationContext(
-                request=None,
-                storage=self.storage,
-                usage_cache=self.usage_cache,
-                manager=self,
-                api_key_hash=key_hash,
-                principal_id=str(metadata.principal_id),
-                path=origin or "",  # fallback path
-                method="API",  # fallback method
-                schema=schema,
-                catalog_id=catalog_id,
-            )
-            try:
-                if not await evaluate_conditions(metadata.conditions, ctx):
-                    return None, metadata, "Key conditions violation"
-            except ApiKeyError as e:
-                return None, metadata, str(e)
-
-        # 7. Check Policy
-        if metadata.policy:
-            # We need a context for policy conditions as well
-            from .conditions import EvaluationContext
-
-            ctx = EvaluationContext(
-                request=None,
-                storage=self.storage,
-                usage_cache=self.usage_cache,
-                manager=self,
-                api_key_hash=key_hash,
-                principal_id=str(metadata.principal_id),
-                path=origin or "",
-                method="API",
-                schema=schema,
-            )
-            is_allowed = await self.policy_service.evaluate_policy_statements(
-                metadata.policy, method="API", path=origin or "", request_context=ctx
-            )
-            if not is_allowed:
-                return None, metadata, "Access denied by Key Policy"
-
-        # 8. Fetch Principal
-        principal = await self.storage.get_principal(
-            metadata.principal_id, schema=principal_schema
-        )
-        return principal, metadata, None
-
-    async def validate_key(
-        self,
-        validation_req: ApiKeyValidationRequest,
-        catalog_id: Optional[str] = None,
-        origin: Optional[str] = None,
-    ) -> ApiKeyStatus:
-        """
-        Validates an API Key string without fetching the principal.
-        """
-        _, metadata, reason = await self.authenticate_apikey(
-            validation_req.api_key, catalog_id=catalog_id, origin=origin
-        )
-        if not metadata:
-            return ApiKeyStatus(is_valid=False, status=reason or "Key not found.")
-
-        if reason:
-            return ApiKeyStatus(is_valid=False, status=reason)
-
-        return ApiKeyStatus(
-            is_valid=True,
-            status="Active",
-            expires_at=metadata.expires_at,
-            principal_id=metadata.principal_id,
-        )
-
-    async def exchange_token(
-        self,
-        api_key_hash: str,
-        ttl_seconds: int = 3600,
-        scoped_policy: Optional[Policy] = None,
-        catalog_id: Optional[str] = None,
-    ) -> TokenResponse:
-        """
-        Exchanges a valid API Key for a short-lived Bearer Token.
-        """
-        schema = await self._resolve_schema(catalog_id)
-
-        # 1. Verify Key
-        key_metadata = await self.storage.get_key_metadata(api_key_hash, schema=schema)
-        if not key_metadata or not key_metadata.is_active:
-            raise ApiKeyInvalidError("Invalid or revoked API Key.")
-
-        if key_metadata.expires_at and key_metadata.expires_at < datetime.now(
-            timezone.utc
-        ):
-            raise ApiKeyExpiredError("API Key has expired.")
-
-        # 2. Extract Effective Policy
-        # Use provided scoped policy or fallback to key's default policy
-        # If scoped_policy is provided, it should be a subset of key's permissions.
-        # This check is currently omitted but should be implemented in production.
-
-        # 3. Generate JWT
-        principal = await self.get_principal(
-            key_metadata.principal_id, catalog_id=catalog_id
-        )
-        if not principal:
-            raise ApiKeyInvalidError("Principal associated with key no longer exists.")
-
-        now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(seconds=ttl_seconds)
-        token_id = secrets.token_hex(16)
-
-        payload = {
-            "sub": principal.subject_id,
-            "prv": principal.provider,
-            "pid": str(principal.id),
-            "kid": api_key_hash,
-            "jti": token_id,
-            "scope": "api_access",
-            "iat": now,
-            "exp": expires_at,
-            "token_type": "access",
-        }
-
-        if scoped_policy:
-            payload["dpol"] = scoped_policy.model_dump()
-
-        secret = await self.get_jwt_secret()
-        token = jwt.encode(payload, secret, algorithm="HS256")
-
-        # 4. Generate Refresh Token (with family_id for rotation tracking)
-        refresh_token_val = secrets.token_urlsafe(64)
-        family_id = secrets.token_urlsafe(32)
-        rt_model = RefreshToken(
-            id=refresh_token_val,
-            key_hash=api_key_hash,
-            principal_id=key_metadata.principal_id,
-            api_key_hash=api_key_hash,
-            family_id=family_id,
-            expires_at=now + timedelta(days=7),
-        )
-        await self.storage.create_refresh_token(rt_model, schema=schema)
-
-        return TokenResponse(
-            access_token=token,
-            token_type="Bearer",
-            expires_in=ttl_seconds,
-            expires_at=expires_at,
-            principal_id=key_metadata.principal_id,
-            refresh_token=refresh_token_val,
-        )
-
-    async def refresh_token_exchange(
-        self,
-        refresh_token: str,
-        ttl_seconds: int = 3600,
-        catalog_id: Optional[str] = None,
-    ) -> TokenResponse:
-        """Refreshes an access token using a refresh token with rotation."""
-        schema = await self._resolve_schema(catalog_id)
-
-        rt = await self.storage.get_refresh_token(refresh_token, schema=schema)
-        if not rt:
-            raise ApiKeyInvalidError("Invalid refresh token.")
-
-        if not rt.is_active:
-            # Reuse detected — invalidate the entire token family
-            if rt.family_id:
-                revoked = await self.storage.invalidate_token_family(
-                    rt.family_id, schema=schema
-                )
-                logger.warning(
-                    "Refresh token reuse detected (family %s), revoked %d tokens",
-                    rt.family_id, revoked,
-                )
-            raise ApiKeyInvalidError(
-                "Refresh token has been revoked (possible token reuse)."
-            )
-
-        if rt.expires_at < datetime.now(timezone.utc):
-            raise ApiKeyExpiredError("Refresh token has expired.")
-
-        # Invalidate current refresh token
-        await self.storage.invalidate_refresh_token(refresh_token, schema=schema)
-
-        # Issue new access token (JWT)
-        now = datetime.now(timezone.utc)
-        principal = await self.get_principal(rt.principal_id, catalog_id=catalog_id)
-        secret = await self.get_jwt_secret()
-        access_token = jwt.encode(
-            {
-                "sub": f"{principal.provider}:{principal.subject_id}" if principal else str(rt.principal_id),
-                "pid": str(rt.principal_id),
-                "kid": rt.key_hash,
-                "iat": int(now.timestamp()),
-                "exp": int((now + timedelta(seconds=ttl_seconds)).timestamp()),
-                "token_type": "access",
-            },
-            secret,
-            algorithm="HS256",
-        )
-
-        # Issue rotated refresh token in the same family
-        new_refresh_val = secrets.token_urlsafe(64)
-        new_rt = RefreshToken(
-            id=new_refresh_val,
-            key_hash=rt.key_hash,
-            principal_id=rt.principal_id,
-            api_key_hash=rt.api_key_hash,
-            family_id=rt.family_id or secrets.token_urlsafe(32),
-            expires_at=rt.expires_at,  # keep original family expiry
-        )
-        await self.storage.create_refresh_token(new_rt, schema=schema)
-
-        return TokenResponse(
-            access_token=access_token,
-            token_type="Bearer",
-            expires_in=ttl_seconds,
-            expires_at=now + timedelta(seconds=ttl_seconds),
-            principal_id=rt.principal_id,
-            refresh_token=new_refresh_val,
-        )
-
-    async def increment_key_usage(
-        self, api_key: str, amount: int = 1, catalog_id: Optional[str] = None
-    ):
-        """
-        Increments the total usage count for an API Key.
-        This is a helper for testing and direct usage, it increments the global quota counter.
-        Matches the key generation logic of MaxCountHandler (quota:apikey:<hash>).
-        """
-        schema = await self._resolve_schema(catalog_id)
-        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
-        # Align with MaxCountHandler default scope='apikey'
-        tracking_key = f"quota:apikey:{key_hash}"
-        period_start = datetime(1970, 1, 1, tzinfo=timezone.utc)
-        await self.increment_usage(
-            tracking_key,
-            period_start,
-            catalog_id=catalog_id,
-            amount=amount,
-            schema=schema,
-        )
-
-    async def check_rate_limit(
-        self, key_hash: str, policy: dict, catalog_id: Optional[str] = None
-    ):
-        """
-        Enforces rate limits defined in policy.
-        """
-        schema = await self._resolve_schema(catalog_id)
-        rate_limit = policy.get("rate_limit")
-        if not rate_limit:
-            return
-
-        requests = rate_limit.get("requests")
-        window = rate_limit.get("window")
-
-        if not requests or not window:
-            return
-
-        # Calculate window start
-        now = datetime.now(timezone.utc)
-        if window == "minute":
-            period_start = now.replace(second=0, microsecond=0)
-        elif window == "hour":
-            period_start = now.replace(minute=0, second=0, microsecond=0)
-        elif window == "day":
-            period_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        else:
-            return
-
-        current_usage = await self.storage.get_usage(
-            key_hash, period_start, schema=schema
-        )
-        if current_usage >= requests:
-            raise RateLimitExceededError(
-                f"Rate limit exceeded: {requests} requests per {window}."
-            )
-
-        # Async increment
-        await self.storage.increment_usage(key_hash, period_start, schema=schema)
-
-    async def get_usage_status(
-        self,
-        principal: Principal,
-        key_hash: Optional[str] = None,
-        catalog_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Returns usage and quota information."""
-        schema = await self._resolve_schema(catalog_id)
-        # Placeholder for complex stats
-        return {
-            "principal": principal.display_name,
-            "total_keys": 1,
-            "active_sessions": 0,
-        }
-
     # --- Role & Hierarchy Management ---
 
     async def create_role(self, role: Role, catalog_id: Optional[str] = None) -> Role:
@@ -1147,19 +629,7 @@ class ApiKeyService(ApiKeyProtocol):
         catalog_id = getattr(getattr(request, "state", {}), "catalog_id", None)
         schema = await self._resolve_schema(catalog_id)
 
-        # 1. Check for system key (Machine/Internal bypass)
-        system_key = await self.get_system_admin_key()
-        if token == system_key:
-            # System Admin is a virtual principal with ID 0
-            return ["sysadmin"], Principal(
-                id=UUID(int=0),
-                provider="system",
-                subject_id="admin",
-                display_name="system:admin",
-                roles=["sysadmin"],
-            )
-
-        # 2. Try V2 Identity Resolution (OAuth2 / OIDC)
+        # Authenticate via registered Identity Providers (OAuth2 / OIDC)
         identity_providers = self.get_identity_providers()
         logger.debug("Checking %d identity providers", len(identity_providers))
         for provider in identity_providers:
@@ -1193,24 +663,5 @@ class ApiKeyService(ApiKeyProtocol):
                     exc_info=True,
                 )
 
-        # 3. Authenticate as regular Principal (API Key)
-        principal, api_key_meta, reason = await self.authenticate_apikey(
-            token, catalog_id=catalog_id
-        )
-
-        # Cache metadata on request.state so middleware doesn't re-authenticate
-        if hasattr(request, "state"):
-            request.state._auth_api_key_metadata = api_key_meta
-
-        if principal:
-            # 3. Resolve Effective Roles (Hierarchy)
-            roles = list(principal.roles or [])
-            if not roles:
-                roles = ["user"]  # Default role if none assigned
-
-            effective_roles = await self.storage.get_role_hierarchy(
-                roles, schema=schema
-            )
-            return [r for r in effective_roles if r], principal
-
+        # No valid identity found
         return ["anonymous"], None

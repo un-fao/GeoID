@@ -16,10 +16,10 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-# File: dynastore/modules/apikey/models.py
+# File: dynastore/modules/iam/models.py
 
 """
-Backward compatibility re-exports for apikey models.
+Backward compatibility re-exports for IAM models.
 
 All models have been moved to dynastore.models.auth_models for better
 separation of concerns. This file provides backward-compatible imports.
@@ -28,17 +28,12 @@ separation of concerns. This file provides backward-compatible imports.
 # Re-export models from dynastore.models.auth_models for backward compatibility
 from dynastore.models.auth_models import (
     SYSTEM_USER_ID,
-    ApiKeyPolicy,
+    PolicyBundle,
     Role,
     IdentityAuthorization,
     IdentityLink,
     TokenExchangeRequest,
     TokenResponse,
-    ApiKey,
-    ApiKeyCreate,
-    ApiKeyStatus,
-    ApiKeyValidationRequest,
-    ApiKeyStatusFilter,
     RefreshToken,
 )
 
@@ -56,13 +51,7 @@ __all__ = [
     "Role",
     "IdentityAuthorization",
     "IdentityLink",
-    # API Key models
-    "ApiKey",
-    "ApiKeyCreate",
-    "ApiKeyStatus",
-    "ApiKeyValidationRequest",
-    "ApiKeyStatusFilter",
-    "ApiKeyPolicy",
+    "PolicyBundle",
     # Token models
     "RefreshToken",
     "TokenExchangeRequest",

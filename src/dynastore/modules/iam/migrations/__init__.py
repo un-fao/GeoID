@@ -1,2 +1,2 @@
-# ApiKey module migrations package.
-# Registered by dynastore.modules.apikey.__init__
+# IAM module migrations package.
+# Registered by dynastore.modules.iam.__init__

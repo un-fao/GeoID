@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-# File: dynastore/modules/apikey/policy_storage.py
+# File: dynastore/modules/iam/policy_storage.py
 
 import abc
 from typing import Optional, List, Any
@@ -31,48 +31,48 @@ class AbstractPolicyStorage(abc.ABC):
     # No initialize() or shutdown() - use lifespan() if needed.
     
     @abc.abstractmethod
-    async def create_policy(self, policy: Policy, conn: Optional[Any] = None, schema: str = "apikey") -> Policy:
+    async def create_policy(self, policy: Policy, conn: Optional[Any] = None, schema: str = "iam") -> Policy:
         """
         Persist a new access policy.
         """
         ...
 
     @abc.abstractmethod
-    async def get_policy(self, policy_id: str, conn: Optional[Any] = None, schema: str = "apikey") -> Optional[Policy]:
+    async def get_policy(self, policy_id: str, conn: Optional[Any] = None, schema: str = "iam") -> Optional[Policy]:
         """
         Retrieve a single policy by ID.
         """
         ...
 
     @abc.abstractmethod
-    async def update_policy(self, policy: Policy, conn: Optional[Any] = None, schema: str = "apikey") -> Optional[Policy]:
+    async def update_policy(self, policy: Policy, conn: Optional[Any] = None, schema: str = "iam") -> Optional[Policy]:
         """
         Update an existing policy. Returns the updated policy or None if not found.
         """
         ...
 
     @abc.abstractmethod
-    async def delete_policy(self, policy_id: str, conn: Optional[Any] = None, schema: str = "apikey") -> bool:
+    async def delete_policy(self, policy_id: str, conn: Optional[Any] = None, schema: str = "iam") -> bool:
         """
         Delete a policy by ID. Returns True if deleted, False if not found.
         """
         ...
 
     @abc.abstractmethod
-    async def list_policies(self, partition_key: Optional[str] = None, limit: int = 100, offset: int = 0, conn: Optional[Any] = None, schema: str = "apikey") -> List[Policy]:
+    async def list_policies(self, partition_key: Optional[str] = None, limit: int = 100, offset: int = 0, conn: Optional[Any] = None, schema: str = "iam") -> List[Policy]:
         """
         List policies, optionally filtering by the partition key.
         """
         ...
 
     @abc.abstractmethod
-    async def search_policies(self, resource_pattern: Optional[str] = None, action_pattern: Optional[str] = None, limit: int = 100, offset: int = 0, conn: Optional[Any] = None, schema: str = "apikey") -> List[Policy]:
+    async def search_policies(self, resource_pattern: Optional[str] = None, action_pattern: Optional[str] = None, limit: int = 100, offset: int = 0, conn: Optional[Any] = None, schema: str = "iam") -> List[Policy]:
         """
         Search policies by partial patterns.
         """
         ...
 
     @abc.abstractmethod
-    async def ensure_policy_partition(self, conn: Any, partition_key: str, schema: str = "apikey"):
+    async def ensure_policy_partition(self, conn: Any, partition_key: str, schema: str = "iam"):
         """Ensures a partition exists for the given key."""
         ...

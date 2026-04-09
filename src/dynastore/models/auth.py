@@ -146,7 +146,7 @@ class Principal(BaseModel):
     """
     Runtime Authorization Object (Platform Level).
     Represents the effective permissions of an identity within a specific context.
-    MOVED from dynastore.modules.apikey.models to here for decoupling.
+    MOVED from dynastore.modules.iam.models to here for decoupling.
     """
     id: Optional[Union[UUID, str]] = None
     provider: Optional[str] = "local"

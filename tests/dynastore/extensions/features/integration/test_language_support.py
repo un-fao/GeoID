@@ -26,9 +26,9 @@ import pytest
 from tests.dynastore.test_utils import generate_test_id
 
 
-@pytest.mark.enable_modules("db_config", "db", "catalog", "stats", "apikey")
+@pytest.mark.enable_modules("db_config", "db", "catalog", "stats", "iam")
 @pytest.mark.enable_extensions(
-    "stac", "assets", "features", "configs", "logs", "apikey"
+    "stac", "assets", "features", "configs", "logs", "iam"
 )
 @pytest.mark.asyncio
 @pytest.mark.xdist_group(name="serial")

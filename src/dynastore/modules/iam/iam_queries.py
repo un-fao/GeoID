@@ -20,11 +20,9 @@ from typing import Optional
 from uuid import UUID
 
 from dynastore.modules.db_config.query_executor import DDLQuery, DDLBatch, DQLQuery, ResultHandler
-from .models import Principal, ApiKey, Role, RefreshToken, IdentityLink, Policy
+from .models import Principal, Role, RefreshToken, IdentityLink, Policy
 
-USAGE_SHARD_COUNT = 16
-
-# --- Queries (V2 + V1 Merged) ---
+# --- Queries (IAM Tables) ---
 
 # V2: Principals (Enhanced)
 CREATE_PRINCIPALS_TABLE = DDLQuery("""
@@ -56,51 +54,6 @@ CREATE_IDENTITY_LINKS_TABLE = DDLQuery("""
         last_login TIMESTAMPTZ,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         PRIMARY KEY (provider, subject_id)
-    );
-""")
-
-# V1: API Keys (Key Auth Credential)
-CREATE_API_KEYS_TABLE = DDLQuery("""
-    CREATE TABLE IF NOT EXISTS {schema}.api_keys (
-        key_hash VARCHAR(64) NOT NULL,
-        key_prefix VARCHAR(10) NOT NULL,
-        principal_id UUID NOT NULL REFERENCES {schema}.principals(id) ON DELETE CASCADE,
-        name VARCHAR(255),
-        note TEXT,
-        allowed_domains JSONB DEFAULT '[]'::jsonb,
-        max_usage BIGINT,
-        total_usage BIGINT DEFAULT 0,
-        referer_match TEXT,
-        catalog_match TEXT,
-        collection_match TEXT,
-        is_active BOOLEAN DEFAULT TRUE,
-        expires_at TIMESTAMPTZ,
-        policy JSONB,
-        conditions JSONB,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        PRIMARY KEY (key_hash, principal_id)
-    );
-""")
-
-# V1: Usage Counters
-CREATE_USAGE_COUNTERS_TABLE = DDLQuery("""
-    CREATE TABLE IF NOT EXISTS {schema}.usage_counters (
-        key_hash VARCHAR(128) NOT NULL,
-        period_start TIMESTAMPTZ NOT NULL,
-        shard_id INTEGER NOT NULL DEFAULT 0,
-        count BIGINT DEFAULT 0,
-        last_accessed_at TIMESTAMPTZ DEFAULT NOW(),
-        PRIMARY KEY (period_start, key_hash, shard_id)
-    ) PARTITION BY RANGE (period_start);
-""")
-
-CREATE_QUOTA_COUNTERS_TABLE = DDLQuery("""
-    CREATE TABLE IF NOT EXISTS {schema}.quota_counters (
-        key_hash VARCHAR(128) NOT NULL,
-        shard_id INTEGER NOT NULL DEFAULT 0,
-        count BIGINT DEFAULT 0,
-        last_accessed_at TIMESTAMPTZ DEFAULT NOW(),
-        PRIMARY KEY (key_hash, shard_id)
     );
 """)
 
@@ -150,7 +103,6 @@ CREATE_REFRESH_TOKENS_TABLE = DDLQuery("""
         id VARCHAR(128) PRIMARY KEY,
         key_hash VARCHAR(64) NOT NULL,
         principal_id UUID NOT NULL REFERENCES {schema}.principals(id) ON DELETE CASCADE,
-        api_key_hash VARCHAR(64),
         family_id VARCHAR(128),
         is_active BOOLEAN DEFAULT TRUE,
         expires_at TIMESTAMPTZ NOT NULL,
@@ -273,34 +225,6 @@ INSERT_IDENTITY_LINK = DQLQuery(
     result_handler=ResultHandler.ROWCOUNT,
 )
 
-INSERT_API_KEY = DQLQuery(
-    """
-    INSERT INTO {schema}.api_keys (
-        key_hash, key_prefix, principal_id, name, note, expires_at, policy, conditions,
-        max_usage, allowed_domains, referer_match, catalog_match, collection_match
-    )
-    VALUES (
-        :key_hash, :key_prefix, :principal_id, :name, :note, :expires_at, :policy, :conditions,
-        :max_usage, :allowed_domains, :referer_match, :catalog_match, :collection_match
-    )
-    RETURNING *;
-    """,
-    result_handler=ResultHandler.ONE_DICT,
-    post_processor=lambda row: ApiKey(**row) if row else None,
-)
-
-GET_KEY_METADATA = DQLQuery(
-    "SELECT * FROM {schema}.api_keys WHERE key_hash = :key_hash;",
-    result_handler=ResultHandler.ONE_DICT,
-    post_processor=lambda row: ApiKey(**row) if row else None,
-)
-
-LIST_KEYS_BY_PRINCIPAL = DQLQuery(
-    "SELECT * FROM {schema}.api_keys WHERE principal_id = :principal_id;",
-    result_handler=ResultHandler.ALL_DICTS,
-    post_processor=lambda rows: [ApiKey(**row) for row in rows],
-)
-
 LIST_PRINCIPALS = DQLQuery(
     """SELECT p.*, l.provider, l.subject_id
     FROM {schema}.principals p
@@ -315,77 +239,7 @@ DELETE_PRINCIPAL = DQLQuery(
     result_handler=ResultHandler.ROWCOUNT,
 )
 
-DELETE_KEY = DQLQuery(
-    "DELETE FROM {schema}.api_keys WHERE key_hash = :key_hash;",
-    result_handler=ResultHandler.ROWCOUNT,
-)
 
-INVALIDATE_KEY = DQLQuery(
-    "UPDATE {schema}.api_keys SET is_active = FALSE WHERE key_hash = :key_hash RETURNING is_active;",
-    result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
-)
-
-# --- Usage (Rate Limit) Queries ---
-INCREMENT_USAGE = DQLQuery(
-    """
-    INSERT INTO {schema}.usage_counters (key_hash, period_start, shard_id, count, last_accessed_at)
-    VALUES (:key_hash, :period_start, :shard_id, :amount, :last_access)
-    ON CONFLICT (period_start, key_hash, shard_id)
-    DO UPDATE SET
-        count = {schema}.usage_counters.count + :amount,
-        last_accessed_at = GREATEST({schema}.usage_counters.last_accessed_at, EXCLUDED.last_accessed_at);
-    """,
-    result_handler=ResultHandler.ROWCOUNT,
-)
-
-CHECK_USAGE = DQLQuery(
-    "SELECT SUM(count) FROM {schema}.usage_counters WHERE key_hash = :key_hash AND period_start = :period_start;",
-    result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
-)
-
-MIGRATE_USAGE = DQLQuery(
-    "UPDATE {schema}.usage_counters SET key_hash = :new_hash WHERE key_hash = :old_hash;",
-    result_handler=ResultHandler.ROWCOUNT,
-)
-
-INCREMENT_QUOTA = DQLQuery(
-    """
-    INSERT INTO {schema}.quota_counters (key_hash, shard_id, count, last_accessed_at)
-    VALUES (:key_hash, :shard_id, :amount, :last_access)
-    ON CONFLICT (key_hash, shard_id)
-    DO UPDATE SET
-        count = {schema}.quota_counters.count + :amount,
-        last_accessed_at = GREATEST({schema}.quota_counters.last_accessed_at, EXCLUDED.last_accessed_at);
-    """,
-    result_handler=ResultHandler.ROWCOUNT,
-)
-
-CHECK_QUOTA = DQLQuery(
-    "SELECT SUM(count) FROM {schema}.quota_counters WHERE key_hash = :key_hash;",
-    result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
-)
-
-MIGRATE_QUOTA = DQLQuery(
-    "UPDATE {schema}.quota_counters SET key_hash = :new_hash WHERE key_hash = :old_hash;",
-    result_handler=ResultHandler.ROWCOUNT,
-)
-
-LIST_KEYS_FILTERED = """
-    SELECT * FROM {schema}.api_keys
-    WHERE (CAST(:principal_id AS UUID) IS NULL OR principal_id = :principal_id)
-      AND (CAST(:is_active AS BOOLEAN) IS NULL OR is_active = :is_active)
-    ORDER BY created_at DESC
-    LIMIT :limit OFFSET :offset;
-"""
-
-DELETE_STALE_KEYS = DQLQuery(
-    """
-    DELETE FROM {schema}.api_keys
-    WHERE (expires_at < NOW() - CAST(:retention AS INTERVAL))
-       OR (is_active = FALSE AND created_at < NOW() - CAST(:retention AS INTERVAL));
-    """,
-    result_handler=ResultHandler.ROWCOUNT,
-)
 
 # --- Role & Hierarchy Queries ---
 
@@ -504,7 +358,7 @@ GET_EFFECTIVE_ROLES = DQLQuery(
 )
 
 INSERT_REFRESH_TOKEN = DQLQuery(
-    "INSERT INTO {schema}.refresh_tokens (id, key_hash, principal_id, api_key_hash, family_id, expires_at) VALUES (:id, :key_hash, :principal_id, :api_key_hash, :family_id, :expires_at) RETURNING *;",
+    "INSERT INTO {schema}.refresh_tokens (id, key_hash, principal_id, family_id, expires_at) VALUES (:id, :key_hash, :principal_id, :family_id, :expires_at) RETURNING *;",
     result_handler=ResultHandler.ONE_DICT,
     post_processor=lambda row: RefreshToken(**row) if row else None,
 )
@@ -527,11 +381,6 @@ INVALIDATE_REFRESH_TOKEN_FAMILY = DQLQuery(
 
 PRUNE_EXPIRED_REFRESH_TOKENS = DQLQuery(
     "DELETE FROM {schema}.refresh_tokens WHERE expires_at < NOW();",
-    result_handler=ResultHandler.ROWCOUNT,
-)
-
-PRUNE_EXPIRED_KEYS = DQLQuery(
-    "DELETE FROM {schema}.api_keys WHERE expires_at < NOW() AND is_active = FALSE;",
     result_handler=ResultHandler.ROWCOUNT,
 )
 
@@ -602,45 +451,12 @@ LIST_IDENTITY_LINKS = DQLQuery(
 
 
 
-def build_search_keys_query(
-    principal_id: Optional[UUID],
-    is_active: Optional[bool],
-    limit: int,
-    offset: int,
-    schema: str = "apikey",
-):
-    clauses = []
-    params = {"limit": limit, "offset": offset}
-
-    if principal_id:
-        clauses.append("principal_id = :principal_id")
-        params["principal_id"] = principal_id
-
-    if is_active is not None:
-        clauses.append("is_active = :is_active")
-        params["is_active"] = is_active
-
-    where_clause = " AND ".join(clauses) if clauses else "1=1"
-
-    sql = f"""
-        SELECT * FROM {schema}.api_keys
-        WHERE {where_clause}
-        ORDER BY created_at DESC
-        LIMIT :limit OFFSET :offset;
-    """
-    return DQLQuery(
-        sql,
-        result_handler=ResultHandler.ALL_DICTS,
-        post_processor=lambda rows: [ApiKey(**row) for row in rows],
-    ), params
-
-
 def build_search_principals_query(
     identifier: Optional[str],
     role: Optional[str],
     limit: int,
     offset: int,
-    schema: str = "apikey",
+    schema: str = "iam",
 ):
     clauses = []
     params = {"limit": limit, "offset": offset}

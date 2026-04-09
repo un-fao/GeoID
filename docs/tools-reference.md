@@ -388,10 +388,10 @@ external = prune_managed_content(stac_item)
 full_item = merge_stac_metadata(managed, external)
 ```
 
-### Multi-Catalog API Keys (`modules.apikey.multi_catalog_helpers`)
+### Multi-Catalog IAM Helpers (`modules.iam.multi_catalog_helpers`)
 
 ```python
-from dynastore.modules.apikey.multi_catalog_helpers import (
+from dynastore.modules.iam.multi_catalog_helpers import (
     create_global_principal,
     sync_principal_across_catalogs,
     get_effective_permissions_for_catalog,

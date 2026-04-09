@@ -36,16 +36,20 @@ class KeycloakIdentityProvider(IdentityProviderProtocol):
     Supports token validation, JWKS caching, and user info retrieval.
     """
     
-    def __init__(self, issuer_url: str, client_id: str, audience: Optional[str] = None):
+    def __init__(self, issuer_url: str, client_id: str, audience: Optional[str] = None, public_url: Optional[str] = None):
         """
         Initialize Keycloak identity provider.
-        
+
         Args:
-            issuer_url: Keycloak issuer URL (e.g., https://keycloak.example.com/realms/myrealm)
+            issuer_url: Keycloak issuer URL for backend calls and JWT validation
+                (e.g., http://keycloak:8080/realms/myrealm — internal Docker URL)
             client_id: OAuth2 client ID
             audience: Expected audience claim (defaults to client_id)
+            public_url: Public-facing Keycloak URL for browser auth redirects
+                (e.g., http://localhost:8181/realms/myrealm). Defaults to issuer_url.
         """
         self.issuer_url = issuer_url.rstrip("/")
+        self.public_url = (public_url or issuer_url).rstrip("/")
         self.client_id = client_id
         self.audience = audience or client_id
         self._jwks_cache: Optional[Dict[str, Any]] = None
@@ -193,7 +197,7 @@ class KeycloakIdentityProvider(IdentityProviderProtocol):
             "scope": scope
         }
         
-        auth_url = f"{self.issuer_url}/protocol/openid-connect/auth"
+        auth_url = f"{self.public_url}/protocol/openid-connect/auth"
         return f"{auth_url}?{urlencode(params)}"
     
     async def exchange_code_for_token(self, code: str, redirect_uri: str, client_secret: Optional[str] = None) -> Dict[str, Any]:

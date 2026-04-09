@@ -53,7 +53,7 @@ from dynastore.models.protocols.tasks import TasksProtocol
 from dynastore.models.protocols.task_queue import TaskQueueProtocol
 from dynastore.models.protocols.event_bus import EventBusProtocol
 from dynastore.models.protocols.event_storage import EventStorageProtocol
-from dynastore.models.protocols.apikey import ApiKeyProtocol
+from dynastore.models.protocols.iam import IamProtocol
 from dynastore.models.protocols.proxy import ProxyProtocol
 from dynastore.models.protocols.database import DatabaseProtocol
 DbProtocol = DatabaseProtocol
@@ -79,17 +79,12 @@ from dynastore.models.protocols.asset_upload import (
 # Export auth_models for convenience
 from dynastore.models.auth_models import (
     SYSTEM_USER_ID,
-    ApiKeyPolicy,
+    PolicyBundle,
     Role,
     IdentityAuthorization,
     IdentityLink,
     TokenExchangeRequest,
     TokenResponse,
-    ApiKey,
-    ApiKeyCreate,
-    ApiKeyStatus,
-    ApiKeyValidationRequest,
-    ApiKeyStatusFilter,
     RefreshToken,
 )
 
@@ -113,7 +108,7 @@ __all__ = [
     "TaskQueueProtocol",
     "EventBusProtocol",
     "EventStorageProtocol",
-    "ApiKeyProtocol",
+    "IamProtocol",
     "ProxyProtocol",
     "DatabaseProtocol",
     "DbProtocol",
@@ -136,16 +131,11 @@ __all__ = [
     "UploadStatusResponse",
     # Auth models
     "SYSTEM_USER_ID",
-    "ApiKeyPolicy",
+    "PolicyBundle",
     "Role",
     "IdentityAuthorization",
     "IdentityLink",
     "TokenExchangeRequest",
     "TokenResponse",
-    "ApiKey",
-    "ApiKeyCreate",
-    "ApiKeyStatus",
-    "ApiKeyValidationRequest",
-    "ApiKeyStatusFilter",
     "RefreshToken",
 ]

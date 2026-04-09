@@ -9,8 +9,8 @@ Covers:
 
 import pytest
 
-from dynastore.modules.apikey.conditions import EvaluationContext
-from dynastore.modules.apikey.filter_inspectors import (
+from dynastore.modules.iam.conditions import EvaluationContext
+from dynastore.modules.iam.filter_inspectors import (
     FilterConditionHandler,
     FilterInspectionResult,
     GeospatialFilterInspector,

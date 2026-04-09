@@ -491,13 +491,13 @@ class Web(ExtensionProtocol):
                 is_readme = fpath.stem.lower() == "readme"
                 if not is_readme:
                     stem = fpath.stem.lower()
-                    # If stem is 'apikey_upgrade' and component is 'apikey', we just want 'upgrade'
+                    # If stem is 'iam_upgrade' and component is 'iam', we just want 'upgrade'
                     if component_name and stem.startswith(component_name):
                         clean_stem = stem[len(component_name) :].lstrip("_-")
                         # Only use if it's not empty
                         if clean_stem:
                             id_parts.append(clean_stem)
-                        # else, it was something like 'apikey.md', which we treat as a readme
+                        # else, it was something like 'iam.md', which we treat as a readme
                     else:
                         id_parts.append(stem)
 
@@ -517,7 +517,7 @@ class Web(ExtensionProtocol):
 
                 # 2. Extract Title (First H1)
                 # Smart Fallback:
-                # If README.md in 'apikey', title is likely 'Apikey' (parent dir), not 'Readme'
+                # If README.md in 'iam', title is likely 'Iam' (parent dir), not 'Readme'
                 if is_readme:
                     title = fpath.parent.name.replace("_", " ").title()
                 else:
@@ -1026,7 +1026,7 @@ async function demoAction(action) {
             if authorization and authorization.startswith("Bearer "):
                 token = authorization.removeprefix("Bearer ")
                 try:
-                    from dynastore.modules.apikey.interfaces import IdentityProviderProtocol
+                    from dynastore.modules.iam.interfaces import IdentityProviderProtocol
                     providers = get_protocols(IdentityProviderProtocol)
                     for provider in providers:
                         try:
@@ -1261,27 +1261,16 @@ async function demoAction(action) {
             principal_id: Optional[str] = None
             if authorization and authorization.startswith("Bearer "):
                 token = authorization[7:]
-                # Fast path: system admin key (env var or DB-stored key)
                 try:
-                    from dynastore.models.protocols.apikey import ApiKeyProtocol
-                    apikey_svc = get_protocol(ApiKeyProtocol)
-                    if apikey_svc:
-                        system_key = await apikey_svc.get_system_admin_key()
-                        if token == system_key:
-                            user_roles = ["sysadmin"]
-                except Exception:
-                    pass
-                if "sysadmin" not in user_roles:
-                    try:
-                        from dynastore.modules.apikey.interfaces import IdentityProviderProtocol
-                        for idp in get_protocols(IdentityProviderProtocol):
-                            try:
-                                info = await idp.get_user_info(token)
-                                if info:
-                                    user_roles = info.get("roles", [])
-                                    principal_id = info.get("subject_id") or info.get("principal_id")
-                                    break
-                            except Exception:
+                    from dynastore.modules.iam.interfaces import IdentityProviderProtocol
+                    for idp in get_protocols(IdentityProviderProtocol):
+                        try:
+                            info = await idp.get_user_info(token)
+                            if info:
+                                user_roles = info.get("roles", [])
+                                principal_id = info.get("subject_id") or info.get("principal_id")
+                                break
+                        except Exception:
                                 continue
                     except Exception as e:
                         logger.debug(f"Dashboard catalogs: could not resolve identity: {e}")

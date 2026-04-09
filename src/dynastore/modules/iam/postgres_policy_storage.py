@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-# File: dynastore/modules/apikey/postgres_policy_storage.py
+# File: dynastore/modules/iam/postgres_policy_storage.py
 
 from typing import Optional, List
 from uuid import UUID
@@ -116,7 +116,7 @@ LIST_POLICIES_BY_PARTITION = DQLQuery(
 
 # --- Enhanced Search Query ---
 
-def build_search_policies_query(resource_pattern: Optional[str], action_pattern: Optional[str], limit: int, offset: int, schema: str = "apikey"):
+def build_search_policies_query(resource_pattern: Optional[str], action_pattern: Optional[str], limit: int, offset: int, schema: str = "iam"):
     clauses = []
     params = {"limit": limit, "offset": offset}
     
@@ -146,11 +146,11 @@ class PostgresPolicyStorage(AbstractPolicyStorage):
         db = get_protocol(DatabaseProtocol)
         self.engine = db.engine if db else None
 
-    async def initialize(self, conn: DbResource, schema: str = "apikey"):
+    async def initialize(self, conn: DbResource, schema: str = "iam"):
         """Compatibility alias for _initialize_schema."""
         return await self._initialize_schema(conn, schema=schema)
 
-    async def _initialize_schema(self, conn: DbResource, schema: str = "apikey"):
+    async def _initialize_schema(self, conn: DbResource, schema: str = "iam"):
         schema = schema.strip('"')
 
         # 0. Ensure Schema
@@ -165,7 +165,7 @@ class PostgresPolicyStorage(AbstractPolicyStorage):
         await CREATE_PARTITION_AUTH.execute(conn, schema=schema)
         await CREATE_PARTITION_DEFAULT.execute(conn, schema=schema)
 
-    async def ensure_policy_partition(self, conn: DbResource, partition_key: str, schema: str = "apikey"):
+    async def ensure_policy_partition(self, conn: DbResource, partition_key: str, schema: str = "iam"):
         from dynastore.tools.db import validate_sql_identifier
         schema = schema.strip('"')
         validate_sql_identifier(partition_key)
@@ -174,7 +174,7 @@ class PostgresPolicyStorage(AbstractPolicyStorage):
         ddl = f"CREATE TABLE IF NOT EXISTS {{schema}}.{partition_table} PARTITION OF {{schema}}.policies FOR VALUES IN ('{safe_key}');"
         await DDLQuery(ddl).execute(conn, schema=schema)
 
-    async def create_policy(self, policy: Policy, conn: Optional[DbResource] = None, schema: str = "apikey") -> Policy:
+    async def create_policy(self, policy: Policy, conn: Optional[DbResource] = None, schema: str = "iam") -> Policy:
         async with managed_transaction(conn or self.engine) as db:
             return await INSERT_POLICY.execute(
                 db,
@@ -191,11 +191,11 @@ class PostgresPolicyStorage(AbstractPolicyStorage):
 
 
 
-    async def get_policy(self, policy_id: str, conn: Optional[DbResource] = None, schema: str = "apikey") -> Optional[Policy]:
+    async def get_policy(self, policy_id: str, conn: Optional[DbResource] = None, schema: str = "iam") -> Optional[Policy]:
         async with managed_transaction(conn or self.engine) as db:
             return await GET_POLICY.execute(db, schema=schema.strip('"'), id=policy_id)
 
-    async def update_policy(self, policy: Policy, conn: Optional[DbResource] = None, schema: str = "apikey") -> Optional[Policy]:
+    async def update_policy(self, policy: Policy, conn: Optional[DbResource] = None, schema: str = "iam") -> Optional[Policy]:
         async with managed_transaction(conn or self.engine) as db:
             # Check if partition_key changed - if so, delete old row first
             existing = await GET_POLICY.execute(db, schema=schema.strip('"'), id=policy.id)
@@ -218,19 +218,19 @@ class PostgresPolicyStorage(AbstractPolicyStorage):
                 partition_key=policy.partition_key or "global"
             )
 
-    async def delete_policy(self, policy_id: str, conn: Optional[DbResource] = None, schema: str = "apikey") -> bool:
+    async def delete_policy(self, policy_id: str, conn: Optional[DbResource] = None, schema: str = "iam") -> bool:
         async with managed_transaction(conn or self.engine) as db:
             count = await DELETE_POLICY.execute(db, schema=schema.strip('"'), id=policy_id)
             return count > 0
 
-    async def list_policies(self, partition_key: Optional[str] = None, limit: int = 100, offset: int = 0, conn: Optional[DbResource] = None, schema: str = "apikey") -> List[Policy]:
+    async def list_policies(self, partition_key: Optional[str] = None, limit: int = 100, offset: int = 0, conn: Optional[DbResource] = None, schema: str = "iam") -> List[Policy]:
         async with managed_transaction(conn or self.engine) as db:
             if partition_key:
                 return await LIST_POLICIES_BY_PARTITION.execute(db, schema=schema.strip('"'), partition_key=partition_key, limit=limit, offset=offset)
             else:
                 return await LIST_POLICIES.execute(db, schema=schema.strip('"'), limit=limit, offset=offset)
 
-    async def search_policies(self, resource_pattern: Optional[str] = None, action_pattern: Optional[str] = None, limit: int = 100, offset: int = 0, conn: Optional[DbResource] = None, schema: str = "apikey") -> List[Policy]:
+    async def search_policies(self, resource_pattern: Optional[str] = None, action_pattern: Optional[str] = None, limit: int = 100, offset: int = 0, conn: Optional[DbResource] = None, schema: str = "iam") -> List[Policy]:
         query, params = build_search_policies_query(resource_pattern, action_pattern, limit, offset, schema=schema.strip('"'))
         async with managed_transaction(conn or self.engine) as db:
             return await query.execute(db, **params)

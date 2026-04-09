@@ -21,27 +21,15 @@ from datetime import datetime
 
 
 @runtime_checkable
-class ApiKeyProtocol(Protocol):
-    """Protocol for API Key and Identity management."""
+class IamProtocol(Protocol):
+    """Protocol for Identity and Access Management."""
 
     storage: Any
-    usage_cache: Any
 
     async def resolve_schema(
         self, catalog_id: Optional[str] = None, conn: Optional[Any] = None
     ) -> str:
         """Resolves the database schema for a catalog."""
-        ...
-
-    async def increment_usage(
-        self,
-        key_hash: str,
-        period_start: datetime,
-        catalog_id: Optional[str] = None,
-        amount: int = 1,
-        schema: Optional[str] = None,
-    ) -> None:
-        """Increments usage/quota in a buffered/aggregated way."""
         ...
 
     async def get_jwt_secret(self) -> str:
@@ -64,39 +52,8 @@ class ApiKeyProtocol(Protocol):
         """Authenticates an identity and returns a principal with permissions."""
         ...
 
-    async def authenticate_apikey(
-        self,
-        api_key: str,
-        catalog_id: Optional[str] = None,
-        origin: Optional[str] = None,
-    ) -> Any:
-        """Authenticates an API key."""
-        ...
-
     async def authenticate_and_get_role(self, request: Any) -> Any:
         """Authenticated a request and returns effective role and principal."""
-        ...
-
-    async def exchange_token(
-        self,
-        api_key_hash: str,
-        ttl_seconds: int,
-        scoped_policy: Optional[Any] = None,
-        catalog_id: Optional[str] = None,
-    ) -> Any:
-        """Exchanges an API key hash for a JWT."""
-        ...
-
-    async def refresh_token_exchange(
-        self, refresh_token: str, ttl_seconds: int, catalog_id: Optional[str] = None
-    ) -> Any:
-        """Refreshes a JWT using a refresh token."""
-        ...
-
-    async def validate_key(
-        self, validation_req: Any, catalog_id: Optional[str] = None
-    ) -> Any:
-        """Validates an API key definition."""
         ...
 
     async def list_roles(self, catalog_id: Optional[str] = None) -> List[Any]:
@@ -170,48 +127,8 @@ class ApiKeyProtocol(Protocol):
         """Deletes a principal."""
         ...
 
-    async def create_key(self, key_data: Any, catalog_id: Optional[str] = None) -> Any:
-        """Creates a new API key."""
-        ...
-
-    async def search_keys(
-        self,
-        principal_id: Optional[UUID] = None,
-        status_filter: Any = None,
-        limit: int = 100,
-        offset: int = 0,
-        catalog_id: Optional[str] = None,
-    ) -> List[Any]:
-        """Searches for API keys."""
-        ...
-
-    async def invalidate_key(
-        self, key_hash: str, catalog_id: Optional[str] = None
-    ) -> bool:
-        """Invalidates an API key."""
-        ...
-
-    async def delete_api_key(
-        self, key_hash: str, catalog_id: Optional[str] = None
-    ) -> bool:
-        """Deletes an API key permanently."""
-        ...
-
-    async def get_system_admin_key(self) -> str:
-        """Retrieves the system admin key (bootstrap)."""
-        ...
-
-    async def get_usage_status(
-        self,
-        principal: Any,
-        key_hash: Optional[str] = None,
-        catalog_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Returns usage and quota information."""
-        ...
-
     def extract_token_from_request(self, request: Any) -> Optional[str]:
-        """Extracts Bearer/ApiKey token from HTTP request."""
+        """Extracts Bearer token from HTTP request."""
         ...
 
     def get_policy_service(self) -> PermissionProtocol:

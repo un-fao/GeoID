@@ -34,9 +34,9 @@ def _validate_schema_name(schema: str) -> str:
         raise ValueError(f"Invalid schema name: {schema!r}")
     return schema
 
-from .models import ApiKeyPolicy, Policy, Condition, Role, Principal
+from .models import PolicyBundle, Policy, Condition, Role, Principal
 from .policy_storage import AbstractPolicyStorage
-from .apikey_storage import AbstractApiKeyStorage
+from .iam_storage import AbstractIamStorage
 from .postgres_policy_storage import PostgresPolicyStorage
 from dynastore.modules.db_config.query_executor import managed_transaction, DbResource
 from dynastore.modules import get_protocol
@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 class PolicyService:
     _instance = None
     storage: AbstractPolicyStorage
-    apikey_storage: Optional[AbstractApiKeyStorage]
+    iam_storage: Optional[AbstractIamStorage]
     _state: object
     _engine: Any
 
@@ -57,31 +57,31 @@ class PolicyService:
         self,
         app_state: object,
         storage: Optional[AbstractPolicyStorage] = None,
-        apikey_storage: Optional[AbstractApiKeyStorage] = None,
+        iam_storage: Optional[AbstractIamStorage] = None,
     ):
         self._state = app_state
         db = get_protocol(DatabaseProtocol)
         self._engine = db.engine if db else None
         self.storage = storage or PostgresPolicyStorage(app_state=app_state)
-        self.apikey_storage = apikey_storage
+        self.iam_storage = iam_storage
 
     async def _resolve_schema(
         self, catalog_id: Optional[str], conn: Optional[Any] = None
     ) -> str:
-        """Resolve physical schema from catalog_id, with fallback to 'apikey' for global."""
+        """Resolve physical schema from catalog_id, with fallback to 'iam' for global."""
         from dynastore.models.protocols import CatalogsProtocol
 
         catalogs = get_protocol(CatalogsProtocol)
 
         if not catalog_id or catalog_id == "_system_":
-            return "apikey"
+            return "iam"
 
         db_resource = conn or self.storage.engine
         # Use allow_missing=True during tenant initialization when catalog may not exist yet
         res = await catalogs.resolve_physical_schema(
             catalog_id, db_resource=db_resource, allow_missing=True
         )
-        schema = res if res else "apikey"
+        schema = res if res else "iam"
         return _validate_schema_name(schema)
 
     async def initialize(
@@ -245,9 +245,10 @@ class PolicyService:
                     "/docs.*",
                     "/openapi.json",
                     "/redoc",
-                    "/apikey/auth/login",
-                    "/apikey/auth/validate",
-                    "/apikey/auth/jwks.json",
+                    "/web/.*",
+                    "/iam/auth/login",
+                    "/iam/auth/validate",
+                    "/iam/auth/jwks.json",
                     "/auth/.*",
                 ],
                 effect="ALLOW",
@@ -257,7 +258,7 @@ class PolicyService:
                 id="self_service_access",
                 description="Allows authenticated users to access their own /me endpoints.",
                 actions=["GET"],
-                resources=["/apikey/me/.*", "/auth/me"],
+                resources=["/iam/me/.*", "/auth/me"],
                 effect="ALLOW",
                 partition_key=partition_key,
             ),
@@ -324,18 +325,18 @@ class PolicyService:
                         await self.storage.update_policy(policy_def, schema=schema, conn=db)
 
             # Provision default roles
-            if self.apikey_storage:
+            if self.iam_storage:
                 for role_def in self._get_default_roles():
-                    existing = await self.apikey_storage.get_role(
+                    existing = await self.iam_storage.get_role(
                         role_def.name, schema=schema, conn=db
                     )
                     if force or not existing:
                         if existing:
-                            await self.apikey_storage.update_role(
+                            await self.iam_storage.update_role(
                                 role_def, schema=schema, conn=db
                             )
                         else:
-                            await self.apikey_storage.create_role(
+                            await self.iam_storage.create_role(
                                 role_def, schema=schema, conn=db
                             )
 
@@ -351,10 +352,10 @@ class PolicyService:
         )
 
     async def evaluate_policy_statements(
-        self, policy: ApiKeyPolicy, method: str, path: str, request_context: Any = None
+        self, policy: PolicyBundle, method: str, path: str, request_context: Any = None
     ) -> bool:
         """
-        Evaluates the statements in an ApiKeyPolicy (embedded in Key or Principal).
+        Evaluates the statements in an PolicyBundle (embedded in Key or Principal).
         Iterates through statements: if any DENY matches, return False.
         If any ALLOW matches, return True.
         If none match, return False (Implicit Deny).
@@ -404,10 +405,10 @@ class PolicyService:
         )
 
         # 1. Fetch all roles matching any of the principals to resolve policy IDs
-        # Always check the global "apikey" schema first for roles
+        # Always check the global "iam" schema first for roles
         all_policy_ids = set()
-        schemas_to_check = ["apikey"]  # Always check global schema
-        if schema != "apikey":
+        schemas_to_check = ["iam"]  # Always check global schema
+        if schema != "iam":
             schemas_to_check.append(
                 schema
             )  # Also check catalog-specific schema if different
@@ -418,8 +419,8 @@ class PolicyService:
                     continue
                 role_obj = None
                 # Lookup role permissions in storage
-                if self.apikey_storage:
-                    role_obj = await self.apikey_storage.get_role(
+                if self.iam_storage:
+                    role_obj = await self.iam_storage.get_role(
                         principal, schema=check_schema
                     )
                     if role_obj:

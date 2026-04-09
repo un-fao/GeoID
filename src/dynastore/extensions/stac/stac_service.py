@@ -34,7 +34,7 @@ from dynastore.models.protocols import (
     AssetsProtocol,
     ConfigsProtocol,
     StorageProtocol,
-    ApiKeyProtocol,
+    IamProtocol,
 )
 
 
@@ -278,10 +278,10 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin):
             roles = set(principal.roles)
             if "admin" in roles and "sysadmin" not in roles:
                 try:
-                    apikey = get_protocol(ApiKeyProtocol)
-                    if apikey and apikey.storage:
+                    iam = get_protocol(IamProtocol)
+                    if iam and iam.storage:
                         accessible_ids = set(
-                            await apikey.storage.get_catalogs_for_identity(
+                            await iam.storage.get_catalogs_for_identity(
                                 principal.provider, principal.subject_id
                             )
                         )

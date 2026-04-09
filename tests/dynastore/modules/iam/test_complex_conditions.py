@@ -3,17 +3,17 @@ from unittest.mock import MagicMock
 from types import SimpleNamespace
 from datetime import datetime, timezone
 
-from dynastore.modules.apikey.conditions import (
+from dynastore.modules.iam.conditions import (
     ConditionManager, EvaluationContext, 
     AttributeMatchHandler, LogicalAndHandler, LogicalOrHandler, LogicalNotHandler
 )
-from dynastore.modules.apikey.models import Condition
+from dynastore.modules.iam.models import Condition
 from cachetools import LRUCache
 
 @pytest.fixture
 def condition_manager():
     # The global instance already has handlers registered in __init__
-    from dynastore.modules.apikey.conditions import condition_manager as cm
+    from dynastore.modules.iam.conditions import condition_manager as cm
     return cm
 
 @pytest.fixture
