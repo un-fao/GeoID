@@ -260,19 +260,17 @@ async def run_schema_migration(
 # ---------------------------------------------------------------------------
 
 
-async def _get_physical_table(engine: Any, schema: str, collection_id: str) -> Optional[str]:
-    from dynastore.modules.db_config.query_executor import (
-        DQLQuery, ResultHandler, managed_transaction
-    )
-    sql = f"""
-        SELECT physical_table FROM "{schema}".pg_storage_locations
-        WHERE collection_id = :collection_id;
-    """
-    async with managed_transaction(engine) as conn:
-        row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
-            conn, collection_id=collection_id
-        )
-    return row["physical_table"] if row else None
+async def _get_physical_table(engine: Any, schema: str, collection_id: str, catalog_id: str = "") -> Optional[str]:
+    from dynastore.modules.storage.router import get_driver
+    from dynastore.modules.storage.routing_config import Operation
+
+    try:
+        driver = await get_driver(Operation.READ, catalog_id, collection_id)
+        if hasattr(driver, "resolve_physical_table"):
+            return await driver.resolve_physical_table(catalog_id, collection_id)
+    except Exception:
+        pass
+    return None
 
 
 async def _resolve_config_and_sidecars(

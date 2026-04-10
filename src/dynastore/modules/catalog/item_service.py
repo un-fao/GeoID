@@ -104,20 +104,15 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         collection_id: str,
         db_resource: Optional[DbResource] = None,
     ) -> Optional[str]:
-        phys_schema = await self._resolve_physical_schema(
-            catalog_id, db_resource=db_resource
-        )
-        if not phys_schema:
-            return None
-        query_sql = f'SELECT physical_table FROM "{phys_schema}".pg_storage_locations WHERE collection_id = :collection_id;'
-        if db_resource:
-            return await DQLQuery(
-                query_sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
-            ).execute(db_resource, collection_id=collection_id)
-        async with managed_transaction(self.engine) as conn:
-            return await DQLQuery(
-                query_sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
-            ).execute(conn, collection_id=collection_id)
+        from dynastore.modules.storage.router import get_driver
+        from dynastore.modules.storage.routing_config import Operation
+
+        driver = await get_driver(Operation.READ, catalog_id, collection_id)
+        if hasattr(driver, "resolve_physical_table"):
+            return await driver.resolve_physical_table(
+                catalog_id, collection_id, db_resource=db_resource
+            )
+        return None
 
     async def _get_collection_config(
         self,
@@ -745,14 +740,13 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                     )
                     phys_table = collection_id
                     force_create = True
-                    set_table_sql = f"""
-                        INSERT INTO "{phys_schema}".pg_storage_locations (collection_id, physical_table)
-                        VALUES (:collection_id, :physical_table)
-                        ON CONFLICT (collection_id) DO UPDATE SET physical_table = EXCLUDED.physical_table;
-                    """
-                    await DQLQuery(
-                        set_table_sql, result_handler=ResultHandler.NONE
-                    ).execute(conn, collection_id=collection_id, physical_table=phys_table)
+                    from dynastore.modules.storage.router import get_driver as _get_driver
+                    from dynastore.modules.storage.routing_config import Operation as _Op
+                    _drv = await _get_driver(_Op.WRITE, catalog_id, collection_id)
+                    if hasattr(_drv, "set_physical_table"):
+                        await _drv.set_physical_table(
+                            catalog_id, collection_id, phys_table, db_resource=conn
+                        )
 
                 if force_create or not await shared_queries.table_exists_query.execute(
                     conn, schema=phys_schema, table=phys_table

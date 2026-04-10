@@ -52,15 +52,6 @@ CREATE TABLE IF NOT EXISTS {schema}.collections (
 );
 """
 
-PG_STORAGE_LOCATIONS_DDL = """
-CREATE TABLE IF NOT EXISTS {schema}.pg_storage_locations (
-    collection_id VARCHAR NOT NULL PRIMARY KEY,
-    physical_table VARCHAR NOT NULL,
-    schema_hash VARCHAR(64),
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-"""
-
 METADATA_DDL = """
 CREATE TABLE IF NOT EXISTS {schema}.metadata (
     collection_id VARCHAR NOT NULL PRIMARY KEY,
@@ -138,7 +129,6 @@ async def initialize_tenant_shell(conn: DbResource, schema: str, catalog_id: str
     # 2. Core Tables (Tenant-local, not globally partitioned) - Combined for efficiency
     await DDLQuery(
         TENANT_COLLECTIONS_DDL
-        + PG_STORAGE_LOCATIONS_DDL
         + METADATA_DDL
         + TENANT_CATALOG_CONFIGS_DDL
         + TENANT_COLLECTION_CONFIGS_DDL

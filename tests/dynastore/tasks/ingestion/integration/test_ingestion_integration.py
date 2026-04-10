@@ -108,12 +108,13 @@ async def test_geojson_ingestion(task_app_state, test_data_loader, data_id):
 
     # FORCE DISABLE PARTITIONING & DROP TABLE to ensure ingestion works without H3 complications
     # which are not auto-handled by simple ingestion yet.
-    from dynastore.modules.storage.driver_config import get_pg_collection_config, PG_DRIVER_PLUGIN_ID
-    config = await get_pg_collection_config(catalog_id, collection_id)
+    from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
+    pg_plugin_id = PostgresCollectionDriverConfig._plugin_id
+    config = await configs.get_config(pg_plugin_id, catalog_id=catalog_id, collection_id=collection_id)
     if config.partitioning:
         config.partitioning.enabled = False
     await configs.set_config(
-        PG_DRIVER_PLUGIN_ID,
+        pg_plugin_id,
         config,
         catalog_id=catalog_id,
         collection_id=collection_id,
@@ -384,12 +385,13 @@ async def test_csv_pointz_ingestion(task_app_state, test_data_loader, data_id):
     await catalogs.create_collection(catalog_id, col_def)
 
     configs = get_protocol(ConfigsProtocol)
-    from dynastore.modules.storage.driver_config import get_pg_collection_config, PG_DRIVER_PLUGIN_ID
-    config = await get_pg_collection_config(catalog_id, collection_id)
+    from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
+    pg_plugin_id = PostgresCollectionDriverConfig._plugin_id
+    config = await configs.get_config(pg_plugin_id, catalog_id=catalog_id, collection_id=collection_id)
     if config.partitioning:
         config.partitioning.enabled = False
     await configs.set_config(
-        PG_DRIVER_PLUGIN_ID,
+        pg_plugin_id,
         config,
         catalog_id=catalog_id,
         collection_id=collection_id,

@@ -15,7 +15,7 @@ from dynastore.modules.processes.models import ExecuteRequest
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.db_config.query_executor import managed_transaction
-from dynastore.modules.storage.driver_config import get_pg_collection_config, PG_DRIVER_PLUGIN_ID
+from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
 from dynastore.tasks.ingestion.operations import ingestion_operation, IngestionOperationInterface
 
 logger = logging.getLogger(__name__)
@@ -55,10 +55,11 @@ async def test_operation_sequential_execution(task_app_state, test_data_loader, 
     await catalogs.create_collection(catalog_id, col_def)
     
     # Explicitly disable partitioning via ConfigManager so ingestion respects it
-    config = await get_pg_collection_config(catalog_id, collection_id)
+    pg_plugin_id = PostgresCollectionDriverConfig._plugin_id
+    config = await configs.get_config(pg_plugin_id, catalog_id=catalog_id, collection_id=collection_id)
     if config.partitioning:
          config.partitioning.enabled = False
-    await configs.set_config(PG_DRIVER_PLUGIN_ID, config, catalog_id=catalog_id, collection_id=collection_id)
+    await configs.set_config(pg_plugin_id, config, catalog_id=catalog_id, collection_id=collection_id)
     
     # Drop the table that was eagerly created with default config (partitioned)
     # to force IngestionTask to recreate it with the new unpartitioned config.

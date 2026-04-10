@@ -396,6 +396,36 @@ class CollectionStorageDriverProtocol(Protocol):
         """
         ...
 
+    async def restore_entities(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        entity_ids: List[str],
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> int:
+        """Restore soft-deleted entities by ID. Returns count of entities restored.
+
+        Requires ``Capability.SOFT_DELETE``.
+        Raises ``SoftDeleteNotSupportedError`` if the driver lacks the capability.
+        """
+        ...
+
+    async def rename_storage(
+        self,
+        catalog_id: str,
+        old_collection_id: str,
+        new_collection_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> None:
+        """Rename storage for a collection (e.g. rename PG table, ES index).
+
+        Not all drivers support renaming. Drivers that do not support it
+        should raise ``NotImplementedError``.
+        """
+        ...
+
     async def get_entity_fields(
         self,
         catalog_id: str,

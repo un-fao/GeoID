@@ -8,8 +8,9 @@ from dynastore.modules.catalog.config_service import (
 )
 from dynastore.modules.storage.driver_config import (
     PostgresCollectionDriverConfig,
-    PG_DRIVER_PLUGIN_ID,
 )
+
+PG_DRIVER_PLUGIN_ID = PostgresCollectionDriverConfig._plugin_id
 from dynastore.modules.db_config.exceptions import ImmutableConfigError
 
 

@@ -382,25 +382,19 @@ async def list_collection_backups(
     from dynastore.modules.db_config.query_executor import (
         DQLQuery, ResultHandler, managed_transaction
     )
+    from dynastore.modules.storage.router import get_driver
+    from dynastore.modules.storage.routing_config import Operation
 
     catalogs = get_protocol(CatalogsProtocol)
     schema = await catalogs.resolve_physical_schema(catalog_id, allow_missing=True)
     if not schema:
         raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
 
-    # Get physical_table name
-    sql = f"""
-        SELECT physical_table FROM "{schema}".pg_storage_locations
-        WHERE collection_id = :collection_id;
-    """
-    async with managed_transaction(engine) as conn:
-        row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
-            conn, collection_id=collection_id
-        )
-    if not row or not row.get("physical_table"):
+    # Get physical_table from driver config
+    driver = await get_driver(Operation.READ, catalog_id, collection_id)
+    physical_table = await driver.resolve_physical_table(catalog_id, collection_id) if hasattr(driver, "resolve_physical_table") else None
+    if not physical_table:
         raise HTTPException(status_code=404, detail="Collection has no physical table.")
-
-    physical_table = row["physical_table"]
 
     # Find all tables matching the _bkp_ pattern
     sql_tables = """
@@ -440,24 +434,19 @@ async def drop_collection_backup(
     from dynastore.modules.db_config.query_executor import (
         DDLQuery, DQLQuery, ResultHandler, managed_transaction
     )
+    from dynastore.modules.storage.router import get_driver
+    from dynastore.modules.storage.routing_config import Operation
 
     catalogs = get_protocol(CatalogsProtocol)
     schema = await catalogs.resolve_physical_schema(catalog_id, allow_missing=True)
     if not schema:
         raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
 
-    sql = f"""
-        SELECT physical_table FROM "{schema}".pg_storage_locations
-        WHERE collection_id = :collection_id;
-    """
-    async with managed_transaction(engine) as conn:
-        row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
-            conn, collection_id=collection_id
-        )
-    if not row or not row.get("physical_table"):
+    driver = await get_driver(Operation.READ, catalog_id, collection_id)
+    physical_table = await driver.resolve_physical_table(catalog_id, collection_id) if hasattr(driver, "resolve_physical_table") else None
+    if not physical_table:
         raise HTTPException(status_code=404, detail="Collection has no physical table.")
 
-    physical_table = row["physical_table"]
     suffix = f"_bkp_{timestamp}"
 
     sql_list = """

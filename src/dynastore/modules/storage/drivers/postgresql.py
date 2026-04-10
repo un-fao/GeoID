@@ -174,6 +174,43 @@ class PostgresStorageDriver(ModuleProtocol):
             )
         return total
 
+    async def restore_entities(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        entity_ids: List[str],
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> int:
+        raise SoftDeleteNotSupportedError(
+            "PostgresStorageDriver: restore_entities not yet implemented."
+        )
+
+    async def rename_storage(
+        self,
+        catalog_id: str,
+        old_collection_id: str,
+        new_collection_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> None:
+        """Rename PG physical table and update driver config."""
+        from dynastore.modules.db_config.query_executor import DDLQuery, managed_transaction
+
+        schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
+        old_table = await self.resolve_physical_table(
+            catalog_id, old_collection_id, db_resource=db_resource
+        )
+        if not old_table:
+            raise ValueError(
+                f"No physical table found for {catalog_id}:{old_collection_id}"
+            )
+
+        new_table = old_table  # Keep same physical table name, just update config mapping
+        await self.set_physical_table(
+            catalog_id, new_collection_id, new_table, db_resource=db_resource
+        )
+
     async def _resolve_schema(self, catalog_id: str, db_resource=None) -> str:
         """Resolve the PG schema name for a catalog."""
         from dynastore.tools.discovery import get_protocol
@@ -194,26 +231,37 @@ class PostgresStorageDriver(ModuleProtocol):
         *,
         db_resource=None,
     ) -> Optional[str]:
-        """Resolve physical table name from pg_storage_locations."""
-        from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler, managed_transaction
+        """Resolve physical table name from driver config."""
+        config = await self.get_driver_config(
+            catalog_id, collection_id, db_resource=db_resource
+        )
+        return config.physical_table
 
-        schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
-        query_sql = f'SELECT physical_table FROM "{schema}".pg_storage_locations WHERE collection_id = :collection_id;'
-
-        async def _query(conn):
-            return await DQLQuery(
-                query_sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
-            ).execute(conn, collection_id=collection_id)
-
-        if db_resource is not None:
-            return await _query(db_resource)
+    async def set_physical_table(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        physical_table: str,
+        *,
+        db_resource=None,
+    ) -> None:
+        """Store physical table name in driver config."""
+        from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.tools.discovery import get_protocol
-        from dynastore.models.protocols.database import DatabaseProtocol
-        db_proto = get_protocol(DatabaseProtocol)
-        if not db_proto:
-            raise RuntimeError("DatabaseProtocol not available")
-        async with managed_transaction(db_proto.engine) as conn:
-            return await _query(conn)
+
+        config = await self.get_driver_config(
+            catalog_id, collection_id, db_resource=db_resource
+        )
+        updated_config = config.model_copy(update={"physical_table": physical_table})
+        configs = get_protocol(ConfigsProtocol)
+        await configs.set_config(
+            f"driver:{self.driver_id}",
+            updated_config,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            check_immutability=False,
+            db_resource=db_resource,
+        )
 
     async def ensure_storage(
         self,
@@ -223,10 +271,8 @@ class PostgresStorageDriver(ModuleProtocol):
     ) -> None:
         """Create PG hub table + sidecar tables for a collection.
 
-        Creates ``pg_storage_locations`` and ``metadata``
-        if they don't already exist, generates a unique ``physical_table``
-        name, creates the hub table, creates sidecar tables, and registers
-        the mapping in ``pg_storage_locations``.
+        Generates a unique ``physical_table`` name, creates the hub table,
+        creates sidecar tables, and stores the mapping in the driver config.
 
         If ``collection_id`` is None, this is a no-op (catalog-level call).
 
@@ -358,15 +404,17 @@ class PostgresStorageDriver(ModuleProtocol):
             except ValueError as e:
                 logger.warning("Skipping sidecar table creation: %s", e)
 
-        # --- Register physical table mapping ---
-        insert_loc_sql = f"""
-            INSERT INTO "{schema}".pg_storage_locations (collection_id, physical_table)
-            VALUES (:collection_id, :physical_table)
-            ON CONFLICT (collection_id) DO UPDATE SET physical_table = EXCLUDED.physical_table;
-        """
-        await DQLQuery(
-            insert_loc_sql, result_handler=ResultHandler.NONE
-        ).execute(db_resource, collection_id=collection_id, physical_table=physical_table)
+        # --- Store physical_table in driver config ---
+        configs = get_protocol(ConfigsProtocol)
+        updated_config = col_config.model_copy(update={"physical_table": physical_table})
+        await configs.set_config(
+            f"driver:{self.driver_id}",
+            updated_config,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            check_immutability=False,
+            db_resource=db_resource,
+        )
 
         # --- Store schema hash ---
         try:

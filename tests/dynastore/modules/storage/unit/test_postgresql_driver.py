@@ -241,15 +241,19 @@ class TestResolveStorageLocation:
         with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
             mock_catalogs = AsyncMock()
             mock_catalogs.resolve_physical_schema = AsyncMock(return_value="my_schema")
-            mock_collections = AsyncMock()
-            mock_collections.resolve_physical_table = AsyncMock(return_value="my_table")
+
+            # ConfigsProtocol mock returns a config with physical_table set
+            mock_configs = AsyncMock()
+            mock_configs.get_config = AsyncMock(
+                return_value=PostgresCollectionDriverConfig(physical_table="my_table")
+            )
 
             def side_effect(proto):
                 name = proto.__name__ if hasattr(proto, "__name__") else str(proto)
                 if "Catalogs" in name:
                     return mock_catalogs
-                if "Collections" in name:
-                    return mock_collections
+                if "Configs" in name:
+                    return mock_configs
                 return None
 
             mock_gp.side_effect = side_effect

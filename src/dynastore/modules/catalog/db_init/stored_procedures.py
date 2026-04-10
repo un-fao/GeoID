@@ -21,7 +21,12 @@ DECLARE
     new_spatial_extent JSONB;
     new_temporal_extent JSONB;
 BEGIN
-    EXECUTE format('SELECT collection_id FROM %I.pg_storage_locations WHERE physical_table = $1 LIMIT 1', schema_name)
+    EXECUTE format(
+        'SELECT collection_id FROM %I.collection_configs '
+        'WHERE plugin_id = ''driver:postgresql'' '
+        'AND config_data->>''physical_table'' = $1 LIMIT 1',
+        schema_name
+    )
     INTO collection_id_val
     USING master_table_name;
 
@@ -71,8 +76,13 @@ BEGIN
     END IF;
     
     -- Resolve Logical Collection ID from Hub Physical Table Name
-    -- The collections table is in the same schema (tenant schema).
-    EXECUTE format('SELECT collection_id FROM %I.pg_storage_locations WHERE physical_table = $1 LIMIT 1', TG_TABLE_SCHEMA)
+    -- The collection_configs table stores driver config with physical_table in JSONB.
+    EXECUTE format(
+        'SELECT collection_id FROM %I.collection_configs '
+        'WHERE plugin_id = ''driver:postgresql'' '
+        'AND config_data->>''physical_table'' = $1 LIMIT 1',
+        TG_TABLE_SCHEMA
+    )
     INTO target_collection_id
     USING hub_physical_table;
     

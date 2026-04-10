@@ -36,16 +36,17 @@ logger = logging.getLogger(__name__)
 async def _resolve_physical_table(
     catalog_id: str, collection_id: str, *, db_resource=None
 ) -> Optional[str]:
-    """Resolve physical table name via the storage routing system."""
+    """Resolve physical table name via the storage driver config."""
     from dynastore.modules.storage.router import get_driver
     from dynastore.modules.storage.routing_config import Operation
 
     try:
         driver = await get_driver(Operation.READ, catalog_id, collection_id)
-        location = await driver.resolve_storage_location(
-            catalog_id, collection_id, db_resource=db_resource
-        )
-        return getattr(location, "physical_table", None)
+        if hasattr(driver, "resolve_physical_table"):
+            return await driver.resolve_physical_table(
+                catalog_id, collection_id, db_resource=db_resource
+            )
+        return None
     except (ValueError, Exception):
         return None
 

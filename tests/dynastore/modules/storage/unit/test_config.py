@@ -9,7 +9,6 @@ from dynastore.modules.catalog.catalog_config import (
 )
 from dynastore.modules.storage.driver_config import (
     PostgresCollectionDriverConfig,
-    PG_DRIVER_PLUGIN_ID,
 )
 from dynastore.modules.storage.routing_config import (
     RoutingPluginConfig,
@@ -44,8 +43,9 @@ class TestCollectionPluginConfigDefaults:
 
 class TestPostgresCollectionDriverConfigDefaults:
     def test_plugin_id(self):
-        assert PostgresCollectionDriverConfig._plugin_id == PG_DRIVER_PLUGIN_ID
-        assert PG_DRIVER_PLUGIN_ID == "driver:postgresql"
+        from dynastore.modules.storage.drivers.postgresql import PostgresStorageDriver
+        expected = f"driver:{PostgresStorageDriver.driver_id}"
+        assert PostgresCollectionDriverConfig._plugin_id == expected
 
     def test_default_sidecars(self):
         cfg = PostgresCollectionDriverConfig()

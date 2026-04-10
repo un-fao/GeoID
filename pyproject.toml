@@ -275,8 +275,8 @@ worker_local = ["dynastore[worker_service,monitor_grp]"]
 scope_catalog = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,task_gcp_provision,module_cache,notebooks]"]
 # scope_geoid: catalog + geoid UI + auth/iam — maps to geospatial-auth in cloud
 scope_geoid = ["dynastore[scope_catalog,extension_geoid,auth_grp]"]
-# scope_worker: background task processor — all tasks + monitoring UI
-scope_worker = ["dynastore[core,catalog_grp,google_grp,index_grp,tasks,processes,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision,monitor_grp,module_cache]"]
+# scope_worker: background task processor — headless Cloud Run job runner
+scope_worker = ["dynastore[core,module_catalog,gcp,extension_dwh,index_grp,tasks,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision]"]
 # scope_tools: proxy + template tools service — no auth
 scope_tools = ["dynastore[core,template,notebooks,cache]"]
 # scope_maps: map tiles/styles service — no auth
@@ -319,6 +319,8 @@ storage_elasticsearch_obfuscated = "dynastore.modules.storage.drivers.elasticsea
 storage_elasticsearch_assets = "dynastore.modules.storage.drivers.elasticsearch:ElasticsearchAssetsDriver"
 storage_duckdb = "dynastore.modules.storage.drivers.duckdb:DuckDBStorageDriver"
 storage_iceberg = "dynastore.modules.storage.drivers.iceberg:IcebergStorageDriver"
+metadata_postgresql = "dynastore.modules.catalog.pg_metadata_driver:PostgresMetadataDriver"
+metadata_elasticsearch = "dynastore.modules.elasticsearch.es_metadata_driver:ElasticsearchMetadataDriver"
 
 [project.entry-points."dynastore.extensions"]
 maps = "dynastore.extensions.maps.maps_service:MapsService"
