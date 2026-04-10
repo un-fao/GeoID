@@ -258,6 +258,20 @@ class EventService(EventBusProtocol):
 
         return decorator
 
+    def unregister(self, event_type: Union[EventType, str], listener: Listener) -> bool:
+        """Remove a previously registered listener. Returns True if found and removed."""
+        e_val = event_type.value if hasattr(event_type, "value") else event_type
+        for bucket in (self._async_listeners, self._sync_listeners):
+            listeners = bucket.get(e_val)
+            if listeners and listener in listeners:
+                listeners.remove(listener)
+                logger.debug(
+                    "Unregistered listener %s.%s for %s",
+                    listener.__module__, listener.__name__, e_val,
+                )
+                return True
+        return False
+
     async def emit(
         self,
         event_type: Union[EventType, str],

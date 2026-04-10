@@ -151,6 +151,7 @@ class ElasticsearchModule(ModuleProtocol):
     async def lifespan(self, app_state: object):
         events = get_protocol(EventBusProtocol)
 
+        _registered: list = []
         if events:
             for etype, handler in [
                 (CatalogEventType.CATALOG_CREATION,         self._on_catalog_upsert),
@@ -170,6 +171,7 @@ class ElasticsearchModule(ModuleProtocol):
                 decorator = events.async_event_listener(etype)
                 if decorator:
                     decorator(handler)
+                    _registered.append((etype, handler))
                 else:
                     logger.warning(
                         "ElasticsearchModule: Failed to register listener for %s", etype
@@ -189,6 +191,8 @@ class ElasticsearchModule(ModuleProtocol):
         try:
             yield
         finally:
+            for etype, handler in _registered:
+                events.unregister(etype, handler)
             await es_client.close()
 
     # ------------------------------------------------------------------

@@ -53,7 +53,7 @@ async def seed_platform_notebook(conn: AsyncConnection, notebook: PlatformNotebo
         INSERT INTO notebooks.platform_notebooks
             (notebook_id, title, description, tags, content, metadata, registered_by, owner_type)
         VALUES
-            (:notebook_id, :title, :description, :tags::jsonb, :content, :metadata, :registered_by, :owner_type)
+            (:notebook_id, :title, :description, :tags, :content, :metadata, :registered_by, :owner_type)
         ON CONFLICT (notebook_id) DO NOTHING
     """)
     params = {
@@ -111,7 +111,7 @@ async def list_platform_notebooks(
         params["q_pat"] = f"%{q}%"
 
     if tags:
-        where_clauses.append("tags @> :tags_json::jsonb")
+        where_clauses.append("tags @> :tags_json")
         params["tags_json"] = json.dumps(tags)
 
     where_sql = " AND ".join(where_clauses)
@@ -163,7 +163,7 @@ async def save_platform_notebook(
         INSERT INTO notebooks.platform_notebooks
             (notebook_id, title, description, tags, content, metadata, registered_by, owner_type, updated_at)
         VALUES
-            (:notebook_id, :title, :description, :tags::jsonb, :content, :metadata, :registered_by, :owner_type, NOW())
+            (:notebook_id, :title, :description, :tags, :content, :metadata, :registered_by, :owner_type, NOW())
         ON CONFLICT (notebook_id) DO UPDATE SET
             title = EXCLUDED.title,
             description = EXCLUDED.description,
