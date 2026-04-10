@@ -58,6 +58,7 @@ Connection lifecycle:
   - **Shutdown**: catalog reference cleared in ``lifespan()`` on app shutdown.
 """
 
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -67,6 +68,7 @@ from typing import Any, AsyncIterator, Dict, FrozenSet, List, Optional, Union
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols.storage_driver import Capability
 from dynastore.models.query_builder import QueryRequest
+from dynastore.modules.concurrency import run_in_thread
 from dynastore.modules.protocols import ModuleProtocol
 from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
 from dynastore.modules.storage.driver_config import IcebergCollectionDriverConfig
@@ -152,8 +154,9 @@ class IcebergStorageDriver(ModuleProtocol):
     preferred_for: FrozenSet[str] = frozenset({"analytics", "features", "write"})
     supported_hints: FrozenSet[str] = frozenset({"analytics", "features", "write"})
 
-    _catalog = None
-    _catalog_loc_key: Optional[str] = None
+    # Thread-safe catalog cache: loc_key → catalog instance, protected by asyncio.Lock.
+    _catalog_cache: Dict[str, Any] = {}
+    _catalog_lock: asyncio.Lock = asyncio.Lock()
 
     def is_available(self) -> bool:
         return _pyiceberg_available()
@@ -184,8 +187,7 @@ class IcebergStorageDriver(ModuleProtocol):
     async def lifespan(self, app_state: object):
         logger.info("IcebergStorageDriver: started")
         yield
-        self._catalog = None
-        self._catalog_loc_key = None
+        self._catalog_cache.clear()
         logger.info("IcebergStorageDriver: stopped")
 
     # ------------------------------------------------------------------
@@ -225,24 +227,16 @@ class IcebergStorageDriver(ModuleProtocol):
         import tempfile
         return f"file://{tempfile.gettempdir()}/iceberg_warehouse"
 
-    def _get_catalog(
+    def _load_catalog_sync(
         self,
         loc: IcebergCollectionDriverConfig,
-        *,
         warehouse: Optional[str] = None,
     ):
-        """Build a PyIceberg catalog from location config + resolved warehouse.
+        """Build a PyIceberg catalog (sync, blocking — called via run_in_thread).
 
         Uses ``pyiceberg.catalog.CatalogType`` enum and PyIceberg constants
         (``TYPE``, ``URI``, ``WAREHOUSE_LOCATION``) instead of string literals.
-
-        The catalog is cached; if the location config key changes, a new
-        catalog is loaded.
         """
-        loc_key = f"{loc.catalog_name}:{loc.catalog_uri}:{loc.catalog_type}"
-        if self._catalog is not None and self._catalog_loc_key == loc_key:
-            return self._catalog
-
         from pyiceberg.catalog import (
             load_catalog,
             CatalogType,
@@ -303,27 +297,43 @@ class IcebergStorageDriver(ModuleProtocol):
         # Future: elif resolved_wh.startswith("s3://"):
         #     from pyiceberg.io import S3_REGION, S3_ACCESS_KEY_ID, ...
 
-        self._catalog = load_catalog(
+        catalog = load_catalog(
             loc.catalog_name or "default", **catalog_props
         )
-        self._catalog_loc_key = loc_key
         logger.debug(
             "IcebergStorageDriver: loaded %s catalog '%s' (warehouse=%s)",
             cat_type.value,
             loc.catalog_name or "default",
             resolved_wh or "none",
         )
-        return self._catalog
+        return catalog
 
     async def _ensure_catalog(
         self, loc: IcebergCollectionDriverConfig, catalog_id: str
     ):
-        """Async wrapper: resolve warehouse then get/create catalog."""
+        """Thread-safe catalog resolution with async lock.
+
+        Uses double-checked locking: fast path (no lock) for cache hit,
+        lock-protected path for cache miss with ``run_in_thread`` to
+        offload the blocking ``load_catalog()`` call.
+        """
         loc_key = f"{loc.catalog_name}:{loc.catalog_uri}:{loc.catalog_type}"
-        if self._catalog is not None and self._catalog_loc_key == loc_key:
-            return self._catalog
-        warehouse = await self._resolve_warehouse(loc, catalog_id)
-        return self._get_catalog(loc, warehouse=warehouse)
+
+        # Fast path: cache hit (no lock)
+        if loc_key in self._catalog_cache:
+            return self._catalog_cache[loc_key]
+
+        async with self._catalog_lock:
+            # Double-check after acquiring lock
+            if loc_key in self._catalog_cache:
+                return self._catalog_cache[loc_key]
+
+            warehouse = await self._resolve_warehouse(loc, catalog_id)
+            catalog = await run_in_thread(
+                self._load_catalog_sync, loc, warehouse
+            )
+            self._catalog_cache[loc_key] = catalog
+            return catalog
 
     def _table_identifier(
         self, loc: IcebergCollectionDriverConfig, catalog_id: str, collection_id: str
@@ -440,7 +450,7 @@ class IcebergStorageDriver(ModuleProtocol):
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
-        table = catalog.load_table(table_id)
+        table = await run_in_thread(catalog.load_table, table_id)
 
         on_conflict = policy.on_conflict
 
@@ -452,9 +462,9 @@ class IcebergStorageDriver(ModuleProtocol):
             if ext_ids:
                 from pyiceberg.expressions import In
                 from dynastore.modules.storage.driver_config import AssetConflictPolicy
-                existing = table.scan().filter(
-                    In("_external_id", ext_ids)
-                ).to_arrow()
+                existing = await run_in_thread(
+                    lambda: table.scan().filter(In("_external_id", ext_ids)).to_arrow()
+                )
                 existing_ids = set(existing.column("_external_id").to_pylist()) if existing.num_rows > 0 else set()
 
                 if (
@@ -480,7 +490,7 @@ class IcebergStorageDriver(ModuleProtocol):
             if ext_ids:
                 from pyiceberg.expressions import In
                 try:
-                    table.delete(delete_filter=In("_external_id", ext_ids))
+                    await run_in_thread(table.delete, delete_filter=In("_external_id", ext_ids))
                 except Exception as e:
                     logger.warning(
                         "Iceberg UPDATE: delete of existing external_ids failed — "
@@ -496,7 +506,7 @@ class IcebergStorageDriver(ModuleProtocol):
             for row in rows
         ]
         pa_table = pa.Table.from_pylist(filtered_rows, schema=arrow_schema)
-        table.append(pa_table)
+        await run_in_thread(table.append, pa_table)
         del pa_table  # release memory early (Cloud Run)
 
         return dicts_to_features(rows)
@@ -566,12 +576,12 @@ class IcebergStorageDriver(ModuleProtocol):
         }
 
         try:
-            loc = await self._resolve_location(catalog_id, collection_id)
+            loc = await self._get_location_async(catalog_id, collection_id)
             if not loc:
                 return {}
             catalog = await self._ensure_catalog(loc, catalog_id)
             table_id = self._table_identifier(loc, catalog_id, collection_id)
-            table = catalog.load_table(table_id)
+            table = await run_in_thread(catalog.load_table, table_id)
 
             result = {}
             for field in table.schema().fields:
@@ -612,7 +622,7 @@ class IcebergStorageDriver(ModuleProtocol):
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
-        table = catalog.load_table(table_id)
+        table = await run_in_thread(catalog.load_table, table_id)
 
         scan = table.scan()
 
@@ -626,7 +636,7 @@ class IcebergStorageDriver(ModuleProtocol):
         effective_limit = request.limit if request and request.limit else limit
         effective_offset = request.offset if request and request.offset else offset
 
-        pa_table = scan.to_arrow()
+        pa_table = await run_in_thread(scan.to_arrow)
 
         count = 0
         for i, row in enumerate(pa_table.to_pylist()):
@@ -729,25 +739,18 @@ class IcebergStorageDriver(ModuleProtocol):
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
-        table = catalog.load_table(table_id)
+        table = await run_in_thread(catalog.load_table, table_id)
 
         from pyiceberg.expressions import In
         row_filter = In("id", entity_ids)
 
         if soft:
-            # Soft delete: Iceberg positional/equality deletes — writes delete
-            # files that mark rows as deleted without rewriting data files.
-            # The rows remain in data files but are filtered out on reads.
-            table.delete(delete_filter=row_filter)
+            await run_in_thread(table.delete, delete_filter=row_filter)
         else:
-            # Hard delete: delete then compact — removes rows and rewrites
-            # data files to physically eliminate the deleted data.
-            table.delete(delete_filter=row_filter)
+            await run_in_thread(table.delete, delete_filter=row_filter)
             try:
-                table.compact()
+                await run_in_thread(table.compact)
             except (AttributeError, NotImplementedError):
-                # compact() may not be available in all PyIceberg versions;
-                # the delete alone is sufficient (data excluded on next read).
                 pass
 
         return len(entity_ids)
@@ -770,14 +773,14 @@ class IcebergStorageDriver(ModuleProtocol):
         namespace = loc.namespace or catalog_id
 
         try:
-            catalog.create_namespace(namespace)
+            await run_in_thread(catalog.create_namespace, namespace)
         except Exception:
             pass  # namespace may already exist
 
         if collection_id:
             table_id = self._table_identifier(loc, catalog_id, collection_id)
             try:
-                catalog.load_table(table_id)
+                await run_in_thread(catalog.load_table, table_id)
             except Exception:
                 from pyiceberg.schema import Schema as IcebergSchema
                 from pyiceberg.types import NestedField, StringType
@@ -786,7 +789,7 @@ class IcebergStorageDriver(ModuleProtocol):
                     NestedField(2, "geometry", StringType(), required=False),
                     NestedField(3, "properties", StringType(), required=False),
                 )
-                catalog.create_table(table_id, schema=iceberg_schema)
+                await run_in_thread(catalog.create_table, table_id, schema=iceberg_schema)
 
     async def drop_storage(
         self,
@@ -810,14 +813,18 @@ class IcebergStorageDriver(ModuleProtocol):
             if collection_id:
                 table_id = self._table_identifier(loc, catalog_id, collection_id)
                 try:
-                    table = catalog.load_table(table_id)
-                    with table.transaction() as tx:
-                        tx.set_properties(
-                            **{
-                                "dynastore.deleted": "true",
-                                "dynastore.deleted_at": datetime.now(tz=timezone.utc).isoformat(),
-                            }
-                        )
+                    table = await run_in_thread(catalog.load_table, table_id)
+
+                    def _soft_drop():
+                        with table.transaction() as tx:
+                            tx.set_properties(
+                                **{
+                                    "dynastore.deleted": "true",
+                                    "dynastore.deleted_at": datetime.now(tz=timezone.utc).isoformat(),
+                                }
+                            )
+
+                    await run_in_thread(_soft_drop)
                 except Exception as e:
                     logger.warning("Iceberg soft drop failed: %s", e)
             return
@@ -825,13 +832,13 @@ class IcebergStorageDriver(ModuleProtocol):
         if collection_id:
             table_id = self._table_identifier(loc, catalog_id, collection_id)
             try:
-                catalog.drop_table(table_id)
+                await run_in_thread(catalog.drop_table, table_id)
             except Exception as e:
                 logger.warning("Iceberg drop_table failed: %s", e)
         else:
             namespace = loc.namespace or catalog_id
             try:
-                catalog.drop_namespace(namespace)
+                await run_in_thread(catalog.drop_namespace, namespace)
             except Exception as e:
                 logger.warning("Iceberg drop_namespace failed: %s", e)
 
@@ -850,23 +857,24 @@ class IcebergStorageDriver(ModuleProtocol):
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
-        table = catalog.load_table(table_id)
+        table = await run_in_thread(catalog.load_table, table_id)
 
-        pa_table = table.scan().to_arrow()
+        pa_table = await run_in_thread(lambda: table.scan().to_arrow())
 
-        if format == "csv":
-            import pyarrow.csv as pcsv
-            pcsv.write_csv(pa_table, target_path)
-        elif format == "json":
-            rows = pa_table.to_pylist()
-            import builtins
-            with builtins.open(target_path, "w") as f:
-                json.dump(rows, f)
-        else:
-            # Default to parquet for any unrecognized format
-            import pyarrow.parquet as pq
-            pq.write_table(pa_table, target_path)
+        def _export_to_file():
+            if format == "csv":
+                import pyarrow.csv as pcsv
+                pcsv.write_csv(pa_table, target_path)
+            elif format == "json":
+                _rows = pa_table.to_pylist()
+                import builtins
+                with builtins.open(target_path, "w") as f:
+                    json.dump(_rows, f)
+            else:
+                import pyarrow.parquet as pq
+                pq.write_table(pa_table, target_path)
 
+        await run_in_thread(_export_to_file)
         del pa_table  # release memory early (Cloud Run)
         return target_path
 
@@ -907,7 +915,7 @@ class IcebergStorageDriver(ModuleProtocol):
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
-        table = catalog.load_table(table_id)
+        table = await run_in_thread(catalog.load_table, table_id)
 
         snapshots = []
         for entry in table.history()[:limit]:
@@ -939,10 +947,10 @@ class IcebergStorageDriver(ModuleProtocol):
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
-        table = catalog.load_table(table_id)
+        table = await run_in_thread(catalog.load_table, table_id)
 
         if label:
-            table.manage_snapshots().create_branch(label)
+            await run_in_thread(lambda: table.manage_snapshots().create_branch(label))
 
         current = table.current_snapshot()
         return SnapshotInfo(
@@ -974,9 +982,9 @@ class IcebergStorageDriver(ModuleProtocol):
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
-        table = catalog.load_table(table_id)
+        table = await run_in_thread(catalog.load_table, table_id)
 
-        table.manage_snapshots().rollback_to(int(snapshot_id))
+        await run_in_thread(lambda: table.manage_snapshots().rollback_to(int(snapshot_id)))
 
     async def read_at_snapshot(
         self,
@@ -995,7 +1003,7 @@ class IcebergStorageDriver(ModuleProtocol):
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
-        table = catalog.load_table(table_id)
+        table = await run_in_thread(catalog.load_table, table_id)
 
         scan = table.scan(snapshot_id=int(snapshot_id))
 
@@ -1007,7 +1015,7 @@ class IcebergStorageDriver(ModuleProtocol):
                     bbox = f.value
 
         effective_limit = request.limit if request and request.limit else limit
-        pa_table = scan.to_arrow()
+        pa_table = await run_in_thread(scan.to_arrow)
 
         count = 0
         for row in pa_table.to_pylist():
@@ -1039,7 +1047,7 @@ class IcebergStorageDriver(ModuleProtocol):
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
-        table = catalog.load_table(table_id)
+        table = await run_in_thread(catalog.load_table, table_id)
 
         # Find snapshot at or before the given timestamp
         target_ms = int(as_of.timestamp() * 1000)
@@ -1075,7 +1083,7 @@ class IcebergStorageDriver(ModuleProtocol):
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
-        table = catalog.load_table(table_id)
+        table = await run_in_thread(catalog.load_table, table_id)
 
         versions = []
         for schema in table.metadata.schemas:
@@ -1127,22 +1135,25 @@ class IcebergStorageDriver(ModuleProtocol):
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
-        table = catalog.load_table(table_id)
+        table = await run_in_thread(catalog.load_table, table_id)
 
-        with table.update_schema() as update:
-            for col in changes.add_columns:
-                iceberg_type = _resolve_iceberg_type(col.type)
-                update.add_column(col.name, iceberg_type, doc=col.doc)
+        def _apply_schema_evolution():
+            with table.update_schema() as update:
+                for col in changes.add_columns:
+                    iceberg_type = _resolve_iceberg_type(col.type)
+                    update.add_column(col.name, iceberg_type, doc=col.doc)
 
-            for old_name, new_name in changes.rename_columns.items():
-                update.rename_column(old_name, new_name)
+                for old_name, new_name in changes.rename_columns.items():
+                    update.rename_column(old_name, new_name)
 
-            for col_name in changes.drop_columns:
-                update.delete_column(col_name)
+                for col_name in changes.drop_columns:
+                    update.delete_column(col_name)
 
-            for field_name, new_type in changes.type_promotions.items():
-                iceberg_type = _resolve_iceberg_type(new_type)
-                update.update_column(field_name, field_type=iceberg_type)
+                for field_name, new_type in changes.type_promotions.items():
+                    iceberg_type = _resolve_iceberg_type(new_type)
+                    update.update_column(field_name, field_type=iceberg_type)
+
+        await run_in_thread(_apply_schema_evolution)
 
         # Return the new schema version
         current_schema = table.schema()
@@ -1183,7 +1194,7 @@ class IcebergStorageDriver(ModuleProtocol):
         try:
             catalog = await self._ensure_catalog(loc, catalog_id)
             table_id = self._table_identifier(loc, catalog_id, collection_id)
-            table = catalog.load_table(table_id)
+            table = await run_in_thread(catalog.load_table, table_id)
         except Exception:
             return None
 
@@ -1217,7 +1228,7 @@ class IcebergStorageDriver(ModuleProtocol):
         try:
             catalog = await self._ensure_catalog(loc, catalog_id)
             table_id = self._table_identifier(loc, catalog_id, collection_id)
-            table = catalog.load_table(table_id)
+            table = await run_in_thread(catalog.load_table, table_id)
         except Exception:
             logger.warning(
                 "IcebergStorageDriver.set_collection_metadata: table not found "
@@ -1232,5 +1243,8 @@ class IcebergStorageDriver(ModuleProtocol):
             if val is not None
         }
         if props:
-            with table.transaction() as tx:
-                tx.set_properties(**props)
+            def _set_props():
+                with table.transaction() as tx:
+                    tx.set_properties(**props)
+
+            await run_in_thread(_set_props)

@@ -34,6 +34,7 @@ etc.), not *what operation* it performs.  Operations are defined in
 ``RoutingPluginConfig`` (see ``routing_config.py``).
 """
 
+import os
 from enum import StrEnum
 from typing import Any, ClassVar, Dict, FrozenSet, List, Optional
 
@@ -42,7 +43,40 @@ from pydantic import ConfigDict, Field, SerializeAsAny, field_validator, model_v
 from dynastore.modules.db_config.platform_config_service import (
     Immutable,
     PluginConfig,
+    WriteOnce,
 )
+
+
+# ---------------------------------------------------------------------------
+# Driver-level configuration — env-var-based, follows DBConfig pattern
+# ---------------------------------------------------------------------------
+
+
+class DuckDBConfig:
+    """DuckDB driver-level configuration (env vars).
+
+    Controls connection pooling, resource limits, and extension loading for
+    the DuckDB storage driver.  Follows the same pattern as
+    ``DBConfig`` (``DB_POOL_*``) and Elasticsearch (``ES_*``).
+    """
+
+    pool_size: int = int(os.getenv("DUCKDB_POOL_SIZE", "4"))
+    max_memory: str = os.getenv("DUCKDB_MAX_MEMORY", "4GB")
+    threads: int = int(os.getenv("DUCKDB_THREADS", "4"))
+    extensions: str = os.getenv("DUCKDB_EXTENSIONS", "spatial")
+    read_timeout: int = int(os.getenv("DUCKDB_READ_TIMEOUT", "30"))
+    write_timeout: int = int(os.getenv("DUCKDB_WRITE_TIMEOUT", "60"))
+    fetch_chunk_size: int = int(os.getenv("DUCKDB_FETCH_CHUNK_SIZE", "500"))
+
+
+class IcebergConfig:
+    """Iceberg driver-level configuration (env vars).
+
+    Controls catalog pool sizing and timeouts for the Iceberg storage driver.
+    """
+
+    catalog_pool_size: int = int(os.getenv("ICEBERG_CATALOG_POOL_SIZE", "4"))
+    catalog_timeout: int = int(os.getenv("ICEBERG_CATALOG_TIMEOUT", "30"))
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +140,7 @@ class AssetConflictPolicy(StrEnum):
 class CollectionWritePolicy(PluginConfig):
     """Collection-level write behaviour, applied by all capable drivers.
 
-    Registered as ``plugin_id = "write_policy"`` in the config waterfall
+    Registered as ``plugin_id = "collection:write_policy"`` in the config waterfall
     (collection > catalog > platform > code default).
 
     All drivers (PG, ES, Iceberg, DuckDB) read this single config during
@@ -114,7 +148,7 @@ class CollectionWritePolicy(PluginConfig):
 
         configs = get_protocol(ConfigsProtocol)
         policy = await configs.get_config(
-            "write_policy", catalog_id=catalog_id, collection_id=collection_id
+            "collection:write_policy", catalog_id=catalog_id, collection_id=collection_id
         )
 
     The ``context`` dict passed to ``write_entities()`` carries runtime values
@@ -132,7 +166,7 @@ class CollectionWritePolicy(PluginConfig):
           on_asset_conflict = AssetConflictPolicy.REFUSE  # reject whole batch
     """
 
-    _plugin_id: ClassVar[Optional[str]] = "write_policy"
+    _plugin_id: ClassVar[Optional[str]] = "collection:write_policy"
 
     on_conflict: WriteConflictPolicy = Field(
         WriteConflictPolicy.UPDATE,
@@ -186,7 +220,7 @@ class CollectionWritePolicy(PluginConfig):
 class DriverPluginConfig(PluginConfig):
     """Base for all per-driver configs.
 
-    Subclasses **must** set ``_plugin_id = "driver:<driver_id>"`` to
+    Subclasses **must** set ``_plugin_id = "driver:{domain}:{driver_id}"`` to
     auto-register with the ``ConfigRegistry``.
 
     Fields shared across all drivers:
@@ -229,7 +263,7 @@ class PostgresCollectionDriverConfig(CollectionDriverConfig):
     cannot be changed once the physical table exists.
     """
 
-    _plugin_id: ClassVar[Optional[str]] = "driver:postgresql"
+    _plugin_id: ClassVar[Optional[str]] = "driver:records:postgresql"
 
     model_config = ConfigDict(extra="allow")
 
@@ -237,12 +271,13 @@ class PostgresCollectionDriverConfig(CollectionDriverConfig):
         default=frozenset({DriverCapability.SYNC, DriverCapability.TRANSACTIONAL}),
     )
 
-    # From PostgresStorageLocationConfig
-    physical_schema: Optional[str] = Field(
-        default=None, description="Override auto-resolved schema"
+    # From PostgresStorageLocationConfig — WriteOnce: None → value allowed (set by
+    # ensure_storage()); once set to a non-None value, mutation is rejected.
+    physical_schema: WriteOnce[Optional[str]] = Field(
+        default=None, description="Override auto-resolved schema. Set once by ensure_storage()."
     )
-    physical_table: Optional[str] = Field(
-        default=None, description="Override auto-resolved table"
+    physical_table: WriteOnce[Optional[str]] = Field(
+        default=None, description="Override auto-resolved table. Set once by ensure_storage()."
     )
 
     # From CollectionPluginConfig — PG-specific structural fields
@@ -391,7 +426,7 @@ class ElasticsearchCollectionDriverConfig(CollectionDriverConfig):
     an external SFEOS app running in read-only mode.
     """
 
-    _plugin_id: ClassVar[Optional[str]] = "driver:elasticsearch"
+    _plugin_id: ClassVar[Optional[str]] = "driver:records:elasticsearch"
 
     model_config = ConfigDict(extra="allow")
 
@@ -418,7 +453,7 @@ class DuckDbCollectionDriverConfig(CollectionDriverConfig):
     Absorbs fields previously in ``FileStorageLocationConfig``.
     """
 
-    _plugin_id: ClassVar[Optional[str]] = "driver:duckdb"
+    _plugin_id: ClassVar[Optional[str]] = "driver:records:duckdb"
 
     capabilities: FrozenSet[str] = Field(
         default=frozenset({DriverCapability.ASYNC, DriverCapability.BATCH}),
@@ -439,7 +474,7 @@ class IcebergCollectionDriverConfig(CollectionDriverConfig):
     Absorbs fields previously in ``OTFStorageLocationConfig``.
     """
 
-    _plugin_id: ClassVar[Optional[str]] = "driver:iceberg"
+    _plugin_id: ClassVar[Optional[str]] = "driver:records:iceberg"
 
     model_config = ConfigDict(extra="allow")
 
@@ -484,7 +519,7 @@ class IcebergCollectionDriverConfig(CollectionDriverConfig):
 class PostgresAssetDriverConfig(AssetDriverConfig):
     """PostgreSQL asset driver config."""
 
-    _plugin_id: ClassVar[Optional[str]] = "driver:postgresql_assets"
+    _plugin_id: ClassVar[Optional[str]] = "driver:asset:postgresql"
 
     capabilities: FrozenSet[str] = Field(
         default=frozenset({DriverCapability.SYNC, DriverCapability.TRANSACTIONAL}),
@@ -494,7 +529,7 @@ class PostgresAssetDriverConfig(AssetDriverConfig):
 class ElasticsearchAssetDriverConfig(AssetDriverConfig):
     """Elasticsearch asset driver config."""
 
-    _plugin_id: ClassVar[Optional[str]] = "driver:elasticsearch_assets"
+    _plugin_id: ClassVar[Optional[str]] = "driver:asset:elasticsearch"
 
     model_config = ConfigDict(extra="allow")
 
@@ -508,7 +543,7 @@ class ElasticsearchAssetDriverConfig(AssetDriverConfig):
 # Convenience helpers
 # ---------------------------------------------------------------------------
 
-WRITE_POLICY_PLUGIN_ID = "write_policy"
+WRITE_POLICY_PLUGIN_ID = "collection:write_policy"
 
 # Register CollectionWritePolicy so the waterfall can look it up
 from dynastore.modules.db_config.platform_config_service import ConfigRegistry as _CR  # noqa: E402
@@ -541,3 +576,72 @@ class FeatureTypePluginConfig(PluginConfig):
 _CR.register(FEATURE_TYPE_PLUGIN_ID, FeatureTypePluginConfig)
 
 
+# ---------------------------------------------------------------------------
+# Apply handler — write_policy ↔ feature_type cross-validation (Task E)
+# ---------------------------------------------------------------------------
+
+import logging as _logging  # noqa: E402
+
+_logger = _logging.getLogger(__name__)
+
+_ALWAYS_VALID_EXTERNAL_ID_FIELDS = frozenset({"geoid", "id"})
+
+
+async def _on_apply_write_policy(
+    config: "CollectionWritePolicy",
+    catalog_id: "Optional[str]",
+    collection_id: "Optional[str]",
+    db_resource: "Optional[Any]",
+) -> None:
+    """Cross-validate write_policy.external_id_field against feature_type.fields.
+
+    If ``external_id_field`` is set and a ``feature_type`` config exists at the
+    same scope, the referenced field must appear in ``feature_type.fields``.
+
+    ``external_id_field = "geoid"`` or ``"id"`` are always accepted (system fields).
+    If ``feature_type`` is not yet configured, validation is skipped.
+    """
+    ext_id = config.external_id_field
+    if not ext_id or ext_id in _ALWAYS_VALID_EXTERNAL_ID_FIELDS:
+        return
+
+    if not (catalog_id and collection_id):
+        return  # only validate at collection scope
+
+    # Extract leaf field name from dot-path (e.g. "properties.code" → "code")
+    field_key = ext_id.split(".")[-1]
+
+    try:
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.tools.discovery import get_protocol
+
+        configs = get_protocol(ConfigsProtocol)
+        if not configs:
+            return
+
+        feature_type = await configs.get_config(
+            FEATURE_TYPE_PLUGIN_ID,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+        )
+        defined_fields = getattr(feature_type, "fields", {})
+        if not defined_fields:
+            return  # no fields defined yet — skip validation
+
+        if field_key not in defined_fields:
+            raise ValueError(
+                f"write_policy.external_id_field '{ext_id}' (field key: '{field_key}') "
+                f"is not defined in feature_type.fields for {catalog_id}/{collection_id}. "
+                f"Defined fields: {sorted(defined_fields)}. "
+                f"Set 'geoid' or 'id' to use system identity fields without feature_type restriction."
+            )
+    except ValueError:
+        raise
+    except Exception as exc:
+        _logger.debug(
+            "write_policy cross-validation skipped for %s/%s: %s",
+            catalog_id, collection_id, exc,
+        )
+
+
+_CR.register_apply_handler(WRITE_POLICY_PLUGIN_ID, _on_apply_write_policy)

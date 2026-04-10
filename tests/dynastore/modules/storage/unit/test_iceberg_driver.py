@@ -750,9 +750,7 @@ class TestIcebergLifespan:
     @pytest.mark.asyncio
     async def test_lifespan_clears_catalog(self):
         driver = IcebergStorageDriver()
-        driver._catalog = "something"
-        driver._catalog_loc_key = "key"
+        driver._catalog_cache["test_key"] = "something"
         async with driver.lifespan(object()):
             pass
-        assert driver._catalog is None
-        assert driver._catalog_loc_key is None
+        assert driver._catalog_cache == {}
