@@ -524,8 +524,10 @@ class IcebergStorageDriver(ModuleProtocol):
         return CollectionWritePolicy()
 
     @staticmethod
-    def _extract_external_id(row: dict, field_path: str) -> Optional[str]:
+    def _extract_external_id(row: dict, field_path: Optional[str]) -> Optional[str]:
         """Extract external_id using dot-notation path from a row dict."""
+        if not field_path:
+            return None
         val = row
         for part in field_path.split("."):
             if isinstance(val, dict):

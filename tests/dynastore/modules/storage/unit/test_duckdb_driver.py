@@ -163,5 +163,6 @@ class TestDuckDBEnsureStorage:
         loc = DuckDbCollectionDriverConfig(format="parquet", path="/nonexistent/file.parquet")
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=loc):
             with patch.object(driver, "_get_conn", return_value=MagicMock()):
-                with pytest.raises(FileNotFoundError):
-                    await driver.ensure_storage("cat1", "col1")
+                # Missing read-only source path is logged as info, not raised —
+                # the file will be populated by ETL or the first write_entities() call.
+                await driver.ensure_storage("cat1", "col1")  # should not raise

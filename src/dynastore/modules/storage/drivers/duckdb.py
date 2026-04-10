@@ -200,7 +200,7 @@ class DuckDBStorageDriver(ModuleProtocol):
             configs = get_protocol(ConfigsProtocol)
             if not configs:
                 return None
-            config = await configs.get_config(
+            config = await configs.get_config(  # type: ignore[attr-defined]
                 DuckDbCollectionDriverConfig._plugin_id,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
