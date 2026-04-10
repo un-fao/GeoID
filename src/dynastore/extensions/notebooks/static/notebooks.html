@@ -102,6 +102,14 @@
   }
   .viewer-header h2 { font-size: 1.1rem; font-weight: 600; color: #fff; }
   .viewer-body { flex: 1; overflow-y: auto; padding: 24px; }
+  .viewer-body.hidden { display: none; }
+
+  /* JupyterLite iframe */
+  .lite-frame {
+    display: none; flex: 1; border: none; width: 100%; height: 100%;
+    background: var(--bg);
+  }
+  .lite-frame.active { display: block; }
 
   /* Notebook cell rendering */
   .nb-cell { margin-bottom: 16px; }
@@ -184,11 +192,15 @@
     <div class="viewer-header">
       <h2 id="viewer-title">Notebook</h2>
       <div style="display:flex;gap:8px;">
+        <button class="btn btn-primary btn-sm" id="btn-run-lite" onclick="toggleLiteMode()" title="Run in JupyterLite"><i class="fa-solid fa-play"></i> <span id="btn-run-label">Run</span></button>
+        <button class="btn btn-outline btn-sm" id="btn-download" onclick="downloadNotebook()" title="Download .ipynb"><i class="fa-solid fa-download"></i> Download</button>
+        <button class="btn btn-outline btn-sm" id="btn-share" onclick="shareNotebook()" title="Copy share link"><i class="fa-solid fa-share-nodes"></i> Share</button>
         <button class="btn btn-outline btn-sm" id="btn-copy-to-catalog" onclick="copyCurrentToCatalog()" title="Copy to catalog"><i class="fa-solid fa-copy"></i> Copy to Catalog</button>
         <button class="btn btn-ghost" onclick="closeViewer()"><i class="fa-solid fa-xmark"></i></button>
       </div>
     </div>
     <div class="viewer-body" id="viewer-body"></div>
+    <iframe class="lite-frame" id="lite-frame" sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe>
   </div>
 </div>
 
@@ -531,6 +543,136 @@ if (window.addEventListener) {
     if (currentTab === 'catalog') loadCatalogNotebooks();
   });
 }
+
+// --- Download / Share ---
+function downloadNotebook() {
+  if (!currentNotebook || !currentNotebook.data) { toast('No notebook loaded', true); return; }
+  var content = JSON.stringify(currentNotebook.data, null, 2);
+  var blob = new Blob([content], { type: 'application/x-ipynb+json' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = (currentNotebook.id || 'notebook') + '.ipynb';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  toast('Downloaded: ' + a.download);
+}
+
+function shareNotebook() {
+  if (!currentNotebook) { toast('No notebook loaded', true); return; }
+  // Build a direct link to this notebook via the API
+  var base = window.location.origin + API_BASE;
+  var link;
+  if (currentNotebookSource === 'platform') {
+    link = base + '/notebooks/platform/' + encodeURIComponent(currentNotebook.id);
+  } else {
+    var cat = getSelectedCatalog();
+    if (!cat) { toast('Select a catalog to share catalog notebooks', true); return; }
+    link = base + '/notebooks/' + encodeURIComponent(cat) + '/' + encodeURIComponent(currentNotebook.id);
+  }
+  // Copy to clipboard
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(link).then(function() {
+      toast('Link copied: ' + link);
+    }).catch(function() {
+      prompt('Copy this link:', link);
+    });
+  } else {
+    prompt('Copy this link:', link);
+  }
+}
+
+// --- JupyterLite integration ---
+let liteActive = false;
+let liteReady = false;
+
+function getLiteBaseUrl() {
+  // JupyterLite assets served at /web/extension-static/lite/
+  return API_BASE + '/web/extension-static/lite/lab/index.html';
+}
+
+function toggleLiteMode() {
+  var body = document.getElementById('viewer-body');
+  var frame = document.getElementById('lite-frame');
+  var label = document.getElementById('btn-run-label');
+
+  if (liteActive) {
+    // Switch back to read-only view
+    body.classList.remove('hidden');
+    frame.classList.remove('active');
+    frame.src = '';
+    label.textContent = 'Run';
+    liteActive = false;
+    liteReady = false;
+    return;
+  }
+
+  // Switch to JupyterLite
+  body.classList.add('hidden');
+  frame.classList.add('active');
+  label.textContent = 'View';
+  liteActive = true;
+
+  // Load JupyterLite
+  var liteUrl = getLiteBaseUrl();
+  frame.src = liteUrl;
+
+  // Wait for JupyterLite to signal readiness, then inject notebook
+  frame.onload = function() {
+    // Give JupyterLite time to initialize, then send notebook content
+    setTimeout(function() { sendNotebookToLite(); }, 3000);
+  };
+}
+
+function sendNotebookToLite() {
+  if (!currentNotebook || !currentNotebook.data) return;
+  var frame = document.getElementById('lite-frame');
+  if (!frame.contentWindow) return;
+
+  var token = null;
+  if (window.DynaStoreContext && window.DynaStoreContext.token) {
+    token = window.DynaStoreContext.token;
+  }
+
+  // Send context + notebook content via postMessage
+  frame.contentWindow.postMessage({
+    type: 'INIT_CONTEXT',
+    token: token,
+    catalogCode: getSelectedCatalog(),
+    baseUrl: API_BASE
+  }, '*');
+
+  frame.contentWindow.postMessage({
+    type: 'LOAD_NOTEBOOK',
+    notebook: currentNotebook.data,
+    notebookId: currentNotebook.id
+  }, '*');
+}
+
+// Listen for NOTEBOOK_READY from JupyterLite iframe
+window.addEventListener('message', function(event) {
+  if (event.data && event.data.type === 'NOTEBOOK_READY') {
+    liteReady = true;
+    // Re-send notebook if we have one queued
+    sendNotebookToLite();
+  }
+});
+
+// Reset lite state when viewer closes
+var _origCloseViewer = closeViewer;
+closeViewer = function() {
+  liteActive = false;
+  liteReady = false;
+  var frame = document.getElementById('lite-frame');
+  if (frame) { frame.src = ''; frame.classList.remove('active'); }
+  var body = document.getElementById('viewer-body');
+  if (body) { body.classList.remove('hidden'); }
+  var label = document.getElementById('btn-run-label');
+  if (label) { label.textContent = 'Run'; }
+  _origCloseViewer();
+};
 
 // --- Init ---
 loadPlatformNotebooks();

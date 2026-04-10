@@ -6,6 +6,7 @@ from .example_registry import register_platform_notebook, get_registered_noteboo
 from dynastore.modules.catalog import notebooks as _catalog_notebooks  # noqa: F401
 from dynastore.modules.storage import notebooks as _storage_notebooks  # noqa: F401
 from dynastore.modules.elasticsearch import notebooks as _es_notebooks  # noqa: F401
+from dynastore.tasks.ingestion import notebooks as _ingestion_notebooks  # noqa: F401
 
 __all__ = [
     "NotebooksModule",
