@@ -1,3 +1,18 @@
+# STAGE 0: JupyterLite Builder — pre-builds browser-based Python kernel (Pyodide)
+FROM python:3.12-slim AS jupyterlite-builder
+
+WORKDIR /build
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install jupyterlite-core jupyterlite-pyodide-kernel
+
+COPY src/dynastore/extensions/notebooks/jupyterlite/ ./lite-config/
+
+RUN jupyter lite build \
+    --lite-dir ./lite-config \
+    --output-dir ./lite-output \
+    --contents ""
+
 # STAGE 1: Builder (Production dependencies)
 FROM ghcr.io/osgeo/gdal:ubuntu-full-3.12.3 AS builder
 
@@ -44,10 +59,21 @@ RUN chmod +x /usr/local/bin/start.sh /usr/local/bin/start-task.sh
 # SCOPE selects which pyproject.toml extras to install.
 # Set per-service via docker-compose.yml build args (from .env) or CI.
 ARG SCOPE=all
+# Set BUILD_JUPYTERLITE=false for services that do not include the notebooks scope (e.g. worker).
+ARG BUILD_JUPYTERLITE=false
 # Use buildkit cache for pip
 RUN --mount=type=cache,target=/root/.cache/pip \
     ${VENV_PATH}/bin/pip install --upgrade pip setuptools wheel && \
     ${VENV_PATH}/bin/pip install ".[${SCOPE}]" uvicorn gunicorn
+
+# Overlay JupyterLite assets when scope includes notebooks; bridge.js (committed) is preserved
+RUN --mount=type=bind,from=jupyterlite-builder,source=/build/lite-output,target=/tmp/lite-output \
+    if [ "${BUILD_JUPYTERLITE}" = "true" ]; then \
+        cp -r /tmp/lite-output/. "${APP_DIR}/src/dynastore/extensions/notebooks/static/lite/" && \
+        echo "JupyterLite: assets installed"; \
+    else \
+        echo "JupyterLite: skipped (BUILD_JUPYTERLITE=false)"; \
+    fi
 
 EXPOSE 80
 

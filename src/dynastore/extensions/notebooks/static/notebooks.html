@@ -263,7 +263,8 @@ async function loadPlatformNotebooks() {
   try {
     var r = await fetch(API_BASE + '/notebooks/platform');
     if (!r.ok) throw new Error(r.statusText);
-    platformNotebooks = await r.json();
+    var data = await r.json();
+    platformNotebooks = data.items || [];
     renderGrid('platform', platformNotebooks);
   } catch (e) {
     console.error('Failed to load platform notebooks:', e);
@@ -277,7 +278,8 @@ async function loadCatalogNotebooks() {
   try {
     var r = await fetch(API_BASE + '/notebooks/' + encodeURIComponent(cat), { headers: getAuthHeaders() });
     if (!r.ok) throw new Error(r.statusText);
-    catalogNotebooks = await r.json();
+    var data = await r.json();
+    catalogNotebooks = data.items || [];
     renderGrid('catalog', catalogNotebooks);
   } catch (e) {
     console.error('Failed to load catalog notebooks:', e);

@@ -45,6 +45,7 @@ services:
       dockerfile: docker/Dockerfile
       args:
         SCOPE: ${CATALOG_SCOPE:-scope_catalog}
+        BUILD_JUPYTERLITE: "true"
     container_name: geoid_catalog
     restart: always
     env_file: .env
@@ -68,6 +69,7 @@ services:
       dockerfile: docker/Dockerfile
       args:
         SCOPE: ${GEOID_SCOPE:-scope_geoid}
+        BUILD_JUPYTERLITE: "true"
     container_name: geoid_web
     restart: always
     env_file: .env
@@ -90,6 +92,7 @@ services:
       dockerfile: docker/Dockerfile
       args:
         SCOPE: ${WORKER_SCOPE:-scope_worker}
+        BUILD_JUPYTERLITE: "false"
     container_name: geoid_worker
     restart: always
     env_file: .env
@@ -115,6 +118,7 @@ services:
       dockerfile: docker/Dockerfile
       args:
         SCOPE: ${TOOLS_SCOPE:-scope_tools}
+        BUILD_JUPYTERLITE: "true"
     container_name: geoid_tools
     restart: always
     env_file: .env
@@ -138,6 +142,7 @@ services:
       dockerfile: docker/Dockerfile
       args:
         SCOPE: ${MAPS_SCOPE:-scope_maps}
+        BUILD_JUPYTERLITE: "true"
     container_name: geoid_maps
     restart: always
     env_file: .env

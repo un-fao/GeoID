@@ -34,7 +34,6 @@ CREATE TABLE IF NOT EXISTS notebooks.platform_notebooks (
 """
 
 
-
 def _serialize_localized(value) -> Optional[str]:
     """Serialize LocalizedText or plain str to JSON for DB insert."""
     if value is None:

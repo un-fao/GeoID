@@ -405,8 +405,11 @@ class CollectionService:
                 modified = False
                 for sc in injected_configs:
                     if sc.sidecar_type not in current_types:
-                        # Insert at the beginning to ensure they run first (e.g. for pruning)
-                        current_sidecars.insert(0, sc)
+                        # Append so injected sidecars run after core geometry/attributes sidecars.
+                        # Registration order in SidecarRegistry determines relative order of
+                        # injected sidecars: item_metadata is registered before stac_metadata,
+                        # ensuring item_metadata publishes to context first.
+                        current_sidecars.append(sc)
                         current_types.add(sc.sidecar_type)
                         modified = True
 

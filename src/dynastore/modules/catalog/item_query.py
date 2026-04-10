@@ -192,7 +192,11 @@ class ItemQueryMixin:
         )
 
         if request is None:
-            request = QueryRequest(item_ids=item_ids or None)
+            from dynastore.models.query_builder import FieldSelection
+            request = QueryRequest(
+                item_ids=item_ids or None,
+                select=[FieldSelection(field="*")],
+            )
 
         optimizer = QueryOptimizer(col_config)
         sql, params = optimizer.build_optimized_query(request, phys_schema, phys_table)
@@ -414,7 +418,12 @@ class ItemQueryMixin:
             if not phys_schema or not phys_table:
                 return None
 
-            request = QueryRequest(item_ids=[str(item_id)], limit=1)
+            from dynastore.models.query_builder import FieldSelection
+            request = QueryRequest(
+                item_ids=[str(item_id)],
+                limit=1,
+                select=[FieldSelection(field="*")],
+            )
             ctx: Dict[str, Any] = {
                 "catalog_id": catalog_id,
                 "collection_id": collection_id,
