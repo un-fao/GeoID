@@ -209,7 +209,7 @@ class DuckDBStorageDriver(ModuleProtocol):
     """
 
     driver_id: str = "duckdb"
-    driver_type: str = "duckdb"
+    driver_type: str = "driver:records:duckdb"
     priority: int = 30
 
     capabilities: FrozenSet[str] = frozenset({

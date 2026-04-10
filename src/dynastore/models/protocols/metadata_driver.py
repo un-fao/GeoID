@@ -73,11 +73,16 @@ class CollectionMetadataDriverProtocol(Protocol):
 
     ``capabilities`` declares what the driver supports.  Callers check
     membership before invoking capability-gated methods.
+
+    ``description`` is a ``ClassVar[LocalizedText]`` defined statically in each
+    driver class.  It is returned by the driver discovery API and must not be
+    stored in the database.
     """
 
     driver_id: str
     driver_type: str
     capabilities: FrozenSet[str]
+    # description: ClassVar[LocalizedText]  — declared in each concrete driver class
 
     async def get_metadata(
         self,

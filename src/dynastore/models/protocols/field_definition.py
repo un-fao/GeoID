@@ -70,7 +70,7 @@ class EntityLevel(str, Enum):
     ASSET = "asset"
 
 
-FEATURE_TYPE_PLUGIN_ID = "feature_type"
+FEATURE_TYPE_PLUGIN_ID = "collection:feature_type"
 
 
 class FeatureTypeDefinition(BaseModel):
@@ -80,7 +80,7 @@ class FeatureTypeDefinition(BaseModel):
     Drivers use this to create storage with the right structure.
     Extensions use this to build OGC/STAC responses.
 
-    Stored as config ``plugin_id = "feature_type"`` in the waterfall.
+    Stored as config ``plugin_id = "collection:feature_type"`` in the waterfall.
 
     Note: the ``PluginConfig`` subclass used for config registration lives in
     ``modules.storage.driver_config.FeatureTypePluginConfig`` to avoid

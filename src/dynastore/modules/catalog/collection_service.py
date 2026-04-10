@@ -502,7 +502,7 @@ class CollectionService:
             # Sync to non-PG metadata driver (e.g. ES) if configured
             try:
                 meta_driver = await get_metadata_driver(catalog_id)
-                if meta_driver is not None and meta_driver.driver_type != "postgresql":
+                if meta_driver is not None and meta_driver.driver_type != "driver:collection:metadata:postgresql":
                     await meta_driver.upsert_metadata(
                         catalog_id, collection_model.id, metadata_payload,
                     )
@@ -775,7 +775,7 @@ class CollectionService:
             # Sync to non-PG metadata driver (e.g. ES) if configured
             try:
                 meta_driver = await get_metadata_driver(catalog_id)
-                if meta_driver is not None and meta_driver.driver_type != "postgresql":
+                if meta_driver is not None and meta_driver.driver_type != "driver:collection:metadata:postgresql":
                     await meta_driver.upsert_metadata(
                         catalog_id, collection_id, metadata_payload,
                     )
@@ -870,7 +870,7 @@ class CollectionService:
                 # Also delete from non-PG metadata driver if configured
                 try:
                     meta_driver = await get_metadata_driver(catalog_id)
-                    if meta_driver is not None and meta_driver.driver_type != "postgresql":
+                    if meta_driver is not None and meta_driver.driver_type != "driver:collection:metadata:postgresql":
                         await meta_driver.delete_metadata(catalog_id, collection_id)
                 except Exception as _meta_e:
                     logger.warning(

@@ -5,7 +5,7 @@ The database is the single source of truth; cache is invalidated on writes.
 """
 import json
 import logging
-from typing import Dict, List, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -20,8 +20,9 @@ logger = logging.getLogger(__name__)
 PLATFORM_NOTEBOOKS_DDL = """
 CREATE TABLE IF NOT EXISTS notebooks.platform_notebooks (
     notebook_id    VARCHAR NOT NULL PRIMARY KEY,
-    title          TEXT NOT NULL,
-    description    TEXT,
+    title          JSONB NOT NULL,
+    description    JSONB,
+    tags           JSONB DEFAULT '[]'::jsonb,
     content        JSONB NOT NULL,
     metadata       JSONB DEFAULT '{}'::jsonb,
     registered_by  VARCHAR NOT NULL,
@@ -33,19 +34,34 @@ CREATE TABLE IF NOT EXISTS notebooks.platform_notebooks (
 """
 
 
+
+def _serialize_localized(value) -> Optional[str]:
+    """Serialize LocalizedText or plain str to JSON for DB insert."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return json.dumps({"en": value})
+    if isinstance(value, dict):
+        return json.dumps(value)
+    if hasattr(value, "model_dump"):
+        return json.dumps({k: v for k, v in value.model_dump().items() if v is not None})
+    return json.dumps(str(value))
+
+
 async def seed_platform_notebook(conn: AsyncConnection, notebook: PlatformNotebookCreate) -> None:
     """Insert a platform notebook only if it does not already exist."""
     query = text("""
         INSERT INTO notebooks.platform_notebooks
-            (notebook_id, title, description, content, metadata, registered_by, owner_type)
+            (notebook_id, title, description, tags, content, metadata, registered_by, owner_type)
         VALUES
-            (:notebook_id, :title, :description, :content, :metadata, :registered_by, :owner_type)
+            (:notebook_id, :title, :description, :tags::jsonb, :content, :metadata, :registered_by, :owner_type)
         ON CONFLICT (notebook_id) DO NOTHING
     """)
     params = {
         "notebook_id": notebook.notebook_id,
-        "title": notebook.title,
-        "description": notebook.description,
+        "title": _serialize_localized(notebook.title),
+        "description": _serialize_localized(notebook.description),
+        "tags": json.dumps(notebook.tags),
         "content": json.dumps(notebook.content),
         "metadata": json.dumps(notebook.metadata),
         "registered_by": notebook.registered_by,
@@ -66,17 +82,61 @@ async def seed_platform_notebooks(conn: AsyncConnection) -> int:
     return len(entries)
 
 
-@cached(maxsize=128, ttl=300, jitter=30, namespace="platform_notebooks_list", ignore=["conn"])
-async def list_platform_notebooks(conn: AsyncConnection) -> List[Dict[str, Any]]:
-    """List active platform notebooks (metadata only, no content). Cached for 5 min."""
-    query = text("""
-        SELECT notebook_id, title, description, metadata, registered_by, owner_type,
+async def list_platform_notebooks(
+    conn: AsyncConnection,
+    *,
+    q: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """List active platform notebooks with optional filtering and pagination.
+
+    Args:
+        q: Case-insensitive substring match across all language values in title + description.
+        tags: Filter to notebooks containing ALL provided tags.
+        limit: Max results per page.
+        offset: Number of results to skip.
+
+    Returns:
+        ``(items, total_count)`` for pagination.
+    """
+    where_clauses = ["deleted_at IS NULL"]
+    params: Dict[str, Any] = {"limit": limit, "offset": offset}
+
+    if q:
+        where_clauses.append(
+            "(EXISTS (SELECT 1 FROM jsonb_each_text(title) WHERE value ILIKE :q_pat) "
+            " OR EXISTS (SELECT 1 FROM jsonb_each_text(description) WHERE value ILIKE :q_pat))"
+        )
+        params["q_pat"] = f"%{q}%"
+
+    if tags:
+        where_clauses.append("tags @> :tags_json::jsonb")
+        params["tags_json"] = json.dumps(tags)
+
+    where_sql = " AND ".join(where_clauses)
+
+    count_query = text(
+        f"SELECT COUNT(*) FROM notebooks.platform_notebooks WHERE {where_sql}"
+    )
+    total_count = await DQLQuery(
+        count_query, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
+    ).execute(conn, **{k: v for k, v in params.items() if k not in ("limit", "offset")})
+    total_count = total_count or 0
+
+    list_query = text(f"""
+        SELECT notebook_id, title, description, tags, metadata, registered_by, owner_type,
                created_at, updated_at
         FROM notebooks.platform_notebooks
-        WHERE deleted_at IS NULL
-        ORDER BY title
+        WHERE {where_sql}
+        ORDER BY updated_at DESC
+        LIMIT :limit OFFSET :offset
     """)
-    return await DQLQuery(query, result_handler=ResultHandler.ALL_DICTS).execute(conn)
+    rows = await DQLQuery(list_query, result_handler=ResultHandler.ALL_DICTS).execute(
+        conn, **params
+    )
+    return rows, total_count
 
 
 @cached(maxsize=256, ttl=300, jitter=30, namespace="platform_notebooks_get", ignore=["conn"])
@@ -102,25 +162,27 @@ async def save_platform_notebook(
     """Upsert a platform notebook (sysadmin use). Invalidates cache."""
     query = text("""
         INSERT INTO notebooks.platform_notebooks
-            (notebook_id, title, description, content, metadata, registered_by, owner_type, updated_at)
+            (notebook_id, title, description, tags, content, metadata, registered_by, owner_type, updated_at)
         VALUES
-            (:notebook_id, :title, :description, :content, :metadata, :registered_by, :owner_type, NOW())
+            (:notebook_id, :title, :description, :tags::jsonb, :content, :metadata, :registered_by, :owner_type, NOW())
         ON CONFLICT (notebook_id) DO UPDATE SET
             title = EXCLUDED.title,
             description = EXCLUDED.description,
+            tags = EXCLUDED.tags,
             content = EXCLUDED.content,
             metadata = EXCLUDED.metadata,
             registered_by = EXCLUDED.registered_by,
             owner_type = EXCLUDED.owner_type,
             updated_at = NOW(),
             deleted_at = NULL
-        RETURNING notebook_id, title, description, content, metadata, registered_by,
+        RETURNING notebook_id, title, description, tags, content, metadata, registered_by,
                   owner_type, created_at, updated_at, deleted_at
     """)
     params = {
         "notebook_id": notebook.notebook_id,
-        "title": notebook.title,
-        "description": notebook.description,
+        "title": _serialize_localized(notebook.title),
+        "description": _serialize_localized(notebook.description),
+        "tags": json.dumps(notebook.tags),
         "content": json.dumps(notebook.content),
         "metadata": json.dumps(notebook.metadata),
         "registered_by": notebook.registered_by,

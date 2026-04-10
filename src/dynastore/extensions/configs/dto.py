@@ -37,21 +37,36 @@ class WellKnownPlugin(StrEnum):
 
     Use ``GET /configs/plugins`` for the live list; this enum documents
     the most common ones for IDE auto-complete and OpenAPI examples.
+
+    Driver configs follow the namespace ``driver:{domain}:{driver_id}``:
+    - ``driver:records:*``  — collection item storage drivers
+    - ``driver:asset:*``    — asset storage drivers
+    - ``driver:collection:metadata:*`` — collection metadata backends
     """
 
+    # Routing
+    COLLECTION_DRIVERS = "collection:drivers"
+    ASSETS_DRIVERS = "assets:drivers"
+    # Collection-scoped policies
+    WRITE_POLICY = "collection:write_policy"
+    FEATURE_TYPE = "collection:feature_type"
+    ASSET_FEATURE_TYPE = "asset:feature_type"
+    # Service/structural configs
     COLLECTION = "collection"
+    ASSET = "asset"
     STAC = "stac"
-    STORAGE_COLLECTIONS = "storage:collections"
-    STORAGE_ASSETS = "storage:assets"
-    # Deprecated aliases — kept for backward compatibility
-    ROUTING = "routing"
-    ROUTING_ASSETS = "routing_assets"
-    DRIVER_POSTGRESQL = "driver:postgresql"
-    DRIVER_POSTGRESQL_ASSETS = "driver:postgresql_assets"
-    DRIVER_ELASTICSEARCH = "driver:elasticsearch"
-    DRIVER_ELASTICSEARCH_ASSETS = "driver:elasticsearch_assets"
-    DRIVER_DUCKDB = "driver:duckdb"
-    ELASTICSEARCH = "elasticsearch"
+    # Record storage driver configs
+    DRIVER_RECORDS_POSTGRESQL = "driver:records:postgresql"
+    DRIVER_RECORDS_ELASTICSEARCH = "driver:records:elasticsearch"
+    DRIVER_RECORDS_DUCKDB = "driver:records:duckdb"
+    DRIVER_RECORDS_ICEBERG = "driver:records:iceberg"
+    # Asset storage driver configs
+    DRIVER_ASSET_POSTGRESQL = "driver:asset:postgresql"
+    DRIVER_ASSET_ELASTICSEARCH = "driver:asset:elasticsearch"
+    # Metadata backend driver configs
+    DRIVER_COLLECTION_METADATA_POSTGRESQL = "driver:collection:metadata:postgresql"
+    DRIVER_COLLECTION_METADATA_ELASTICSEARCH = "driver:collection:metadata:elasticsearch"
+    # Other service configs
     TILES = "tiles"
     TILES_PRESEED = "tiles_preseed"
     TASKS = "tasks"
@@ -92,7 +107,7 @@ class PluginSchemaInfo(BaseModel):
 class ConfigEntry(BaseModel):
     """A single configuration entry as returned by list/search endpoints."""
 
-    plugin_id: str = Field(..., description="Unique plugin identifier.", examples=["driver:postgresql"])
+    plugin_id: str = Field(..., description="Unique plugin identifier.", examples=["driver:records:postgresql"])
     config_data: Dict[str, Any] = Field(..., description="The stored configuration payload.")
     updated_at: Optional[datetime] = Field(None, description="Last modification timestamp (UTC).")
 
@@ -114,7 +129,7 @@ class EffectiveConfigResponse(BaseModel):
     or a fallback default.
     """
 
-    plugin_id: str = Field(..., examples=["driver:postgresql"])
+    plugin_id: str = Field(..., examples=["driver:records:postgresql"])
     config: Dict[str, Any] = Field(..., description="Effective configuration payload.")
     resolved_from: Optional[ConfigLevel] = Field(
         None,
@@ -125,11 +140,19 @@ class EffectiveConfigResponse(BaseModel):
 class DriverInfo(BaseModel):
     """Metadata about a registered storage driver."""
 
-    driver_id: str = Field(..., description="Unique driver identifier.")
+    driver_id: str = Field(..., description="Unique driver identifier (used in routing config).")
+    driver_type: str = Field(
+        "",
+        description="Driver family type (e.g. 'driver:records:postgresql'). Multiple driver_ids may share a type.",
+    )
     domain: str = Field(
         ...,
-        description="Domain this driver serves: 'collections' or 'assets'.",
-        examples=["collections", "assets"],
+        description="Domain this driver serves: 'collections', 'assets', or 'collection_metadata'.",
+        examples=["collections", "assets", "collection_metadata"],
+    )
+    description: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Multilanguage description of the driver (ClassVar[LocalizedText] from the class).",
     )
     capabilities: List[str] = Field(
         default_factory=list,
@@ -151,12 +174,21 @@ class DriverInfo(BaseModel):
         default_factory=list,
         description="Hints this driver is optimized for (used for auto-selection).",
     )
+    available: bool = Field(True, description="Whether the driver is currently available.")
 
 
 class DriverListResponse(BaseModel):
-    """All registered storage drivers with their capabilities and supported hints."""
+    """All registered storage drivers grouped by driver_type.
 
-    drivers: List[DriverInfo] = Field(default_factory=list)
+    Keys are driver_type strings (e.g. ``"driver:records:postgresql"``).
+    Each value is a list of driver instances sharing that type.
+    Use ``driver_id`` values in ``collection:drivers`` routing config.
+    """
+
+    drivers: Dict[str, List[DriverInfo]] = Field(
+        default_factory=dict,
+        description="driver_type → list of driver implementations.",
+    )
 
 
 class PluginListResponse(BaseModel):
@@ -168,10 +200,11 @@ class PluginListResponse(BaseModel):
             [
                 "collection",
                 "stac",
-                "storage:collections",
-                "storage:assets",
-                "driver:postgresql",
-                "driver:postgresql_assets",
+                "collection:drivers",
+                "assets:drivers",
+                "driver:records:postgresql",
+                "driver:asset:postgresql",
+                "driver:collection:metadata:elasticsearch",
                 "tiles",
                 "tasks",
                 "features",
@@ -303,6 +336,31 @@ _ROUTING_GEOPARQUET_EXAMPLE: Dict[str, Any] = {
             "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
             "READ": [{"driver_id": "duckdb", "hints": [], "on_failure": "fatal"}],
             "SEARCH": [{"driver_id": "elasticsearch", "hints": [], "on_failure": "fatal"}],
+        },
+    },
+}
+
+_ROUTING_PG_ES_WITH_METADATA_EXAMPLE: Dict[str, Any] = {
+    "summary": "PG + ES with ES metadata backend and Iceberg metadata storage",
+    "description": (
+        "PG primary write with async ES indexing.  "
+        "``metadata.override`` routes collection metadata CRUD to the ES metadata driver "
+        "(enables full-text and spatial search of collection records).  "
+        "``metadata.storage`` reads Iceberg table properties at READ time via DriverMetadataEnricher."
+    ),
+    "value": {
+        "enabled": True,
+        "operations": {
+            "WRITE": [
+                {"driver_id": "postgresql", "hints": [], "on_failure": "fatal", "write_mode": "sync"},
+                {"driver_id": "elasticsearch", "hints": [], "on_failure": "warn", "write_mode": "async"},
+            ],
+            "READ": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
+            "SEARCH": [{"driver_id": "elasticsearch", "hints": ["search"], "on_failure": "fatal"}],
+        },
+        "metadata": {
+            "override": [{"driver_id": "elasticsearch_metadata", "on_failure": "warn"}],
+            "storage": [{"driver_id": "iceberg", "on_failure": "ignore"}],
         },
     },
 }
@@ -727,51 +785,35 @@ _TASKS_EXAMPLE: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 PLUGIN_EXAMPLES: Dict[str, List[Dict[str, Any]]] = {
-    WellKnownPlugin.STORAGE_COLLECTIONS: [
+    WellKnownPlugin.COLLECTION_DRIVERS: [
         _ROUTING_PG_EXAMPLE,
         _ROUTING_PG_ES_EXAMPLE,
         _ROUTING_ES_ONLY_EXAMPLE,
         _ROUTING_DUCKDB_ES_EXAMPLE,
         _ROUTING_PG_ES_ICEBERG_EXAMPLE,
         _ROUTING_GEOPARQUET_EXAMPLE,
+        _ROUTING_PG_ES_WITH_METADATA_EXAMPLE,
     ],
-    WellKnownPlugin.STORAGE_ASSETS: [
+    WellKnownPlugin.ASSETS_DRIVERS: [
         _ROUTING_ASSETS_PG_EXAMPLE,
         _ROUTING_ASSETS_ES_EXAMPLE,
     ],
-    # Legacy aliases
-    WellKnownPlugin.ROUTING: [
-        _ROUTING_PG_EXAMPLE,
-        _ROUTING_PG_ES_EXAMPLE,
-        _ROUTING_ES_ONLY_EXAMPLE,
-        _ROUTING_DUCKDB_ES_EXAMPLE,
-        _ROUTING_PG_ES_ICEBERG_EXAMPLE,
-        _ROUTING_GEOPARQUET_EXAMPLE,
-    ],
-    WellKnownPlugin.ROUTING_ASSETS: [
-        _ROUTING_ASSETS_PG_EXAMPLE,
-        _ROUTING_ASSETS_ES_EXAMPLE,
-    ],
-    WellKnownPlugin.DRIVER_POSTGRESQL: [
+    WellKnownPlugin.DRIVER_RECORDS_POSTGRESQL: [
         _DRIVER_PG_MINIMAL_EXAMPLE,
         _DRIVER_PG_PARTITIONED_EXAMPLE,
     ],
-    WellKnownPlugin.DRIVER_ELASTICSEARCH: [
+    WellKnownPlugin.DRIVER_RECORDS_ELASTICSEARCH: [
         _DRIVER_ES_EXAMPLE,
         _DRIVER_ES_RASTER_EXAMPLE,
         _DRIVER_ES_CUSTOM_MAPPING_EXAMPLE,
     ],
-    WellKnownPlugin.DRIVER_ELASTICSEARCH_ASSETS: [
+    WellKnownPlugin.DRIVER_ASSET_ELASTICSEARCH: [
         _DRIVER_ES_ASSETS_EXAMPLE,
     ],
-    WellKnownPlugin.DRIVER_DUCKDB: [
+    WellKnownPlugin.DRIVER_RECORDS_DUCKDB: [
         _DRIVER_DUCKDB_PARQUET_EXAMPLE,
         _DRIVER_DUCKDB_CSV_EXAMPLE,
         _DRIVER_DUCKDB_GEOPARQUET_EXAMPLE,
-    ],
-    WellKnownPlugin.ELASTICSEARCH: [
-        _ES_CATALOG_EXAMPLE,
-        _ES_CATALOG_OBFUSCATED_EXAMPLE,
     ],
     WellKnownPlugin.STAC: [_STAC_MINIMAL_EXAMPLE, _STAC_DATACUBE_EXAMPLE],
     WellKnownPlugin.COLLECTION: [_COLLECTION_EXAMPLE],
@@ -806,10 +848,10 @@ class QuickStartConfigSet(BaseModel):
         json_schema_extra={
             "examples": [
                 {
-                    "storage:collections": _ROUTING_PG_EXAMPLE["value"],
-                    "storage:assets": _ROUTING_ASSETS_PG_EXAMPLE["value"],
-                    "driver:postgresql": _DRIVER_PG_MINIMAL_EXAMPLE["value"],
-                    "driver:postgresql_assets": {"enabled": True},
+                    "collection:drivers": _ROUTING_PG_EXAMPLE["value"],
+                    "assets:drivers": _ROUTING_ASSETS_PG_EXAMPLE["value"],
+                    "driver:records:postgresql": _DRIVER_PG_MINIMAL_EXAMPLE["value"],
+                    "driver:asset:postgresql": {"enabled": True},
                     "stac": _STAC_MINIMAL_EXAMPLE["value"],
                     "collection": _COLLECTION_EXAMPLE["value"],
                     "tiles": _TILES_EXAMPLE["value"],

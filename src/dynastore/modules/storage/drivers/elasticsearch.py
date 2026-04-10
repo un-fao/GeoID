@@ -220,7 +220,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
     """
 
     driver_id: str = "elasticsearch"
-    driver_type: str = "elasticsearch"
+    driver_type: str = "driver:records:elasticsearch"
     priority: int = 50
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,
@@ -1000,7 +1000,7 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
     """
 
     driver_id: str = "elasticsearch_obfuscated"
-    driver_type: str = "elasticsearch"
+    driver_type: str = "driver:records:elasticsearch"
     priority: int = 51
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,
@@ -1466,7 +1466,7 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
     """
 
     driver_id: str = "elasticsearch_assets"
-    driver_type: str = "elasticsearch"
+    driver_type: str = "driver:asset:elasticsearch"
     priority: int = 52
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,

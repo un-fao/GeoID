@@ -36,7 +36,7 @@ class AssetPluginConfig(PluginConfig):
     """Per-collection asset config (structural only).
 
     Routing is now managed by ``AssetRoutingPluginConfig``
-    (``plugin_id="routing_assets"``).
+    (``plugin_id="assets:drivers"``).
     """
 
     _plugin_id: ClassVar[Optional[str]] = ASSET_PLUGIN_CONFIG_ID

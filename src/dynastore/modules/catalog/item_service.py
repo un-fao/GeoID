@@ -276,7 +276,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         except Exception:
             primary = None
 
-        if primary is not None and primary.driver.driver_type != "postgresql":
+        if primary is not None and primary.driver.driver_type != "driver:records:postgresql":
             results = await primary.driver.write_entities(
                 catalog_id,
                 collection_id,

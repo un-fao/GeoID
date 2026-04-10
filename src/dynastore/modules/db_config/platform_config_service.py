@@ -99,6 +99,32 @@ class Immutable:
         return Annotated[item, ImmutableMarker]
 
 
+class WriteOnceMarker:
+    """Internal marker for write-once fields (None → value allowed, value → anything rejected)."""
+
+    pass
+
+
+class WriteOnce:
+    """A marker for write-once fields.
+
+    The field may be set once from ``None`` to a non-``None`` value (e.g. by
+    ``ensure_storage()``), but once set to a non-``None`` value it cannot be
+    changed.  Attempts to mutate a non-``None`` value raise ``ImmutableConfigError``.
+
+    Usage::
+
+        field: WriteOnce[Optional[str]] = Field(None, description="Set once on storage creation.")
+
+    This is equivalent to::
+
+        field: Annotated[Optional[str], WriteOnceMarker] = Field(None)
+    """
+
+    def __class_getitem__(cls, item):
+        return Annotated[item, WriteOnceMarker]
+
+
 def is_immutable_field(field_info: "FieldInfo") -> bool:
     """
     Checks if a Pydantic field is annotated as Immutable.
@@ -126,18 +152,39 @@ def is_immutable_field(field_info: "FieldInfo") -> bool:
     return False
 
 
+def is_write_once_field(field_info: "FieldInfo") -> bool:
+    """Checks if a Pydantic field is annotated as WriteOnce."""
+    if get_origin(field_info.annotation) is Annotated:
+        args = get_args(field_info.annotation)
+        if WriteOnceMarker in args or WriteOnce in args:
+            return True
+    if any(
+        item is WriteOnceMarker
+        or item is WriteOnce
+        or (isinstance(item, type) and issubclass(item, WriteOnceMarker))
+        for item in field_info.metadata
+    ):
+        return True
+    return False
+
+
 def enforce_config_immutability(
     current_config: Optional["PluginConfig"], new_config: "PluginConfig"
 ) -> None:
     """
-    Validates that no fields marked as Immutable[T] have changed between current and new config.
+    Validates that no fields marked as Immutable[T] or WriteOnce[T] have changed
+    between current and new config.
+
+    - ``Immutable[T]``: any change from the stored value is rejected.
+    - ``WriteOnce[T]``: transition ``None → value`` is allowed (first set);
+      any change from a non-``None`` stored value is rejected.
 
     Args:
         current_config: The existing configuration (from DB). If None, checks are skipped (creation scenario).
         new_config: The candidate configuration.
 
     Raises:
-        ValueError: If an immutable field has been modified.
+        ImmutableConfigError: If an immutable or write-once field has been modified.
     """
     if current_config is None:
         return
@@ -150,15 +197,21 @@ def enforce_config_immutability(
         return
 
     for field_name, field_info in model_class.model_fields.items():
-        # Pass the entire FieldInfo object for robust checking
-        if is_immutable_field(field_info):
-            current_val = getattr(current_config, field_name)
-            new_val = getattr(new_config, field_name)
+        current_val = getattr(current_config, field_name)
+        new_val = getattr(new_config, field_name)
 
+        if is_immutable_field(field_info):
             if current_val != new_val:
                 raise ImmutableConfigError(
                     f"Configuration field '{field_name}' in '{model_class.__name__}' is Immutable. "
                     f"Modification forbidden: {current_val} -> {new_val}"
+                )
+        elif is_write_once_field(field_info):
+            # Allow None → value (first set); reject value → anything_else
+            if current_val is not None and current_val != new_val:
+                raise ImmutableConfigError(
+                    f"Configuration field '{field_name}' in '{model_class.__name__}' is WriteOnce. "
+                    f"Cannot change a non-None value: {current_val!r} -> {new_val!r}"
                 )
 
 

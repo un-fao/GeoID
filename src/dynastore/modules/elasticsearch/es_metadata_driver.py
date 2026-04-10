@@ -31,16 +31,80 @@ automatically indexed and searchable.
 """
 
 import logging
-from typing import Any, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, FrozenSet, List, Optional, Tuple
 
 from dynastore.models.protocols.metadata_driver import (
     CollectionMetadataDriverProtocol,
     MetadataCapability,
 )
+from dynastore.modules.db_config.platform_config_service import (
+    Immutable,
+    PluginConfig,
+)
+from pydantic import Field
 
 logger = logging.getLogger(__name__)
 
-METADATA_ES_DRIVER_CONFIG_ID = "driver:elasticsearch_metadata"
+METADATA_ES_DRIVER_CONFIG_ID = "driver:collection:metadata:elasticsearch"
+
+
+class ElasticsearchMetadataDriverConfig(PluginConfig):
+    """Configuration for the Elasticsearch collection metadata driver.
+
+    ``index_prefix`` is ``Immutable`` — once set it cannot change, because
+    altering the prefix would orphan all existing catalog metadata indexes.
+
+    The final index name is ``{index_prefix}_collection_metadata_{catalog_id}``.
+    """
+
+    _plugin_id: ClassVar[Optional[str]] = METADATA_ES_DRIVER_CONFIG_ID
+
+    index_prefix: Immutable[str] = Field(
+        "meta",
+        description=(
+            "Index name prefix.  "
+            "Final index: ``{index_prefix}_collection_metadata_{catalog_id}``.  "
+            "Immutable once set — changing it would orphan existing indexes."
+        ),
+    )
+
+
+# Register config with the waterfall
+from dynastore.modules.db_config.platform_config_service import (  # noqa: E402
+    ConfigRegistry as _MetaCR,
+)
+
+_MetaCR.register(METADATA_ES_DRIVER_CONFIG_ID, ElasticsearchMetadataDriverConfig)
+
+
+async def _on_apply_es_metadata_driver_config(
+    config: ElasticsearchMetadataDriverConfig,
+    catalog_id: Optional[str],
+    collection_id: Optional[str],
+    db_resource: Optional[Any],
+) -> None:
+    """Create the ES metadata index for the catalog when the driver config is applied."""
+    if not catalog_id:
+        return  # platform-level config — no catalog to create index for
+
+    from dynastore.tools.discovery import get_protocols
+
+    drivers = [
+        d for d in get_protocols(CollectionMetadataDriverProtocol)
+        if getattr(d, "driver_id", None) == "elasticsearch_metadata"
+    ]
+    for driver in drivers:
+        if hasattr(driver, "ensure_storage"):
+            try:
+                await driver.ensure_storage(catalog_id)
+            except Exception as exc:
+                logger.warning(
+                    "ensure_storage failed for elasticsearch_metadata on catalog '%s': %s",
+                    catalog_id, exc,
+                )
+
+
+_MetaCR.register_apply_handler(METADATA_ES_DRIVER_CONFIG_ID, _on_apply_es_metadata_driver_config)
 
 # ---------------------------------------------------------------------------
 # Mapping — explicit typing only for fields ES cannot auto-detect
@@ -126,7 +190,7 @@ class ElasticsearchMetadataDriver:
     """
 
     driver_id: str = "elasticsearch_metadata"
-    driver_type: str = "elasticsearch"
+    driver_type: str = "driver:collection:metadata:elasticsearch"
     capabilities: FrozenSet[str] = frozenset({
         MetadataCapability.READ,
         MetadataCapability.WRITE,
@@ -145,6 +209,14 @@ class ElasticsearchMetadataDriver:
         from dynastore.modules.elasticsearch.client import get_index_prefix
 
         return get_index_prefix()
+
+    async def ensure_storage(self, catalog_id: str) -> None:
+        """Ensure the ES metadata index exists for the given catalog (idempotent).
+
+        Called by the ``driver:collection:metadata:elasticsearch`` apply handler
+        when the driver config is applied at catalog scope.
+        """
+        await self._ensure_index(catalog_id)
 
     async def _ensure_index(self, catalog_id: str) -> str:
         """Create metadata index if it doesn't exist. Returns index name."""

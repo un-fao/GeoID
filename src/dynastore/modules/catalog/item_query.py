@@ -99,7 +99,7 @@ async def _try_driver_dispatch(
     except Exception:
         return None
 
-    if resolved is None or resolved.driver_type == "postgresql":
+    if resolved is None or resolved.driver_type == "driver:records:postgresql":
         return None
 
     effective_limit = (request.limit if request and request.limit else limit) or limit

@@ -30,9 +30,9 @@ Public API::
         ...
 
 Storage routing is controlled by ``RoutingPluginConfig``
-(``plugin_id = "routing"``) via the existing config API.
+(``plugin_id = "collection:drivers"``) via the existing config API.
 Per-driver settings are in ``DriverPluginConfig`` subclasses
-(``plugin_id = "driver:<driver_id>"``).
+(``plugin_id = "driver:records:<driver_id>"``).
 """
 
 from dynastore.models.protocols.storage_driver import (
@@ -65,6 +65,7 @@ from dynastore.modules.storage.router import (
 from dynastore.modules.storage.routing_config import (
     AssetRoutingPluginConfig,
     FailurePolicy,
+    MetadataOperationConfig,
     Operation,
     OperationDriverEntry,
     RoutingPluginConfig,
@@ -90,6 +91,7 @@ __all__ = [
     # Routing configs
     "RoutingPluginConfig",
     "AssetRoutingPluginConfig",
+    "MetadataOperationConfig",
     "OperationDriverEntry",
     "FailurePolicy",
     "Operation",

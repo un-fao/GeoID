@@ -48,7 +48,7 @@ class PostgresStorageDriver(ModuleProtocol):
     """
 
     driver_id: str = "postgresql"
-    driver_type: str = "postgresql"
+    driver_type: str = "driver:records:postgresql"
     priority: int = 10
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,

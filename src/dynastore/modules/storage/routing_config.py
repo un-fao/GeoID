@@ -55,12 +55,8 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-ROUTING_PLUGIN_CONFIG_ID = "storage:collections"
-ROUTING_ASSETS_PLUGIN_CONFIG_ID = "storage:assets"
-
-# Legacy aliases — existing DB rows may reference these
-_ROUTING_LEGACY_ID = "routing"
-_ROUTING_ASSETS_LEGACY_ID = "routing_assets"
+ROUTING_PLUGIN_CONFIG_ID = "collection:drivers"
+ROUTING_ASSETS_PLUGIN_CONFIG_ID = "assets:drivers"
 
 
 class FailurePolicy(StrEnum):
@@ -72,19 +68,19 @@ class FailurePolicy(StrEnum):
 
 
 class Operation(StrEnum):
-    """Standard operations.
+    """Standard operations configured in ``RoutingPluginConfig.operations``.
 
     - WRITE  : fan-out to all configured drivers (position 0 = primary)
     - READ   : single-driver for browsing/pagination (streaming)
     - SEARCH : single-driver for filtered queries (bbox, attributes, fulltext)
-    - METADATA: single-driver for collection metadata persistence/retrieval.
-                Falls back to primary WRITE driver if not configured.
+
+    Metadata routing is separate: see ``MetadataOperationConfig`` on
+    ``RoutingPluginConfig`` (``metadata.override`` and ``metadata.storage``).
     """
 
     WRITE = "WRITE"
     READ = "READ"
     SEARCH = "SEARCH"
-    METADATA = "METADATA"
 
 
 class WriteMode(StrEnum):
@@ -164,17 +160,54 @@ class OperationDriverEntry(BaseModel):
     )
 
 
+class MetadataOperationConfig(BaseModel):
+    """Metadata sub-configuration within ``RoutingPluginConfig``.
+
+    override:
+        ``CollectionMetadataDriverProtocol`` backends used for collection
+        metadata persistence and search (e.g. ``elasticsearch_metadata``).
+        Drives ``metadata_router.py`` — first available wins.
+        Empty → auto-discovery fallback (ES if registered, otherwise PG).
+
+    storage:
+        ``CollectionStorageDriverProtocol`` backends that supply collection
+        metadata at READ time (e.g. Iceberg table properties, DuckDB sidecar
+        JSON).  Drives ``DriverMetadataEnricher`` — fan-out: all entries are
+        queried and results are merged (non-fatal failures are logged).
+    """
+
+    override: List[OperationDriverEntry] = Field(
+        default_factory=list,
+        description=(
+            "Ordered metadata driver list (CollectionMetadataDriverProtocol). "
+            "First available wins. Empty → auto-discovery fallback."
+        ),
+    )
+    storage: List[OperationDriverEntry] = Field(
+        default_factory=list,
+        description=(
+            "Storage drivers that supply collection metadata at READ time "
+            "(e.g. Iceberg table properties, DuckDB sidecar JSON). "
+            "Fan-out: all entries are queried and results merged."
+        ),
+    )
+
+
 class RoutingPluginConfig(PluginConfig):
     """Operation-based routing for collection storage drivers.
 
     Each operation maps to an ordered list of :class:`OperationDriverEntry`.
     Position in the list determines priority (first = primary).
 
-    Registered as ``plugin_id = "storage:collections"`` in the config waterfall.
-    Legacy alias ``"routing"`` is kept for backward compatibility.
+    ``metadata`` is a separate sub-object for collection metadata routing —
+    see :class:`MetadataOperationConfig`.
+
+    Registered as ``plugin_id = "collection:drivers"`` in the config waterfall.
     """
 
     _plugin_id: ClassVar[Optional[str]] = ROUTING_PLUGIN_CONFIG_ID
+
+    enabled: bool = Field(True, description="Enable this routing configuration.")
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
@@ -188,6 +221,16 @@ class RoutingPluginConfig(PluginConfig):
         ),
     )
 
+    metadata: MetadataOperationConfig = Field(
+        default_factory=MetadataOperationConfig,
+        description=(
+            "Metadata routing sub-configuration. "
+            "``override`` selects the CollectionMetadataDriverProtocol backend; "
+            "``storage`` selects CollectionStorageDriverProtocol backends that "
+            "contribute metadata at READ time."
+        ),
+    )
+
 
 class AssetRoutingPluginConfig(PluginConfig):
     """Operation-based routing for asset storage drivers.
@@ -195,11 +238,12 @@ class AssetRoutingPluginConfig(PluginConfig):
     Same structure as :class:`RoutingPluginConfig` but scoped to
     asset-domain drivers.
 
-    Registered as ``plugin_id = "storage:assets"`` in the config waterfall.
-    Legacy alias ``"routing_assets"`` is kept for backward compatibility.
+    Registered as ``plugin_id = "assets:drivers"`` in the config waterfall.
     """
 
     _plugin_id: ClassVar[Optional[str]] = ROUTING_ASSETS_PLUGIN_CONFIG_ID
+
+    enabled: bool = Field(True, description="Enable this routing configuration.")
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
@@ -262,31 +306,33 @@ def _validate_routing_entries(
                     f"(derived from capabilities: {sorted(driver_caps)})"
                 )
 
-            # 4. write_mode compatibility
+            # 4. write_mode compatibility — check DriverCapability.ASYNC
             if entry.write_mode == WriteMode.ASYNC:
-                # Fetch driver config to check DriverCapability
+                # Resolve driver config by the driver instance's own _plugin_id.
+                # This avoids constructing the plugin_id from the short driver_id,
+                # which would break with the driver:records:*/driver:asset:* namespace.
                 try:
                     from dynastore.modules.db_config.platform_config_service import (
                         ConfigRegistry,
                     )
 
-                    driver_config = ConfigRegistry.create_default(
-                        f"driver:{entry.driver_id}"
-                    )
-                    config_caps = getattr(driver_config, "capabilities", frozenset())
-                    if DriverCapability.ASYNC not in config_caps:
-                        raise ValueError(
-                            f"{label}: write_mode='async' requires "
-                            f"DriverCapability.ASYNC on driver '{entry.driver_id}'. "
-                            f"Driver capabilities: {sorted(config_caps)}"
-                        )
+                    driver_plugin_id = getattr(driver, "_plugin_id", None)
+                    if driver_plugin_id:
+                        driver_config = ConfigRegistry.create_default(driver_plugin_id)
+                        config_caps = getattr(driver_config, "capabilities", frozenset())
+                        if DriverCapability.ASYNC not in config_caps:
+                            raise ValueError(
+                                f"{label}: write_mode='async' requires "
+                                f"DriverCapability.ASYNC on driver '{entry.driver_id}'. "
+                                f"Driver capabilities: {sorted(config_caps)}"
+                            )
                 except ValueError:
                     raise  # re-raise validation errors
                 except Exception:
                     pass  # driver config may not exist — skip check
 
     # 5. Primary driver capability check
-    #    Position 0 in WRITE must support WRITE; position 0 in READ/SEARCH/METADATA
+    #    Position 0 in WRITE must support WRITE; position 0 in READ/SEARCH
     #    must support READ.  Warn only — don't hard-fail for forward-compat.
     from dynastore.models.protocols.storage_driver import Capability
 
@@ -294,7 +340,6 @@ def _validate_routing_entries(
         Operation.WRITE: Capability.WRITE,
         Operation.READ: Capability.READ,
         Operation.SEARCH: Capability.READ,
-        Operation.METADATA: Capability.READ,
     }
     for operation, entries in config.operations.items():
         if not entries:
@@ -323,14 +368,32 @@ async def _on_apply_routing_config(
 ) -> None:
     """Called after routing config is written.
 
-    Validates driver_id, hints, operations, and write_mode, then
-    invalidates the router cache.
+    Validates driver_id, hints, operations, write_mode, and metadata entries,
+    then invalidates the router and metadata-router caches.
     """
+    from dynastore.models.protocols.metadata_driver import CollectionMetadataDriverProtocol
     from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
     from dynastore.tools.discovery import get_protocols
 
     driver_index = {d.driver_id: d for d in get_protocols(CollectionStorageDriverProtocol)}
     _validate_routing_entries(config, driver_index, "Collection routing config")
+
+    # Validate metadata.override entries (CollectionMetadataDriverProtocol drivers)
+    metadata_driver_index = {d.driver_id: d for d in get_protocols(CollectionMetadataDriverProtocol)}
+    for entry in config.metadata.override:
+        if entry.driver_id not in metadata_driver_index:
+            raise ValueError(
+                f"Collection routing config: metadata.override driver '{entry.driver_id}' "
+                f"is not registered. Available: {sorted(metadata_driver_index)}"
+            )
+
+    # Validate metadata.storage entries (CollectionStorageDriverProtocol drivers)
+    for entry in config.metadata.storage:
+        if entry.driver_id not in driver_index:
+            raise ValueError(
+                f"Collection routing config: metadata.storage driver '{entry.driver_id}' "
+                f"is not registered. Available: {sorted(driver_index)}"
+            )
 
     # Invalidate router cache
     try:
@@ -340,13 +403,36 @@ async def _on_apply_routing_config(
     except Exception:
         pass
 
-    # Call ensure_storage() on all referenced drivers (idempotent).
+    # Invalidate metadata router cache
+    try:
+        from dynastore.modules.catalog.metadata_router import invalidate_metadata_router_cache
+
+        invalidate_metadata_router_cache(catalog_id)
+    except Exception:
+        pass
+
+    # Call ensure_storage() on metadata override drivers (idempotent, catalog-scoped).
+    if catalog_id:
+        for entry in config.metadata.override:
+            driver = metadata_driver_index.get(entry.driver_id)
+            if driver and hasattr(driver, "ensure_storage"):
+                try:
+                    await driver.ensure_storage(catalog_id)
+                except Exception as exc:
+                    logger.warning(
+                        "ensure_storage failed for metadata driver '%s' on catalog '%s': %s",
+                        entry.driver_id, catalog_id, exc,
+                    )
+
+    # Call ensure_storage() on all referenced collection drivers (idempotent).
     # Skipped for platform-level configs where catalog/collection are absent.
     if catalog_id and collection_id:
         seen_ids: set[str] = set()
         for entries in config.operations.values():
             for entry in entries:
                 seen_ids.add(entry.driver_id)
+        for entry in config.metadata.storage:
+            seen_ids.add(entry.driver_id)
         for did in seen_ids:
             driver = driver_index.get(did)
             if driver and hasattr(driver, "ensure_storage"):
@@ -407,10 +493,3 @@ from dynastore.modules.db_config.platform_config_service import ConfigRegistry  
 
 ConfigRegistry.register_apply_handler(ROUTING_PLUGIN_CONFIG_ID, _on_apply_routing_config)
 ConfigRegistry.register_apply_handler(ROUTING_ASSETS_PLUGIN_CONFIG_ID, _on_apply_asset_routing_config)
-
-# Legacy aliases — register the same models + handlers under old IDs so that
-# existing DB rows with plugin_id='routing' / 'routing_assets' still deserialize.
-ConfigRegistry.register(_ROUTING_LEGACY_ID, RoutingPluginConfig)
-ConfigRegistry.register(_ROUTING_ASSETS_LEGACY_ID, AssetRoutingPluginConfig)
-ConfigRegistry.register_apply_handler(_ROUTING_LEGACY_ID, _on_apply_routing_config)
-ConfigRegistry.register_apply_handler(_ROUTING_ASSETS_LEGACY_ID, _on_apply_asset_routing_config)

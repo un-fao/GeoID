@@ -142,6 +142,10 @@ class CollectionStorageDriverProtocol(Protocol):
 
     ``supported_hints`` declares which hints this driver accepts in routing config.
     Config validation rejects entries with hints not in this set.
+
+    ``description`` is a ``ClassVar[LocalizedText]`` defined statically in each
+    driver class.  It is returned by the driver discovery API
+    (``GET /storage/drivers``) and must not be stored in the database.
     """
 
     driver_id: str
@@ -149,6 +153,7 @@ class CollectionStorageDriverProtocol(Protocol):
     capabilities: FrozenSet[str]
     preferred_for: FrozenSet[str]
     supported_hints: FrozenSet[str]
+    # description: ClassVar[LocalizedText]  — declared in each concrete driver class
 
     async def write_entities(
         self,
@@ -173,7 +178,7 @@ class CollectionStorageDriverProtocol(Protocol):
 
                 Drivers that declare ``Capability.EXTERNAL_ID_TRACKING`` or
                 ``Capability.TEMPORAL_VALIDITY`` MUST honour these keys and apply
-                the ``CollectionWritePolicy`` (plugin_id ``"write_policy"``) retrieved
+                the ``CollectionWritePolicy`` (plugin_id ``"collection:write_policy"``) retrieved
                 from ``ConfigsProtocol``.
 
             db_resource: Optional connection/transaction to reuse (PG only).
@@ -463,8 +468,8 @@ class CollectionStorageDriverProtocol(Protocol):
     ) -> Any:
         """Fetch this driver's typed config from the config waterfall.
 
-        Each driver resolves its own ``_plugin_id`` (e.g. ``"driver:postgresql"``,
-        ``"driver:elasticsearch"``) and returns the matching
+        Each driver resolves its own ``_plugin_id`` (e.g. ``"driver:records:postgresql"``,
+        ``"driver:records:elasticsearch"``) and returns the matching
         ``CollectionDriverConfig`` subclass.  Returns code defaults when no
         config has been stored.
 

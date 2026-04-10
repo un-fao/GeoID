@@ -293,31 +293,49 @@ class ConfigsService(ExtensionProtocol):
         return list(plugins.keys())
 
     async def list_storage_drivers(self) -> Any:
-        """List all registered storage drivers with capabilities, supported
-        operations, and supported hints.
+        """List all registered storage drivers grouped by driver_type.
 
-        Useful for discovering which drivers are available before
-        configuring ``storage:collections`` or ``storage:assets``.
+        Returns a dict keyed by ``driver_type`` (e.g. ``"driver:records:postgresql"``).
+        Use the ``driver_id`` values in ``collection:drivers`` or ``assets:drivers``
+        routing config.
         """
+        from collections import defaultdict
+
         from dynastore.extensions.configs.dto import DriverInfo, DriverListResponse
         from dynastore.models.protocols.asset_driver import AssetDriverProtocol
+        from dynastore.models.protocols.metadata_driver import CollectionMetadataDriverProtocol
         from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
         from dynastore.modules.storage.routing_config import derive_supported_operations
         from dynastore.tools.discovery import get_protocols
 
-        drivers: list = []
+        grouped: dict = defaultdict(list)
+
+        def _driver_description(driver) -> dict:
+            desc = getattr(driver, "description", None)
+            if desc is None:
+                return {}
+            if isinstance(desc, dict):
+                return desc
+            # LocalizedText or similar
+            if hasattr(desc, "model_dump"):
+                return {k: v for k, v in desc.model_dump().items() if v}
+            return {}
 
         for driver in get_protocols(CollectionStorageDriverProtocol):
             caps = sorted(getattr(driver, "capabilities", frozenset()))
+            driver_type = getattr(driver, "driver_type", "")
+            plugin_id = getattr(driver, "_plugin_id", f"driver:records:{driver.driver_id}")
             driver_config_caps = []
             try:
-                dcfg = ConfigRegistry.create_default(f"driver:{driver.driver_id}")
+                dcfg = ConfigRegistry.create_default(plugin_id)
                 driver_config_caps = sorted(getattr(dcfg, "capabilities", frozenset()))
             except Exception:
                 pass
-            drivers.append(DriverInfo(
+            grouped[driver_type].append(DriverInfo(
                 driver_id=driver.driver_id,
+                driver_type=driver_type,
                 domain="collections",
+                description=_driver_description(driver),
                 capabilities=caps,
                 driver_capabilities=driver_config_caps,
                 supported_operations=sorted(derive_supported_operations(
@@ -329,15 +347,19 @@ class ConfigsService(ExtensionProtocol):
 
         for driver in get_protocols(AssetDriverProtocol):
             caps = sorted(getattr(driver, "capabilities", frozenset()))
+            driver_type = getattr(driver, "driver_type", "")
+            plugin_id = getattr(driver, "_plugin_id", f"driver:asset:{driver.driver_id}")
             driver_config_caps = []
             try:
-                dcfg = ConfigRegistry.create_default(f"driver:{driver.driver_id}")
+                dcfg = ConfigRegistry.create_default(plugin_id)
                 driver_config_caps = sorted(getattr(dcfg, "capabilities", frozenset()))
             except Exception:
                 pass
-            drivers.append(DriverInfo(
+            grouped[driver_type].append(DriverInfo(
                 driver_id=driver.driver_id,
+                driver_type=driver_type,
                 domain="assets",
+                description=_driver_description(driver),
                 capabilities=caps,
                 driver_capabilities=driver_config_caps,
                 supported_operations=sorted(derive_supported_operations(
@@ -347,7 +369,22 @@ class ConfigsService(ExtensionProtocol):
                 preferred_for=sorted(getattr(driver, "preferred_for", frozenset())),
             ))
 
-        return DriverListResponse(drivers=drivers)
+        for driver in get_protocols(CollectionMetadataDriverProtocol):
+            driver_type = getattr(driver, "driver_type", "")
+            plugin_id = getattr(driver, "_plugin_id", "")
+            grouped[driver_type].append(DriverInfo(
+                driver_id=driver.driver_id,
+                driver_type=driver_type,
+                domain="collection_metadata",
+                description=_driver_description(driver),
+                capabilities=sorted(getattr(driver, "capabilities", frozenset())),
+                driver_capabilities=[],
+                supported_operations=[],
+                supported_hints=sorted(getattr(driver, "supported_hints", frozenset())),
+                preferred_for=sorted(getattr(driver, "preferred_for", frozenset())),
+            ))
+
+        return DriverListResponse(drivers=dict(grouped))
 
     # --- Configuration Listing Endpoints ---
 
@@ -589,8 +626,8 @@ class ConfigsService(ExtensionProtocol):
         self,
         plugin_id: str = Path(
             ...,
-            description="Plugin identifier (e.g. ``driver:postgresql``, ``routing``, ``stac``).",
-            examples=["driver:postgresql", "routing", "stac"],
+            description="Plugin identifier (e.g. ``driver:records:postgresql``, ``collection:drivers``, ``stac``).",
+            examples=["driver:records:postgresql", "collection:drivers", "stac"],
         ),
     ) -> List[Dict[str, Any]]:
         """Returns configuration examples for a specific plugin.
@@ -625,14 +662,14 @@ class ConfigsService(ExtensionProtocol):
                     ),
                     "value": {
                         "configs": {
-                            "routing": {
+                            "collection:drivers": {
                                 "enabled": True,
                                 "operations": {
                                     "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
                                     "READ": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
                                 },
                             },
-                            "routing_assets": {
+                            "assets:drivers": {
                                 "enabled": True,
                                 "operations": {
                                     "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
@@ -677,7 +714,7 @@ class ConfigsService(ExtensionProtocol):
                     ),
                     "value": {
                         "configs": {
-                            "driver:postgresql": {
+                            "driver:records:postgresql": {
                                 "enabled": True,
                                 "collection_type": "VECTOR",
                                 "sidecars": [
@@ -701,7 +738,7 @@ class ConfigsService(ExtensionProtocol):
                                 ],
                                 "partitioning": {"enabled": False, "partition_keys": []},
                             },
-                            "routing": {
+                            "collection:drivers": {
                                 "enabled": True,
                                 "operations": {
                                     "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],

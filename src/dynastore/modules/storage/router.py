@@ -139,8 +139,8 @@ async def resolve_drivers(
         catalog_id: Catalog context.
         collection_id: Optional collection context.
         hint: Optional preference to select specific driver(s).
-        routing_plugin_id: Config key — ``"routing"`` for collections,
-            ``"routing_assets"`` for assets.
+        routing_plugin_id: Config key — ``"collection:drivers"`` for collections,
+            ``"assets:drivers"`` for assets.
 
     Returns:
         Ordered list of :class:`ResolvedDriver`. Empty if hint is not

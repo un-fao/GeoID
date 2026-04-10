@@ -51,7 +51,7 @@ _META_COLUMNS = (
     "extra_metadata", "stac_extensions",
 )
 
-METADATA_DRIVER_CONFIG_ID = "driver:postgresql_metadata"
+METADATA_DRIVER_CONFIG_ID = "driver:collection:metadata:postgresql"
 
 
 class PostgresMetadataDriver:
@@ -61,7 +61,7 @@ class PostgresMetadataDriver:
     """
 
     driver_id: str = "postgresql_metadata"
-    driver_type: str = "postgresql"
+    driver_type: str = "driver:collection:metadata:postgresql"
     capabilities: FrozenSet[str] = frozenset({
         MetadataCapability.READ,
         MetadataCapability.WRITE,

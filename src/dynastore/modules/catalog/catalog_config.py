@@ -76,10 +76,10 @@ class CollectionPluginConfig(PluginConfig):
 
     PG-specific fields (``sidecars``, ``partitioning``, ``collection_type``)
     have moved to ``PostgresCollectionDriverConfig``
-    (``plugin_id = "driver:postgresql"``).
+    (``plugin_id = "driver:records:postgresql"``).
 
     Storage routing is handled by ``RoutingPluginConfig``
-    (``plugin_id = "routing"``).
+    (``plugin_id = "collection:drivers"``).
     """
 
     _plugin_id: ClassVar[Optional[str]] = COLLECTION_PLUGIN_CONFIG_ID

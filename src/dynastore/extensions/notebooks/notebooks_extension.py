@@ -2,7 +2,8 @@
 from contextlib import asynccontextmanager
 from fastapi import APIRouter, FastAPI, Depends, HTTPException, Request
 from fastapi.responses import Response
-from typing import List, Optional, Any, Dict
+from typing import List, Optional, Any, Dict, Tuple
+from fastapi import Query
 
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.web import expose_static, expose_web_page
@@ -52,7 +53,7 @@ class NotebooksExtension(ExtensionProtocol):
             "/platform",
             self.list_platform_notebooks,
             methods=["GET"],
-            response_model=List[Dict[str, Any]],
+            response_model=Dict[str, Any],
             summary="List platform notebooks",
         )
         self.router.add_api_route(
@@ -87,7 +88,7 @@ class NotebooksExtension(ExtensionProtocol):
             "/{catalog_id}",
             self.list_notebooks,
             methods=["GET"],
-            response_model=List[Dict[str, Any]],
+            response_model=Dict[str, Any],
             summary="List notebooks in a catalog",
         )
         self.router.add_api_route(
@@ -134,9 +135,19 @@ class NotebooksExtension(ExtensionProtocol):
     # Platform notebook endpoints
     # ------------------------------------------------------------------
 
-    async def list_platform_notebooks(self) -> List[Dict[str, Any]]:
+    async def list_platform_notebooks(
+        self,
+        q: Optional[str] = Query(None, description="Search title/description"),
+        tags: Optional[str] = Query(None, description="Comma-separated tag filter"),
+        limit: int = Query(20, ge=1, le=100),
+        offset: int = Query(0, ge=0),
+    ) -> Dict[str, Any]:
         """List active platform notebooks (no auth required)."""
-        return await notebook_service.list_platform_notebooks()
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
+        items, total = await notebook_service.list_platform_notebooks(
+            q=q, tags=tag_list, limit=limit, offset=offset,
+        )
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
 
     async def get_platform_notebook(self, notebook_id: str):
         """Get a platform notebook by ID (no auth required)."""
@@ -193,10 +204,18 @@ class NotebooksExtension(ExtensionProtocol):
     async def list_notebooks(
         self,
         catalog_id: str,
+        q: Optional[str] = Query(None, description="Search title/description"),
+        tags: Optional[str] = Query(None, description="Comma-separated tag filter"),
+        limit: int = Query(20, ge=1, le=100),
+        offset: int = Query(0, ge=0),
         current_user: User = Depends(get_current_active_user),
     ):
         """List all active notebooks in a catalog."""
-        return await notebook_service.list_notebooks(catalog_id)
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
+        items, total = await notebook_service.list_notebooks(
+            catalog_id, q=q, tags=tag_list, limit=limit, offset=offset,
+        )
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
 
     async def get_notebook(
         self,

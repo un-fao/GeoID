@@ -3,7 +3,7 @@
 import logging
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 from dynastore.modules import ModuleProtocol, get_protocol
 from dynastore.models.protocols import DatabaseProtocol, CatalogsProtocol
@@ -70,14 +70,22 @@ class NotebooksModule(ModuleProtocol):
             data = await db_get_notebook(conn, schema, notebook_id)
         return Notebook(**data)
 
-    async def list_notebooks(self, catalog_id: str) -> List[Dict[str, Any]]:
+    async def list_notebooks(
+        self,
+        catalog_id: str,
+        *,
+        q: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> Tuple[List[Dict[str, Any]], int]:
         catalogs = get_protocol(CatalogsProtocol)
         db = get_protocol(DatabaseProtocol)
         engine = db.engine if db else None
         schema = await catalogs.resolve_physical_schema(catalog_id) if catalogs else None
         async with managed_transaction(engine) as conn:
             from .notebooks_db import list_notebooks as db_list_notebooks
-            return await db_list_notebooks(conn, schema)
+            return await db_list_notebooks(conn, schema, q=q, tags=tags, limit=limit, offset=offset)
 
     async def delete_notebook(self, catalog_id: str, notebook_id: str) -> None:
         catalogs = get_protocol(CatalogsProtocol)
@@ -116,12 +124,19 @@ class NotebooksModule(ModuleProtocol):
     # Platform notebook service methods
     # ------------------------------------------------------------------
 
-    async def list_platform_notebooks(self) -> List[Dict[str, Any]]:
+    async def list_platform_notebooks(
+        self,
+        *,
+        q: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> Tuple[List[Dict[str, Any]], int]:
         db = get_protocol(DatabaseProtocol)
         engine = db.engine if db else None
         async with managed_transaction(engine) as conn:
             from .platform_db import list_platform_notebooks as db_list
-            return await db_list(conn)
+            return await db_list(conn, q=q, tags=tags, limit=limit, offset=offset)
 
     async def get_platform_notebook(self, notebook_id: str) -> PlatformNotebook:
         db = get_protocol(DatabaseProtocol)
@@ -166,8 +181,15 @@ def _get_service() -> NotebooksModule:
 async def get_notebook(catalog_id: str, notebook_id: str) -> Notebook:
     return await _get_service().get_notebook(catalog_id, notebook_id)
 
-async def list_notebooks(catalog_id: str) -> List[Dict[str, Any]]:
-    return await _get_service().list_notebooks(catalog_id)
+async def list_notebooks(
+    catalog_id: str,
+    *,
+    q: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> Tuple[List[Dict[str, Any]], int]:
+    return await _get_service().list_notebooks(catalog_id, q=q, tags=tags, limit=limit, offset=offset)
 
 async def delete_notebook(catalog_id: str, notebook_id: str) -> None:
     return await _get_service().delete_notebook(catalog_id, notebook_id)
@@ -178,8 +200,14 @@ async def save_notebook(catalog_id: str, notebook: NotebookCreate, owner_id: str
 async def copy_from_platform(catalog_id: str, platform_notebook_id: str, owner_id: str) -> Notebook:
     return await _get_service().copy_from_platform(catalog_id, platform_notebook_id, owner_id)
 
-async def list_platform_notebooks() -> List[Dict[str, Any]]:
-    return await _get_service().list_platform_notebooks()
+async def list_platform_notebooks(
+    *,
+    q: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> Tuple[List[Dict[str, Any]], int]:
+    return await _get_service().list_platform_notebooks(q=q, tags=tags, limit=limit, offset=offset)
 
 async def get_platform_notebook(notebook_id: str) -> PlatformNotebook:
     return await _get_service().get_platform_notebook(notebook_id)

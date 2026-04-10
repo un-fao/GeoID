@@ -20,7 +20,7 @@
 Per-driver plugin configurations.
 
 Each driver instance registers its own ``PluginConfig`` subclass with
-``_plugin_id = "driver:<driver_id>"``.  The config is stored/retrieved via
+``_plugin_id = "driver:{domain}:{driver_id}"``.  The config is stored/retrieved via
 the existing config API and 4-tier waterfall
 (collection > catalog > platform > code defaults).
 

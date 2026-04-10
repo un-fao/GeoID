@@ -21,10 +21,10 @@ Metadata driver routing — resolves the active CollectionMetadataDriverProtocol
 
 Resolution strategy:
 
-1. Check the routing config (``RoutingPluginConfig``) for ``Operation.METADATA``.
-   If a metadata driver is configured there, use it (via the standard router).
+1. Check ``RoutingPluginConfig.metadata.override`` (plugin_id ``"collection:drivers"``).
+   If override entries are configured, use the first available driver.
 
-2. If no routing config exists for METADATA, fall back to protocol discovery:
+2. If ``metadata.override`` is empty, fall back to protocol discovery:
    discover all ``CollectionMetadataDriverProtocol`` implementations, prefer
    ES if available, otherwise PG.
 
@@ -63,13 +63,10 @@ async def _resolve_metadata_driver_cached(
 
     Returns None if no metadata driver is available.
     """
-    # 1. Try routing config (Operation.METADATA)
+    # 1. Try routing config (RoutingPluginConfig.metadata.override)
     try:
         from dynastore.models.protocols.configs import ConfigsProtocol
-        from dynastore.modules.storage.routing_config import (
-            ROUTING_PLUGIN_CONFIG_ID,
-            Operation,
-        )
+        from dynastore.modules.storage.routing_config import ROUTING_PLUGIN_CONFIG_ID
         from dynastore.tools.discovery import get_protocol
 
         configs = get_protocol(ConfigsProtocol)
@@ -77,9 +74,9 @@ async def _resolve_metadata_driver_cached(
             routing_config = await configs.get_config(
                 ROUTING_PLUGIN_CONFIG_ID, catalog_id=catalog_id
             )
-            entries = routing_config.operations.get(Operation.METADATA, [])
+            entries = routing_config.metadata.override
             if entries:
-                # Config explicitly declares a METADATA driver — use it.
+                # Config explicitly declares override metadata drivers — use first available.
                 driver_index = _build_metadata_driver_index()
                 for entry in entries:
                     driver = driver_index.get(entry.driver_id)
