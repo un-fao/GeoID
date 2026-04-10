@@ -503,9 +503,16 @@ def write_geopackage(
     processed_records_gen = _process_records_for_writing(records)
     record_chunks = _iterate_chunks(processed_records_gen, chunk_size=chunk_size)
 
-    with tempfile.NamedTemporaryFile(
-        suffix=".gpkg", dir=_ensure_temp_dir(), delete=True
-    ) as tmpfile:
+    # Use delete=False so we can unlink before fiona writes (fiona's GPKG driver
+    # refuses to overwrite an existing file when mode="w").
+    tmpfile = tempfile.NamedTemporaryFile(
+        suffix=".gpkg", dir=_ensure_temp_dir(), delete=False
+    )
+    gpkg_path = tmpfile.name
+    tmpfile.close()
+    # Remove the empty placeholder so fiona can create a fresh GPKG file.
+    os.unlink(gpkg_path)
+    try:
         first_chunk = True
         for chunk in record_chunks:
             gdf = _prepare_gdf_chunk_for_writing(chunk, srid)
@@ -513,17 +520,20 @@ def write_geopackage(
                 continue
             _write_gdf_to_file_safe(
                 gdf,
-                tmpfile.name,
+                gpkg_path,
                 driver="GPKG",
                 layer="features",
                 mode="w" if first_chunk else "a",
             )
             first_chunk = False
 
-        tmpfile.seek(0)
-        # Stream the file in chunks to handle very large outputs
-        while chunk := tmpfile.read(8192):
-            yield chunk
+        if os.path.exists(gpkg_path):
+            with open(gpkg_path, "rb") as f:
+                while chunk := f.read(8192):
+                    yield chunk
+    finally:
+        if os.path.exists(gpkg_path):
+            os.unlink(gpkg_path)
 
 
 def _truncate_shapefile_columns(gdf: gpd.GeoDataFrame):

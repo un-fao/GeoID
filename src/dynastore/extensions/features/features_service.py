@@ -647,18 +647,29 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
         from dynastore.models.protocols.storage_driver import Capability
 
         columns: list = []
+        driver_fields = None
         try:
             driver = await get_driver(Operation.READ, catalog_id, collection_id)
-            if hasattr(driver, "capabilities") and Capability.INTROSPECTION in driver.capabilities:
+            if driver and hasattr(driver, "capabilities") and Capability.INTROSPECTION in driver.capabilities:
                 schema_info = await driver.introspect_schema(
                     catalog_id, collection_id, db_resource=conn
                 )
                 columns = [entry.name for entry in schema_info] if schema_info else []
+                # For non-PG drivers, get_entity_fields() returns richer FieldDefinition
+                # objects (with types and capabilities) than introspect_schema alone.
+                if hasattr(driver, "get_entity_fields"):
+                    try:
+                        driver_fields = await driver.get_entity_fields(
+                            catalog_id, collection_id, entity_level="item"
+                        )
+                    except Exception:
+                        driver_fields = None
         except (ValueError, Exception):
             pass
 
         return await ogc_generator.create_queryables_response(
-            request, catalog_id, collection_id, columns, language=language
+            request, catalog_id, collection_id, columns, language=language,
+            driver_fields=driver_fields or None,
         )
 
     async def create_collection(

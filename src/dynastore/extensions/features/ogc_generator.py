@@ -214,6 +214,7 @@ async def create_queryables_response(
     collection_id: str,
     columns: list,
     language: str = "en",
+    driver_fields: Optional[Dict[str, Any]] = None,
 ) -> ogc_models.Queryables:
     """Generates the queryables response for a collection using Sidecar FieldDefinitions."""
     catalogs = get_protocol(CatalogsProtocol)
@@ -236,27 +237,43 @@ async def create_queryables_response(
         }
     }
 
-    # Fetch field definitions via ItemIntrospectionProtocol — driver-agnostic.
-    # Both PG and Iceberg item services implement this protocol.
-    items_svc = get_protocol(ItemsProtocol)
-    if items_svc:
-        all_fields = await items_svc.get_collection_fields(catalog_id, collection_id)
-        for field_def in all_fields.values():
-            if not field_def.expose:
+    if driver_fields:
+        # Non-PG driver supplied rich FieldDefinition objects via get_entity_fields().
+        # Use them directly — bypass ItemsProtocol which is PG-specific.
+        for field_def in driver_fields.values():
+            if not getattr(field_def, "expose", True):
                 continue
-            # Use alias as the property key in Queryables (matches Feature output)
-            final_name = field_def.alias or field_def.name
+            final_name = getattr(field_def, "alias", None) or field_def.name
+            if final_name in ("geoid", "geom"):
+                continue
+            title = getattr(field_def, "title", None)
+            description = getattr(field_def, "description", None)
             properties[final_name] = {
-                "title": str(field_def.title) if field_def.title else final_name,
-                "description": str(field_def.description) if field_def.description else None,
+                "title": str(title) if title else final_name,
+                "description": str(description) if description else None,
                 "type": map_pg_to_json_type(field_def.data_type),
             }
     else:
-        # Fallback to simple column list when no items service is registered
-        for col_name in columns:
-            if col_name in ["geoid", "geom"]:
-                continue
-            properties[col_name] = {"title": col_name, "type": "string"}
+        # PG path: fetch field definitions via ItemsProtocol (ItemService).
+        items_svc = get_protocol(ItemsProtocol)
+        if items_svc:
+            all_fields = await items_svc.get_collection_fields(catalog_id, collection_id)
+            for field_def in all_fields.values():
+                if not field_def.expose:
+                    continue
+                # Use alias as the property key in Queryables (matches Feature output)
+                final_name = field_def.alias or field_def.name
+                properties[final_name] = {
+                    "title": str(field_def.title) if field_def.title else final_name,
+                    "description": str(field_def.description) if field_def.description else None,
+                    "type": map_pg_to_json_type(field_def.data_type),
+                }
+        else:
+            # Final fallback: column name list only (no type info)
+            for col_name in columns:
+                if col_name in ["geoid", "geom"]:
+                    continue
+                properties[col_name] = {"title": col_name, "type": "string"}
 
     localized, _ = collection.localize(language)
     return ogc_models.Queryables(

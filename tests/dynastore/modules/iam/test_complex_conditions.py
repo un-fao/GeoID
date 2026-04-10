@@ -8,8 +8,6 @@ from dynastore.modules.iam.conditions import (
     AttributeMatchHandler, LogicalAndHandler, LogicalOrHandler, LogicalNotHandler
 )
 from dynastore.modules.iam.models import Condition
-from cachetools import LRUCache
-
 @pytest.fixture
 def condition_manager():
     # The global instance already has handlers registered in __init__
@@ -30,7 +28,6 @@ def eval_context():
     return EvaluationContext(
         request=request_mock,
         storage=MagicMock(),
-        usage_cache=LRUCache(maxsize=100),
         query_params={"force": "false", "debug": "true", "limit": "100"},
         path="/api/v1/resource",
         method="GET",

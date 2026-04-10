@@ -135,14 +135,24 @@ def pytest_runtest_setup(item):
 
 
 @pytest.fixture(scope="session", autouse=True)
-def wait_for_db():
+def wait_for_db(request):
     """
     Block until PostgreSQL accepts real queries (not just TCP connections).
 
     pg_isready / TCP-level checks pass while the server is still in recovery
     mode. This fixture retries a SELECT 1 so tests only start when the DB is
     actually ready to serve queries.
+
+    Skips the wait when no collected test requires a DB connection (e.g. pure
+    unit test runs without app_lifespan or db_engine fixtures).
     """
+    needs_db = any(
+        "app_lifespan" in item.fixturenames or "db_engine" in item.fixturenames
+        for item in request.session.items
+    )
+    if not needs_db:
+        return
+
     import asyncio
     import time
     import asyncpg

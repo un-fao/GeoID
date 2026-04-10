@@ -29,7 +29,6 @@ def _make_ctx(query_params: dict | None = None) -> EvaluationContext:
     return EvaluationContext(
         request=None,
         storage=None,  # type: ignore[arg-type]
-        usage_cache=None,  # type: ignore[arg-type]
         query_params=query_params or {},
     )
 
