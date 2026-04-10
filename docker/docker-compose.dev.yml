@@ -17,7 +17,7 @@ services:
       file: docker-compose.yml
       service: keycloak
     environment:
-      KC_PROXY_HEADERS: ""  # No reverse proxy in local dev — avoids "Non-secure context" warning
+      KC_PROXY_HEADERS: xforwarded
 
   catalog:
     extends:
