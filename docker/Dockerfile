@@ -10,8 +10,7 @@ COPY src/dynastore/extensions/notebooks/jupyterlite/ ./lite-config/
 
 RUN jupyter lite build \
     --lite-dir ./lite-config \
-    --output-dir ./lite-output \
-    --contents ""
+    --output-dir ./lite-output
 
 # STAGE 1: Builder (Production dependencies)
 FROM ghcr.io/osgeo/gdal:ubuntu-full-3.12.3 AS builder
