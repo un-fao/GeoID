@@ -88,10 +88,9 @@ class PostgresStorageDriver(ModuleProtocol):
         from dynastore.tools.discovery import get_protocol
         from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
 
-        plugin_id = f"driver:{self.driver_id}"
         configs = get_protocol(ConfigsProtocol)
         config = await configs.get_config(
-            plugin_id,
+            PostgresCollectionDriverConfig._plugin_id,
             catalog_id=catalog_id,
             collection_id=collection_id,
             db_resource=db_resource,
@@ -249,13 +248,15 @@ class PostgresStorageDriver(ModuleProtocol):
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.tools.discovery import get_protocol
 
+        from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
+
         config = await self.get_driver_config(
             catalog_id, collection_id, db_resource=db_resource
         )
         updated_config = config.model_copy(update={"physical_table": physical_table})
         configs = get_protocol(ConfigsProtocol)
         await configs.set_config(
-            f"driver:{self.driver_id}",
+            PostgresCollectionDriverConfig._plugin_id,
             updated_config,
             catalog_id=catalog_id,
             collection_id=collection_id,
@@ -405,10 +406,12 @@ class PostgresStorageDriver(ModuleProtocol):
                 logger.warning("Skipping sidecar table creation: %s", e)
 
         # --- Store physical_table in driver config ---
+        from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
+
         configs = get_protocol(ConfigsProtocol)
         updated_config = col_config.model_copy(update={"physical_table": physical_table})
         await configs.set_config(
-            f"driver:{self.driver_id}",
+            PostgresCollectionDriverConfig._plugin_id,
             updated_config,
             catalog_id=catalog_id,
             collection_id=collection_id,

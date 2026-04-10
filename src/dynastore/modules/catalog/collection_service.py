@@ -453,7 +453,22 @@ class CollectionService:
                 **init_kwargs,
             )
 
-            # 5. Call write driver's ensure_storage() — creates hub + sidecar tables.
+            # 5. Persist initial driver config (sidecars etc.) BEFORE ensure_storage.
+            #    ensure_storage later saves the same config with physical_table set
+            #    (check_immutability=False), which is allowed because WriteOnce starts
+            #    at None here and is updated to a real value there.
+            if layer_config_override:
+                configs = get_protocol(ConfigsProtocol)
+                await configs.set_config(
+                    layer_config_override._plugin_id,
+                    layer_config_override,
+                    catalog_id=catalog_id,
+                    collection_id=collection_model.id,
+                    db_resource=conn,
+                )
+
+            # 6. Call write driver's ensure_storage() — creates hub + sidecar tables
+            #    and pins physical_table in driver config (check_immutability=False).
             #    Skipped gracefully when no storage drivers are registered (e.g. tests
             #    that don't load StorageModule; PG-native tables are handled separately).
             from dynastore.modules.storage.router import get_driver
@@ -470,7 +485,7 @@ class CollectionService:
             except ValueError:
                 pass
 
-            # 5b. Pin the resolved routing config at collection level so future
+            # 6b. Pin the resolved routing config at collection level so future
             #     platform default changes don't silently re-route existing collections.
             try:
                 from dynastore.modules.storage.routing_config import ROUTING_PLUGIN_CONFIG_ID, RoutingPluginConfig
@@ -495,7 +510,7 @@ class CollectionService:
                     catalog_id, collection_model.id, _routing_e,
                 )
 
-            # 6. Store collection metadata — always write to PG metadata driver
+            # 7. Store collection metadata — always write to PG metadata driver
             #    (authoritative), then sync to non-PG metadata driver if configured.
             metadata_payload = collection_model.model_dump(
                 by_alias=True, exclude_none=True
@@ -518,17 +533,6 @@ class CollectionService:
                 logger.warning(
                     "create_collection: metadata driver sync failed for %s/%s: %s",
                     catalog_id, collection_model.id, _meta_e,
-                )
-
-            # 7. Persist driver config if override provided.
-            if layer_config_override:
-                configs = get_protocol(ConfigsProtocol)
-                await configs.set_config(
-                    layer_config_override._plugin_id,
-                    layer_config_override,
-                    catalog_id=catalog_id,
-                    collection_id=collection_model.id,
-                    db_resource=conn,
                 )
 
             # 8. Persist write_policy if provided in the collection definition.
