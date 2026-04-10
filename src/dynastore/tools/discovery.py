@@ -243,10 +243,15 @@ def discover_and_load_plugins(group: str, include_only: Optional[List[str]] = No
         try:
             # Load the class/service defined in pyproject.toml
             plugin_class = entry_point.load()
-            
+
             loaded_plugins[entry_point.name] = plugin_class
             logger.info(f"Successfully discovered installed {group}: {entry_point.name}")
-            
+
+        except ImportError as e:
+            logger.info(
+                f"Skipping {group} plugin '{entry_point.name}': "
+                f"optional dependencies not installed — {e}"
+            )
         except Exception as e:
             logger.error(f"Failed to load installed plugin '{entry_point.name}' from group '{group}': {e}")
             

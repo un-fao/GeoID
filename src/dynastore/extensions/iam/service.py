@@ -75,6 +75,10 @@ from dynastore.modules.iam.exceptions import (
     PrincipalNotFoundError,
 )
 from dynastore.extensions.iam.middleware import IamMiddleware
+from dynastore.extensions.iam.authorization_api import (
+    router as admin_router,
+    me_router,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -365,11 +369,6 @@ class IamExtension(ExtensionProtocol):
         self.router.include_router(self.gov_router)
         self.router.include_router(self.stats_router)
 
-        # Include new simplified IAG routers
-        from dynastore.extensions.iam.authorization_api import (
-            router as admin_router,
-            me_router,
-        )
         self.router.include_router(admin_router)
         self.router.include_router(me_router)
 
