@@ -96,7 +96,7 @@ class PostgresStorageDriver(ModuleProtocol):
             collection_id=collection_id,
             db_resource=db_resource,
         )
-        if config is None:
+        if config is None or not isinstance(config, PostgresCollectionDriverConfig):
             return PostgresCollectionDriverConfig()
         return config
 

@@ -396,8 +396,13 @@ class CollectionService:
             )
             if injected_configs:
                 if layer_config_override is None:
-                    # Start with current config defaults if no override
-                    layer_config_override = collection_config.model_copy()
+                    from dynastore.modules.storage.driver_config import (
+                        PostgresCollectionDriverConfig,
+                    )
+                    if isinstance(collection_config, PostgresCollectionDriverConfig):
+                        layer_config_override = collection_config.model_copy()
+                    else:
+                        layer_config_override = PostgresCollectionDriverConfig()
 
                 current_sidecars = layer_config_override.sidecars or []
                 current_types = {s.sidecar_type for s in current_sidecars}
