@@ -87,8 +87,8 @@ _OGC_COLLECTION_EXAMPLES = [
 ]
 
 
-class Conformance(BaseModel):
-    conformsTo: List[str]
+# Canonical Conformance — single source in ogc_common_models
+from dynastore.extensions.tools.ogc_common_models import Conformance
 
 
 class CatalogDefinition(BaseModel):
@@ -168,27 +168,8 @@ class CollectionDefinition(BaseModel):
     )
 
 
-class LandingPage(BaseModel):
-    model_config = ConfigDict(
-        json_schema_extra={
-            "examples": [
-                {
-                    "title": "DynaStore OGC API",
-                    "description": "Access to geospatial data via OGC API Features",
-                    "links": [
-                        {"rel": "self", "href": "https://example.com/", "type": "application/json"},
-                        {"rel": "service-desc", "href": "https://example.com/openapi", "type": "application/vnd.oai.openapi+json;version=3.0"},
-                        {"rel": "conformance", "href": "https://example.com/conformance", "type": "application/json"},
-                        {"rel": "data", "href": "https://example.com/collections", "type": "application/json"},
-                    ],
-                }
-            ]
-        },
-    )
-
-    title: str = "DynaStore OGC API"
-    description: str = "Access to geospatial data via OGC API Features"
-    links: List[Link]
+# Canonical LandingPage — single source in ogc_common_models
+from dynastore.extensions.tools.ogc_common_models import LandingPage
 
 
 class OGCCollection(BaseModel):

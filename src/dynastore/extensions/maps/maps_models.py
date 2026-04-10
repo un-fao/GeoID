@@ -19,6 +19,8 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from dynastore.models.shared_models import Link
+from dynastore.extensions.tools.ogc_common_models import LandingPage
+
 
 class MapContent(BaseModel):
     """Describes a map resource available for a dataset."""
@@ -32,8 +34,7 @@ class DatasetMaps(BaseModel):
     maps: List[MapContent]
     links: List[Link]
 
-class MapsLandingPage(BaseModel):
+class MapsLandingPage(LandingPage):
     """The root landing page for the OGC API - Maps service."""
-    title: str = "DynaStore OGC API - Maps"
-    description: str = "Access to map rendering services."
-    links: List[Link]
+    title: Optional[str] = "DynaStore OGC API - Maps"
+    description: Optional[str] = "Access to map rendering services."

@@ -32,14 +32,13 @@ from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from dynastore.extensions.protocols import ExtensionProtocol
-from dynastore.extensions.tools.conformance import register_conformance_uris
+from dynastore.extensions.ogc_base import OGCServiceMixin
 from dynastore.extensions.tools.db import get_async_connection
 from dynastore.extensions.tools.language_utils import get_language
 from dynastore.extensions.tools.url import get_root_url
 from dynastore.models.protocols import CatalogsProtocol, ItemsProtocol
 from dynastore.models.shared_models import Link
 from dynastore.modules.catalog.sidecars.base import ConsumerType
-from dynastore.tools.discovery import get_protocol
 
 from . import records_generator as gen
 from . import records_models as rm
@@ -66,7 +65,7 @@ OGC_API_RECORDS_URIS = [
 # ---------------------------------------------------------------------------
 
 
-class RecordsService(ExtensionProtocol):
+class RecordsService(ExtensionProtocol, OGCServiceMixin):
     """OGC API - Records Part 1 extension.
 
     Priority 150 — after STAC (100) and Features (100), before
@@ -76,12 +75,17 @@ class RecordsService(ExtensionProtocol):
     priority: int = 150
     router: APIRouter
 
+    # OGCServiceMixin class attributes
+    conformance_uris = OGC_API_RECORDS_URIS
+    prefix = "/records"
+    protocol_title = "DynaStore OGC API - Records"
+    protocol_description = "Access to catalog records via OGC API - Records"
+
     def __init__(self, app: Optional[FastAPI] = None):
         super().__init__()
         self.app = app
         self.router = APIRouter(prefix="/records", tags=["OGC API - Records"])
-        register_conformance_uris(OGC_API_RECORDS_URIS)
-        self._catalogs_protocol: Optional[CatalogsProtocol] = None
+        self._register_ogc_conformance()
         self._register_routes()
 
     # ------------------------------------------------------------------
@@ -90,24 +94,12 @@ class RecordsService(ExtensionProtocol):
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
-        register_conformance_uris(OGC_API_RECORDS_URIS)
-        register_records_policies()
-        logger.info("RecordsService: conformance classes and policies registered.")
+        self.register_policies()
+        logger.info("RecordsService: policies registered.")
         yield
 
-    # ------------------------------------------------------------------
-    # Protocol helpers
-    # ------------------------------------------------------------------
-
-    async def _get_catalogs_service(self) -> CatalogsProtocol:
-        if self._catalogs_protocol is None:
-            svc = get_protocol(CatalogsProtocol)
-            if not svc:
-                raise HTTPException(
-                    status_code=500, detail="Catalogs service not available."
-                )
-            self._catalogs_protocol = svc
-        return cast(CatalogsProtocol, self._catalogs_protocol)
+    def register_policies(self):
+        register_records_policies()
 
     # ------------------------------------------------------------------
     # Route registration
@@ -163,23 +155,14 @@ class RecordsService(ExtensionProtocol):
         )
 
     # ------------------------------------------------------------------
-    # Landing page & conformance
+    # Landing page & conformance (delegated to OGCServiceMixin)
     # ------------------------------------------------------------------
 
     async def get_landing_page(self, request: Request) -> rm.LandingPage:
-        root_url = get_root_url(request)
-        return rm.LandingPage(
-            title="DynaStore OGC API - Records",
-            description="Access to catalog records via OGC API - Records",
-            links=[
-                Link(href=f"{root_url}/records/", rel="self", type="application/json", title="This document"),
-                Link(href=f"{root_url}/records/conformance", rel="conformance", type="application/json", title="Conformance classes"),
-                Link(href=f"{root_url}/api", rel="service-doc", type="application/json", title="API documentation"),
-            ],
-        )
+        return await self.ogc_landing_page_handler(request)
 
     async def get_conformance(self, request: Request) -> rm.Conformance:
-        return rm.Conformance(conformsTo=OGC_API_RECORDS_URIS)
+        return await self.ogc_conformance_handler(request)
 
     # ------------------------------------------------------------------
     # Collections (filtered to RECORDS type)
@@ -310,31 +293,8 @@ class RecordsService(ExtensionProtocol):
             records.append(gen.db_row_to_record(feature, catalog_id, collection_id, root_url, layer_config))
 
         # Pagination links
-        base_url = str(request.url).split("?")[0]
-        query_params = dict(request.query_params)
-        links = [
-            Link(href=str(request.url), rel="self", type="application/geo+json"),
-        ]
-        if offset > 0:
-            prev_params = query_params.copy()
-            prev_params["offset"] = str(max(0, offset - limit))
-            links.append(
-                Link(
-                    href=f"{base_url}?{'&'.join(f'{k}={v}' for k, v in prev_params.items())}",
-                    rel="prev",
-                    type="application/geo+json",
-                )
-            )
-        if offset + limit < count:
-            next_params = query_params.copy()
-            next_params["offset"] = str(offset + limit)
-            links.append(
-                Link(
-                    href=f"{base_url}?{'&'.join(f'{k}={v}' for k, v in next_params.items())}",
-                    rel="next",
-                    type="application/geo+json",
-                )
-            )
+        from dynastore.extensions.tools.pagination import build_pagination_links
+        links = build_pagination_links(request, offset, limit, count)
 
         result = rm.RecordCollection(
             type="FeatureCollection",

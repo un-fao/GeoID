@@ -157,15 +157,5 @@ class RecordsCatalogCollections(BaseModel):
     numberReturned: Optional[int] = None
 
 
-class Conformance(BaseModel):
-    """OGC API conformance response."""
-
-    conformsTo: List[str]
-
-
-class LandingPage(BaseModel):
-    """Records API landing page."""
-
-    title: Optional[str] = None
-    description: Optional[str] = None
-    links: List[Link] = Field(default_factory=list)
+# Canonical Conformance & LandingPage — single source in ogc_common_models
+from dynastore.extensions.tools.ogc_common_models import Conformance, LandingPage

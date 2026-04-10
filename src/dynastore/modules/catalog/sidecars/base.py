@@ -42,7 +42,6 @@ from enum import Enum
 from geojson_pydantic import Feature, FeatureCollection
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.db_config.query_executor import DbResource
-from dynastore.models.localization import LocalizedText
 
 
 
@@ -55,12 +54,21 @@ class ConsumerType(str, Enum):
     Passed via ``FeaturePipelineContext.consumer`` so that sidecars can
     gate extension-specific field injection (e.g. STAC assets) while
     still performing shared work (e.g. multilanguage resolution).
+
+    New protocols can pass custom string values without modifying this
+    enum — ``_missing_`` will accept any string as a valid member.
     """
 
     GENERIC = "generic"
     OGC_FEATURES = "ogc_features"
     STAC = "stac"
     OGC_RECORDS = "ogc_records"
+
+    @classmethod
+    def _missing_(cls, value):
+        obj = str.__new__(cls, value)
+        obj._value_ = value
+        return obj
 
 # Columns that belong to the Hub table and must never appear in Feature.properties,
 # regardless of which sidecar is currently running.
@@ -270,46 +278,17 @@ class FeaturePipelineContext:
         return HUB_INTERNAL_COLUMNS | self._all_internal_cols
 
 
-class FieldCapability(str, Enum):
-    """Capabilities a field can have."""
-
-    FILTERABLE = "filterable"  # Can be used in WHERE
-    SORTABLE = "sortable"  # Can be used in ORDER BY
-    GROUPABLE = "groupable"  # Can be used in GROUP BY
-    AGGREGATABLE = "aggregatable"  # Can be aggregated (SUM, COUNT, etc.)
-    SPATIAL = "spatial"  # Spatial operations available
-    INDEXED = "indexed"  # Has database index
+# Re-export protocol-level definitions for backward compatibility
+from dynastore.models.protocols.field_definition import (  # noqa: F401
+    FieldCapability,
+    FieldDefinition as _ProtocolFieldDefinition,
+)
 
 
-class FieldDefinition(BaseModel):
-    """Definition of a queryable field."""
+class FieldDefinition(_ProtocolFieldDefinition):
+    """PG-sidecar field definition — extends protocol FieldDefinition with sql_expression."""
 
-    name: str  # Internal name (often same as database column or JSON key)
-    alias: Optional[str] = None  # External name (schema mapping)
-    title: Optional[Union[str, LocalizedText]] = None
-    description: Optional[Union[str, LocalizedText]] = None
-    sql_expression: str  # e.g., "sc_geom.geom", "sc_attr.external_id"
-    capabilities: List[FieldCapability]
-    data_type: str  # "geometry", "text", "integer", "jsonb", etc.
-    expose: bool = True  # Whether to expose this field in public APIs (OGC, STAC)
-    aggregations: Optional[List[str]] = (
-        None  # None or ["*"] = all allowed, [] = none, ["count", "sum"] = specific
-    )
-    transformations: Optional[List[str]] = (
-        None  # None or ["*"] = all allowed, [] = none, ["upper", "lower"] = specific
-    )
-
-    def supports_aggregation(self, agg_func: str) -> bool:
-        """Check if this field supports a specific aggregation."""
-        if self.aggregations is None or "*" in (self.aggregations or []):
-            return True  # All aggregations allowed
-        return agg_func in (self.aggregations or [])
-
-    def supports_transformation(self, transform_func: str) -> bool:
-        """Check if this field supports a specific transformation."""
-        if self.transformations is None or "*" in (self.transformations or []):
-            return True  # All transformations allowed
-        return transform_func in (self.transformations or [])
+    sql_expression: str = ""  # e.g., "sc_geom.geom", "sc_attr.external_id"
 
 
 class ValidationResult(BaseModel):

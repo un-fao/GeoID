@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 # Optional dependency for safe CQL2/ECQL parsing
 try:
     from pygeofilter.parsers.cql2_text import parse as parse_cql2_text
+    from pygeofilter.parsers.cql2_json import parse as parse_cql2_json
     from pygeofilter.parsers.ecql import parse as parse_ecql
     from pygeofilter.backends.sqlalchemy import to_filter
     from pygeofilter.ast import Attribute
@@ -35,6 +36,7 @@ try:
 except ImportError:
     PYGEOFILTER_AVAILABLE = False
     parse_cql2_text = None
+    parse_cql2_json = None
     parse_ecql = None
     to_filter = None
     Attribute = None
@@ -168,3 +170,78 @@ def parse_cql_filter(
         if isinstance(e, ValueError):
             raise e
         raise ValueError(f"Invalid {parser_type.upper()} filter: {e}") from e
+
+
+def parse_cql2_json_filter(
+    cql_json: Dict[str, Any],
+    field_mapping: Optional[Dict[str, Any]] = None,
+    valid_props: Optional[Set[str]] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Parses a CQL2-JSON filter dict and converts it to a SQLAlchemy-safe
+    SQL string with bind parameters.
+
+    This is the JSON counterpart to ``parse_cql_filter`` (CQL2-Text).
+    It follows the exact same validation → to_filter → compile pipeline.
+
+    Args:
+        cql_json: The CQL2-JSON filter as a Python dict.
+        field_mapping: Maps field names to SQLAlchemy Columns or TextClauses.
+        valid_props: Valid property names for filter validation.
+
+    Returns:
+        (sql_where_clause, bind_params) tuple.
+
+    Raises:
+        ValueError: If the filter is invalid or contains unknown properties.
+        ImportError: If pygeofilter is not installed.
+    """
+    if not PYGEOFILTER_AVAILABLE:
+        raise ImportError("pygeofilter is not installed.")
+
+    if not cql_json:
+        return "", {}
+
+    try:
+        ast = parse_cql2_json(cql_json)
+
+        if valid_props is None and field_mapping:
+            valid_props = set(field_mapping.keys())
+
+        if valid_props:
+            used_properties = _extract_property_names(ast)
+            invalid_props = used_properties - valid_props
+            if invalid_props:
+                sorted_valid = sorted(list(valid_props))
+                raise ValueError(
+                    f"Unknown properties: {', '.join(sorted(invalid_props))}. "
+                    f"Available properties: {', '.join(sorted_valid)}. "
+                )
+
+        if field_mapping is None:
+            raise ValueError("field_mapping is required for SQL conversion")
+
+        try:
+            sql_expr = to_filter(ast, field_mapping=field_mapping)
+        except KeyError as ke:
+            prop_name = str(ke).strip(chr(39))
+            msg = f"Unknown property in filter: {prop_name}"
+            if field_mapping:
+                sorted_valid = sorted(list(field_mapping.keys()))
+                msg += f". Available properties: {', '.join(sorted_valid)}"
+            raise ValueError(msg) from ke
+
+        if isinstance(sql_expr, bool):
+            if sql_expr is False:
+                return "1=0", {}
+            return "", {}
+
+        compiled = sql_expr.compile(
+            compile_kwargs={"render_postcompile": True}
+        )
+
+        return str(compiled), compiled.params
+
+    except Exception as e:
+        if isinstance(e, ValueError):
+            raise e
+        raise ValueError(f"Invalid CQL2-JSON filter: {e}") from e

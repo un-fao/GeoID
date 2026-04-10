@@ -16,41 +16,32 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-import logging
+import asyncio
 import json
+import logging
 import re
 from datetime import datetime
-from sqlalchemy import text
-import asyncio
-from typing import List, Optional, Tuple, Dict, Any, Union, cast
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 from pydantic import BaseModel, Field
-from enum import Enum
 
 from dynastore.models.protocols import CatalogsProtocol
+from dynastore.models.query_builder import (
+    FieldSelection,
+    FilterCondition,
+    FilterOperator,
+    QueryRequest,
+)
 from dynastore.modules import get_protocol
-from dynastore.modules.stac.stac_config import StacPluginConfig, SimplificationConfig
 from dynastore.modules.catalog.models import Collection
+from dynastore.modules.catalog.query_optimizer import QueryOptimizer
 from dynastore.modules.db_config.query_executor import (
-    managed_transaction,
     DbResource,
     DQLQuery,
     ResultHandler,
 )
-from dynastore.modules.db_config.shared_queries import (
-    build_filter_clause,
-    get_table_column_names,
-)
-from dynastore.models.query_builder import (
-    QueryRequest,
-    FieldSelection,
-    FilterCondition,
-    SortOrder,
-    FilterOperator,
-)
-from dynastore.modules.catalog.query_optimizer import QueryOptimizer
-
-
-from dynastore.modules.stac.stac_config import AggregationRule
+from dynastore.modules.db_config.shared_queries import build_filter_clause
+from dynastore.modules.stac.stac_config import AggregationRule, StacPluginConfig
 
 
 class AttributeFilter(BaseModel):
@@ -118,6 +109,52 @@ def _get_simplification_sql(config: Optional[StacPluginConfig]) -> str:
 
 
 _SAFE_ATTRIBUTE_FIELD_RE = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+
+# CQL2-JSON operator mapping from FilterOperator values
+_FILTER_OP_TO_CQL2: Dict[str, str] = {
+    "eq": "=", "ne": "<>", "neq": "<>",
+    "gt": ">", "gte": ">=", "lt": "<", "lte": "<=",
+    "like": "like", "ilike": "like",  # pygeofilter uses "like"
+    "in": "in", "nin": "not in",
+}
+
+
+def _filter_to_cql2_json(
+    filt: Union[AttributeFilter, QueryFilter],
+) -> Dict[str, Any]:
+    """Convert STAC AttributeFilter/QueryFilter to a CQL2-JSON dict.
+
+    This bridges the STAC custom filter model to the shared pygeofilter
+    pipeline so all protocols use the same filter compilation path.
+    """
+    if isinstance(filt, QueryFilter):
+        return {
+            "op": filt.op.lower(),
+            "args": [_filter_to_cql2_json(arg) for arg in filt.args],
+        }
+    # AttributeFilter
+    op_str = filt.operator.value if isinstance(filt.operator, FilterOperator) else str(filt.operator)
+    cql_op = _FILTER_OP_TO_CQL2.get(op_str)
+    if cql_op is None:
+        raise ValueError(f"Cannot convert operator '{op_str}' to CQL2-JSON")
+    return {
+        "op": cql_op,
+        "args": [{"property": filt.field}, filt.value],
+    }
+
+
+def _build_cql2_field_mapping(table_columns: set) -> Dict[str, Any]:
+    """Build a field_mapping dict for pygeofilter from JSONB attributes columns.
+
+    Maps property names to ``attributes->>'field'`` SQL text expressions,
+    which is the standard JSONB accessor pattern for STAC attributes.
+    """
+    from sqlalchemy import text
+    return {
+        col: text(f"attributes->>'{col}'")
+        for col in table_columns
+        if _SAFE_ATTRIBUTE_FIELD_RE.match(col)
+    }
 
 _COLLECTION_SORT_ALIASES: dict = {"code": "id", "label": "title"}
 _COLLECTION_DIRECT_SORT_COLUMNS = frozenset({"id", "catalog_id"})
@@ -242,10 +279,22 @@ async def search_items(
 
     if search_request.filter:
         cql_filter_sql = None
-        if isinstance(search_request.filter, QueryFilter):
-            cql_filter_sql = _build_complex_filter_sql(search_request.filter, params)
-        elif isinstance(search_request.filter, AttributeFilter):
-            cql_filter_sql = _build_attribute_filter_sql(search_request.filter, params)
+        try:
+            from dynastore.modules.tools.cql import parse_cql2_json_filter
+            cql2_json = _filter_to_cql2_json(search_request.filter)
+            field_mapping = _build_cql2_field_mapping(table_columns)
+            cql_where, cql_params = parse_cql2_json_filter(
+                cql2_json, field_mapping=field_mapping,
+            )
+            if cql_where:
+                cql_filter_sql = f"({cql_where})"
+                params.update(cql_params)
+        except Exception as e:
+            logger.warning(f"CQL2-JSON filter path failed, falling back to legacy: {e}")
+            if isinstance(search_request.filter, QueryFilter):
+                cql_filter_sql = _build_complex_filter_sql(search_request.filter, params)
+            elif isinstance(search_request.filter, AttributeFilter):
+                cql_filter_sql = _build_attribute_filter_sql(search_request.filter, params)
         if cql_filter_sql:
             where_sql += f" AND {cql_filter_sql}"
 

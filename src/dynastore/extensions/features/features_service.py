@@ -66,13 +66,10 @@ from dynastore.extensions.tools.url import get_root_url, get_url
 from dynastore.extensions.tools.language_utils import get_language
 from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 from dynastore.extensions.protocols import ExtensionProtocol
+from dynastore.extensions.ogc_base import OGCServiceMixin
 from dynastore.extensions.tools.db import get_async_connection, get_async_engine
 from dynastore.modules.db_config.tools import managed_transaction
 from dynastore.modules.db_config.query_executor import DbResource
-from dynastore.extensions.tools.conformance import (
-    register_conformance_uris,
-    Conformance,
-)
 import re
 from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
 from . import features_db
@@ -208,9 +205,18 @@ async def _resolve_crs_uri_to_srid(
     raise HTTPException(
         status_code=400, detail=f"Unsupported or unknown CRS URI: {crs_uri}"
     )
-class OGCFeaturesService(ExtensionProtocol):
+class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
     priority: int = 100
     router: APIRouter
+
+    # OGCServiceMixin class attributes
+    conformance_uris = OGC_API_FEATURES_URIS
+    prefix = "/features"
+    protocol_title = "DynaStore OGC API Features"
+    protocol_description = (
+        "OGC API Features (Parts 1-4) with CQL2 filtering, multi-CRS support, "
+        "queryables, sorting, and full CRUD transactions."
+    )
 
     def configure_app(self, app: FastAPI):
         """Early configuration for the Features extension."""
@@ -221,10 +227,8 @@ class OGCFeaturesService(ExtensionProtocol):
         super().__init__()
         self.app = app
         self.router = APIRouter(prefix="/features", tags=["OGC API - Features"])
-        register_conformance_uris(OGC_API_FEATURES_URIS)
+        self._register_ogc_conformance()
         self._storage_protocol: Optional[StorageProtocol] = None
-        self._catalogs_protocol: Optional[CatalogsProtocol] = None
-        self._configs_protocol: Optional[ConfigsProtocol] = None
         self._register_routes()
 
     def _register_routes(self):
@@ -355,29 +359,15 @@ class OGCFeaturesService(ExtensionProtocol):
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
-        """
-        Registers OGC API Features conformance classes at application startup.
-        """
-        register_conformance_uris(OGC_API_FEATURES_URIS)
-        register_features_policies()
-        logger.info(
-            "OGCFeaturesService: Successfully registered conformance classes and policies."
-        )
+        self.register_policies()
+        logger.info("OGCFeaturesService: policies registered.")
         yield
 
-    async def _get_catalogs_service(self) -> CatalogsProtocol:
-        """Helper to get the catalogs service protocol."""
-        if self._catalogs_protocol is None:
-            svc = get_protocol(CatalogsProtocol)
-            if not svc:
-                raise HTTPException(
-                    status_code=500, detail="Catalogs service not available."
-                )
-            self._catalogs_protocol = svc
-        return cast(CatalogsProtocol, self._catalogs_protocol)
+    def register_policies(self):
+        register_features_policies()
 
     async def _get_storage_service(self) -> Optional[StorageProtocol]:
-        """Helper to get the storage service protocol."""
+        """Helper to get the storage service protocol (Features-specific)."""
         if self._storage_protocol is None:
             self._storage_protocol = get_protocol(StorageProtocol)
         return self._storage_protocol
@@ -401,17 +391,6 @@ class OGCFeaturesService(ExtensionProtocol):
                 return crs_def.srid
         return None
 
-    async def _get_configs_service(self) -> ConfigsProtocol:
-        """Helper to get the configs service protocol."""
-        if self._configs_protocol is None:
-            svc = get_protocol(ConfigsProtocol)
-            if not svc:
-                raise HTTPException(
-                    status_code=500, detail="Configs service not available."
-                )
-            self._configs_protocol = svc
-        return cast(ConfigsProtocol, self._configs_protocol)
-
     async def get_landing_page(
         self, request: Request, language: str = Depends(get_language)
     ):
@@ -420,7 +399,7 @@ class OGCFeaturesService(ExtensionProtocol):
 
     async def get_conformance(self, request: Request):
         """Returns the list of conformance classes (Part 1)."""
-        return ogc_models.Conformance(conformsTo=OGC_API_FEATURES_URIS)
+        return await self.ogc_conformance_handler(request)
 
     # --- Catalog Endpoints ---
     async def list_catalogs(
@@ -674,7 +653,7 @@ class OGCFeaturesService(ExtensionProtocol):
                 schema_info = await driver.introspect_schema(
                     catalog_id, collection_id, db_resource=conn
                 )
-                columns = [entry["name"] for entry in schema_info] if schema_info else []
+                columns = [entry.name for entry in schema_info] if schema_info else []
         except (ValueError, Exception):
             pass
 
@@ -956,40 +935,19 @@ class OGCFeaturesService(ExtensionProtocol):
             count = query_response.total_count or 0
             root_url = get_root_url(request)
             base_url = str(request.url).split("?")[0]
-            query_params = dict(request.query_params)
 
             # --- Link Construction ---
-            links = [
-                Link(href=str(request.url), rel="self", type="application/geo+json"),
+            from dynastore.extensions.tools.pagination import build_pagination_links
+            links = build_pagination_links(request, offset, limit, count)
+            # Features-specific: add HTML alternate link
+            links.append(
                 Link(
                     href=f"{base_url}?f=html",
                     rel="alternate",
                     type="text/html",
                     title="This document as HTML",
                 ),
-            ]
-
-            if offset > 0:
-                prev_params = query_params.copy()
-                prev_params["offset"] = str(max(0, offset - limit))
-                links.append(
-                    Link(
-                        href=f"{base_url}?{'&'.join([f'{k}={v}' for k, v in prev_params.items()])}",
-                        rel="prev",
-                        type="application/geo+json",
-                    )
-                )
-
-            if (offset + limit) < count:
-                next_params = query_params.copy()
-                next_params["offset"] = str(offset + limit)
-                links.append(
-                    Link(
-                        href=f"{base_url}?{'&'.join([f'{k}={v}' for k, v in next_params.items()])}",
-                        rel="next",
-                        type="application/geo+json",
-                    )
-                )
+            )
 
             # --- OGC post-processing wrapper (defense-in-depth) ---
             from dynastore.extensions.stac.stac_items_sidecar import STAC_FEATURES_STRIP
@@ -1228,14 +1186,5 @@ class OGCFeaturesService(ExtensionProtocol):
         item_id: str,
         engine=Depends(get_async_engine),
     ):
-        catalogs_svc = await self._get_catalogs_service()
         async with managed_transaction(engine) as conn:
-            rows_affected = await catalogs_svc.delete_item(
-                catalog_id, collection_id, item_id, db_resource=conn
-            )
-            if rows_affected == 0:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Item '{item_id}' not found.",
-                )
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+            return await self._delete_item(catalog_id, collection_id, item_id, conn)

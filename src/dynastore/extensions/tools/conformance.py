@@ -28,8 +28,8 @@ logger = logging.getLogger(__name__)
 
 # --- Data Model ---
 
-class Conformance(BaseModel):
-    conformsTo: List[str]
+# Canonical Conformance is defined in ogc_common_models; re-export for compatibility.
+from dynastore.extensions.tools.ogc_common_models import Conformance
 
 
 class StandardSummary(BaseModel):

@@ -349,6 +349,7 @@ stats = "dynastore.extensions.stats.extension:StatsExtension"
 tiles = "dynastore.extensions.tiles.tiles_service:TilesService"
 dimensions = "dynastore.extensions.dimensions.dimensions_extension:DimensionsExtension"
 records = "dynastore.extensions.records.records_service:RecordsService"
+coverages = "dynastore.extensions.coverages.coverages_service:CoveragesService"
 
 [project.entry-points."dynastore.tasks"]
 gdal = "dynastore.tasks.gdal.gdalinfo_task:GdalInfoTask"

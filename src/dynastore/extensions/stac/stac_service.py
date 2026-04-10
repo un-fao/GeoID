@@ -30,11 +30,9 @@ from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import text
 from dynastore.models.protocols import (
-    CatalogsProtocol,
-    AssetsProtocol,
     ConfigsProtocol,
-    StorageProtocol,
     IamProtocol,
+    StorageProtocol,
 )
 
 
@@ -72,15 +70,10 @@ from .stac_models import (
     STACItemCollectionResponse,
 )
 from .stac_aggregation_models import AggregationRequest
-from dynastore.extensions.tools.conformance import register_conformance_uris
+from dynastore.extensions.ogc_base import OGCServiceMixin
 from datetime import datetime, timezone
 from dynastore.extensions.tools.url import get_url, get_parent_url, get_root_url
 from dynastore.tools.discovery import get_protocol, get_protocols
-from dynastore.models.protocols import (
-    CatalogsProtocol,
-    StorageProtocol,
-    ConfigsProtocol,
-)
 from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
 
 logger = logging.getLogger(__name__)
@@ -106,11 +99,17 @@ STAC_API_URIS = [
     "https://api.stacspec.org/v1.0.0/item-search#filter:cql-json",
     "http://www.opengis.net/spec/ogcapi-features-3/1.0/conf/filter",
 ]
-class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin):
+class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCServiceMixin):
     priority: int = 100
     router: APIRouter = APIRouter(
         prefix="/stac", tags=["OGC API - STAC - Spatio Temporal Asset Catalog"]
     )
+
+    # OGCServiceMixin class attributes
+    conformance_uris = STAC_API_URIS
+    prefix = "/stac"
+    protocol_title = "DynaStore OGC API - STAC"
+    protocol_description = "SpatioTemporal Asset Catalog API for discovery and access"
 
     def configure_app(self, app: FastAPI):
         """Early configuration for the STAC extension."""
@@ -131,9 +130,12 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin):
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
-        register_stac_policies()
+        self.register_policies()
         logger.info("STACService: Policies registered.")
         yield
+
+    def register_policies(self):
+        register_stac_policies()
 
     def get_static_prefix(self) -> str:
         """Returns the static prefix for STAC."""
@@ -160,32 +162,14 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin):
         return sorted(files)[offset : offset + limit]
 
     def __init__(self, app: Optional[FastAPI] = None):
-        register_conformance_uris(STAC_API_URIS)
+        self._register_ogc_conformance()
         logger.info("STACService: Successfully registered conformance classes.")
         self.app = app
         self._register_routes()
 
-    async def _get_catalogs_service(self) -> CatalogsProtocol:
-        """Helper to get the catalogs service protocol."""
-        svc = get_protocol(CatalogsProtocol)
-        if not svc:
-            raise HTTPException(
-                status_code=500, detail="Catalogs service not available."
-            )
-        return svc
-
     async def _get_storage_service(self) -> Optional[StorageProtocol]:
         """Helper to get the storage service protocol."""
         return get_protocol(StorageProtocol)
-
-    async def _get_configs_service(self) -> ConfigsProtocol:
-        """Helper to get the configs service protocol."""
-        svc = get_protocol(ConfigsProtocol)
-        if not svc:
-            raise HTTPException(
-                status_code=500, detail="Configs service not available."
-            )
-        return svc
 
     def _register_routes(self):
         """Registers routes using a declarative route table."""
@@ -938,19 +922,9 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin):
         )
         catalog_id = validate_sql_identifier(catalog_id)
         collection_id = validate_sql_identifier(collection_id)
-        catalogs_svc = await self._get_catalogs_service()
 
         async with managed_transaction(engine) as conn:
-            rows_affected = await catalogs_svc.delete_item(
-                catalog_id, collection_id, item_id, db_resource=conn
-            )
-
-            if rows_affected == 0:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Item '{item_id}' not found.",
-                )
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+            return await self._delete_item(catalog_id, collection_id, item_id, conn)
 
     async def search_items_post(
         self,
