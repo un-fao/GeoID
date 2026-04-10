@@ -82,7 +82,7 @@ app = FastAPI(
     description=os.getenv(
         "DESCRIPTION",
         "Multi-tenant, OGC-compliant geospatial data platform implementing OGC API Features (Parts 1-4), "
-        "STAC API 1.0.0, Processes, Records, Tiles, Maps, and Dimensions with CQL2 filtering, "
+        "STAC API 1.0.0, Processes, Records, Tiles, Maps, Coverages, and Dimensions with CQL2 filtering, "
         "multi-CRS support, and transaction capabilities.",
     ),
     version=VERSION,

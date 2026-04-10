@@ -85,7 +85,7 @@ async def create_root_catalog(request: Request, lang: str = "en") -> Dict[str, A
     base_url = get_url(request)
     root_catalog = pystac.Catalog(
         id="dynastore-stac-root",
-        description="Multi-tenant OGC-compliant geospatial data platform implementing STAC API 1.0.0, OGC API Features (Parts 1-4), Processes, Records, Tiles, Maps, and Dimensions.",
+        description="Multi-tenant OGC-compliant geospatial data platform implementing STAC API 1.0.0, OGC API Features (Parts 1-4), Processes, Records, Tiles, Maps, Coverages, and Dimensions.",
         title="DynaStore OGC STAC API",
     )
 

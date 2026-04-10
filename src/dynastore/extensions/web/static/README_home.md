@@ -19,7 +19,7 @@ We push orchestration into PostgreSQL. Triggers, Partitioning, and JSONB handle 
 User-facing `codes` are stable. Physical schemas (`s_a1b2...`) are immutable and collision-free. Rename anything, break nothing.
 
 ### OGC Native
-Built for OGC API - Features, STAC, and Processes from day one. Interoperability is not an afterthought, it's the foundation.
+Built for OGC API - Features, STAC, Coverages, and Processes from day one. Interoperability is not an afterthought, it's the foundation.
 
 ---
 
@@ -35,9 +35,10 @@ Create isolated environments for departments or clients instantly. Each `catalog
 
 ### Comprehensive OGC Support
 Stop building custom APIs. Dynastore exposes your data through standardized, interoperable interfaces compatible with QGIS, ArcGIS, and web maps.
-*   OGC API - Features (Part 1 & 2)
-*   SpatioTemporal Asset Catalog (STAC)
-*   OGC API - Tiles & Processes
+*   OGC API - Features (Parts 1-4: Core, CRS, Filtering, CRUD)
+*   SpatioTemporal Asset Catalog (STAC API 1.0.0)
+*   OGC API - Coverages, Tiles, Maps, Processes, Records
+*   OGC Dimensions (paginated datacube dimensions)
 
 ### Deployment Flexibility
 #### Cloud Native
@@ -105,6 +106,9 @@ Legacy support for Web Feature Service to ensure compatibility with older GIS cl
 
 ### OGC API - Maps
 Server-side rendering of map images (PNG/JPEG) using SLD/Mapbox styles.
+
+### OGC API - Coverages
+Raster and datacube data access via the OGC API Coverages standard. Exposes coverage landing pages, domain sets, range types, and data retrieval endpoints per catalog/collection. Backed by the pluggable storage driver architecture (DuckDB, Iceberg, PostgreSQL).
 
 ---
 
