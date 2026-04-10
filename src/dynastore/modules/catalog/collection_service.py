@@ -168,7 +168,7 @@ class CollectionService:
             from dynastore.modules.storage.routing_config import Operation
 
             meta_driver = await get_driver(Operation.METADATA, catalog_id, collection_id)
-            if meta_driver is not None and meta_driver.driver_id != "postgresql":
+            if meta_driver is not None and meta_driver.driver_type != "postgresql":
                 meta_dict = await meta_driver.get_collection_metadata(
                     catalog_id, collection_id,
                 )
@@ -261,10 +261,12 @@ class CollectionService:
     async def get_collection_config(
         self, catalog_id: str, collection_id: str, db_resource: Optional[Any] = None
     ) -> CollectionPluginConfig:
-        """Retrieves the active write driver config for a collection (via routing config)."""
-        from dynastore.modules.storage.driver_config import get_collection_driver_config
+        """Retrieves the active driver config for a collection (via routing)."""
+        from dynastore.modules.storage.router import get_driver
+        from dynastore.modules.storage.routing_config import Operation
 
-        return await get_collection_driver_config(
+        driver = await get_driver(Operation.READ, catalog_id, collection_id)
+        return await driver.get_driver_config(
             catalog_id, collection_id, db_resource=db_resource
         )
 
@@ -364,12 +366,13 @@ class CollectionService:
                 f"[LIFECYCLE] Creating collection '{catalog_id}:{collection_model.id}' in schema '{phys_schema}'"
             )
 
-            # Get PG driver config (default/platform config only - collection doesn't exist yet,
+            # Get driver config (default/platform config only - collection doesn't exist yet,
             # so we must NOT pass db_resource here; querying collection_configs in a nested
             # transaction before the table may be ready would poison the outer transaction).
-            from dynastore.modules.storage.driver_config import get_pg_collection_config
-
-            collection_config = await get_pg_collection_config(
+            from dynastore.modules.storage.router import get_driver as _get_driver
+            from dynastore.modules.storage.routing_config import Operation
+            _meta_driver = await _get_driver(Operation.READ, catalog_id, collection_model.id)
+            collection_config = await _meta_driver.get_driver_config(
                 catalog_id, collection_model.id,
             )
 
@@ -489,6 +492,31 @@ class CollectionService:
             except ValueError:
                 pass
 
+            # 5b. Pin the resolved routing config at collection level so future
+            #     platform default changes don't silently re-route existing collections.
+            try:
+                from dynastore.modules.storage.routing_config import ROUTING_PLUGIN_CONFIG_ID, RoutingPluginConfig
+                configs = get_protocol(ConfigsProtocol)
+                resolved_routing: RoutingPluginConfig = await configs.get_config(
+                    ROUTING_PLUGIN_CONFIG_ID,
+                    catalog_id=catalog_id,
+                    collection_id=collection_model.id,
+                    db_resource=conn,
+                )
+                if resolved_routing:
+                    await configs.set_config(
+                        ROUTING_PLUGIN_CONFIG_ID,
+                        resolved_routing,
+                        catalog_id=catalog_id,
+                        collection_id=collection_model.id,
+                        db_resource=conn,
+                    )
+            except Exception as _routing_e:
+                logger.warning(
+                    "create_collection: failed to pin routing config for %s/%s: %s",
+                    catalog_id, collection_model.id, _routing_e,
+                )
+
             # 6. Store collection metadata — always write to metadata
             #    directly so the data is present even when no storage meta_driver exists
             #    (e.g. in tests or fresh deployments without a registered READ driver).
@@ -544,7 +572,7 @@ class CollectionService:
                 meta_driver = await get_driver(
                     Operation.METADATA, catalog_id, collection_model.id
                 )
-                if meta_driver is not None and meta_driver.driver_id != "postgresql":
+                if meta_driver is not None and meta_driver.driver_type != "postgresql":
                     await meta_driver.set_collection_metadata(
                         catalog_id,
                         collection_model.id,

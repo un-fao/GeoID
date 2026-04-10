@@ -126,6 +126,7 @@ class IcebergStorageDriver(ModuleProtocol):
     """
 
     driver_id: str = "iceberg"
+    driver_type: str = "iceberg"
     priority: int = 20
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,
@@ -156,6 +157,28 @@ class IcebergStorageDriver(ModuleProtocol):
 
     def is_available(self) -> bool:
         return _pyiceberg_available()
+
+    async def get_driver_config(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> "IcebergCollectionDriverConfig":
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.tools.discovery import get_protocol
+
+        plugin_id = f"driver:{self.driver_id}"
+        configs = get_protocol(ConfigsProtocol)
+        config = await configs.get_config(
+            plugin_id,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            db_resource=db_resource,
+        )
+        if config is None:
+            return IcebergCollectionDriverConfig()
+        return config
 
     @asynccontextmanager
     async def lifespan(self, app_state: object):
@@ -421,23 +444,27 @@ class IcebergStorageDriver(ModuleProtocol):
 
         on_conflict = policy.on_conflict
 
-        if on_conflict in (WriteConflictPolicy.REFUSE, WriteConflictPolicy.REFUSE_INGESTION):
+        if on_conflict == WriteConflictPolicy.REFUSE or policy.on_asset_conflict is not None:
             # Collect external_ids that already exist in the table.
             ext_ids = [
                 row["_external_id"] for row in rows if "_external_id" in row
             ]
             if ext_ids:
                 from pyiceberg.expressions import In
+                from dynastore.modules.storage.driver_config import AssetConflictPolicy
                 existing = table.scan().filter(
                     In("_external_id", ext_ids)
                 ).to_arrow()
                 existing_ids = set(existing.column("_external_id").to_pylist()) if existing.num_rows > 0 else set()
 
-                if on_conflict == WriteConflictPolicy.REFUSE_INGESTION and existing_ids:
+                if (
+                    policy.on_asset_conflict == AssetConflictPolicy.REFUSE
+                    and existing_ids
+                ):
                     from dynastore.modules.storage.errors import ConflictError
                     raise ConflictError(
                         f"Iceberg: external_id(s) {sorted(existing_ids)} already exist "
-                        f"in {catalog_id}/{collection_id} (policy=refuse_ingestion)"
+                        f"in {catalog_id}/{collection_id} (policy=refuse_asset)"
                     )
 
                 if on_conflict == WriteConflictPolicy.REFUSE:

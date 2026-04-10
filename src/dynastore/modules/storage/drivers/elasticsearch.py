@@ -91,6 +91,29 @@ class _ElasticsearchBase:
         except ImportError:
             return False
 
+    async def get_driver_config(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> Any:
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.tools.discovery import get_protocol
+        from dynastore.modules.storage.driver_config import ElasticsearchCollectionDriverConfig
+
+        plugin_id = f"driver:{self.driver_id}"
+        configs = get_protocol(ConfigsProtocol)
+        config = await configs.get_config(
+            plugin_id,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            db_resource=db_resource,
+        )
+        if config is None:
+            return ElasticsearchCollectionDriverConfig()
+        return config
+
     @staticmethod
     async def _is_secondary_for(
         driver_id: str, catalog_id: str, collection_id: Optional[str],
@@ -197,6 +220,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
     """
 
     driver_id: str = "elasticsearch"
+    driver_type: str = "elasticsearch"
     priority: int = 50
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,
@@ -263,11 +287,13 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
         Applies ``WriteConflictPolicy`` per entity when ``external_id`` is present.
         Stores ``asset_id``, ``valid_from``, ``valid_to`` from ``context`` in ES ``_source``.
 
-        Conflict policies:
+        Conflict policies (item-level via ``on_conflict``):
         - UPDATE: index with stable doc_id (existing ES behaviour).
         - REFUSE: skip if a doc with the same external_id already exists.
-        - REFUSE_INGESTION: raise ``ConflictError`` if external_id already exists.
         - NEW_VERSION: index with a timestamped doc_id suffix; stores ``valid_from``/``valid_to``.
+
+        Batch-level via ``on_asset_conflict``:
+        - REFUSE (``refuse_asset``): raise ``ConflictError`` if any external_id already exists.
         """
         from datetime import datetime, timezone
 
@@ -315,6 +341,20 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
 
             base_id = external_id or stac_doc.get("id")
 
+            # Asset-level (batch-level) check — runs before item-level; raises on first match.
+            if policy.on_asset_conflict is not None and external_id:
+                from dynastore.modules.storage.driver_config import AssetConflictPolicy
+                if (
+                    policy.on_asset_conflict == AssetConflictPolicy.REFUSE
+                    and await self._es_doc_exists_by_external_id(db, collection_id, external_id)
+                ):
+                    from dynastore.modules.storage.errors import ConflictError
+                    raise ConflictError(
+                        f"ES driver: external_id '{external_id}' already exists "
+                        f"in {catalog_id}/{collection_id} (policy=refuse_asset)"
+                    )
+
+            # Item-level check — skip this entity, continue batch.
             if policy.on_conflict == WriteConflictPolicy.REFUSE:
                 if external_id and await self._es_doc_exists_by_external_id(
                     db, collection_id, external_id,
@@ -325,17 +365,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
                     )
                     continue
 
-            elif policy.on_conflict == WriteConflictPolicy.REFUSE_INGESTION:
-                if external_id and await self._es_doc_exists_by_external_id(
-                    db, collection_id, external_id,
-                ):
-                    from dynastore.modules.storage.errors import ConflictError
-                    raise ConflictError(
-                        f"ES driver: external_id '{external_id}' already exists "
-                        f"in {catalog_id}/{collection_id}"
-                    )
-
-            elif policy.on_conflict == WriteConflictPolicy.NEW_VERSION:
+            if policy.on_conflict == WriteConflictPolicy.NEW_VERSION:
                 # Each version gets a unique doc_id. Store validity window.
                 ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
                 stac_doc["id"] = f"{base_id}_{ts}" if base_id else ts
@@ -970,6 +1000,7 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
     """
 
     driver_id: str = "elasticsearch_obfuscated"
+    driver_type: str = "elasticsearch"
     priority: int = 51
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,
@@ -1435,6 +1466,7 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
     """
 
     driver_id: str = "elasticsearch_assets"
+    driver_type: str = "elasticsearch"
     priority: int = 52
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,

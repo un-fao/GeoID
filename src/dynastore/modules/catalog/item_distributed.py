@@ -96,16 +96,18 @@ class ItemDistributedMixin:
                     )
                     break
 
-        # 1.6 Additional Checks: Identity/Asset/Unique Collision
-        if on_conflict == WriteConflictPolicy.REFUSE_INGESTION:
-            for sidecar in sidecars:
-                if await sidecar.check_upsert_collision(
-                    conn, phys_schema, phys_table, processing_context
-                ):
-                    logger.warning(
-                        f"Feature rejected: Identity/Unique collision found (via {sidecar.sidecar_id})"
-                    )
-                    return None
+        # 1.6 Additional Checks: Asset-level (batch-level) collision guard.
+        if write_policy and write_policy.on_asset_conflict is not None:
+            from dynastore.modules.storage.driver_config import AssetConflictPolicy
+            if write_policy.on_asset_conflict == AssetConflictPolicy.REFUSE:
+                for sidecar in sidecars:
+                    if await sidecar.check_upsert_collision(
+                        conn, phys_schema, phys_table, processing_context
+                    ):
+                        logger.warning(
+                            f"Feature rejected: Identity/Unique collision found (via {sidecar.sidecar_id})"
+                        )
+                        return None
 
         result = None
         # 2. Execution Path

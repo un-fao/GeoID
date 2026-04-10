@@ -403,13 +403,15 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin):
         self, catalog_id: str, collection: Any
     ) -> bool:
         """Check if a collection is of RECORDS type via its driver config."""
-        from dynastore.modules.storage.driver_config import get_pg_collection_config
+        from dynastore.modules.storage.router import get_driver
+        from dynastore.modules.storage.routing_config import Operation
 
         coll_id = collection.id if hasattr(collection, "id") else collection.get("id")
         if not coll_id:
             return False
         try:
-            config = await get_pg_collection_config(catalog_id, coll_id)
+            driver = await get_driver(Operation.READ, catalog_id, coll_id)
+            config = await driver.get_driver_config(catalog_id, coll_id)
             return getattr(config, "collection_type", "VECTOR") == "RECORDS"
         except Exception:
             return False

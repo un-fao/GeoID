@@ -246,8 +246,10 @@ async def search_items(
     ]
 
     async def _check_layer_def(cid):
-        from dynastore.modules.storage.driver_config import get_pg_collection_config
-        return await get_pg_collection_config(
+        from dynastore.modules.storage.router import get_driver
+        from dynastore.modules.storage.routing_config import Operation
+        driver = await get_driver(Operation.READ, search_request.catalog_id, cid)
+        return await driver.get_driver_config(
             search_request.catalog_id, cid, db_resource=db_resource
         )
 

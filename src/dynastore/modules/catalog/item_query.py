@@ -23,7 +23,6 @@ from dynastore.modules.catalog.models import Collection
 from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
 from dynastore.modules.storage.driver_config import (
     PostgresCollectionDriverConfig,
-    get_pg_collection_config,
 )
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
@@ -100,7 +99,7 @@ async def _try_driver_dispatch(
     except Exception:
         return None
 
-    if resolved is None or resolved.driver_id == "postgresql":
+    if resolved is None or resolved.driver_type == "postgresql":
         return None
 
     effective_limit = (request.limit if request and request.limit else limit) or limit
@@ -180,7 +179,10 @@ class ItemQueryMixin:
     ) -> List[Feature]:
         """Retrieves a list of items via the QueryOptimizer path."""
         if not col_config:
-            col_config = await get_pg_collection_config(
+            from dynastore.modules.storage.router import get_driver as _get_driver
+            from dynastore.modules.storage.routing_config import Operation
+            _driver = await _get_driver(Operation.READ, catalog_id, collection_id)
+            col_config = await _driver.get_driver_config(
                 catalog_id, collection_id, db_resource=conn
             )
 
@@ -451,7 +453,10 @@ class ItemQueryMixin:
             if not phys_schema or not phys_table:
                 return 0
 
-            col_config = await get_pg_collection_config(
+            from dynastore.modules.storage.router import get_driver as _get_driver
+            from dynastore.modules.storage.routing_config import Operation
+            _driver = await _get_driver(Operation.READ, catalog_id, collection_id)
+            col_config = await _driver.get_driver_config(
                 catalog_id, collection_id, db_resource=conn,
             )
 
@@ -698,7 +703,10 @@ class ItemQueryMixin:
         validate_sql_identifier(collection_id)
 
         async with managed_transaction(db_resource or self.engine) as conn:
-            col_config = await get_pg_collection_config(catalog_id, collection_id)
+            from dynastore.modules.storage.router import get_driver as _get_driver
+            from dynastore.modules.storage.routing_config import Operation
+            _driver = await _get_driver(Operation.READ, catalog_id, collection_id)
+            col_config = await _driver.get_driver_config(catalog_id, collection_id)
             phys_schema = await self._resolve_physical_schema(catalog_id)
             phys_table = await self._resolve_physical_table(catalog_id, collection_id)
 

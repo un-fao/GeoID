@@ -48,7 +48,6 @@ from dynastore.tools.geospatial import (
 )
 from dynastore.modules.storage.driver_config import (
     PostgresCollectionDriverConfig,
-    get_pg_collection_config,
 )
 from dynastore.modules.catalog.sidecars.geometries_config import GeometriesSidecarConfig
 from dynastore.modules.stac.stac_config import (
@@ -346,9 +345,12 @@ async def create_collection(
     catalogs_svc = get_protocol(CatalogsProtocol)
     if not catalogs_svc:
         raise RuntimeError("CatalogsProtocol not available")
+    from dynastore.modules.storage.router import get_driver
+    from dynastore.modules.storage.routing_config import Operation
+    driver = await get_driver(Operation.READ, catalog_id, collection_id)
     metadata_model, layer_config = await asyncio.gather(
         catalogs_svc.get_collection_model(catalog_id, collection_id),
-        get_pg_collection_config(catalog_id, collection_id),
+        driver.get_driver_config(catalog_id, collection_id),
     )
     if not metadata_model:
         return None

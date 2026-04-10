@@ -66,18 +66,41 @@ class DriverCapability(StrEnum):
 
 
 class WriteConflictPolicy(StrEnum):
-    """What to do when an entity with the same identity already exists.
+    """Item-level conflict policy — applied per entity when identity already exists.
 
     Drivers that declare ``Capability.EXTERNAL_ID_TRACKING`` read this policy
     from ``CollectionWritePolicy`` via the config waterfall and apply it during
     ``write_entities()``.  Drivers without that capability fall back to their
     native behaviour (typically UPDATE).
+
+    Identity keys:
+      - ``geoid``: always a new UUID, always unique. Never duplicated, even by
+        ``new_version`` (which archives the old entity and inserts a fresh one
+        with a new geoid).  This is the system identity key.
+      - ``external_id``: optional.  When ``external_id_field`` is set, a fresh
+        geoid is always generated and conflict resolution uses external_id.
+        When absent, conflict resolution uses geoid directly.
     """
 
-    UPDATE = "update"                       # overwrite in place (default)
-    NEW_VERSION = "new_version"             # create a new temporal version
-    REFUSE = "refuse"                       # reject the duplicate, continue processing others
-    REFUSE_INGESTION = "refuse_ingestion"   # hard stop — reject the entire ingestion batch
+    UPDATE = "update"           # overwrite in place (default)
+    NEW_VERSION = "new_version" # archive old, insert new with new geoid
+    REFUSE = "refuse"           # skip this entity, continue batch
+
+
+class AssetConflictPolicy(StrEnum):
+    """Asset-level (batch-level) conflict policy — checked before item processing.
+
+    When set, the driver checks whether any entity in the incoming asset batch
+    has a duplicate identity before processing items.  A positive match triggers
+    the configured response for the entire batch.
+
+    This operates at a different level than ``WriteConflictPolicy`` (per-item).
+    Both can be combined: e.g. ``on_conflict=REFUSE`` (skip individual item
+    duplicates) and ``on_asset_conflict=REFUSE`` (reject entire batch if any
+    duplicate is found).
+    """
+
+    REFUSE = "refuse_asset"     # hard stop — reject the entire asset batch
 
 
 class CollectionWritePolicy(PluginConfig):
@@ -96,27 +119,49 @@ class CollectionWritePolicy(PluginConfig):
 
     The ``context`` dict passed to ``write_entities()`` carries runtime values
     that override config defaults:
-    - ``asset_id``           — source asset reference (from ingestion pipeline)
+    - ``asset_id``             — source asset reference (from ingestion pipeline)
     - ``external_id_override`` — explicit external_id bypassing field extraction
-    - ``valid_from``         — validity range start (ISO-8601 or datetime)
-    - ``valid_to``           — validity range end (None = open-ended)
+    - ``valid_from``           — validity range start (ISO-8601 or datetime)
+    - ``valid_to``             — validity range end (None = open-ended)
+
+    Composable policies:
+      ``on_conflict`` (item-level) and ``on_asset_conflict`` (batch-level) act
+      independently — both can be set simultaneously.  Example::
+
+          on_conflict = WriteConflictPolicy.REFUSE        # skip item duplicates
+          on_asset_conflict = AssetConflictPolicy.REFUSE  # reject whole batch
     """
 
     _plugin_id: ClassVar[Optional[str]] = "write_policy"
 
     on_conflict: WriteConflictPolicy = Field(
         WriteConflictPolicy.UPDATE,
-        description="Conflict policy when identity already exists.",
+        description=(
+            "Item-level conflict policy applied per entity. "
+            "UPDATE overwrites in place; NEW_VERSION archives old and inserts "
+            "new with a fresh geoid; REFUSE skips the entity and continues."
+        ),
+    )
+    on_asset_conflict: Optional[AssetConflictPolicy] = Field(
+        default=None,
+        description=(
+            "Asset-level (batch-level) conflict policy, checked before item processing. "
+            "None = no batch-level check. "
+            "REFUSE rejects the entire asset batch if any duplicate identity is found."
+        ),
     )
     track_asset_id: bool = Field(
         True,
         description="Store asset_id from write context in the entity document.",
     )
-    external_id_field: str = Field(
-        "id",
+    external_id_field: Optional[str] = Field(
+        default=None,
         description=(
             "Dot-notation path to extract external_id from the entity. "
-            "E.g. 'id' (Feature.id), 'properties.code', 'properties.src_id'."
+            "E.g. 'id' (Feature.id), 'properties.code', 'properties.src_id'. "
+            "When None, conflict detection uses geoid directly. "
+            "When set, a fresh geoid is always generated and conflict resolution "
+            "uses the extracted external_id."
         ),
     )
     require_external_id: bool = Field(
@@ -463,7 +508,6 @@ class ElasticsearchAssetDriverConfig(AssetDriverConfig):
 # Convenience helpers
 # ---------------------------------------------------------------------------
 
-PG_DRIVER_PLUGIN_ID = "driver:postgresql"
 WRITE_POLICY_PLUGIN_ID = "write_policy"
 
 # Register CollectionWritePolicy so the waterfall can look it up
@@ -497,64 +541,3 @@ class FeatureTypePluginConfig(PluginConfig):
 _CR.register(FEATURE_TYPE_PLUGIN_ID, FeatureTypePluginConfig)
 
 
-async def get_collection_driver_config(
-    catalog_id: str,
-    collection_id: Optional[str] = None,
-    *,
-    operation: str = "WRITE",
-    db_resource: Any = None,
-) -> "PostgresCollectionDriverConfig":
-    """Fetch the active write (or read) driver config for a collection.
-
-    Resolves driver identity from the routing config, then fetches the
-    driver-specific ``CollectionPluginConfig`` subclass.  Falls back to a
-    default ``PostgresCollectionDriverConfig`` when no config is stored.
-    """
-    from dynastore.models.protocols.configs import ConfigsProtocol
-    from dynastore.tools.discovery import get_protocol
-    from dynastore.modules.storage.routing_config import ROUTING_PLUGIN_CONFIG_ID, RoutingPluginConfig
-
-    configs = get_protocol(ConfigsProtocol)
-    routing: RoutingPluginConfig = await configs.get_config(
-        ROUTING_PLUGIN_CONFIG_ID,
-        catalog_id=catalog_id,
-        collection_id=collection_id,
-        db_resource=db_resource,
-    )
-    entries = routing.operations.get(operation, [])
-    driver_id = entries[0].driver_id if entries else "postgresql"
-    plugin_id = f"driver:{driver_id}"
-    config = await configs.get_config(
-        plugin_id,
-        catalog_id=catalog_id,
-        collection_id=collection_id,
-        db_resource=db_resource,
-    )
-    if config is None:
-        return PostgresCollectionDriverConfig()
-    return config
-
-
-async def get_pg_collection_config(
-    catalog_id: str,
-    collection_id: Optional[str] = None,
-    *,
-    db_resource: Any = None,
-) -> "PostgresCollectionDriverConfig":
-    """Fetch ``PostgresCollectionDriverConfig`` via the config waterfall.
-
-    Returns the default instance if no config has been explicitly set.
-    """
-    from dynastore.models.protocols.configs import ConfigsProtocol
-    from dynastore.tools.discovery import get_protocol
-
-    configs = get_protocol(ConfigsProtocol)
-    config = await configs.get_config(
-        PG_DRIVER_PLUGIN_ID,
-        catalog_id=catalog_id,
-        collection_id=collection_id,
-        db_resource=db_resource,
-    )
-    if config is None:
-        return PostgresCollectionDriverConfig()
-    return config

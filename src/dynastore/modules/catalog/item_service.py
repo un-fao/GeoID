@@ -37,8 +37,6 @@ from dynastore.modules.catalog.models import ItemDataForDB, Collection, Catalog
 from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
 from dynastore.modules.storage.driver_config import (
     PostgresCollectionDriverConfig,
-    PG_DRIVER_PLUGIN_ID,
-    get_pg_collection_config,
 )
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
@@ -127,9 +125,12 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         collection_id: str,
         config_provider: Optional[ConfigsProtocol] = None,
         db_resource: Optional[DbResource] = None,
-    ) -> PostgresCollectionDriverConfig:
-        """Fetch PG driver config (sidecars, partitioning, collection_type)."""
-        return await get_pg_collection_config(
+    ):
+        """Fetch driver config (sidecars, partitioning, collection_type)."""
+        from dynastore.modules.storage.router import get_driver
+        from dynastore.modules.storage.routing_config import Operation
+        driver = await get_driver(Operation.READ, catalog_id, collection_id)
+        return await driver.get_driver_config(
             catalog_id, collection_id, db_resource=db_resource,
         )
 
@@ -280,7 +281,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         except Exception:
             primary = None
 
-        if primary is not None and primary.driver.driver_id != "postgresql":
+        if primary is not None and primary.driver.driver_type != "postgresql":
             results = await primary.driver.write_entities(
                 catalog_id,
                 collection_id,
@@ -342,7 +343,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                     f"Split into smaller batches."
                 )
 
-            col_config = await get_pg_collection_config(
+            col_config = await primary.driver.get_driver_config(
                 catalog_id, collection_id, db_resource=conn
             )
 

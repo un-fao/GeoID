@@ -127,6 +127,13 @@ class CollectionStorageDriverProtocol(Protocol):
     The ``driver_id`` is used by routing config to select the active driver
     for a given collection.
 
+    ``driver_type`` declares the driver *family* (e.g. ``"postgresql"``).
+    Versioned drivers share the same ``driver_type`` but have different
+    ``driver_id`` values (e.g. ``"postgresql"`` and ``"postgresql_v2"``).
+    Business logic uses ``driver_type`` to decide code paths (e.g. PG
+    sidecar pipeline vs non-PG write path); ``driver_id`` is only for
+    routing resolution.
+
     ``capabilities`` declares what the driver supports as a ``FrozenSet[str]``
     using ``Capability`` constants and/or custom strings.
 
@@ -138,6 +145,7 @@ class CollectionStorageDriverProtocol(Protocol):
     """
 
     driver_id: str
+    driver_type: str
     capabilities: FrozenSet[str]
     preferred_for: FrozenSet[str]
     supported_hints: FrozenSet[str]
@@ -413,6 +421,26 @@ class CollectionStorageDriverProtocol(Protocol):
         ``dynastore.models.protocols.field_definition.FieldDefinition``.
         Each driver maps its native type system to the common FieldDefinition
         model (name, data_type, capabilities, etc.).
+        """
+        ...
+
+    async def get_driver_config(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> Any:
+        """Fetch this driver's typed config from the config waterfall.
+
+        Each driver resolves its own ``_plugin_id`` (e.g. ``"driver:postgresql"``,
+        ``"driver:elasticsearch"``) and returns the matching
+        ``CollectionDriverConfig`` subclass.  Returns code defaults when no
+        config has been stored.
+
+        This method replaces driver-specific standalone functions like
+        Callers should obtain the driver via routing and call
+        ``driver.get_driver_config()`` instead.
         """
         ...
 

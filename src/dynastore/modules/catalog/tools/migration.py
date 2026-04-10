@@ -32,7 +32,6 @@ from dynastore.modules.catalog.catalog_config import (
 )
 from dynastore.modules.storage.driver_config import (
     PostgresCollectionDriverConfig,
-    get_pg_collection_config,
 )
 from dynastore.modules.catalog.sidecars.geometries_config import (
     GeometriesSidecarConfig,
@@ -70,7 +69,10 @@ class OneShotMigrator:
             configs = get_protocol(ConfigsProtocol)
             catalogs = get_protocol(CatalogsProtocol)
 
-            orig_config = await get_pg_collection_config(
+            from dynastore.modules.storage.router import get_driver as _get_driver
+            from dynastore.modules.storage.routing_config import Operation
+            _driver = await _get_driver(Operation.READ, catalog_id, collection_id)
+            orig_config = await _driver.get_driver_config(
                 catalog_id, collection_id, db_resource=conn
             )
 

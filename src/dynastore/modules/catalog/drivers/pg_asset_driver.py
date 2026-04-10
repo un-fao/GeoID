@@ -74,6 +74,7 @@ class PostgresAssetDriver:
     """
 
     driver_id: str = "postgresql"
+    driver_type: str = "postgresql"
     capabilities: FrozenSet[str] = frozenset({"read", "write", "streaming"})
     preferred_for: FrozenSet[str] = frozenset({"default", "metadata"})
     supported_hints: FrozenSet[str] = frozenset({"metadata"})

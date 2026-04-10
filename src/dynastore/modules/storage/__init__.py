@@ -42,16 +42,15 @@ from dynastore.models.protocols.storage_driver import (
     StorageLocationResolver,
 )
 from dynastore.modules.storage.driver_config import (
+    AssetConflictPolicy,
+    AssetDriverConfig,
     CollectionDriverConfig,
     CollectionWritePolicy,
-    AssetDriverConfig,
     DriverCapability,
     DriverPluginConfig,
-    PG_DRIVER_PLUGIN_ID,
-    WRITE_POLICY_PLUGIN_ID,
     PostgresCollectionDriverConfig,
     WriteConflictPolicy,
-    get_pg_collection_config,
+    WRITE_POLICY_PLUGIN_ID,
 )
 from dynastore.modules.storage.driver_enricher import DriverMetadataEnricher
 from dynastore.modules.storage.errors import ReadOnlyDriverError, SoftDeleteNotSupportedError

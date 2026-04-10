@@ -1,7 +1,6 @@
 import logging
 from typing import Set, List
 from dynastore.modules.db_config.exceptions import InternalValidationError
-from dynastore.modules.storage.driver_config import get_pg_collection_config
 from dynastore.modules.db_config.query_executor import DbResource
 
 logger = logging.getLogger(__name__)
@@ -27,8 +26,8 @@ async def get_valid_properties(conn: DbResource, catalog_id: str, collection_id:
     except (ValueError, Exception):
         pass
 
-    # 2. Get PG driver config (sidecars, partitioning, etc.)
-    config = await get_pg_collection_config(catalog_id, collection_id, db_resource=conn)
+    # 2. Get driver config (sidecars, partitioning, etc.)
+    config = await driver.get_driver_config(catalog_id, collection_id, db_resource=conn)
 
     schema_properties = set()
     if config:

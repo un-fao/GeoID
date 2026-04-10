@@ -48,6 +48,7 @@ class PostgresStorageDriver(ModuleProtocol):
     """
 
     driver_id: str = "postgresql"
+    driver_type: str = "postgresql"
     priority: int = 10
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,
@@ -75,6 +76,29 @@ class PostgresStorageDriver(ModuleProtocol):
         from dynastore.models.protocols.items import ItemsProtocol
 
         return get_protocol(ItemsProtocol) is not None
+
+    async def get_driver_config(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> "PostgresCollectionDriverConfig":
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.tools.discovery import get_protocol
+        from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
+
+        plugin_id = f"driver:{self.driver_id}"
+        configs = get_protocol(ConfigsProtocol)
+        config = await configs.get_config(
+            plugin_id,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            db_resource=db_resource,
+        )
+        if config is None:
+            return PostgresCollectionDriverConfig()
+        return config
 
     @asynccontextmanager
     async def lifespan(self, app_state: object):
@@ -227,7 +251,6 @@ class PostgresStorageDriver(ModuleProtocol):
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.modules.storage.driver_config import (
             PostgresCollectionDriverConfig,
-            get_pg_collection_config,
         )
         from dynastore.modules.catalog.catalog_service import generate_physical_name
         from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
@@ -237,7 +260,7 @@ class PostgresStorageDriver(ModuleProtocol):
 
         # Resolve col_config if not provided
         if col_config is None:
-            col_config = await get_pg_collection_config(
+            col_config = await self.get_driver_config(
                 catalog_id, collection_id, db_resource=db_resource,
             )
 
@@ -623,8 +646,7 @@ class PostgresStorageDriver(ModuleProtocol):
             ).execute(conn, schema=schema, table=table)
 
             # Also collect fields from attribute sidecar (JSONB keys)
-            from dynastore.modules.storage.driver_config import get_pg_collection_config
-            col_config = await get_pg_collection_config(
+            col_config = await self.get_driver_config(
                 catalog_id, collection_id, db_resource=conn,
             )
 
@@ -707,13 +729,12 @@ class PostgresStorageDriver(ModuleProtocol):
             FieldDefinition as ProtocolFieldDefinition,
             FieldCapability,
         )
-        from dynastore.modules.storage.driver_config import get_pg_collection_config
         from dynastore.modules.db_config.query_executor import managed_transaction
 
         async def _resolve_item_fields(conn):
             if not collection_id:
                 return {}
-            col_config = await get_pg_collection_config(
+            col_config = await self.get_driver_config(
                 catalog_id, collection_id, db_resource=conn,
             )
             if col_config and col_config.sidecars:
@@ -795,7 +816,6 @@ class PostgresStorageDriver(ModuleProtocol):
         from dynastore.modules.db_config.query_executor import (
             DQLQuery, ResultHandler, managed_transaction,
         )
-        from dynastore.modules.storage.driver_config import get_pg_collection_config
 
         schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
         table = await self.resolve_physical_table(
@@ -805,7 +825,7 @@ class PostgresStorageDriver(ModuleProtocol):
             return None
 
         async def _query(conn):
-            layer_config = await get_pg_collection_config(
+            layer_config = await self.get_driver_config(
                 catalog_id, collection_id, db_resource=conn,
             )
             if not layer_config:
@@ -924,7 +944,6 @@ class PostgresStorageDriver(ModuleProtocol):
         from dynastore.modules.db_config.query_executor import (
             DQLQuery, ResultHandler, managed_transaction,
         )
-        from dynastore.modules.storage.driver_config import get_pg_collection_config
 
         schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
         table = await self.resolve_physical_table(
@@ -934,7 +953,7 @@ class PostgresStorageDriver(ModuleProtocol):
             return None
 
         async def _query(conn):
-            layer_config = await get_pg_collection_config(
+            layer_config = await self.get_driver_config(
                 catalog_id, collection_id, db_resource=conn,
             )
 

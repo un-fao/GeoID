@@ -142,6 +142,7 @@ class DuckDBStorageDriver(ModuleProtocol):
     """
 
     driver_id: str = "duckdb"
+    driver_type: str = "duckdb"
     priority: int = 30
 
     capabilities: FrozenSet[str] = frozenset({
@@ -163,6 +164,18 @@ class DuckDBStorageDriver(ModuleProtocol):
 
     def is_available(self) -> bool:
         return _duckdb_available()
+
+    async def get_driver_config(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> "DuckDbCollectionDriverConfig":
+        config = await self._get_location_async(catalog_id, collection_id)
+        if config is None:
+            return DuckDbCollectionDriverConfig()
+        return config
 
     @asynccontextmanager
     async def lifespan(self, app_state: object):
@@ -317,16 +330,19 @@ class DuckDBStorageDriver(ModuleProtocol):
                         ).fetchone()
                         if existing:
                             continue
-                    elif on_conflict == WriteConflictPolicy.REFUSE_INGESTION and ext_id:
-                        existing = conn.execute(
-                            f"SELECT id FROM {table_name} WHERE external_id = ?", [ext_id]
-                        ).fetchone()
-                        if existing:
-                            from dynastore.modules.storage.errors import ConflictError
-                            raise ConflictError(
-                                f"DuckDB: external_id '{ext_id}' already exists in "
-                                f"{catalog_id}/{collection_id} (policy=refuse_ingestion)"
-                            )
+                    elif policy.on_asset_conflict is not None and ext_id:
+                        # Asset-level conflict check: reject entire batch on first duplicate.
+                        from dynastore.modules.storage.driver_config import AssetConflictPolicy
+                        if policy.on_asset_conflict == AssetConflictPolicy.REFUSE:
+                            existing = conn.execute(
+                                f"SELECT id FROM {table_name} WHERE external_id = ?", [ext_id]
+                            ).fetchone()
+                            if existing:
+                                from dynastore.modules.storage.errors import ConflictError
+                                raise ConflictError(
+                                    f"DuckDB: external_id '{ext_id}' already exists in "
+                                    f"{catalog_id}/{collection_id} (policy=refuse_asset)"
+                                )
 
                     row_with_ext = dict(row)
                     if ext_id:

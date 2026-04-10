@@ -328,11 +328,13 @@ class WFSService(ExtensionProtocol):
                 # Use the catalog's metadata for the service identification block.
                 service_metadata, _ = catalog_metadata.localize(language)
 
-            from dynastore.modules.storage.driver_config import get_pg_collection_config
+            from dynastore.modules.storage.router import get_driver
+            from dynastore.modules.storage.routing_config import Operation
 
             vector_collections = []
             for c_summary in all_collections_summary:
-                layer_config = await get_pg_collection_config(
+                driver = await get_driver(Operation.READ, catalog_id, c_summary.id)
+                layer_config = await driver.get_driver_config(
                     catalog_id, c_summary.id, db_resource=conn
                 )
                 if not layer_config or layer_config.collection_type == "VECTOR":
@@ -353,7 +355,8 @@ class WFSService(ExtensionProtocol):
                 )
                 vector_collections = []
                 for c_summary in all_collections_summary:
-                    layer_config = await get_pg_collection_config(
+                    driver = await get_driver(Operation.READ, catalog.id, c_summary.id)
+                    layer_config = await driver.get_driver_config(
                         catalog.id, c_summary.id, db_resource=conn
                     )
                     if not layer_config or layer_config.collection_type == "VECTOR":

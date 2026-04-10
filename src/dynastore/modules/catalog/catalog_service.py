@@ -965,9 +965,11 @@ class CatalogService(CatalogsProtocol):
         collection_id: str,
         db_resource: Optional[DbResource] = None,
     ):
-        from dynastore.modules.storage.driver_config import get_collection_driver_config
+        from dynastore.modules.storage.router import get_driver
+        from dynastore.modules.storage.routing_config import Operation
 
-        return await get_collection_driver_config(
+        driver = await get_driver(Operation.READ, catalog_id, collection_id)
+        return await driver.get_driver_config(
             catalog_id, collection_id, db_resource=db_resource
         )
 
