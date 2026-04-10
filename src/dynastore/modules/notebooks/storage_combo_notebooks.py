@@ -49,3 +49,17 @@ for _nb_id in _NOTEBOOKS:
         registered_by="dynastore.modules.notebooks.storage_combo_notebooks",
         notebook_path=_HERE / f"{_nb_id}.ipynb",
     )
+
+# --- Collection configuration architecture notebooks ---
+_CONFIG_NOTEBOOKS = [
+    ("write_policy",           "write_policy"),
+    ("feature_type_definition","feature_type_definition"),
+    ("metadata_enrichment",    "metadata_enrichment"),
+]
+
+for _nb_id, _nb_file in _CONFIG_NOTEBOOKS:
+    register_platform_notebook(
+        notebook_id=f"collection_config_{_nb_id}",
+        registered_by="dynastore.modules.notebooks.storage_combo_notebooks",
+        notebook_path=_HERE / f"{_nb_file}.ipynb",
+    )
