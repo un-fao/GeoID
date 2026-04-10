@@ -198,6 +198,9 @@ class CatalogModule(ModuleProtocol):
         from dynastore.modules.storage.drivers.postgresql import PostgresStorageDriver
         self.pg_storage_driver = PostgresStorageDriver()
 
+        from dynastore.modules.storage.driver_enricher import DriverMetadataEnricher
+        self.driver_metadata_enricher = DriverMetadataEnricher()
+
         from contextlib import AsyncExitStack
         async with AsyncExitStack() as stack:
             for svc in (
@@ -209,6 +212,7 @@ class CatalogModule(ModuleProtocol):
                 self.asset_service,
                 self.pg_asset_driver,
                 self.pg_storage_driver,
+                self.driver_metadata_enricher,
                 self.properties_service,
                 self.localization_service,
                 self.event_service,

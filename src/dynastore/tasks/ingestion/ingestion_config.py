@@ -19,7 +19,7 @@
 from typing import ClassVar, List, Optional, Any, Literal, Dict, Type
 from pydantic import BaseModel, Field, model_validator
 from dynastore.modules.db_config.platform_config_service import PluginConfig
-from dynastore.modules.catalog.catalog_config import VersioningBehaviorEnum
+from dynastore.modules.storage.driver_config import WriteConflictPolicy
 
 # --- Configuration Identifier ---
 INGESTION_CONFIG_ID = "ingestion"
@@ -33,7 +33,7 @@ class IngestionPluginConfig(PluginConfig):
     """
     _plugin_id: ClassVar[Optional[str]] = INGESTION_CONFIG_ID
     # 1. Behavior Rules
-    versioning_behavior: VersioningBehaviorEnum = Field(
-        default=VersioningBehaviorEnum.ALWAYS_ADD_NEW,
-        description="Determines how new features with an existing external_id are handled."
+    on_conflict: WriteConflictPolicy = Field(
+        default=WriteConflictPolicy.NEW_VERSION,
+        description="Determines how new entities with an existing external_id are handled."
     )

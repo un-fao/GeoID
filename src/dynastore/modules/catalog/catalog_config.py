@@ -29,10 +29,6 @@ from typing import ClassVar, List, Optional
 
 from dynastore.modules.catalog.sidecars.base import SidecarConfig
 from dynastore.modules.catalog.sidecars.geometries_config import GeometriesSidecarConfig
-from dynastore.modules.catalog.sidecars.attributes_config import (
-    FeatureAttributeSidecarConfig,
-    VersioningBehaviorEnum,
-)
 
 
 class CollectionTypeEnum(str, Enum):

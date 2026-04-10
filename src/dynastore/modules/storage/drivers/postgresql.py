@@ -574,11 +574,12 @@ class PostgresStorageDriver(ModuleProtocol):
         collection_id: str,
         *,
         db_resource: Optional[Any] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[Any]:
         from dynastore.modules.db_config.query_executor import (
             DQLQuery, ResultHandler, managed_transaction,
         )
         from dynastore.modules.db_config import shared_queries
+        from dynastore.models.protocols.field_definition import FieldDefinition as ProtocolFieldDefinition
 
         schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
         table = await self.resolve_physical_table(
@@ -627,7 +628,7 @@ class PostgresStorageDriver(ModuleProtocol):
                 catalog_id, collection_id, db_resource=conn,
             )
 
-            fields = []
+            fields: list[ProtocolFieldDefinition] = []
             internal_cols = {"geoid", "deleted_at", "transaction_time", "geom", "bbox_geom", "asset_id"}
             for row in (rows or []):
                 col_name = row["column_name"]
@@ -637,7 +638,7 @@ class PostgresStorageDriver(ModuleProtocol):
                 mapped = pg_type_map.get(data_type, "unknown")
                 if mapped == "geometry":
                     mapped = "geometry"
-                fields.append({"name": col_name, "type": mapped})
+                fields.append(ProtocolFieldDefinition(name=col_name, data_type=mapped))
 
             # Add sidecar attribute fields if available
             if col_config and col_config.sidecars:
@@ -655,7 +656,7 @@ class PostgresStorageDriver(ModuleProtocol):
                             continue
                         data_type = row.get("data_type", "unknown")
                         mapped = pg_type_map.get(data_type, "unknown")
-                        fields.append({"name": col_name, "type": mapped})
+                        fields.append(ProtocolFieldDefinition(name=col_name, data_type=mapped))
 
                     # Also extract keys from JSONB attributes column via sample
                     try:
@@ -668,11 +669,11 @@ class PostgresStorageDriver(ModuleProtocol):
                         key_rows = await DQLQuery(
                             sample_sql, result_handler=ResultHandler.ALL
                         ).execute(conn)
-                        existing_names = {f["name"] for f in fields}
+                        existing_names = {f.name for f in fields}
                         for key_row in (key_rows or []):
                             key_name = key_row[0]
                             if key_name not in existing_names and key_name not in internal_cols:
-                                fields.append({"name": key_name, "type": "string"})
+                                fields.append(ProtocolFieldDefinition(name=key_name, data_type="string"))
                     except Exception:
                         pass
 
@@ -687,6 +688,102 @@ class PostgresStorageDriver(ModuleProtocol):
             return []
         async with managed_transaction(db_proto.engine) as conn:
             return await _query(conn)
+
+    async def get_entity_fields(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        entity_level: str = "item",
+        db_resource: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Return FieldDefinition dict for the given entity level.
+
+        For ``item`` level, wraps ``QueryOptimizer.get_all_queryable_fields()``.
+        For ``collection``/``catalog``/``asset`` levels, returns STAC-standard
+        fields enriched with driver-specific metadata.
+        """
+        from dynastore.models.protocols.field_definition import (
+            FieldDefinition as ProtocolFieldDefinition,
+            FieldCapability,
+        )
+        from dynastore.modules.storage.driver_config import get_pg_collection_config
+        from dynastore.modules.db_config.query_executor import managed_transaction
+
+        async def _resolve_item_fields(conn):
+            if not collection_id:
+                return {}
+            col_config = await get_pg_collection_config(
+                catalog_id, collection_id, db_resource=conn,
+            )
+            if col_config and col_config.sidecars:
+                try:
+                    from dynastore.modules.catalog.query_optimizer import QueryOptimizer
+                    optimizer = QueryOptimizer(col_config)
+                    sidecar_fields = optimizer.get_all_queryable_fields()
+                    result = {}
+                    for name, fd in sidecar_fields.items():
+                        result[name] = ProtocolFieldDefinition(
+                            name=fd.name,
+                            alias=fd.alias,
+                            title=fd.title if isinstance(fd.title, (str, dict, type(None))) else None,
+                            description=fd.description if isinstance(fd.description, (str, dict, type(None))) else None,
+                            capabilities=list(fd.capabilities),
+                            data_type=fd.data_type,
+                            expose=fd.expose,
+                            aggregations=fd.aggregations,
+                            transformations=fd.transformations,
+                        )
+                    return result
+                except Exception:
+                    pass
+
+            # Fallback: use introspect_schema
+            schema_fields = await self.introspect_schema(
+                catalog_id, collection_id, db_resource=conn,
+            )
+            return {
+                f["name"]: ProtocolFieldDefinition(
+                    name=f["name"],
+                    data_type=f.get("type", "string"),
+                    capabilities=[FieldCapability.FILTERABLE],
+                )
+                for f in schema_fields
+            }
+
+        def _stac_base_fields(level: str) -> Dict[str, ProtocolFieldDefinition]:
+            """Return STAC-standard fields for catalog/collection/asset levels."""
+            if level == "catalog":
+                names = ["id", "title", "description", "type", "conformsTo"]
+            elif level == "collection":
+                names = [
+                    "id", "title", "description", "license", "keywords",
+                    "extent", "providers", "summaries", "links",
+                ]
+            elif level == "asset":
+                names = ["href", "type", "title", "description", "roles"]
+            else:
+                return {}
+            return {
+                n: ProtocolFieldDefinition(
+                    name=n, data_type="string",
+                    capabilities=[FieldCapability.FILTERABLE],
+                )
+                for n in names
+            }
+
+        if entity_level == "item":
+            if db_resource is not None:
+                return await _resolve_item_fields(db_resource)
+            from dynastore.tools.discovery import get_protocol
+            from dynastore.models.protocols.database import DatabaseProtocol
+            db_proto = get_protocol(DatabaseProtocol)
+            if not db_proto:
+                return {}
+            async with managed_transaction(db_proto.engine) as conn:
+                return await _resolve_item_fields(conn)
+
+        return _stac_base_fields(entity_level)
 
     async def compute_extents(
         self,

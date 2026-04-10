@@ -29,15 +29,6 @@ from pydantic import BaseModel, Field, model_validator
 from dynastore.modules.catalog.sidecars.base import SidecarConfig, SidecarConfigRegistry
 
 
-class VersioningBehaviorEnum(str, Enum):
-    UPDATE_EXISTING_VERSION = "UPDATE_EXISTING_VERSION"
-    REJECT_NEW_VERSION = "REJECT_NEW_VERSION"
-    CREATE_NEW_VERSION = "CREATE_NEW_VERSION"
-    ARCHIVE_AND_NEW_VERSION = "ARCHIVE_AND_NEW_VERSION"
-    REFUSE_ON_ASSET_ID_COLLISION = "REFUSE_ON_ASSET_ID_COLLISION"
-    ALWAYS_ADD_NEW = "CREATE_NEW_VERSION"  # Alias for compatibility
-
-
 class AttributePartitionStrategyPreset(str, Enum):
     """Partition strategies supported by the Attribute Sidecar."""
 
@@ -218,12 +209,6 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
         "asset_id", description="Input field to map to asset_id"
     )
     index_asset_id: bool = Field(True, description="Create index on asset_id")
-
-    # Ingestion & Versioning Policy
-    versioning_behavior: VersioningBehaviorEnum = Field(
-        VersioningBehaviorEnum.UPDATE_EXISTING_VERSION,
-        description="Behavior when an item with the same external_id/validity exists",
-    )
 
     # Validity Configuration
     enable_validity: bool = Field(

@@ -421,7 +421,7 @@ class IcebergStorageDriver(ModuleProtocol):
 
         on_conflict = policy.on_conflict
 
-        if on_conflict in (WriteConflictPolicy.IGNORE, WriteConflictPolicy.REFUSE):
+        if on_conflict in (WriteConflictPolicy.REFUSE, WriteConflictPolicy.REFUSE_INGESTION):
             # Collect external_ids that already exist in the table.
             ext_ids = [
                 row["_external_id"] for row in rows if "_external_id" in row
@@ -433,14 +433,14 @@ class IcebergStorageDriver(ModuleProtocol):
                 ).to_arrow()
                 existing_ids = set(existing.column("_external_id").to_pylist()) if existing.num_rows > 0 else set()
 
-                if on_conflict == WriteConflictPolicy.REFUSE and existing_ids:
+                if on_conflict == WriteConflictPolicy.REFUSE_INGESTION and existing_ids:
                     from dynastore.modules.storage.errors import ConflictError
                     raise ConflictError(
                         f"Iceberg: external_id(s) {sorted(existing_ids)} already exist "
-                        f"in {catalog_id}/{collection_id} (policy=refuse)"
+                        f"in {catalog_id}/{collection_id} (policy=refuse_ingestion)"
                     )
 
-                if on_conflict == WriteConflictPolicy.IGNORE:
+                if on_conflict == WriteConflictPolicy.REFUSE:
                     rows = [r for r in rows if r.get("_external_id") not in existing_ids]
                     if not rows:
                         return []
@@ -506,6 +506,64 @@ class IcebergStorageDriver(ModuleProtocol):
             else:
                 return None
         return str(val) if val is not None else None
+
+    async def get_entity_fields(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        entity_level: str = "item",
+        db_resource: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Return FieldDefinition dict from Iceberg table schema."""
+        from dynastore.models.protocols.field_definition import (
+            FieldDefinition as ProtocolFieldDefinition,
+            FieldCapability,
+        )
+
+        if entity_level != "item" or not collection_id:
+            return {}
+
+        iceberg_type_map = {
+            "boolean": ("boolean", [FieldCapability.FILTERABLE]),
+            "int": ("integer", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
+            "long": ("integer", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
+            "float": ("numeric", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
+            "double": ("numeric", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
+            "string": ("string", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
+            "date": ("datetime", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
+            "timestamp": ("datetime", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
+            "timestamptz": ("datetime", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
+        }
+
+        try:
+            loc = await self._resolve_location(catalog_id, collection_id)
+            if not loc:
+                return {}
+            catalog = await self._ensure_catalog(loc, catalog_id)
+            table_id = self._table_identifier(loc, catalog_id, collection_id)
+            table = catalog.load_table(table_id)
+
+            result = {}
+            for field in table.schema().fields:
+                type_str = str(field.field_type).lower()
+                for key, (data_type, caps) in iceberg_type_map.items():
+                    if key in type_str:
+                        result[field.name] = ProtocolFieldDefinition(
+                            name=field.name,
+                            data_type=data_type,
+                            capabilities=caps,
+                        )
+                        break
+                else:
+                    result[field.name] = ProtocolFieldDefinition(
+                        name=field.name,
+                        data_type="string",
+                        capabilities=[FieldCapability.FILTERABLE],
+                    )
+            return result
+        except Exception:
+            return {}
 
     async def read_entities(
         self,

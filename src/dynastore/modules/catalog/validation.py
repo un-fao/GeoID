@@ -23,7 +23,7 @@ async def get_valid_properties(conn: DbResource, catalog_id: str, collection_id:
             schema_info = await driver.introspect_schema(
                 catalog_id, collection_id, db_resource=conn
             )
-            physical_columns = {entry["name"] for entry in schema_info} if schema_info else set()
+            physical_columns = {entry.name for entry in schema_info} if schema_info else set()
     except (ValueError, Exception):
         pass
 

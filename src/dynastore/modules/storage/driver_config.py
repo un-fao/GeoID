@@ -66,24 +66,18 @@ class DriverCapability(StrEnum):
 
 
 class WriteConflictPolicy(StrEnum):
-    """What to do when a feature with the same external_id already exists.
+    """What to do when an entity with the same identity already exists.
 
     Drivers that declare ``Capability.EXTERNAL_ID_TRACKING`` read this policy
     from ``CollectionWritePolicy`` via the config waterfall and apply it during
     ``write_entities()``.  Drivers without that capability fall back to their
     native behaviour (typically UPDATE).
-
-    Mapping to PG ``VersioningBehaviorEnum``:
-    - UPDATE      ↔ UPDATE_EXISTING_VERSION
-    - NEW_VERSION ↔ CREATE_NEW_VERSION / ARCHIVE_AND_NEW_VERSION
-    - IGNORE      ↔ REJECT_NEW_VERSION (skip silently)
-    - REFUSE      ↔ REFUSE_ON_ASSET_ID_COLLISION / hard reject
     """
 
-    UPDATE = "update"           # overwrite in place (default)
-    NEW_VERSION = "new_version" # create a new temporal version
-    IGNORE = "ignore"           # skip silently if external_id exists
-    REFUSE = "refuse"           # raise ConflictError if external_id exists
+    UPDATE = "update"                       # overwrite in place (default)
+    NEW_VERSION = "new_version"             # create a new temporal version
+    REFUSE = "refuse"                       # reject the duplicate, continue processing others
+    REFUSE_INGESTION = "refuse_ingestion"   # hard stop — reject the entire ingestion batch
 
 
 class CollectionWritePolicy(PluginConfig):
@@ -92,7 +86,8 @@ class CollectionWritePolicy(PluginConfig):
     Registered as ``plugin_id = "write_policy"`` in the config waterfall
     (collection > catalog > platform > code default).
 
-    Drivers read this config during ``write_entities()`` via::
+    All drivers (PG, ES, Iceberg, DuckDB) read this single config during
+    ``write_entities()`` via::
 
         configs = get_protocol(ConfigsProtocol)
         policy = await configs.get_config(
@@ -111,26 +106,30 @@ class CollectionWritePolicy(PluginConfig):
 
     on_conflict: WriteConflictPolicy = Field(
         WriteConflictPolicy.UPDATE,
-        description="Conflict policy when external_id already exists.",
+        description="Conflict policy when identity already exists.",
     )
     track_asset_id: bool = Field(
         True,
-        description="Store asset_id from write context in the feature document.",
-    )
-    enable_validity: bool = Field(
-        False,
-        description="Track valid_from / valid_to temporal range per feature.",
+        description="Store asset_id from write context in the entity document.",
     )
     external_id_field: str = Field(
         "id",
         description=(
-            "Dot-notation path to extract external_id from the feature. "
+            "Dot-notation path to extract external_id from the entity. "
             "E.g. 'id' (Feature.id), 'properties.code', 'properties.src_id'."
         ),
     )
     require_external_id: bool = Field(
         False,
-        description="Refuse feature if external_id cannot be extracted.",
+        description="Refuse entity if external_id cannot be extracted.",
+    )
+    enable_validity: bool = Field(
+        False,
+        description="Track valid_from / valid_to temporal range per entity.",
+    )
+    validity_field: str = Field(
+        "valid_from",
+        description="Field to extract validity start from entity.",
     )
 
 
@@ -471,6 +470,31 @@ WRITE_POLICY_PLUGIN_ID = "write_policy"
 from dynastore.modules.db_config.platform_config_service import ConfigRegistry as _CR  # noqa: E402
 
 _CR.register(WRITE_POLICY_PLUGIN_ID, CollectionWritePolicy)
+
+from dynastore.models.protocols.field_definition import (  # noqa: E402
+    FeatureTypeDefinition as _FeatureTypeBase,
+    FieldDefinition as _FieldDefinition,
+    EntityLevel as _EntityLevel,
+    FEATURE_TYPE_PLUGIN_ID,
+)
+
+
+class FeatureTypePluginConfig(PluginConfig):
+    """PluginConfig wrapper for FeatureTypeDefinition — registerable in the waterfall.
+
+    Inherits all fields from the protocol-level ``FeatureTypeDefinition``
+    and adds ``PluginConfig`` compliance (``enabled``, ``_plugin_id``).
+    """
+
+    _plugin_id: ClassVar[Optional[str]] = FEATURE_TYPE_PLUGIN_ID
+
+    level: _EntityLevel = _EntityLevel.ITEM
+    fields: Dict[str, _FieldDefinition] = Field(default_factory=dict)
+    exclude_fields: Optional[List[str]] = None
+    metadata_fields: Optional[Dict[str, Any]] = None
+
+
+_CR.register(FEATURE_TYPE_PLUGIN_ID, FeatureTypePluginConfig)
 
 
 async def get_collection_driver_config(

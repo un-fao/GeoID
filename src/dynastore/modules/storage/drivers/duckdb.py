@@ -311,13 +311,13 @@ class DuckDBStorageDriver(ModuleProtocol):
                         )
 
                     on_conflict = policy.on_conflict
-                    if on_conflict == WriteConflictPolicy.IGNORE and ext_id:
+                    if on_conflict == WriteConflictPolicy.REFUSE and ext_id:
                         existing = conn.execute(
                             f"SELECT id FROM {table_name} WHERE external_id = ?", [ext_id]
                         ).fetchone()
                         if existing:
                             continue
-                    elif on_conflict == WriteConflictPolicy.REFUSE and ext_id:
+                    elif on_conflict == WriteConflictPolicy.REFUSE_INGESTION and ext_id:
                         existing = conn.execute(
                             f"SELECT id FROM {table_name} WHERE external_id = ?", [ext_id]
                         ).fetchone()
@@ -325,7 +325,7 @@ class DuckDBStorageDriver(ModuleProtocol):
                             from dynastore.modules.storage.errors import ConflictError
                             raise ConflictError(
                                 f"DuckDB: external_id '{ext_id}' already exists in "
-                                f"{catalog_id}/{collection_id} (policy=refuse)"
+                                f"{catalog_id}/{collection_id} (policy=refuse_ingestion)"
                             )
 
                     row_with_ext = dict(row)
@@ -671,3 +671,69 @@ class DuckDBStorageDriver(ModuleProtocol):
         sidecar = os.path.join(base_dir, f".dynastore_meta_{collection_id}.json")
         with open(sidecar, "w") as f:
             json.dump(metadata, f, default=str)
+
+    async def get_entity_fields(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        entity_level: str = "item",
+        db_resource: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Return FieldDefinition dict from DuckDB column schema."""
+        from dynastore.models.protocols.field_definition import (
+            FieldDefinition as ProtocolFieldDefinition,
+            FieldCapability,
+        )
+
+        if entity_level != "item" or not collection_id:
+            return {}
+
+        duckdb_type_map = {
+            "VARCHAR": ("string", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
+            "INTEGER": ("integer", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
+            "BIGINT": ("integer", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
+            "SMALLINT": ("integer", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
+            "TINYINT": ("integer", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
+            "FLOAT": ("numeric", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
+            "DOUBLE": ("numeric", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
+            "BOOLEAN": ("boolean", [FieldCapability.FILTERABLE]),
+            "DATE": ("datetime", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
+            "TIMESTAMP": ("datetime", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
+            "TIMESTAMP WITH TIME ZONE": ("datetime", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
+            "GEOMETRY": ("geometry", [FieldCapability.SPATIAL]),
+            "BLOB": ("unknown", []),
+        }
+
+        try:
+            loc = await self._get_location_async(catalog_id, collection_id)
+            if not loc or not loc.path:
+                return {}
+
+            conn = self._get_conn()
+            reader = self._reader_func(loc.format)
+            source = f"{reader}('{loc.path}')"
+            schema = conn.execute(f"DESCRIBE SELECT * FROM {source} LIMIT 0").fetchall()
+
+            result = {}
+            for col_name, col_type, *_ in schema:
+                type_upper = str(col_type).upper()
+                matched = False
+                for key, (data_type, caps) in duckdb_type_map.items():
+                    if key in type_upper:
+                        result[col_name] = ProtocolFieldDefinition(
+                            name=col_name,
+                            data_type=data_type,
+                            capabilities=caps,
+                        )
+                        matched = True
+                        break
+                if not matched:
+                    result[col_name] = ProtocolFieldDefinition(
+                        name=col_name,
+                        data_type="string",
+                        capabilities=[FieldCapability.FILTERABLE],
+                    )
+            return result
+        except Exception:
+            return {}

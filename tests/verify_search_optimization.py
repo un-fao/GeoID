@@ -4,7 +4,7 @@ from uuid import UUID
 from datetime import datetime, timezone
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.protocols import CatalogsProtocol
-from dynastore.modules.catalog.catalog_config import VersioningBehaviorEnum
+from dynastore.modules.storage.driver_config import WriteConflictPolicy
 from dynastore.models.query_builder import QueryRequest, FieldSelection
 
 logging.basicConfig(level=logging.INFO)
@@ -40,7 +40,7 @@ async def test_identity_and_search_refactor():
     
     # Second insert with same ID but CREATE_NEW_VERSION
     # We can override behavior in the context if we want, but for now we'll just check if it works via ingestion context if we had one.
-    # Actually ItemService.upsert uses col_config.versioning_behavior by default.
+    # Actually ItemService.upsert uses CollectionWritePolicy.on_conflict by default.
     # Let's update the collection config to test it.
     
     col_config = await catalogs.get_collection_config(catalog_id, collection_id)

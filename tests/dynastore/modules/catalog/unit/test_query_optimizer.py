@@ -17,7 +17,6 @@ from dynastore.modules.catalog.sidecars.geometries_config import (
 from dynastore.modules.catalog.sidecars.attributes_config import (
     FeatureAttributeSidecarConfig,
     AttributeStorageMode,
-    VersioningBehaviorEnum,
 )
 from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
 
@@ -51,7 +50,6 @@ def mock_col_config():
                 enable_asset_id=True,
                 asset_id_field="asset_id",
                 index_asset_id=True,
-                versioning_behavior=VersioningBehaviorEnum.UPDATE_EXISTING_VERSION,
                 enable_validity=True,
                 attribute_schema=None,
                 jsonb_column_name="attributes",

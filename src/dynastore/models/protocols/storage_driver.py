@@ -42,6 +42,7 @@ Type contracts:
 """
 
 from typing import (
+    TYPE_CHECKING,
     Any,
     AsyncIterator,
     Dict,
@@ -55,6 +56,9 @@ from typing import (
 
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.query_builder import QueryRequest, QueryResponse
+
+if TYPE_CHECKING:
+    from dynastore.models.protocols.field_definition import FieldDefinition
 
 
 class Capability:
@@ -321,15 +325,15 @@ class CollectionStorageDriverProtocol(Protocol):
         collection_id: str,
         *,
         db_resource: Optional[Any] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> "List[FieldDefinition]":
         """Discover the field schema for a collection.
 
         Requires ``Capability.INTROSPECTION``.
 
-        Returns a list of field descriptors::
+        Returns a list of ``FieldDefinition`` instances::
 
-            [{"name": "temperature", "type": "numeric"},
-             {"name": "station_id", "type": "string"}, ...]
+            [FieldDefinition(name="temperature", data_type="numeric"),
+             FieldDefinition(name="station_id", data_type="string"), ...]
 
         Field types are driver-agnostic strings: ``"string"``, ``"numeric"``,
         ``"integer"``, ``"boolean"``, ``"datetime"``, ``"geometry"``, ``"json"``,
@@ -381,6 +385,34 @@ class CollectionStorageDriverProtocol(Protocol):
 
         The ``request`` parameter optionally filters the aggregation scope.
         Return type varies by ``aggregation_type``.
+        """
+        ...
+
+    async def get_entity_fields(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        entity_level: str = "item",
+        db_resource: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Return field definitions for entities at the given level.
+
+        Requires ``Capability.INTROSPECTION``.
+
+        Args:
+            catalog_id: The catalog scope.
+            collection_id: The collection scope (required for ``item`` and
+                ``asset`` levels; None for ``catalog`` and ``collection`` levels).
+            entity_level: One of ``"catalog"``, ``"collection"``, ``"item"``,
+                ``"asset"`` (see ``EntityLevel`` enum in
+                ``models.protocols.field_definition``).
+            db_resource: Optional connection/transaction to reuse.
+
+        Returns a mapping of ``field_name`` →
+        ``dynastore.models.protocols.field_definition.FieldDefinition``.
+        Each driver maps its native type system to the common FieldDefinition
+        model (name, data_type, capabilities, etc.).
         """
         ...
 

@@ -1,5 +1,4 @@
 {
-  "versioning_behavior": "create_new_version",
   "collection_type": "VECTOR",
   "attribute_ex": "",
   "partitioning": {

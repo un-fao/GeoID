@@ -73,6 +73,12 @@ from dynastore.models.protocols.asset_enricher import AssetEnricherProtocol
 from dynastore.models.protocols.catalog_enricher import CatalogEnricherProtocol
 from dynastore.models.protocols.item_enricher import ItemEnricherProtocol
 from dynastore.models.protocols.bigquery import BigQueryProtocol
+from dynastore.models.protocols.field_definition import (
+    FieldCapability,
+    FieldDefinition,
+    EntityLevel,
+    FeatureTypeDefinition,
+)
 from dynastore.models.protocols.asset_upload import (
     AssetUploadProtocol,
     UploadTicket,
@@ -128,6 +134,10 @@ __all__ = [
     "AssetDriverProtocol",
     "CollectionMetadataEnricherProtocol",
     "AssetEnricherProtocol",
+    "FieldCapability",
+    "FieldDefinition",
+    "EntityLevel",
+    "FeatureTypeDefinition",
     "AssetUploadProtocol",
     "UploadTicket",
     "UploadStatus",

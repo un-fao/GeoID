@@ -697,7 +697,6 @@ class ConfigsService(ExtensionProtocol):
                                         "storage_mode": "automatic",
                                         "enable_external_id": True,
                                         "enable_asset_id": True,
-                                        "versioning_behavior": "UPDATE_EXISTING_VERSION",
                                     },
                                 ],
                                 "partitioning": {"enabled": False, "partition_keys": []},

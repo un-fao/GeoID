@@ -568,6 +568,56 @@ class CollectionService:
                     db_resource=conn,
                 )
 
+            # 8. Persist write_policy if provided in the collection definition.
+            write_policy_input = None
+            if isinstance(collection_definition, dict):
+                write_policy_input = collection_definition.get("write_policy")
+            elif hasattr(collection_definition, "write_policy"):
+                write_policy_input = getattr(collection_definition, "write_policy", None)
+            if write_policy_input:
+                from dynastore.modules.storage.driver_config import (
+                    CollectionWritePolicy,
+                    WRITE_POLICY_PLUGIN_ID,
+                )
+                policy = (
+                    CollectionWritePolicy.model_validate(write_policy_input)
+                    if isinstance(write_policy_input, dict)
+                    else write_policy_input
+                )
+                configs = get_protocol(ConfigsProtocol)
+                await configs.set_config(
+                    WRITE_POLICY_PLUGIN_ID,
+                    policy,
+                    catalog_id=catalog_id,
+                    collection_id=collection_model.id,
+                    db_resource=conn,
+                )
+
+            # 9. Persist feature_type if provided in the collection definition.
+            feature_type_input = None
+            if isinstance(collection_definition, dict):
+                feature_type_input = collection_definition.get("feature_type")
+            elif hasattr(collection_definition, "feature_type"):
+                feature_type_input = getattr(collection_definition, "feature_type", None)
+            if feature_type_input:
+                from dynastore.modules.storage.driver_config import (
+                    FeatureTypePluginConfig,
+                    FEATURE_TYPE_PLUGIN_ID,
+                )
+                ft_def = (
+                    FeatureTypePluginConfig.model_validate(feature_type_input)
+                    if isinstance(feature_type_input, dict)
+                    else feature_type_input
+                )
+                configs = get_protocol(ConfigsProtocol)
+                await configs.set_config(
+                    FEATURE_TYPE_PLUGIN_ID,
+                    ft_def,
+                    catalog_id=catalog_id,
+                    collection_id=collection_model.id,
+                    db_resource=conn,
+                )
+
         # Resolve physical_table for async lifecycle context (PG driver only; None for others).
         # Use db_resource when available so uncommitted catalog/collection rows are visible.
         # Fall back to None gracefully if the table hasn't been registered yet.
@@ -798,6 +848,33 @@ class CollectionService:
                 self._get_collection_model_cached.cache_invalidate(
                     catalog_id, collection_id
                 )
+
+                # Write-through: propagate metadata to METADATA-routed drivers
+                try:
+                    from dynastore.modules.storage.router import get_write_drivers
+                    write_drivers = await get_write_drivers(catalog_id, collection_id)
+                    updated_meta = merged_model.model_dump(
+                        exclude_none=True, by_alias=True
+                    )
+                    for rd in write_drivers:
+                        if hasattr(rd.driver, "set_collection_metadata"):
+                            try:
+                                await rd.driver.set_collection_metadata(
+                                    catalog_id, collection_id, updated_meta,
+                                )
+                            except Exception as _wt_err:
+                                logger.warning(
+                                    "Metadata write-through to driver '%s' "
+                                    "failed for %s/%s: %s",
+                                    getattr(rd.driver, "driver_id", "?"),
+                                    catalog_id, collection_id, _wt_err,
+                                )
+                except Exception as _wt_outer:
+                    logger.debug(
+                        "Metadata write-through skipped for %s/%s: %s",
+                        catalog_id, collection_id, _wt_outer,
+                    )
+
                 return await self._get_collection_model_logic(
                     catalog_id, collection_id, conn
                 )

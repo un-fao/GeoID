@@ -18,9 +18,12 @@ from dynastore.modules.db_config.query_executor import (
     DbResource,
     ResultHandler,
 )
-from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
-from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
-from dynastore.modules.catalog.sidecars.attributes_config import VersioningBehaviorEnum
+from dynastore.modules.storage.driver_config import (
+    PostgresCollectionDriverConfig,
+    CollectionWritePolicy,
+    WriteConflictPolicy,
+    WRITE_POLICY_PLUGIN_ID,
+)
 from dynastore.models.protocols import ConfigsProtocol
 from dynastore.modules.catalog.sidecars.base import SidecarProtocol
 from dynastore.tools.discovery import get_protocol
@@ -66,14 +69,12 @@ class ItemDistributedMixin:
             f"DISTRIBUTED UPSERT: collection={catalog_id}.{collection_id}, phys={phys_schema}.{phys_table}, sidecars={[s.sidecar_id for s in sidecars]}"
         )
 
-        # 1. Versioning Logic Check on Hub
-        ingestion_config = await get_protocol(ConfigsProtocol).get_config(
-            COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
+        # 1. Resolve write policy from the config waterfall (same as all drivers)
+        write_policy = await get_protocol(ConfigsProtocol).get_config(
+            WRITE_POLICY_PLUGIN_ID, catalog_id, collection_id, db_resource=conn
         )
-        versioning_behavior = getattr(
-            ingestion_config,
-            "versioning_behavior",
-            VersioningBehaviorEnum.ALWAYS_ADD_NEW,
+        on_conflict = (
+            write_policy.on_conflict if write_policy else WriteConflictPolicy.UPDATE
         )
 
         # 1.5 Acceptance Check
@@ -84,10 +85,7 @@ class ItemDistributedMixin:
 
         # Standardized Identity Resolution via Sidecar Protocol
         active_rec = None
-        if versioning_behavior not in [
-            VersioningBehaviorEnum.CREATE_NEW_VERSION,
-            VersioningBehaviorEnum.ALWAYS_ADD_NEW,
-        ]:
+        if on_conflict != WriteConflictPolicy.NEW_VERSION:
             for sidecar in sidecars:
                 active_rec = await sidecar.resolve_existing_item(
                     conn, phys_schema, phys_table, processing_context
@@ -99,7 +97,7 @@ class ItemDistributedMixin:
                     break
 
         # 1.6 Additional Checks: Identity/Asset/Unique Collision
-        if versioning_behavior == VersioningBehaviorEnum.REFUSE_ON_ASSET_ID_COLLISION:
+        if on_conflict == WriteConflictPolicy.REFUSE_INGESTION:
             for sidecar in sidecars:
                 if await sidecar.check_upsert_collision(
                     conn, phys_schema, phys_table, processing_context
@@ -111,10 +109,19 @@ class ItemDistributedMixin:
 
         result = None
         # 2. Execution Path
-        if not active_rec or versioning_behavior in [
-            VersioningBehaviorEnum.CREATE_NEW_VERSION,
-            VersioningBehaviorEnum.ALWAYS_ADD_NEW,
-        ]:
+        if not active_rec or on_conflict == WriteConflictPolicy.NEW_VERSION:
+            if active_rec and on_conflict == WriteConflictPolicy.NEW_VERSION:
+                # Archive the existing version before inserting
+                expire_at = hub_payload.get("valid_from") or datetime.now(timezone.utc)
+                for sidecar in sidecars:
+                    await sidecar.expire_version(
+                        conn,
+                        phys_schema,
+                        phys_table,
+                        geoid=active_rec["geoid"],
+                        expire_at=expire_at,
+                    )
+
             # INSERT NEW
             result = await self._execute_distributed_insert(
                 conn,
@@ -127,14 +134,14 @@ class ItemDistributedMixin:
                 processing_context=processing_context,
             )
 
-        elif versioning_behavior == VersioningBehaviorEnum.REJECT_NEW_VERSION:
+        elif on_conflict == WriteConflictPolicy.REFUSE:
             logger.info(
-                "DISTRIBUTED UPSERT: identity matched and REJECT_NEW_VERSION set. Skipping."
+                "DISTRIBUTED UPSERT: identity matched and REFUSE set. Skipping."
             )
             return None
 
         else:
-            # 3. Update Validation Hooks
+            # UPDATE path (WriteConflictPolicy.UPDATE)
             processing_context["operation"] = "update"
             for sidecar in sidecars:
                 val_result = sidecar.validate_update(
@@ -147,7 +154,7 @@ class ItemDistributedMixin:
                         f"Sidecar {sidecar.sidecar_id} rejected update: {val_result.error}"
                     )
 
-            # B. Resolve Validity for Hub & Sidecars
+            # Resolve Validity for Hub & Sidecars
             valid_from = processing_context.get("valid_from") or datetime.now(
                 timezone.utc
             )
@@ -159,46 +166,24 @@ class ItemDistributedMixin:
 
             if "validity" not in hub_payload:
                 hub_payload["validity"] = validity
-            if versioning_behavior == VersioningBehaviorEnum.UPDATE_EXISTING_VERSION:
-                # UPDATE EXISTING (HUB + Sidecars)
-                if active_rec and "validity" in active_rec:
-                    validity = active_rec["validity"]
-                    hub_payload["validity"] = validity
 
-                result = await self._execute_distributed_update(
-                    conn,
-                    phys_schema,
-                    phys_table,
-                    active_rec["geoid"],
-                    hub_payload,
-                    sidecar_payloads,
-                    col_config=col_config,
-                    sidecars=sidecars,
-                    processing_context=processing_context,
-                    active_rec=active_rec,
-                )
-            else:
-                # 4. ARCHIVE + INSERT NEW
-                expire_at = hub_payload.get("valid_from") or datetime.now(timezone.utc)
-                for sidecar in sidecars:
-                    await sidecar.expire_version(
-                        conn,
-                        phys_schema,
-                        phys_table,
-                        geoid=active_rec["geoid"],
-                        expire_at=expire_at,
-                    )
+            # UPDATE EXISTING (HUB + Sidecars)
+            if active_rec and "validity" in active_rec:
+                validity = active_rec["validity"]
+                hub_payload["validity"] = validity
 
-                result = await self._execute_distributed_insert(
-                    conn,
-                    phys_schema,
-                    phys_table,
-                    hub_payload,
-                    sidecar_payloads,
-                    col_config=col_config,
-                    sidecars=sidecars,
-                    processing_context=processing_context,
-                )
+            result = await self._execute_distributed_update(
+                conn,
+                phys_schema,
+                phys_table,
+                active_rec["geoid"],
+                hub_payload,
+                sidecar_payloads,
+                col_config=col_config,
+                sidecars=sidecars,
+                processing_context=processing_context,
+                active_rec=active_rec,
+            )
 
         return result
 

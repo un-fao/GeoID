@@ -265,8 +265,8 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
 
         Conflict policies:
         - UPDATE: index with stable doc_id (existing ES behaviour).
-        - IGNORE: skip if a doc with the same external_id already exists.
-        - REFUSE: raise ``ConflictError`` if external_id already exists.
+        - REFUSE: skip if a doc with the same external_id already exists.
+        - REFUSE_INGESTION: raise ``ConflictError`` if external_id already exists.
         - NEW_VERSION: index with a timestamped doc_id suffix; stores ``valid_from``/``valid_to``.
         """
         from datetime import datetime, timezone
@@ -315,17 +315,17 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
 
             base_id = external_id or stac_doc.get("id")
 
-            if policy.on_conflict == WriteConflictPolicy.IGNORE:
+            if policy.on_conflict == WriteConflictPolicy.REFUSE:
                 if external_id and await self._es_doc_exists_by_external_id(
                     db, collection_id, external_id,
                 ):
                     logger.debug(
-                        "ES write_entities(IGNORE): external_id '%s' exists — skipped",
+                        "ES write_entities(REFUSE): external_id '%s' exists — skipped",
                         external_id,
                     )
                     continue
 
-            elif policy.on_conflict == WriteConflictPolicy.REFUSE:
+            elif policy.on_conflict == WriteConflictPolicy.REFUSE_INGESTION:
                 if external_id and await self._es_doc_exists_by_external_id(
                     db, collection_id, external_id,
                 ):
@@ -417,6 +417,68 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
             return resp.get("count", 0) > 0
         except Exception:
             return False
+
+    async def get_entity_fields(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        entity_level: str = "item",
+        db_resource: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Return FieldDefinition dict from ES index mappings."""
+        from dynastore.models.protocols.field_definition import (
+            FieldDefinition as ProtocolFieldDefinition,
+            FieldCapability,
+        )
+
+        if entity_level != "item" or not collection_id:
+            return {}
+
+        es_type_map = {
+            "text": [FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
+            "keyword": [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.GROUPABLE],
+            "long": [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE],
+            "integer": [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE],
+            "float": [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE],
+            "double": [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE],
+            "date": [FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
+            "boolean": [FieldCapability.FILTERABLE],
+            "geo_point": [FieldCapability.SPATIAL],
+            "geo_shape": [FieldCapability.SPATIAL],
+        }
+        data_type_map = {
+            "text": "string", "keyword": "string",
+            "long": "integer", "integer": "integer",
+            "float": "numeric", "double": "numeric",
+            "date": "datetime", "boolean": "boolean",
+            "geo_point": "geometry", "geo_shape": "geometry",
+        }
+
+        try:
+            db = self._get_db_logic()
+            index_name = f"stac_{collection_id}"
+            mapping = await db.client.indices.get_mapping(index=index_name)
+            properties = {}
+            for idx_data in mapping.values():
+                properties = idx_data.get("mappings", {}).get("properties", {})
+                break
+
+            result = {}
+            internal = {"_asset_id", "_external_id", "_valid_from", "_valid_to"}
+            for name, field_info in properties.items():
+                if name.startswith("_") and name in internal:
+                    continue
+                es_type = field_info.get("type", "object")
+                caps = es_type_map.get(es_type, [FieldCapability.FILTERABLE])
+                result[name] = ProtocolFieldDefinition(
+                    name=name,
+                    data_type=data_type_map.get(es_type, "string"),
+                    capabilities=caps,
+                )
+            return result
+        except Exception:
+            return {}
 
     async def read_entities(
         self,
