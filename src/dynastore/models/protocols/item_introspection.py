@@ -23,9 +23,12 @@ Used by WFS (DescribeFeatureType), OGC Features (field capability validation),
 and any extension that needs to know which fields a collection exposes.
 """
 
-from typing import Protocol, Optional, Any, Dict, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, Optional, Any, Dict, runtime_checkable
 
 from dynastore.models.ogc import Feature
+
+if TYPE_CHECKING:
+    from dynastore.models.protocols.field_definition import FieldDefinition
 
 
 @runtime_checkable
@@ -43,7 +46,7 @@ class ItemIntrospectionProtocol(Protocol):
         catalog_id: str,
         collection_id: str,
         db_resource: Optional[Any] = None,
-    ) -> Dict[str, Any]:
+    ) -> "Dict[str, FieldDefinition]":
         """
         Return a mapping of field name → ``FieldDefinition`` for the collection.
 
