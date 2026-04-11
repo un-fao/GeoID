@@ -171,10 +171,9 @@ class IcebergStorageDriver(ModuleProtocol):
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.tools.discovery import get_protocol
 
-        plugin_id = f"driver:{self.driver_id}"
         configs = get_protocol(ConfigsProtocol)
         config = await configs.get_config(
-            plugin_id,
+            self.driver_type,
             catalog_id=catalog_id,
             collection_id=collection_id,
             db_resource=db_resource,

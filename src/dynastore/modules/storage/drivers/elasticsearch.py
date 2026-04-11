@@ -102,10 +102,9 @@ class _ElasticsearchBase:
         from dynastore.tools.discovery import get_protocol
         from dynastore.modules.storage.driver_config import ElasticsearchCollectionDriverConfig
 
-        plugin_id = f"driver:{self.driver_id}"
         configs = get_protocol(ConfigsProtocol)
         config = await configs.get_config(
-            plugin_id,
+            self.driver_type,
             catalog_id=catalog_id,
             collection_id=collection_id,
             db_resource=db_resource,

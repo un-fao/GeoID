@@ -166,13 +166,25 @@ class ItemDistributedMixin:
 
             validity = Range(valid_from, valid_to, lower_inc=True, upper_inc=False)
 
-            if "validity" not in hub_payload:
-                hub_payload["validity"] = validity
-
-            # UPDATE EXISTING (HUB + Sidecars)
-            if active_rec and "validity" in active_rec:
+            # Only write validity to the hub row when the hub table actually has
+            # the column — i.e. when partitioning is enabled and "validity" is a
+            # declared partition key.  Sidecars track validity independently via
+            # their own finalize_upsert_payload() call.
+            hub_has_validity = (
+                col_config.partitioning is not None
+                and col_config.partitioning.enabled
+                and "validity" in (col_config.partitioning.partition_keys or [])
+            )
+            if hub_has_validity:
+                if "validity" not in hub_payload:
+                    hub_payload["validity"] = validity
+                # UPDATE EXISTING: preserve the existing validity range if present
+                if active_rec and "validity" in active_rec:
+                    validity = active_rec["validity"]
+                    hub_payload["validity"] = validity
+            elif active_rec and "validity" in active_rec:
+                # Non-partitioned: keep validity in context for sidecars but not hub
                 validity = active_rec["validity"]
-                hub_payload["validity"] = validity
 
             result = await self._execute_distributed_update(
                 conn,
