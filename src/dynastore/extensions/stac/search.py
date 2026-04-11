@@ -56,7 +56,7 @@ class QueryFilter(BaseModel):
 
 
 class ItemSearchRequest(BaseModel):
-    catalog_id: str
+    catalog_id: Optional[str] = None
     collections: Optional[List[str]] = None
     ids: Optional[List[str]] = None
     bbox: Optional[Tuple[float, float, float, float]] = None
@@ -71,6 +71,7 @@ class ItemSearchRequest(BaseModel):
 
 class CollectionSearchRequest(BaseModel):
     catalog_id: Optional[str] = None
+    catalog_ids: Optional[List[str]] = None
     ids: Optional[List[str]] = None
     bbox: Optional[Tuple[float, float, float, float]] = None
     datetime: Optional[str] = None
@@ -177,9 +178,9 @@ def _parse_collection_sort_sql(sortby: Optional[str], lang: Optional[str] = None
         return f"{field} {direction}"
     if field == "title":
         safe_lang = lang if (lang and re.match(r"^[a-z]{2,3}$", lang)) else "en"
-        return f"(metadata->'title'->>'{safe_lang}') {direction}"
+        return f"(title->>'{safe_lang}') {direction}"
     if _SAFE_ATTRIBUTE_FIELD_RE.match(field):
-        return f"(metadata->>'{field}') {direction}"
+        return f"(extra_metadata->>'{field}') {direction}"
     raise ValueError(f"Invalid sort field: {field!r}")
 
 
@@ -783,17 +784,22 @@ async def search_collections(
     # Determine which schemas to search
     target_schemas = []
 
+    # Resolve effective catalog filter (catalog_ids list takes precedence when set)
+    effective_catalog_ids = []
     if search_request.catalog_id:
+        effective_catalog_ids = [search_request.catalog_id]
+    elif search_request.catalog_ids:
+        effective_catalog_ids = search_request.catalog_ids
+
+    if effective_catalog_ids:
         from dynastore.models.protocols import CatalogsProtocol
 
         catalogs = get_protocol(CatalogsProtocol)
-        # Check if catalog exists and get schema
-        schema = await catalogs.resolve_physical_schema(
-            search_request.catalog_id, db_resource
-        )
-        if schema:
-            target_schemas.append(schema)
-        # If catalog_id provided but not found, filtering by it implies no results
+        for cid in effective_catalog_ids:
+            schema = await catalogs.resolve_physical_schema(cid, db_resource)
+            if schema:
+                target_schemas.append(schema)
+        # If none of the catalog_ids resolved, implies no results
     else:
         # Search all catalogs
         # Retrieve all physical schemas from catalog.catalogs
@@ -815,22 +821,19 @@ async def search_collections(
     where_clauses = ["deleted_at IS NULL"]
     params = {}
 
-    # Common filters
-    if search_request.catalog_id:
-        where_clauses.append("catalog_id = :catalog_id")
-        params["catalog_id"] = search_request.catalog_id
+    # Common filters — catalog_id / catalog_ids filtering is handled via schema UNION above
 
     if search_request.ids:
         where_clauses.append("id = ANY(:ids)")
         params["ids"] = search_request.ids
 
     if search_request.keywords:
-        where_clauses.append("metadata->'keywords' @> CAST(:keywords AS jsonb)")
+        where_clauses.append("m.keywords @> CAST(:keywords AS jsonb)")
         params["keywords"] = str(search_request.keywords).replace("'", '"')
 
     if search_request.bbox:
         where_clauses.append(
-            """EXISTS (SELECT 1 FROM jsonb_array_elements(metadata->'extent'->'spatial'->'bbox') AS bbox WHERE ST_Intersects(ST_MakeEnvelope((bbox->>0)::float, (bbox->>1)::float, (bbox->>2)::float, (bbox->>3)::float, 4326), ST_MakeEnvelope(:xmin, :ymin, :xmax, :ymax, 4326)))"""
+            """EXISTS (SELECT 1 FROM jsonb_array_elements(m.extent->'spatial'->'bbox') AS bbox WHERE ST_Intersects(ST_MakeEnvelope((bbox->>0)::float, (bbox->>1)::float, (bbox->>2)::float, (bbox->>3)::float, 4326), ST_MakeEnvelope(:xmin, :ymin, :xmax, :ymax, 4326)))"""
         )
         params.update(
             {
@@ -843,13 +846,20 @@ async def search_collections(
 
     where_sql = " AND ".join(where_clauses)
 
-    # Build UNION ALL query
-    # effectively: SELECT metadata, catalog_id, id FROM schema1.collections WHERE ... UNION ALL ...
+    # Each subquery JOINs the separate metadata table (collections has no metadata column).
+    _meta_cols = (
+        "c.id, c.catalog_id, "
+        "m.title, m.description, m.keywords, m.license, "
+        "m.links, m.assets, m.extent, m.providers, m.summaries, "
+        "m.item_assets, m.extra_metadata"
+    )
     union_queries = []
     for schema in target_schemas:
-        # Double quote schema to handle special characters or keywords
         union_queries.append(
-            f'SELECT metadata, catalog_id, id FROM "{schema}".collections WHERE {where_sql}'
+            f'SELECT {_meta_cols} '
+            f'FROM "{schema}".collections c '
+            f'LEFT JOIN "{schema}".metadata m ON m.collection_id = c.id '
+            f'WHERE {where_sql}'
         )
 
     full_union_query = " UNION ALL ".join(union_queries)
@@ -860,9 +870,8 @@ async def search_collections(
     count_query = f"{base_query_cte} SELECT count(*) FROM all_matches"
 
     order_by = _parse_collection_sort_sql(search_request.sortby, search_request.lang)
-    # We select metadata from the matches
-    data_query = minified_data_query = (
-        f"{base_query_cte} SELECT metadata FROM all_matches ORDER BY {order_by} LIMIT :limit OFFSET :offset"
+    data_query = (
+        f"{base_query_cte} SELECT * FROM all_matches ORDER BY {order_by} LIMIT :limit OFFSET :offset"
     )
 
     final_params = {
@@ -885,12 +894,8 @@ async def search_collections(
         ).execute(db_resource, **final_params)
 
         total_count = count_result
-        collections = [
-            Collection.model_validate(row["metadata"]) for row in rows_result
-        ]
+        collections = [Collection.model_validate(row) for row in rows_result]
         return collections, total_count
     except Exception as e:
         logger.error(f"Error executing collection search: {e}")
-        # In case of partial schema failures (e.g. missing tables), we might want to return empty or raise
-        # For now, safer to re-raise to see the error
         raise

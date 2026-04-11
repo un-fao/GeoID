@@ -870,3 +870,150 @@ class DuckDBStorageDriver(ModuleProtocol):
             return await run_in_thread(self._get_entity_fields_sync, loc)
         except Exception:
             return {}
+
+    async def count_entities(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        request: Optional[Any] = None,
+        db_resource: Optional[Any] = None,
+    ) -> int:
+        loc = await self._get_location_async(catalog_id, collection_id)
+        if not loc or not loc.path:
+            return 0
+
+        def _count_sync() -> int:
+            with _borrow_conn() as conn:
+                reader = self._reader_func(loc.format)
+                source = f"{reader}('{loc.path}')"
+                result = conn.execute(f"SELECT COUNT(*) FROM {source}").fetchone()
+                return int(result[0]) if result else 0
+
+        try:
+            return await run_in_thread(_count_sync)
+        except Exception:
+            return 0
+
+    async def introspect_schema(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> List[Any]:
+        fields = await self.get_entity_fields(catalog_id, collection_id)
+        return list(fields.values())
+
+    async def compute_extents(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> Optional[Dict[str, Any]]:
+        loc = await self._get_location_async(catalog_id, collection_id)
+        if not loc or not loc.path:
+            return None
+
+        def _extents_sync() -> Optional[Dict[str, Any]]:
+            with _borrow_conn() as conn:
+                reader = self._reader_func(loc.format)
+                source = f"{reader}('{loc.path}')"
+
+                geo_col: Optional[str] = None
+                if "spatial" in _loaded_extensions:
+                    try:
+                        schema = conn.execute(
+                            f"DESCRIBE SELECT * FROM {source} LIMIT 0"
+                        ).fetchall()
+                        for col_name, col_type, *_ in schema:
+                            if "GEOMETRY" in str(col_type).upper():
+                                geo_col = col_name
+                                break
+                    except Exception:
+                        pass
+
+                extents: Dict[str, Any] = {}
+
+                if geo_col and "spatial" in _loaded_extensions:
+                    try:
+                        row = conn.execute(f"""
+                            SELECT
+                                MIN(ST_XMin({geo_col})), MIN(ST_YMin({geo_col})),
+                                MAX(ST_XMax({geo_col})), MAX(ST_YMax({geo_col}))
+                            FROM {source}
+                        """).fetchone()
+                        if row and all(v is not None for v in row):
+                            extents["spatial"] = {
+                                "bbox": [[float(row[0]), float(row[1]), float(row[2]), float(row[3])]]
+                            }
+                    except Exception:
+                        pass
+
+                try:
+                    schema_rows = conn.execute(
+                        f"DESCRIBE SELECT * FROM {source} LIMIT 0"
+                    ).fetchall()
+                    dt_col: Optional[str] = None
+                    for col_name, col_type, *_ in schema_rows:
+                        if "TIMESTAMP" in str(col_type).upper() or col_name.lower() in (
+                            "datetime", "date"
+                        ):
+                            dt_col = col_name
+                            break
+                    if dt_col:
+                        row = conn.execute(
+                            f'SELECT MIN("{dt_col}"), MAX("{dt_col}") FROM {source}'
+                        ).fetchone()
+                        if row and row[0] is not None:
+                            extents["temporal"] = {
+                                "interval": [[str(row[0]), str(row[1]) if row[1] else None]]
+                            }
+                except Exception:
+                    pass
+
+                return extents if extents else None
+
+        try:
+            return await run_in_thread(_extents_sync)
+        except Exception:
+            return None
+
+    async def aggregate(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        aggregation_type: str,
+        field: Optional[str] = None,
+        request: Optional[Any] = None,
+        db_resource: Optional[Any] = None,
+    ) -> Any:
+        raise NotImplementedError(
+            f"DuckDBStorageDriver: aggregate('{aggregation_type}') is not implemented"
+        )
+
+    async def restore_entities(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        entity_ids: List[str],
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> int:
+        raise SoftDeleteNotSupportedError(
+            "DuckDBStorageDriver does not support soft delete / restore."
+        )
+
+    async def rename_storage(
+        self,
+        catalog_id: str,
+        old_collection_id: str,
+        new_collection_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> None:
+        raise NotImplementedError(
+            "DuckDBStorageDriver does not support rename_storage"
+        )

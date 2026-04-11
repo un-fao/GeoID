@@ -77,7 +77,7 @@ class ItemQueryProtocol(Protocol):
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
         db_resource: Optional[Any] = None,
-        consumer: "ConsumerType" = None,
+        consumer: "Optional[ConsumerType]" = None,
     ) -> QueryResponse:
         """
         Stream features as an async iterator with O(1) memory footprint.

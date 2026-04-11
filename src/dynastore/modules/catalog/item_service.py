@@ -104,14 +104,27 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         collection_id: str,
         db_resource: Optional[DbResource] = None,
     ) -> Optional[str]:
-        from dynastore.modules.storage.router import get_driver
+        from dynastore.modules.storage.router import get_driver, get_write_drivers
         from dynastore.modules.storage.routing_config import Operation
 
-        driver = await get_driver(Operation.READ, catalog_id, collection_id)
-        if hasattr(driver, "resolve_physical_table"):
-            return await driver.resolve_physical_table(
-                catalog_id, collection_id, db_resource=db_resource
-            )
+        # Try READ driver first; fall back to the primary WRITE driver.
+        # When READ is a non-PG driver (e.g. DuckDB), it has no
+        # resolve_physical_table — the PG WRITE driver must supply it.
+        for _op in (Operation.READ, None):
+            try:
+                if _op is None:
+                    write_drivers = await get_write_drivers(catalog_id, collection_id)
+                    driver = write_drivers[0].driver if write_drivers else None
+                else:
+                    driver = await get_driver(_op, catalog_id, collection_id)
+            except Exception:
+                continue
+            if driver and hasattr(driver, "resolve_physical_table"):
+                result = await driver.resolve_physical_table(
+                    catalog_id, collection_id, db_resource=db_resource
+                )
+                if result:
+                    return result
         return None
 
     async def _get_collection_config(
@@ -121,13 +134,35 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         config_provider: Optional[ConfigsProtocol] = None,
         db_resource: Optional[DbResource] = None,
     ):
-        """Fetch driver config (sidecars, partitioning, collection_type)."""
-        from dynastore.modules.storage.router import get_driver
+        """Fetch driver config (sidecars, partitioning, collection_type).
+
+        Uses the READ driver first; falls back to the primary WRITE driver
+        when READ is a non-PG driver (e.g. DuckDB) so that the PG path
+        receives a PostgresCollectionDriverConfig with valid sidecars.
+        """
+        from dynastore.modules.storage.router import get_driver, get_write_drivers
         from dynastore.modules.storage.routing_config import Operation
-        driver = await get_driver(Operation.READ, catalog_id, collection_id)
-        return await driver.get_driver_config(
-            catalog_id, collection_id, db_resource=db_resource,
-        )
+
+        # Try READ driver; if it returns a non-PG config, fall back to WRITE.
+        for _op in (Operation.READ, None):
+            try:
+                if _op is None:
+                    write_drivers = await get_write_drivers(catalog_id, collection_id)
+                    driver = write_drivers[0].driver if write_drivers else None
+                else:
+                    driver = await get_driver(_op, catalog_id, collection_id)
+            except Exception:
+                continue
+            if driver is None:
+                continue
+            config = await driver.get_driver_config(
+                catalog_id, collection_id, db_resource=db_resource
+            )
+            # If the driver config has physical_table support (PG), use it.
+            if hasattr(config, "physical_table"):
+                return config
+            # Non-PG config (e.g. DuckDB) — try next driver.
+        return config  # Return whatever we got last
 
     def map_row_to_feature(
         self,
@@ -404,7 +439,14 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 # Extract partition keys if any
                 partition_values = {}
 
-                for sidecar in sidecars:
+                # Run item_metadata before attributes so its in-place prune of
+                # feature.properties takes effect before attributes captures them.
+                _PRUNE_FIRST = {"item_metadata"}
+                sidecars_ordered = sorted(
+                    sidecars, key=lambda s: (0 if s.sidecar_id in _PRUNE_FIRST else 1)
+                )
+
+                for sidecar in sidecars_ordered:
                     # A. Validation
                     val_result = sidecar.validate_insert(raw_item, item_context)
                     if not val_result.valid:

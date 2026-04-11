@@ -104,7 +104,7 @@ async def create_root_catalog(request: Request, lang: str = "en") -> Dict[str, A
     root_catalog.set_self_href(base_url)
     root_catalog.add_link(
         pystac.Link(
-            rel="root", target=root_catalog.get_self_href(), title="Root Catalog"
+            rel="root", target=root_catalog.get_self_href() or "", title="Root Catalog"
         )
     )
     root_catalog.add_link(
@@ -122,7 +122,7 @@ async def create_root_catalog(request: Request, lang: str = "en") -> Dict[str, A
     catalogs_svc = get_protocol(CatalogsProtocol)
     if not catalogs_svc:
         raise RuntimeError("CatalogsProtocol not available")
-    all_catalogs = await catalogs_svc.list_catalogs(lang=lang, limit=1000)
+    all_catalogs = await cast(CatalogsProtocol, catalogs_svc).list_catalogs(lang=lang, limit=1000)
     for cat in all_catalogs:
         # Localize catalog summary for the link title
         catalog_id = cat.id
@@ -132,7 +132,7 @@ async def create_root_catalog(request: Request, lang: str = "en") -> Dict[str, A
                 rel="child",
                 target=child_href,
                 media_type="application/json",
-                title=cat.title.resolve(lang) if cat.title else catalog_id,
+                title=str(cat.title.resolve(lang) or catalog_id) if cat.title else catalog_id,
             )
         )
 
@@ -214,7 +214,7 @@ async def create_catalog(
     catalogs_svc = get_protocol(CatalogsProtocol)
     if not catalogs_svc:
         raise RuntimeError("CatalogsProtocol not available")
-    catalog_metadata_model = await catalogs_svc.get_catalog_model(catalog_id)
+    catalog_metadata_model = await cast(CatalogsProtocol, catalogs_svc).get_catalog_model(catalog_id)
     if not catalog_metadata_model:
         return {}
 
@@ -288,7 +288,7 @@ async def create_catalog(
     catalogs_svc = get_protocol(CatalogsProtocol)
     if not catalogs_svc:
         raise RuntimeError("CatalogsProtocol not available")
-    collections = await catalogs_svc.list_collections(catalog_id, lang=lang, limit=1000)
+    collections = await cast(CatalogsProtocol, catalogs_svc).list_collections(catalog_id, lang=lang, limit=1000)
     for coll in collections:
         # Localize collection summary for the link title
         collection_id = coll.id
@@ -312,7 +312,7 @@ async def create_collections_catalog(
     catalogs_svc = get_protocol(CatalogsProtocol)
     if not catalogs_svc:
         raise RuntimeError("CatalogsProtocol not available")
-    collections = await catalogs_svc.list_collections(catalog_id, lang=lang, limit=1000)
+    collections = await cast(CatalogsProtocol, catalogs_svc).list_collections(catalog_id, lang=lang, limit=1000)
 
     stac_collections = []
     for coll in collections:
@@ -349,8 +349,8 @@ async def create_collection(
     from dynastore.modules.storage.routing_config import Operation
     driver = await get_driver(Operation.READ, catalog_id, collection_id)
     metadata_model, layer_config = await asyncio.gather(
-        catalogs_svc.get_collection_model(catalog_id, collection_id),
-        driver.get_driver_config(catalog_id, collection_id),
+        catalogs_svc.get_collection_model(catalog_id, collection_id),  # type: ignore[attr-defined]
+        driver.get_driver_config(catalog_id, collection_id),  # type: ignore[attr-defined]
     )
     if not metadata_model:
         return None
@@ -364,7 +364,7 @@ async def create_collection(
         raise RuntimeError("ConfigsProtocol not available")
     stac_config: StacPluginConfig = cast(
         StacPluginConfig,
-        await config_manager.get_config(
+        await cast(ConfigsProtocol, config_manager).get_config(
             STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id
         ),
     )
@@ -381,7 +381,7 @@ async def create_collection(
 
     spatial_extent = pystac.SpatialExtent([list(spatial_bbox)])
 
-    temporal_interval_dates = [None, None]
+    temporal_interval_dates: List[Optional[datetime]] = [None, None]
     if (
         metadata_model.extent
         and metadata_model.extent.temporal
@@ -447,8 +447,9 @@ async def create_collection(
     # --- Summaries (merge: config base + DB overrides) ---
     merged_summaries: Dict[str, Any] = {}
     if stac_config.summaries:
+        from pydantic import BaseModel
         for k, v in stac_config.summaries.items():
-            merged_summaries[k] = v.model_dump(exclude_none=True) if hasattr(v, "model_dump") else v
+            merged_summaries[k] = v.model_dump(exclude_none=True) if isinstance(v, BaseModel) else v
     db_summaries = meta_dict.get("summaries")
     if db_summaries and isinstance(db_summaries, dict):
         merged_summaries.update(db_summaries)
@@ -685,32 +686,33 @@ def apply_hierarchy_links(
             # For hierarchy, we need to know WHICH hierarchy_id we are in.
             # We can try to find the matching rule.
             from dynastore.tools.expression import evaluate_sql_condition
-            for rule in config.hierarchy.rules.values():
-                if evaluate_sql_condition(rule.condition, feature_properties):
-                    # Link to the virtual collection for this hierarchy level
-                    hier_coll_url = f"{root_url}/stac/virtual/hierarchy/{rule.hierarchy_id}/catalogs/{catalog_id}/collections/{collection_id}"
+            if config.hierarchy:
+                for rule in config.hierarchy.rules.values():
+                    if rule.condition and evaluate_sql_condition(rule.condition, feature_properties):
+                        # Link to the virtual collection for this hierarchy level
+                        hier_coll_url = f"{root_url}/stac/virtual/hierarchy/{rule.hierarchy_id}/catalogs/{catalog_id}/collections/{collection_id}"
 
-                    # If this is a child level, we can scope it to the parent value
-                    if rule.parent_code_property:
-                        parent_val = feature_properties.get(rule.parent_code_property)
-                        if parent_val:
-                            hier_coll_url += f"?parent_value={parent_val}"
+                        # If this is a child level, we can scope it to the parent value
+                        if rule.parent_code_field:
+                            parent_val = feature_properties.get(rule.parent_code_field)
+                            if parent_val:
+                                hier_coll_url += f"?parent_value={parent_val}"
 
-                    item.add_link(
-                        pystac.Link(
-                            rel="parent",
-                            target=hier_coll_url,
-                            title=f"Level: {rule.level_name or rule.hierarchy_id}",
+                        item.add_link(
+                            pystac.Link(
+                                rel="parent",
+                                target=hier_coll_url,
+                                title=f"Level: {rule.level_name or rule.hierarchy_id}",
+                            )
                         )
-                    )
-                    item.add_link(
-                        pystac.Link(
-                            rel="collection",
-                            target=hier_coll_url,
-                            title=f"Level: {rule.level_name or rule.hierarchy_id}",
+                        item.add_link(
+                            pystac.Link(
+                                rel="collection",
+                                target=hier_coll_url,
+                                title=f"Level: {rule.level_name or rule.hierarchy_id}",
+                            )
                         )
-                    )
-                    break
+                        break
             return item
 
     # Note: Asset lineage linking is now handled dynamically in asset_factory.
@@ -729,7 +731,7 @@ def apply_hierarchy_links(
                     )
                 elif rule.parent_code_field:
                     # Implicit root if parent field is null
-                    parent_val = feature_properties.get(rule.parent_code_property)
+                    parent_val = feature_properties.get(rule.parent_code_field)
                     is_root = parent_val is None
 
                 if is_root:
@@ -739,7 +741,7 @@ def apply_hierarchy_links(
                 else:
                     # It's a child node. Parent is the item with ID specified in parent_code_field
                     if rule.parent_code_field:
-                        parent_code = feature_properties.get(rule.parent_code_property)
+                        parent_code = feature_properties.get(rule.parent_code_field)
                         if parent_code:
                             parent_item_url = f"{collection_url}/items/{parent_code}"
                             item.add_link(
@@ -753,11 +755,12 @@ def apply_hierarchy_links(
             # Fixed Strategy (Default)
             else:
                 # Evaluate condition to see if this rule applies to the current item
-                if _evaluate_condition(rule.condition, feature_properties):
+                from dynastore.tools.expression import evaluate_sql_condition
+                if rule.condition and evaluate_sql_condition(rule.condition, feature_properties):
                     # Rule Matches: This item belongs to this level.
-                    # Find its parent using parent_code_property
-                    if rule.parent_code_property:
-                        parent_code = feature_properties.get(rule.parent_code_property)
+                    # Find its parent using parent_code_field
+                    if rule.parent_code_field:
+                        parent_code = feature_properties.get(rule.parent_code_field)
                         if parent_code:
                             parent_item_url = f"{collection_url}/items/{parent_code}"
                             item.add_link(
@@ -790,9 +793,11 @@ async def create_item_from_feature(
     # 1. Resolve Configs
     if not stac_config:
         config_manager = get_protocol(ConfigsProtocol)
+        if not config_manager:
+            raise RuntimeError("ConfigsProtocol not available")
         stac_config = cast(
             StacPluginConfig,
-            await config_manager.get_config(
+            await cast(ConfigsProtocol, config_manager).get_config(
                 STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id
             ),
         )
@@ -999,7 +1004,7 @@ async def create_item_from_feature(
     apply_hierarchy_links(
         item=item,
         feature_properties=properties,
-        asset_id=feat_asset_id,
+        asset_id=feat_asset_id or "",
         config=stac_config,
         catalog_id=catalog_id,
         collection_id=collection_id,

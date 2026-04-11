@@ -310,6 +310,12 @@ class ItemDistributedMixin:
             sc_payload = sc_data_map.get(sc_id, {})
             sc_table = f"{hub_table}_{sc_id}"
 
+            # Skip non-mandatory sidecars with no data — they have no table.
+            # Mirrors the INSERT path guard: sidecars like StacItemsSidecar that
+            # have is_mandatory()=False and no DDL must not attempt a DB write.
+            if sc_id not in sc_data_map and not sidecar.is_mandatory():
+                continue
+
             # 1. Identity Columns
             conflict_cols = sidecar.get_identity_columns()
             if col_config.partitioning and col_config.partitioning.enabled:
@@ -318,8 +324,10 @@ class ItemDistributedMixin:
                         conflict_cols.insert(0, key)
 
             # 2. Finalize Payload
-            if "geoid" not in sc_payload:
-                sc_payload["geoid"] = geoid
+            # Always override geoid: sidecar payloads were prepared with a
+            # freshly-generated UUID from item_context; in the UPDATE path we
+            # must use the existing hub geoid (=active_rec["geoid"]).
+            sc_payload["geoid"] = geoid
 
             full_payload = sidecar.finalize_upsert_payload(
                 sc_payload, hub_data, processing_context or {}
@@ -403,9 +411,14 @@ class ItemDistributedMixin:
             if k not in conflict_cols:
                 updates.append(f'"{k}" = EXCLUDED."{k}"')
 
+        conflict_target = ", ".join([f'"{c}"' for c in conflict_cols])
+        if updates:
+            on_conflict_clause = f"DO UPDATE SET {', '.join(updates)}"
+        else:
+            on_conflict_clause = "DO NOTHING"
         sql = f"""
 INSERT INTO "{schema}"."{table}" ({", ".join(cols)})
 VALUES ({", ".join(vals)})
-ON CONFLICT ({", ".join([f'"{c}"' for c in conflict_cols])}) DO UPDATE SET {", ".join(updates)};
+ON CONFLICT ({conflict_target}) {on_conflict_clause};
 """
         await DDLQuery(sql).execute(conn, **params)

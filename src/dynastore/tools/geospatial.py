@@ -222,16 +222,17 @@ def process_geometry(
             bbox_coords = list(bbox_geom.bounds)
 
     # Determine WKB output dimension
-    dump_args = {"hex": True}
     # For shapely < 2.0 output_dimension might be ignored or handled differently, but for 2.0+ it enforces coordinate dimension
     if storage_config.target_dimension == TargetDimension.FORCE_3D:
-        dump_args["output_dimension"] = 3
+        wkb_hex_processed = wkb.dumps(processed_geom, hex=True, output_dimension=3)
     elif storage_config.target_dimension == TargetDimension.FORCE_2D:
-        dump_args["output_dimension"] = 2
+        wkb_hex_processed = wkb.dumps(processed_geom, hex=True, output_dimension=2)
+    else:
+        wkb_hex_processed = wkb.dumps(processed_geom, hex=True)
 
     return {
         "geom_type": processed_geom.geom_type,
-        "wkb_hex_processed": wkb.dumps(processed_geom, **dump_args),
+        "wkb_hex_processed": wkb_hex_processed,
         "content_hash": content_hash,
         "bbox_coords": bbox_coords,
         "centroid": (processed_geom.centroid.x, processed_geom.centroid.y),
@@ -266,7 +267,7 @@ def calculate_spatial_indices_from_centroid(
             # Fallback for H3 v3.x
             try:
                 for res in h3_resolutions:
-                    h3_index = h3.geo_to_h3(centroid_lat, centroid_lon, res)
+                    h3_index = h3.geo_to_h3(centroid_lat, centroid_lon, res)  # type: ignore[attr-defined]
                     if isinstance(h3_index, str):
                         h3_index = int(h3_index, 16)
                     indices[f"h3_res{res}"] = h3_index
@@ -283,7 +284,8 @@ def calculate_spatial_indices_from_centroid(
             for res in s2_resolutions:
                 latlng = s2sphere.LatLng.from_degrees(centroid_lat, centroid_lon)
                 cell_id = s2sphere.CellId.from_lat_lng(latlng).parent(res)
-                indices[f"s2_res{res}"] = cell_id.id()
+                if cell_id is not None:
+                    indices[f"s2_res{res}"] = cell_id.id()
         except Exception as e:
             logger.warning(f"S2 index calculation failed: {e}")
     elif s2_resolutions and not s2sphere:
@@ -342,7 +344,7 @@ def calculate_spatial_indices(
                     # Fallback for H3 v3.x if v4 is not present but h3 is
                     try:
                         for res in h3_resolutions:
-                            h3_index = h3.geo_to_h3(
+                            h3_index = h3.geo_to_h3(  # type: ignore[attr-defined]
                                 centroid.y, centroid.x, res
                             )  # v3 returns int
                             if isinstance(
@@ -365,7 +367,8 @@ def calculate_spatial_indices(
                     for res in s2_resolutions:
                         latlng = s2sphere.LatLng.from_degrees(centroid.y, centroid.x)
                         cell_id = s2sphere.CellId.from_lat_lng(latlng).parent(res)
-                        indices[f"s2_res{res}"] = cell_id.id()
+                        if cell_id is not None:
+                            indices[f"s2_res{res}"] = cell_id.id()
                 except Exception as e:
                     logger.warning(f"S2 index calculation failed: {e}")
             elif s2_resolutions and not s2sphere:
@@ -410,7 +413,7 @@ def get_spatial_indices_for_bbox(
                 )
             elif hasattr(h3, "polyfill"):
                 indices["h3_cells"] = list(
-                    h3.polyfill(geojson_poly, target_h3_res, geo_json_conformant=True)
+                    h3.polyfill(geojson_poly, target_h3_res, geo_json_conformant=True)  # type: ignore[attr-defined]
                 )
 
         except Exception as e:

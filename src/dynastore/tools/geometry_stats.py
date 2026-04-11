@@ -76,13 +76,12 @@ def compute_geometry_statistics(
 
         if config.storage_mode == StatisticStorageMode.COLUMNAR:
             # Explicitly force 3D output if Z present to match column type
-            dump_args = {"hex": True}
-            if c.has_z:
-                dump_args["output_dimension"] = 3
-
             from shapely import wkb
 
-            stats["centroid"] = wkb.dumps(c, **dump_args)
+            if c.has_z:
+                stats["centroid"] = wkb.dumps(c, hex=True, output_dimension=3)
+            else:
+                stats["centroid"] = wkb.dumps(c, hex=True)
         else:
             # JSONB mode: store as array
             centroid = [float(c.x), float(c.y)]

@@ -99,7 +99,7 @@ class FeatureAttributeSidecar(SidecarProtocol):
         cls, context: Dict[str, Any]
     ) -> Optional[FeatureAttributeSidecarConfig]:
         """Auto-inject attributes sidecar by default."""
-        return FeatureAttributeSidecarConfig()
+        return FeatureAttributeSidecarConfig()  # type: ignore[call-arg]
 
     @property
     def provides_feature_id(self) -> bool:
@@ -187,10 +187,8 @@ class FeatureAttributeSidecar(SidecarProtocol):
                     capabilities=caps,
                     data_type=attr.type.value.lower(),
                     expose=not is_storage_only,  # Storage-only fields not in Feature output
-                    title=attr.title if hasattr(attr, "title") else attr.name,
-                    description=attr.description
-                    if hasattr(attr, "description")
-                    else None,
+                    title=getattr(attr, "title", attr.name),
+                    description=getattr(attr, "description", None),
                 )
 
         # Merge with other definitions (validity, transaction_time) from get_field_definitions
@@ -427,7 +425,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
             logger.info(f"Setting up asset cleanup trigger for {schema}.{table_name}")
             am = get_protocol(AssetsProtocol)
             if am:
-                await am.ensure_asset_cleanup_trigger(
+                await am.ensure_asset_cleanup_trigger(  # type: ignore[attr-defined]
                     schema, table_name, db_resource=conn
                 )
             else:
@@ -967,22 +965,22 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                 context["asset_id"] = asset_id_str
 
         # 5. Temporal Fields extraction (Supports JSON-FG 'time' member)
-        if hasattr(feature, "time") and feature.time:
+        feature_time = getattr(feature, "time", None)
+        if feature_time:
             # JSON-FG time can be an instant or interval. For simplicity in mapping to validity:
-            if isinstance(feature.time, dict):
-                valid_from = feature.time.get("date") or feature.time.get("timestamp")
+            if isinstance(feature_time, dict):
+                valid_from = feature_time.get("date") or feature_time.get("timestamp")
                 valid_to = None
-            elif isinstance(feature.time, (list, tuple)) and len(feature.time) == 2:
-                valid_from = feature.time[0]
-                valid_to = feature.time[1]
+            elif isinstance(feature_time, (list, tuple)) and len(feature_time) == 2:
+                valid_from = feature_time[0]
+                valid_to = feature_time[1]
             else:
-                valid_from = feature.time
+                valid_from = feature_time
                 valid_to = None
         elif isinstance(feature, Feature):
-            valid_from = feature.properties.get("valid_from") or feature.properties.get(
-                "datetime"
-            )
-            valid_to = feature.properties.get("valid_to")
+            props = feature.properties or {}
+            valid_from = props.get("valid_from") or props.get("datetime")
+            valid_to = props.get("valid_to")
         else:
             time_val = feature.get("time")
             if time_val:
@@ -1026,6 +1024,9 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
             context["valid_to"] = valid_to
 
         # 6. Attributes Extraction
+        feature_as_dict: Dict[str, Any] = (
+            feature.model_dump() if isinstance(feature, Feature) else feature
+        )
         if isinstance(feature, Feature):
             properties = feature.properties
         else:
@@ -1035,8 +1036,8 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
             if self.config.attribute_schema:
                 for attr in self.config.attribute_schema:
                     val = self._extract_value(
-                        feature, f"properties.{attr.name}"
-                    ) or feature.get(attr.name)
+                        feature_as_dict, f"properties.{attr.name}"
+                    ) or feature_as_dict.get(attr.name)
 
                     # Apply default if missing
                     if val is None:
@@ -1046,7 +1047,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                         payload[attr.name] = val
         else:
             # JSONB Mode: Clean duplicates
-            props_to_save = dict(properties)
+            props_to_save = dict(properties or {})
 
             # Apply defaults from schema if present (even in JSONB mode)
             if self.config.attribute_schema:
@@ -1065,7 +1066,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                 
                 ext_id = context.get("external_id")
                 if not ext_id:
-                    ext_id = self._extract_value(feature, field_path)
+                    ext_id = self._extract_value(feature_as_dict, field_path)
                 if ext_id:
                     payload["external_id"] = ext_id
 
@@ -1073,10 +1074,10 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                 asset_id_field = getattr(self.config, "asset_id_field", "asset_id")
                 if "." not in asset_id_field and asset_id_field in props_to_save:
                     del props_to_save[asset_id_field]
-                
+
                 asset_id = context.get("asset_id")
                 if not asset_id:
-                    asset_id = self._extract_value(feature, asset_id_field)
+                    asset_id = self._extract_value(feature_as_dict, asset_id_field)
                 if asset_id:
                     payload["asset_id"] = asset_id
                     context["asset_id"] = asset_id
@@ -1292,7 +1293,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                 )
                 return
 
-            await assets_protocol.link_asset_to_feature(
+            await assets_protocol.link_asset_to_feature(  # type: ignore[attr-defined]
                 physical_schema,
                 physical_table,
                 geoid=geoid,
@@ -1403,7 +1404,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                 LIMIT 1
             """)
             params = {"asset_id": str(asset_id), "exclude_geoid": exclude_geoid}
-            if await conn.scalar(query, params):
+            if await conn.scalar(query, params):  # type: ignore[union-attr, misc]
                 return True
 
         # 2. Check External ID Collision (for unique constraints if not versioned)
@@ -1452,7 +1453,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
             # Limit 1 for speed
             sql += " LIMIT 1"
 
-            res = await conn.execute(text(sql), params)
+            res = await conn.execute(text(sql), params)  # type: ignore[union-attr, misc]
             return res.scalar() is not None
 
         # Check columnar attributes
@@ -1469,7 +1470,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                     params["exclude"] = exclude_geoid
 
                 sql += " LIMIT 1"
-                res = await conn.execute(text(sql), params)
+                res = await conn.execute(text(sql), params)  # type: ignore[union-attr, misc]
                 return res.scalar() is not None
 
         return False
@@ -1525,7 +1526,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
 
         from sqlalchemy import text
 
-        result = await conn.execute(text(sql), {"ext_id": str(external_id)})
+        result = await conn.execute(text(sql), {"ext_id": str(external_id)})  # type: ignore[union-attr, misc]
         row = result.fetchone()
 
         if row:

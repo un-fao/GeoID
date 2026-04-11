@@ -143,24 +143,24 @@ _DYNASTORE_PLUGINS: List[Any] = []
 def register_plugin(instance: Any) -> None:
     if instance not in _DYNASTORE_PLUGINS:
         _DYNASTORE_PLUGINS.append(instance)
-        get_protocol.cache_clear()
-        get_protocols.cache_clear()
+        _get_protocol_cached.cache_clear()
+        _get_protocols_cached.cache_clear()
 
 def unregister_plugin(instance: Any) -> None:
     if instance in _DYNASTORE_PLUGINS:
         _DYNASTORE_PLUGINS.remove(instance)
-        get_protocol.cache_clear()
-        get_protocols.cache_clear()
+        _get_protocol_cached.cache_clear()
+        _get_protocols_cached.cache_clear()
 
 @lru_cache(maxsize=128)
-def get_protocol(protocol: Type[T]) -> Optional[T]:
-    instances = get_protocols(protocol)
+def _get_protocol_cached(protocol: type) -> Optional[Any]:
+    instances = _get_protocols_cached(protocol)
     return instances[0] if instances else None
 
 @lru_cache(maxsize=128)
-def get_protocols(protocol: Type[T]) -> List[T]:
-    discovered: List[T] = []
-    seen = set()
+def _get_protocols_cached(protocol: type) -> List[Any]:
+    discovered: List[Any] = []
+    seen: set = set()
 
     def _accept(obj: Any) -> bool:
         obj_id = id(obj)
@@ -176,20 +176,20 @@ def get_protocols(protocol: Type[T]) -> List[T]:
     # 1. Dynamically registered plugins
     for instance in _DYNASTORE_PLUGINS:
         if _accept(instance):
-            discovered.append(cast(T, instance))
+            discovered.append(instance)
 
     # 2. Modules
     from dynastore.modules import _DYNASTORE_MODULES
     for config in _DYNASTORE_MODULES.values():
         if config.instance and _accept(config.instance):
-            discovered.append(cast(T, config.instance))
+            discovered.append(config.instance)
 
     # 3. Extensions
     try:
         from dynastore.extensions.registry import _DYNASTORE_EXTENSIONS
         for config in _DYNASTORE_EXTENSIONS.values():
             if config.instance and _accept(config.instance):
-                discovered.append(cast(T, config.instance))
+                discovered.append(config.instance)
     except (ImportError, ModuleNotFoundError):
         pass
 
@@ -197,10 +197,31 @@ def get_protocols(protocol: Type[T]) -> List[T]:
     from dynastore.tasks import _DYNASTORE_TASKS
     for config in _DYNASTORE_TASKS.values():
         if config.instance and _accept(config.instance):
-            discovered.append(cast(T, config.instance))
+            discovered.append(config.instance)
 
     discovered.sort(key=lambda x: getattr(x, "priority", 100))
     return discovered
+
+
+def get_protocol(protocol: Type[T]) -> Optional[T]:
+    """Return the first registered instance of the given protocol, or None."""
+    return cast(Optional[T], _get_protocol_cached(protocol))
+
+
+def get_protocols(protocol: Type[T]) -> List[T]:
+    """Return all registered instances of the given protocol, sorted by priority."""
+    return cast(List[T], _get_protocols_cached(protocol))
+
+
+def _clear_protocol_caches() -> None:
+    _get_protocol_cached.cache_clear()
+    _get_protocols_cached.cache_clear()
+
+
+# Expose cache_clear on the wrapper functions so callers (e.g. tests) can
+# invalidate the caches via `get_protocol.cache_clear()`.
+get_protocol.cache_clear = _clear_protocol_caches  # type: ignore[attr-defined]
+get_protocols.cache_clear = _clear_protocol_caches  # type: ignore[attr-defined]
 
 def discover_and_load_plugins(group: str, include_only: Optional[List[str]] = None) -> Dict[str, Type[Any]]:
     """

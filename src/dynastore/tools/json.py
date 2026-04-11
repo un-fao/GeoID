@@ -112,7 +112,7 @@ class CustomJSONEncoder(json.JSONEncoder):
             # format for binary geometry from databases like PostGIS.
             try:
                 # If successful, return the WKT representation.
-                return _wkb_loads(o).wkt
+                return _wkb_loads(bytes(o)).wkt
             except Exception:
                 # If it's not a valid WKB, fall back to the original text/hex logic.
                 try:

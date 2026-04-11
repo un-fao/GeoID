@@ -799,7 +799,7 @@ def sync_managed_transaction(db_resource: DbResource):
 
 
 @asynccontextmanager
-async def managed_transaction(db_resource: DbResource):
+async def managed_transaction(db_resource: Optional[DbResource]):
     """Async-native re-entrant transaction manager."""
     if db_resource is None:
         raise ValueError("Cannot start managed_transaction: db_resource is None.")

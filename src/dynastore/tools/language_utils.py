@@ -40,7 +40,8 @@ def resolve_localized_field(
         return None
     
     # Convert Pydantic models to dict and filter out None values
-    if hasattr(field, 'model_dump'):
+    from pydantic import BaseModel
+    if isinstance(field, BaseModel):
         # Get all fields, then manually filter None values
         all_fields = field.model_dump()
         field_dict = {k: v for k, v in all_fields.items() if v is not None}

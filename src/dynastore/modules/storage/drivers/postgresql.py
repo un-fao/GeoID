@@ -338,6 +338,10 @@ class PostgresStorageDriver(ModuleProtocol):
                 )
 
         # --- Generate physical table name if not provided ---
+        # Prefer the name already stored in col_config (idempotent re-runs);
+        # only generate a new name if the collection is truly new.
+        if not physical_table and col_config and col_config.physical_table:
+            physical_table = col_config.physical_table
         if not physical_table:
             physical_table = generate_physical_name("t")
 

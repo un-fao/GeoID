@@ -84,8 +84,8 @@ class StatisticStorageMode(str, Enum):
 
 class StatisticIndexConfig(BaseModel):
     """Per-statistic configuration."""
-    enabled: bool = Field(False, description="Compute this statistic")
-    index: bool = Field(False, description="Create B-Tree index on this statistic")
+    enabled: bool = Field(default=False, description="Compute this statistic")
+    index: bool = Field(default=False, description="Create B-Tree index on this statistic")
 
 
 class GeometriesStatisticsConfig(BaseModel):
@@ -104,15 +104,15 @@ class GeometriesStatisticsConfig(BaseModel):
     
     # Basic geometric metrics with indexing control
     area: StatisticIndexConfig = Field(
-        default_factory=StatisticIndexConfig,
+        default_factory=lambda: StatisticIndexConfig(),
         description="2D surface area or 3D surface area"
     )
     volume: StatisticIndexConfig = Field(
-        default_factory=StatisticIndexConfig,
+        default_factory=lambda: StatisticIndexConfig(),
         description="Volume (3D closed meshes only)"
     )
     length: StatisticIndexConfig = Field(
-        default_factory=StatisticIndexConfig,
+        default_factory=lambda: StatisticIndexConfig(),
         description="Perimeter or line length"
     )
     
@@ -131,11 +131,11 @@ class GeometriesStatisticsConfig(BaseModel):
     
     # Topology
     vertex_count: StatisticIndexConfig = Field(
-        default_factory=StatisticIndexConfig,
+        default_factory=lambda: StatisticIndexConfig(),
         description="Number of vertices in geometry"
     )
     hole_count: StatisticIndexConfig = Field(
-        default_factory=StatisticIndexConfig,
+        default_factory=lambda: StatisticIndexConfig(),
         description="Number of holes (interior rings)"
     )
     
@@ -165,19 +165,19 @@ class PlaceStatisticsConfig(BaseModel):
     )
     # Volumetric
     volume: StatisticIndexConfig = Field(
-        default_factory=StatisticIndexConfig,
+        default_factory=lambda: StatisticIndexConfig(),
         description="Volume in cubic units (3D solids and prisms only)"
     )
     surface_area: StatisticIndexConfig = Field(
-        default_factory=StatisticIndexConfig,
+        default_factory=lambda: StatisticIndexConfig(),
         description="Total surface area of all exterior faces of a 3D solid"
     )
     surface_to_volume_ratio: StatisticIndexConfig = Field(
-        default_factory=StatisticIndexConfig,
+        default_factory=lambda: StatisticIndexConfig(),
         description="Ratio of surface area to volume (building efficiency metric)"
     )
     net_floor_area: StatisticIndexConfig = Field(
-        default_factory=StatisticIndexConfig,
+        default_factory=lambda: StatisticIndexConfig(),
         description="Estimated usable floor area for prism features"
     )
     # 3D Morphological
@@ -186,16 +186,16 @@ class PlaceStatisticsConfig(BaseModel):
         description="Compute 3D centroid (center of gravity) of volume"
     )
     z_range: StatisticIndexConfig = Field(
-        default_factory=StatisticIndexConfig,
+        default_factory=lambda: StatisticIndexConfig(),
         description="Vertical elevation delta (max_z - min_z)"
     )
     vertical_gradient: StatisticIndexConfig = Field(
-        default_factory=StatisticIndexConfig,
+        default_factory=lambda: StatisticIndexConfig(),
         description="Steepness of a 3D Curve (e.g., slope of a pipe or road)"
     )
     # Temporal
     temporal_duration: StatisticIndexConfig = Field(
-        default_factory=StatisticIndexConfig,
+        default_factory=lambda: StatisticIndexConfig(),
         description="Computed from the JSON-FG 'time' member interval duration"
     )
     # Legacy GIN

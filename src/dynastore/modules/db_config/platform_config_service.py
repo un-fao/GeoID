@@ -46,6 +46,8 @@ from typing import (
     cast,
     Annotated,
     List,
+    TYPE_CHECKING,
+    Iterator,
 )
 
 # Handle UnionType for Python 3.10+
@@ -85,18 +87,26 @@ class ImmutableMarker:
     pass
 
 
-class Immutable:
-    """
-    A marker class that supports elegant declaration of immutable fields.
-    Usage:
-        field: Immutable[int] = Field(...)
+if TYPE_CHECKING:
+    class Immutable(Generic[T]):
+        """Transparent wrapper for type checkers: Immutable[T] is treated as T."""
 
-    This is equivalent to:
-        field: Annotated[int, ImmutableMarker] = Field(...)
-    """
+        def __iter__(self) -> Iterator[Any]: ...
 
-    def __class_getitem__(cls, item):
-        return Annotated[item, ImmutableMarker]
+        def __class_getitem__(cls, item: T) -> T: ...  # type: ignore[override]
+else:
+    class Immutable:
+        """
+        A marker class that supports elegant declaration of immutable fields.
+        Usage:
+            field: Immutable[int] = Field(...)
+
+        This is equivalent to:
+            field: Annotated[int, ImmutableMarker] = Field(...)
+        """
+
+        def __class_getitem__(cls, item: Any) -> Any:
+            return Annotated[item, ImmutableMarker]
 
 
 class WriteOnceMarker:

@@ -24,6 +24,7 @@ import json
 import zipfile
 import tempfile
 from typing import (
+    TYPE_CHECKING,
     Generator,
     Dict,
     Any,
@@ -44,6 +45,10 @@ from shapely import wkb
 from shapely.geometry import mapping  # To convert shapely geom to GeoJSON-like dict
 from dynastore.tools.features import Feature
 import logging
+
+if TYPE_CHECKING:
+    import geopandas as gpd
+    import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +102,7 @@ def _write_gdf_to_file_safe(gdf: gpd.GeoDataFrame, filename: str, driver: str, *
                 "type": "Feature",
                 "id": str(i),
                 "properties": _sanitize(row.drop(geom_col).to_dict()),
-                "geometry": mapping(row[geom_col]) if row[geom_col] else None,
+                "geometry": mapping(row[geom_col]) if row[geom_col] is not None else None,  # type: ignore[arg-type]
             }
             c.write(feature)
 
@@ -126,7 +131,7 @@ def get_file_reader(
     Handles both local file paths and GCS/HTTPS URLs.
     """
     # This function is now a simple dispatcher. It doesn't need column mapping info.
-    file_source = file_path_or_buffer  # type: ignore
+    file_source = file_path_or_buffer
     ext = None
 
     if isinstance(file_path_or_buffer, str):
@@ -238,7 +243,7 @@ def read_shapefile(
 
 def read_geopackage(
     file_path_or_buffer: Union[str, io.BytesIO],
-    layer_name: str = None,
+    layer_name: Optional[str] = None,
     encoding: str = "utf-8",
 ) -> Generator[Dict[str, Any], None, None]:
     """Reads a GeoPackage file and yields records."""
@@ -340,9 +345,13 @@ def _process_records_for_writing(
     with cleaned, user-facing attributes and a shapely geometry object, suitable for
     direct use in GeoDataFrame creation.
     """
+    from pydantic import BaseModel
     for r in records:
         # Handle both Pydantic models and plain dicts
-        data = r.model_dump() if hasattr(r, "model_dump") else r
+        if isinstance(r, BaseModel):
+            data: Dict[str, Any] = r.model_dump()
+        else:
+            data = r
 
         # Extract properties and geometry based on structure, prioritizing Feature model patterns.
         if "properties" in data:
@@ -394,7 +403,7 @@ def _prepare_gdf_chunk_for_writing(
     import geopandas as gpd
 
     if not records_chunk:
-        return gpd.GeoDataFrame(columns=["geometry"], crs=f"EPSG:{srid}")
+        return gpd.GeoDataFrame(columns=["geometry"], crs=f"EPSG:{srid}")  # type: ignore[call-overload]
 
     from shapely.geometry import shape
     properties = [r["properties"] for r in records_chunk]

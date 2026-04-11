@@ -69,8 +69,9 @@ async def recalculate_and_update_extents(
         spatial = extents.get("spatial", {})
         temporal = extents.get("temporal", {})
 
-        bbox = spatial.get("bbox", [-180.0, -90.0, 180.0, 90.0])
-        new_spatial_extent = SpatialExtent(bbox=[list(bbox)])
+        # compute_extents already returns bbox as [[x1,y1,x2,y2]] (list of bboxes)
+        bbox = spatial.get("bbox", [[-180.0, -90.0, 180.0, 90.0]])
+        new_spatial_extent = SpatialExtent(bbox=bbox)
 
         interval = temporal.get("interval", [[None, None]])
         new_temporal_extent = TemporalExtent(interval=interval)

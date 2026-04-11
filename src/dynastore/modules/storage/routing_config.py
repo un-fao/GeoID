@@ -424,27 +424,15 @@ async def _on_apply_routing_config(
                         entry.driver_id, catalog_id, exc,
                     )
 
-    # Call ensure_storage() on all referenced collection drivers (idempotent).
-    # Skipped for platform-level configs where catalog/collection are absent.
-    if catalog_id and collection_id:
-        seen_ids: set[str] = set()
-        for entries in config.operations.values():
-            for entry in entries:
-                seen_ids.add(entry.driver_id)
-        for entry in config.metadata.storage:
-            seen_ids.add(entry.driver_id)
-        for did in seen_ids:
-            driver = driver_index.get(did)
-            if driver and hasattr(driver, "ensure_storage"):
-                try:
-                    await driver.ensure_storage(
-                        catalog_id, collection_id, db_resource=db_resource,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "ensure_storage failed for driver '%s' on %s/%s: %s",
-                        did, catalog_id, collection_id, exc,
-                    )
+    # NOTE: ensure_storage() for collection WRITE/READ drivers is intentionally
+    # NOT called here. It is invoked by the collection-creation flow
+    # (CollectionService._create_collection_internal step 6) on the write driver,
+    # which is the only correct point because the PostgresCollectionDriverConfig
+    # (physical_table, sidecars) must be fully resolved before storage is
+    # provisioned.  Calling ensure_storage() here — potentially before the
+    # collection row exists — causes ImmutableConfigError for WriteOnce /
+    # Immutable fields when collection creation later tries to write the
+    # initial driver config with default (None / empty) values.
 
 
 async def _on_apply_asset_routing_config(

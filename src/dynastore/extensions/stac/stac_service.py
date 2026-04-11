@@ -314,7 +314,11 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
     ):
         catalog_id = validate_sql_identifier(catalog_id)
         catalogs_svc = await self._get_catalogs_service()
-        if not await catalogs_svc.get_catalog(catalog_id, lang=language):
+        try:
+            catalog = await catalogs_svc.get_catalog(catalog_id, lang=language)
+        except (ValueError, Exception):
+            catalog = None
+        if not catalog:
             raise HTTPException(
                 status_code=404, detail=f"Catalog '{catalog_id}' not found."
             )
@@ -579,30 +583,23 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                     status_code=404, detail=f"Collection '{collection_id}' not found."
                 )
 
-            # Driver-agnostic path: dispatch through ItemsProtocol
-            from dynastore.models.query_builder import QueryRequest
-            from dynastore.models.protocols import ItemsProtocol
-
-            items_svc = get_protocol(ItemsProtocol)
-            if items_svc is None:
-                return stac_generator.create_empty_item_collection(
-                    request, limit, offset
-                )
-            query_response = await items_svc.stream_items(
-                catalog_id,
-                collection_id,
-                QueryRequest(limit=limit, offset=offset),
+            stac_config = await self._get_stac_config(
+                catalog_id, collection_id, db_resource=conn
             )
-            items_list = [
-                stac_generator.build_stac_item(f, collection_metadata, {})
-                async for f in query_response.items
-            ]
-            return JSONResponse(content={
-                "type": "FeatureCollection",
-                "features": items_list,
-                "numberReturned": len(items_list),
-                "links": [],
-            })
+
+            result = await stac_generator.create_item_collection(
+                request,
+                conn,
+                schema=catalog_id,
+                table=collection_id,
+                limit=limit,
+                offset=offset,
+                stac_config=stac_config,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                lang=language,
+            )
+        return JSONResponse(content=result)
 
     async def _get_item_with_row(
         self,
