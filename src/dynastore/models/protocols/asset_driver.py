@@ -47,7 +47,6 @@ class AssetDriverProtocol(Protocol):
     - ``DriverAssetElasticsearch`` — asset metadata in per-catalog ES index
     """
 
-    driver_id: str
     capabilities: FrozenSet[str]
     preferred_for: FrozenSet[str]
     supported_hints: FrozenSet[str]

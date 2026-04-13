@@ -243,7 +243,6 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
     Registered as ``storage_elasticsearch`` via entry points.
     """
 
-    driver_id: str = "elasticsearch"
     priority: int = 50
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,
@@ -775,7 +774,7 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
     ):
         if not catalog_id:
             return
-        if not await self._is_secondary_for(self.driver_id, catalog_id, None):
+        if not await self._is_secondary_for(type(self).__name__, catalog_id, None):
             return
         try:
             doc = await self._serialize_catalog(catalog_id)
@@ -788,7 +787,7 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
     async def _on_catalog_delete(self, catalog_id: Optional[str] = None, **kwargs):
         if not catalog_id:
             return
-        if not await self._is_secondary_for(self.driver_id, catalog_id, None):
+        if not await self._is_secondary_for(type(self).__name__, catalog_id, None):
             return
         try:
             await self.delete_catalog(catalog_id)
@@ -801,7 +800,7 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
     ):
         if not catalog_id or not collection_id:
             return
-        if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
+        if not await self._is_secondary_for(type(self).__name__, catalog_id, collection_id):
             return
         try:
             doc = await self._serialize_collection(catalog_id, collection_id)
@@ -819,7 +818,7 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
     ):
         if not catalog_id or not collection_id:
             return
-        if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
+        if not await self._is_secondary_for(type(self).__name__, catalog_id, collection_id):
             return
         try:
             await self.delete_collection_doc(catalog_id, collection_id)
@@ -835,11 +834,11 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
     ):
         if not catalog_id or not collection_id or not item_id:
             return
-        if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
+        if not await self._is_secondary_for(type(self).__name__, catalog_id, collection_id):
             return
         # Skip event-driven indexing when driver is in WRITE routing —
         # the router fan-out already handled this write.
-        if await self._is_write_driver_for(self.driver_id, catalog_id, collection_id):
+        if await self._is_write_driver_for(type(self).__name__, catalog_id, collection_id):
             return
         try:
             doc = await self._serialize_item(catalog_id, collection_id, item_id)
@@ -863,11 +862,11 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
     ):
         if not catalog_id or not collection_id:
             return
-        if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
+        if not await self._is_secondary_for(type(self).__name__, catalog_id, collection_id):
             return
         # Skip event-driven indexing when driver is in WRITE routing —
         # the router fan-out already handled this write.
-        if await self._is_write_driver_for(self.driver_id, catalog_id, collection_id):
+        if await self._is_write_driver_for(type(self).__name__, catalog_id, collection_id):
             return
 
         items_subset = (payload if isinstance(payload, dict) else {}).get("items_subset", [])
@@ -899,7 +898,7 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
             item_id = str(_val) if _val is not None else None
         if not catalog_id or not collection_id or not item_id:
             return
-        if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
+        if not await self._is_secondary_for(type(self).__name__, catalog_id, collection_id):
             return
         try:
             db = self._get_db_logic()
@@ -1029,7 +1028,6 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
     Registered as ``storage_elasticsearch_obfuscated`` via entry points.
     """
 
-    driver_id: str = "elasticsearch_obfuscated"
     priority: int = 51
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,
@@ -1271,9 +1269,9 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
     ):
         if not catalog_id or not collection_id or not item_id:
             return
-        if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
+        if not await self._is_secondary_for(type(self).__name__, catalog_id, collection_id):
             return
-        if await self._is_write_driver_for(self.driver_id, catalog_id, collection_id):
+        if await self._is_write_driver_for(type(self).__name__, catalog_id, collection_id):
             return
         try:
             from dynastore.modules.elasticsearch.mappings import (
@@ -1310,9 +1308,9 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
     ):
         if not catalog_id or not collection_id:
             return
-        if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
+        if not await self._is_secondary_for(type(self).__name__, catalog_id, collection_id):
             return
-        if await self._is_write_driver_for(self.driver_id, catalog_id, collection_id):
+        if await self._is_write_driver_for(type(self).__name__, catalog_id, collection_id):
             return
 
         items_subset = (payload if isinstance(payload, dict) else {}).get("items_subset", [])
@@ -1363,7 +1361,7 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
             item_id = str(_val) if _val is not None else None
         if not catalog_id or not item_id:
             return
-        if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
+        if not await self._is_secondary_for(type(self).__name__, catalog_id, collection_id):
             return
         try:
             from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
@@ -1461,7 +1459,7 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
                         routing = await configs.get_config(
                             COLLECTION_PLUGIN_CONFIG_ID, catalog_id=catalog_id,
                         )
-                        if self.driver_id in routing.secondary_driver_ids:  # type: ignore[attr-defined]
+                        if type(self).__name__ in routing.secondary_driver_ids:  # type: ignore[attr-defined]
                             await self._apply_deny_policy(catalog_id)
                             logger.info(
                                 "ObfuscatedDriver: restored DENY for '%s'.",
@@ -1495,7 +1493,6 @@ class DriverAssetElasticsearch(_ElasticsearchBase, ModuleProtocol):
     Registered as ``storage_elasticsearch_assets`` via entry points.
     """
 
-    driver_id: str = "elasticsearch_assets"
     priority: int = 52
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,
@@ -1748,7 +1745,7 @@ class DriverAssetElasticsearch(_ElasticsearchBase, ModuleProtocol):
     ):
         if not catalog_id or not asset_id:
             return
-        if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
+        if not await self._is_secondary_for(type(self).__name__, catalog_id, collection_id):
             return
         try:
             doc = payload if isinstance(payload, dict) else {}
@@ -1772,7 +1769,7 @@ class DriverAssetElasticsearch(_ElasticsearchBase, ModuleProtocol):
             asset_id = str(_val) if _val is not None else None
         if not catalog_id or not asset_id:
             return
-        if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
+        if not await self._is_secondary_for(type(self).__name__, catalog_id, collection_id):
             return
         try:
             await self.delete_asset(catalog_id, asset_id)

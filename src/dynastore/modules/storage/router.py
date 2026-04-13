@@ -69,7 +69,7 @@ class ResolvedDriver(Generic[_D]):
 
     @property
     def driver_id(self) -> str:
-        return getattr(self.driver, "driver_id", "unknown")
+        return type(self.driver).__name__
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +82,7 @@ def _build_collection_driver_index() -> "Dict[str, CollectionStorageDriverProtoc
     from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
     from dynastore.tools.discovery import get_protocols
 
-    return {d.driver_id: d for d in get_protocols(CollectionStorageDriverProtocol)}
+    return {type(d).__name__: d for d in get_protocols(CollectionStorageDriverProtocol)}
 
 
 def _build_asset_driver_index() -> "Dict[str, AssetDriverProtocol]":
@@ -90,7 +90,7 @@ def _build_asset_driver_index() -> "Dict[str, AssetDriverProtocol]":
     from dynastore.models.protocols.asset_driver import AssetDriverProtocol
     from dynastore.tools.discovery import get_protocols
 
-    return {d.driver_id: d for d in get_protocols(AssetDriverProtocol)}
+    return {type(d).__name__: d for d in get_protocols(AssetDriverProtocol)}
 
 
 # ---------------------------------------------------------------------------

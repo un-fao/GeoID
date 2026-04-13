@@ -189,7 +189,6 @@ class ElasticsearchMetadataDriver:
     Uses opensearch-py client (wire-compatible with ES and OpenSearch).
     """
 
-    driver_id: str = "elasticsearch_metadata"
     capabilities: FrozenSet[str] = frozenset({
         MetadataCapability.READ,
         MetadataCapability.WRITE,

@@ -79,7 +79,6 @@ class CollectionMetadataDriverProtocol(Protocol):
     stored in the database.
     """
 
-    driver_id: str
     capabilities: FrozenSet[str]
     # description: ClassVar[LocalizedText]  — declared in each concrete driver class
 

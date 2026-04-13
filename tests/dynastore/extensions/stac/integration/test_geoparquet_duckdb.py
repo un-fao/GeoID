@@ -160,8 +160,8 @@ async def test_geoparquet_duckdb_pipeline(
     # ------------------------------------------------------------------
     routing_config = {
         "operations": {
-            "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
-            "READ": [{"driver_id": "duckdb", "hints": [], "on_failure": "fatal"}],
+            "WRITE": [{"driver_id": "DriverRecordsPostgresql", "hints": [], "on_failure": "fatal"}],
+            "READ": [{"driver_id": "DriverRecordsDuckdb", "hints": [], "on_failure": "fatal"}],
         }
     }
     r = await in_process_client.put(
@@ -270,8 +270,8 @@ async def test_geoparquet_duckdb_pipeline(
     from dynastore.modules.storage import get_driver, Operation
 
     driver = await get_driver(Operation.READ, catalog_id, collection_id)
-    assert driver.driver_id == "duckdb", (
-        f"Expected duckdb driver via routing, got '{driver.driver_id}'"
+    assert type(driver).__name__ == "DriverRecordsDuckdb", (
+        f"Expected DriverRecordsDuckdb via routing, got '{type(driver).__name__}'"
     )
 
     features_from_duckdb = []

@@ -60,7 +60,6 @@ class PostgresMetadataDriver:
     Uses the existing ``{schema}.metadata`` table for CRUD + search.
     """
 
-    driver_id: str = "postgresql_metadata"
     capabilities: FrozenSet[str] = frozenset({
         MetadataCapability.READ,
         MetadataCapability.WRITE,

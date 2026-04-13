@@ -145,7 +145,6 @@ class CollectionStorageDriverProtocol(Protocol):
     (``GET /storage/drivers``) and must not be stored in the database.
     """
 
-    driver_id: str
     capabilities: FrozenSet[str]
     preferred_for: FrozenSet[str]
     supported_hints: FrozenSet[str]

@@ -287,7 +287,7 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
         if Capability.INTROSPECTION not in driver.capabilities:
             raise HTTPException(
                 501,
-                detail=f"Driver '{driver.driver_id}' does not support field introspection",
+                detail=f"Driver '{type(driver).__name__}' does not support field introspection",
             )
 
         fields = await driver.introspect_schema(catalog_id, collection_id)

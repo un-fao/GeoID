@@ -46,7 +46,7 @@ async def _is_es_active(catalog_id: str, collection_id: str) -> bool:
         )
         for entries in routing.operations.values():
             for entry in entries:
-                if entry.driver_id == "elasticsearch":
+                if entry.driver_id == "DriverRecordsElasticsearch":
                     return True
         return False
     except Exception as e:

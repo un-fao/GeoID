@@ -47,7 +47,6 @@ class DriverRecordsPostgresql(ModuleProtocol):
     optimization, and streaming.
     """
 
-    driver_id: str = "postgresql"
     priority: int = 10
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,

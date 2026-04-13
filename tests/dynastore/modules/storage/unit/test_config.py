@@ -99,9 +99,9 @@ class TestRoutingPluginConfig:
 
     def test_custom_operations(self):
         cfg = RoutingPluginConfig(operations={
-            Operation.WRITE: [OperationDriverEntry(driver_id="postgresql")],
-            Operation.READ: [OperationDriverEntry(driver_id="elasticsearch", hints={"search"})],
-            Operation.SEARCH: [OperationDriverEntry(driver_id="elasticsearch", hints={"search"})],
+            Operation.WRITE: [OperationDriverEntry(driver_id="DriverRecordsPostgresql")],
+            Operation.READ: [OperationDriverEntry(driver_id="DriverRecordsElasticsearch", hints={"search"})],
+            Operation.SEARCH: [OperationDriverEntry(driver_id="DriverRecordsElasticsearch", hints={"search"})],
         })
         assert len(cfg.operations) == 3
         assert cfg.operations[Operation.SEARCH][0].driver_id == "elasticsearch"

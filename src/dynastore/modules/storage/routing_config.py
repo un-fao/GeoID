@@ -211,8 +211,8 @@ class RoutingPluginConfig(PluginConfig):
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
-            Operation.WRITE: [OperationDriverEntry(driver_id="postgresql")],
-            Operation.READ: [OperationDriverEntry(driver_id="postgresql")],
+            Operation.WRITE: [OperationDriverEntry(driver_id="DriverRecordsPostgresql")],
+            Operation.READ: [OperationDriverEntry(driver_id="DriverRecordsPostgresql")],
         },
         description=(
             "Operation → ordered driver list.  "
@@ -247,8 +247,8 @@ class AssetRoutingPluginConfig(PluginConfig):
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
-            Operation.WRITE: [OperationDriverEntry(driver_id="postgresql")],
-            Operation.READ: [OperationDriverEntry(driver_id="postgresql")],
+            Operation.WRITE: [OperationDriverEntry(driver_id="PostgresAssetDriver")],
+            Operation.READ: [OperationDriverEntry(driver_id="PostgresAssetDriver")],
         },
         description="Operation → ordered driver list for asset drivers.",
     )
@@ -375,11 +375,11 @@ async def _on_apply_routing_config(
     from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
     from dynastore.tools.discovery import get_protocols
 
-    driver_index = {d.driver_id: d for d in get_protocols(CollectionStorageDriverProtocol)}
+    driver_index = {type(d).__name__: d for d in get_protocols(CollectionStorageDriverProtocol)}
     _validate_routing_entries(config, driver_index, "Collection routing config")
 
     # Validate metadata.override entries (CollectionMetadataDriverProtocol drivers)
-    metadata_driver_index = {d.driver_id: d for d in get_protocols(CollectionMetadataDriverProtocol)}
+    metadata_driver_index = {type(d).__name__: d for d in get_protocols(CollectionMetadataDriverProtocol)}
     for entry in config.metadata.override:
         if entry.driver_id not in metadata_driver_index:
             raise ValueError(
@@ -445,7 +445,7 @@ async def _on_apply_asset_routing_config(
     from dynastore.models.protocols.asset_driver import AssetDriverProtocol
     from dynastore.tools.discovery import get_protocols
 
-    driver_index = {d.driver_id: d for d in get_protocols(AssetDriverProtocol)}
+    driver_index = {type(d).__name__: d for d in get_protocols(AssetDriverProtocol)}
     _validate_routing_entries(config, driver_index, "Asset routing config")
 
     # Invalidate router cache

@@ -324,7 +324,7 @@ class ConfigsService(ExtensionProtocol):
         for driver in get_protocols(CollectionStorageDriverProtocol):
             caps = sorted(getattr(driver, "capabilities", frozenset()))
             driver_type = type(driver).__name__
-            plugin_id = getattr(driver, "_plugin_id", f"driver:records:{driver.driver_id}")
+            plugin_id = getattr(driver, "_plugin_id", f"driver:records:{type(driver).__name__}")
             driver_config_caps = []
             try:
                 dcfg = ConfigRegistry.create_default(plugin_id)
@@ -332,7 +332,7 @@ class ConfigsService(ExtensionProtocol):
             except Exception:
                 pass
             grouped[driver_type].append(DriverInfo(
-                driver_id=driver.driver_id,
+                driver_id=type(driver).__name__,
                 driver_type=driver_type,
                 domain="collections",
                 description=_driver_description(driver),
@@ -348,7 +348,7 @@ class ConfigsService(ExtensionProtocol):
         for driver in get_protocols(AssetDriverProtocol):
             caps = sorted(getattr(driver, "capabilities", frozenset()))
             driver_type = type(driver).__name__
-            plugin_id = getattr(driver, "_plugin_id", f"driver:asset:{driver.driver_id}")
+            plugin_id = getattr(driver, "_plugin_id", f"driver:asset:{type(driver).__name__}")
             driver_config_caps = []
             try:
                 dcfg = ConfigRegistry.create_default(plugin_id)
@@ -356,7 +356,7 @@ class ConfigsService(ExtensionProtocol):
             except Exception:
                 pass
             grouped[driver_type].append(DriverInfo(
-                driver_id=driver.driver_id,
+                driver_id=type(driver).__name__,
                 driver_type=driver_type,
                 domain="assets",
                 description=_driver_description(driver),
@@ -373,7 +373,7 @@ class ConfigsService(ExtensionProtocol):
             driver_type = type(driver).__name__
             plugin_id = getattr(driver, "_plugin_id", "")
             grouped[driver_type].append(DriverInfo(
-                driver_id=driver.driver_id,
+                driver_id=type(driver).__name__,
                 driver_type=driver_type,
                 domain="collection_metadata",
                 description=_driver_description(driver),

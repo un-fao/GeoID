@@ -208,7 +208,6 @@ class DriverRecordsDuckdb(ModuleProtocol):
     Satisfies ``CollectionStorageDriverProtocol`` and ``StorageLocationResolver``.
     """
 
-    driver_id: str = "duckdb"
     priority: int = 30
 
     capabilities: FrozenSet[str] = frozenset({

@@ -51,7 +51,6 @@ class NotebookStorageDriverProtocol(Protocol):
     CAP_SEARCH = "search"          # full-text search (q parameter)
     CAP_TAGS = "tags"              # tag containment filtering
 
-    driver_id: str
     capabilities: FrozenSet[str]
 
     # ------------------------------------------------------------------

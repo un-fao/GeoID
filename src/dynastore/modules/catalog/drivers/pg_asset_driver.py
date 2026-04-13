@@ -73,7 +73,6 @@ class PostgresAssetDriver:
     ``CatalogModule.lifespan()``.
     """
 
-    driver_id: str = "postgresql"
     capabilities: FrozenSet[str] = frozenset({"read", "write", "streaming"})
     preferred_for: FrozenSet[str] = frozenset({"default", "metadata"})
     supported_hints: FrozenSet[str] = frozenset({"metadata"})

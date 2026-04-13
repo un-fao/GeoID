@@ -127,7 +127,6 @@ class DriverRecordsIceberg(ModuleProtocol):
     Satisfies ``CollectionStorageDriverProtocol`` and ``StorageLocationResolver``.
     """
 
-    driver_id: str = "iceberg"
     priority: int = 20
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,

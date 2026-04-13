@@ -45,14 +45,14 @@ from dynastore.tools.cache import cached
 logger = logging.getLogger(__name__)
 
 # Preferred driver ordering for auto-discovery (first available wins)
-_PREFERRED_DRIVER_ORDER = ["elasticsearch_metadata", "postgresql_metadata"]
+_PREFERRED_DRIVER_ORDER = ["ElasticsearchMetadataDriver", "PostgresMetadataDriver"]
 
 
 def _build_metadata_driver_index() -> Dict[str, CollectionMetadataDriverProtocol]:
     """Build driver_id → driver instance lookup for metadata drivers."""
     from dynastore.tools.discovery import get_protocols
 
-    return {d.driver_id: d for d in get_protocols(CollectionMetadataDriverProtocol)}
+    return {type(d).__name__: d for d in get_protocols(CollectionMetadataDriverProtocol)}
 
 
 @cached(maxsize=256, ttl=300, namespace="metadata_router", distributed=False)
@@ -82,7 +82,7 @@ async def _resolve_metadata_driver_cached(
                     driver = driver_index.get(entry.driver_id)
                     if driver:
                         if await driver.is_available():
-                            return driver.driver_id
+                            return type(driver).__name__
                         # Config declares this driver but it's unavailable → error
                         raise RuntimeError(
                             f"Metadata driver '{entry.driver_id}' is configured "

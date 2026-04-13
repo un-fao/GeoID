@@ -94,7 +94,7 @@ class DriverMetadataEnricher:
             return metadata
 
         driver_index = {
-            d.driver_id: d for d in get_protocols(CollectionStorageDriverProtocol)
+            type(d).__name__: d for d in get_protocols(CollectionStorageDriverProtocol)
         }
         merged = {**metadata}
 
