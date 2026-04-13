@@ -83,7 +83,7 @@ CATALOG_CONFIGS_TABLE = "catalog_configs"
 @cached(maxsize=8192, ttl=300, namespace="catalog_config", ignore=["engine", "catalog_manager"])
 async def _catalog_config_cache(
     engine: DbResource,
-    catalog_manager: "CatalogModule",
+    catalog_manager: CatalogsProtocol,
     catalog_id: str,
     plugin_id: str,
 ) -> Optional[dict]:
@@ -108,7 +108,7 @@ async def _catalog_config_cache(
 @cached(maxsize=16384, ttl=300, namespace="collection_config", ignore=["engine", "catalog_manager"])
 async def _collection_config_cache(
     engine: DbResource,
-    catalog_manager: "CatalogModule",
+    catalog_manager: CatalogsProtocol,
     catalog_id: str,
     collection_id: str,
     plugin_id: str,
@@ -182,6 +182,7 @@ class ConfigService(ConfigsProtocol):
         if self._catalogs_service is None:
             from dynastore.tools.discovery import get_protocol
             self._catalogs_service = get_protocol(CatalogsProtocol)
+        assert self._catalogs_service is not None, "CatalogsProtocol not registered"
         return self._catalogs_service
 
     def _get_platform_config_service(self) -> PlatformConfigsProtocol:
@@ -222,6 +223,7 @@ class ConfigService(ConfigsProtocol):
                     f"{plugin_id.__qualname__} has no _plugin_id; cannot resolve config"
                 )
             plugin_id = cls_pid
+        assert isinstance(plugin_id, str)
 
         # Tier 0: Snapshot
         if config_snapshot is not None:
@@ -275,6 +277,7 @@ class ConfigService(ConfigsProtocol):
         self, catalog_id: str, plugin_id: str
     ) -> Optional[dict]:
         """Global cache for catalog config."""
+        assert self.engine is not None, "ConfigService.engine not initialised"
         return await _catalog_config_cache(
             self.engine, self._get_catalog_manager(), catalog_id, plugin_id
         )
@@ -283,6 +286,7 @@ class ConfigService(ConfigsProtocol):
         self, catalog_id: str, collection_id: str, plugin_id: str
     ) -> Optional[dict]:
         """Global cache for collection config."""
+        assert self.engine is not None, "ConfigService.engine not initialised"
         return await _collection_config_cache(
             self.engine, self._get_catalog_manager(), catalog_id, collection_id, plugin_id
         )
@@ -657,15 +661,16 @@ class ConfigService(ConfigsProtocol):
                 model.class_key(): pid
                 for pid, model in ConfigRegistry.list_registered().items()
             }
-            results = [
-                {
-                    "plugin_id": inverse.get(r["class_key"], r["class_key"]),
+            results = []
+            for r in rows:
+                ck: str = r["class_key"]
+                pid_str: str = inverse.get(ck) or ck
+                results.append({
+                    "plugin_id": pid_str,
                     "config": ConfigRegistry.validate_config(
-                        inverse.get(r["class_key"], r["class_key"]), r["config_data"]
+                        pid_str, r["config_data"]
                     ).model_dump(),
-                }
-                for r in rows
-            ]
+                })
             return {"total": total, "results": results}
 
         elif catalog_id is not None:
@@ -696,15 +701,16 @@ class ConfigService(ConfigsProtocol):
                 model.class_key(): pid
                 for pid, model in ConfigRegistry.list_registered().items()
             }
-            results = [
-                {
-                    "plugin_id": inverse.get(r["class_key"], r["class_key"]),
+            results = []
+            for r in rows:
+                ck: str = r["class_key"]
+                pid_str: str = inverse.get(ck) or ck
+                results.append({
+                    "plugin_id": pid_str,
                     "config": ConfigRegistry.validate_config(
-                        inverse.get(r["class_key"], r["class_key"]), r["config_data"]
+                        pid_str, r["config_data"]
                     ).model_dump(),
-                }
-                for r in rows
-            ]
+                })
             return {"total": total, "results": results}
         else:
             # Platform level - implementation in platform_config_service doesn't support pagination yet,
@@ -745,9 +751,9 @@ class ConfigService(ConfigsProtocol):
         }
         configs: Dict[str, PluginConfig] = {}
         for row in rows:
-            class_key = row["class_key"]
+            class_key: str = row["class_key"]
             config_data = row["config_data"]
-            plugin_id = inverse.get(class_key, class_key)
+            plugin_id: str = inverse.get(class_key) or class_key
             configs[plugin_id] = ConfigRegistry.validate_config(plugin_id, config_data)
         return configs
 
@@ -831,8 +837,8 @@ class ConfigService(ConfigsProtocol):
                 }
                 results = []
                 for r in rows:
-                    class_key = r["class_key"]
-                    plugin_id = inverse.get(class_key, class_key)
+                    class_key: str = r["class_key"]
+                    plugin_id: str = inverse.get(class_key) or class_key
                     results.append(
                         {
                             "level": r["level"],
