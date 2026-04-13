@@ -39,7 +39,7 @@ Resolution semantics:
 
 import logging
 from enum import StrEnum
-from typing import Any, ClassVar, Dict, FrozenSet, List, Optional, Set
+from typing import Any, Callable, ClassVar, Dict, FrozenSet, List, Optional, Set, cast
 
 from pydantic import BaseModel, Field
 
@@ -146,11 +146,11 @@ class OperationDriverEntry(BaseModel):
         description="Hints this driver responds to for this operation.",
     )
     on_failure: FailurePolicy = Field(
-        FailurePolicy.FATAL,
+        default=FailurePolicy.FATAL,
         description="What happens if this driver fails: fatal, warn, or ignore.",
     )
     write_mode: WriteMode = Field(
-        WriteMode.SYNC,
+        default=WriteMode.SYNC,
         description=(
             "Execution mode for WRITE operations.  "
             "'sync' = await result (parallel with other sync drivers, participates "
@@ -207,7 +207,7 @@ class RoutingPluginConfig(PluginConfig):
 
     _plugin_id: ClassVar[Optional[str]] = ROUTING_PLUGIN_CONFIG_ID
 
-    enabled: bool = Field(True, description="Enable this routing configuration.")
+    enabled: bool = Field(default=True, description="Enable this routing configuration.")
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
@@ -243,7 +243,7 @@ class AssetRoutingPluginConfig(PluginConfig):
 
     _plugin_id: ClassVar[Optional[str]] = ROUTING_ASSETS_PLUGIN_CONFIG_ID
 
-    enabled: bool = Field(True, description="Enable this routing configuration.")
+    enabled: bool = Field(default=True, description="Enable this routing configuration.")
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
@@ -260,7 +260,7 @@ class AssetRoutingPluginConfig(PluginConfig):
 
 
 def _validate_routing_entries(
-    config: PluginConfig,
+    config: "RoutingPluginConfig | AssetRoutingPluginConfig",
     driver_index: Dict[str, Any],
     label: str,
 ) -> None:
@@ -336,10 +336,10 @@ def _validate_routing_entries(
     #    must support READ.  Warn only — don't hard-fail for forward-compat.
     from dynastore.models.protocols.storage_driver import Capability
 
-    _op_required_cap = {
-        Operation.WRITE: Capability.WRITE,
-        Operation.READ: Capability.READ,
-        Operation.SEARCH: Capability.READ,
+    _op_required_cap: Dict[str, str] = {
+        Operation.WRITE.value: Capability.WRITE,
+        Operation.READ.value: Capability.READ,
+        Operation.SEARCH.value: Capability.READ,
     }
     for operation, entries in config.operations.items():
         if not entries:
@@ -415,9 +415,10 @@ async def _on_apply_routing_config(
     if catalog_id:
         for entry in config.metadata.override:
             driver = metadata_driver_index.get(entry.driver_id)
-            if driver and hasattr(driver, "ensure_storage"):
+            ensure_fn = getattr(driver, "ensure_storage", None) if driver else None
+            if ensure_fn is not None:
                 try:
-                    await driver.ensure_storage(catalog_id)
+                    await ensure_fn(catalog_id)
                 except Exception as exc:
                     logger.warning(
                         "ensure_storage failed for metadata driver '%s' on catalog '%s': %s",
@@ -464,11 +465,10 @@ async def _on_apply_asset_routing_config(
                 seen_ids.add(entry.driver_id)
         for did in seen_ids:
             driver = driver_index.get(did)
-            if driver and hasattr(driver, "ensure_storage"):
+            ensure_fn = getattr(driver, "ensure_storage", None) if driver else None
+            if ensure_fn is not None:
                 try:
-                    await driver.ensure_storage(
-                        catalog_id, collection_id, db_resource=db_resource,
-                    )
+                    await ensure_fn(catalog_id, collection_id)
                 except Exception as exc:
                     logger.warning(
                         "ensure_storage failed for asset driver '%s' on %s/%s: %s",
@@ -479,5 +479,6 @@ async def _on_apply_asset_routing_config(
 # Register handlers
 from dynastore.modules.db_config.platform_config_service import ConfigRegistry  # noqa: E402
 
-ConfigRegistry.register_apply_handler(ROUTING_PLUGIN_CONFIG_ID, _on_apply_routing_config)
-ConfigRegistry.register_apply_handler(ROUTING_ASSETS_PLUGIN_CONFIG_ID, _on_apply_asset_routing_config)
+_HandlerSig = Callable[[PluginConfig, Optional[str], Optional[str], Optional[Any]], Any]
+ConfigRegistry.register_apply_handler(ROUTING_PLUGIN_CONFIG_ID, cast(_HandlerSig, _on_apply_routing_config))
+ConfigRegistry.register_apply_handler(ROUTING_ASSETS_PLUGIN_CONFIG_ID, cast(_HandlerSig, _on_apply_asset_routing_config))
