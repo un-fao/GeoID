@@ -61,6 +61,27 @@ def _get_catalog_visibility_tunables():
 class GcpCatalogOpsMixin:
     """Mixin providing catalog lifecycle hooks and GCP resource orchestration for GCPModule."""
 
+    # --- Host interface stubs (provided by GCPModule) ---
+
+    def get_bucket_service(self) -> Any: ...
+
+    def get_config_service(self) -> ConfigsProtocol: ...
+
+    def get_eventing_config(self, *args: Any, **kw: Any) -> Any: ...
+
+    def set_eventing_config(self, *args: Any, **kw: Any) -> Any: ...
+
+    def generate_default_subscription_id(self, *args: Any, **kw: Any) -> str: ...
+
+    async def setup_managed_eventing_channel(self, *args: Any, **kw: Any) -> Any: ...
+
+    async def teardown_managed_eventing_channel(self, *args: Any, **kw: Any) -> Any: ...
+
+    async def delete_storage_for_catalog(self, *args: Any, **kw: Any) -> Any: ...
+
+    @property
+    def engine(self) -> DbResource: ...
+
     async def _on_sync_init_catalog(self, conn: DbResource, physical_schema: str, catalog_id: str):
         """
         Sync hook to initialize GCP resources (Bucket, Eventing) when a catalog is created.
@@ -340,10 +361,8 @@ class GcpCatalogOpsMixin:
                     },
                 )
                 eventing_config = GcpEventingConfig(
-                    managed_eventing=ManagedBucketEventing(
-                        enabled=True,
-                        triggered_actions=[default_ingestion_template],
-                    )
+                    managed_eventing=ManagedBucketEventing(enabled=True),
+                    action_templates={"ingestion": default_ingestion_template},
                 )
 
             # 2c. Setup Topic and Notifications if managed eventing is enabled
@@ -455,7 +474,7 @@ class GcpCatalogOpsMixin:
         await config_service.set_config(
             GCP_CATALOG_BUCKET_CONFIG_ID, config, catalog_id=catalog_id
         )
-        return await config_service.get_config(GCP_CATALOG_BUCKET_CONFIG_ID, catalog_id)
+        return await config_service.get_config(GcpCatalogBucketConfig, catalog_id)
 
     async def apply_storage_config(
         self, catalog_id: str, config: GcpCatalogBucketConfig

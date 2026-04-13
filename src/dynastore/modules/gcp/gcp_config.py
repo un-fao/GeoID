@@ -149,13 +149,13 @@ class GcpCatalogBucketConfig(PluginConfig):
     _plugin_id: ClassVar[Optional[str]] = GCP_CATALOG_BUCKET_CONFIG_ID
     _on_apply: ClassVar[Optional[Callable]] = on_apply_gcp_bucket_config
     # Immutable fields: Once the bucket is created, these cannot be changed.
-    location: Immutable[Optional[GcpLocation]] = Field(os.getenv("REGION", GcpLocation.EUROPE_WEST1), description="The GCP region where the bucket will be created (e.g., 'europe-west1'). If not set, defaults to the application's region.")
-    storage_class: Immutable[GcsStorageClass] = Field(GcsStorageClass.STANDARD, description="The default storage class for objects in the bucket.")
+    location: Immutable[Optional[GcpLocation]] = Field(default=os.getenv("REGION", GcpLocation.EUROPE_WEST1), description="The GCP region where the bucket will be created (e.g., 'europe-west1'). If not set, defaults to the application's region.")
+    storage_class: Immutable[GcsStorageClass] = Field(default=GcsStorageClass.STANDARD, description="The default storage class for objects in the bucket.")
     
     # Mutable fields
-    cdn_enabled: bool = Field(False, description="Whether Cloud CDN is enabled for this bucket.")
+    cdn_enabled: bool = Field(default=False, description="Whether Cloud CDN is enabled for this bucket.")
     lifecycle_rules: List[LifecycleRule] = Field(default_factory=list, description="Lifecycle rules for the bucket.")
-    listen_catalog_events: bool = Field(True, description="If true, the bucket and pub/sub resources are synchronized with catalog/collection deletions.")
+    listen_catalog_events: bool = Field(default=True, description="If true, the bucket and pub/sub resources are synchronized with catalog/collection deletions.")
     cors: List[GcpCorsRule] = Field(
         default_factory=lambda: [GcpCorsRule(origin=["*"], method=["GET", "OPTIONS", "HEAD", "POST", "PUT", "DELETE"], response_header=["*"], max_age_seconds=3600)],
         description="CORS rules for the bucket."
@@ -167,8 +167,8 @@ class GcpModuleConfig(PluginConfig):
     Defines global configurations for the GCP module.
     """
     _plugin_id: ClassVar[Optional[str]] = GCP_MODULE_CONFIG_ID
-    project_id: str = Field(os.getenv("PROJECT_ID", "local-project"), description="The GCP Project ID.")
-    region: str = Field(os.getenv("REGION", "europe-west1"), description="The default GCP region.")
+    project_id: str = Field(default=os.getenv("PROJECT_ID", "local-project"), description="The GCP Project ID.")
+    region: str = Field(default=os.getenv("REGION", "europe-west1"), description="The default GCP region.")
     
     # Visibility and Propagation Tuning (Critical for tests)
     catalog_visibility_max_retries: int = Field(
@@ -213,7 +213,7 @@ class ManagedBucketEventing(BaseModel):
     subscription, and the GCS notification resource that links them. This tracks
     events for the entire bucket by default.
     """
-    enabled: bool = Field(True, description="If true, the managed eventing system is active.")
+    enabled: bool = Field(default=True, description="If true, the managed eventing system is active.")
     
     # Immutable: The topic, once created for a catalog, should not be changed.
     topic_id: Optional[str] = Field(default=None, description="Optional custom ID for the managed topic. If not set, a default ID will be generated (e.g., 'ds-catalog_id-events').")
@@ -222,7 +222,7 @@ class ManagedBucketEventing(BaseModel):
     subscription: Optional[PushSubscriptionConfig] = Field(default=None, description="Configuration for the managed push subscription.")
     blob_name_prefixes: List[str] = Field(default_factory=lambda: ["catalog/", "collections/"], description="Filter events to objects with these prefixes. If empty, tracks the entire bucket.")
     event_types: Optional[List[GcsNotificationEventType]] = Field(default=None, description="A list of event types to listen for. Defaults to OBJECT_FINALIZE if not set.")
-    payload_format: GcsPayloadFormat = Field(GcsPayloadFormat.JSON_API_V1, description="The format of the message payload.")
+    payload_format: GcsPayloadFormat = Field(default=GcsPayloadFormat.JSON_API_V1, description="The format of the message payload.")
     
     # --- Output fields managed by the system ---
     topic_path: Optional[str] = Field(default=None, description="The full, unique resource path of the managed Pub/Sub topic. This is an output field managed by the system.")
@@ -243,8 +243,8 @@ class GcpEventingConfig(PluginConfig):
     """
     _plugin_id: ClassVar[Optional[str]] = GCP_EVENTING_CONFIG_ID
     _on_apply: ClassVar[Optional[Callable]] = on_apply_gcp_eventing_config
-    managed_eventing: Optional[ManagedBucketEventing] = Field(ManagedBucketEventing(), description="Configuration for the default, system-managed eventing pipeline for the catalog's bucket.")
-    custom_subscriptions: List[ExternalTopicSubscription] = Field([], description="A list of additional, custom subscriptions to external (non-managed) Pub/Sub topics.")
+    managed_eventing: Optional[ManagedBucketEventing] = Field(default=ManagedBucketEventing(), description="Configuration for the default, system-managed eventing pipeline for the catalog's bucket.")
+    custom_subscriptions: List[ExternalTopicSubscription] = Field(default=[], description="A list of additional, custom subscriptions to external (non-managed) Pub/Sub topics.")
     
     # New registry for reusable action templates
     action_templates: Dict[str, TriggeredAction] = Field(
@@ -267,7 +267,7 @@ class UploadOptions(BaseModel):
     if_generation_not_match: Optional[int] = Field(default=None, description="Makes the operation conditional on the object's generation not matching this value.")
     if_metageneration_match: Optional[int] = Field(default=None, description="Makes the operation conditional on the object's metageneration matching this value.")
     if_metageneration_not_match: Optional[int] = Field(default=None, description="Makes the operation conditional on the object's metageneration not matching this value.")
-    timeout: Optional[int] = Field(60, description="The amount of time, in seconds, to wait for the server response for the initiation request.")
+    timeout: Optional[int] = Field(default=60, description="The amount of time, in seconds, to wait for the server response for the initiation request.")
     retry: Optional[GcsRetryOptions] = Field(default=None, description="Custom retry policy parameters for the upload initiation RPC.")
 
 
