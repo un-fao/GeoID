@@ -271,7 +271,7 @@ class TaskUpdate(BaseModel):
     )
 
     status: Optional[TaskStatusEnum] = None
-    progress: Optional[int] = Field(None, ge=0, le=100)
+    progress: Optional[int] = Field(default=None, ge=0, le=100)
     outputs: Optional[Any] = None
     error_message: Optional[str] = None
     # Queue control fields (set by dispatcher / heartbeat manager)

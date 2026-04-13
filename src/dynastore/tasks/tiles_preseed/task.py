@@ -14,7 +14,7 @@
 
 import logging
 import asyncio
-from typing import List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any
 from shapely.geometry import box
 import morecantile
 
@@ -65,17 +65,20 @@ class TilePreseedTask(
         request = payload.inputs
 
         config_manager = get_protocol(ConfigsProtocol)
+        catalogs = get_protocol(CatalogsProtocol)
+        if config_manager is None or catalogs is None or self.engine is None:
+            raise RuntimeError("Required protocols/engine unavailable for tiles preseed task.")
 
         catalog_id = request.catalog_id
-        catalogs = get_protocol(CatalogsProtocol)
         schema = await catalogs.resolve_physical_schema(
             catalog_id, db_resource=self.engine
         )
+        if schema is None:
+            raise RuntimeError(f"Cannot resolve physical schema for catalog {catalog_id!r}.")
 
         # Ensure task table exists (Cellular mode - schema might exist but module table might be missing)
-        async with self.engine.connect() as conn:
+        async with managed_transaction(self.engine) as conn:
             await tasks_module.ensure_task_storage_exists(conn, schema)
-            await conn.commit()
 
         # Report Starting
         if payload.task_id:
@@ -86,7 +89,7 @@ class TilePreseedTask(
                 schema=schema,
             )
 
-        results = {"generated": 0, "skipped": 0, "errors": 0}
+        results: Dict[str, Any] = {"generated": 0, "skipped": 0, "errors": 0}
 
         try:
             # Fetch Configs
@@ -100,7 +103,7 @@ class TilePreseedTask(
                 logger.info(
                     f"Pre-seeding disabled or not configured for {catalog_id}:{request.collection_id}"
                 )
-                return {"status": "skipped", "message": "Pre-seeding disabled."}
+                return None  # skipped: pre-seeding disabled
 
             runtime_config = await config_manager.get_config(
                 TILES_PLUGIN_CONFIG_ID, catalog_id, request.collection_id
@@ -120,7 +123,7 @@ class TilePreseedTask(
                 logger.warning(
                     f"No specific collection targeted and no list in config for {catalog_id}. Skipping."
                 )
-                return {"status": "skipped", "message": "No target collections."}
+                return None  # skipped: no target collections
 
             # Resolve BBOX
             effective_bboxes = (
@@ -215,6 +218,8 @@ class TilePreseedTask(
                                 f"Failed to resolve SRID for CRS {tms_def.crs}: {e}. Falling back to 3857."
                             )
 
+                    # .tiles() is the morecantile-only helper; ensure we have one.
+                    mc_tms: Any = tms_def
                     # Acquire connection once for all zooms/tiles using managed_transaction
                     async with managed_transaction(self.engine) as conn:
                         # Iterate Zooms
@@ -224,7 +229,7 @@ class TilePreseedTask(
                             for bbox in effective_bboxes:
                                 # Generate Tile Iterator
                                 try:
-                                    tiles = tms_def.tiles(*bbox, zooms=[z])
+                                    tiles = mc_tms.tiles(*bbox, zooms=[z])
                                 except Exception as e:
                                     logger.error(
                                         f"Error generating tiles for bbox {bbox}: {e}"
@@ -249,7 +254,7 @@ class TilePreseedTask(
                                             data = await tiles_db.get_features_as_mvt_filtered(
                                                 conn=conn,
                                                 resolved_collections=[meta],
-                                                tms_def=tms_def,
+                                                tms_def=mc_tms,
                                                 target_srid=target_srid,
                                                 z=str(z),
                                                 x=tile.x,
@@ -311,8 +316,8 @@ class TilePreseedTask(
                     schema=schema,
                 )
 
-            results["status"] = TaskStatusEnum.COMPLETED
-            return results
+            results["status"] = TaskStatusEnum.COMPLETED.value
+            return None  # status persisted via tasks_module.update_task
 
         except Exception as e:
             logger.error(f"Pre-seed task failed: {e}", exc_info=True)

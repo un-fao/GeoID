@@ -35,8 +35,8 @@ class TilesPluginConfig(PluginConfig):
     )
     
     # Zoom limits
-    min_zoom: int = Field(0, description="Minimum zoom level served.")
-    max_zoom: int = Field(12, description="Maximum zoom level served.")
+    min_zoom: int = Field(default=0, description="Minimum zoom level served.")
+    max_zoom: int = Field(default=12, description="Maximum zoom level served.")
     
     # TMS Support
     supported_tms_ids: List[str] = Field(
@@ -49,13 +49,13 @@ class TilesPluginConfig(PluginConfig):
         description="Map of zoom level to simplification tolerance (in degrees/units). Applied during dynamic generation."
     )
     simplification_algorithm: Optional[SimplificationAlgorithm] = Field(
-        SimplificationAlgorithm.TOPOLOGY_PRESERVING, 
+        default=SimplificationAlgorithm.TOPOLOGY_PRESERVING,
         description="Algorithm used for dynamic simplification."
     )
-    
+
     # Caching
     cache_on_demand: bool = Field(
-        True,
+        default=True,
         description="If True, dynamically generated tiles are saved to the preseed storage for future reuse."
     )
 
