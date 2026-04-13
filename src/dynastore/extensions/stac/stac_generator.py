@@ -23,15 +23,15 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Type, cast
+from typing import Any, Dict, List, Optional, Type, Union, cast
 from uuid import UUID
 from dynastore.models.shared_models import Feature
+from dynastore.models.ogc import Feature as OGCFeature
 
 import pystac
 from fastapi import HTTPException, Request, status
 from shapely import wkb
 from shapely.geometry import mapping, shape
-from sqlalchemy.ext.asyncio import AsyncConnection
 from dynastore.modules.db_config.query_executor import managed_transaction
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
 import dynastore.modules.db_config.shared_queries as shared_queries
@@ -776,7 +776,7 @@ async def create_item_from_feature(
     request: Request,
     catalog_id: str,
     collection_id: str,
-    feature: Feature,
+    feature: Union[Feature, OGCFeature],
     stac_config: Optional[StacPluginConfig] = None,
     view_mode: str = "standard",
     lang: str = "en",
@@ -857,9 +857,9 @@ async def create_item_from_feature(
     # PySTAC Requirement: If datetime is None, both start_datetime and end_datetime should be present if possible.
     # 7. Create PySTAC Item
     item = pystac.Item(
-        id=feature.id,
+        id=str(feature.id) if feature.id is not None else "",
         geometry=geometry,
-        bbox=feature.bbox,
+        bbox=getattr(feature, "bbox", None),
         datetime=item_dt,
         properties=properties,
         collection=collection_id,
@@ -972,7 +972,7 @@ async def create_item_from_feature(
         catalog_id=catalog_id,
         collection_id=collection_id,
         item_id=item.id,
-        geoid=feat_geoid or "",
+        geoid=str(feat_geoid) if feat_geoid else "",
         lang=lang,
     )
 
@@ -1011,7 +1011,7 @@ async def create_item_from_feature(
 
 async def create_item_collection(
     request: Request,
-    conn: AsyncConnection,
+    conn: Any,
     schema: str,
     table: str,
     limit: int,

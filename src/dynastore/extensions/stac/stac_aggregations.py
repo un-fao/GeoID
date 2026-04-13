@@ -21,7 +21,6 @@ import logging
 from typing import Any, Dict, FrozenSet, List, Optional
 
 from fastapi import HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import text
 
 from dynastore.modules.stac.stac_config import AggregationRule, AggregationType
@@ -59,7 +58,7 @@ async def _resolve_physical_table(
     ignore=["conn"],
 )
 async def execute_aggregations(
-    conn: AsyncConnection,
+    conn: Any,
     catalog_id: str,
     collection_ids: List[str],
     aggregation_rules: List[AggregationRule],
@@ -167,7 +166,7 @@ def _build_joins(phys_schema: str, phys_table: str, required_sidecars: FrozenSet
 
 
 async def _execute_term_aggregation(
-    conn: AsyncConnection,
+    conn: Any,
     catalog_id: str,
     collection_ids: List[str],
     agg_request: AggregationRule,
@@ -239,7 +238,7 @@ async def _execute_term_aggregation(
 
 
 async def _execute_stats_aggregation(
-    conn: AsyncConnection,
+    conn: Any,
     catalog_id: str,
     collection_ids: List[str],
     agg_request: AggregationRule,
@@ -325,7 +324,7 @@ async def _execute_stats_aggregation(
 
 
 async def _execute_geohash_aggregation(
-    conn: AsyncConnection,
+    conn: Any,
     catalog_id: str,
     collection_ids: List[str],
     agg_request: AggregationRule,
@@ -389,7 +388,7 @@ async def _execute_geohash_aggregation(
 
 
 async def _execute_datetime_aggregation(
-    conn: AsyncConnection,
+    conn: Any,
     catalog_id: str,
     collection_ids: List[str],
     agg_request: AggregationRule,
@@ -467,7 +466,7 @@ async def _execute_datetime_aggregation(
 
 
 async def _execute_bbox_aggregation(
-    conn: AsyncConnection,
+    conn: Any,
     catalog_id: str,
     collection_ids: List[str],
     where_sql: str,
@@ -534,7 +533,7 @@ async def _execute_bbox_aggregation(
 
 
 async def _execute_temporal_extent_aggregation(
-    conn: AsyncConnection,
+    conn: Any,
     catalog_id: str,
     collection_ids: List[str],
     where_sql: str,

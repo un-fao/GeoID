@@ -27,7 +27,6 @@ import pystac
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response, HTMLResponse
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
-from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import text
 from dynastore.models.protocols import (
     ConfigsProtocol,
@@ -359,6 +358,11 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         collection = await stac_generator.create_collection(
             request, catalog_id=catalog_id, collection_id=collection_id, lang=language
         )
+        if collection is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{catalog_id}:{collection_id}' not found.",
+            )
         return JSONResponse(content=collection.to_dict())
 
     # --- Write Endpoints ---
@@ -397,12 +401,15 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                 content=localized_data, status_code=status.HTTP_201_CREATED
             )
         except Exception as e:
-            raise handle_exception(
+            _exc = handle_exception(
                 e,
                 resource_name="Catalog",
                 resource_id=definition.id,
                 operation="STAC Catalog creation",
             )
+            if isinstance(_exc, HTTPException):
+                raise _exc
+            return _exc
 
     async def create_stac_collection(
         self,
@@ -446,12 +453,15 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                 content=localized_data, status_code=status.HTTP_201_CREATED
             )
         except Exception as e:
-            raise handle_exception(
+            _exc = handle_exception(
                 e,
                 resource_name="Collection",
                 resource_id=f"{catalog_id}:{request_body.id}",
                 operation="STAC Collection creation",
             )
+            if isinstance(_exc, HTTPException):
+                raise _exc
+            return _exc
 
     async def update_stac_catalog(
         self,
@@ -686,9 +696,8 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                     status_code=404, detail=f"Item {item_id} not found."
                 )
 
-            config_manager = get_protocol(ConfigsProtocol)
-            stac_config = await config_manager.get_config(
-                STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
+            stac_config = await self._get_stac_config(
+                catalog_id, collection_id, db_resource=conn
             )
 
             response_item = await stac_generator.create_item_from_feature(
@@ -699,6 +708,10 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                 stac_config=stac_config,
                 lang=language,
             )
+            if response_item is None:
+                raise HTTPException(
+                    status_code=500, detail="Failed to render STAC Item."
+                )
             return JSONResponse(content=response_item.to_dict())
 
     async def add_stac_item(
@@ -933,6 +946,8 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         # Path param overrides body when present (new canonical path includes catalog_id)
         if catalog_id:
             search_request = search_request.model_copy(update={"catalog_id": catalog_id})
+        if not search_request.catalog_id:
+            raise HTTPException(status_code=400, detail="catalog_id required")
         async with managed_transaction(engine) as conn:
             stac_config = await self._get_stac_config(
                 search_request.catalog_id, db_resource=conn
@@ -973,11 +988,13 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         for coll in collections:
             # Localize before creating PySTAC collection
             localized_coll, _ = stac_localize(coll, language)
+            if coll.extent is None:
+                continue
             stac_coll = pystac.Collection(
-                id=localized_coll.get("id"),
-                description=localized_coll.get("description"),
+                id=str(localized_coll.get("id") or ""),
+                description=str(localized_coll.get("description") or ""),
                 title=localized_coll.get("title"),
-                license=localized_coll.get("license"),
+                license=str(localized_coll.get("license") or ""),
                 extent=pystac.Extent(
                     spatial=pystac.SpatialExtent(coll.extent.spatial.bbox),
                     temporal=pystac.TemporalExtent(coll.extent.temporal.interval),
@@ -1005,7 +1022,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         "/catalogs/{catalog_id}/collections/{collection_id}/aggregate",
         response_class=JSONResponse,
     )
-    async def aggregate_collection_items(
+    async def aggregate_collection_items(  # type: ignore[misc]
         catalog_id: str,
         collection_id: str,
         request: Request,
@@ -1024,12 +1041,13 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         async with managed_transaction(engine) as conn:
             # Get STAC config
             configs = get_protocol(ConfigsProtocol)
-            stac_config = cast(
-                StacPluginConfig,
-                await configs.get_config(
-                    STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
-                ),
+            if configs is None:
+                raise HTTPException(status_code=500, detail="ConfigsProtocol not available")
+            _cfg = await configs.get_config(
+                StacPluginConfig, catalog_id, collection_id, db_resource=conn
             )
+            assert isinstance(_cfg, StacPluginConfig)
+            stac_config = _cfg
 
             # Check if aggregations are enabled
             if stac_config.aggregations and not stac_config.aggregations.enabled:
