@@ -75,7 +75,7 @@ class CollectionPluginConfig(PluginConfig):
     """Collection configuration — structural only.
 
     PG-specific fields (``sidecars``, ``partitioning``, ``collection_type``)
-    have moved to ``PostgresCollectionDriverConfig``
+    have moved to ``DriverRecordsPostgresqlConfig``
     (``plugin_id = "driver:records:postgresql"``).
 
     Storage routing is handled by ``RoutingPluginConfig``

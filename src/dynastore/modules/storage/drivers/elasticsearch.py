@@ -103,19 +103,19 @@ class _ElasticsearchBase:
     ) -> Any:
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.tools.discovery import get_protocol
-        from dynastore.modules.storage.driver_config import ElasticsearchCollectionDriverConfig
+        from dynastore.modules.storage.driver_config import DriverRecordsElasticsearchConfig
 
         configs = get_protocol(ConfigsProtocol)
         if configs is None:
-            return ElasticsearchCollectionDriverConfig()
+            return DriverRecordsElasticsearchConfig()
         config = await configs.get_config(
-            ElasticsearchCollectionDriverConfig,
+            DriverRecordsElasticsearchConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
             db_resource=db_resource,
         )
         if config is None:
-            return ElasticsearchCollectionDriverConfig()
+            return DriverRecordsElasticsearchConfig()
         return config
 
     @staticmethod

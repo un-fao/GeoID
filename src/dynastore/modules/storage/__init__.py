@@ -48,7 +48,7 @@ from dynastore.modules.storage.driver_config import (
     CollectionWritePolicy,
     DriverCapability,
     DriverPluginConfig,
-    PostgresCollectionDriverConfig,
+    DriverRecordsPostgresqlConfig,
     WriteConflictPolicy,
     WRITE_POLICY_PLUGIN_ID,
 )

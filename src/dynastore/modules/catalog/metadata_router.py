@@ -45,7 +45,7 @@ from dynastore.tools.cache import cached
 logger = logging.getLogger(__name__)
 
 # Preferred driver ordering for auto-discovery (first available wins)
-_PREFERRED_DRIVER_ORDER = ["ElasticsearchMetadataDriver", "PostgresMetadataDriver"]
+_PREFERRED_DRIVER_ORDER = ["DriverMetadataElasticsearch", "DriverMetadataPostgresql"]
 
 
 def _build_metadata_driver_index() -> Dict[str, CollectionMetadataDriverProtocol]:

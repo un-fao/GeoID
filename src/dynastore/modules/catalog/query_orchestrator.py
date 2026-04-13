@@ -22,7 +22,7 @@ from typing import Dict, Any, List, Optional, Tuple, Set
 from sqlalchemy import text # type: ignore
 from pydantic import BaseModel
 
-from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
+from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
 from dynastore.modules.catalog.sidecars.base import SidecarProtocol
 from dynastore.modules.db_config.query_executor import DbResource, GeoDQLQuery, ResultHandler
 
@@ -38,7 +38,7 @@ class CatalogQueryOrchestrator:
     3. execute queries transparently.
     """
     
-    def __init__(self, collection_config: PostgresCollectionDriverConfig):
+    def __init__(self, collection_config: DriverRecordsPostgresqlConfig):
         self.config = collection_config
         self.sidecars: List[SidecarProtocol] = []
         self._init_sidecars()

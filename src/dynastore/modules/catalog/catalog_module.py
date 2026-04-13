@@ -198,8 +198,8 @@ class CatalogModule(ModuleProtocol):
         self.localization_service = LocalizationService()
         self.event_service = EventService()
 
-        from dynastore.modules.catalog.drivers.pg_asset_driver import PostgresAssetDriver
-        self.pg_asset_driver = PostgresAssetDriver(engine=engine)
+        from dynastore.modules.catalog.drivers.pg_asset_driver import DriverAssetPostgresql
+        self.pg_asset_driver = DriverAssetPostgresql(engine=engine)
 
         from dynastore.modules.storage.drivers.postgresql import DriverRecordsPostgresql
         self.pg_storage_driver = DriverRecordsPostgresql()  # type: ignore[abstract]

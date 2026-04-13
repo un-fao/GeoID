@@ -26,7 +26,7 @@ from geojson_pydantic import Feature as _GeoJSONFeature
 
 from dynastore.models.protocols import ItemsProtocol
 from dynastore.models.shared_models import Link
-from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
+from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
 from dynastore.tools.discovery import get_protocol
 
 from . import records_models as rm
@@ -39,7 +39,7 @@ def db_row_to_record(
     catalog_id: str,
     collection_id: str,
     root_url: str,
-    layer_config: Optional[PostgresCollectionDriverConfig] = None,
+    layer_config: Optional[DriverRecordsPostgresqlConfig] = None,
 ) -> rm.Record:
     """Convert a DB row or mapped Feature into an OGC Record.
 

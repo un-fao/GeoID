@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS {schema}.metadata (
 """
 
 
-# 2. CONFIGS (assets table is now created by PostgresAssetDriver lifecycle hook at priority 5)
+# 2. CONFIGS (assets table is now created by DriverAssetPostgresql lifecycle hook at priority 5)
 TENANT_CATALOG_CONFIGS_DDL = """
 CREATE TABLE IF NOT EXISTS {schema}.catalog_configs (
     catalog_id VARCHAR NOT NULL,

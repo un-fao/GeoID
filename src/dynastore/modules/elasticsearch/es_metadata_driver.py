@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 METADATA_ES_DRIVER_CONFIG_ID = "driver:collection:metadata:elasticsearch"
 
 
-class ElasticsearchMetadataDriverConfig(PluginConfig):
+class DriverMetadataElasticsearchConfig(PluginConfig):
     """Configuration for the Elasticsearch collection metadata driver.
 
     ``index_prefix`` is ``Immutable`` — once set it cannot change, because
@@ -74,11 +74,11 @@ from dynastore.modules.db_config.platform_config_service import (  # noqa: E402
     ConfigRegistry as _MetaCR,
 )
 
-_MetaCR.register(METADATA_ES_DRIVER_CONFIG_ID, ElasticsearchMetadataDriverConfig)
+_MetaCR.register(METADATA_ES_DRIVER_CONFIG_ID, DriverMetadataElasticsearchConfig)
 
 
 async def _on_apply_es_metadata_driver_config(
-    config: ElasticsearchMetadataDriverConfig,
+    config: DriverMetadataElasticsearchConfig,
     catalog_id: Optional[str],
     collection_id: Optional[str],
     db_resource: Optional[Any],
@@ -183,7 +183,7 @@ def _bbox_to_envelope(bbox: List[float]) -> Optional[Dict[str, Any]]:
     }
 
 
-class ElasticsearchMetadataDriver:
+class DriverMetadataElasticsearch:
     """Elasticsearch implementation of CollectionMetadataDriverProtocol.
 
     Uses opensearch-py client (wire-compatible with ES and OpenSearch).

@@ -40,7 +40,7 @@ from dynastore.modules.db_config.query_executor import (
 from dynastore.modules.catalog.models import ItemDataForDB, Collection, Catalog
 from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
 from dynastore.modules.storage.driver_config import (
-    PostgresCollectionDriverConfig,
+    DriverRecordsPostgresqlConfig,
 )
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
@@ -144,7 +144,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
         Uses the READ driver first; falls back to the primary WRITE driver
         when READ is a non-PG driver (e.g. DuckDB) so that the PG path
-        receives a PostgresCollectionDriverConfig with valid sidecars.
+        receives a DriverRecordsPostgresqlConfig with valid sidecars.
         """
         from dynastore.modules.storage.router import get_driver, get_write_drivers
         from dynastore.modules.storage.routing_config import Operation
@@ -772,7 +772,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         self,
         catalog_id: str,
         collection_id: str,
-        col_config: PostgresCollectionDriverConfig,
+        col_config: DriverRecordsPostgresqlConfig,
         db_resource: Optional[DbResource] = None,
     ):
         async with managed_transaction(db_resource or self.engine) as conn:
@@ -819,7 +819,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         self,
         catalog_id: str,
         collection_id: str,
-        col_config: PostgresCollectionDriverConfig,
+        col_config: DriverRecordsPostgresqlConfig,
         partition_value: Any,
         db_resource: Optional[DbResource] = None,
     ):

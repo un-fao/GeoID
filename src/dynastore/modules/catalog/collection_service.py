@@ -374,10 +374,10 @@ class CollectionService:
             # Layer config override from input
             if layer_config_override and isinstance(layer_config_override, dict):
                 from dynastore.modules.storage.driver_config import (
-                    PostgresCollectionDriverConfig,
+                    DriverRecordsPostgresqlConfig,
                 )
 
-                layer_config_override = PostgresCollectionDriverConfig.model_validate(
+                layer_config_override = DriverRecordsPostgresqlConfig.model_validate(
                     layer_config_override
                 )
 
@@ -403,15 +403,15 @@ class CollectionService:
             if injected_configs:
                 from typing import cast as _cast
                 from dynastore.modules.storage.driver_config import (
-                    PostgresCollectionDriverConfig,
+                    DriverRecordsPostgresqlConfig,
                 )
                 if layer_config_override is None:
-                    if isinstance(collection_config, PostgresCollectionDriverConfig):
+                    if isinstance(collection_config, DriverRecordsPostgresqlConfig):
                         layer_config_override = collection_config.model_copy()
                     else:
-                        layer_config_override = PostgresCollectionDriverConfig()
+                        layer_config_override = DriverRecordsPostgresqlConfig()
 
-                pg_override = _cast(PostgresCollectionDriverConfig, layer_config_override)
+                pg_override = _cast(DriverRecordsPostgresqlConfig, layer_config_override)
                 current_sidecars: List[Any] = list(pg_override.sidecars or [])
                 current_types = {s.sidecar_type for s in current_sidecars}
 
@@ -529,17 +529,17 @@ class CollectionService:
             metadata_payload = collection_model.model_dump(
                 by_alias=True, exclude_none=True
             )
-            from dynastore.modules.catalog.pg_metadata_driver import PostgresMetadataDriver
+            from dynastore.modules.catalog.pg_metadata_driver import DriverMetadataPostgresql
             from dynastore.modules.catalog.metadata_router import get_metadata_driver
 
-            pg_meta = PostgresMetadataDriver()
+            pg_meta = DriverMetadataPostgresql()
             await pg_meta.upsert_metadata(
                 catalog_id, collection_model.id, metadata_payload, db_resource=conn,
             )
             # Sync to non-PG metadata driver (e.g. ES) if configured
             try:
                 meta_driver = await get_metadata_driver(catalog_id)
-                if meta_driver is not None and not isinstance(meta_driver, PostgresMetadataDriver):
+                if meta_driver is not None and not isinstance(meta_driver, DriverMetadataPostgresql):
                     await meta_driver.upsert_metadata(
                         catalog_id, collection_model.id, metadata_payload,
                     )
@@ -789,13 +789,13 @@ class CollectionService:
                 return None
 
             # Upsert metadata via PG metadata driver (authoritative)
-            from dynastore.modules.catalog.pg_metadata_driver import PostgresMetadataDriver
+            from dynastore.modules.catalog.pg_metadata_driver import DriverMetadataPostgresql
             from dynastore.modules.catalog.metadata_router import get_metadata_driver
 
             metadata_payload = merged_model.model_dump(
                 by_alias=True, exclude_none=True
             )
-            pg_meta = PostgresMetadataDriver()
+            pg_meta = DriverMetadataPostgresql()
             await pg_meta.upsert_metadata(
                 catalog_id, collection_id, metadata_payload, db_resource=conn,
             )
@@ -807,7 +807,7 @@ class CollectionService:
             # Sync to non-PG metadata driver (e.g. ES) if configured
             try:
                 meta_driver = await get_metadata_driver(catalog_id)
-                if meta_driver is not None and not isinstance(meta_driver, PostgresMetadataDriver):
+                if meta_driver is not None and not isinstance(meta_driver, DriverMetadataPostgresql):
                     await meta_driver.upsert_metadata(
                         catalog_id, collection_id, metadata_payload,
                     )
@@ -893,17 +893,17 @@ class CollectionService:
                 )
                 await DDLQuery(hard_delete_sql).execute(conn, id=collection_id)
                 # Clean up metadata via PG metadata driver + driver config
-                from dynastore.modules.catalog.pg_metadata_driver import PostgresMetadataDriver
+                from dynastore.modules.catalog.pg_metadata_driver import DriverMetadataPostgresql
                 from dynastore.modules.catalog.metadata_router import get_metadata_driver
 
-                pg_meta = PostgresMetadataDriver()
+                pg_meta = DriverMetadataPostgresql()
                 await pg_meta.delete_metadata(
                     catalog_id, collection_id, db_resource=conn,
                 )
                 # Also delete from non-PG metadata driver if configured
                 try:
                     meta_driver = await get_metadata_driver(catalog_id)
-                    if meta_driver is not None and not isinstance(meta_driver, PostgresMetadataDriver):
+                    if meta_driver is not None and not isinstance(meta_driver, DriverMetadataPostgresql):
                         await meta_driver.delete_metadata(catalog_id, collection_id)
                 except Exception as _meta_e:
                     logger.warning(

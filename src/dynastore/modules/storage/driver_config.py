@@ -252,7 +252,7 @@ class AssetDriverConfig(DriverPluginConfig):
 # ---------------------------------------------------------------------------
 
 
-class PostgresCollectionDriverConfig(CollectionDriverConfig):
+class DriverRecordsPostgresqlConfig(CollectionDriverConfig):
     """PostgreSQL collection driver config.
 
     Absorbs fields previously in ``PostgresStorageLocationConfig`` and
@@ -349,7 +349,7 @@ class PostgresCollectionDriverConfig(CollectionDriverConfig):
         return data
 
     @model_validator(mode="after")
-    def validate_composite_partitioning(self) -> "PostgresCollectionDriverConfig":
+    def validate_composite_partitioning(self) -> "DriverRecordsPostgresqlConfig":
         """Validate partition keys are provided by configured sidecars."""
         if not self.partitioning.enabled:
             return self
@@ -369,7 +369,7 @@ class PostgresCollectionDriverConfig(CollectionDriverConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_sidecar_partition_mirroring(self) -> "PostgresCollectionDriverConfig":
+    def validate_sidecar_partition_mirroring(self) -> "DriverRecordsPostgresqlConfig":
         """Ensure all sidecars mirror the Hub's partition strategy."""
         if self.sidecars and self.partitioning.enabled:
             pass  # Enforced at sidecar DDL generation level
@@ -416,7 +416,7 @@ def _default_partitioning() -> Any:
     return CompositePartitionConfig()
 
 
-class ElasticsearchCollectionDriverConfig(CollectionDriverConfig):
+class DriverRecordsElasticsearchConfig(CollectionDriverConfig):
     """Elasticsearch collection driver config.
 
     Uses the stac-fastapi-elasticsearch-opensearch (SFEOS) library by
@@ -468,7 +468,7 @@ class DuckDbCollectionDriverConfig(CollectionDriverConfig):
     )
 
 
-class IcebergCollectionDriverConfig(CollectionDriverConfig):
+class DriverRecordsIcebergConfig(CollectionDriverConfig):
     """Iceberg collection driver config.
 
     Absorbs fields previously in ``OTFStorageLocationConfig``.
@@ -516,7 +516,7 @@ class IcebergCollectionDriverConfig(CollectionDriverConfig):
 # ---------------------------------------------------------------------------
 
 
-class PostgresAssetDriverConfig(AssetDriverConfig):
+class DriverAssetPostgresqlConfig(AssetDriverConfig):
     """PostgreSQL asset driver config."""
 
     _plugin_id: ClassVar[Optional[str]] = "driver:asset:postgresql"
@@ -526,7 +526,7 @@ class PostgresAssetDriverConfig(AssetDriverConfig):
     )
 
 
-class ElasticsearchAssetDriverConfig(AssetDriverConfig):
+class DriverAssetElasticsearchConfig(AssetDriverConfig):
     """Elasticsearch asset driver config."""
 
     _plugin_id: ClassVar[Optional[str]] = "driver:asset:elasticsearch"

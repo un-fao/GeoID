@@ -65,11 +65,11 @@ logger = logging.getLogger(__name__)
 _CATALOG_LEVEL_COLLECTION_ID = "_catalog_"
 
 
-class PostgresAssetDriver:
+class DriverAssetPostgresql:
     """PostgreSQL implementation of ``AssetDriverProtocol``.
 
     Owns all DDL and SQL for asset storage in the tenant schema.
-    Registered via ``register_plugin(PostgresAssetDriver(engine=...))`` in
+    Registered via ``register_plugin(DriverAssetPostgresql(engine=...))`` in
     ``CatalogModule.lifespan()``.
     """
 
@@ -123,7 +123,7 @@ class PostgresAssetDriver:
         )
         if not schema:
             logger.warning(
-                "PostgresAssetDriver.ensure_storage: cannot resolve schema for catalog=%s",
+                "DriverAssetPostgresql.ensure_storage: cannot resolve schema for catalog=%s",
                 catalog_id,
             )
             return
@@ -220,7 +220,7 @@ class PostgresAssetDriver:
         schema = await self._resolve_schema(catalog_id, db_resource)
         if not schema:
             raise ValueError(
-                f"PostgresAssetDriver.index_asset: catalog '{catalog_id}' not found."
+                f"DriverAssetPostgresql.index_asset: catalog '{catalog_id}' not found."
             )
 
         async with managed_transaction(db_resource or self.engine) as conn:
@@ -530,7 +530,7 @@ class PostgresAssetDriver:
         schema = await self._resolve_schema(catalog_id, db_resource)
         if not schema:
             raise ValueError(
-                f"PostgresAssetDriver.add_asset_reference: catalog '{catalog_id}' not found."
+                f"DriverAssetPostgresql.add_asset_reference: catalog '{catalog_id}' not found."
             )
 
         now = datetime.now(timezone.utc)
@@ -701,6 +701,6 @@ async def _pg_asset_driver_init_tenant(
     This is the sole DDL path for asset tables — ``TENANT_ASSETS_DDL`` has been
     removed from ``catalog_service.py`` and ``tenant_schema.py``.
     """
-    driver = PostgresAssetDriver()
+    driver = DriverAssetPostgresql()
     driver.engine = conn  # use the in-transaction connection directly
     await driver.ensure_storage(catalog_id, db_resource=conn, schema=schema)

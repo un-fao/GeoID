@@ -1,29 +1,29 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from dynastore.modules.catalog.pg_metadata_driver import PostgresMetadataDriver
-from dynastore.modules.elasticsearch.es_metadata_driver import ElasticsearchMetadataDriver
+from dynastore.modules.catalog.pg_metadata_driver import DriverMetadataPostgresql
+from dynastore.modules.elasticsearch.es_metadata_driver import DriverMetadataElasticsearch
 from dynastore.models.protocols.metadata_driver import (
     CollectionMetadataDriverProtocol,
     MetadataCapability,
 )
 
 
-class TestPostgresMetadataDriverProtocol:
+class TestDriverMetadataPostgresqlProtocol:
     def test_is_protocol_instance(self):
-        driver = PostgresMetadataDriver()
+        driver = DriverMetadataPostgresql()
         assert isinstance(driver, CollectionMetadataDriverProtocol)
 
     def test_driver_id(self):
-        driver = PostgresMetadataDriver()
+        driver = DriverMetadataPostgresql()
         assert driver.driver_id == "postgresql_metadata"
 
     def test_driver_type(self):
-        driver = PostgresMetadataDriver()
+        driver = DriverMetadataPostgresql()
         assert driver.driver_type == "postgresql"
 
     def test_capabilities(self):
-        driver = PostgresMetadataDriver()
+        driver = DriverMetadataPostgresql()
         assert MetadataCapability.READ in driver.capabilities
         assert MetadataCapability.WRITE in driver.capabilities
         assert MetadataCapability.SEARCH in driver.capabilities
@@ -31,35 +31,35 @@ class TestPostgresMetadataDriverProtocol:
         assert MetadataCapability.SPATIAL_FILTER not in driver.capabilities
 
     def test_is_available_with_engine(self):
-        driver = PostgresMetadataDriver()
+        driver = DriverMetadataPostgresql()
         with patch.object(driver, "_get_engine", return_value=MagicMock()):
             import asyncio
             result = asyncio.get_event_loop().run_until_complete(driver.is_available())
             assert result is True
 
     def test_is_available_without_engine(self):
-        driver = PostgresMetadataDriver()
+        driver = DriverMetadataPostgresql()
         with patch.object(driver, "_get_engine", return_value=None):
             import asyncio
             result = asyncio.get_event_loop().run_until_complete(driver.is_available())
             assert result is False
 
 
-class TestElasticsearchMetadataDriverProtocol:
+class TestDriverMetadataElasticsearchProtocol:
     def test_is_protocol_instance(self):
-        driver = ElasticsearchMetadataDriver()
+        driver = DriverMetadataElasticsearch()
         assert isinstance(driver, CollectionMetadataDriverProtocol)
 
     def test_driver_id(self):
-        driver = ElasticsearchMetadataDriver()
+        driver = DriverMetadataElasticsearch()
         assert driver.driver_id == "elasticsearch_metadata"
 
     def test_driver_type(self):
-        driver = ElasticsearchMetadataDriver()
+        driver = DriverMetadataElasticsearch()
         assert driver.driver_type == "elasticsearch"
 
     def test_capabilities(self):
-        driver = ElasticsearchMetadataDriver()
+        driver = DriverMetadataElasticsearch()
         assert MetadataCapability.READ in driver.capabilities
         assert MetadataCapability.WRITE in driver.capabilities
         assert MetadataCapability.SEARCH in driver.capabilities
@@ -70,22 +70,22 @@ class TestElasticsearchMetadataDriverProtocol:
 
     @pytest.mark.asyncio
     async def test_is_available_no_client(self):
-        driver = ElasticsearchMetadataDriver()
+        driver = DriverMetadataElasticsearch()
         with patch.object(driver, "_get_client", return_value=None):
             assert await driver.is_available() is False
 
     @pytest.mark.asyncio
     async def test_get_metadata_no_client(self):
-        driver = ElasticsearchMetadataDriver()
+        driver = DriverMetadataElasticsearch()
         with patch.object(driver, "_get_client", return_value=None):
             result = await driver.get_metadata("cat1", "col1")
             assert result is None
 
 
-class TestPostgresMetadataDriverGetMetadata:
+class TestDriverMetadataPostgresqlGetMetadata:
     @pytest.mark.asyncio
     async def test_get_metadata_returns_deserialized(self):
-        driver = PostgresMetadataDriver()
+        driver = DriverMetadataPostgresql()
         mock_engine = MagicMock()
 
         raw_row = {
@@ -123,17 +123,17 @@ class TestPostgresMetadataDriverGetMetadata:
             assert result["description"] == {"en": "Test Desc"}
 
 
-class TestPostgresMetadataDriverSearchMetadata:
+class TestDriverMetadataPostgresqlSearchMetadata:
     @pytest.mark.asyncio
     async def test_search_metadata_no_engine(self):
-        driver = PostgresMetadataDriver()
+        driver = DriverMetadataPostgresql()
         with patch.object(driver, "_get_engine", return_value=None):
             results, total = await driver.search_metadata("cat1")
             assert results == []
             assert total == 0
 
 
-class TestElasticsearchMetadataDriverBboxEnvelope:
+class TestDriverMetadataElasticsearchBboxEnvelope:
     def test_bbox_to_envelope(self):
         from dynastore.modules.elasticsearch.es_metadata_driver import _bbox_to_envelope
 
@@ -150,7 +150,7 @@ class TestElasticsearchMetadataDriverBboxEnvelope:
         assert _bbox_to_envelope(None) is None
 
     def test_enrich_doc_adds_bbox_shape(self):
-        driver = ElasticsearchMetadataDriver()
+        driver = DriverMetadataElasticsearch()
         doc = {
             "id": "test",
             "extent": {

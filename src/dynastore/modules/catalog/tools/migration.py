@@ -31,7 +31,7 @@ from dynastore.modules.catalog.catalog_config import (
     COLLECTION_PLUGIN_CONFIG_ID,
 )
 from dynastore.modules.storage.driver_config import (
-    PostgresCollectionDriverConfig,
+    DriverRecordsPostgresqlConfig,
 )
 from dynastore.modules.catalog.sidecars.geometries_config import (
     GeometriesSidecarConfig,
@@ -266,7 +266,7 @@ class OneShotMigrator:
                 f"Successfully migrated {catalog_id}.{collection_id} to Sidecar Architecture."
             )
 
-    def _convert_legacy_to_sidecars(self, config: PostgresCollectionDriverConfig) -> List[Any]:
+    def _convert_legacy_to_sidecars(self, config: DriverRecordsPostgresqlConfig) -> List[Any]:
         """Converts legacy fields to new sidecar configs."""
         sidecars = []
 
@@ -431,7 +431,7 @@ class OneShotMigrator:
             await DDLQuery(sql).execute(conn)
 
     async def _cleanup_hub_table(
-        self, conn, schema, table, config: PostgresCollectionDriverConfig
+        self, conn, schema, table, config: DriverRecordsPostgresqlConfig
     ):
         """Drops legacy columns from Hub table."""
         drops = []

@@ -280,7 +280,7 @@ async def _resolve_config_and_sidecars(
     collection_id: str,
     target_config_dict: Optional[Dict[str, Any]],
 ):
-    """Load PostgresCollectionDriverConfig and extract sidecar IDs."""
+    """Load DriverRecordsPostgresqlConfig and extract sidecar IDs."""
     from dynastore.modules.storage.router import get_driver
     from dynastore.modules.storage.routing_config import Operation
 
@@ -288,8 +288,8 @@ async def _resolve_config_and_sidecars(
     col_config = await _driver.get_driver_config(catalog_id, collection_id)
 
     if target_config_dict:
-        from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
-        col_config = PostgresCollectionDriverConfig.model_validate(target_config_dict)
+        from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
+        col_config = DriverRecordsPostgresqlConfig.model_validate(target_config_dict)
 
     sidecar_ids = [sc.sidecar_id for sc in col_config.sidecars]
     return col_config, sidecar_ids

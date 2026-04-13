@@ -22,7 +22,7 @@ from dynastore.modules.db_config.query_executor import (
 from dynastore.modules.catalog.models import Collection
 from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
 from dynastore.modules.storage.driver_config import (
-    PostgresCollectionDriverConfig,
+    DriverRecordsPostgresqlConfig,
 )
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
@@ -211,7 +211,7 @@ class ItemQueryMixin:
         conn: DbResource,
         catalog_id: str,
         collection_id: str,
-        col_config: Optional[PostgresCollectionDriverConfig] = None,
+        col_config: Optional[DriverRecordsPostgresqlConfig] = None,
         item_ids: Optional[List[str]] = None,
         request: Optional[QueryRequest] = None,
         **kwargs,
@@ -249,7 +249,7 @@ class ItemQueryMixin:
         conn: DbResource,
         catalog_id: str,
         collection_id: str,
-        col_config: PostgresCollectionDriverConfig,
+        col_config: DriverRecordsPostgresqlConfig,
         params: Dict[str, Any],
         param_suffix: str = "",
     ) -> Tuple[str, Dict[str, Any]]:
@@ -278,7 +278,7 @@ class ItemQueryMixin:
         return sql, bind_params
 
     def _build_base_query_request(
-        self, params: Dict[str, Any], col_config: PostgresCollectionDriverConfig
+        self, params: Dict[str, Any], col_config: DriverRecordsPostgresqlConfig
     ) -> QueryRequest:
         """Build base QueryRequest from params before transformations"""
         from dynastore.models.query_builder import QueryRequest, FieldSelection
@@ -325,7 +325,7 @@ class ItemQueryMixin:
         context: Dict[str, Any],
         catalog_id: str,
         collection_id: str,
-        col_config: PostgresCollectionDriverConfig,
+        col_config: DriverRecordsPostgresqlConfig,
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Applies registered query transformations and generates optimized SQL.

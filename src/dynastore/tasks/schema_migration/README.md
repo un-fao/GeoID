@@ -26,7 +26,7 @@ class SchemaMigrationInputs(BaseModel):
 |-------|-------------|
 | `catalog_id` | Catalog containing the collection |
 | `collection_id` | Collection whose physical tables will be migrated |
-| `target_config` | Optional new `PostgresCollectionDriverConfig` dict; if omitted, current config is re-applied |
+| `target_config` | Optional new `DriverRecordsPostgresqlConfig` dict; if omitted, current config is re-applied |
 | `dry_run` | When `True`, returns what would happen without touching the database |
 
 ## Outputs (`SchemaMigrationReport`)

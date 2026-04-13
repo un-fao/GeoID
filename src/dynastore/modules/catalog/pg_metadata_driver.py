@@ -54,7 +54,7 @@ _META_COLUMNS = (
 METADATA_DRIVER_CONFIG_ID = "driver:collection:metadata:postgresql"
 
 
-class PostgresMetadataDriver:
+class DriverMetadataPostgresql:
     """PostgreSQL implementation of CollectionMetadataDriverProtocol.
 
     Uses the existing ``{schema}.metadata`` table for CRUD + search.

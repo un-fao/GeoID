@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, patch
 from datetime import datetime, timezone
 
 from dynastore.models.protocols.storage_driver import Capability
-from dynastore.modules.storage.driver_config import IcebergCollectionDriverConfig
+from dynastore.modules.storage.driver_config import DriverRecordsIcebergConfig
 from dynastore.modules.storage.drivers.iceberg import (
     IcebergStorageDriver,
     _resolve_iceberg_type,
@@ -39,7 +39,7 @@ def _make_loc(table_name="test_tbl", namespace="test_ns", **overrides):
         table_name=table_name,
     )
     defaults.update(overrides)
-    return IcebergCollectionDriverConfig(**defaults)
+    return DriverRecordsIcebergConfig(**defaults)
 
 
 @pytest.fixture
@@ -122,7 +122,7 @@ def iceberg_table(iceberg_catalog, ns_name, request):
 
 @pytest.fixture
 def test_loc(iceberg_table, ns_name):
-    """IcebergCollectionDriverConfig pointing to the test's unique table."""
+    """DriverRecordsIcebergConfig pointing to the test's unique table."""
     return _make_loc(table_name=iceberg_table.name()[-1], namespace=ns_name)
 
 
@@ -199,7 +199,7 @@ class TestIcebergDriverMeta:
 class TestIcebergTableIdentifier:
     def test_default_mapping(self):
         driver = IcebergStorageDriver()
-        loc = IcebergCollectionDriverConfig()
+        loc = DriverRecordsIcebergConfig()
         assert driver._table_identifier(loc, "cat", "col") == ("cat", "col")
 
     def test_explicit_namespace_and_table(self):
@@ -527,7 +527,7 @@ class TestIcebergResolveLocation:
         driver = IcebergStorageDriver()
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=None):
             loc = await driver.resolve_storage_location("cat1")
-            assert isinstance(loc, IcebergCollectionDriverConfig)
+            assert isinstance(loc, DriverRecordsIcebergConfig)
 
 
 # ---------------------------------------------------------------------------

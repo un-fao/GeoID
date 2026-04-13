@@ -18,13 +18,13 @@ from dynastore.modules.catalog.sidecars.attributes_config import (
     FeatureAttributeSidecarConfig,
     AttributeStorageMode,
 )
-from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
+from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
 
 
 # Mock Sidecar Configs
 @pytest.fixture
 def mock_col_config():
-    return PostgresCollectionDriverConfig(
+    return DriverRecordsPostgresqlConfig(
         collection_type="VECTOR",
         sidecars=[
             GeometriesSidecarConfig(

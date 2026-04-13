@@ -34,7 +34,7 @@ from dynastore.models.protocols.storage_driver import Capability
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.protocols import ModuleProtocol
 from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
-from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
+from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
 
 logger = logging.getLogger(__name__)
 
@@ -81,20 +81,20 @@ class DriverRecordsPostgresql(ModuleProtocol):
         collection_id: Optional[str] = None,
         *,
         db_resource: Optional[Any] = None,
-    ) -> "PostgresCollectionDriverConfig":
+    ) -> "DriverRecordsPostgresqlConfig":
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.tools.discovery import get_protocol
-        from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
+        from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
 
         configs = get_protocol(ConfigsProtocol)
         config = await configs.get_config(
-            PostgresCollectionDriverConfig._plugin_id,
+            DriverRecordsPostgresqlConfig._plugin_id,
             catalog_id=catalog_id,
             collection_id=collection_id,
             db_resource=db_resource,
         )
-        if config is None or not isinstance(config, PostgresCollectionDriverConfig):
-            return PostgresCollectionDriverConfig()
+        if config is None or not isinstance(config, DriverRecordsPostgresqlConfig):
+            return DriverRecordsPostgresqlConfig()
         return config
 
     @asynccontextmanager
@@ -246,7 +246,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.tools.discovery import get_protocol
 
-        from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
+        from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
 
         config = await self.get_driver_config(
             catalog_id, collection_id, db_resource=db_resource
@@ -254,7 +254,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
         updated_config = config.model_copy(update={"physical_table": physical_table})
         configs = get_protocol(ConfigsProtocol)
         await configs.set_config(
-            PostgresCollectionDriverConfig._plugin_id,
+            DriverRecordsPostgresqlConfig._plugin_id,
             updated_config,
             catalog_id=catalog_id,
             collection_id=collection_id,
@@ -279,7 +279,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
             physical_table: Optional explicit table name. If not provided,
                 one is generated automatically.
             layer_config: Optional config overlay merged on top of the
-                resolved ``PostgresCollectionDriverConfig`` before creating storage.
+                resolved ``DriverRecordsPostgresqlConfig`` before creating storage.
         """
         if not collection_id:
             return
@@ -295,7 +295,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
         from dynastore.tools.discovery import get_protocol
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.modules.storage.driver_config import (
-            PostgresCollectionDriverConfig,
+            DriverRecordsPostgresqlConfig,
         )
         from dynastore.modules.catalog.catalog_service import generate_physical_name
         from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
@@ -328,7 +328,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
 
             merged = deep_update(base_dump, layer_config_dict)
             try:
-                col_config = PostgresCollectionDriverConfig.model_validate(merged)
+                col_config = DriverRecordsPostgresqlConfig.model_validate(merged)
             except Exception as e:
                 logger.error(
                     "Failed to merge layer_config for %s:%s: %s",
@@ -408,12 +408,12 @@ class DriverRecordsPostgresql(ModuleProtocol):
                 logger.warning("Skipping sidecar table creation: %s", e)
 
         # --- Store physical_table in driver config ---
-        from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
+        from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
 
         configs = get_protocol(ConfigsProtocol)
         updated_config = col_config.model_copy(update={"physical_table": physical_table})
         await configs.set_config(
-            PostgresCollectionDriverConfig._plugin_id,
+            DriverRecordsPostgresqlConfig._plugin_id,
             updated_config,
             catalog_id=catalog_id,
             collection_id=collection_id,
@@ -1122,7 +1122,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
         collection_id: Optional[str] = None,
         *,
         db_resource: Optional[Any] = None,
-    ) -> PostgresCollectionDriverConfig:
+    ) -> DriverRecordsPostgresqlConfig:
         """Resolve PG storage coordinates using internal methods."""
         schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
         table = None
@@ -1131,7 +1131,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
                 catalog_id, collection_id, db_resource=db_resource,
             )
 
-        return PostgresCollectionDriverConfig(
+        return DriverRecordsPostgresqlConfig(
             physical_schema=schema,
             physical_table=table,
         )

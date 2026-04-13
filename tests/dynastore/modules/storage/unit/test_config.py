@@ -8,7 +8,7 @@ from dynastore.modules.catalog.catalog_config import (
     COLLECTION_PLUGIN_CONFIG_ID,
 )
 from dynastore.modules.storage.driver_config import (
-    PostgresCollectionDriverConfig,
+    DriverRecordsPostgresqlConfig,
 )
 from dynastore.modules.storage.routing_config import (
     RoutingPluginConfig,
@@ -37,30 +37,30 @@ class TestCollectionPluginConfigDefaults:
 
 
 # ---------------------------------------------------------------------------
-# PostgresCollectionDriverConfig (sidecars, partitioning, collection_type)
+# DriverRecordsPostgresqlConfig (sidecars, partitioning, collection_type)
 # ---------------------------------------------------------------------------
 
 
-class TestPostgresCollectionDriverConfigDefaults:
+class TestDriverRecordsPostgresqlConfigDefaults:
     def test_plugin_id(self):
         from dynastore.modules.storage.drivers.postgresql import PostgresStorageDriver
         expected = f"driver:{PostgresStorageDriver.driver_id}"
-        assert PostgresCollectionDriverConfig._plugin_id == expected
+        assert DriverRecordsPostgresqlConfig._plugin_id == expected
 
     def test_default_sidecars(self):
-        cfg = PostgresCollectionDriverConfig()
+        cfg = DriverRecordsPostgresqlConfig()
         assert len(cfg.sidecars) == 2
 
     def test_default_partitioning_disabled(self):
-        cfg = PostgresCollectionDriverConfig()
+        cfg = DriverRecordsPostgresqlConfig()
         assert cfg.partitioning.enabled is False
 
     def test_default_collection_type(self):
-        cfg = PostgresCollectionDriverConfig()
+        cfg = DriverRecordsPostgresqlConfig()
         assert cfg.collection_type == "VECTOR"
 
     def test_column_definitions(self):
-        cfg = PostgresCollectionDriverConfig()
+        cfg = DriverRecordsPostgresqlConfig()
         cols = cfg.get_column_definitions()
         assert "geoid" in cols
         assert "transaction_time" in cols
