@@ -33,7 +33,8 @@ Layering:
 """
 
 from dynastore.tools.typed_store.base import PersistentModel
-from dynastore.tools.typed_store.registry import TypedModelRegistry
+from dynastore.tools.typed_store.migrations import migrate, migrates
+from dynastore.tools.typed_store.registry import TypedModelRegistry, compute_schema_id
 from dynastore.tools.typed_store.scope import (
     CatalogScope,
     CollectionScope,
@@ -50,4 +51,7 @@ __all__ = [
     "Scope",
     "TypedModelRegistry",
     "TypedStore",
+    "compute_schema_id",
+    "migrate",
+    "migrates",
 ]

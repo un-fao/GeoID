@@ -1,0 +1,89 @@
+#    Copyright 2025 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
+"""DDL for the PostgreSQL :class:`TypedStore` backend.
+
+Three independent tables cover the three built-in scopes:
+
+* ``configs.schemas`` — global schema registry (content-addressed).
+* ``configs.platform_configs`` — global one-row-per-class_key store.
+* ``"<tenant_schema>".catalog_configs`` — per-tenant, one-row-per-class_key.
+* ``"<tenant_schema>".collection_configs`` — per-tenant, keyed by
+  ``(collection_id, class_key)``.
+
+The per-tenant tables live inside the tenant's own PG schema, matching the
+rest of dynastore's tenant isolation model — no ``catalog_id`` column
+needed.
+"""
+
+from __future__ import annotations
+
+from dynastore.tools.db import validate_sql_identifier
+
+CONFIGS_SCHEMA = "configs"
+
+PLATFORM_SCHEMAS_DDL = f"""
+CREATE SCHEMA IF NOT EXISTS {CONFIGS_SCHEMA};
+
+CREATE TABLE IF NOT EXISTS {CONFIGS_SCHEMA}.schemas (
+    schema_id    TEXT        PRIMARY KEY,
+    class_key    TEXT        NOT NULL,
+    schema_json  JSONB       NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS ix_schemas_class_key
+    ON {CONFIGS_SCHEMA}.schemas (class_key);
+
+CREATE TABLE IF NOT EXISTS {CONFIGS_SCHEMA}.platform_configs (
+    class_key   TEXT        PRIMARY KEY,
+    schema_id   TEXT        NOT NULL REFERENCES {CONFIGS_SCHEMA}.schemas(schema_id),
+    config_data JSONB       NOT NULL,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"""
+
+
+def tenant_configs_ddl(tenant_schema: str) -> str:
+    """Return idempotent DDL for the two per-tenant config tables.
+
+    The ``tenant_schema`` is validated before interpolation to prevent SQL
+    injection (asyncpg cannot bind identifiers).
+    """
+    validate_sql_identifier(tenant_schema)
+    return f"""
+    CREATE TABLE IF NOT EXISTS "{tenant_schema}".catalog_configs (
+        class_key   TEXT        PRIMARY KEY,
+        schema_id   TEXT        NOT NULL REFERENCES {CONFIGS_SCHEMA}.schemas(schema_id),
+        config_data JSONB       NOT NULL,
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS "{tenant_schema}".collection_configs (
+        collection_id TEXT        NOT NULL,
+        class_key     TEXT        NOT NULL,
+        schema_id     TEXT        NOT NULL REFERENCES {CONFIGS_SCHEMA}.schemas(schema_id),
+        config_data   JSONB       NOT NULL,
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (collection_id, class_key)
+    );
+
+    CREATE INDEX IF NOT EXISTS ix_collection_configs_class_key
+        ON "{tenant_schema}".collection_configs (class_key);
+    """
