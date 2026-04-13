@@ -21,7 +21,7 @@ ExtensionProtocol so it can be deployed on the tools Cloud Run service.
 At startup the extension:
 
 1. Registers all dimension providers in the ogc-dimensions router
-   (live API at ``/dimensions/{id}/members``, ``/inverse``, etc.).
+   (live API at ``/dimensions/{id}/items``, ``/inverse``, etc.).
 2. Materializes every dimension's members into a RECORDS-type collection
    so they are also browsable via the OGC API - Records extension at
    ``/records/catalogs/_dimensions_/collections/{dim_id}/items``.

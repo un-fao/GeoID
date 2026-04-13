@@ -146,7 +146,16 @@ class HierarchyRule(BaseModel):
 class HierarchyConfig(BaseModel):
     """Defines how to dynamically extract parent/child relationships."""
     enabled: bool = Field(True, description="Enable or disable hierarchical link generation.")
-    rules: Dict[str, HierarchyRule] = Field(default_factory=dict, description="Dictionary of rules keyed by hierarchy_id to define parent/child relationships.")
+    rules: Dict[str, HierarchyRule] = Field(default_factory=dict, description="Dictionary of SQL-based rules keyed by hierarchy_id. Legacy data-derived path.")
+    providers: Dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Pluggable hierarchy providers keyed by hierarchy_id. "
+            "Each value is a HierarchyProviderConfig (kind=data-derived|dimension-backed|static|external-skos). "
+            "When set, takes precedence over `rules` for that hierarchy_id. "
+            "Typed as Any to avoid a circular import with extensions.stac.hierarchy.config."
+        ),
+    )
 
     @model_validator(mode='after')
     def check_rules_if_enabled(self) -> 'HierarchyConfig':

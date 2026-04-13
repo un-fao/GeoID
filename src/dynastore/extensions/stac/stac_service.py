@@ -27,6 +27,7 @@ import pystac
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response, HTMLResponse
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
+from dynastore.models.driver_context import DriverContext
 from sqlalchemy import text
 from dynastore.models.protocols import (
     ConfigsProtocol,
@@ -97,6 +98,7 @@ STAC_API_URIS = [
     "https://api.stacspec.org/v1.0.0/item-search#query",
     "https://api.stacspec.org/v1.0.0/item-search#filter:cql-json",
     "http://www.opengis.net/spec/ogcapi-features-3/1.0/conf/filter",
+    "https://api.stacspec.org/v1.0.0/children",
 ]
 class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCServiceMixin):
     priority: int = 100
@@ -231,8 +233,8 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
     ) -> StacPluginConfig:
         configs_svc = await self._get_configs_service()
         return await configs_svc.get_config(
-            StacPluginConfig, catalog_id, collection_id, db_resource=db_resource
-        )
+            StacPluginConfig, catalog_id, collection_id, ctx=DriverContext(db_resource=db_resource
+        ))
 
     async def get_stac_root_catalog(
         self, request: Request, language: str = Depends(get_language)
@@ -627,7 +629,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             catalog_id=catalog_id,
             collection_id=collection_id,
             item_id=item_id,
-            db_resource=conn,
+            ctx=DriverContext(db_resource=conn),
             lang=language,
             context=context,
         )
@@ -754,7 +756,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                     catalog_id,
                     collection_id,
                     items=item_payload,  # Pass STACItem model directly
-                    db_resource=conn,
+                    ctx=DriverContext(db_resource=conn),
                 )
                 new_row = (
                     new_row_or_list
@@ -873,7 +875,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                     catalog_id,
                     collection_id,
                     items=item_payload,  # Pass STACItem model directly
-                    db_resource=conn,
+                    ctx=DriverContext(db_resource=conn),
                 )
                 new_row = (
                     new_row_or_list
@@ -1044,8 +1046,8 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             if configs is None:
                 raise HTTPException(status_code=500, detail="ConfigsProtocol not available")
             _cfg = await configs.get_config(
-                StacPluginConfig, catalog_id, collection_id, db_resource=conn
-            )
+                StacPluginConfig, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
+            ))
             assert isinstance(_cfg, StacPluginConfig)
             stac_config = _cfg
 

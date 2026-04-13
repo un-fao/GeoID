@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Optional, cast
 import pystac
 from fastapi import Depends, HTTPException, Query, Request, status
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
+from dynastore.models.driver_context import DriverContext
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -392,8 +393,8 @@ class StacVirtualMixin(_Host):
                     status_code=500, detail="Configs protocol not available."
                 )
             stac_config = await cm.get_config(
-                StacPluginConfig, catalog_id, collection_id, db_resource=conn
-            )
+                StacPluginConfig, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
+            ))
 
             from dynastore.modules.stac.stac_config import AssetAccessMode
             from fastapi.responses import RedirectResponse
@@ -419,6 +420,209 @@ class StacVirtualMixin(_Host):
                     return RedirectResponse(url=asset.uri)
             else:
                 return RedirectResponse(url=asset.uri)
+
+    def _resolve_hierarchy_rule(
+        self,
+        stac_config: Any,
+        hierarchy_id: str,
+    ) -> Optional[Any]:
+        """Return a `HierarchyRule` for `hierarchy_id` from either:
+          1. `hierarchy.providers[hierarchy_id]` when kind=="data-derived"
+             (unwraps the embedded rule), OR
+          2. `hierarchy.rules[hierarchy_id]` legacy path.
+
+        Returns ``None`` when no SQL-backed rule is configured.
+        dimension-backed / static / external-skos providers return ``None`` —
+        items via SQL are not meaningful for those kinds.
+        """
+        if not stac_config.hierarchy or not stac_config.hierarchy.enabled:
+            return None
+
+        provider_cfg_raw = (stac_config.hierarchy.providers or {}).get(hierarchy_id)
+        if provider_cfg_raw is not None:
+            try:
+                from dynastore.extensions.stac.hierarchy import HierarchyProviderConfig
+                provider_cfg = (
+                    provider_cfg_raw
+                    if isinstance(provider_cfg_raw, HierarchyProviderConfig)
+                    else HierarchyProviderConfig.model_validate(provider_cfg_raw)
+                )
+                if provider_cfg.kind == "data-derived" and provider_cfg.rule is not None:
+                    return provider_cfg.rule
+            except Exception:
+                pass
+
+        return stac_config.hierarchy.rules.get(hierarchy_id)
+
+    def _autobuild_dimension_provider_cfg(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        hierarchy_id: str,
+    ) -> Optional[dict]:
+        """Return a synthetic `dimension-backed` provider config when the
+        collection is a materialized hierarchical dimension.
+
+        Activates only when:
+          - catalog_id is the dimensions catalog ("_dimensions_"), AND
+          - `collection_id == hierarchy_id` names a dimension whose provider
+            advertises `hierarchical=True`.
+
+        Returns ``None`` otherwise; caller falls back to the normal lookup.
+        """
+        try:
+            from dynastore.extensions.dimensions.dimensions_extension import (
+                DIMENSIONS_CATALOG_ID,
+            )
+        except Exception:
+            return None
+        if catalog_id != DIMENSIONS_CATALOG_ID or collection_id != hierarchy_id:
+            return None
+        try:
+            from dynastore.models.protocols.dimensions import DimensionsProtocol  # type: ignore
+            dim_proto = get_protocol(DimensionsProtocol)
+            if dim_proto is None:
+                return None
+            provider = dim_proto.get_provider(hierarchy_id)  # type: ignore[attr-defined]
+        except Exception:
+            return None
+        if not getattr(provider, "hierarchical", False):
+            return None
+        return {
+            "kind": "dimension-backed",
+            "hierarchy_id": hierarchy_id,
+            "dimension_id": hierarchy_id,
+        }
+
+    async def _render_virtual_collection_via_provider(
+        self,
+        *,
+        provider_cfg_raw: Any,
+        conn: Any,
+        catalog_id: str,
+        collection_id: str,
+        hierarchy_id: str,
+        parent_value: Optional[str],
+        limit: int,
+        request: Request,
+    ) -> JSONResponse:
+        """Render a virtual Collection through a pluggable HierarchyProvider.
+
+        Used when `HierarchyConfig.providers[hierarchy_id]` is configured.
+        Supports any registered provider kind (data-derived, dimension-backed,
+        static, external-skos). Link shape is uniform across kinds.
+        """
+        from types import SimpleNamespace
+        from dynastore.extensions.stac.hierarchy import (
+            HierarchyProviderConfig,
+            get_hierarchy_provider,
+        )
+
+        try:
+            provider_cfg = (
+                provider_cfg_raw
+                if isinstance(provider_cfg_raw, HierarchyProviderConfig)
+                else HierarchyProviderConfig.model_validate(provider_cfg_raw)
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Invalid HierarchyProviderConfig for {hierarchy_id!r}: {exc}",
+            )
+
+        ctx = SimpleNamespace(
+            conn=conn,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+        )
+        # dimension-backed resolves its ogc-dimensions provider via protocol lookup.
+        if provider_cfg.kind == "dimension-backed":
+            try:
+                from dynastore.models.protocols.dimensions import DimensionsProtocol  # type: ignore
+                dim_proto = get_protocol(DimensionsProtocol)
+                if dim_proto is not None:
+                    ctx.get_provider = lambda dim_id: dim_proto.get_provider(dim_id)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+        try:
+            provider = get_hierarchy_provider(provider_cfg, ctx)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+        if parent_value:
+            page = await provider.children(ctx, parent_value, limit=limit, offset=0)
+        else:
+            page = await provider.roots(ctx, limit=limit, offset=0)
+        ext = await provider.extent(ctx, parent_value)
+
+        base_url = get_url(request, remove_qp=True)
+        root_url = get_root_url(request)
+
+        title = (
+            provider_cfg.collection_title_template
+            or f"{provider_cfg.level_name or hierarchy_id} Hierarchy"
+        )
+        if parent_value:
+            title += f" (Parent: {parent_value})"
+        description = (
+            provider_cfg.collection_description_template
+            or f"Virtual collection for {provider_cfg.level_name or hierarchy_id}"
+        )
+
+        bbox = ext.spatial_bbox or [-180, -90, 180, 90]
+        temporal = [ext.temporal_interval or [None, None]]
+
+        virtual_collection = pystac.Collection(
+            id=f"{collection_id}_{hierarchy_id}",
+            description=description,
+            title=title,
+            extent=pystac.Extent(
+                spatial=pystac.SpatialExtent([bbox]),
+                temporal=pystac.TemporalExtent(temporal),
+            ),
+            license="proprietary",
+        )
+        virtual_collection.set_self_href(get_url(request))
+
+        # rel=parent
+        if parent_value:
+            parent_coll_url = (
+                f"{root_url}/stac/virtual/hierarchy/{hierarchy_id}"
+                f"/catalogs/{catalog_id}/collections/{collection_id}"
+            )
+            virtual_collection.add_link(pystac.Link(
+                rel="parent", target=parent_coll_url,
+                title=f"Parent hierarchy level ({hierarchy_id})",
+                media_type="application/json",
+            ))
+        else:
+            main_coll_url = (
+                f"{root_url}/stac/catalogs/{catalog_id}/collections/{collection_id}"
+            )
+            virtual_collection.add_link(pystac.Link(
+                rel="parent", target=main_coll_url,
+                title="Main Collection", media_type="application/json",
+            ))
+
+        # rel=child per member
+        for node in page.members:
+            child_href = f"{base_url}?parent_value={node.code}"
+            virtual_collection.add_link(pystac.Link(
+                rel="child", target=child_href,
+                title=node.label,
+                media_type="application/json",
+            ))
+
+        # rel=items
+        items_url = f"{base_url}/items"
+        if parent_value:
+            items_url += f"?parent_value={parent_value}"
+        virtual_collection.add_link(pystac.Link(
+            rel="items", target=items_url, media_type="application/geo+json",
+        ))
+
+        return JSONResponse(content=virtual_collection.to_dict())
 
     async def get_virtual_hierarchy_collection(
         self,
@@ -448,16 +652,48 @@ class StacVirtualMixin(_Host):
             stac_config = cast(
                 StacPluginConfig,
                 await config_manager.get_config(
-                    STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
-                ),
+                    STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
+                )),
             )
+
+            # Auto-register: a collection under the dimensions catalog whose
+            # `collection_id` names a hierarchical dimension provider gets a
+            # synthetic dimension-backed provider config — no stac_config needed.
+            auto_cfg_raw = self._autobuild_dimension_provider_cfg(
+                catalog_id, collection_id, hierarchy_id,
+            )
+            if auto_cfg_raw is not None:
+                return await self._render_virtual_collection_via_provider(
+                    provider_cfg_raw=auto_cfg_raw,
+                    conn=conn,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                    hierarchy_id=hierarchy_id,
+                    parent_value=parent_value,
+                    limit=limit,
+                    request=request,
+                )
 
             if not stac_config.hierarchy or not stac_config.hierarchy.enabled:
                 raise HTTPException(
                     status_code=404, detail="Hierarchy not enabled for this collection."
                 )
 
-            # Get the rule directly from dictionary (O(1) lookup)
+            # Pluggable provider path — short-circuits when configured.
+            provider_cfg_raw = (stac_config.hierarchy.providers or {}).get(hierarchy_id)
+            if provider_cfg_raw is not None:
+                return await self._render_virtual_collection_via_provider(
+                    provider_cfg_raw=provider_cfg_raw,
+                    conn=conn,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                    hierarchy_id=hierarchy_id,
+                    parent_value=parent_value,
+                    limit=limit,
+                    request=request,
+                )
+
+            # Legacy data-derived path — lookup HierarchyRule.
             matching_rule = stac_config.hierarchy.rules.get(hierarchy_id)
             if not matching_rule:
                 raise HTTPException(
@@ -604,8 +840,8 @@ class StacVirtualMixin(_Host):
             stac_config = cast(
                 StacPluginConfig,
                 await config_service.get_config(
-                    STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
-                ),
+                    STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
+                )),
             )
 
             if not stac_config.hierarchy or not stac_config.hierarchy.enabled:
@@ -613,8 +849,8 @@ class StacVirtualMixin(_Host):
                     status_code=404, detail="Hierarchy not enabled for this collection."
                 )
 
-            # Find the matching rule directly from dictionary (O(1) lookup)
-            matching_rule = stac_config.hierarchy.rules.get(hierarchy_id)
+            # Resolve rule from providers[hierarchy_id] (data-derived) OR rules[hierarchy_id]
+            matching_rule = self._resolve_hierarchy_rule(stac_config, hierarchy_id)
 
             if not matching_rule:
                 raise HTTPException(
@@ -716,8 +952,8 @@ class StacVirtualMixin(_Host):
             stac_config = cast(
                 StacPluginConfig,
                 await config_service.get_config(
-                    STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
-                ),
+                    STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
+                )),
             )
 
             if not stac_config.hierarchy or not stac_config.hierarchy.enabled:
@@ -725,8 +961,8 @@ class StacVirtualMixin(_Host):
                     status_code=404, detail="Hierarchy not enabled for this collection."
                 )
 
-            # Find the matching rule directly from dictionary (O(1) lookup)
-            matching_rule = stac_config.hierarchy.rules.get(hierarchy_id)
+            # Resolve rule from providers[hierarchy_id] (data-derived) OR rules[hierarchy_id]
+            matching_rule = self._resolve_hierarchy_rule(stac_config, hierarchy_id)
 
             if not matching_rule:
                 raise HTTPException(
