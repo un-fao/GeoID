@@ -71,7 +71,7 @@ from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.concurrency import run_in_thread
 from dynastore.modules.protocols import ModuleProtocol
 from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
-from dynastore.modules.storage.driver_config import DriverRecordsIcebergConfig
+from dynastore.modules.storage.driver_config import DriverRecordsIcebergConfig, CollectionWritePolicy
 
 logger = logging.getLogger(__name__)
 
@@ -170,13 +170,15 @@ class DriverRecordsIceberg(ModuleProtocol):
         from dynastore.tools.discovery import get_protocol
 
         configs = get_protocol(ConfigsProtocol)
+        if configs is None:
+            return DriverRecordsIcebergConfig()
         config = await configs.get_config(
             DriverRecordsIcebergConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
             db_resource=db_resource,
         )
-        if config is None:
+        if not isinstance(config, DriverRecordsIcebergConfig):
             return DriverRecordsIcebergConfig()
         return config
 
@@ -352,7 +354,7 @@ class DriverRecordsIceberg(ModuleProtocol):
             if not configs:
                 return None
             config = await configs.get_config(
-                DriverRecordsIcebergConfig._plugin_id,
+                DriverRecordsIcebergConfig,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )
@@ -460,7 +462,7 @@ class DriverRecordsIceberg(ModuleProtocol):
                 from pyiceberg.expressions import In
                 from dynastore.modules.storage.driver_config import AssetConflictPolicy
                 existing = await run_in_thread(
-                    lambda: table.scan().filter(In("_external_id", ext_ids)).to_arrow()
+                    lambda: table.scan().filter(In("_external_id", ext_ids)).to_arrow()  # type: ignore[call-arg]
                 )
                 existing_ids = set(existing.column("_external_id").to_pylist()) if existing.num_rows > 0 else set()
 
@@ -487,7 +489,7 @@ class DriverRecordsIceberg(ModuleProtocol):
             if ext_ids:
                 from pyiceberg.expressions import In
                 try:
-                    await run_in_thread(table.delete, delete_filter=In("_external_id", ext_ids))
+                    await run_in_thread(table.delete, delete_filter=In("_external_id", ext_ids))  # type: ignore[call-arg]
                 except Exception as e:
                     logger.warning(
                         "Iceberg UPDATE: delete of existing external_ids failed — "
@@ -509,23 +511,22 @@ class DriverRecordsIceberg(ModuleProtocol):
         return dicts_to_features(rows)
 
     @staticmethod
-    async def _resolve_write_policy(catalog_id: str, collection_id: str):
+    async def _resolve_write_policy(catalog_id: str, collection_id: str) -> "CollectionWritePolicy":
         """Resolve CollectionWritePolicy from the config waterfall."""
-        from dynastore.modules.storage.driver_config import (
-            CollectionWritePolicy,
-            WRITE_POLICY_PLUGIN_ID,
-        )
+        from dynastore.modules.storage.driver_config import CollectionWritePolicy
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.tools.discovery import get_protocol
 
         try:
             configs = get_protocol(ConfigsProtocol)
             if configs:
-                return await configs.get_config(
-                    WRITE_POLICY_PLUGIN_ID,
+                cfg = await configs.get_config(
+                    CollectionWritePolicy,
                     catalog_id=catalog_id,
                     collection_id=collection_id,
                 )
+                if isinstance(cfg, CollectionWritePolicy):
+                    return cfg
         except Exception:
             pass
         return CollectionWritePolicy()
@@ -625,7 +626,7 @@ class DriverRecordsIceberg(ModuleProtocol):
 
         if entity_ids:
             from pyiceberg.expressions import In
-            scan = scan.filter(In("id", entity_ids))
+            scan = scan.filter(In("id", entity_ids))  # type: ignore[call-arg]
 
         if request and request.filters:
             scan = self._apply_filters(scan, request.filters)
@@ -663,25 +664,25 @@ class DriverRecordsIceberg(ModuleProtocol):
             op = f.operator
             if op == "eq":
                 from pyiceberg.expressions import EqualTo
-                scan = scan.filter(EqualTo(f.field, f.value))
+                scan = scan.filter(EqualTo(f.field, f.value))  # type: ignore[call-arg]
             elif op == "neq":
                 from pyiceberg.expressions import NotEqualTo
-                scan = scan.filter(NotEqualTo(f.field, f.value))
+                scan = scan.filter(NotEqualTo(f.field, f.value))  # type: ignore[call-arg]
             elif op == "gt":
                 from pyiceberg.expressions import GreaterThan
-                scan = scan.filter(GreaterThan(f.field, f.value))
+                scan = scan.filter(GreaterThan(f.field, f.value))  # type: ignore[call-arg]
             elif op == "gte":
                 from pyiceberg.expressions import GreaterThanOrEqual
-                scan = scan.filter(GreaterThanOrEqual(f.field, f.value))
+                scan = scan.filter(GreaterThanOrEqual(f.field, f.value))  # type: ignore[call-arg]
             elif op == "lt":
                 from pyiceberg.expressions import LessThan
-                scan = scan.filter(LessThan(f.field, f.value))
+                scan = scan.filter(LessThan(f.field, f.value))  # type: ignore[call-arg]
             elif op == "lte":
                 from pyiceberg.expressions import LessThanOrEqual
-                scan = scan.filter(LessThanOrEqual(f.field, f.value))
+                scan = scan.filter(LessThanOrEqual(f.field, f.value))  # type: ignore[call-arg]
             elif op == "in" and isinstance(f.value, list):
                 from pyiceberg.expressions import In
-                scan = scan.filter(In(f.field, f.value))
+                scan = scan.filter(In(f.field, f.value))  # type: ignore[call-arg]
             # bbox handled at Feature level in _bbox_matches
         return scan
 
@@ -739,7 +740,7 @@ class DriverRecordsIceberg(ModuleProtocol):
         table = await run_in_thread(catalog.load_table, table_id)
 
         from pyiceberg.expressions import In
-        row_filter = In("id", entity_ids)
+        row_filter = In("id", entity_ids)  # type: ignore[call-arg]
 
         if soft:
             await run_in_thread(table.delete, delete_filter=row_filter)
