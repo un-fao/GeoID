@@ -449,6 +449,14 @@ class SidecarProtocol(ABC):
         """
         pass
 
+    def is_mandatory(self) -> bool:
+        """
+        Whether this sidecar must own a DB table and participate in writes.
+        Sidecars that are pure read-overlays (no DDL of their own) return False.
+        Default: True.
+        """
+        return True
+
     @property
     def provides_feature_id(self) -> bool:
         """

@@ -8,8 +8,9 @@ inherits from this mixin.
 
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional, Any, Dict
+from typing import List, Optional, Any, Dict, TYPE_CHECKING
 
+from geojson_pydantic import Feature
 from sqlalchemy import text
 
 from dynastore.modules.db_config.query_executor import (
@@ -30,6 +31,20 @@ from dynastore.tools.discovery import get_protocol
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.catalog.query_optimizer import QueryOptimizer
 
+if TYPE_CHECKING:
+    class _Host:
+        async def _resolve_physical_schema(
+            self, catalog_id: str, *, db_resource: Any = None
+        ) -> str: ...
+        async def _resolve_physical_table(
+            self, catalog_id: str, collection_id: str, *, db_resource: Any = None
+        ) -> Optional[str]: ...
+        def map_row_to_feature(
+            self, row: Dict[str, Any], col_config: Any
+        ) -> Dict[str, Any]: ...
+else:
+    class _Host: ...
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,7 +58,7 @@ async def _run_query(conn, stmt, params=None):
     return result
 
 
-class ItemDistributedMixin:
+class ItemDistributedMixin(_Host):
     """Distributed insert/update operations for ItemService."""
 
     async def insert_or_update_distributed(
@@ -70,9 +85,14 @@ class ItemDistributedMixin:
         )
 
         # 1. Resolve write policy from the config waterfall (same as all drivers)
-        write_policy = await get_protocol(ConfigsProtocol).get_config(
-            WRITE_POLICY_PLUGIN_ID, catalog_id, collection_id, db_resource=conn
-        )
+        configs = get_protocol(ConfigsProtocol)
+        write_policy: Optional[CollectionWritePolicy] = None
+        if configs is not None:
+            wp = await configs.get_config(
+                CollectionWritePolicy, catalog_id, collection_id, db_resource=conn
+            )
+            if isinstance(wp, CollectionWritePolicy):
+                write_policy = wp
         on_conflict = (
             write_policy.on_conflict if write_policy else WriteConflictPolicy.UPDATE
         )
@@ -209,14 +229,16 @@ class ItemDistributedMixin:
         hub_payload,
         sc_data_map,
         col_config,
-        sidecars=None,
-        processing_context=None,
-    ) -> Dict[str, Any]:
+        sidecars: Optional[List[SidecarProtocol]] = None,
+        processing_context: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Performs inserts across Hub and all sidecars."""
+        sidecars = sidecars or []
+        processing_context = processing_context or {}
         # A. Insert Hub
         logger.warning(f"DEBUG: Inserting into Hub {schema}.{hub_table}")
         hub_row = await self._insert_table_raw(conn, schema, hub_table, hub_payload)
-        hub_data = hub_row._mapping if hasattr(hub_row, "_mapping") else hub_row
+        hub_data = getattr(hub_row, "_mapping", hub_row)
         geoid = hub_data["geoid"]
 
         # B. Insert Sidecars
@@ -251,9 +273,10 @@ class ItemDistributedMixin:
             )
 
             # JSON-FG Place Statistics: insert into <hub_table>_place if configured
-            if hasattr(sidecar, "prepare_place_upsert_payload"):
+            _prep_place = getattr(sidecar, "prepare_place_upsert_payload", None)
+            if _prep_place is not None:
                 try:
-                    place_payload = sidecar.prepare_place_upsert_payload(
+                    place_payload = _prep_place(
                         processing_context.get("_raw_item", {}), processing_context
                     )
                     if place_payload:
@@ -291,17 +314,18 @@ class ItemDistributedMixin:
         hub_data,
         sc_data_map,
         col_config,
-        sidecars=None,
-        processing_context=None,
+        sidecars: Optional[List[SidecarProtocol]] = None,
+        processing_context: Optional[Dict[str, Any]] = None,
         active_rec=None,
-    ) -> Dict[str, Any]:
+    ) -> Optional[Dict[str, Any]]:
         """Performs updates across Hub and all sidecars."""
+        sidecars = sidecars or []
         # A. Update Hub
         hub_row = await self._update_table_raw(conn, schema, hub_table, geoid, hub_data)
         if not hub_row:
             return None
 
-        row_data = hub_row._mapping if hasattr(hub_row, "_mapping") else hub_row
+        row_data = getattr(hub_row, "_mapping", hub_row)
         res_geoid = row_data["geoid"]
 
         # B. Resolve Identity and Finalize Payloads for Sidecars
