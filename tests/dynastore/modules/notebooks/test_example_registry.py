@@ -29,7 +29,7 @@ def test_register_with_content():
     assert entries[0].registered_by == "test_module"
     assert entries[0].owner_type == OwnerType.MODULE
     assert entries[0].content == {"cells": [], "metadata": {"title": "Test"}}
-    assert entries[0].title == "Test"
+    assert entries[0].title.en == "Test"
 
 
 def test_register_with_path():

@@ -10,9 +10,9 @@ from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfi
 
 
 class TestDriverRecordsPostgresqlMeta:
-    def test_driver_id(self):
+    def test_driver_class_name(self):
         driver = DriverRecordsPostgresql()
-        assert driver.driver_id == "postgresql"
+        assert type(driver).__name__ == "DriverRecordsPostgresql"
 
     def test_priority(self):
         driver = DriverRecordsPostgresql()
@@ -193,12 +193,10 @@ class TestLifecycleMethods:
             mock_resolve.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_ensure_storage_raises_without_protocol(self):
+    async def test_ensure_storage_requires_db_resource(self):
         driver = DriverRecordsPostgresql()
-        with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
-            mock_gp.return_value = None
-            with pytest.raises(RuntimeError, match="CatalogsProtocol not available"):
-                await driver.ensure_storage("cat1", "col1")
+        with pytest.raises(ValueError, match="db_resource"):
+            await driver.ensure_storage("cat1", "col1")
 
     @pytest.mark.asyncio
     async def test_drop_storage_collection(self):

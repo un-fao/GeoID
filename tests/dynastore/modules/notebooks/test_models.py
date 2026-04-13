@@ -17,7 +17,7 @@ def test_owner_type_enum():
 def test_platform_notebook_create():
     nb = PlatformNotebookCreate(
         notebook_id="test-nb",
-        title="Test",
+        title={"en": "Test"},
         registered_by="test_module",
         owner_type=OwnerType.MODULE,
         content={"cells": [], "metadata": {}},
@@ -31,7 +31,7 @@ def test_platform_notebook_includes_timestamps():
     now = datetime.now()
     nb = PlatformNotebook(
         notebook_id="test-nb",
-        title="Test",
+        title={"en": "Test"},
         registered_by="test_module",
         owner_type=OwnerType.MODULE,
         content={"cells": []},
@@ -46,7 +46,7 @@ def test_tenant_notebook_has_new_fields():
     now = datetime.now()
     nb = Notebook(
         notebook_id="test-nb",
-        title="Test",
+        title={"en": "Test"},
         content={"cells": []},
         catalog_id="cat-1",
         created_at=now,
@@ -63,7 +63,7 @@ def test_tenant_notebook_defaults():
     now = datetime.now()
     nb = Notebook(
         notebook_id="test-nb",
-        title="Test",
+        title={"en": "Test"},
         content={"cells": []},
         catalog_id="cat-1",
         created_at=now,

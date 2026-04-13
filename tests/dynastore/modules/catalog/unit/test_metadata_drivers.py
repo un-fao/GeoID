@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from dynastore.modules.catalog.pg_metadata_driver import DriverMetadataPostgresql
+from dynastore.modules.storage.drivers.metadata_postgresql import DriverMetadataPostgresql
 from dynastore.modules.elasticsearch.es_metadata_driver import DriverMetadataElasticsearch
 from dynastore.models.protocols.metadata_driver import (
     CollectionMetadataDriverProtocol,
@@ -14,13 +14,9 @@ class TestDriverMetadataPostgresqlProtocol:
         driver = DriverMetadataPostgresql()
         assert isinstance(driver, CollectionMetadataDriverProtocol)
 
-    def test_driver_id(self):
+    def test_driver_class_name(self):
         driver = DriverMetadataPostgresql()
-        assert driver.driver_id == "postgresql_metadata"
-
-    def test_driver_type(self):
-        driver = DriverMetadataPostgresql()
-        assert driver.driver_type == "postgresql"
+        assert type(driver).__name__ == "DriverMetadataPostgresql"
 
     def test_capabilities(self):
         driver = DriverMetadataPostgresql()
@@ -50,13 +46,9 @@ class TestDriverMetadataElasticsearchProtocol:
         driver = DriverMetadataElasticsearch()
         assert isinstance(driver, CollectionMetadataDriverProtocol)
 
-    def test_driver_id(self):
+    def test_driver_class_name(self):
         driver = DriverMetadataElasticsearch()
-        assert driver.driver_id == "elasticsearch_metadata"
-
-    def test_driver_type(self):
-        driver = DriverMetadataElasticsearch()
-        assert driver.driver_type == "elasticsearch"
+        assert type(driver).__name__ == "DriverMetadataElasticsearch"
 
     def test_capabilities(self):
         driver = DriverMetadataElasticsearch()
@@ -105,9 +97,9 @@ class TestDriverMetadataPostgresqlGetMetadata:
         }
 
         with patch.object(driver, "_get_engine", return_value=mock_engine), \
-             patch("dynastore.modules.catalog.pg_metadata_driver.managed_transaction") as mock_tx, \
+             patch("dynastore.modules.storage.drivers.metadata_postgresql.managed_transaction") as mock_tx, \
              patch.object(driver, "_resolve_physical_schema", return_value="schema1"), \
-             patch("dynastore.modules.catalog.pg_metadata_driver.DQLQuery") as mock_dql:
+             patch("dynastore.modules.storage.drivers.metadata_postgresql.DQLQuery") as mock_dql:
 
             mock_conn = AsyncMock()
             mock_tx.return_value.__aenter__ = AsyncMock(return_value=mock_conn)

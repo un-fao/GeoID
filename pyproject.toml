@@ -319,7 +319,7 @@ storage_elasticsearch_obfuscated = "dynastore.modules.storage.drivers.elasticsea
 storage_elasticsearch_assets = "dynastore.modules.storage.drivers.elasticsearch:DriverAssetElasticsearch"
 storage_duckdb = "dynastore.modules.storage.drivers.duckdb:DriverRecordsDuckdb"
 storage_iceberg = "dynastore.modules.storage.drivers.iceberg:DriverRecordsIceberg"
-metadata_postgresql = "dynastore.modules.catalog.pg_metadata_driver:DriverMetadataPostgresql"
+metadata_postgresql = "dynastore.modules.storage.drivers.metadata_postgresql:DriverMetadataPostgresql"
 metadata_elasticsearch = "dynastore.modules.elasticsearch.es_metadata_driver:DriverMetadataElasticsearch"
 
 [project.entry-points."dynastore.extensions"]

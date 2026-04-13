@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from dynastore.models.protocols.storage_driver import Capability
 from dynastore.modules.storage.driver_config import DriverRecordsIcebergConfig
 from dynastore.modules.storage.drivers.iceberg import (
-    IcebergStorageDriver,
+    DriverRecordsIceberg,
     _resolve_iceberg_type,
 )
 
@@ -128,8 +128,8 @@ def test_loc(iceberg_table, ns_name):
 
 @pytest.fixture
 def driver_with_catalog(iceberg_catalog, iceberg_table):
-    """IcebergStorageDriver wired to the real test catalog."""
-    driver = IcebergStorageDriver()
+    """DriverRecordsIceberg wired to the real test catalog."""
+    driver = DriverRecordsIceberg()
     driver._catalog = iceberg_catalog
     driver._catalog_loc_key = "test_iceberg:None:None"
     return driver
@@ -162,14 +162,14 @@ def _write_rows(table, rows):
 
 
 class TestIcebergDriverMeta:
-    def test_driver_id(self):
-        assert IcebergStorageDriver().driver_id == "iceberg"
+    def test_driver_class_name(self):
+        assert type(DriverRecordsIceberg()).__name__ == "DriverRecordsIceberg"
 
     def test_priority(self):
-        assert IcebergStorageDriver().priority == 20
+        assert DriverRecordsIceberg().priority == 20
 
     def test_capabilities(self):
-        caps = IcebergStorageDriver().capabilities
+        caps = DriverRecordsIceberg().capabilities
         assert Capability.STREAMING in caps
         assert Capability.SPATIAL_FILTER in caps
         assert Capability.EXPORT in caps
@@ -181,14 +181,14 @@ class TestIcebergDriverMeta:
         assert Capability.READ_ONLY not in caps
 
     def test_is_available_true(self):
-        assert IcebergStorageDriver().is_available() is True
+        assert DriverRecordsIceberg().is_available() is True
 
     def test_is_available_without_pyiceberg(self):
         with patch(
             "dynastore.modules.storage.drivers.iceberg._pyiceberg_available",
             return_value=False,
         ):
-            assert IcebergStorageDriver().is_available() is False
+            assert DriverRecordsIceberg().is_available() is False
 
 
 # ---------------------------------------------------------------------------
@@ -198,12 +198,12 @@ class TestIcebergDriverMeta:
 
 class TestIcebergTableIdentifier:
     def test_default_mapping(self):
-        driver = IcebergStorageDriver()
+        driver = DriverRecordsIceberg()
         loc = DriverRecordsIcebergConfig()
         assert driver._table_identifier(loc, "cat", "col") == ("cat", "col")
 
     def test_explicit_namespace_and_table(self):
-        driver = IcebergStorageDriver()
+        driver = DriverRecordsIceberg()
         loc = _make_loc(namespace="ns", table_name="tbl")
         assert driver._table_identifier(loc, "cat", "col") == ("ns", "tbl")
 
@@ -241,7 +241,7 @@ class TestIcebergCatalogConfig:
 class TestIcebergWriteEntities:
     @pytest.mark.asyncio
     async def test_write_raises_without_location(self):
-        driver = IcebergStorageDriver()
+        driver = DriverRecordsIceberg()
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=None):
             with pytest.raises(RuntimeError, match="no OTF location config"):
                 await driver.write_entities("cat1", "col1", {"id": "1"})
@@ -429,7 +429,7 @@ class TestIcebergDropStorage:
         )
         iceberg_catalog.create_table((ns_name, tbl_name), schema=schema)
 
-        driver = IcebergStorageDriver()
+        driver = DriverRecordsIceberg()
         driver._catalog = iceberg_catalog
         driver._catalog_loc_key = "test_iceberg:None:None"
 
@@ -459,7 +459,7 @@ class TestIcebergEnsureStorage:
         except Exception:
             pass
 
-        driver = IcebergStorageDriver()
+        driver = DriverRecordsIceberg()
         driver._catalog = iceberg_catalog
         driver._catalog_loc_key = "test_iceberg:None:None"
 
@@ -524,7 +524,7 @@ class TestIcebergExportEntities:
 class TestIcebergResolveLocation:
     @pytest.mark.asyncio
     async def test_returns_default_when_no_config(self):
-        driver = IcebergStorageDriver()
+        driver = DriverRecordsIceberg()
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=None):
             loc = await driver.resolve_storage_location("cat1")
             assert isinstance(loc, DriverRecordsIcebergConfig)
@@ -676,38 +676,38 @@ class TestIcebergSchemaEvolution:
 class TestIcebergBboxFilter:
     def test_point_inside_bbox(self):
         geom = {"type": "Point", "coordinates": [10, 20]}
-        assert IcebergStorageDriver._bbox_matches(geom, [0, 0, 50, 50]) is True
+        assert DriverRecordsIceberg._bbox_matches(geom, [0, 0, 50, 50]) is True
 
     def test_point_outside_bbox(self):
         geom = {"type": "Point", "coordinates": [100, 100]}
-        assert IcebergStorageDriver._bbox_matches(geom, [0, 0, 50, 50]) is False
+        assert DriverRecordsIceberg._bbox_matches(geom, [0, 0, 50, 50]) is False
 
     def test_polygon_partially_inside(self):
         geom = {"type": "Polygon", "coordinates": [[[10, 10], [60, 10], [60, 60], [10, 60], [10, 10]]]}
-        assert IcebergStorageDriver._bbox_matches(geom, [0, 0, 50, 50]) is True
+        assert DriverRecordsIceberg._bbox_matches(geom, [0, 0, 50, 50]) is True
 
     def test_none_geometry(self):
-        assert IcebergStorageDriver._bbox_matches(None, [0, 0, 50, 50]) is False
+        assert DriverRecordsIceberg._bbox_matches(None, [0, 0, 50, 50]) is False
 
     def test_empty_bbox(self):
         geom = {"type": "Point", "coordinates": [10, 20]}
-        assert IcebergStorageDriver._bbox_matches(geom, []) is False
+        assert DriverRecordsIceberg._bbox_matches(geom, []) is False
 
     def test_json_string_geometry(self):
         geom = json.dumps({"type": "Point", "coordinates": [10, 20]})
-        assert IcebergStorageDriver._bbox_matches(geom, [0, 0, 50, 50]) is True
+        assert DriverRecordsIceberg._bbox_matches(geom, [0, 0, 50, 50]) is True
 
     def test_linestring(self):
         geom = {"type": "LineString", "coordinates": [[5, 5], [15, 15]]}
-        assert IcebergStorageDriver._bbox_matches(geom, [0, 0, 10, 10]) is True
+        assert DriverRecordsIceberg._bbox_matches(geom, [0, 0, 10, 10]) is True
 
     def test_multipoint_none_inside(self):
         geom = {"type": "MultiPoint", "coordinates": [[100, 100], [200, 200]]}
-        assert IcebergStorageDriver._bbox_matches(geom, [0, 0, 50, 50]) is False
+        assert DriverRecordsIceberg._bbox_matches(geom, [0, 0, 50, 50]) is False
 
     def test_point_on_bbox_edge(self):
         geom = {"type": "Point", "coordinates": [50, 50]}
-        assert IcebergStorageDriver._bbox_matches(geom, [0, 0, 50, 50]) is True
+        assert DriverRecordsIceberg._bbox_matches(geom, [0, 0, 50, 50]) is True
 
 
 # ---------------------------------------------------------------------------
@@ -749,7 +749,7 @@ class TestIcebergTypeResolution:
 class TestIcebergLifespan:
     @pytest.mark.asyncio
     async def test_lifespan_clears_catalog(self):
-        driver = IcebergStorageDriver()
+        driver = DriverRecordsIceberg()
         driver._catalog_cache["test_key"] = "something"
         async with driver.lifespan(object()):
             pass

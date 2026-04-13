@@ -43,10 +43,14 @@ def _mock_configs_protocol(routing_config):
 
 
 def _mock_driver(driver_id: str):
-    """Create a mock driver with a driver_id attribute."""
-    d = MagicMock()
-    d.driver_id = driver_id
-    return d
+    """Create a mock driver whose class name equals ``driver_id``.
+
+    The router builds the driver index via ``type(driver).__name__`` after the
+    ``driver_id`` field was removed in favour of class-name routing keys, so
+    mocks must carry that name in their type.
+    """
+    cls = type(driver_id, (MagicMock,), {})
+    return cls()
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +287,6 @@ class TestResolvedDriver:
         rd = ResolvedDriver(driver=_mock_driver("es"), on_failure=FailurePolicy.WARN)
         assert rd.on_failure == FailurePolicy.WARN
 
-    def test_unknown_driver_id(self):
+    def test_driver_id_falls_back_to_class_name(self):
         rd = ResolvedDriver(driver=object())
-        assert rd.driver_id == "unknown"
+        assert rd.driver_id == "object"

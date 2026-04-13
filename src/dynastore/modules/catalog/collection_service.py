@@ -529,7 +529,7 @@ class CollectionService:
             metadata_payload = collection_model.model_dump(
                 by_alias=True, exclude_none=True
             )
-            from dynastore.modules.catalog.pg_metadata_driver import DriverMetadataPostgresql
+            from dynastore.modules.storage.drivers.metadata_postgresql import DriverMetadataPostgresql
             from dynastore.modules.catalog.metadata_router import get_metadata_driver
 
             pg_meta = DriverMetadataPostgresql()
@@ -789,7 +789,7 @@ class CollectionService:
                 return None
 
             # Upsert metadata via PG metadata driver (authoritative)
-            from dynastore.modules.catalog.pg_metadata_driver import DriverMetadataPostgresql
+            from dynastore.modules.storage.drivers.metadata_postgresql import DriverMetadataPostgresql
             from dynastore.modules.catalog.metadata_router import get_metadata_driver
 
             metadata_payload = merged_model.model_dump(
@@ -893,7 +893,7 @@ class CollectionService:
                 )
                 await DDLQuery(hard_delete_sql).execute(conn, id=collection_id)
                 # Clean up metadata via PG metadata driver + driver config
-                from dynastore.modules.catalog.pg_metadata_driver import DriverMetadataPostgresql
+                from dynastore.modules.storage.drivers.metadata_postgresql import DriverMetadataPostgresql
                 from dynastore.modules.catalog.metadata_router import get_metadata_driver
 
                 pg_meta = DriverMetadataPostgresql()

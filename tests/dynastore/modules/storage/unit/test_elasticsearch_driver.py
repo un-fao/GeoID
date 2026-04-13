@@ -2,8 +2,8 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from dynastore.modules.storage.drivers.elasticsearch import (
-    ElasticsearchStorageDriver,
-    ElasticsearchObfuscatedDriver,
+    DriverRecordsElasticsearch,
+    DriverRecordsElasticsearchObfuscated,
     _ElasticsearchBase,
 )
 from dynastore.models.ogc import Feature, FeatureCollection
@@ -85,7 +85,7 @@ class TestIsSecondaryFor:
 
         with patch("dynastore.tools.discovery.get_protocol", return_value=mock_configs):
             result = await _ElasticsearchBase._is_secondary_for(
-                "elasticsearch", "cat1", "col1"
+                "DriverRecordsElasticsearch", "cat1", "col1"
             )
             assert result is True
 
@@ -128,17 +128,17 @@ class TestIsSecondaryFor:
             assert result is False
 
 
-class TestElasticsearchStorageDriverMeta:
-    def test_driver_id(self):
-        driver = ElasticsearchStorageDriver()
-        assert driver.driver_id == "elasticsearch"
+class TestDriverRecordsElasticsearchMeta:
+    def test_driver_class_name(self):
+        driver = DriverRecordsElasticsearch()
+        assert type(driver).__name__ == "DriverRecordsElasticsearch"
 
     def test_priority(self):
-        driver = ElasticsearchStorageDriver()
+        driver = DriverRecordsElasticsearch()
         assert driver.priority == 50
 
     def test_capabilities(self):
-        driver = ElasticsearchStorageDriver()
+        driver = DriverRecordsElasticsearch()
         assert Capability.STREAMING in driver.capabilities
         assert Capability.SPATIAL_FILTER in driver.capabilities
         assert Capability.FULLTEXT in driver.capabilities
@@ -146,41 +146,41 @@ class TestElasticsearchStorageDriverMeta:
 
     @pytest.mark.asyncio
     async def test_export_entities_not_implemented(self):
-        driver = ElasticsearchStorageDriver()
+        driver = DriverRecordsElasticsearch()
         with pytest.raises(NotImplementedError):
             await driver.export_entities("cat1", "col1")
 
 
-class TestElasticsearchObfuscatedDriverMeta:
-    def test_driver_id(self):
-        driver = ElasticsearchObfuscatedDriver()
-        assert driver.driver_id == "elasticsearch_obfuscated"
+class TestDriverRecordsElasticsearchObfuscatedMeta:
+    def test_driver_class_name(self):
+        driver = DriverRecordsElasticsearchObfuscated()
+        assert type(driver).__name__ == "DriverRecordsElasticsearchObfuscated"
 
     def test_priority(self):
-        driver = ElasticsearchObfuscatedDriver()
+        driver = DriverRecordsElasticsearchObfuscated()
         assert driver.priority == 51
 
     def test_capabilities(self):
-        driver = ElasticsearchObfuscatedDriver()
+        driver = DriverRecordsElasticsearchObfuscated()
         assert Capability.STREAMING in driver.capabilities
         assert Capability.FULLTEXT not in driver.capabilities
         assert Capability.SOFT_DELETE not in driver.capabilities
 
     @pytest.mark.asyncio
     async def test_export_entities_not_implemented(self):
-        driver = ElasticsearchObfuscatedDriver()
+        driver = DriverRecordsElasticsearchObfuscated()
         with pytest.raises(NotImplementedError):
             await driver.export_entities("cat1", "col1")
 
     @pytest.mark.asyncio
     async def test_soft_delete_raises(self):
-        driver = ElasticsearchObfuscatedDriver()
+        driver = DriverRecordsElasticsearchObfuscated()
         with pytest.raises(SoftDeleteNotSupportedError):
             await driver.delete_entities("cat1", "col1", ["id1"], soft=True)
 
     @pytest.mark.asyncio
     async def test_soft_drop_raises(self):
-        driver = ElasticsearchObfuscatedDriver()
+        driver = DriverRecordsElasticsearchObfuscated()
         with pytest.raises(SoftDeleteNotSupportedError):
             await driver.drop_storage("cat1", "col1", soft=True)
 
@@ -189,7 +189,7 @@ class TestQueryRequestToEs:
     def test_empty_request(self):
         from dynastore.models.query_builder import QueryRequest
         request = QueryRequest()
-        result = ElasticsearchStorageDriver._query_request_to_es(request)
+        result = DriverRecordsElasticsearch._query_request_to_es(request)
         assert result == {"query": {"match_all": {}}}
 
     def test_eq_filter(self):
@@ -197,7 +197,7 @@ class TestQueryRequestToEs:
         request = QueryRequest(
             filters=[FilterCondition(field="status", operator="eq", value="active")]
         )
-        result = ElasticsearchStorageDriver._query_request_to_es(request)
+        result = DriverRecordsElasticsearch._query_request_to_es(request)
         assert result["query"]["bool"]["must"][0] == {"term": {"status": "active"}}
 
     def test_bbox_filter(self):
@@ -211,7 +211,7 @@ class TestQueryRequestToEs:
                 )
             ]
         )
-        result = ElasticsearchStorageDriver._query_request_to_es(request)
+        result = DriverRecordsElasticsearch._query_request_to_es(request)
         geo_filter = result["query"]["bool"]["must"][0]
         assert "geo_bounding_box" in geo_filter
 
@@ -220,7 +220,7 @@ class TestQueryRequestToEs:
         request = QueryRequest(
             filters=[FilterCondition(field="name", operator="like", value="test*")]
         )
-        result = ElasticsearchStorageDriver._query_request_to_es(request)
+        result = DriverRecordsElasticsearch._query_request_to_es(request)
         assert result["query"]["bool"]["must"][0] == {"wildcard": {"name": "test*"}}
 
     def test_multiple_filters(self):
@@ -231,6 +231,6 @@ class TestQueryRequestToEs:
                 FilterCondition(field="name", operator="like", value="test*"),
             ]
         )
-        result = ElasticsearchStorageDriver._query_request_to_es(request)
+        result = DriverRecordsElasticsearch._query_request_to_es(request)
         must = result["query"]["bool"]["must"]
         assert len(must) == 2

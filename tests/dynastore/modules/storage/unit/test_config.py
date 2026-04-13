@@ -43,9 +43,7 @@ class TestCollectionPluginConfigDefaults:
 
 class TestDriverRecordsPostgresqlConfigDefaults:
     def test_plugin_id(self):
-        from dynastore.modules.storage.drivers.postgresql import PostgresStorageDriver
-        expected = f"driver:{PostgresStorageDriver.driver_id}"
-        assert DriverRecordsPostgresqlConfig._plugin_id == expected
+        assert DriverRecordsPostgresqlConfig._plugin_id == "driver:records:postgresql"
 
     def test_default_sidecars(self):
         cfg = DriverRecordsPostgresqlConfig()
@@ -89,13 +87,13 @@ class TestCompositePartitionConfig:
 class TestRoutingPluginConfig:
     def test_plugin_id(self):
         assert RoutingPluginConfig._plugin_id == ROUTING_PLUGIN_CONFIG_ID
-        assert ROUTING_PLUGIN_CONFIG_ID == "storage:collections"
+        assert ROUTING_PLUGIN_CONFIG_ID == "collection:drivers"
 
     def test_defaults(self):
         cfg = RoutingPluginConfig()
         assert Operation.WRITE in cfg.operations
         assert Operation.READ in cfg.operations
-        assert cfg.operations[Operation.WRITE][0].driver_id == "postgresql"
+        assert cfg.operations[Operation.WRITE][0].driver_id == "DriverRecordsPostgresql"
 
     def test_custom_operations(self):
         cfg = RoutingPluginConfig(operations={
@@ -104,7 +102,7 @@ class TestRoutingPluginConfig:
             Operation.SEARCH: [OperationDriverEntry(driver_id="DriverRecordsElasticsearch", hints={"search"})],
         })
         assert len(cfg.operations) == 3
-        assert cfg.operations[Operation.SEARCH][0].driver_id == "elasticsearch"
+        assert cfg.operations[Operation.SEARCH][0].driver_id == "DriverRecordsElasticsearch"
 
     def test_failure_policy(self):
         entry = OperationDriverEntry(driver_id="es", on_failure=FailurePolicy.WARN)
@@ -118,9 +116,9 @@ class TestRoutingPluginConfig:
 class TestAssetRoutingPluginConfig:
     def test_plugin_id(self):
         assert AssetRoutingPluginConfig._plugin_id == ROUTING_ASSETS_PLUGIN_CONFIG_ID
-        assert ROUTING_ASSETS_PLUGIN_CONFIG_ID == "storage:assets"
+        assert ROUTING_ASSETS_PLUGIN_CONFIG_ID == "assets:drivers"
 
     def test_defaults(self):
         cfg = AssetRoutingPluginConfig()
         assert Operation.WRITE in cfg.operations
-        assert cfg.operations[Operation.WRITE][0].driver_id == "postgresql"
+        assert cfg.operations[Operation.WRITE][0].driver_id == "DriverAssetPostgresql"
