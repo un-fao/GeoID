@@ -12,6 +12,7 @@ from typing import List, Optional, Any, Dict, TYPE_CHECKING
 
 from geojson_pydantic import Feature
 
+from dynastore.models.driver_context import DriverContext
 from dynastore.modules.db_config.query_executor import (
     DDLQuery,
     DQLQuery,
@@ -78,8 +79,8 @@ class ItemDistributedMixin(_Host):
         write_policy: Optional[CollectionWritePolicy] = None
         if configs is not None:
             wp = await configs.get_config(
-                CollectionWritePolicy, catalog_id, collection_id, db_resource=conn
-            )
+                CollectionWritePolicy, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
+            ))
             if isinstance(wp, CollectionWritePolicy):
                 write_policy = wp
         on_conflict = (

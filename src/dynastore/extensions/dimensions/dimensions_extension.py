@@ -44,6 +44,7 @@ from fastapi import APIRouter, FastAPI
 
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.tools.conformance import register_conformance_uris
+from dynastore.models.driver_context import DriverContext
 
 logger = logging.getLogger(__name__)
 
@@ -286,7 +287,7 @@ async def _materialize_dimension(
         await catalogs.create_collection(
             DIMENSIONS_CATALOG_ID,
             collection_def,
-            db_resource=db_resource,
+            ctx=DriverContext(db_resource=db_resource),
         )
         logger.info("Created RECORDS collection: %s/%s", DIMENSIONS_CATALOG_ID, dim_name)
 
@@ -303,7 +304,7 @@ async def _materialize_dimension(
     for i in range(0, len(features), UPSERT_BATCH_SIZE):
         batch = features[i : i + UPSERT_BATCH_SIZE]
         await catalogs.upsert(
-            DIMENSIONS_CATALOG_ID, dim_name, batch, db_resource=db_resource,
+            DIMENSIONS_CATALOG_ID, dim_name, batch, ctx=DriverContext(db_resource=db_resource),
         )
         total += len(batch)
         logger.debug(
@@ -339,7 +340,7 @@ async def _materialize_all_dimensions(dimensions: Dict[str, Any]) -> None:
         async with managed_transaction(engine) as conn:
             # Ensure dimensions catalog exists
             await catalogs.ensure_catalog_exists(
-                DIMENSIONS_CATALOG_ID, db_resource=conn,
+                DIMENSIONS_CATALOG_ID, ctx=DriverContext(db_resource=conn),
             )
     except Exception as exc:
         logger.error("Failed to ensure dimensions catalog: %s", exc)

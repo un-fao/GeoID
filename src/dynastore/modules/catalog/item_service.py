@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 from sqlalchemy import text
 
 import inspect as _inspect
+from dynastore.models.driver_context import DriverContext
 from dynastore.modules.db_config.query_executor import (
     DDLQuery,
     DQLQuery,
@@ -101,7 +102,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         if catalogs is None:
             return None
         return await catalogs.resolve_physical_schema(
-            catalog_id, db_resource=db_resource
+            catalog_id, ctx=DriverContext(db_resource=db_resource)
         )
 
     async def _resolve_physical_table(
@@ -269,7 +270,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         catalog_id: str,
         collection_id: str,
         items: Union[Dict[str, Any], List[Dict[str, Any]], Any],
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
         processing_context: Optional[Dict[str, Any]] = None,
     ) -> Union[Dict[str, Any], List[Dict[str, Any]], Any]:
         """
@@ -279,11 +280,12 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             catalog_id: Catalog identifier
             collection_id: Collection identifier
             items: Feature, FeatureCollection, STACItem, or raw dict/list
-            db_resource: Optional database resource
+            ctx: Optional driver context carrying db_resource and processing hints
 
         Returns:
             Created/Updated item(s) (single or list)
         """
+        db_resource = ctx.db_resource if ctx else None
         validate_sql_identifier(catalog_id)
         validate_sql_identifier(collection_id)
 
@@ -375,8 +377,8 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             _configs = get_protocol(ConfigsProtocol)
             assert _configs is not None, "ConfigsProtocol not registered"
             collection_config = await _configs.get_config(
-                COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
-            )
+                COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
+            ))
             max_bulk = getattr(collection_config, "max_bulk_features", 10000)
             if len(items_list) > max_bulk:
                 raise ValueError(
@@ -708,12 +710,13 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         collection_id: str,
         item_id: str,
         lang: str,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
     ) -> int:
         """
         Deletes a specific language variant from an item's attributes.
         Actually, it looks for localized fields in 'attributes' and removes the key.
         """
+        db_resource = ctx.db_resource if ctx else None
         validate_sql_identifier(catalog_id)
         validate_sql_identifier(collection_id)
         async with managed_transaction(db_resource or self.engine) as conn:

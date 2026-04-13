@@ -25,6 +25,7 @@ from dynastore.modules.db_config.query_executor import (
 )
 from dynastore.models.protocols.catalogs import CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
+from dynastore.models.driver_context import DriverContext
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,7 @@ async def recalculate_and_update_extents(
         new_temporal_extent = TemporalExtent(interval=interval)
 
         collection = await catalogs.get_collection(
-            catalog_id, collection_id, db_resource=conn
+            catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
         )
         if collection:
             if not collection.extent:
@@ -94,7 +95,7 @@ async def recalculate_and_update_extents(
                 collection_id,
                 collection.model_dump(),
                 lang="*",
-                db_resource=conn,
+                ctx=DriverContext(db_resource=conn),
             )
             logger.info(
                 f"Successfully updated extents for collection '{catalog_id}:{collection_id}'."

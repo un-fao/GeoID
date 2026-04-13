@@ -42,6 +42,7 @@ from dynastore.models.protocols.configs import ConfigsProtocol
 
 if TYPE_CHECKING:
     from dynastore.modules.catalog.sidecars.base import ConsumerType
+    from dynastore.models.driver_context import DriverContext  # noqa: F401
 
 
 @runtime_checkable
@@ -60,7 +61,7 @@ class ItemQueryProtocol(Protocol):
         collection_id: str,
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> List[Feature]:
         """
         Search and return a list of features matching the request.
@@ -76,7 +77,7 @@ class ItemQueryProtocol(Protocol):
         collection_id: str,
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
         consumer: "Optional[ConsumerType]" = None,
     ) -> QueryResponse:
         """

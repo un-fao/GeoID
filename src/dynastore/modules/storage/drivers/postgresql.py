@@ -30,6 +30,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, FrozenSet, List, Optional, Union
 
 from dynastore.models.ogc import Feature, FeatureCollection
+from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols.storage_driver import Capability
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.protocols import ModuleProtocol
@@ -93,7 +94,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
             DriverRecordsPostgresqlConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
-            db_resource=db_resource,
+            ctx=DriverContext(db_resource=db_resource),
         )
         if not isinstance(config, DriverRecordsPostgresqlConfig):
             return DriverRecordsPostgresqlConfig()
@@ -218,7 +219,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
         catalogs = get_protocol(CatalogsProtocol)
         if not catalogs:
             raise RuntimeError("CatalogsProtocol not available")
-        schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=db_resource)
+        schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=db_resource))
         if not schema:
             raise ValueError(f"No physical schema found for catalog '{catalog_id}'")
         return schema
@@ -265,7 +266,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
             catalog_id=catalog_id,
             collection_id=collection_id,
             check_immutability=False,
-            db_resource=db_resource,
+            ctx=DriverContext(db_resource=db_resource),
         )
 
     async def ensure_storage(
@@ -431,7 +432,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
                 catalog_id=catalog_id,
                 collection_id=collection_id,
                 check_immutability=False,
-                db_resource=db_resource,
+                ctx=DriverContext(db_resource=db_resource),
             )
 
         # --- Store schema hash ---
@@ -461,7 +462,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
         # --- Ensure asset cleanup trigger ---
         am = get_protocol(AssetsProtocol)
         if am:
-            await am.ensure_asset_cleanup_trigger(schema, physical_table, db_resource=db_resource)
+            await am.ensure_asset_cleanup_trigger(schema, physical_table, ctx=DriverContext(db_resource=db_resource) if db_resource is not None else None)
 
         logger.info(
             "DriverRecordsPostgresql.ensure_storage: created hub '%s' + sidecars for %s/%s",

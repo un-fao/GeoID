@@ -11,6 +11,7 @@ from dynastore.modules.db_config import maintenance_tools
 from dynastore.modules.db_config.locking_tools import check_table_exists
 from dynastore.modules.db_config.query_executor import managed_transaction, DDLQuery
 from dynastore.modules.db_config.shared_queries import DbResource
+from dynastore.models.driver_context import DriverContext
 from .models import NotebookCreate, Notebook, PlatformNotebookCreate, PlatformNotebook
 from .platform_db import PLATFORM_NOTEBOOKS_DDL, seed_platform_notebooks
 
@@ -64,7 +65,7 @@ class NotebooksModule(ModuleProtocol):
         catalogs = get_protocol(CatalogsProtocol)
         db = get_protocol(DatabaseProtocol)
         engine = db.engine if db else None
-        schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=db_resource) if catalogs else None
+        schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=db_resource) if db_resource else None) if catalogs else None
         async with managed_transaction(db_resource or engine) as conn:
             from .notebooks_db import get_notebook as db_get_notebook
             data = await db_get_notebook(conn, schema, notebook_id)

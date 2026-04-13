@@ -21,6 +21,7 @@ import logging
 from typing import Optional, Tuple, Any
 
 from dynastore.tools.discovery import get_protocol
+from dynastore.models.driver_context import DriverContext
 from dynastore.modules.db_config.query_executor import (
     DbResource,
     managed_transaction,
@@ -101,7 +102,7 @@ class GcpCatalogOpsMixin:
             config_mgr = get_protocol(ConfigsProtocol)
             if config_mgr:
                 # get_config follows the waterfall: Collection -> Catalog -> Platform -> Defaults
-                bucket_config = await config_mgr.get_config(GCP_CATALOG_BUCKET_CONFIG_ID, catalog_id=catalog_id, db_resource=conn)
+                bucket_config = await config_mgr.get_config(GCP_CATALOG_BUCKET_CONFIG_ID, catalog_id=catalog_id, ctx=DriverContext(db_resource=conn))
 
             # 2. Check if provisioning is enabled for this catalog
             if not bucket_config.enabled:
@@ -113,7 +114,7 @@ class GcpCatalogOpsMixin:
                 from dynastore.models.protocols import CatalogsProtocol
                 catalogs_svc = get_protocol(CatalogsProtocol)
                 if catalogs_svc:
-                    await catalogs_svc.update_provisioning_status(catalog_id, "ready", db_resource=conn)
+                    await catalogs_svc.update_provisioning_status(catalog_id, "ready", ctx=DriverContext(db_resource=conn))
 
                 # Link the deterministic bucket name in the DB to allow uploads
                 from dynastore.modules.gcp import gcp_db

@@ -20,6 +20,7 @@ import logging
 import json
 from typing import List, Optional, Any, Dict, Union, Tuple, Set, Callable
 from dynastore.tools.cache import cached
+from dynastore.models.driver_context import DriverContext
 
 from dynastore.modules.db_config.query_executor import (
     DDLQuery,
@@ -68,7 +69,7 @@ class CollectionService:
         if catalogs is None:
             return None
         return await catalogs.resolve_physical_schema(
-            catalog_id, db_resource=db_resource
+            catalog_id, ctx=DriverContext(db_resource=db_resource) if db_resource else None
         )
 
     async def _get_pg_driver(self):
@@ -213,9 +214,10 @@ class CollectionService:
         catalog_id: str,
         collection_id: str,
         lang: str = "en",
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> Optional[Collection]:
         """Retrieves a collection by ID, localized."""
+        db_resource = ctx.db_resource if ctx else None
         collection_model = await self.get_collection_model(
             catalog_id, collection_id, db_resource=db_resource
         )
@@ -231,9 +233,10 @@ class CollectionService:
         return collection_model
 
     async def get_collection_config(
-        self, catalog_id: str, collection_id: str, db_resource: Optional[Any] = None
+        self, catalog_id: str, collection_id: str, ctx: Optional["DriverContext"] = None
     ) -> CollectionPluginConfig:
         """Retrieves the active driver config for a collection (via routing)."""
+        db_resource = ctx.db_resource if ctx else None
         from dynastore.modules.storage.router import get_driver
         from dynastore.modules.storage.routing_config import Operation
 
@@ -259,9 +262,10 @@ class CollectionService:
         self,
         catalog_id: str,
         collection_id: str,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> Set[str]:
         """Retrieves the physical column names for a collection."""
+        db_resource = ctx.db_resource if ctx else None
         phys_schema = await self._resolve_physical_schema(
             catalog_id, db_resource=db_resource
         )
@@ -309,9 +313,10 @@ class CollectionService:
         catalog_id: str,
         collection_definition: Union[Dict[str, Any], Collection],
         lang: str = "en",
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
         **kwargs,
     ) -> Collection:
+        db_resource = ctx.db_resource if ctx else None
         if isinstance(collection_definition, dict):
             from dynastore.models.localization import validate_language_consistency
 
@@ -329,7 +334,7 @@ class CollectionService:
             # Check catalog exists
             catalogs = get_protocol(CatalogsProtocol)
             assert catalogs is not None, "CatalogsProtocol not registered"
-            if not await catalogs.get_catalog_model(catalog_id, db_resource=conn):
+            if not await catalogs.get_catalog_model(catalog_id, ctx=DriverContext(db_resource=conn)):
                 raise ValueError(f"Catalog '{catalog_id}' does not exist.")
 
             phys_schema = await self._resolve_physical_schema(
@@ -476,7 +481,7 @@ class CollectionService:
                         layer_config_override,
                         catalog_id=catalog_id,
                         collection_id=collection_model.id,
-                        db_resource=conn,
+                        ctx=DriverContext(db_resource=conn),
                     )
 
             # 6. Call write driver's ensure_storage() — creates hub + sidecar tables
@@ -508,7 +513,7 @@ class CollectionService:
                     RoutingPluginConfig,
                     catalog_id=catalog_id,
                     collection_id=collection_model.id,
-                    db_resource=conn,
+                    ctx=DriverContext(db_resource=conn),
                 )
                 if resolved_routing:
                     await configs.set_config(
@@ -516,7 +521,7 @@ class CollectionService:
                         resolved_routing,
                         catalog_id=catalog_id,
                         collection_id=collection_model.id,
-                        db_resource=conn,
+                        ctx=DriverContext(db_resource=conn),
                     )
             except Exception as _routing_e:
                 logger.warning(
@@ -572,7 +577,7 @@ class CollectionService:
                     policy,
                     catalog_id=catalog_id,
                     collection_id=collection_model.id,
-                    db_resource=conn,
+                    ctx=DriverContext(db_resource=conn),
                 )
 
             # 9. Persist feature_type if provided in the collection definition.
@@ -598,7 +603,7 @@ class CollectionService:
                     ft_def,
                     catalog_id=catalog_id,
                     collection_id=collection_model.id,
-                    db_resource=conn,
+                    ctx=DriverContext(db_resource=conn),
                 )
 
         # Resolve physical_table for async lifecycle context (PG driver only; None for others).
@@ -652,9 +657,10 @@ class CollectionService:
         limit: int = 10,
         offset: int = 0,
         lang: str = "en",
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
         q: Optional[str] = None,
     ) -> List[Collection]:
+        db_resource = ctx.db_resource if ctx else None
         # Delegate to metadata driver (ES preferred, PG fallback)
         from dynastore.modules.catalog.metadata_router import get_metadata_driver
 
@@ -746,8 +752,9 @@ class CollectionService:
         collection_id: str,
         updates: Dict[str, Any],
         lang: str = "en",
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> Optional[Collection]:
+        db_resource = ctx.db_resource if ctx else None
         validate_sql_identifier(catalog_id)
         validate_sql_identifier(collection_id)
 
@@ -826,8 +833,9 @@ class CollectionService:
         catalog_id: str,
         collection_id: str,
         force: bool = False,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> bool:
+        db_resource = ctx.db_resource if ctx else None
         validate_sql_identifier(catalog_id)
         validate_sql_identifier(collection_id)
 
@@ -867,7 +875,7 @@ class CollectionService:
                             COLLECTION_PLUGIN_CONFIG_ID,
                             catalog_id,
                             collection_id,
-                            db_resource=conn,
+                            ctx=DriverContext(db_resource=conn),
                         )
                         if coll_config:
                             config_snapshot["collection_config"] = coll_config.model_dump()
@@ -938,9 +946,10 @@ class CollectionService:
         catalog_id: str,
         collection_id: str,
         lang: str,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> bool:
         """Deletes a specific language variant from a collection."""
+        db_resource = ctx.db_resource if ctx else None
         validate_sql_identifier(catalog_id)
         validate_sql_identifier(collection_id)
 

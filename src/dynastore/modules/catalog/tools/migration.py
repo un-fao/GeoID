@@ -27,6 +27,7 @@ from dynastore.modules.db_config.query_executor import (
     ResultHandler,
     managed_transaction,
 )
+from dynastore.models.driver_context import DriverContext
 from dynastore.modules.catalog.catalog_config import (
     COLLECTION_PLUGIN_CONFIG_ID,
 )
@@ -83,7 +84,7 @@ class OneShotMigrator:
                 return
 
             phys_schema = await catalogs.resolve_physical_schema(
-                catalog_id, db_resource=conn
+                catalog_id, ctx=DriverContext(db_resource=conn)
             )
 
             # SOURCE Table: In legacy, this WAS the collection_id
@@ -259,7 +260,7 @@ class OneShotMigrator:
                 catalog_id=catalog_id,
                 collection_id=collection_id,
                 check_immutability=False,
-                db_resource=conn,
+                ctx=DriverContext(db_resource=conn),
             )
 
             logger.info(

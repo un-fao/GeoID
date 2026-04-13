@@ -46,6 +46,7 @@ from dynastore.modules.db_config.partition_tools import (
 from dynastore.modules.catalog.models import EventType
 from dynastore.models.protocols.assets import AssetsProtocol
 from dynastore.models.query_builder import FilterOperator
+from dynastore.models.driver_context import DriverContext
 from enum import Enum
 
 logger = logging.getLogger(__name__)
@@ -178,7 +179,7 @@ class AssetManager(AssetsProtocol):
 
         catalogs = get_protocol(CatalogsProtocol)
         return await catalogs.resolve_physical_schema(
-            catalog_id, db_resource=db_resource
+            catalog_id, ctx=DriverContext(db_resource=db_resource)
         )
 
     def _get_partition_name(self, catalog_id: str, collection_id: str) -> str:
@@ -358,8 +359,9 @@ class AssetManager(AssetsProtocol):
         catalog_id: str,
         asset: AssetBase,
         collection_id: Optional[str] = None,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
     ) -> Asset:
+        db_resource = ctx.db_resource if ctx else None
         target_col_id = collection_id if collection_id else CATALOG_LEVEL_COLLECTION_ID
 
         async with managed_transaction(db_resource or self.engine) as conn:
@@ -611,12 +613,13 @@ class AssetManager(AssetsProtocol):
         self,
         schema: str,
         table: str,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
     ) -> None:
         """
         Ensures that the asset cleanup trigger is present on the specified table.
         This includes ensuring the 'asset_cleanup' function exists in the tenant schema.
         """
+        db_resource = ctx.db_resource if ctx else None
         async with managed_transaction(db_resource or self.engine) as conn:
             # 1. Check if asset_id column exists
             check_sql = """

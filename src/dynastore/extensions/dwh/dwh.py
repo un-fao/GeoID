@@ -43,6 +43,7 @@ from dynastore.models.protocols import (
     CatalogsProtocol,
     ItemsProtocol,
 )
+from dynastore.models.driver_context import DriverContext
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     ResultHandler,
@@ -230,7 +231,7 @@ class DwhService(ExtensionProtocol):
             catalog_id=catalog_id,
             collection_id=req.collection,
             request=query_req,
-            db_resource=conn,
+            ctx=DriverContext(db_resource=conn),
         )
 
         # Enrich streamed features with DWH data (O(1) dict lookup per feature)
@@ -463,7 +464,7 @@ class DwhService(ExtensionProtocol):
             catalog_id=catalog_id,
             collection_id=req.collection,
             request=query_req,
-            db_resource=conn,
+            ctx=DriverContext(db_resource=conn),
         )
 
         # 8. Join with DWH data and materialize for MVT query

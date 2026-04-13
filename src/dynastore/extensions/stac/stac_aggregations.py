@@ -28,6 +28,7 @@ from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
 from dynastore.tools.discovery import get_protocol
 from dynastore.tools.cache import cached
 from dynastore.models.protocols import CatalogsProtocol
+from dynastore.models.driver_context import DriverContext
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +190,7 @@ async def _execute_term_aggregation(
     assert catalogs is not None
 
     # Resolve physical schema
-    phys_schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+    phys_schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=conn))
     assert phys_schema is not None
 
     # Build the UNION ALL query for aggregation
@@ -260,7 +261,7 @@ async def _execute_stats_aggregation(
     assert catalogs is not None
 
     # Resolve physical schema
-    phys_schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+    phys_schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=conn))
     assert phys_schema is not None
 
     # Build UNION ALL query
@@ -339,7 +340,7 @@ async def _execute_geohash_aggregation(
     assert catalogs is not None
 
     # Resolve physical schema
-    phys_schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+    phys_schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=conn))
     assert phys_schema is not None
 
     # Build UNION ALL query
@@ -412,7 +413,7 @@ async def _execute_datetime_aggregation(
     assert catalogs is not None
 
     # Resolve physical schema
-    phys_schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+    phys_schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=conn))
     assert phys_schema is not None
 
     # Build UNION ALL query
@@ -479,7 +480,7 @@ async def _execute_bbox_aggregation(
     assert catalogs is not None
 
     # Resolve physical schema
-    phys_schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+    phys_schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=conn))
     assert phys_schema is not None
 
     # Build UNION ALL query
@@ -546,7 +547,7 @@ async def _execute_temporal_extent_aggregation(
     assert catalogs is not None
 
     # Resolve physical schema
-    phys_schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+    phys_schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=conn))
     assert phys_schema is not None
 
     # Build UNION ALL query

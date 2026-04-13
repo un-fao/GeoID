@@ -30,6 +30,7 @@ from pydantic import BaseModel
 
 from dynastore.modules.catalog.tools import recalculate_and_update_extents
 from dynastore.modules.db_config.query_executor import DbEngine
+from dynastore.models.driver_context import DriverContext
 
 # Import Ingestion Configuration
 from dynastore.tasks.ingestion.ingestion_config import INGESTION_CONFIG_ID
@@ -99,7 +100,7 @@ async def run_ingestion_task(
 
     # --- Ensure Logical Collection Exists ---
     await catalog_module.ensure_collection_exists(
-        catalog_id, collection_id, lang=task_request.lang, db_resource=engine
+        catalog_id, collection_id, lang=task_request.lang, ctx=DriverContext(db_resource=engine)
     )
 
     logger.info(f"Task '{task_id}': Beginning main ingestion process.")
@@ -166,7 +167,7 @@ async def run_ingestion_task(
                 metadata=req_asset.metadata or {},
             )
             asset = await asset_manager.create_asset(
-                catalog_id, asset_payload, collection_id, db_resource=engine
+                catalog_id, asset_payload, collection_id, ctx=DriverContext(db_resource=engine)
             )
 
         if not asset:
@@ -174,9 +175,9 @@ async def run_ingestion_task(
 
         # --- Run Pre-Operations ---
         if pre_ops:
-            catalog = await catalog_module.get_catalog(catalog_id, db_resource=engine)
+            catalog = await catalog_module.get_catalog(catalog_id, ctx=DriverContext(db_resource=engine))
             collection = await catalog_module.get_collection(
-                catalog_id, collection_id, db_resource=engine
+                catalog_id, collection_id, ctx=DriverContext(db_resource=engine)
             )
             asset = await run_pre_operations(pre_ops, catalog, collection, asset)
             if asset is None:
@@ -335,7 +336,7 @@ async def run_ingestion_task(
                         catalog_id,
                         collection_id,
                         current_batch,
-                        db_resource=engine,
+                        ctx=DriverContext(db_resource=engine),
                         processing_context=upsert_context,
                     )
                     rows_ingested += len(current_batch)
@@ -352,7 +353,7 @@ async def run_ingestion_task(
                     catalog_id,
                     collection_id,
                     current_batch,
-                    db_resource=engine,
+                    ctx=DriverContext(db_resource=engine),
                     processing_context=upsert_context,
                 )
                 rows_ingested += len(current_batch)
@@ -376,7 +377,7 @@ async def run_ingestion_task(
                 ref_type=CoreAssetReferenceType.COLLECTION,
                 ref_id=collection_id,
                 cascade_delete=True,
-                db_resource=engine,
+                ctx=DriverContext(db_resource=engine),
             )
         except Exception as ref_err:
             logger.warning(
@@ -390,9 +391,9 @@ async def run_ingestion_task(
 
         # --- Run Post-Operations ---
         if post_ops:
-            catalog = await catalog_module.get_catalog(catalog_id, db_resource=engine)
+            catalog = await catalog_module.get_catalog(catalog_id, ctx=DriverContext(db_resource=engine))
             collection = await catalog_module.get_collection(
-                catalog_id, collection_id, db_resource=engine
+                catalog_id, collection_id, ctx=DriverContext(db_resource=engine)
             )
             await run_post_operations(post_ops, catalog, collection, asset, "COMPLETED")
 
@@ -407,10 +408,10 @@ async def run_ingestion_task(
         if post_ops:
             try:
                 catalog = await catalog_module.get_catalog(
-                    catalog_id, db_resource=engine
+                    catalog_id, ctx=DriverContext(db_resource=engine)
                 )
                 collection = await catalog_module.get_collection(
-                    catalog_id, collection_id, db_resource=engine
+                    catalog_id, collection_id, ctx=DriverContext(db_resource=engine)
                 )
                 await run_post_operations(
                     post_ops, catalog, collection, asset, "FAILED", error_message=str(e)

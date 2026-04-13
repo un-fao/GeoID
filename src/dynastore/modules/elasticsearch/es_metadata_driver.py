@@ -33,6 +33,7 @@ automatically indexed and searchable.
 import logging
 from typing import Any, ClassVar, Dict, FrozenSet, List, Optional, Tuple
 
+from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols.metadata_driver import (
     CollectionMetadataDriverProtocol,
     MetadataCapability,
@@ -438,7 +439,7 @@ class DriverMetadataElasticsearch:
             return await configs.get_config(
                 METADATA_ES_DRIVER_CONFIG_ID,
                 catalog_id=catalog_id,
-                db_resource=db_resource,
+                ctx=DriverContext(db_resource=db_resource),
             )
         except Exception:
             return {}

@@ -162,8 +162,9 @@ async def execute_process(
     db_schema = "public"
     catalog_protocol = get_protocol(CatalogsProtocol)
     if catalog_protocol and catalog_id:
+        from dynastore.models.driver_context import DriverContext
         db_schema = await catalog_protocol.resolve_physical_schema(
-            catalog_id, engine
+            catalog_id, ctx=DriverContext(db_resource=engine) if engine else None
         )
 
     return await execution_engine.execute(

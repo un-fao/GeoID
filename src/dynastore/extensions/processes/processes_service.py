@@ -52,6 +52,7 @@ from dynastore.modules.tasks.models import (
 from dynastore.modules.tasks.execution import execution_engine
 from dynastore.modules.processes import models
 from dynastore.modules.iam.models import Principal, SYSTEM_USER_ID
+from dynastore.models.driver_context import DriverContext
 
 
 logger = logging.getLogger(__name__)
@@ -382,7 +383,7 @@ async def _resolve_catalog_schema(catalog_id: str, conn: AsyncConnection) -> str
     if not catalogs:
         raise HTTPException(status_code=500, detail="CatalogsProtocol not available.")
     catalogs = cast(CatalogsProtocol, catalogs)
-    schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+    schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=conn))
     if not schema:
         raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
     return schema

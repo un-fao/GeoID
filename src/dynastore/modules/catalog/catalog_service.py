@@ -34,6 +34,7 @@ from typing import List, Optional, Any, Dict, Union, Set, Callable, Tuple, TYPE_
 if TYPE_CHECKING:
     from dynastore.modules.catalog.sidecars.base import ConsumerType
 from dynastore.tools.cache import cached
+from dynastore.models.driver_context import DriverContext
 from sqlalchemy import text
 
 from dynastore.modules.db_config.query_executor import (
@@ -342,10 +343,11 @@ class CatalogService(CatalogsProtocol):
     async def resolve_physical_schema(
         self,
         catalog_id: str,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
         allow_missing: bool = False,
     ) -> Optional[str]:
         """Resolve physical schema for a catalog."""
+        db_resource = ctx.db_resource if ctx else None
         if db_resource:
             async with managed_transaction(db_resource) as conn:
                 res = await DQLQuery(
@@ -408,17 +410,17 @@ class CatalogService(CatalogsProtocol):
         self,
         catalog_id: str,
         lang: str = "en",
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> None:
         """Ensures that a catalog exists, creating it if necessary (JIT creation)."""
-        if not await self.get_catalog_model(catalog_id, db_resource=db_resource):
+        if not await self.get_catalog_model(catalog_id, ctx=ctx):
             # If lang is not '*', we provide a simple string which create_catalog will localize
             # If lang is '*', we provide the default 'en' dictionary
             title = {"en": catalog_id} if lang == "*" else catalog_id
             await self.create_catalog(
                 {"id": catalog_id, "title": title},
                 lang=lang,
-                db_resource=db_resource,
+                ctx=ctx,
             )
 
     async def ensure_collection_exists(
@@ -426,9 +428,10 @@ class CatalogService(CatalogsProtocol):
         catalog_id: str,
         collection_id: str,
         lang: str = "en",
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> None:
         """Ensures that a collection exists, creating it if necessary (JIT creation)."""
+        db_resource = ctx.db_resource if ctx else None
         if not await self._col_svc.get_collection_model(
             catalog_id, collection_id, db_resource=db_resource
         ):
@@ -453,8 +456,9 @@ class CatalogService(CatalogsProtocol):
         collection_id: str,
         config: Any,
         partition_value: Any,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> None:
+        db_resource = ctx.db_resource if ctx else None
         return await self._item_svc.ensure_partition_exists(
             catalog_id, collection_id, config, partition_value, db_resource=db_resource
         )
@@ -463,9 +467,9 @@ class CatalogService(CatalogsProtocol):
         self,
         catalog_id: str,
         lang: str = "en",
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> Catalog:
-        model = await self.get_catalog_model(catalog_id, db_resource=db_resource)
+        model = await self.get_catalog_model(catalog_id, ctx=ctx)
         if not model:
             raise ValueError(f"Catalog '{catalog_id}' not found.")
         return model
@@ -474,9 +478,10 @@ class CatalogService(CatalogsProtocol):
         self,
         catalog_data: Union[Dict[str, Any], Catalog],
         lang: str = "en",
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> Catalog:
         """Create a new catalog."""
+        db_resource = ctx.db_resource if ctx else None
         from dynastore.models.protocols import StorageProtocol
         from dynastore.modules.tasks.tasks_module import create_task
         from dynastore.modules.tasks.models import TaskCreate
@@ -685,9 +690,10 @@ class CatalogService(CatalogsProtocol):
             return self._unpack_catalog_row(result)
 
     async def get_catalog_model(
-        self, catalog_id: str, db_resource: Optional[DbResource] = None
+        self, catalog_id: str, ctx: Optional["DriverContext"] = None
     ) -> Optional[Catalog]:
         """Get catalog by ID."""
+        db_resource = ctx.db_resource if ctx else None
         if db_resource:
             async with managed_transaction(db_resource) as conn:
                 result = await _get_catalog_query.execute(conn, id=catalog_id)
@@ -741,9 +747,10 @@ class CatalogService(CatalogsProtocol):
         catalog_id: str,
         updates: Union[Dict[str, Any], CatalogUpdate],
         lang: str = "en",
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> Optional[Catalog]:
         """Update a catalog."""
+        db_resource = ctx.db_resource if ctx else None
         validate_sql_identifier(catalog_id)
 
         if isinstance(updates, dict):
@@ -758,7 +765,7 @@ class CatalogService(CatalogsProtocol):
         )
 
         async with managed_transaction(get_catalog_engine(db_resource)) as conn:
-            existing_model = await self.get_catalog_model(catalog_id, db_resource=conn)
+            existing_model = await self.get_catalog_model(catalog_id, ctx=DriverContext(db_resource=conn))
             if not existing_model:
                 raise ValueError(f"Catalog '{catalog_id}' not found.")
 
@@ -840,16 +847,17 @@ class CatalogService(CatalogsProtocol):
         # Invalidate cache
         self._get_catalog_model_cached.cache_invalidate(catalog_id)
 
-        return await self.get_catalog_model(catalog_id, db_resource=db_resource)
+        return await self.get_catalog_model(catalog_id, ctx=DriverContext(db_resource=db_resource) if db_resource else None)
 
     async def delete_catalog_language(
-        self, catalog_id: str, lang: str, db_resource: Optional[DbResource] = None
+        self, catalog_id: str, lang: str, ctx: Optional["DriverContext"] = None
     ) -> bool:
         """Deletes a specific language variant from a catalog."""
+        db_resource = ctx.db_resource if ctx else None
         validate_sql_identifier(catalog_id)
 
         async with managed_transaction(get_catalog_engine(db_resource)) as conn:
-            model = await self.get_catalog_model(catalog_id, db_resource=conn)
+            model = await self.get_catalog_model(catalog_id, ctx=DriverContext(db_resource=conn))
             if not model:
                 raise ValueError(f"Catalog '{catalog_id}' not found.")
 
@@ -911,10 +919,11 @@ class CatalogService(CatalogsProtocol):
         limit: int = 100,
         offset: int = 0,
         lang: str = "en",
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
         q: Optional[str] = None,
     ) -> List[Catalog]:
         """List all catalogs."""
+        db_resource = ctx.db_resource if ctx else None
         async with managed_transaction(get_catalog_engine(db_resource)) as conn:
             if not q:
                 results = await _list_catalogs_query.execute(
@@ -940,30 +949,32 @@ class CatalogService(CatalogsProtocol):
         """Search catalogs with filters."""
         # TODO: implement this feature reusing ogc filters, reemove delegate to list_catalogs
         return await self.list_catalogs(
-            limit=limit, offset=offset, db_resource=db_resource
+            limit=limit, offset=offset, ctx=DriverContext(db_resource=db_resource) if db_resource else None
         )
 
     # --- Config Operations (delegated to ConfigsProtocol via aggregation if needed, or keeping legacy) ---
     # Actually, the protocol says CatalogsProtocol has get_catalog_config and get_collection_config
 
     async def get_catalog_config(
-        self, catalog_id: str, db_resource: Optional[DbResource] = None
+        self, catalog_id: str, ctx: Optional["DriverContext"] = None
     ):
+        db_resource = ctx.db_resource if ctx else None
         from dynastore.models.protocols.configs import ConfigsProtocol
 
         configs = get_protocol(ConfigsProtocol)
         from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
 
         return await configs.get_config(  # type: ignore[union-attr]
-            COLLECTION_PLUGIN_CONFIG_ID, catalog_id, db_resource=db_resource
-        )
+            COLLECTION_PLUGIN_CONFIG_ID, catalog_id, ctx=DriverContext(db_resource=db_resource
+        ))
 
     async def get_collection_config(
         self,
         catalog_id: str,
         collection_id: str,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
     ):
+        db_resource = ctx.db_resource if ctx else None
         from dynastore.modules.storage.router import get_driver
         from dynastore.modules.storage.routing_config import Operation
 
@@ -976,7 +987,7 @@ class CatalogService(CatalogsProtocol):
         self,
         catalog_id: str,
         force: bool = False,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> bool:
         """
         Delete a catalog.
@@ -984,6 +995,7 @@ class CatalogService(CatalogsProtocol):
         If force=True, triggers a hard deletion (removal of schema and data).
         Otherwise, performs a soft delete (marks as deleted).
         """
+        db_resource = ctx.db_resource if ctx else None
         validate_sql_identifier(catalog_id)
 
         async with managed_transaction(get_catalog_engine(db_resource)) as conn:
@@ -1029,7 +1041,7 @@ class CatalogService(CatalogsProtocol):
             config_snapshot = {}
             if config_manager:
                 try:
-                    config_snapshot = await config_manager.list_catalog_configs(catalog_id, db_resource=conn)
+                    config_snapshot = await config_manager.list_catalog_configs(catalog_id, ctx=DriverContext(db_resource=conn))
                 except Exception as e:
                     logger.debug(f"Could not list catalog configs before deletion: {e}")
 
@@ -1117,11 +1129,11 @@ class CatalogService(CatalogsProtocol):
         limit: int = 10,
         offset: int = 0,
         lang: str = "en",
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
         q: Optional[str] = None,
     ):
         return await self._col_svc.list_collections(
-            catalog_id, limit=limit, offset=offset, lang=lang, db_resource=db_resource, q=q
+            catalog_id, limit=limit, offset=offset, lang=lang, ctx=ctx, q=q
         )
 
     async def get_collection_model(
@@ -1139,8 +1151,9 @@ class CatalogService(CatalogsProtocol):
         catalog_id: str,
         collection_id: str,
         lang: str = "en",
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> Optional[Collection]:
+        db_resource = ctx.db_resource if ctx else None
         return await self._col_svc.get_collection_model(
             catalog_id, collection_id, db_resource=db_resource
         )
@@ -1149,10 +1162,10 @@ class CatalogService(CatalogsProtocol):
         self,
         catalog_id: str,
         collection_id: str,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> Set[str]:
         return await self._col_svc.get_collection_column_names(
-            catalog_id, collection_id, db_resource=db_resource
+            catalog_id, collection_id, ctx=ctx
         )
 
     async def create_collection(
@@ -1160,14 +1173,14 @@ class CatalogService(CatalogsProtocol):
         catalog_id: str,
         collection_definition: Union[Dict[str, Any], Collection],
         lang: str = "en",
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
         **kwargs,
     ) -> Collection:
         return await self._col_svc.create_collection(
             catalog_id,
             collection_definition,
             lang=lang,
-            db_resource=db_resource,
+            ctx=ctx,
             **kwargs,
         )
 
@@ -1177,10 +1190,10 @@ class CatalogService(CatalogsProtocol):
         collection_id: str,
         updates: Dict[str, Any],
         lang: str = "en",
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> Optional[Collection]:
         return await self._col_svc.update_collection(
-            catalog_id, collection_id, updates, lang=lang, db_resource=db_resource
+            catalog_id, collection_id, updates, lang=lang, ctx=ctx
         )
 
     async def delete_collection(
@@ -1188,10 +1201,10 @@ class CatalogService(CatalogsProtocol):
         catalog_id: str,
         collection_id: str,
         force: bool = False,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> bool:
         return await self._col_svc.delete_collection(
-            catalog_id, collection_id, force=force, db_resource=db_resource
+            catalog_id, collection_id, force=force, ctx=ctx
         )
 
     async def delete_collection_language(
@@ -1199,10 +1212,10 @@ class CatalogService(CatalogsProtocol):
         catalog_id: str,
         collection_id: str,
         lang: str,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> bool:
         return await self._col_svc.delete_collection_language(
-            catalog_id, collection_id, lang, db_resource=db_resource
+            catalog_id, collection_id, lang, ctx=ctx
         )
 
     async def create_physical_collection(
@@ -1236,7 +1249,7 @@ class CatalogService(CatalogsProtocol):
         catalog_id: str,
         collection_id: str,
         items: Union[Dict[str, Any], List[Dict[str, Any]], Any],
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
         processing_context: Optional[Dict[str, Any]] = None,
     ) -> Union[Dict[str, Any], List[Dict[str, Any]], Any]:
         """Create or update items (single or bulk) via ItemService."""
@@ -1244,7 +1257,7 @@ class CatalogService(CatalogsProtocol):
             catalog_id,
             collection_id,
             items,
-            db_resource=db_resource,
+            ctx=ctx,
             processing_context=processing_context,
         )
 
@@ -1253,12 +1266,12 @@ class CatalogService(CatalogsProtocol):
         catalog_id: str,
         collection_id: str,
         item_id: Any,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
         lang: str = "en",
         context: Optional[Any] = None,
     ):
         return await self._item_svc.get_item(
-            catalog_id, collection_id, item_id, db_resource=db_resource, lang=lang, context=context
+            catalog_id, collection_id, item_id, ctx=ctx, lang=lang, context=context
         )
 
     async def delete_item(
@@ -1266,11 +1279,11 @@ class CatalogService(CatalogsProtocol):
         catalog_id: str,
         collection_id: str,
         item_id: str,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
     ) -> int:
         # Resolves ID internally in ItemService
         return await self._item_svc.delete_item(
-            catalog_id, collection_id, item_id, db_resource=db_resource
+            catalog_id, collection_id, item_id, ctx=ctx
         )
 
     async def delete_item_language(
@@ -1279,10 +1292,10 @@ class CatalogService(CatalogsProtocol):
         collection_id: str,
         item_id: str,
         lang: str,
-        db_resource: Optional[Any] = None,
+        ctx: Optional[DriverContext] = None,
     ) -> int:
         return await self._item_svc.delete_item_language(
-            catalog_id, collection_id, item_id, lang, db_resource=db_resource
+            catalog_id, collection_id, item_id, lang, ctx=ctx
         )
 
     @property
@@ -1377,11 +1390,11 @@ class CatalogService(CatalogsProtocol):
         collection_id: str,
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
-        db_resource: Optional[Any] = None,
+        ctx: Optional[DriverContext] = None,
     ) -> List[Dict[str, Any]]:
         """Search and retrieve items using optimized query generation."""
         return await self._item_svc.search_items(
-            catalog_id, collection_id, request, config=config, db_resource=db_resource
+            catalog_id, collection_id, request, config=config, ctx=ctx
         )
 
     async def stream_items(
@@ -1390,14 +1403,14 @@ class CatalogService(CatalogsProtocol):
         collection_id: str,
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
-        db_resource: Optional[Any] = None,
+        ctx: Optional[DriverContext] = None,
         consumer: "Optional[ConsumerType]" = None,
     ) -> QueryResponse:
         """Stream search results using an async iterator."""
         from dynastore.modules.catalog.sidecars.base import ConsumerType as _CT
         return await self._item_svc.stream_items(
             catalog_id, collection_id, request,
-            config=config, db_resource=db_resource,
+            config=config, ctx=ctx,
             consumer=consumer or _CT.GENERIC,
         )
 
@@ -1419,9 +1432,10 @@ class CatalogService(CatalogsProtocol):
         )
 
     async def update_provisioning_status(
-        self, catalog_id: str, status: str, db_resource: Optional[DbResource] = None
+        self, catalog_id: str, status: str, ctx: Optional["DriverContext"] = None
     ) -> bool:
         """Updates the provisioning status (provisioning | ready | failed) for a catalog."""
+        db_resource = ctx.db_resource if ctx else None
         sql = "UPDATE catalog.catalogs SET provisioning_status = :status WHERE id = :id RETURNING id;"
         async with managed_transaction(get_catalog_engine(db_resource)) as conn:
             result = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
@@ -1447,15 +1461,16 @@ async def ensure_catalog_exists(
     from dynastore.models.protocols.catalogs import CatalogsProtocol
 
     catalogs = get_protocol(CatalogsProtocol)
+    _ctx = DriverContext(db_resource=db_resource) if db_resource else None
     if catalogs:
-        await catalogs.ensure_catalog_exists(catalog_id, db_resource=db_resource)
+        await catalogs.ensure_catalog_exists(catalog_id, ctx=_ctx)
     else:
         # Fallback if discovery not ready
         service = CatalogService(db_resource)  # type: ignore[abstract]
-        if not await service.get_catalog_model(catalog_id, db_resource=db_resource):
+        if not await service.get_catalog_model(catalog_id, ctx=_ctx):
             await service.create_catalog(
                 {"id": catalog_id, "title": title, "description": description},
-                db_resource=db_resource,
+                ctx=_ctx,
             )
 
 
@@ -1475,14 +1490,15 @@ async def ensure_collection_exists(
     # Ensure catalog first
     await ensure_catalog_exists(db_resource, catalog_id)
 
+    _ctx = DriverContext(db_resource=db_resource) if db_resource else None
     if catalogs:
         if not await catalogs.get_collection(  # type: ignore[attr-defined]
-            catalog_id, collection_id, db_resource=db_resource
+            catalog_id, collection_id, ctx=_ctx
         ):
             await catalogs.create_collection(
                 catalog_id,
                 {"id": collection_id, "title": title, "description": description},
-                db_resource=db_resource,
+                ctx=_ctx,
             )
     else:
         # Fallback
@@ -1493,5 +1509,5 @@ async def ensure_collection_exists(
             await service.create_collection(
                 catalog_id,
                 {"id": collection_id, "title": title, "description": description},
-                db_resource=db_resource,
+                ctx=_ctx,
             )

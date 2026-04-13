@@ -97,7 +97,7 @@ class DriverAssetPostgresql:
         if not catalogs:
             return None
         conn = db_resource or self.engine
-        return await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+        return await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=conn))
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -689,6 +689,7 @@ class DriverAssetPostgresql:
 # ==============================================================================
 
 from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry  # noqa: E402
+from dynastore.models.driver_context import DriverContext
 
 
 @lifecycle_registry.sync_catalog_initializer(priority=5)

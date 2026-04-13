@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any, Protocol, Type, Tuple, Callable, Awaitable
 from abc import abstractmethod
 from dynastore.tools.cache import cached
+from dynastore.models.driver_context import DriverContext
 from dynastore.modules import (
     ModuleProtocol,
     get_protocol,
@@ -864,8 +865,8 @@ async def get_collection_source_srid(
             return 4326
         config_service = catalogs.configs
         tiles_config = await config_service.get_config(
-            TILES_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
-        )
+            TILES_PLUGIN_CONFIG_ID, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
+        ))
 
         source_crs_uri = getattr(tiles_config, "source_crs", None)
         if source_crs_uri:
@@ -948,14 +949,14 @@ async def get_tile_resolution_params(
         # 3. Resolve Simplification Configuration (Waterfall handled by ConfigManager)
         config_service = catalogs.configs
         tiles_config = await config_service.get_config(
-            TILES_PLUGIN_CONFIG_ID, catalog_id, db_resource=conn
-        )
+            TILES_PLUGIN_CONFIG_ID, catalog_id, ctx=DriverContext(db_resource=conn
+        ))
         if not tiles_config:
             # If not present, we can initialize it with defaults
             tiles_config = TilesPluginConfig(storage_priority=["bucket", "pg"])
             await config_service.set_config(
-                TILES_PLUGIN_CONFIG_ID, tiles_config, catalog_id=catalog_id, db_resource=conn
-            )
+                TILES_PLUGIN_CONFIG_ID, tiles_config, catalog_id=catalog_id, ctx=DriverContext(db_resource=conn
+            ))
 
         # Extract relevant fields
         simplification_by_zoom = {}
@@ -964,7 +965,7 @@ async def get_tile_resolution_params(
 
         # 4. Resolve Collection Config (for sidecar-aware queries)
         col_config = await catalogs.get_collection_config(
-            catalog_id, collection_id, db_resource=conn
+            catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
         )
 
         return {

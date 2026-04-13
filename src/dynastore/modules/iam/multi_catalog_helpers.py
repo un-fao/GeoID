@@ -8,6 +8,7 @@ These methods support the global + catalog-specific permission model.
 from typing import List, Dict, Any, Optional
 from uuid import UUID
 import logging
+from dynastore.models.driver_context import DriverContext
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +185,7 @@ async def list_catalogs_for_identity(
     
     # Get all catalogs
     catalogs = get_protocol(CatalogsProtocol)
-    all_catalogs = await catalogs.list_catalogs(db_resource=catalogs.engine)
+    all_catalogs = await catalogs.list_catalogs(ctx=DriverContext(db_resource=catalogs.engine))
     
     # Check each catalog for principal
     catalog_list = []

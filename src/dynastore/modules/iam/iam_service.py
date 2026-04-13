@@ -54,6 +54,7 @@ from dynastore.models.protocols import (
     CatalogsProtocol,
 )
 from dynastore.models.protocols.policies import PermissionProtocol
+from dynastore.models.driver_context import DriverContext
 
 
 logger = logging.getLogger(__name__)
@@ -155,7 +156,8 @@ class IamService(IamProtocol):
         # It handles caching and physical schema lookup.
         try:
             res = await catalogs.resolve_physical_schema(
-                catalog_id, db_resource=conn or catalogs.engine  # type: ignore[attr-defined]
+                catalog_id,
+                ctx=DriverContext(db_resource=conn or catalogs.engine),  # type: ignore[attr-defined]
             )
             if res:
                 return res

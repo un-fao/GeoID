@@ -29,6 +29,7 @@ import json
 import logging
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
+from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols.metadata_driver import (
     CollectionMetadataDriverProtocol,
     MetadataCapability,
@@ -84,7 +85,7 @@ class DriverMetadataPostgresql:
         if not catalogs:
             return None
         return await catalogs.resolve_physical_schema(
-            catalog_id, db_resource=db_resource
+            catalog_id, ctx=DriverContext(db_resource=db_resource)
         )
 
     @staticmethod
@@ -297,7 +298,7 @@ class DriverMetadataPostgresql:
             return await configs.get_config(
                 METADATA_DRIVER_CONFIG_ID,
                 catalog_id=catalog_id,
-                db_resource=db_resource,
+                ctx=DriverContext(db_resource=db_resource),
             )
         except Exception:
             return {}

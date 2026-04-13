@@ -18,6 +18,7 @@
 
 from dynastore.models.protocols import ItemsProtocol
 from dynastore.models.query_builder import QueryRequest
+from dynastore.models.driver_context import DriverContext
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.stac.stac_config import StacPluginConfig
 import logging
@@ -65,7 +66,7 @@ async def get_stac_items_paginated(
         catalog_id=catalog_id,
         collection_id=collection_id,
         request=request,
-        db_resource=conn,
+        ctx=DriverContext(db_resource=conn) if conn is not None else None,
     )
 
     if query_response is None:

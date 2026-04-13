@@ -79,7 +79,7 @@ class PolicyService:
         db_resource = conn or self.storage.engine
         # Use allow_missing=True during tenant initialization when catalog may not exist yet
         res = await catalogs.resolve_physical_schema(
-            catalog_id, db_resource=db_resource, allow_missing=True
+            catalog_id, ctx=DriverContext(db_resource=db_resource), allow_missing=True
         )
         schema = res if res else "iam"
         return _validate_schema_name(schema)

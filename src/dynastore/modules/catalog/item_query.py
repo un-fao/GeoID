@@ -24,6 +24,7 @@ from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
 from dynastore.modules.storage.driver_config import (
     DriverRecordsPostgresqlConfig,
 )
+from dynastore.models.driver_context import DriverContext
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
 from dynastore.modules.catalog.sidecars.base import (
@@ -430,10 +431,11 @@ class ItemQueryMixin:
         catalog_id: str,
         collection_id: str,
         item_id: str,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
         lang: str = "en",
         context: Optional[Any] = None,
     ) -> Optional[Feature]:
+        db_resource = ctx.db_resource if ctx else None
         validate_sql_identifier(catalog_id)
         validate_sql_identifier(collection_id)
 
@@ -465,13 +467,13 @@ class ItemQueryMixin:
                 limit=1,
                 select=[FieldSelection(field="*")],
             )
-            ctx: Dict[str, Any] = {
+            query_ctx: Dict[str, Any] = {
                 "catalog_id": catalog_id,
                 "collection_id": collection_id,
                 "col_config": col_config,
             }
             sql, params = await self._apply_query_transformations(
-                request, ctx, catalog_id, collection_id, col_config
+                request, query_ctx, catalog_id, collection_id, col_config
             )
 
             result = await _run_query(conn, text(sql), params)
@@ -487,10 +489,11 @@ class ItemQueryMixin:
         catalog_id: str,
         collection_id: str,
         item_id: str,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
     ) -> int:
         from dynastore.modules.catalog.tools import recalculate_and_update_extents
 
+        db_resource = ctx.db_resource if ctx else None
         validate_sql_identifier(catalog_id)
         validate_sql_identifier(collection_id)
         async with managed_transaction(db_resource or self.engine) as conn:
@@ -574,7 +577,7 @@ class ItemQueryMixin:
         collection_id: str,
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
         consumer: ConsumerType = ConsumerType.GENERIC,
     ) -> QueryResponse:
         """
@@ -595,6 +598,7 @@ class ItemQueryMixin:
             return driver_response
 
         # --- PG path (unchanged) ---
+        db_resource = ctx.db_resource if ctx else None
         # Metadata Resolution
         async with managed_transaction(db_resource or self.engine) as conn:
             col_config = await self._get_collection_config(catalog_id, collection_id, config, db_resource=conn)
@@ -630,9 +634,9 @@ class ItemQueryMixin:
                 # Use a buffer for higher throughput but still O(1) memory
                 stream = await stream_conn.stream(text(sql), params)  # type: ignore[union-attr]
                 async for row in stream:
-                    ctx = FeaturePipelineContext(lang=lang, consumer=consumer)
+                    feature_ctx = FeaturePipelineContext(lang=lang, consumer=consumer)
                     yield self.map_row_to_feature(
-                        dict(row._mapping), col_config, context=ctx,
+                        dict(row._mapping), col_config, context=feature_ctx,
                     )
 
         return QueryResponse(
@@ -681,7 +685,7 @@ class ItemQueryMixin:
         collection_id: str,
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
-        db_resource: Optional[Any] = None,
+        ctx: Optional[DriverContext] = None,
     ) -> List[Feature]:
         """
         Search and retrieve items using optimized query generation.
@@ -706,6 +710,7 @@ class ItemQueryMixin:
             return [feature async for feature in driver_response.items]
 
         # --- PG path ---
+        db_resource = ctx.db_resource if ctx else None
         async with self._prepare_search(
             catalog_id, collection_id, request, config, db_resource
         ) as (query, conn, params):

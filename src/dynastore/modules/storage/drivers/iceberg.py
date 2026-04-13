@@ -66,6 +66,7 @@ from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict, FrozenSet, List, Optional, Union
 
 from dynastore.models.ogc import Feature, FeatureCollection
+from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols.storage_driver import Capability
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.concurrency import run_in_thread
@@ -176,7 +177,7 @@ class DriverRecordsIceberg(ModuleProtocol):
             DriverRecordsIcebergConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
-            db_resource=db_resource,
+            ctx=DriverContext(db_resource=db_resource),
         )
         if not isinstance(config, DriverRecordsIcebergConfig):
             return DriverRecordsIcebergConfig()

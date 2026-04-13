@@ -18,6 +18,7 @@ from sqlalchemy.sql import column as sql_column
 
 from dynastore.modules.db_config.query_executor import DbResource, managed_transaction
 from dynastore.modules.db_config import shared_queries
+from dynastore.models.driver_context import DriverContext
 from dynastore.tools.db import validate_sql_identifier
 from dynastore.modules.tools.cql import parse_cql_filter, PYGEOFILTER_AVAILABLE
 
@@ -187,7 +188,7 @@ async def stream_features(
             catalog_id=config.catalog,
             collection_id=config.collection,
             request=req,
-            db_resource=db_resource,
+            ctx=DriverContext(db_resource=db_resource) if db_resource else None,
         ):
             yield item
     except Exception as e:

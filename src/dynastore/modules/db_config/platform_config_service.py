@@ -71,6 +71,7 @@ from dynastore.modules.db_config.query_executor import (
 )
 from .maintenance_tools import ensure_schema_exists
 from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
+from dynastore.models.driver_context import DriverContext
 
 # imported to avoid circular imports
 from dynastore.modules.db_config.exceptions import ImmutableConfigError
@@ -587,8 +588,9 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
             raise
 
     async def get_config(
-        self, plugin_id: str, db_resource: Optional[DbResource] = None
+        self, plugin_id: str, ctx: Optional[DriverContext] = None
     ) -> PluginConfig:
+        db_resource = ctx.db_resource if ctx else None
         config = await self._get_platform_config_internal(
             plugin_id, db_resource=db_resource
         )
@@ -638,15 +640,16 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
         plugin_id: str,
         config: PluginConfig,
         check_immutability: bool = True,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
     ) -> None:
         """
         Writes configuration to the Platform level.
 
         Args:
             check_immutability: If True, enforces immutability checks against existing config.
-            db_resource: Optional database connection/engine to use.
+            ctx: Optional driver context carrying db_resource.
         """
+        db_resource = ctx.db_resource if ctx else None
         async with managed_transaction(db_resource or self.engine) as conn:
             class_key = _class_key_for(plugin_id)
             old_config: Optional[PluginConfig] = None
@@ -704,9 +707,10 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
         return configs
 
     async def delete_config(
-        self, plugin_id: str, db_resource: Optional[DbResource] = None
+        self, plugin_id: str, ctx: Optional[DriverContext] = None
     ) -> bool:
         """Deletes a configuration at the platform level."""
+        db_resource = ctx.db_resource if ctx else None
         async with managed_transaction(db_resource or self.engine) as conn:
             rows_affected = await delete_platform_config_query.execute(
                 conn, class_key=_class_key_for(plugin_id)

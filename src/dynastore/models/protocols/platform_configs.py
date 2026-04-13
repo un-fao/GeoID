@@ -20,6 +20,7 @@ from typing import Protocol, Optional, Any, Dict, runtime_checkable, TYPE_CHECKI
 
 if TYPE_CHECKING:
     from dynastore.modules.db_config.platform_config_service import PluginConfig
+    from dynastore.models.driver_context import DriverContext
 
 
 @runtime_checkable
@@ -35,7 +36,7 @@ class PlatformConfigsProtocol(Protocol):
         ...
 
     async def get_config(
-        self, plugin_id: str, db_resource: Optional[Any] = None
+        self, plugin_id: str, ctx: Optional["DriverContext"] = None
     ) -> "PluginConfig":
         """
         Retrieves a platform-level configuration or its default.
@@ -47,7 +48,7 @@ class PlatformConfigsProtocol(Protocol):
         plugin_id: str,
         config: "PluginConfig",
         check_immutability: bool = True,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> None:
         """
         Writes a platform-level configuration.
@@ -61,7 +62,7 @@ class PlatformConfigsProtocol(Protocol):
         ...
 
     async def delete_config(
-        self, plugin_id: str, db_resource: Optional[Any] = None
+        self, plugin_id: str, ctx: Optional["DriverContext"] = None
     ) -> bool:
         """
         Deletes a platform-level configuration (resets to defaults).

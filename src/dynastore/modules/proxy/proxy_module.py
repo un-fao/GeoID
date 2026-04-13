@@ -73,6 +73,7 @@ async def _initialize_proxy_tenant_slice(conn: DbResource, schema: str, catalog_
 
 from dynastore.modules.catalog.lifecycle_manager import sync_collection_initializer, sync_collection_destroyer
 from dynastore.tools.db import sanitize_for_sql_identifier
+from dynastore.models.driver_context import DriverContext
 
 
 @sync_collection_initializer
@@ -119,7 +120,7 @@ class ProxyModule(ModuleProtocol, ProxyProtocol):
         from dynastore.models.protocols import CatalogsProtocol
         catalogs = get_protocol(CatalogsProtocol)
         async with managed_transaction(engine) as tx_engine:
-            schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=tx_engine)
+            schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=tx_engine))
             if not schema:
                 raise ValueError(f"Catalog '{catalog_id}' not found.")
             return await self.storage_driver.insert_short_url(tx_engine, schema, long_url, custom_key, collection_id, comment)
@@ -137,7 +138,7 @@ class ProxyModule(ModuleProtocol, ProxyProtocol):
         from dynastore.models.protocols import CatalogsProtocol
         catalogs = get_protocol(CatalogsProtocol)
         async with managed_transaction(engine) as tx_engine:
-            schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=tx_engine)
+            schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=tx_engine))
             if not schema:
                 return None
             return await self.storage_driver.select_long_url(tx_engine, schema, short_key)
@@ -147,7 +148,7 @@ class ProxyModule(ModuleProtocol, ProxyProtocol):
         from dynastore.models.protocols import CatalogsProtocol
         catalogs = get_protocol(CatalogsProtocol)
         async with managed_transaction(engine) as tx_engine:
-            schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=tx_engine)
+            schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=tx_engine))
             if not schema:
                 logger.warning(f"Could not log redirect: Catalog '{catalog_id}' not found.")
                 return
@@ -158,7 +159,7 @@ class ProxyModule(ModuleProtocol, ProxyProtocol):
         from dynastore.models.protocols import CatalogsProtocol
         catalogs = get_protocol(CatalogsProtocol)
         async with managed_transaction(engine) as tx_engine:
-            schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=tx_engine)
+            schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=tx_engine))
             if not schema:
                 return AnalyticsPage(data=[], long_url=None)
             page = await self.storage_driver.select_analytics(schema, short_key, cursor, page_size, aggregate, start_date, end_date)
@@ -172,7 +173,7 @@ class ProxyModule(ModuleProtocol, ProxyProtocol):
         from dynastore.models.protocols import CatalogsProtocol
         catalogs = get_protocol(CatalogsProtocol)
         async with managed_transaction(engine) as tx_engine:
-            schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=tx_engine)
+            schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=tx_engine))
             if not schema:
                 return None
             return await self.storage_driver.drop_short_url(tx_engine, schema, short_key)

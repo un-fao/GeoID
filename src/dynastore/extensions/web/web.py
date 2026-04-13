@@ -192,6 +192,7 @@ from dynastore.modules.db_config.platform_config_service import PluginConfig, Co
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.routing import Match, get_route_path
+from dynastore.models.driver_context import DriverContext
 
 
 class RelativeSlashRedirectMiddleware:
@@ -1356,7 +1357,7 @@ async function demoAction(action) {
                 try:
                     schema = (
                         await catalogs.resolve_physical_schema(
-                            catalog_id, db_resource=db_resource
+                            catalog_id, ctx=DriverContext(db_resource=db_resource)
                         )
                         or "catalog"
                     )

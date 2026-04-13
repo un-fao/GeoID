@@ -26,6 +26,7 @@ except ImportError:
     storage = None
 
 from dynastore.modules.db_config.query_executor import managed_transaction, DbResource
+from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols import ConfigsProtocol, CatalogsProtocol
 from dynastore.modules.catalog.lifecycle_manager import LifecycleContext
 from dynastore.tools.discovery import get_protocol
@@ -141,12 +142,12 @@ class BucketManager:
             if catalogs:
                 # Ensure the parent catalog exists, creating it if necessary.
                 # This is the minimum requirement for any upload target.
-                await catalogs.ensure_catalog_exists(catalog_id, db_resource=conn)
+                await catalogs.ensure_catalog_exists(catalog_id, ctx=DriverContext(db_resource=conn))
 
                 if collection_id:
                     # If a collection is targeted, ensure it exists as a logical entity first.
                     collection_record = await catalogs.get_collection(
-                        catalog_id, collection_id, db_resource=conn
+                        catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
                     )
                     if not collection_record:
                         logger.info(
@@ -169,7 +170,7 @@ class BucketManager:
                         )
                         # This creates only the logical collection record, without a LayerConfig.
                         await catalogs.create_collection(
-                            catalog_id, default_collection_metadata, db_resource=conn
+                            catalog_id, default_collection_metadata, ctx=DriverContext(db_resource=conn)
                         )
             else:
                 logger.warning(
@@ -307,8 +308,8 @@ class BucketManager:
                         effective_config = GcpCatalogBucketConfig(location=self.region)
                 else:
                     effective_config = await self.config_manager.get_config(
-                        GCP_CATALOG_BUCKET_CONFIG_ID, catalog_id, db_resource=conn
-                    )
+                        GCP_CATALOG_BUCKET_CONFIG_ID, catalog_id, ctx=DriverContext(db_resource=conn
+                    ))
 
             if not isinstance(effective_config, GcpCatalogBucketConfig):
                 # If no config is set, create a default one.
@@ -321,7 +322,7 @@ class BucketManager:
                     GCP_CATALOG_BUCKET_CONFIG_ID,
                     effective_config,
                     catalog_id=catalog_id,
-                    db_resource=conn,
+                    ctx=DriverContext(db_resource=conn),
                 )
             
             # Use effective_config for the rest of the creation logic

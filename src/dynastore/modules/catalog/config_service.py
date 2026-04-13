@@ -29,6 +29,7 @@ from dynastore.modules.db_config.query_executor import (
     managed_transaction,
     DbResource,
 )
+from dynastore.models.driver_context import DriverContext
 from dynastore.tools.db import validate_sql_identifier
 from dynastore.tools.json import CustomJSONEncoder
 
@@ -91,7 +92,7 @@ async def _catalog_config_cache(
     validate_sql_identifier(catalog_id)
     async with managed_transaction(engine) as conn:
         phys_schema = await catalog_manager.resolve_physical_schema(
-            catalog_id, db_resource=conn, allow_missing=True
+            catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True
         )
         if not phys_schema:
             return None
@@ -118,7 +119,7 @@ async def _collection_config_cache(
     validate_sql_identifier(collection_id)
     async with managed_transaction(engine) as conn:
         phys_schema = await catalog_manager.resolve_physical_schema(
-            catalog_id, db_resource=conn, allow_missing=True
+            catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True
         )
         if not phys_schema:
             return None
@@ -200,7 +201,7 @@ class ConfigService(ConfigsProtocol):
         plugin_id: "Union[str, Type[PluginConfig]]",
         catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
         config_snapshot: Optional[Dict[str, Any]] = None,
     ) -> PluginConfig:
         """
@@ -215,6 +216,7 @@ class ConfigService(ConfigsProtocol):
         type narrows to that class) or a legacy string id.  When a class is
         supplied, its ``_plugin_id`` drives the storage lookup.
         """
+        db_resource = ctx.db_resource if ctx else None
         # Normalise class → string id for storage lookup.
         if isinstance(plugin_id, type):
             cls_pid = getattr(plugin_id, "_plugin_id", None)
@@ -270,7 +272,7 @@ class ConfigService(ConfigsProtocol):
 
         # Tier 3 & 4: Platform & Defaults
         return await self._get_platform_config_service().get_config(
-            plugin_id, db_resource=db_resource
+            plugin_id, ctx=DriverContext(db_resource=db_resource) if db_resource else None
         )
 
     async def get_catalog_config_internal_cached(
@@ -308,7 +310,7 @@ class ConfigService(ConfigsProtocol):
         # Live query if db_resource provided
         async with managed_transaction(db_resource) as conn:
             phys_schema = await self._get_catalog_manager().resolve_physical_schema(
-                catalog_id, db_resource=conn, allow_missing=True
+                catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True
             )
             if not phys_schema:
                 return None
@@ -330,11 +332,12 @@ class ConfigService(ConfigsProtocol):
         catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
         check_immutability: bool = True,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
     ) -> None:
         """
         Unified method to set configuration at any level.
         """
+        db_resource = ctx.db_resource if ctx else None
         if collection_id is not None:
             # Collection level
             if catalog_id is None:
@@ -364,7 +367,7 @@ class ConfigService(ConfigsProtocol):
                 plugin_id,
                 config,
                 check_immutability=check_immutability,
-                db_resource=db_resource,
+                ctx=DriverContext(db_resource=db_resource) if db_resource else None,
             )
 
     async def set_catalog_config(
@@ -398,19 +401,19 @@ class ConfigService(ConfigsProtocol):
         async with managed_transaction(db_resource or self.engine) as conn:
             # 0. Ensure catalog exists (and thus schema)
             await self._get_catalog_manager().ensure_catalog_exists(
-                catalog_id, db_resource=conn
+                catalog_id, ctx=DriverContext(db_resource=conn)
             )
 
             # Resolve physical schema
             phys_schema = await self._get_catalog_manager().resolve_physical_schema(
-                catalog_id, db_resource=conn, allow_missing=True
+                catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True
             )
             if not phys_schema:
                 await self._get_catalog_manager().ensure_catalog_exists(
-                    catalog_id, db_resource=conn
+                    catalog_id, ctx=DriverContext(db_resource=conn)
                 )
                 phys_schema = await self._get_catalog_manager().resolve_physical_schema(
-                    catalog_id, db_resource=conn
+                    catalog_id, ctx=DriverContext(db_resource=conn)
                 )
 
             if not phys_schema:
@@ -496,7 +499,7 @@ class ConfigService(ConfigsProtocol):
         # Live query if db_resource provided
         async with managed_transaction(db_resource) as conn:
             phys_schema = await self._get_catalog_manager().resolve_physical_schema(
-                catalog_id, db_resource=conn
+                catalog_id, ctx=DriverContext(db_resource=conn)
             )
             if not phys_schema:
                 return None
@@ -531,19 +534,19 @@ class ConfigService(ConfigsProtocol):
         async with managed_transaction(db_resource or self.engine) as conn:
             # 0. Ensure catalog exists (and thus schema)
             await self._get_catalog_manager().ensure_catalog_exists(
-                catalog_id, db_resource=conn
+                catalog_id, ctx=DriverContext(db_resource=conn)
             )
 
             # Resolve physical schema
             phys_schema = await self._get_catalog_manager().resolve_physical_schema(
-                catalog_id, db_resource=conn, allow_missing=True
+                catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True
             )
             if not phys_schema:
                 await self._get_catalog_manager().ensure_catalog_exists(
-                    catalog_id, db_resource=conn
+                    catalog_id, ctx=DriverContext(db_resource=conn)
                 )
                 phys_schema = await self._get_catalog_manager().resolve_physical_schema(
-                    catalog_id, db_resource=conn
+                    catalog_id, ctx=DriverContext(db_resource=conn)
                 )
 
             if not phys_schema:
@@ -616,11 +619,12 @@ class ConfigService(ConfigsProtocol):
         collection_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
     ) -> Dict[str, Any]:
         """
         Unified method to list configurations at any level with pagination and total count.
         """
+        db_resource = ctx.db_resource if ctx else None
         if collection_id is not None:
             # Collection level
             if catalog_id is None:
@@ -632,7 +636,7 @@ class ConfigService(ConfigsProtocol):
             validate_sql_identifier(collection_id)
             async with managed_transaction(db_resource or self.engine) as conn:
                 phys_schema = await self._get_catalog_manager().resolve_physical_schema(
-                    catalog_id, db_resource=conn
+                    catalog_id, ctx=DriverContext(db_resource=conn)
                 )
                 if not phys_schema:
                     return {"total": 0, "results": []}
@@ -678,7 +682,7 @@ class ConfigService(ConfigsProtocol):
             validate_sql_identifier(catalog_id)
             async with managed_transaction(db_resource or self.engine) as conn:
                 phys_schema = await self._get_catalog_manager().resolve_physical_schema(
-                    catalog_id, db_resource=conn
+                    catalog_id, ctx=DriverContext(db_resource=conn)
                 )
                 if not phys_schema:
                     return {"total": 0, "results": []}
@@ -725,14 +729,15 @@ class ConfigService(ConfigsProtocol):
             return {"total": total, "results": all_results[offset : offset + limit]}
 
     async def list_catalog_configs(
-        self, catalog_id: str, db_resource: Optional[DbResource] = None
+        self, catalog_id: str, ctx: Optional[DriverContext] = None
     ) -> Dict[str, PluginConfig]:
         """Lists all configurations explicitly set at the Catalog level."""
         validate_sql_identifier(catalog_id)
+        db_resource = ctx.db_resource if ctx else None
 
         async with managed_transaction(db_resource or self.engine) as conn:
             phys_schema = await self._get_catalog_manager().resolve_physical_schema(
-                catalog_id, db_resource=conn
+                catalog_id, ctx=DriverContext(db_resource=conn)
             )
             if not phys_schema:
                 return {}
@@ -764,12 +769,13 @@ class ConfigService(ConfigsProtocol):
         collection_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> Dict[str, Any]:
         """
         Searches for configurations across the hierarchy.
         Matches against plugin_id (simple LIKE search).
         """
+        db_resource = ctx.db_resource if ctx else None
         if catalog_id:
             validate_sql_identifier(catalog_id)
         if collection_id:
@@ -778,7 +784,7 @@ class ConfigService(ConfigsProtocol):
         async with managed_transaction(db_resource or self.engine) as conn:
             if catalog_id:
                 phys_schema = await self._get_catalog_manager().resolve_physical_schema(
-                    catalog_id, db_resource=conn
+                    catalog_id, ctx=DriverContext(db_resource=conn)
                 )
                 if not phys_schema:
                     return {"total": 0, "results": []}
@@ -873,7 +879,7 @@ class ConfigService(ConfigsProtocol):
         validate_sql_identifier(catalog_id)
         async with managed_transaction(self.engine) as conn:
             phys_schema = await self.catalog_manager.resolve_physical_schema(
-                catalog_id, db_resource=conn
+                catalog_id, ctx=DriverContext(db_resource=conn)
             )
             if not phys_schema:
                 return False
@@ -898,13 +904,14 @@ class ConfigService(ConfigsProtocol):
         plugin_id: str,
         catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
     ) -> None:
         """
         Unified method to delete configuration at any level.
         Delegates to specific methods based on provided parameters.
         Deleting platform config acts as a reset to defaults.
         """
+        db_resource = ctx.db_resource if ctx else None
         if collection_id is not None:
             # Collection level
             if catalog_id is None:
@@ -925,7 +932,7 @@ class ConfigService(ConfigsProtocol):
             # Assuming 'config' parameter should be passed, but it's not available here.
             # Reverting to original behavior of calling delete_config on the service.
             await self._get_platform_config_service().delete_config(
-                plugin_id, db_resource=db_resource
+                plugin_id, ctx=DriverContext(db_resource=db_resource) if db_resource else None
             )
 
     async def _delete_catalog_config(
@@ -935,7 +942,7 @@ class ConfigService(ConfigsProtocol):
         validate_sql_identifier(catalog_id)
         async with managed_transaction(db_resource or self.engine) as conn:
             phys_schema = await self._get_catalog_manager().resolve_physical_schema(
-                catalog_id, db_resource=conn
+                catalog_id, ctx=DriverContext(db_resource=conn)
             )
             if not phys_schema:
                 return False
@@ -967,7 +974,7 @@ class ConfigService(ConfigsProtocol):
         validate_sql_identifier(collection_id)
         async with managed_transaction(db_resource or self.engine) as conn:
             phys_schema = await self._get_catalog_manager().resolve_physical_schema(
-                catalog_id, db_resource=conn
+                catalog_id, ctx=DriverContext(db_resource=conn)
             )
             if not phys_schema:
                 return False

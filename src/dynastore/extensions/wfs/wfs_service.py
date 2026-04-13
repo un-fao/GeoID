@@ -20,6 +20,7 @@
 import asyncio
 
 from dynastore.tools.discovery import get_protocol
+from dynastore.models.driver_context import DriverContext
 from ...tools.features import Feature, FeatureCollection
 import logging
 import re
@@ -286,7 +287,7 @@ class WFSService(ExtensionProtocol):
         """Handles requests scoped to a specific catalog, e.g., `/wfs/my_catalog`."""
         safe_catalog_id = catalog_id.replace(":", "_").replace("-", "_")
         catalogs_svc = await self._get_catalogs_service()
-        if not await catalogs_svc.get_catalog(safe_catalog_id, db_resource=conn):
+        if not await catalogs_svc.get_catalog(safe_catalog_id, ctx=DriverContext(db_resource=conn)):
             raise HTTPException(
                 status_code=404, detail=f"Catalog '{safe_catalog_id}' not found."
             )
@@ -321,8 +322,8 @@ class WFSService(ExtensionProtocol):
         if catalog_id:
             # Scoped request: only fetch collections for the specified catalog.
             catalog_metadata, all_collections_summary = await asyncio.gather(
-                catalogs_svc.get_catalog(catalog_id, db_resource=conn),
-                catalogs_svc.list_collections(catalog_id, limit=1000, db_resource=conn),
+                catalogs_svc.get_catalog(catalog_id, ctx=DriverContext(db_resource=conn)),
+                catalogs_svc.list_collections(catalog_id, limit=1000, ctx=DriverContext(db_resource=conn)),
             )
             if catalog_metadata:
                 # Use the catalog's metadata for the service identification block.
@@ -339,7 +340,7 @@ class WFSService(ExtensionProtocol):
                 )
                 if not layer_config or layer_config.collection_type == "VECTOR":
                     full_collection_details = await catalogs_svc.get_collection(
-                        catalog_id, c_summary.id, db_resource=conn
+                        catalog_id, c_summary.id, ctx=DriverContext(db_resource=conn)
                     )
                     if full_collection_details:
                         localized, _ = full_collection_details.localize(language)
@@ -348,10 +349,10 @@ class WFSService(ExtensionProtocol):
                 catalogs_with_collections[catalog_id] = vector_collections
         else:
             # Root request: fetch all catalogs and their respective collections.
-            catalogs = await catalogs_svc.list_catalogs(limit=1000, db_resource=conn)
+            catalogs = await catalogs_svc.list_catalogs(limit=1000, ctx=DriverContext(db_resource=conn))
             for catalog in catalogs:
                 all_collections_summary = await catalogs_svc.list_collections(
-                    catalog.id, limit=1000, db_resource=conn
+                    catalog.id, limit=1000, ctx=DriverContext(db_resource=conn)
                 )
                 vector_collections = []
                 for c_summary in all_collections_summary:
@@ -361,7 +362,7 @@ class WFSService(ExtensionProtocol):
                     )
                     if not layer_config or layer_config.collection_type == "VECTOR":
                         full_collection_details = await catalogs_svc.get_collection(
-                            catalog.id, c_summary.id, db_resource=conn
+                            catalog.id, c_summary.id, ctx=DriverContext(db_resource=conn)
                         )
                         if full_collection_details:
                             localized, _ = full_collection_details.localize(language)
@@ -491,8 +492,8 @@ class WFSService(ExtensionProtocol):
         storage_svc = await self._get_storage_service()
 
         plugin_config: WFSPluginConfig = await configs_svc.get_config(
-            WFS_PLUGIN_CONFIG_ID, catalog_id=catalog_id_from_path, db_resource=conn
-        )
+            WFS_PLUGIN_CONFIG_ID, catalog_id=catalog_id_from_path, ctx=DriverContext(db_resource=conn
+        ))
 
         cache_key = None
         if plugin_config.cache_on_demand and storage_svc:
@@ -579,7 +580,7 @@ class WFSService(ExtensionProtocol):
                 request=request_obj,
                 # Decouple from request connection to allow background streaming
                 # without premature closure errors.
-                db_resource=None,
+                ctx=None,
             )
         except ValueError as e:
             xml = wfs_generator.create_exception_report("InvalidParameterValue", None, str(e))

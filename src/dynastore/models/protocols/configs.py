@@ -24,6 +24,7 @@ from typing import Protocol, Optional, Any, List, Dict, Type, TypeVar, Union, ov
 
 if TYPE_CHECKING:
     from dynastore.modules.db_config.platform_config_service import PluginConfig
+    from dynastore.models.driver_context import DriverContext
 
 _T_Config = TypeVar("_T_Config", bound="PluginConfig")
 
@@ -53,7 +54,7 @@ class ConfigsProtocol(Protocol):
         plugin_id: Type[_T_Config],
         catalog_id: Optional[str] = ...,
         collection_id: Optional[str] = ...,
-        db_resource: Optional[Any] = ...,
+        ctx: Optional["DriverContext"] = ...,
         config_snapshot: Optional[Dict[str, Any]] = ...,
     ) -> _T_Config: ...
 
@@ -63,7 +64,7 @@ class ConfigsProtocol(Protocol):
         plugin_id: str,
         catalog_id: Optional[str] = ...,
         collection_id: Optional[str] = ...,
-        db_resource: Optional[Any] = ...,
+        ctx: Optional["DriverContext"] = ...,
         config_snapshot: Optional[Dict[str, Any]] = ...,
     ) -> "PluginConfig": ...
 
@@ -72,7 +73,7 @@ class ConfigsProtocol(Protocol):
         plugin_id: Union[str, Type["PluginConfig"]],
         catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
         config_snapshot: Optional[Dict[str, Any]] = None,
     ) -> "PluginConfig":
         """
@@ -102,7 +103,7 @@ class ConfigsProtocol(Protocol):
         catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
         check_immutability: bool = True,
-        db_resource: Optional[Any] = None
+        ctx: Optional["DriverContext"] = None,
     ) -> None:
         """
         Sets configuration at the appropriate level based on provided parameters:
@@ -126,7 +127,7 @@ class ConfigsProtocol(Protocol):
         collection_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
-        db_resource: Optional[Any] = None
+        ctx: Optional["DriverContext"] = None,
     ) -> Dict[str, Any]:
         """
         Lists all configurations at the specified level with pagination:
@@ -147,7 +148,9 @@ class ConfigsProtocol(Protocol):
         ...
 
     async def list_catalog_configs(
-        self, catalog_id: str, db_resource: Optional[Any] = None
+        self,
+        catalog_id: str,
+        ctx: Optional["DriverContext"] = None,
     ) -> Dict[str, Any]:
         """
         Returns all configurations for a catalog as a simple dictionary (mapping: plugin_id -> data).
@@ -160,7 +163,7 @@ class ConfigsProtocol(Protocol):
         plugin_id: str,
         catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
-        db_resource: Optional[Any] = None
+        ctx: Optional["DriverContext"] = None,
     ) -> None:
         """
         Deletes configuration at the specified level:
@@ -185,7 +188,7 @@ class ConfigsProtocol(Protocol):
         collection_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
-        db_resource: Optional[Any] = None
+        ctx: Optional["DriverContext"] = None,
     ) -> Dict[str, Any]:
         """
         Searches for configurations across the hierarchy.

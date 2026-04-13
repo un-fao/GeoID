@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from dynastore.modules.storage.driver_config import CollectionWritePolicy
 
 from dynastore.models.ogc import Feature, FeatureCollection
+from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols.storage_driver import Capability
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.protocols import ModuleProtocol
@@ -112,7 +113,7 @@ class _ElasticsearchBase:
             DriverRecordsElasticsearchConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
-            db_resource=db_resource,
+            ctx=DriverContext(db_resource=db_resource),
         )
         if config is None:
             return DriverRecordsElasticsearchConfig()

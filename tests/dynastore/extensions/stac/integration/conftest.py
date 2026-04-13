@@ -1,5 +1,6 @@
 import pytest
 
+from dynastore.models.driver_context import DriverContext
 import dynastore.modules.catalog.catalog_module as catalog_manager
 from dynastore.modules.stac.stac_config import (
     STAC_PLUGIN_CONFIG_ID,
@@ -98,7 +99,7 @@ async def setup_aggregation_data(
             config=stac_config,
             catalog_id=catalog_id,
             collection_id=collection_id,
-            db_resource=conn,
+            ctx=DriverContext(db_resource=conn),
         )
 
     # Ingest Items
@@ -132,7 +133,7 @@ async def setup_aggregation_data(
         # Call upsert directly to debug
         async with managed_transaction(app_lifespan.engine) as conn:
             await items_svc.upsert(
-                catalog_id, collection_id, stac_item, db_resource=conn
+                catalog_id, collection_id, stac_item, ctx=DriverContext(db_resource=conn)
             )
 
         # res = await in_process_client.post(

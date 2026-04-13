@@ -42,6 +42,7 @@ from dynastore.modules.db_config.query_executor import (
 )
 from dynastore.modules.db_config.shared_queries import build_filter_clause
 from dynastore.modules.stac.stac_config import AggregationRule, StacPluginConfig
+from dynastore.models.driver_context import DriverContext
 
 
 class AttributeFilter(BaseModel):
@@ -236,18 +237,18 @@ async def search_items(
         if isinstance(resource, AsyncEngine):
             async with resource.connect() as conn:
                 return await _catalogs.get_collection_column_names(
-                    cat_id, target_collections[0], db_resource=conn
+                    cat_id, target_collections[0], ctx=DriverContext(db_resource=conn)
                 )
         else:
             return await _catalogs.get_collection_column_names(
-                cat_id, target_collections[0], db_resource=resource
+                cat_id, target_collections[0], ctx=DriverContext(db_resource=resource)
             )
 
     # Resolve layer config in parallel
     initial_collection_ids = search_request.collections or [
         c.id
         for c in await catalogs.list_collections(
-            cat_id, limit=1000, db_resource=db_resource
+            cat_id, limit=1000, ctx=DriverContext(db_resource=db_resource)
         )
     ]
 
@@ -318,7 +319,7 @@ async def search_items(
     catalogs2 = get_protocol(CatalogsProtocol)
     assert catalogs2 is not None, "CatalogsProtocol not registered"
     phys_schema = await catalogs2.resolve_physical_schema(
-        cat_id, db_resource=db_resource
+        cat_id, ctx=DriverContext(db_resource=db_resource)
     )
 
     # --- Query Planner: Dependency Analysis ---

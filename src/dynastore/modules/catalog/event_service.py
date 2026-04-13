@@ -68,6 +68,7 @@ from dynastore.modules.catalog.lifecycle_manager import (
 from dynastore.modules.db_config.maintenance_tools import register_cron_job
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.concurrency import get_background_executor
+from dynastore.models.driver_context import DriverContext
 
 logger = logging.getLogger(__name__)
 
@@ -313,7 +314,7 @@ class EventService(EventBusProtocol):
                 catalogs = get_protocol(CatalogsProtocol)
                 if catalogs:
                     schema_name = await catalogs.resolve_physical_schema(
-                        catalog_id, db_resource=db_resource
+                        catalog_id, ctx=DriverContext(db_resource=db_resource)
                     )
 
             from dynastore.models.protocols import EventStorageProtocol

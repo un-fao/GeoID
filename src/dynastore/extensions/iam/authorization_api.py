@@ -31,6 +31,7 @@ from dynastore.modules import get_protocol
 from dynastore.models.protocols import IamProtocol, CatalogsProtocol
 from dynastore.models.auth import Principal
 from dynastore.extensions.tools.exception_handlers import http_errors
+from dynastore.models.driver_context import DriverContext
 
 
 def _require_admin_role(request: Request) -> Principal:
@@ -135,7 +136,7 @@ async def resolve_catalog_schema(catalog_id: str) -> str:
     catalog_module = await get_catalogs_protocol()
     try:
         schema = await catalog_module.resolve_physical_schema(
-            catalog_id, db_resource=catalog_module.engine
+            catalog_id, ctx=DriverContext(db_resource=catalog_module.engine)
         )
         if not schema:
             raise HTTPException(
@@ -229,14 +230,14 @@ async def get_my_catalogs(request: Request):
 
     # 1. Get all catalogs
     catalog_module = await get_catalogs_protocol()
-    all_catalogs = await catalog_module.list_catalogs(db_resource=catalog_module.engine)
+    all_catalogs = await catalog_module.list_catalogs(ctx=DriverContext(db_resource=catalog_module.engine))
 
     for catalog in all_catalogs:
         # Get roles for this catalog
         try:
             # Re-fetch catalog_module if needed or use the existing one
             catalog_schema = await catalog_module.resolve_physical_schema(
-                catalog.id, db_resource=catalog_module.engine
+                catalog.id, ctx=DriverContext(db_resource=catalog_module.engine)
             )
             catalog_roles = await storage.get_identity_roles(
                 provider, subject_id, schema=catalog_schema
@@ -415,7 +416,7 @@ async def get_user_catalogs(email: EmailStr):
         # Get roles for this catalog
         try:
             catalog_schema = await catalog_module.resolve_physical_schema(
-                cat_id, db_resource=catalog_module.engine
+                cat_id, ctx=DriverContext(db_resource=catalog_module.engine)
             )
             catalog_roles = await storage.get_identity_roles(
                 provider, subject_id, schema=catalog_schema

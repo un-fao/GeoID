@@ -197,6 +197,7 @@ from dynastore.modules.catalog.lifecycle_manager import (
     sync_collection_hard_destroyer,
 )
 from dynastore.modules.db_config.query_executor import DDLQuery
+from dynastore.models.driver_context import DriverContext
 
 
 @sync_collection_initializer
@@ -392,7 +393,7 @@ class LogService(ProtocolPlugin[Any], LogsProtocol):
         else:
             try:
                 phys_schema = await catalogs.resolve_physical_schema(
-                    entry.catalog_id, db_resource=conn
+                    entry.catalog_id, ctx=DriverContext(db_resource=conn)
                 )
                 table_name = "logs"
             except ValueError:
@@ -619,12 +620,12 @@ class LogService(ProtocolPlugin[Any], LogsProtocol):
         else:
             if db_resource:
                 phys_schema = await catalogs.resolve_physical_schema(
-                    catalog_id, db_resource=db_resource
+                    catalog_id, ctx=DriverContext(db_resource=db_resource)
                 )
             else:
                 async with managed_transaction(self._engine) as conn:
                     phys_schema = await catalogs.resolve_physical_schema(
-                        catalog_id, db_resource=conn
+                        catalog_id, ctx=DriverContext(db_resource=conn)
                     )  # type: ignore
             table_name = "logs"
 
@@ -682,12 +683,12 @@ class LogService(ProtocolPlugin[Any], LogsProtocol):
         else:
             if db_resource:
                 phys_schema = await catalogs.resolve_physical_schema(
-                    catalog_id, db_resource=db_resource
+                    catalog_id, ctx=DriverContext(db_resource=db_resource)
                 )
             else:
                 async with managed_transaction(self._engine) as conn:
                     phys_schema = await catalogs.resolve_physical_schema(
-                        catalog_id, db_resource=conn
+                        catalog_id, ctx=DriverContext(db_resource=conn)
                     )  # type: ignore
             table_name = "logs"
 

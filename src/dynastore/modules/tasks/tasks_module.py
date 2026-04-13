@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 from typing import List, Optional, Any, Dict, AsyncGenerator
 from dynastore.tools.cache import cached
+from dynastore.models.driver_context import DriverContext
 from dynastore.modules import ModuleProtocol
 from dynastore.modules.db_config.query_executor import (
     DDLQuery,
@@ -328,7 +329,7 @@ class TasksModule(TaskQueueProtocol, ModuleProtocol):
                 if config_mgr:
                     try:
                         # get_config can fetch from cache or DB; since we have an engine inside manage_tasks, we pass it safely
-                        tasks_config = await config_mgr.get_config(TASKS_PLUGIN_CONFIG_ID, db_resource=engine)
+                        tasks_config = await config_mgr.get_config(TASKS_PLUGIN_CONFIG_ID, ctx=DriverContext(db_resource=engine))
                         if isinstance(tasks_config, TasksPluginConfig):
                             poll_interval = tasks_config.queue_poll_interval
                     except Exception as e:

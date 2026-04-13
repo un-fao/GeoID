@@ -42,6 +42,7 @@ else:
         pubsub_v1 = None  # type: ignore[assignment]
 
 from dynastore.modules.concurrency import run_in_thread
+from dynastore.models.driver_context import DriverContext
 from dynastore.modules.db_config.query_executor import managed_transaction
 from dynastore.modules.gcp import gcp_db
 from dynastore.modules.gcp.gcp_config import (
@@ -612,14 +613,14 @@ class GcpEventingOpsMixin:
         config_service = self.get_config_service()
         # Pass the connection to reuse the transaction
         await config_service.set_config(
-            GCP_EVENTING_CONFIG_ID, config, catalog_id=catalog_id, db_resource=conn
-        )
+            GCP_EVENTING_CONFIG_ID, config, catalog_id=catalog_id, ctx=DriverContext(db_resource=conn
+        ))
         # Re-fetch to confirm and return the validated model.
         # Passing the class (not a string id) narrows the return type to
         # GcpEventingConfig without a cast().
         return await config_service.get_config(
-            GcpEventingConfig, catalog_id, db_resource=conn
-        )
+            GcpEventingConfig, catalog_id, ctx=DriverContext(db_resource=conn
+        ))
 
     async def setup_catalog_eventing(self, catalog_id: str) -> Tuple[str, Any]:
         """EventingProtocol: Sets up GCP eventing for a catalog."""
@@ -688,7 +689,7 @@ class GcpEventingOpsMixin:
         config = await config_service.get_config(
             GCP_EVENTING_CONFIG_ID,
             catalog_id,
-            db_resource=conn,
+            ctx=DriverContext(db_resource=conn),
             config_snapshot=context.config if context else None,
         )
 

@@ -20,9 +20,12 @@
 Item CRUD protocol — create, read, update, delete operations.
 """
 
-from typing import Protocol, Optional, Any, List, Dict, Union, runtime_checkable
+from typing import Protocol, Optional, Any, List, Dict, Union, runtime_checkable, TYPE_CHECKING
 
 from dynastore.models.ogc import Feature, FeatureCollection
+
+if TYPE_CHECKING:
+    from dynastore.models.driver_context import DriverContext
 
 
 @runtime_checkable
@@ -39,7 +42,7 @@ class ItemCrudProtocol(Protocol):
         catalog_id: str,
         collection_id: str,
         items: Union[Feature, FeatureCollection, Dict[str, Any], List[Dict[str, Any]]],
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
         processing_context: Optional[Dict[str, Any]] = None,
     ) -> Union[Feature, List[Feature]]:
         """Create or update items (single or bulk)."""
@@ -50,7 +53,7 @@ class ItemCrudProtocol(Protocol):
         catalog_id: str,
         collection_id: str,
         geoid: Any,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
         lang: str = "en",
         context: Optional[Any] = None,
     ) -> Optional[Feature]:
@@ -62,7 +65,7 @@ class ItemCrudProtocol(Protocol):
         catalog_id: str,
         collection_id: str,
         item_id: str,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> int:
         """Soft-delete all versions of an item by its external ID."""
         ...
@@ -73,7 +76,7 @@ class ItemCrudProtocol(Protocol):
         collection_id: str,
         item_id: str,
         lang: str,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> int:
         """Delete a specific language translation for an item."""
         ...

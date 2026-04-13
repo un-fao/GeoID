@@ -587,7 +587,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
 
         async with managed_transaction(engine) as conn:
             collection_metadata = await catalogs_svc.get_collection(
-                catalog_id, collection_id, db_resource=conn
+                catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
             )
             if not collection_metadata:
                 raise HTTPException(

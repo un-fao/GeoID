@@ -71,7 +71,7 @@ class TilePreseedTask(
 
         catalog_id = request.catalog_id
         schema = await catalogs.resolve_physical_schema(
-            catalog_id, db_resource=self.engine
+            catalog_id, ctx=DriverContext(db_resource=self.engine)
         )
         if schema is None:
             raise RuntimeError(f"Cannot resolve physical schema for catalog {catalog_id!r}.")

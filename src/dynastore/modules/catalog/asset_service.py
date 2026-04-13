@@ -96,7 +96,7 @@ Ingestion (PostgreSQL, cascade-safe)
         ref_type=CoreAssetReferenceType.COLLECTION,
         ref_id=collection_id,
         cascade_delete=True,
-        db_resource=engine,
+        ctx=DriverContext(db_resource=engine),
     )
 
 Upload flow (GCS)
@@ -160,8 +160,10 @@ from dynastore.tools.db import validate_sql_identifier
 from dynastore.modules.catalog.models import AssetReferenceType, CoreAssetReferenceType, EventType
 from dynastore.models.protocols.assets import AssetsProtocol
 from dynastore.models.protocols.asset_driver import AssetDriverProtocol
+from dynastore.models.driver_context import DriverContext
 from dynastore.models.query_builder import FilterOperator
 from enum import Enum
+from dynastore.models.driver_context import DriverContext
 
 logger = logging.getLogger(__name__)
 
@@ -490,7 +492,7 @@ class AssetService(AssetsProtocol):
 
         catalogs = get_protocol(CatalogsProtocol)
         return await catalogs.resolve_physical_schema(
-            catalog_id, db_resource=db_resource
+            catalog_id, ctx=DriverContext(db_resource=db_resource)
         )
 
     def _get_partition_name(self, catalog_id: str, collection_id: str) -> str:
@@ -812,9 +814,10 @@ class AssetService(AssetsProtocol):
         catalog_id: str,
         asset: AssetBase,
         collection_id: Optional[str] = None,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
     ) -> Asset:
         from dynastore.modules.storage.router import get_asset_driver
+        db_resource = ctx.db_resource if ctx else None
         target_col_id = collection_id if collection_id else CATALOG_LEVEL_COLLECTION_ID
         now = datetime.now(timezone.utc)
 
@@ -1063,12 +1066,13 @@ class AssetService(AssetsProtocol):
         self,
         schema: str,
         table: str,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
     ) -> None:
         """
         Ensures that the asset cleanup trigger is present on the specified table.
         This includes ensuring the 'asset_cleanup' function exists in the tenant schema.
         """
+        db_resource = ctx.db_resource if ctx else None
         async with managed_transaction(db_resource or self.engine) as conn:
             # 1. Check if asset_id column exists
             check_sql = """
@@ -1152,10 +1156,11 @@ class AssetService(AssetsProtocol):
         ref_type: AssetReferenceType,
         ref_id: str,
         cascade_delete: bool = True,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
     ) -> AssetReference:
         """Registers a dependency on an asset. Delegates to DriverAssetPostgresql."""
         from dynastore.modules.catalog.drivers.pg_asset_driver import DriverAssetPostgresql
+        db_resource = ctx.db_resource if ctx else None
         pg = DriverAssetPostgresql(engine=db_resource or self.engine)
         row = await pg.add_asset_reference(
             asset_id=asset_id,

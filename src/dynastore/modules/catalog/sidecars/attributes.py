@@ -425,8 +425,9 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
             logger.info(f"Setting up asset cleanup trigger for {schema}.{table_name}")
             am = get_protocol(AssetsProtocol)
             if am:
+                from dynastore.models.driver_context import DriverContext
                 await am.ensure_asset_cleanup_trigger(  # type: ignore[attr-defined]
-                    schema, table_name, db_resource=conn
+                    schema, table_name, ctx=DriverContext(db_resource=conn) if conn is not None else None,
                 )
             else:
                 logger.warning(

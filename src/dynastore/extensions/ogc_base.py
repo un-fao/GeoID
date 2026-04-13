@@ -167,8 +167,9 @@ class OGCServiceMixin:
         ``modules.db_config``.
         """
         catalogs_svc = await self._get_catalogs_service()
+        from dynastore.models.driver_context import DriverContext
         rows_affected = await catalogs_svc.delete_item(
-            catalog_id, collection_id, item_id, db_resource=db_resource
+            catalog_id, collection_id, item_id, ctx=DriverContext(db_resource=db_resource)
         )
         if rows_affected == 0:
             raise HTTPException(

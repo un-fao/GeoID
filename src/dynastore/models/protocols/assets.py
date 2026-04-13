@@ -85,6 +85,7 @@ if TYPE_CHECKING:
         AssetReference,
         AssetReferenceType,
     )
+    from dynastore.models.driver_context import DriverContext  # noqa: F401
 
 
 @runtime_checkable
@@ -144,7 +145,7 @@ class AssetsProtocol(Protocol):
         catalog_id: str,
         asset: "AssetBase",
         collection_id: Optional[str] = None,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> "Asset":
         """
         Creates a new asset.
@@ -256,7 +257,7 @@ class AssetsProtocol(Protocol):
         self,
         schema: str,
         table: str,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> None:
         """
         Ensures the ``trg_asset_cleanup`` DB trigger is installed on *table*.
@@ -284,7 +285,7 @@ class AssetsProtocol(Protocol):
         ref_type: "AssetReferenceType",
         ref_id: str,
         cascade_delete: bool = True,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> "AssetReference":
         """
         Registers a dependency from *ref_id* (e.g. a collection or table) on

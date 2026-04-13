@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from dynastore.models.shared_models import Collection, CollectionUpdate
     from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
     from dynastore.models.otf import SchemaEvolution, SchemaVersion, SnapshotInfo
+    from dynastore.models.driver_context import DriverContext  # noqa: F401
 
 
 @runtime_checkable
@@ -51,7 +52,7 @@ class CollectionsProtocol(Protocol):
         catalog_id: str,
         collection_id: str,
         lang: str = "en",
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> Optional["Collection"]:
         """
         Retrieves a collection by ID.
@@ -63,7 +64,7 @@ class CollectionsProtocol(Protocol):
         catalog_id: str,
         collection_data: Union[Dict[str, Any], "Collection"],
         lang: str = "en",
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
         **kwargs,
     ) -> "Collection":
         """
@@ -77,7 +78,7 @@ class CollectionsProtocol(Protocol):
         collection_id: str,
         updates: Union[Dict[str, Any], "CollectionUpdate"],
         lang: str = "en",
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> Optional["Collection"]:
         """
         Updates an existing collection.
@@ -89,7 +90,7 @@ class CollectionsProtocol(Protocol):
         catalog_id: str,
         collection_id: str,
         force: bool = False,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> bool:
         """
         Deletes a collection.
@@ -101,7 +102,7 @@ class CollectionsProtocol(Protocol):
         catalog_id: str,
         collection_id: str,
         lang: str,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> bool:
         """
         Deletes a specific language translation for a collection.
@@ -114,7 +115,7 @@ class CollectionsProtocol(Protocol):
         limit: int = 10,
         offset: int = 0,
         lang: str = "en",
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
         q: Optional[str] = None,
     ) -> List[Any]:
         """
@@ -150,13 +151,13 @@ class CollectionsProtocol(Protocol):
         ...
 
     async def get_collection_config(
-        self, catalog_id: str, collection_id: str, db_resource: Optional[Any] = None
+        self, catalog_id: str, collection_id: str, ctx: Optional["DriverContext"] = None
     ) -> "CollectionPluginConfig":
         """Retrieves the configuration for a collection."""
         ...
 
     async def get_collection_column_names(
-        self, catalog_id: str, collection_id: str, db_resource: Optional[Any] = None
+        self, catalog_id: str, collection_id: str, ctx: Optional["DriverContext"] = None
     ) -> Set[str]:
         """Retrieves the physical column names for a collection."""
         ...
@@ -169,7 +170,7 @@ class CollectionsProtocol(Protocol):
         collection_id: str,
         *,
         limit: int = 100,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> List["SnapshotInfo"]:
         """List available snapshots (versions) for a collection.
 
@@ -184,7 +185,7 @@ class CollectionsProtocol(Protocol):
         collection_id: str,
         *,
         label: Optional[str] = None,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> "SnapshotInfo":
         """Create an explicit snapshot/bookmark of current state."""
         ...
@@ -195,7 +196,7 @@ class CollectionsProtocol(Protocol):
         collection_id: str,
         snapshot_id: str,
         *,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> None:
         """Rollback collection to a previous snapshot."""
         ...
@@ -209,7 +210,7 @@ class CollectionsProtocol(Protocol):
         snapshot_id: str,
         *,
         request: Optional[Any] = None,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> AsyncIterator[Any]:
         """Read entities at a specific snapshot (time-travel)."""
         ...
@@ -221,7 +222,7 @@ class CollectionsProtocol(Protocol):
         as_of: datetime,
         *,
         request: Optional[Any] = None,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> AsyncIterator[Any]:
         """Read entities as they existed at a point in time."""
         ...
@@ -233,7 +234,7 @@ class CollectionsProtocol(Protocol):
         catalog_id: str,
         collection_id: str,
         *,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> List["SchemaVersion"]:
         """Return schema evolution history for a collection."""
         ...
@@ -244,7 +245,7 @@ class CollectionsProtocol(Protocol):
         collection_id: str,
         changes: "SchemaEvolution",
         *,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> "SchemaVersion":
         """Apply schema changes (add/rename/drop columns, type widening).
 

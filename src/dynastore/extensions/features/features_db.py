@@ -188,11 +188,12 @@ async def get_items_filtered(
         ))
 
     # --- Execute Single Query utilizing the Optimized Services ---
+    from dynastore.models.driver_context import DriverContext
     rows_proxy = await catalogs.search_items(
-        catalog_id=catalog_id, 
-        collection_id=collection_id, 
-        request=request, 
-        db_resource=conn
+        catalog_id=catalog_id,
+        collection_id=collection_id,
+        request=request,
+        ctx=DriverContext(db_resource=conn) if conn is not None else None,
     )
 
     rows = []

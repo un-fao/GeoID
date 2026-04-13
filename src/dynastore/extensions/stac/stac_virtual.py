@@ -269,7 +269,7 @@ class StacVirtualMixin(_Host):
 
             # Resolve col_config for sidecar resolution
             col_config = await catalogs_svc.get_collection_config(
-                catalog_id, collection_id, db_resource=conn
+                catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
             )
 
             # Optimized query with QueryRequest
@@ -288,7 +288,8 @@ class StacVirtualMixin(_Host):
 
             # Fetch features using ItemService.stream_items to get QueryResponse
             query_res = await items_svc.stream_items(
-                catalog_id, collection_id, request=query_req, db_resource=conn
+                catalog_id, collection_id, request=query_req,
+                ctx=DriverContext(db_resource=conn) if conn is not None else None,
             )
 
             total_count = query_res.total_count or 0
@@ -883,7 +884,7 @@ class StacVirtualMixin(_Host):
             features = []
             for row in items_rows:
                 # Hierarchy queries return base table rows + sidecar joins if configured
-                col_config = await catalogs_svc.get_collection_config(catalog_id, collection_id, db_resource=conn)
+                col_config = await catalogs_svc.get_collection_config(catalog_id, collection_id, ctx=DriverContext(db_resource=conn))
                 feat = items_svc.map_row_to_feature(dict(row._mapping) if hasattr(row, "_mapping") else dict(row), col_config)
                 if feat:
                     features.append(feat)
@@ -1002,7 +1003,7 @@ class StacVirtualMixin(_Host):
             assert items_svc is not None and catalogs_svc is not None
             features = []
             for row in items_rows:
-                col_config = await catalogs_svc.get_collection_config(catalog_id, collection_id, db_resource=conn)
+                col_config = await catalogs_svc.get_collection_config(catalog_id, collection_id, ctx=DriverContext(db_resource=conn))
                 feat = items_svc.map_row_to_feature(dict(row._mapping) if hasattr(row, "_mapping") else dict(row), col_config)
                 if feat:
                     features.append(feat)

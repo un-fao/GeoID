@@ -43,6 +43,7 @@ from dynastore.modules.catalog.sidecars.base import ConsumerType
 from . import records_generator as gen
 from . import records_models as rm
 from .policies import register_records_policies
+from dynastore.models.driver_context import DriverContext
 
 logger = logging.getLogger(__name__)
 
@@ -271,11 +272,12 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin):
 
         items_protocol = cast(ItemsProtocol, catalogs_svc)
         try:
+            from dynastore.models.driver_context import DriverContext
             query_response = await items_protocol.stream_items(
                 catalog_id=catalog_id,
                 collection_id=collection_id,
                 request=request_obj,
-                db_resource=conn,
+                ctx=DriverContext(db_resource=conn) if conn is not None else None,
                 consumer=ConsumerType.OGC_RECORDS,
             )
         except ValueError as e:
@@ -285,7 +287,7 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin):
         root_url = get_root_url(request)
 
         layer_config = await catalogs_svc.get_collection_config(
-            catalog_id, collection_id, db_resource=conn,
+            catalog_id, collection_id, ctx=DriverContext(db_resource=conn),
         )
 
         records: List[rm.Record] = []
@@ -326,7 +328,7 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin):
             raise HTTPException(status_code=404, detail=f"Record '{record_id}' not found.")
 
         layer_config = await catalogs_svc.get_collection_config(
-            catalog_id, collection_id, db_resource=conn,
+            catalog_id, collection_id, ctx=DriverContext(db_resource=conn),
         )
         root_url = get_root_url(request)
         record = gen.db_row_to_record(feature, catalog_id, collection_id, root_url, layer_config)
@@ -365,12 +367,12 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin):
             catalog_id=catalog_id,
             collection_id=collection_id,
             items=items,
-            db_resource=conn,
+            ctx=DriverContext(db_resource=conn),
         )
 
         root_url = get_root_url(request)
         layer_config = await catalogs_svc.get_collection_config(
-            catalog_id, collection_id, db_resource=conn,
+            catalog_id, collection_id, ctx=DriverContext(db_resource=conn),
         )
 
         if isinstance(result, list) and len(result) == 1:

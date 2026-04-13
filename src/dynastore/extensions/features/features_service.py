@@ -22,6 +22,7 @@ from typing import Optional, List, Dict, Any, Tuple, Union, cast
 
 import logging
 from dynastore.modules.db_config.exceptions import ImmutableConfigError
+from dynastore.models.driver_context import DriverContext
 from fastapi import (
     APIRouter,
     Depends,
@@ -482,7 +483,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
             created_catalog_model = await catalogs_svc.create_catalog(
                 catalog_data=catalog_data,
                 lang=use_lang,
-                db_resource=conn,
+                ctx=DriverContext(db_resource=conn),
             )
             localized_data, _ = created_catalog_model.localize(language)
             return JSONResponse(
@@ -557,7 +558,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
 
         # Pass raw dict, manager handles validation
         catalog = await catalogs_svc.update_catalog(
-            catalog_id, catalog_dict, lang=use_lang, db_resource=conn
+            catalog_id, catalog_dict, lang=use_lang, ctx=DriverContext(db_resource=conn)
         )
         if not catalog:
             raise HTTPException(status_code=404, detail="Catalog not found")
@@ -573,7 +574,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
         catalogs_svc = await self._get_catalogs_service()
         # Catalog Protocol supports force deletion of catalogs
         if not await catalogs_svc.delete_catalog(
-            catalog_id, force=force, db_resource=conn
+            catalog_id, force=force, ctx=DriverContext(db_resource=conn)
         ):
             raise HTTPException(
                 status_code=404, detail=f"Catalog '{catalog_id}' not found."
@@ -710,7 +711,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
             # Pass raw dict, manager handles localization
             # Pass conn as db_resource for transactional integrity
             collection = await catalogs_svc.create_collection(
-                catalog_id, collection_dict, lang=use_lang, db_resource=conn
+                catalog_id, collection_dict, lang=use_lang, ctx=DriverContext(db_resource=conn)
             )
             return JSONResponse(
                 content=collection.model_dump(by_alias=True, exclude_none=True),
@@ -820,7 +821,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
     ):
         catalogs_svc = await self._get_catalogs_service()
         if not await catalogs_svc.delete_collection(
-            catalog_id, collection_id, force, db_resource=conn
+            catalog_id, collection_id, force, ctx=DriverContext(db_resource=conn)
         ):
             raise HTTPException(status_code=404, detail="Collection not found.")
         return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -884,8 +885,8 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
         # --- Caching Support ---
 
         _pc = await configs_svc.get_config(
-            FeaturesPluginConfig, catalog_id=catalog_id, db_resource=conn
-        )
+            FeaturesPluginConfig, catalog_id=catalog_id, ctx=DriverContext(db_resource=conn
+        ))
         assert isinstance(_pc, FeaturesPluginConfig)
         plugin_config: FeaturesPluginConfig = _pc
 
@@ -945,7 +946,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
                     collection_id=collection_id,
                     request=request_obj,
                     # Decouple from request connection to allow background streaming
-                    db_resource=None,
+                    ctx=None,
                     consumer=ConsumerType.OGC_FEATURES,
                 )
             except ValueError as e:
@@ -1054,7 +1055,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
             raise HTTPException(status_code=404, detail=f"Item '{item_id}' not found.")
 
         layer_config = await catalogs_svc.get_collection_config(
-            catalog_id, collection_id, db_resource=conn
+            catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
         )
         root_url = get_root_url(request)
         ogc_feature = ogc_generator._db_row_to_ogc_feature(
@@ -1077,7 +1078,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
         configs_svc = await self._get_configs_service()
         # 1. Get CatalogPluginConfig to correctly process the incoming feature payload.
         layer_config = await catalogs_svc.get_collection_config(
-            catalog_id, collection_id, db_resource=conn
+            catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
         )
         if not layer_config:
             raise HTTPException(
@@ -1093,7 +1094,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
 
         try:
             created = await catalogs_svc.upsert(
-                catalog_id, collection_id, items=payload, db_resource=conn
+                catalog_id, collection_id, items=payload, ctx=DriverContext(db_resource=conn)
             )
         except ValueError as e:
             raise HTTPException(
@@ -1189,7 +1190,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
             catalog_id,
             collection_id,
             items=feature_def,
-            db_resource=conn,
+            ctx=DriverContext(db_resource=conn),
         )
         if not updated_row:
             raise HTTPException(
