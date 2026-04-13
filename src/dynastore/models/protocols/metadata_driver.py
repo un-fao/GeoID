@@ -80,7 +80,6 @@ class CollectionMetadataDriverProtocol(Protocol):
     """
 
     driver_id: str
-    driver_type: str
     capabilities: FrozenSet[str]
     # description: ClassVar[LocalizedText]  — declared in each concrete driver class
 

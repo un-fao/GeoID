@@ -127,12 +127,9 @@ class CollectionStorageDriverProtocol(Protocol):
     The ``driver_id`` is used by routing config to select the active driver
     for a given collection.
 
-    ``driver_type`` declares the driver *family* (e.g. ``"postgresql"``).
-    Versioned drivers share the same ``driver_type`` but have different
-    ``driver_id`` values (e.g. ``"postgresql"`` and ``"postgresql_v2"``).
-    Business logic uses ``driver_type`` to decide code paths (e.g. PG
-    sidecar pipeline vs non-PG write path); ``driver_id`` is only for
-    routing resolution.
+    Business logic dispatches on driver *class* (``isinstance(driver, X)``)
+    rather than a string family tag; ``driver_id`` is only for routing
+    resolution.
 
     ``capabilities`` declares what the driver supports as a ``FrozenSet[str]``
     using ``Capability`` constants and/or custom strings.
@@ -149,7 +146,6 @@ class CollectionStorageDriverProtocol(Protocol):
     """
 
     driver_id: str
-    driver_type: str
     capabilities: FrozenSet[str]
     preferred_for: FrozenSet[str]
     supported_hints: FrozenSet[str]

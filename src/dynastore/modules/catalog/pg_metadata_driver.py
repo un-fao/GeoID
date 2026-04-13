@@ -61,7 +61,6 @@ class PostgresMetadataDriver:
     """
 
     driver_id: str = "postgresql_metadata"
-    driver_type: str = "driver:collection:metadata:postgresql"
     capabilities: FrozenSet[str] = frozenset({
         MetadataCapability.READ,
         MetadataCapability.WRITE,

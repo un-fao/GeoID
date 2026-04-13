@@ -190,7 +190,6 @@ class ElasticsearchMetadataDriver:
     """
 
     driver_id: str = "elasticsearch_metadata"
-    driver_type: str = "driver:collection:metadata:elasticsearch"
     capabilities: FrozenSet[str] = frozenset({
         MetadataCapability.READ,
         MetadataCapability.WRITE,

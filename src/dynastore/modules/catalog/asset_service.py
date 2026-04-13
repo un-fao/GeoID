@@ -970,7 +970,10 @@ class AssetService(AssetsProtocol):
 
             # Build drivers to notify: non-PG primary + all secondaries
             drivers_to_delete = []
-            if getattr(write_driver, "driver_type", None) != "postgresql":
+            from dynastore.modules.catalog.drivers.pg_asset_driver import (
+                PostgresAssetDriver,
+            )
+            if not isinstance(write_driver, PostgresAssetDriver):
                 from dynastore.modules.storage.router import ResolvedDriver
                 drivers_to_delete.append(
                     ResolvedDriver(driver=write_driver, on_failure=FailurePolicy.WARN)

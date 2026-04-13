@@ -71,7 +71,6 @@ class _ElasticsearchBase:
     """Shared helpers for ES storage drivers."""
 
     _db_logic = None
-    driver_type: str = ""  # overridden by concrete subclasses
 
     @classmethod
     def _get_db_logic(cls):
@@ -245,7 +244,6 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
     """
 
     driver_id: str = "elasticsearch"
-    driver_type: str = "driver:records:elasticsearch"
     priority: int = 50
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,
@@ -1032,7 +1030,6 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
     """
 
     driver_id: str = "elasticsearch_obfuscated"
-    driver_type: str = "driver:records:elasticsearch"
     priority: int = 51
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,
@@ -1499,7 +1496,6 @@ class DriverAssetElasticsearch(_ElasticsearchBase, ModuleProtocol):
     """
 
     driver_id: str = "elasticsearch_assets"
-    driver_type: str = "driver:asset:elasticsearch"
     priority: int = 52
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,

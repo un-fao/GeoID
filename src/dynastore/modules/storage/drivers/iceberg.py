@@ -128,7 +128,6 @@ class DriverRecordsIceberg(ModuleProtocol):
     """
 
     driver_id: str = "iceberg"
-    driver_type: str = "driver:records:iceberg"
     priority: int = 20
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,

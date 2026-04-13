@@ -143,7 +143,7 @@ class DriverInfo(BaseModel):
     driver_id: str = Field(..., description="Unique driver identifier (used in routing config).")
     driver_type: str = Field(
         "",
-        description="Driver family type (e.g. 'driver:records:postgresql'). Multiple driver_ids may share a type.",
+        description="Driver class name (e.g. 'DriverRecordsPostgresql'). Multiple driver_ids may share a class.",
     )
     domain: str = Field(
         ...,
