@@ -172,11 +172,11 @@ class GcpModuleConfig(PluginConfig):
     
     # Visibility and Propagation Tuning (Critical for tests)
     catalog_visibility_max_retries: int = Field(
-        int(os.environ.get("GCP_CATALOG_VISIBILITY_MAX_RETRIES", "20")), 
+        default=int(os.environ.get("GCP_CATALOG_VISIBILITY_MAX_RETRIES", "20")),
         description="Max retries when checking for catalog visibility."
     )
     catalog_visibility_retry_interval: float = Field(
-        float(os.environ.get("GCP_CATALOG_VISIBILITY_RETRY_INTERVAL", "0.2")), 
+        default=float(os.environ.get("GCP_CATALOG_VISIBILITY_RETRY_INTERVAL", "0.2")),
         description="Interval between visibility checks, in seconds."
     )
 

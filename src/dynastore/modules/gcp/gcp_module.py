@@ -20,14 +20,19 @@ import logging
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from typing import Optional, AsyncIterator, Dict, Any, List, Tuple, Union
+from typing import TYPE_CHECKING, Optional, AsyncIterator, Dict, Any, List, Tuple, Union
 
-try:
+if TYPE_CHECKING:
     from google.api_core import exceptions as google_exceptions
     from google.api_core.exceptions import Aborted
-except ImportError:
-    google_exceptions = None
-    Aborted = None # Ensure Aborted is defined even if google.api_core is not available
+    from google.cloud import storage, pubsub_v1, run_v2
+else:
+    try:
+        from google.api_core import exceptions as google_exceptions
+        from google.api_core.exceptions import Aborted
+    except ImportError:
+        google_exceptions = None
+        Aborted = None
 from dynastore.tools.cache import cached
 import dynastore.modules as dm
 from dynastore.modules import ModuleProtocol
@@ -77,18 +82,19 @@ from dynastore.modules.gcp.models import (
     PUBSUB_JWT_AUDIENCE,
 )
 
-try:
-    from google.cloud import storage
-except ImportError:
-    storage = None
-try:
-    from google.cloud import pubsub_v1
-except ImportError:
-    pubsub_v1 = None
-try:
-    from google.cloud import run_v2
-except ImportError:
-    run_v2 = None
+if not TYPE_CHECKING:
+    try:
+        from google.cloud import storage
+    except ImportError:
+        storage = None
+    try:
+        from google.cloud import pubsub_v1
+    except ImportError:
+        pubsub_v1 = None
+    try:
+        from google.cloud import run_v2
+    except ImportError:
+        run_v2 = None
 from dynastore.modules.gcp.bucket_service import BucketService
 # from google.cloud import compute_v1
 from .gcp_catalog_ops import GcpCatalogOpsMixin
@@ -134,7 +140,9 @@ class GCPModule(
         if self._engine:
             return self._engine
         from dynastore.tools.protocol_helpers import get_engine
-        return get_engine()
+        eng = get_engine()
+        assert eng is not None, "No DB engine available"
+        return eng
 
     @engine.setter
     def engine(self, value: DbResource):
@@ -221,7 +229,8 @@ class GCPModule(
         # 1. Retrieve ConfigManager and Global Module Config
         self._config_service = get_protocol(ConfigsProtocol)
         if self._config_service:
-            self._module_config = await self._config_service.get_config(GCP_MODULE_CONFIG_ID)
+            cfg = await self._config_service.get_config(GcpModuleConfig)
+            self._module_config = cfg if isinstance(cfg, GcpModuleConfig) else None
             
             # Synchronize local tunables with global config
             if self._module_config:
@@ -232,7 +241,7 @@ class GCPModule(
             logger.warning(
                 "GCP Module: ConfigsProtocol not available. Global settings will use defaults/env."
             )
-            self._module_config = GcpModuleConfig() # Use defaults (including env fallbacks)
+            self._module_config = GcpModuleConfig()
 
         # 2. Ensure synchronous clients are open (re-open if closed from previous lifespan)
         self.reinitialize_clients()
@@ -267,8 +276,8 @@ class GCPModule(
                 engine=self._engine, # Explicitly pass current engine check
                 config_service=self._config_service,
                 storage_client=self._storage_client,
-                project_id=self.get_project_id(),
-                region=self.get_region(),
+                project_id=self.get_project_id() or "",
+                region=self.get_region() or "",
             )
 
             # Initialize database schema for the module
@@ -290,11 +299,11 @@ class GCPModule(
             # --- Register Lifecycle Hooks ---
             from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
 
-            lifecycle_registry.sync_catalog_initializer(self._on_sync_init_catalog)
-            # We keep these as async because they don't block the core creation flow 
+            lifecycle_registry.sync_catalog_initializer()(self._on_sync_init_catalog)
+            # We keep these as async because they don't block the core creation flow
             # and don't cause race conditions in tests as easily as the creation one.
-            lifecycle_registry.async_catalog_destroyer(self._on_async_destroy_catalog)
-            lifecycle_registry.async_collection_destroyer(
+            lifecycle_registry.async_catalog_destroyer()(self._on_async_destroy_catalog)
+            lifecycle_registry.async_collection_destroyer()(
                 self._on_async_destroy_collection
             )
 
@@ -533,6 +542,7 @@ class GCPModule(
         to a background thread.
         """
         await run_in_thread(self._refresh_credentials)
+        assert self._credentials is not None
         return self._credentials.token
 
     def get_credentials_object(self) -> Any:
@@ -631,7 +641,7 @@ class GCPModule(
                 f"Discovering public URL for Cloud Run service '{service_name}' in region '{region}'."
             )
             client = self.get_run_client()
-            service_path = client.service_path(project_id, region, service_name)
+            service_path = client.service_path(project_id or "", region or "", service_name)
             service_details = await client.get_service(name=service_path)
             logger.info(f"Discovered and cached self URL: {service_details.uri}")
             return service_details.uri
