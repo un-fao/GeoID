@@ -43,7 +43,7 @@ async def _resolve_physical_table(
     try:
         driver = await get_driver(Operation.READ, catalog_id, collection_id)
         if hasattr(driver, "resolve_physical_table"):
-            return await driver.resolve_physical_table(
+            return await driver.resolve_physical_table(  # type: ignore[attr-defined]
                 catalog_id, collection_id, db_resource=db_resource
             )
         return None
@@ -155,7 +155,7 @@ async def execute_aggregations(
     return results
 
 
-def _build_joins(phys_schema: str, phys_table: str, required_sidecars: set) -> str:
+def _build_joins(phys_schema: str, phys_table: str, required_sidecars: FrozenSet[str]) -> str:
     joins = []
     if "attributes" in required_sidecars:
         table = f"{phys_table}_attributes"
@@ -173,7 +173,7 @@ async def _execute_term_aggregation(
     agg_request: AggregationRule,
     where_sql: str,
     params: Dict[str, Any],
-    filter_hints: set,
+    filter_hints: FrozenSet[str],
 ) -> Dict[str, Any]:
     """Executes a STAC-style term aggregation (frequency counts)."""
     # The 'property' is like 'properties.asset_id'
@@ -187,9 +187,11 @@ async def _execute_term_aggregation(
     attribute_key = field_parts[1]
 
     catalogs = get_protocol(CatalogsProtocol)
+    assert catalogs is not None
 
     # Resolve physical schema
     phys_schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+    assert phys_schema is not None
 
     # Build the UNION ALL query for aggregation
     required = filter_hints | {"attributes"}
@@ -243,7 +245,7 @@ async def _execute_stats_aggregation(
     agg_request: AggregationRule,
     where_sql: str,
     params: Dict[str, Any],
-    filter_hints: set,
+    filter_hints: FrozenSet[str],
 ) -> Dict[str, Any]:
     """Executes statistical aggregation (min, max, avg, sum, count)."""
     field_parts = agg_request.property.split(".")
@@ -256,9 +258,11 @@ async def _execute_stats_aggregation(
     attribute_key = field_parts[1]
 
     catalogs = get_protocol(CatalogsProtocol)
+    assert catalogs is not None
 
     # Resolve physical schema
     phys_schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+    assert phys_schema is not None
 
     # Build UNION ALL query
     required = filter_hints | {"attributes"}
@@ -327,15 +331,17 @@ async def _execute_geohash_aggregation(
     agg_request: AggregationRule,
     where_sql: str,
     params: Dict[str, Any],
-    filter_hints: set,
+    filter_hints: FrozenSet[str],
 ) -> Dict[str, Any]:
     """Executes geohash-based spatial aggregation."""
     precision = agg_request.precision or 5  # Default precision
 
     catalogs = get_protocol(CatalogsProtocol)
+    assert catalogs is not None
 
     # Resolve physical schema
     phys_schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+    assert phys_schema is not None
 
     # Build UNION ALL query
     required = filter_hints | {"geometry"}
@@ -389,7 +395,7 @@ async def _execute_datetime_aggregation(
     agg_request: AggregationRule,
     where_sql: str,
     params: Dict[str, Any],
-    filter_hints: set,
+    filter_hints: FrozenSet[str],
 ) -> Dict[str, Any]:
     """Executes temporal histogram aggregation."""
     interval = agg_request.interval or "1 day"  # Default interval
@@ -404,9 +410,11 @@ async def _execute_datetime_aggregation(
         time_expr = f'"{agg_request.property}"'
 
     catalogs = get_protocol(CatalogsProtocol)
+    assert catalogs is not None
 
     # Resolve physical schema
     phys_schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+    assert phys_schema is not None
 
     # Build UNION ALL query
     required = filter_hints | {"attributes"}
@@ -464,14 +472,16 @@ async def _execute_bbox_aggregation(
     collection_ids: List[str],
     where_sql: str,
     params: Dict[str, Any],
-    filter_hints: set,
+    filter_hints: FrozenSet[str],
 ) -> Dict[str, Any]:
     """Calculates the combined bounding box for all matching items."""
 
     catalogs = get_protocol(CatalogsProtocol)
+    assert catalogs is not None
 
     # Resolve physical schema
     phys_schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+    assert phys_schema is not None
 
     # Build UNION ALL query
     required = filter_hints | {"geometry"}
@@ -529,14 +539,16 @@ async def _execute_temporal_extent_aggregation(
     collection_ids: List[str],
     where_sql: str,
     params: Dict[str, Any],
-    filter_hints: set,
+    filter_hints: FrozenSet[str],
 ) -> Dict[str, Any]:
     """Calculates the temporal extent (min/max datetime) for all matching items."""
 
     catalogs = get_protocol(CatalogsProtocol)
+    assert catalogs is not None
 
     # Resolve physical schema
     phys_schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+    assert phys_schema is not None
 
     # Build UNION ALL query
     required = filter_hints | {"attributes"}

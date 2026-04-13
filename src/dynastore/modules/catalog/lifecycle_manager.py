@@ -306,7 +306,7 @@ class LifecycleRegistry:
         if callable(priority):
             func = priority
             priority = 0
-            return decorator(func)
+            return decorator(func)  # type: ignore[return-value]
 
         return decorator
 
@@ -319,7 +319,7 @@ class LifecycleRegistry:
         if callable(priority):
             func = priority
             priority = 0
-            return decorator(func)
+            return decorator(func)  # type: ignore[return-value]
         return decorator
 
     def sync_collection_initializer(
@@ -331,7 +331,7 @@ class LifecycleRegistry:
         if callable(priority):
             func = priority
             priority = 0
-            return decorator(func)
+            return decorator(func)  # type: ignore[return-value]
         return decorator
 
     def sync_collection_destroyer(
@@ -343,7 +343,7 @@ class LifecycleRegistry:
         if callable(priority):
             func = priority
             priority = 0
-            return decorator(func)
+            return decorator(func)  # type: ignore[return-value]
         return decorator
 
     def sync_collection_hard_destroyer(
@@ -357,7 +357,7 @@ class LifecycleRegistry:
         if callable(priority):
             func = priority
             priority = 0
-            return decorator(func)
+            return decorator(func)  # type: ignore[return-value]
         return decorator
 
     # Async external component hook registration
@@ -370,7 +370,7 @@ class LifecycleRegistry:
         if callable(priority):
             func = priority
             priority = 0
-            return decorator(func)
+            return decorator(func)  # type: ignore[return-value]
         return decorator
 
     def async_catalog_destroyer(
@@ -382,7 +382,7 @@ class LifecycleRegistry:
         if callable(priority):
             func = priority
             priority = 0
-            return decorator(func)
+            return decorator(func)  # type: ignore[return-value]
         return decorator
 
     def async_collection_initializer(
@@ -394,7 +394,7 @@ class LifecycleRegistry:
         if callable(priority):
             func = priority
             priority = 0
-            return decorator(func)
+            return decorator(func)  # type: ignore[return-value]
         return decorator
 
     def async_collection_destroyer(
@@ -406,7 +406,7 @@ class LifecycleRegistry:
         if callable(priority):
             func = priority
             priority = 0
-            return decorator(func)
+            return decorator(func)  # type: ignore[return-value]
         return decorator
 
     # Asset lifecycle hook registration
@@ -419,7 +419,7 @@ class LifecycleRegistry:
         if callable(priority):
             func = priority
             priority = 0
-            return decorator(func)
+            return decorator(func)  # type: ignore[return-value]
         return decorator
 
     def sync_asset_destroyer(
@@ -431,7 +431,7 @@ class LifecycleRegistry:
         if callable(priority):
             func = priority
             priority = 0
-            return decorator(func)
+            return decorator(func)  # type: ignore[return-value]
         return decorator
 
     def async_asset_initializer(
@@ -443,7 +443,7 @@ class LifecycleRegistry:
         if callable(priority):
             func = priority
             priority = 0
-            return decorator(func)
+            return decorator(func)  # type: ignore[return-value]
         return decorator
 
     def async_asset_destroyer(
@@ -455,7 +455,7 @@ class LifecycleRegistry:
         if callable(priority):
             func = priority
             priority = 0
-            return decorator(func)
+            return decorator(func)  # type: ignore[return-value]
         return decorator
 
     # Synchronous transactional execution
@@ -821,7 +821,7 @@ class LifecycleRegistry:
         async def _run_all():
             for destroyer in self._sort_hooks(self._async_collection_destroyers, reverse=True):
                 try:
-                    await destroyer(schema, catalog_id, collection_id, config_snapshot)
+                    await destroyer(catalog_id, collection_id, context)
                 except Exception as e:
                     logger.error(
                         f"Async collection destroyer {destroyer.__module__}.{destroyer.__name__} "
@@ -1023,8 +1023,8 @@ class LifecycleRegistry:
 
                         try:
                             async with managed_transaction(engine) as conn:
-                                await conn.execute(text("SET LOCAL lock_timeout = '50ms'"))
-                                res = await conn.execute(count_sql, type_params)
+                                await conn.execute(text("SET LOCAL lock_timeout = '50ms'"))  # type: ignore[misc]
+                                res = await conn.execute(count_sql, type_params)  # type: ignore[misc]
                                 total_pending = res.scalar_one() or 0
                         except Exception as e:
                             logger.debug(f"wait_for_all_tasks: poll error: {e}")
