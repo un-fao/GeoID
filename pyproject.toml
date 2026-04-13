@@ -77,7 +77,7 @@ extension_events = ["dynastore[extension_base,module_events]"]
 extension_wfs = ["dynastore[extension_base,geospatial_core]"]
 extension_admin = ["dynastore[extension_base,extension_iam]"]
 extension_assets = ["dynastore[extension_base]"]
-extension_notebooks = ["dynastore[extension_base,module_notebooks]"]
+extension_notebooks = ["dynastore[extension_base,module_notebooks]", "pydantic[email]", "PyJWT>=2.0.0"]
 extension_records = ["dynastore[extension_base]"]
 extension_search = ["dynastore[extension_base]"]
 extension_gcp_bucket = ["dynastore[extension_base,module_gcp]"]
@@ -313,12 +313,12 @@ notebooks = "dynastore.modules.notebooks.notebooks_module:NotebooksModule"
 elasticsearch = "dynastore.modules.elasticsearch.module:ElasticsearchModule"
 stats = "dynastore.modules.stats.stats_module:STATS"
 web = "dynastore.modules.web.web_module:WebModule"
-storage_postgresql = "dynastore.modules.storage.drivers.postgresql:PostgresStorageDriver"
-storage_elasticsearch = "dynastore.modules.storage.drivers.elasticsearch:ElasticsearchStorageDriver"
-storage_elasticsearch_obfuscated = "dynastore.modules.storage.drivers.elasticsearch:ElasticsearchObfuscatedDriver"
-storage_elasticsearch_assets = "dynastore.modules.storage.drivers.elasticsearch:ElasticsearchAssetsDriver"
-storage_duckdb = "dynastore.modules.storage.drivers.duckdb:DuckDBStorageDriver"
-storage_iceberg = "dynastore.modules.storage.drivers.iceberg:IcebergStorageDriver"
+storage_postgresql = "dynastore.modules.storage.drivers.postgresql:DriverRecordsPostgresql"
+storage_elasticsearch = "dynastore.modules.storage.drivers.elasticsearch:DriverRecordsElasticsearch"
+storage_elasticsearch_obfuscated = "dynastore.modules.storage.drivers.elasticsearch:DriverRecordsElasticsearchObfuscated"
+storage_elasticsearch_assets = "dynastore.modules.storage.drivers.elasticsearch:DriverAssetElasticsearch"
+storage_duckdb = "dynastore.modules.storage.drivers.duckdb:DriverRecordsDuckdb"
+storage_iceberg = "dynastore.modules.storage.drivers.iceberg:DriverRecordsIceberg"
 metadata_postgresql = "dynastore.modules.catalog.pg_metadata_driver:PostgresMetadataDriver"
 metadata_elasticsearch = "dynastore.modules.elasticsearch.es_metadata_driver:ElasticsearchMetadataDriver"
 

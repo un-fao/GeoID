@@ -118,7 +118,7 @@ def _resolve_iceberg_type(type_str: str):
     }.get(type_str, StringType())
 
 
-class IcebergStorageDriver(ModuleProtocol):
+class DriverRecordsIceberg(ModuleProtocol):
     """Iceberg storage driver — Open Table Format with full OTF capabilities.
 
     Uses PyIceberg for ACID transactions, snapshot management, time-travel,
@@ -184,10 +184,10 @@ class IcebergStorageDriver(ModuleProtocol):
 
     @asynccontextmanager
     async def lifespan(self, app_state: object):
-        logger.info("IcebergStorageDriver: started")
+        logger.info("DriverRecordsIceberg: started")
         yield
         self._catalog_cache.clear()
-        logger.info("IcebergStorageDriver: stopped")
+        logger.info("DriverRecordsIceberg: stopped")
 
     # ------------------------------------------------------------------
     # Catalog & warehouse resolution
@@ -300,7 +300,7 @@ class IcebergStorageDriver(ModuleProtocol):
             loc.catalog_name or "default", **catalog_props
         )
         logger.debug(
-            "IcebergStorageDriver: loaded %s catalog '%s' (warehouse=%s)",
+            "DriverRecordsIceberg: loaded %s catalog '%s' (warehouse=%s)",
             cat_type.value,
             loc.catalog_name or "default",
             resolved_wh or "none",
@@ -396,7 +396,7 @@ class IcebergStorageDriver(ModuleProtocol):
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
             raise RuntimeError(
-                "IcebergStorageDriver: no OTF location config found"
+                "DriverRecordsIceberg: no OTF location config found"
             )
 
         import pyarrow as pa
@@ -734,7 +734,7 @@ class IcebergStorageDriver(ModuleProtocol):
     ) -> int:
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
-            raise RuntimeError("IcebergStorageDriver: no location config")
+            raise RuntimeError("DriverRecordsIceberg: no location config")
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
@@ -763,7 +763,7 @@ class IcebergStorageDriver(ModuleProtocol):
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
             logger.warning(
-                "IcebergStorageDriver.ensure_storage: no location config for "
+                "DriverRecordsIceberg.ensure_storage: no location config for "
                 "catalog=%s collection=%s", catalog_id, collection_id,
             )
             return
@@ -805,7 +805,7 @@ class IcebergStorageDriver(ModuleProtocol):
 
         if soft:
             logger.info(
-                "IcebergStorageDriver.drop_storage(soft=True): "
+                "DriverRecordsIceberg.drop_storage(soft=True): "
                 "catalog=%s collection=%s — table retained, tagged as deprecated",
                 catalog_id, collection_id,
             )
@@ -852,7 +852,7 @@ class IcebergStorageDriver(ModuleProtocol):
     ) -> str:
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
-            raise ValueError("IcebergStorageDriver: no location config for export")
+            raise ValueError("DriverRecordsIceberg: no location config for export")
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
@@ -942,7 +942,7 @@ class IcebergStorageDriver(ModuleProtocol):
 
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
-            raise RuntimeError("IcebergStorageDriver: no location config")
+            raise RuntimeError("DriverRecordsIceberg: no location config")
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
@@ -977,7 +977,7 @@ class IcebergStorageDriver(ModuleProtocol):
         """Rollback collection to a previous snapshot."""
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
-            raise RuntimeError("IcebergStorageDriver: no location config")
+            raise RuntimeError("DriverRecordsIceberg: no location config")
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
@@ -1130,7 +1130,7 @@ class IcebergStorageDriver(ModuleProtocol):
 
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
-            raise RuntimeError("IcebergStorageDriver: no location config")
+            raise RuntimeError("DriverRecordsIceberg: no location config")
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
@@ -1230,7 +1230,7 @@ class IcebergStorageDriver(ModuleProtocol):
             table = await run_in_thread(catalog.load_table, table_id)
         except Exception:
             logger.warning(
-                "IcebergStorageDriver.set_collection_metadata: table not found "
+                "DriverRecordsIceberg.set_collection_metadata: table not found "
                 "for catalog=%s collection=%s", catalog_id, collection_id,
             )
             return

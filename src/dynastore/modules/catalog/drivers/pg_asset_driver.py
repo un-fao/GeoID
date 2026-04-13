@@ -25,7 +25,7 @@ Owns the DDL and all SQL operations for:
 
 Also implements ``get_collection_metadata()`` / ``set_collection_metadata()``
 by reading/upserting ``{schema}.metadata`` — the same table used
-by ``PostgresStorageDriver`` — enabling ``CollectionMetadataEnricherProtocol``
+by ``DriverRecordsPostgresql`` — enabling ``CollectionMetadataEnricherProtocol``
 to enrich collection descriptors with asset-derived statistics (counts, last
 ingestion timestamp, coverage bounds).
 
@@ -623,7 +623,7 @@ class PostgresAssetDriver:
     ) -> Optional[Dict[str, Any]]:
         """Read collection metadata from ``metadata``.
 
-        The same table is used by ``PostgresStorageDriver`` for feature
+        The same table is used by ``DriverRecordsPostgresql`` for feature
         collection metadata — scoped to ``collection_id``.
         """
         schema = await self._resolve_schema(catalog_id, db_resource)

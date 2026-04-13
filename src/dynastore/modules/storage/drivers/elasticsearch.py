@@ -25,15 +25,15 @@ can read data written by these drivers transparently.
 
 Three drivers:
 
-* ``ElasticsearchStorageDriver``  (driver_id ``"elasticsearch"``)
+* ``DriverRecordsElasticsearch``  (driver_id ``"elasticsearch"``)
   Full STAC indexing via SFEOS ``DatabaseLogic`` for items, collections, and
   catalogs.  Supports ``stac-fastapi-core[catalogs]``.
 
-* ``ElasticsearchObfuscatedDriver``  (driver_id ``"elasticsearch_obfuscated"``)
+* ``DriverRecordsElasticsearchObfuscated``  (driver_id ``"elasticsearch_obfuscated"``)
   Stores full entity data but only allows search by geoid (``dynamic: false``).
   Manages DENY access policies in its own lifecycle.
 
-* ``ElasticsearchAssetsDriver``  (driver_id ``"elasticsearch_assets"``)
+* ``DriverAssetElasticsearch``  (driver_id ``"elasticsearch_assets"``)
   Indexes asset metadata into per-catalog ``{prefix}-assets-{catalog_id}`` indices.
   Listens for ``CatalogEventType.ASSET_*`` events (when wired) and supports
   direct programmatic indexing via ``index_asset()`` / ``delete_asset()``.
@@ -231,10 +231,10 @@ class _ElasticsearchBase:
 
 
 # ---------------------------------------------------------------------------
-# ElasticsearchStorageDriver — SFEOS-backed full STAC
+# DriverRecordsElasticsearch — SFEOS-backed full STAC
 # ---------------------------------------------------------------------------
 
-class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
+class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
     """SFEOS-compatible Elasticsearch storage driver.
 
     Delegates all ES operations to ``stac-fastapi-elasticsearch``'s
@@ -291,7 +291,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
                 decorator = events.async_event_listener(etype)
                 if decorator:
                     decorator(handler)
-            logger.info("ElasticsearchStorageDriver: event listeners registered.")
+            logger.info("DriverRecordsElasticsearch: event listeners registered.")
         yield
 
     # ------------------------------------------------------------------
@@ -579,7 +579,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
                         pass
             except Exception as e:
                 logger.warning(
-                    "ElasticsearchStorageDriver: search failed for %s/%s: %s",
+                    "DriverRecordsElasticsearch: search failed for %s/%s: %s",
                     catalog_id, collection_id, e,
                 )
 
@@ -628,7 +628,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
         if not _templates_created:
             await create_index_templates()
             _templates_created = True
-            logger.debug("ElasticsearchStorageDriver: global index templates created.")
+            logger.debug("DriverRecordsElasticsearch: global index templates created.")
 
         # Always ensure the collections meta-index.
         await create_collection_index()
@@ -645,12 +645,12 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
                         ignore=400,  # 400 = index already exists — safe to ignore
                     )
                     logger.info(
-                        "ElasticsearchStorageDriver: created items index '%s'.",
+                        "DriverRecordsElasticsearch: created items index '%s'.",
                         index_name,
                     )
             except Exception as e:
                 logger.warning(
-                    "ElasticsearchStorageDriver: ensure_storage collection index "
+                    "DriverRecordsElasticsearch: ensure_storage collection index "
                     "creation failed for '%s': %s",
                     collection_id, e,
                 )
@@ -684,7 +684,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> str:
         raise NotImplementedError(
-            "ElasticsearchStorageDriver.export_entities: not supported. "
+            "DriverRecordsElasticsearch.export_entities: not supported. "
             "Export from the primary driver instead."
         )
 
@@ -1015,10 +1015,10 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
 
 
 # ---------------------------------------------------------------------------
-# ElasticsearchObfuscatedDriver — geoid-only, DENY-protected
+# DriverRecordsElasticsearchObfuscated — geoid-only, DENY-protected
 # ---------------------------------------------------------------------------
 
-class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
+class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
     """Obfuscated Elasticsearch storage driver.
 
     Stores full entity data but only allows search by geoid.  Uses
@@ -1069,7 +1069,7 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
                 decorator = events.async_event_listener(etype)
                 if decorator:
                     decorator(handler)
-            logger.info("ElasticsearchObfuscatedDriver: event listeners registered.")
+            logger.info("DriverRecordsElasticsearchObfuscated: event listeners registered.")
         yield
 
     # ------------------------------------------------------------------
@@ -1171,7 +1171,7 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
     ) -> int:
         if soft:
             raise SoftDeleteNotSupportedError(
-                "ElasticsearchObfuscatedDriver does not support soft delete."
+                "DriverRecordsElasticsearchObfuscated does not support soft delete."
             )
         from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
@@ -1221,7 +1221,7 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
     ) -> None:
         if soft:
             raise SoftDeleteNotSupportedError(
-                "ElasticsearchObfuscatedDriver does not support soft drop."
+                "DriverRecordsElasticsearchObfuscated does not support soft drop."
             )
         from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
@@ -1241,7 +1241,7 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> str:
         raise NotImplementedError(
-            "ElasticsearchObfuscatedDriver.export_entities: not supported."
+            "DriverRecordsElasticsearchObfuscated.export_entities: not supported."
         )
 
     # Obfuscated driver stores geoid tokens only — not a metadata driver.
@@ -1482,10 +1482,10 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
 
 
 # ---------------------------------------------------------------------------
-# ElasticsearchAssetsDriver — per-catalog asset index
+# DriverAssetElasticsearch — per-catalog asset index
 # ---------------------------------------------------------------------------
 
-class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
+class DriverAssetElasticsearch(_ElasticsearchBase, ModuleProtocol):
     """Elasticsearch storage driver for asset metadata.
 
     Indexes asset documents into per-catalog ``{prefix}-assets-{catalog_id}``
@@ -1534,7 +1534,7 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
                 decorator = events.async_event_listener(etype)
                 if decorator:
                     decorator(handler)
-            logger.info("ElasticsearchAssetsDriver: event listeners registered.")
+            logger.info("DriverAssetElasticsearch: event listeners registered.")
         yield
 
     # ------------------------------------------------------------------
@@ -1675,7 +1675,7 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
     ) -> int:
         if soft:
             raise SoftDeleteNotSupportedError(
-                "ElasticsearchAssetsDriver does not support soft delete."
+                "DriverAssetElasticsearch does not support soft delete."
             )
         from dynastore.modules.elasticsearch.mappings import get_assets_index_name
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
@@ -1720,7 +1720,7 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
     ) -> None:
         if soft:
             raise SoftDeleteNotSupportedError(
-                "ElasticsearchAssetsDriver does not support soft drop."
+                "DriverAssetElasticsearch does not support soft drop."
             )
         from dynastore.modules.elasticsearch.mappings import get_assets_index_name
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
@@ -1739,7 +1739,7 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> str:
         raise NotImplementedError(
-            "ElasticsearchAssetsDriver.export_entities: not supported."
+            "DriverAssetElasticsearch.export_entities: not supported."
         )
 
     # ------------------------------------------------------------------
@@ -1930,5 +1930,5 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
             )
             return [hit["_source"] for hit in resp["hits"]["hits"]]
         except Exception as e:
-            logger.error("ElasticsearchAssetsDriver.search_assets failed: %s", e)
+            logger.error("DriverAssetElasticsearch.search_assets failed: %s", e)
             return []

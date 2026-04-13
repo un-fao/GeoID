@@ -73,12 +73,12 @@ class CollectionService:
 
     async def _get_pg_driver(self):
         """Get the PostgreSQL storage driver instance."""
-        from dynastore.modules.storage.drivers.postgresql import PostgresStorageDriver
+        from dynastore.modules.storage.drivers.postgresql import DriverRecordsPostgresql
         from dynastore.tools.discovery import get_protocols
         from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
 
         for driver in get_protocols(CollectionStorageDriverProtocol):
-            if isinstance(driver, PostgresStorageDriver):
+            if isinstance(driver, DriverRecordsPostgresql):
                 return driver
         return None
 
@@ -106,7 +106,7 @@ class CollectionService:
         """Store physical table in PG driver config."""
         pg_driver = await self._get_pg_driver()
         if not pg_driver:
-            raise RuntimeError("PostgresStorageDriver not available")
+            raise RuntimeError("DriverRecordsPostgresql not available")
         await pg_driver.set_physical_table(
             catalog_id, collection_id, physical_table, db_resource=db_resource
         )

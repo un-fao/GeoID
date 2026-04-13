@@ -201,8 +201,8 @@ class CatalogModule(ModuleProtocol):
         from dynastore.modules.catalog.drivers.pg_asset_driver import PostgresAssetDriver
         self.pg_asset_driver = PostgresAssetDriver(engine=engine)
 
-        from dynastore.modules.storage.drivers.postgresql import PostgresStorageDriver
-        self.pg_storage_driver = PostgresStorageDriver()  # type: ignore[abstract]
+        from dynastore.modules.storage.drivers.postgresql import DriverRecordsPostgresql
+        self.pg_storage_driver = DriverRecordsPostgresql()  # type: ignore[abstract]
 
         from dynastore.modules.storage.driver_enricher import DriverMetadataEnricher
         self.driver_metadata_enricher = DriverMetadataEnricher()
@@ -233,7 +233,7 @@ class CatalogModule(ModuleProtocol):
             logger.info("Initialized CatalogModule services.")
 
             # 4. Initialize Storage & Schemas
-            # Hub/sidecar creation is handled by PostgresStorageDriver.ensure_storage()
+            # Hub/sidecar creation is handled by DriverRecordsPostgresql.ensure_storage()
             # which is called from _create_collection_internal(). No lifecycle hook needed.
             from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
 

@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from dynastore.modules.storage.drivers.postgresql import PostgresStorageDriver
+from dynastore.modules.storage.drivers.postgresql import DriverRecordsPostgresql
 from dynastore.models.ogc import Feature
 from dynastore.models.protocols.storage_driver import Capability
 from dynastore.models.query_builder import QueryRequest
@@ -9,17 +9,17 @@ from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
 from dynastore.modules.storage.driver_config import PostgresCollectionDriverConfig
 
 
-class TestPostgresStorageDriverMeta:
+class TestDriverRecordsPostgresqlMeta:
     def test_driver_id(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         assert driver.driver_id == "postgresql"
 
     def test_priority(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         assert driver.priority == 10
 
     def test_capabilities(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         assert Capability.STREAMING in driver.capabilities
         assert Capability.SPATIAL_FILTER in driver.capabilities
         assert Capability.SOFT_DELETE in driver.capabilities
@@ -29,20 +29,20 @@ class TestPostgresStorageDriverMeta:
     def test_is_available_with_items_protocol(self):
         with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
             mock_gp.return_value = MagicMock()
-            driver = PostgresStorageDriver()
+            driver = DriverRecordsPostgresql()
             assert driver.is_available() is True
 
     def test_is_available_without_items_protocol(self):
         with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
             mock_gp.return_value = None
-            driver = PostgresStorageDriver()
+            driver = DriverRecordsPostgresql()
             assert driver.is_available() is False
 
 
 class TestWriteEntities:
     @pytest.mark.asyncio
     async def test_write_single_feature(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         mock_crud = AsyncMock()
         mock_crud.upsert = AsyncMock(return_value=[MagicMock(spec=Feature)])
 
@@ -54,7 +54,7 @@ class TestWriteEntities:
 
     @pytest.mark.asyncio
     async def test_write_returns_list_from_single(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         mock_crud = AsyncMock()
         single_result = MagicMock(spec=Feature)
         mock_crud.upsert = AsyncMock(return_value=single_result)
@@ -66,7 +66,7 @@ class TestWriteEntities:
 
     @pytest.mark.asyncio
     async def test_write_list_returns_list(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         mock_crud = AsyncMock()
         items = [MagicMock(spec=Feature), MagicMock(spec=Feature)]
         mock_crud.upsert = AsyncMock(return_value=items)
@@ -80,7 +80,7 @@ class TestWriteEntities:
 class TestReadEntities:
     @pytest.mark.asyncio
     async def test_read_with_default_query_request(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         mock_query = AsyncMock()
         mock_feature = MagicMock(spec=Feature)
 
@@ -106,7 +106,7 @@ class TestReadEntities:
 
     @pytest.mark.asyncio
     async def test_read_with_entity_ids(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         mock_query = AsyncMock()
 
         async def mock_items():
@@ -129,7 +129,7 @@ class TestReadEntities:
 
     @pytest.mark.asyncio
     async def test_read_with_custom_request(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         mock_query = AsyncMock()
 
         async def mock_items():
@@ -157,7 +157,7 @@ class TestReadEntities:
 class TestDeleteEntities:
     @pytest.mark.asyncio
     async def test_delete_entities(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         mock_crud = AsyncMock()
         mock_crud.delete_item = AsyncMock(return_value=1)
 
@@ -168,7 +168,7 @@ class TestDeleteEntities:
 
     @pytest.mark.asyncio
     async def test_delete_empty_list(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         mock_crud = AsyncMock()
 
         with patch.object(driver, "_get_crud_protocol", return_value=mock_crud):
@@ -177,7 +177,7 @@ class TestDeleteEntities:
 
     @pytest.mark.asyncio
     async def test_soft_delete_raises(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         with pytest.raises(SoftDeleteNotSupportedError):
             await driver.delete_entities("cat1", "col1", ["id1"], soft=True)
 
@@ -186,7 +186,7 @@ class TestLifecycleMethods:
     @pytest.mark.asyncio
     async def test_ensure_storage_noop_without_collection(self):
         """ensure_storage with no collection_id is a no-op."""
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         # Should return immediately without touching the DB
         with patch.object(driver, "_resolve_schema", new_callable=AsyncMock) as mock_resolve:
             await driver.ensure_storage("cat1")
@@ -194,7 +194,7 @@ class TestLifecycleMethods:
 
     @pytest.mark.asyncio
     async def test_ensure_storage_raises_without_protocol(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
             mock_gp.return_value = None
             with pytest.raises(RuntimeError, match="CatalogsProtocol not available"):
@@ -202,7 +202,7 @@ class TestLifecycleMethods:
 
     @pytest.mark.asyncio
     async def test_drop_storage_collection(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
             mock_catalogs = AsyncMock()
             mock_gp.return_value = mock_catalogs
@@ -211,7 +211,7 @@ class TestLifecycleMethods:
 
     @pytest.mark.asyncio
     async def test_drop_storage_catalog(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
             mock_catalogs = AsyncMock()
             mock_gp.return_value = mock_catalogs
@@ -220,7 +220,7 @@ class TestLifecycleMethods:
 
     @pytest.mark.asyncio
     async def test_drop_storage_soft(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
             mock_catalogs = AsyncMock()
             mock_gp.return_value = mock_catalogs
@@ -229,7 +229,7 @@ class TestLifecycleMethods:
 
     @pytest.mark.asyncio
     async def test_export_entities_not_implemented(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         with pytest.raises(NotImplementedError):
             await driver.export_entities("cat1", "col1")
 
@@ -237,7 +237,7 @@ class TestLifecycleMethods:
 class TestResolveStorageLocation:
     @pytest.mark.asyncio
     async def test_resolve_with_collection(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
             mock_catalogs = AsyncMock()
             mock_catalogs.resolve_physical_schema = AsyncMock(return_value="my_schema")
@@ -264,7 +264,7 @@ class TestResolveStorageLocation:
 
     @pytest.mark.asyncio
     async def test_resolve_without_collection(self):
-        driver = PostgresStorageDriver()
+        driver = DriverRecordsPostgresql()
         with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
             mock_catalogs = AsyncMock()
             mock_catalogs.resolve_physical_schema = AsyncMock(return_value="my_schema")

@@ -44,7 +44,7 @@ class AssetDriverProtocol(Protocol):
     """Protocol for drivers that store and search asset metadata.
 
     Implementations:
-    - ``ElasticsearchAssetsDriver`` — asset metadata in per-catalog ES index
+    - ``DriverAssetElasticsearch`` — asset metadata in per-catalog ES index
     """
 
     driver_id: str

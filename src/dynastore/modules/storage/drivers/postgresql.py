@@ -39,7 +39,7 @@ from dynastore.modules.storage.driver_config import PostgresCollectionDriverConf
 logger = logging.getLogger(__name__)
 
 
-class PostgresStorageDriver(ModuleProtocol):
+class DriverRecordsPostgresql(ModuleProtocol):
     """PostgreSQL storage driver — delegates to existing ItemsProtocol.
 
     Satisfies ``CollectionStorageDriverProtocol`` by wrapping the existing
@@ -101,9 +101,9 @@ class PostgresStorageDriver(ModuleProtocol):
 
     @asynccontextmanager
     async def lifespan(self, app_state: object):
-        logger.info("PostgresStorageDriver: started (wraps existing ItemsProtocol)")
+        logger.info("DriverRecordsPostgresql: started (wraps existing ItemsProtocol)")
         yield
-        logger.info("PostgresStorageDriver: stopped")
+        logger.info("DriverRecordsPostgresql: stopped")
 
     async def write_entities(
         self,
@@ -161,7 +161,7 @@ class PostgresStorageDriver(ModuleProtocol):
     ) -> int:
         if soft:
             raise SoftDeleteNotSupportedError(
-                "PostgresStorageDriver: soft delete for individual entities "
+                "DriverRecordsPostgresql: soft delete for individual entities "
                 "is not yet implemented. Use drop_storage(soft=True) for "
                 "collection-level soft deletion."
             )
@@ -182,7 +182,7 @@ class PostgresStorageDriver(ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> int:
         raise SoftDeleteNotSupportedError(
-            "PostgresStorageDriver: restore_entities not yet implemented."
+            "DriverRecordsPostgresql: restore_entities not yet implemented."
         )
 
     async def rename_storage(
@@ -453,7 +453,7 @@ class PostgresStorageDriver(ModuleProtocol):
             await am.ensure_asset_cleanup_trigger(schema, physical_table, db_resource=db_resource)
 
         logger.info(
-            "PostgresStorageDriver.ensure_storage: created hub '%s' + sidecars for %s/%s",
+            "DriverRecordsPostgresql.ensure_storage: created hub '%s' + sidecars for %s/%s",
             physical_table, catalog_id, collection_id,
         )
 
@@ -586,7 +586,7 @@ class PostgresStorageDriver(ModuleProtocol):
 
         if soft:
             logger.info(
-                "PostgresStorageDriver.drop_storage(soft=True): "
+                "DriverRecordsPostgresql.drop_storage(soft=True): "
                 "catalog=%s collection=%s — marking as deleted via deleted_at",
                 catalog_id, collection_id,
             )
@@ -606,7 +606,7 @@ class PostgresStorageDriver(ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> str:
         raise NotImplementedError(
-            "PostgresStorageDriver.export_entities: use ExportFeaturesTask "
+            "DriverRecordsPostgresql.export_entities: use ExportFeaturesTask "
             "for async export via the task runner system."
         )
 

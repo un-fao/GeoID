@@ -195,7 +195,7 @@ def _close_pool():
             logger.info("DuckDB: connection pool closed (%d connections)", closed)
 
 
-class DuckDBStorageDriver(ModuleProtocol):
+class DriverRecordsDuckdb(ModuleProtocol):
     """DuckDB storage driver — file-based analytical reads.
 
     Reads from parquet, CSV, JSON, etc. via DuckDB's built-in readers.
@@ -247,10 +247,10 @@ class DuckDBStorageDriver(ModuleProtocol):
     @asynccontextmanager
     async def lifespan(self, app_state: object):
         _init_pool()
-        logger.info("DuckDBStorageDriver: started (pool_size=%d)", DuckDBConfig.pool_size)
+        logger.info("DriverRecordsDuckdb: started (pool_size=%d)", DuckDBConfig.pool_size)
         yield
         _close_pool()
-        logger.info("DuckDBStorageDriver: stopped")
+        logger.info("DriverRecordsDuckdb: stopped")
 
     async def _get_location_async(
         self, catalog_id: str, collection_id: Optional[str] = None
@@ -653,7 +653,7 @@ class DuckDBStorageDriver(ModuleProtocol):
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc or not self._is_writable(loc):
             raise ReadOnlyDriverError(
-                "DuckDBStorageDriver: no write_path configured — driver is read-only"
+                "DriverRecordsDuckdb: no write_path configured — driver is read-only"
             )
 
         from dynastore.modules.storage.drivers._duckdb_helpers import normalize_to_dicts
@@ -719,17 +719,17 @@ class DuckDBStorageDriver(ModuleProtocol):
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc or not self._is_writable(loc):
             raise ReadOnlyDriverError(
-                "DuckDBStorageDriver: no write_path — cannot delete"
+                "DriverRecordsDuckdb: no write_path — cannot delete"
             )
         if soft:
             raise SoftDeleteNotSupportedError(
-                "DuckDBStorageDriver does not support soft delete."
+                "DriverRecordsDuckdb does not support soft delete."
             )
 
         write_fmt = loc.write_format or "sqlite"
         if write_fmt != "sqlite":
             raise ReadOnlyDriverError(
-                "DuckDBStorageDriver: delete only supported with SQLite write backend"
+                "DriverRecordsDuckdb: delete only supported with SQLite write backend"
             )
 
         return await run_in_thread(
@@ -745,7 +745,7 @@ class DuckDBStorageDriver(ModuleProtocol):
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
             logger.info(
-                "DuckDBStorageDriver.ensure_storage: no location config for "
+                "DriverRecordsDuckdb.ensure_storage: no location config for "
                 "catalog=%s collection=%s — nothing to provision",
                 catalog_id, collection_id,
             )
@@ -762,7 +762,7 @@ class DuckDBStorageDriver(ModuleProtocol):
     ) -> None:
         if soft:
             raise SoftDeleteNotSupportedError(
-                "DuckDBStorageDriver does not support soft drop."
+                "DriverRecordsDuckdb does not support soft drop."
             )
         loc = await self._get_location_async(catalog_id, collection_id)
         if loc and loc.write_path:
@@ -991,7 +991,7 @@ class DuckDBStorageDriver(ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> Any:
         raise NotImplementedError(
-            f"DuckDBStorageDriver: aggregate('{aggregation_type}') is not implemented"
+            f"DriverRecordsDuckdb: aggregate('{aggregation_type}') is not implemented"
         )
 
     async def restore_entities(
@@ -1003,7 +1003,7 @@ class DuckDBStorageDriver(ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> int:
         raise SoftDeleteNotSupportedError(
-            "DuckDBStorageDriver does not support soft delete / restore."
+            "DriverRecordsDuckdb does not support soft delete / restore."
         )
 
     async def rename_storage(
@@ -1015,5 +1015,5 @@ class DuckDBStorageDriver(ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> None:
         raise NotImplementedError(
-            "DuckDBStorageDriver does not support rename_storage"
+            "DriverRecordsDuckdb does not support rename_storage"
         )
