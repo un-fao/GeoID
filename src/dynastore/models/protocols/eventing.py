@@ -45,3 +45,9 @@ class EventingProtocol(Protocol):
     async def apply_eventing_config(self, catalog_id: str, config: Any, conn: Optional[Any] = None) -> None:
         """Applies eventing configuration changes to the live cloud resources."""
         ...
+
+    async def teardown_managed_eventing_channel(
+        self, catalog_id: str, managed_eventing: Any
+    ) -> None:
+        """Tears down a managed eventing channel (notification + subscription + topic)."""
+        ...

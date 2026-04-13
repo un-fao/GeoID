@@ -72,6 +72,7 @@ from dynastore.models.protocols import (
     CatalogsProtocol,
     ConfigsProtocol,
 )
+from dynastore.models.protocols.cloud_storage_client import CloudStorageClientProtocol
 
 
 def _get_providers():
@@ -152,7 +153,7 @@ async def on_catalog_hard_deletion(engine: DbResource, payload: Dict[str, Any]):
         raise ValueError("Missing 'catalog_id' in event payload")
 
     storage, eventing, _, configs = _get_providers()
-    if not all([storage, eventing, configs]):
+    if storage is None or eventing is None or configs is None:
         return
 
     logger.info(
@@ -163,7 +164,7 @@ async def on_catalog_hard_deletion(engine: DbResource, payload: Dict[str, Any]):
     # config=None triggers force cleanup of deterministic/default resources in the protocol implementation.
     try:
         eventing_config = await configs.get_config(
-            GCP_EVENTING_CONFIG_ID, catalog_id, engine
+            GCP_EVENTING_CONFIG_ID, catalog_id
         )
         await eventing.teardown_catalog_eventing(catalog_id, config=eventing_config)
     except Exception as e:
@@ -197,8 +198,8 @@ async def on_collection_hard_deletion(engine: DbResource, payload: Dict[str, Any
         raise ValueError("Missing 'catalog_id' or 'collection_id' in event payload")
 
     # Retrieve providers using the helper
-    storage, _, _, configs = _get_providers()
-    if not all([storage, configs]):
+    storage, eventing, _, configs = _get_providers()
+    if storage is None or configs is None or eventing is None:
         return
 
     logger.info(
@@ -238,13 +239,18 @@ async def on_collection_hard_deletion(engine: DbResource, payload: Dict[str, Any
 
         # list_blobs is partial lazy but iterator makes requests. delete_blobs makes requests.
         # Ideally we should push this entire block to thread.
-        def _delete_helper():
-            blobs_to_delete = list(bucket.list_blobs(prefix=folder_prefix))
-            if blobs_to_delete:
-                bucket.delete_blobs(blobs_to_delete)
-            return len(blobs_to_delete)
+        if bucket is None:
+            deleted_count = 0
+        else:
+            bucket_ref = bucket
 
-        deleted_count = await run_in_thread(_delete_helper)
+            def _delete_helper():
+                blobs_to_delete = list(bucket_ref.list_blobs(prefix=folder_prefix))
+                if blobs_to_delete:
+                    bucket_ref.delete_blobs(blobs_to_delete)
+                return len(blobs_to_delete)
+
+            deleted_count = await run_in_thread(_delete_helper)
 
         if deleted_count:
             logger.info(
@@ -256,7 +262,7 @@ async def on_collection_hard_deletion(engine: DbResource, payload: Dict[str, Any
             )
 
     # 2. Check managed eventing prefix
-    eventing_config = await config_manager.get_config(
+    eventing_config = await configs.get_config(
         GCP_EVENTING_CONFIG_ID, catalog_id
     )
     if isinstance(eventing_config, GcpEventingConfig):
@@ -271,7 +277,7 @@ async def on_collection_hard_deletion(engine: DbResource, payload: Dict[str, Any
                 logger.info(
                     f"Managed eventing was tracking the deleted collection prefix '{folder_prefix}'. Tearing down the channel."
                 )
-                await gcp_module.teardown_managed_eventing_channel(
+                await eventing.teardown_managed_eventing_channel(
                     catalog_id, eventing_config.managed_eventing
                 )
 
@@ -375,7 +381,7 @@ async def _trigger_configured_actions(
 ):
     """Fetches collection config and executes actions based on the event type."""
     _, eventing_provider, _, configs = _get_providers()
-    if not all([eventing_provider, configs]):
+    if eventing_provider is None or configs is None:
         return
     # Fetch config for the specific collection. The config manager will fall back
     # to the catalog level if no collection-specific config is set.
@@ -476,10 +482,13 @@ async def _trigger_configured_actions(
                 )
                 execute_payload = ExecuteRequest(inputs=interpolated_inputs)
 
+            engine = get_engine()
+            if engine is None:
+                raise RuntimeError("No DatabaseProtocol engine available to execute process.")
             await processes_module.execute_process(
                 process_id=action.process_id,
                 execution_request=execute_payload,
-                engine=get_engine(),
+                engine=engine,
                 caller_id=f"gcp_event:{event_type.value}",
             )
             logger.info(
@@ -703,7 +712,9 @@ async def register_self_as_subscriber(self_public_url):
     if not self_public_url:
         return
 
-    webhook_url = f"{self_public_url.rstrip('/')}/gcp/events/webhook"
+    from pydantic import HttpUrl
+
+    webhook_url = HttpUrl(f"{self_public_url.rstrip('/')}/gcp/events/webhook")
     auth_config = AuthConfigAPIKey(
         auth_method=AuthMethod.API_KEY, header_name=API_KEY_NAME
     )

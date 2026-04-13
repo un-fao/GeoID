@@ -183,7 +183,7 @@ class ExecuteRequest(BaseModel):
 
     inputs: Dict[str, Any]
     outputs: Optional[Dict[str, OutputExecutionRequest]] = None
-    response: str = Field("document", pattern="^(document|raw)$")
+    response: str = Field(default="document", pattern="^(document|raw)$")
 
 # Type alias for clarity: a process execution task payload
 ProcessTaskPayload = TaskPayload[ExecuteRequest] # This remains for type hinting
