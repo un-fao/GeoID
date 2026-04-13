@@ -4,6 +4,7 @@ from dynastore.modules.catalog.event_service import register_event_listener, Cat
 from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler, DbResource
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.modules import get_protocol
+from dynastore.models.driver_context import DriverContext
 
 logger = logging.getLogger(__name__)
 

@@ -11,6 +11,7 @@ from dynastore.modules.db_config.platform_config_service import (
     PluginConfig,
 )
 from dynastore.modules.tiles.tiles_config import TilesPluginConfig
+from dynastore.models.driver_context import DriverContext
 
 @pytest.mark.enable_modules("db_config", "db", "catalog", "tiles")
 @pytest.mark.enable_extensions("tiles")
@@ -33,9 +34,9 @@ async def test_hierarchical_config_cache_invalidation(app_lifespan, data_id):
 
     # 0. Setup: Create catalog and collection
     async with managed_transaction(get_engine()) as conn:
-        await catalogs.ensure_catalog_exists(catalog_id, db_resource=conn)
+        await catalogs.ensure_catalog_exists(catalog_id, ctx=DriverContext(db_resource=conn))
         if not await catalogs.get_collection_model(catalog_id, collection_id, db_resource=conn):
-            await catalogs.create_collection(catalog_id, {"id": collection_id}, lang="*", db_resource=conn)
+            await catalogs.create_collection(catalog_id, {"id": collection_id}, lang="*", ctx=DriverContext(db_resource=conn))
     
     # 1. Set a catalog-level config
     config_v1 = TilesPluginConfig(enabled=True, max_zoom=10)

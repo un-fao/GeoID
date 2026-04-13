@@ -71,7 +71,9 @@ async def run_ingestion_task(
     )
 
     # Resolve physical schema for task storage
-    phys_schema = await catalog_module.resolve_physical_schema(catalog_id, engine)
+    phys_schema = await catalog_module.resolve_physical_schema(
+        catalog_id, ctx=DriverContext(db_resource=engine) if engine else None
+    )
     if phys_schema is None:
         raise RuntimeError(f"Cannot resolve physical schema for catalog {catalog_id!r}.")
 

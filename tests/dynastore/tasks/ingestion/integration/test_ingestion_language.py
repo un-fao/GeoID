@@ -9,6 +9,7 @@ from dynastore.modules.processes.models import ExecuteRequest
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.db_config.query_executor import managed_transaction
+from dynastore.models.driver_context import DriverContext
 
 @pytest.mark.asyncio
 async def test_geojson_ingestion_with_lang_en(task_app_state, test_data_loader, data_id):
@@ -32,7 +33,7 @@ async def test_geojson_ingestion_with_lang_en(task_app_state, test_data_loader, 
         catalogs: CatalogsProtocol = get_protocol(CatalogsProtocol)
         async with managed_transaction(task_app_state.engine) as conn:
             await catalogs.create_catalog(
-                {"id": catalog_id, "title": catalog_id}, lang='en', db_resource=conn
+                {"id": catalog_id, "title": catalog_id}, lang='en', ctx=DriverContext(db_resource=conn)
             )
 
         # Prepare Task with explicit lang='en'
@@ -62,7 +63,7 @@ async def test_geojson_ingestion_with_lang_en(task_app_state, test_data_loader, 
 
         # Verification
         async with task_app_state.engine.connect() as conn:
-            phys_schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+            phys_schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=conn))
             phys_table = await catalogs.resolve_physical_table(catalog_id, collection_id, db_resource=conn)
             
             result = await conn.execute(text(f'SELECT count(*) FROM "{phys_schema}"."{phys_table}"'))

@@ -808,7 +808,7 @@ async def search_collections(
         catalogs = get_protocol(CatalogsProtocol)
         assert catalogs is not None, "CatalogsProtocol not registered"
         for cid in effective_catalog_ids:
-            schema = await catalogs.resolve_physical_schema(cid, db_resource)
+            schema = await catalogs.resolve_physical_schema(cid, ctx=DriverContext(db_resource=db_resource))
             if schema:
                 target_schemas.append(schema)
         # If none of the catalog_ids resolved, implies no results

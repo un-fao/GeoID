@@ -2,6 +2,7 @@ import pytest
 from sqlalchemy import text
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
+from dynastore.models.driver_context import DriverContext
 
 
 @pytest.mark.asyncio
@@ -59,7 +60,7 @@ async def test_get_feature_missing_table(
     catalogs = get_protocol(CatalogsProtocol)
     async with db_engine.connect() as conn:
         phys_schema = await catalogs.resolve_physical_schema(
-            catalog_id, db_resource=conn
+            catalog_id, ctx=DriverContext(db_resource=conn)
         )
         phys_table = await catalogs.resolve_physical_table(
             catalog_id, collection_id, db_resource=conn

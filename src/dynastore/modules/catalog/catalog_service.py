@@ -460,7 +460,7 @@ class CatalogService(CatalogsProtocol):
     ) -> None:
         db_resource = ctx.db_resource if ctx else None
         return await self._item_svc.ensure_partition_exists(
-            catalog_id, collection_id, config, partition_value, db_resource=db_resource
+            catalog_id, collection_id, config, partition_value, ctx=ctx
         )
 
     async def get_catalog(

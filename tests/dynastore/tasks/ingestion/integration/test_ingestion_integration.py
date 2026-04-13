@@ -26,6 +26,7 @@ from dynastore.modules.processes.models import ExecuteRequest
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.db_config.query_executor import managed_transaction
+from dynastore.models.driver_context import DriverContext
 
 
 @pytest.fixture(autouse=True)
@@ -76,7 +77,7 @@ async def test_geojson_ingestion(task_app_state, test_data_loader, data_id):
     async with managed_transaction(task_app_state.engine) as conn:
         # Cleanup
         phys_schema_before = await catalogs.resolve_physical_schema(
-            catalog_id, db_resource=conn, allow_missing=True
+            catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True
         )
         if phys_schema_before:
             await conn.execute(
@@ -122,7 +123,7 @@ async def test_geojson_ingestion(task_app_state, test_data_loader, data_id):
 
     async with managed_transaction(task_app_state.engine) as conn:
         phys_schema = await catalogs.resolve_physical_schema(
-            catalog_id, db_resource=conn
+            catalog_id, ctx=DriverContext(db_resource=conn)
         )
         phys_table = await catalogs.resolve_physical_table(
             catalog_id, collection_id, db_resource=conn
@@ -162,7 +163,7 @@ async def test_geojson_ingestion(task_app_state, test_data_loader, data_id):
         # Re-resolve physical names to navigate the cellular structure
         catalogs = get_protocol(CatalogsProtocol)
         phys_schema = await catalogs.resolve_physical_schema(
-            catalog_id, db_resource=conn
+            catalog_id, ctx=DriverContext(db_resource=conn)
         )
         phys_table = await catalogs.resolve_physical_table(
             catalog_id, collection_id, db_resource=conn
@@ -218,7 +219,7 @@ async def test_csv_ingestion(task_app_state, test_data_loader, data_id):
     async with managed_transaction(task_app_state.engine) as conn:
         # Cleanup
         phys_schema_before = await catalogs.resolve_physical_schema(
-            catalog_id, db_resource=conn, allow_missing=True
+            catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True
         )
         if phys_schema_before:
             await conn.execute(
@@ -226,7 +227,7 @@ async def test_csv_ingestion(task_app_state, test_data_loader, data_id):
             )
 
         await catalogs.create_catalog(
-            Catalog(id=catalog_id, title=catalog_id), db_resource=conn
+            Catalog(id=catalog_id, title=catalog_id), ctx=DriverContext(db_resource=conn)
         )
 
         col_def = Collection(
@@ -245,7 +246,7 @@ async def test_csv_ingestion(task_app_state, test_data_loader, data_id):
                 },
             },
         )
-        await catalogs.create_collection(catalog_id, col_def, db_resource=conn)
+        await catalogs.create_collection(catalog_id, col_def, ctx=DriverContext(db_resource=conn))
 
         # FORCE DISABLE PARTITIONING & DROP TABLE
         configs = get_protocol(ConfigsProtocol)
@@ -266,7 +267,7 @@ async def test_csv_ingestion(task_app_state, test_data_loader, data_id):
         )
 
         phys_schema = await catalogs.resolve_physical_schema(
-            catalog_id, db_resource=conn
+            catalog_id, ctx=DriverContext(db_resource=conn)
         )
         phys_table = await catalogs.resolve_physical_table(
             catalog_id, collection_id, db_resource=conn
@@ -308,7 +309,7 @@ async def test_csv_ingestion(task_app_state, test_data_loader, data_id):
     async with task_app_state.engine.connect() as conn:
         catalogs = get_protocol(CatalogsProtocol)
         phys_schema = await catalogs.resolve_physical_schema(
-            catalog_id, db_resource=conn
+            catalog_id, ctx=DriverContext(db_resource=conn)
         )
         phys_table = await catalogs.resolve_physical_table(
             catalog_id, collection_id, db_resource=conn
@@ -427,7 +428,7 @@ async def test_csv_pointz_ingestion(task_app_state, test_data_loader, data_id):
     # 4. Verification
     async with task_app_state.engine.connect() as conn:
         phys_schema = await catalogs.resolve_physical_schema(
-            catalog_id, db_resource=conn
+            catalog_id, ctx=DriverContext(db_resource=conn)
         )
         phys_table = await catalogs.resolve_physical_table(
             catalog_id, collection_id, db_resource=conn

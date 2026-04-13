@@ -8,6 +8,7 @@ from dynastore.models.protocols import CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.db_config.query_executor import managed_transaction
 from dynastore.modules.concurrency import await_all_background_tasks
+from dynastore.models.driver_context import DriverContext
 
 @pytest.fixture(autouse=True)
 def setup_proxy_env(monkeypatch):
@@ -36,14 +37,14 @@ async def test_proxy_service_flow(app_lifespan, catalog_obj):
     catalogs = get_protocol(CatalogsProtocol)
     async with managed_transaction(app_lifespan.engine) as conn:
         # cleanup any leftover physical schema first (use resolved name, not catalog_id)
-        existing_schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn, allow_missing=True)
+        existing_schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True)
         if existing_schema:
             await conn.execute(text(f'DROP SCHEMA IF EXISTS "{existing_schema}" CASCADE'))
         # Also delete the catalog record if it exists
         await conn.execute(text("DELETE FROM catalog.catalogs WHERE id = :id"), {"id": catalog_id})
         # Create catalog
-        await catalogs.create_catalog(catalog_obj, db_resource=conn)
-        physical_schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+        await catalogs.create_catalog(catalog_obj, ctx=DriverContext(db_resource=conn))
+        physical_schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=conn))
         
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         

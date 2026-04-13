@@ -462,7 +462,9 @@ async def _resolve_catalog_schema(
             "CatalogsProtocol not available - CatalogModule not initialized"
         )
 
-    schema = await catalog_protocol.resolve_physical_schema(catalog_id, db_resource)
+    schema = await catalog_protocol.resolve_physical_schema(
+        catalog_id, ctx=DriverContext(db_resource=db_resource) if db_resource else None
+    )
     if not schema:
         raise ValueError(f"Cannot resolve schema for catalog '{catalog_id}'")
     return schema

@@ -116,7 +116,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
     ) -> List[Feature]:
         items_svc = self._get_crud_protocol()
         result = await items_svc.upsert(
-            catalog_id, collection_id, entities, db_resource=db_resource
+            catalog_id, collection_id, entities, ctx=DriverContext(db_resource=db_resource) if db_resource else None
         )
         if isinstance(result, list):
             return result

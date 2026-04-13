@@ -305,7 +305,7 @@ class CollectionService:
                 catalog_id,
                 {"id": collection_id, "title": title},
                 lang=lang,
-                db_resource=db_resource,
+                ctx=DriverContext(db_resource=db_resource) if db_resource else None,
             )
 
     async def create_collection(

@@ -645,7 +645,7 @@ class CatalogModule(ModuleProtocol):
     ) -> None:
         db_resource = ctx.db_resource if ctx else None
         return await self._item_svc.ensure_partition_exists(
-            catalog_id, collection_id, config, partition_value, db_resource=db_resource  # type: ignore[arg-type]
+            catalog_id, collection_id, config, partition_value, ctx=ctx
         )
 
     @property

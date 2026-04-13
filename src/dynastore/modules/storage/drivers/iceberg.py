@@ -613,7 +613,7 @@ class DriverRecordsIceberg(ModuleProtocol):
         context: Optional[Dict[str, Any]] = None,
         limit: int = 100,
         offset: int = 0,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> AsyncIterator[Feature]:
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
@@ -903,7 +903,7 @@ class DriverRecordsIceberg(ModuleProtocol):
         collection_id: str,
         *,
         limit: int = 100,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> list:
         """List available snapshots for a collection."""
         from dynastore.models.otf import SnapshotInfo
@@ -935,7 +935,7 @@ class DriverRecordsIceberg(ModuleProtocol):
         collection_id: str,
         *,
         label: Optional[str] = None,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ):
         """Create an explicit snapshot/bookmark of current state."""
         from dynastore.models.otf import SnapshotInfo
@@ -972,7 +972,7 @@ class DriverRecordsIceberg(ModuleProtocol):
         collection_id: str,
         snapshot_id: str,
         *,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> None:
         """Rollback collection to a previous snapshot."""
         loc = await self._get_location_async(catalog_id, collection_id)
@@ -993,7 +993,7 @@ class DriverRecordsIceberg(ModuleProtocol):
         *,
         request: Optional[QueryRequest] = None,
         limit: int = 100,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> AsyncIterator[Feature]:
         """Read entities at a specific snapshot (time-travel)."""
         loc = await self._get_location_async(catalog_id, collection_id)
@@ -1037,7 +1037,7 @@ class DriverRecordsIceberg(ModuleProtocol):
         *,
         request: Optional[QueryRequest] = None,
         limit: int = 100,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> AsyncIterator[Feature]:
         """Read entities as they existed at a point in time."""
         loc = await self._get_location_async(catalog_id, collection_id)
@@ -1062,7 +1062,7 @@ class DriverRecordsIceberg(ModuleProtocol):
 
         async for feature in self.read_at_snapshot(
             catalog_id, collection_id, str(snapshot_id),
-            request=request, limit=limit, db_resource=db_resource,
+            request=request, limit=limit, ctx=ctx,
         ):
             yield feature
 
@@ -1071,7 +1071,7 @@ class DriverRecordsIceberg(ModuleProtocol):
         catalog_id: str,
         collection_id: str,
         *,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ) -> list:
         """Return schema evolution history for a collection."""
         from dynastore.models.otf import SchemaVersion, SchemaField
@@ -1111,7 +1111,7 @@ class DriverRecordsIceberg(ModuleProtocol):
         collection_id: str,
         changes: Any,
         *,
-        db_resource: Optional[Any] = None,
+        ctx: Optional["DriverContext"] = None,
     ):
         """Apply schema changes (add/rename/drop columns, type widening).
 

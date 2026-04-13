@@ -40,6 +40,7 @@ from .models import TilePreseedRequest
 from .definition import TILES_PRESEED_PROCESS_DEFINITION
 from dynastore.tools.protocol_helpers import get_engine
 from dynastore.modules.processes.models import Process, ExecuteRequest, StatusInfo
+from dynastore.models.driver_context import DriverContext
 
 logger = logging.getLogger(__name__)
 class TilePreseedTask(

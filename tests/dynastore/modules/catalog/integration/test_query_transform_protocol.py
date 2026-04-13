@@ -23,6 +23,7 @@ import pytest
 from dynastore.models.query_builder import QueryRequest, FieldSelection
 from dynastore.models.protocols import ItemsProtocol, QueryTransformProtocol
 from dynastore.tools.discovery import get_protocol, get_protocols
+from dynastore.models.driver_context import DriverContext
 
 
 
@@ -54,7 +55,7 @@ async def test_mvt_query_transformation(catalog_id, collection_id, db_engine, ap
     
     async with db_engine.begin() as conn:
         col_config = await catalogs.get_collection_config(
-            catalog_id, collection_id, db_resource=conn
+            catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
         )
         
         # Build MVT query parameters
@@ -105,7 +106,7 @@ async def test_dwh_join_transformation(catalog_id, collection_id, db_engine, app
     
     async with db_engine.begin() as conn:
         col_config = await catalogs.get_collection_config(
-            catalog_id, collection_id, db_resource=conn
+            catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
         )
         
         # Build QueryRequest with DWH join context
@@ -172,7 +173,7 @@ async def test_no_transformation_when_not_applicable(catalog_id, collection_id, 
     
     async with db_engine.begin() as conn:
         col_config = await catalogs.get_collection_config(
-            catalog_id, collection_id, db_resource=conn
+            catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
         )
         
         # Build standard GeoJSON query (no MVT, no DWH)

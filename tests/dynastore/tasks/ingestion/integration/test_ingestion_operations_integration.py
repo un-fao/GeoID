@@ -17,6 +17,7 @@ from dynastore.tools.discovery import get_protocol
 from dynastore.modules.db_config.query_executor import managed_transaction
 from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
 from dynastore.tasks.ingestion.operations import ingestion_operation, IngestionOperationInterface
+from dynastore.models.driver_context import DriverContext
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ async def test_operation_sequential_execution(task_app_state, test_data_loader, 
     configs = get_protocol(ConfigsProtocol)
     # Drop existing schema if needed
     async with managed_transaction(task_app_state.engine) as conn:
-        phys_schema_before = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn, allow_missing=True)
+        phys_schema_before = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True)
         if phys_schema_before:
             await conn.execute(text(f'DROP SCHEMA IF EXISTS "{phys_schema_before}" CASCADE'))
 
@@ -64,7 +65,7 @@ async def test_operation_sequential_execution(task_app_state, test_data_loader, 
     # Drop the table that was eagerly created with default config (partitioned)
     # to force IngestionTask to recreate it with the new unpartitioned config.
     async with managed_transaction(task_app_state.engine) as conn:
-        phys_schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+        phys_schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=conn))
         phys_table = await catalogs.resolve_physical_table(catalog_id, collection_id, db_resource=conn)
         if phys_schema and phys_table:
              await conn.execute(text(f'DROP TABLE IF EXISTS "{phys_schema}"."{phys_table}" CASCADE'))
@@ -116,7 +117,7 @@ async def test_operation_sequential_execution(task_app_state, test_data_loader, 
         # Retrieve the physical table name that was generated during ingestion/creation
         # Retrieve physical names for the raw query
         catalogs = get_protocol(CatalogsProtocol)
-        phys_schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+        phys_schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=conn))
         phys_table = await catalogs.resolve_physical_table(catalog_id, collection_id, db_resource=conn)
 
         # Execute raw count check (Variables are clean strings, manual quotes here are correct)

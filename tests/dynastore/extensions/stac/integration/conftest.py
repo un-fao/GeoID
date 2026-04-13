@@ -114,7 +114,7 @@ async def setup_aggregation_data(
     catalogs = get_protocol(CatalogsProtocol)
 
     async with managed_transaction(app_lifespan.engine) as conn:
-        schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn)
+        schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=conn))
         table = await catalogs.resolve_physical_table(
             catalog_id, collection_id, db_resource=conn
         )

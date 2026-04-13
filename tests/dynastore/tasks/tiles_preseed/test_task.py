@@ -10,6 +10,7 @@ from dynastore.modules.tiles.tiles_config import TilesPreseedConfig, TILES_PRESE
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
+from dynastore.models.driver_context import DriverContext
 
 @pytest.mark.asyncio
 @pytest.mark.xdist_group(name="serial")
@@ -92,7 +93,7 @@ async def test_tile_preseed_task_run_integration(app_lifespan, in_process_client
     # Resolve physical schema to create task in the right place
     # This also ensures the tasks table is created via the task_module.create_task logic
     catalogs = get_protocol(CatalogsProtocol)
-    schema = await catalogs.resolve_physical_schema(catalog_id, db_resource=app_lifespan.engine)
+    schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=app_lifespan.engine))
     
     # Properly create task record to ensure table existence
     db_task = await tasks_module.create_task(

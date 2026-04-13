@@ -8,6 +8,7 @@ from dynastore.models.protocols import CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.db_config.query_executor import managed_transaction
 from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
+from dynastore.models.driver_context import DriverContext
 
 @pytest.mark.enable_modules("db_config", "db", "catalog", "httpx", "proxy", "stats")
 @pytest.mark.enable_extensions("proxy")
@@ -24,12 +25,12 @@ async def test_proxy_ownership_and_cleanup(app_lifespan, catalog_obj, collection
     # 1. Create Catalog
     catalogs = get_protocol(CatalogsProtocol)
     async with managed_transaction(engine) as conn:
-        phys_schema_before = await catalogs.resolve_physical_schema(catalog_id, db_resource=conn, allow_missing=True)
+        phys_schema_before = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True)
         if phys_schema_before:
             await conn.execute(text(f'DROP SCHEMA IF EXISTS "{phys_schema_before}" CASCADE'))
             await conn.commit()
             
-        await catalogs.create_catalog(catalog_obj, db_resource=conn)
+        await catalogs.create_catalog(catalog_obj, ctx=DriverContext(db_resource=conn))
         await lifecycle_registry.wait_for_all_tasks()
     
     # 2. Verify parent table exists in tenant schema
@@ -44,7 +45,7 @@ async def test_proxy_ownership_and_cleanup(app_lifespan, catalog_obj, collection
 
     # 3. Create Collection
     async with managed_transaction(engine) as conn:
-        await catalogs.create_collection(catalog_id, collection_obj, db_resource=conn)
+        await catalogs.create_collection(catalog_id, collection_obj, ctx=DriverContext(db_resource=conn))
         await lifecycle_registry.wait_for_all_tasks()
     
     # 3a. Verify partition existence
@@ -81,7 +82,7 @@ async def test_proxy_ownership_and_cleanup(app_lifespan, catalog_obj, collection
 
         # 6. Delete Collection (programmatically, not via REST API)
         async with managed_transaction(engine) as conn:
-            await catalogs.delete_collection(catalog_id, collection_id, force=True, db_resource=conn)
+            await catalogs.delete_collection(catalog_id, collection_id, force=True, ctx=DriverContext(db_resource=conn))
         
         # Wait for background tasks (cleanup hook)
         await lifecycle_registry.wait_for_all_tasks()

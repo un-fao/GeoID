@@ -41,6 +41,7 @@ from .postgres_policy_storage import PostgresPolicyStorage
 from dynastore.modules.db_config.query_executor import managed_transaction, DbResource
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import DatabaseProtocol
+from dynastore.models.driver_context import DriverContext
 
 logger = logging.getLogger(__name__)
 

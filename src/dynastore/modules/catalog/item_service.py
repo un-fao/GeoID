@@ -490,7 +490,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                         list(partition_values.values())[0] if partition_values else None
                     )
                     await self.ensure_partition_exists(
-                        catalog_id, collection_id, col_config, p_val, db_resource=conn
+                        catalog_id, collection_id, col_config, p_val, ctx=DriverContext(db_resource=conn)
                     )
 
                 # Add partition keys to hub if missing
@@ -824,8 +824,9 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         collection_id: str,
         col_config: DriverRecordsPostgresqlConfig,
         partition_value: Any,
-        db_resource: Optional[DbResource] = None,
+        ctx: Optional[DriverContext] = None,
     ):
+        db_resource = ctx.db_resource if ctx else None
         partitioning = col_config.partitioning
         if not partitioning.enabled or not partitioning.partition_keys:
             return
