@@ -20,12 +20,13 @@
 
 import logging
 import asyncio
-from typing import Optional, cast
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 import pystac
 from fastapi import Depends, HTTPException, Query, Request, status
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from dynastore.models.protocols import (
     AssetsProtocol,
@@ -48,7 +49,18 @@ from . import stac_generator, asset_factory, metadata_mapper
 logger = logging.getLogger(__name__)
 
 
-class StacVirtualMixin:
+if TYPE_CHECKING:
+    class _Host:
+        async def _get_catalogs_service(self) -> Any: ...
+        async def _get_configs_service(self) -> Any: ...
+        async def _get_stac_config(
+            self, catalog_id: str, collection_id: Optional[str] = None, *, db_resource: Any = None
+        ) -> Any: ...
+else:
+    class _Host: ...
+
+
+class StacVirtualMixin(_Host):
     """Mixin providing virtual STAC endpoints (asset views and hierarchy views)."""
 
     # --- Virtual STAC Endpoints ---
@@ -165,7 +177,7 @@ class StacVirtualMixin:
                 asset_id=asset_code,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
-                db_resource=conn,
+                db_resource=conn,  # type: ignore[call-arg]
             )
             if not asset:
                 logger.warning(
@@ -409,6 +421,7 @@ class StacVirtualMixin:
                 return RedirectResponse(url=asset.uri)
 
     async def get_virtual_hierarchy_collection(
+        self,
         hierarchy_id: str,
         catalog_id: str,
         collection_id: str,
@@ -458,7 +471,7 @@ class StacVirtualMixin:
             # Get distinct values for this hierarchy level (optionally filtered by parent_value)
             distinct_values = (
                 await stac_hierarchy_queries.get_distinct_hierarchy_values(
-                    conn,
+                    cast(AsyncConnection, conn),
                     catalog_id,
                     collection_id,
                     matching_rule,
@@ -469,7 +482,7 @@ class StacVirtualMixin:
 
             # Get computed extent (bbox and temporal)
             extent_data = await stac_hierarchy_queries.get_hierarchy_extent(
-                conn,
+                cast(AsyncConnection, conn),
                 catalog_id,
                 collection_id,
                 matching_rule,
@@ -567,6 +580,7 @@ class StacVirtualMixin:
         return JSONResponse(content=virtual_collection.to_dict())
 
     async def get_virtual_hierarchy_items(
+        self,
         hierarchy_id: str,
         catalog_id: str,
         collection_id: str,
@@ -610,7 +624,7 @@ class StacVirtualMixin:
 
             # Import hierarchy queries
             from dynastore.extensions.stac import stac_hierarchy_queries
-            from dynastore.modules.catalog.catalog_module import GeoDQLQuery
+            from dynastore.modules.db_config.query_executor import GeoDQLQuery
 
             # Build and execute query
             sql, params = await stac_hierarchy_queries.build_hierarchy_items_query(
@@ -622,12 +636,13 @@ class StacVirtualMixin:
 
             # Get total count
             total_count = await stac_hierarchy_queries.get_hierarchy_item_count(
-                conn, catalog_id, collection_id, matching_rule, parent_value
+                cast(AsyncConnection, conn), catalog_id, collection_id, matching_rule, parent_value
             )
 
             # Map to Features
             from dynastore.models.protocols import ItemsProtocol
             items_svc = get_protocol(ItemsProtocol)
+            assert items_svc is not None
             catalogs_svc = await self._get_catalogs_service()
             features = []
             for row in items_rows:
@@ -673,6 +688,7 @@ class StacVirtualMixin:
         return JSONResponse(content=coll_dict)
 
     async def search_virtual_hierarchy_items(
+        self,
         hierarchy_id: str,
         catalog_id: str,
         collection_id: str,
@@ -747,6 +763,7 @@ class StacVirtualMixin:
             from dynastore.models.protocols import ItemsProtocol
             items_svc = get_protocol(ItemsProtocol)
             catalogs_svc = get_protocol(CatalogsProtocol)
+            assert items_svc is not None and catalogs_svc is not None
             features = []
             for row in items_rows:
                 col_config = await catalogs_svc.get_collection_config(catalog_id, collection_id, db_resource=conn)
