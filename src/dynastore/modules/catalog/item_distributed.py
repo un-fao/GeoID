@@ -11,7 +11,6 @@ from datetime import datetime, timezone
 from typing import List, Optional, Any, Dict, TYPE_CHECKING
 
 from geojson_pydantic import Feature
-from sqlalchemy import text
 
 from dynastore.modules.db_config.query_executor import (
     DDLQuery,
@@ -46,16 +45,6 @@ else:
     class _Host: ...
 
 logger = logging.getLogger(__name__)
-
-
-async def _run_query(conn, stmt, params=None):
-    """Run a statement on either sync or async connection."""
-    import inspect as _inspect
-
-    result = conn.execute(stmt, params or {})
-    if _inspect.isawaitable(result):
-        result = await result
-    return result
 
 
 class ItemDistributedMixin(_Host):
@@ -297,8 +286,9 @@ class ItemDistributedMixin(_Host):
             limit=1,
         )
         sql, params = optimizer.build_optimized_query(fetch_req, schema, hub_table)
-        result = await _run_query(conn, text(sql), params)
-        row = result.mappings().first()
+        row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
+            conn, **params
+        )
         if row is None:
             return None
         res = self.map_row_to_feature(dict(row), col_config)
@@ -367,8 +357,9 @@ class ItemDistributedMixin(_Host):
             limit=1,
         )
         sql, params = optimizer.build_optimized_query(fetch_req, schema, hub_table)
-        result = await _run_query(conn, text(sql), params)
-        row = result.mappings().first()
+        row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
+            conn, **params
+        )
         if row is None:
             return None
         return self.map_row_to_feature(dict(row), col_config)
