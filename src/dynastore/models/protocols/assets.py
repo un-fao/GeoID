@@ -141,9 +141,10 @@ class AssetsProtocol(Protocol):
 
     async def create_asset(
         self,
-        asset: "AssetBase",
         catalog_id: str,
+        asset: "AssetBase",
         collection_id: Optional[str] = None,
+        db_resource: Optional[Any] = None,
     ) -> "Asset":
         """
         Creates a new asset.
@@ -283,6 +284,7 @@ class AssetsProtocol(Protocol):
         ref_type: "AssetReferenceType",
         ref_id: str,
         cascade_delete: bool = True,
+        db_resource: Optional[Any] = None,
     ) -> "AssetReference":
         """
         Registers a dependency from *ref_id* (e.g. a collection or table) on

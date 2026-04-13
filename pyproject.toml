@@ -85,7 +85,7 @@ extension_geoid = ["dynastore[extension_base,extension_web]", "user-agents>=2.2.
 extension_maps = ["dynastore[extension_base,geospatial_core,mvt]", "GDAL==3.12.3"]
 extension_coverages = ["dynastore[extension_base,geospatial_core]"]
 extension_dwh = ["dynastore[extension_base,dwh]"]
-extension_dimensions = ["dynastore[extension_base]", "ogc-dimensions @ git+https://github.com/ccancellieri/ogc-dimensions.git@main#subdirectory=reference-implementation"]
+extension_dimensions = ["dynastore[extension_base]", "ogc-dimensions @ git+https://github.com/ccancellieri/ogc-dimensions.git@7cd827bddfbbc8cadb07a909ace5534d87e4d782#subdirectory=reference-implementation"]
 
 # ==========================================================================
 # GRANULAR TASKS

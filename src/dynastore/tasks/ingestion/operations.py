@@ -19,7 +19,7 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Generic, List, Optional, Type, TypeVar
 from pydantic import BaseModel
-from sqlalchemy.engine import Engine
+from dynastore.modules.db_config.query_executor import DbEngine
 import logging
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ class IngestionOperationInterface(Generic[T_CONFIG], ABC):
     Abstract base class defining the interface for all ingestion operations.
     Operations can be run before or after the ingestion process.
     """
-    def __init__(self, engine: Engine, task_id: str, task_request: Any, catalog_config: Any = None, ingestion_config: Any = None, config: Optional[T_CONFIG] = None, **kwargs):
+    def __init__(self, engine: DbEngine, task_id: str, task_request: Any, catalog_config: Any = None, ingestion_config: Any = None, config: Optional[T_CONFIG] = None, **kwargs):
         """
         Initializes the operation with common context.
         :param engine: The database engine for any DB operations.
@@ -88,7 +88,7 @@ def _get_config_model_from_operation(op_class: Type[IngestionOperationInterface]
     return None
 
 def initialize_operations(
-    engine: Engine,
+    engine: DbEngine,
     task_id: str,
     task_request: Any,
     ops_config: Optional[Dict[str, Dict[str, Any]]] = None,

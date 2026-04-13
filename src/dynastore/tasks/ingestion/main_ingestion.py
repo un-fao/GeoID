@@ -58,6 +58,10 @@ async def run_ingestion_task(
     if not catalog_module:
         raise RuntimeError("CatalogsProtocol implementation not found.")
 
+    if task_request.asset is None:
+        raise ValueError("task_request.asset is required for ingestion.")
+    req_asset = task_request.asset
+
     pre_ops = []
     post_ops = []
 
@@ -67,6 +71,8 @@ async def run_ingestion_task(
 
     # Resolve physical schema for task storage
     phys_schema = await catalog_module.resolve_physical_schema(catalog_id, engine)
+    if phys_schema is None:
+        raise RuntimeError(f"Cannot resolve physical schema for catalog {catalog_id!r}.")
 
     reporters = initialize_reporters(
         engine,
@@ -85,7 +91,7 @@ async def run_ingestion_task(
                 task_id,
                 collection_id,
                 catalog_id,
-                task_request.asset.asset_id or task_request.asset.uri,
+                req_asset.asset_id or req_asset.uri or "",
             )
             for reporter in reporters
         )
@@ -139,25 +145,25 @@ async def run_ingestion_task(
 
         # --- Resolve or Create the Asset ---
         asset: Optional[Asset] = None
-        if task_request.asset.asset_id:
+        if req_asset.asset_id:
             asset = await asset_manager.get_asset(
-                catalog_id, task_request.asset.asset_id, collection_id
+                catalog_id, req_asset.asset_id, collection_id
             )
-            if not asset and not task_request.asset.uri:
+            if not asset and not req_asset.uri:
                 raise ValueError(
-                    f"Asset with asset_id '{task_request.asset.asset_id}' not found and no URI provided."
+                    f"Asset with asset_id '{req_asset.asset_id}' not found and no URI provided."
                 )
 
-        if not asset and task_request.asset.uri:
-            logger.info(f"Creating asset from URI: {task_request.asset.uri}")
-            asset_id_for_creation = task_request.asset.asset_id or re.sub(
-                r"[^a-zA-Z0-9_\-]", "_", os.path.basename(task_request.asset.uri)
+        if not asset and req_asset.uri:
+            logger.info(f"Creating asset from URI: {req_asset.uri}")
+            asset_id_for_creation = req_asset.asset_id or re.sub(
+                r"[^a-zA-Z0-9_\-]", "_", os.path.basename(req_asset.uri)
             )
 
             asset_payload = AssetBase(
                 asset_id=asset_id_for_creation,
-                uri=task_request.asset.uri,
-                metadata=task_request.asset.metadata or {},
+                uri=req_asset.uri,
+                metadata=req_asset.metadata or {},
             )
             asset = await asset_manager.create_asset(
                 catalog_id, asset_payload, collection_id, db_resource=engine
@@ -173,6 +179,8 @@ async def run_ingestion_task(
                 catalog_id, collection_id, db_resource=engine
             )
             asset = await run_pre_operations(pre_ops, catalog, collection, asset)
+            if asset is None:
+                raise RuntimeError("Pre-operations returned no asset.")
 
         source_file_path = asset.uri
         asset_id = asset.asset_id

@@ -229,7 +229,7 @@ class AssetBase(BaseModel):
         description="URI pointing to the asset location (e.g., gs://bucket/path/to/asset.tif).",
     )
     asset_type: AssetTypeEnum = Field(
-        AssetTypeEnum.ASSET,
+        default=AssetTypeEnum.ASSET,
         description="Type of the asset. Could be VECTORIAL, RASTER, or generic ASSET.",
         examples=["VECTORIAL", "RASTER", "ASSET"],
     )
@@ -239,7 +239,7 @@ class AssetBase(BaseModel):
         examples=[{"owner": "", "provider": ""}],
     )
     owned_by: Optional[str] = Field(
-        None,
+        default=None,
         description=(
             "Identifier of the system that manages the underlying file "
             "(e.g. 'gcs', 'local', 'http'). "

@@ -140,6 +140,7 @@ class CatalogsProtocol(ItemCrudProtocol, ItemQueryProtocol, ItemIntrospectionPro
         collection_id: str,
         items: Union[Dict[str, Any], Any],
         db_resource: Optional[Any] = None,
+        processing_context: Optional[Dict[str, Any]] = None,
     ) -> Union[Dict[str, Any], List[Dict[str, Any]]]: ...
 
     async def get_catalog(
