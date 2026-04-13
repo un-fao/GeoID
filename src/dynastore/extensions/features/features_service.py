@@ -35,6 +35,7 @@ from fastapi import (
 from sqlalchemy.ext.asyncio import AsyncConnection
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 from dynastore.extensions.tools.exception_handlers import handle_exception
+from dynastore.models.localization import LocalizedText
 from contextlib import asynccontextmanager
 import asyncio
 from dynastore.models.protocols import (
@@ -154,7 +155,7 @@ def _generate_pagination_links(
             href=str(request.url),
             rel="self",
             type="application/geo+json",
-            title="This document",
+            title=LocalizedText(en="This document"),
         )
     ]
 
@@ -165,7 +166,7 @@ def _generate_pagination_links(
                 href=str(next_url),
                 rel="next",
                 type="application/geo+json",
-                title="Next page",
+                title=LocalizedText(en="Next page"),
             )
         )
 
@@ -177,7 +178,7 @@ def _generate_pagination_links(
                 href=str(prev_url),
                 rel="prev",
                 type="application/geo+json",
-                title="Previous page",
+                title=LocalizedText(en="Previous page"),
             )
         )
 
@@ -373,7 +374,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
         return self._storage_protocol
 
     async def _resolve_crs_srid(
-        self, conn: DbResource, catalog_id: str, crs_uri: str
+        self, conn: DbResource, catalog_id: str, crs_uri: Optional[str]
     ) -> Optional[int]:
         """Resolves a CRS URI to an SRID using the CRSProtocol."""
         if not crs_uri:
@@ -489,12 +490,15 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
                 status_code=status.HTTP_201_CREATED,
             )
         except Exception as e:
-            raise handle_exception(
+            _exc = handle_exception(
                 e,
                 resource_name="Catalog",
                 resource_id=definition.id,
                 operation="OGC Features Catalog creation",
             )
+            if isinstance(_exc, HTTPException):
+                raise _exc
+            return _exc
 
     async def get_catalog(
         self, catalog_id: str, request: Request, language: str = Depends(get_language)
@@ -641,7 +645,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
         conn: AsyncConnection = Depends(get_async_connection),
         language: str = Depends(get_language),
     ):
-        """Returns the filterable properties for a collection as a JSON Schema (Part 3)."""  # type: ignore
+        """Returns the filterable properties for a collection as a JSON Schema (Part 3)."""
         from dynastore.modules.storage.router import get_driver
         from dynastore.modules.storage.routing_config import Operation
         from dynastore.models.protocols.storage_driver import Capability
@@ -713,12 +717,15 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
                 status_code=status.HTTP_201_CREATED,
             )
         except Exception as e:
-            raise handle_exception(
+            _exc = handle_exception(
                 e,
                 resource_name="Collection",
                 resource_id=f"{catalog_id}:{collection_def.id}",
                 operation="OGC Features Collection creation",
             )
+            if isinstance(_exc, HTTPException):
+                raise _exc
+            return _exc
 
     async def get_collection(
         self,
@@ -750,13 +757,13 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
                 href=f"{self_url}/items",
                 rel="items",
                 type="application/geo+json",
-                title="Items in this collection",
+                title=LocalizedText(en="Items in this collection"),
             ),
             Link(
                 href=f"{self_url}/queryables",
                 rel="queryables",
                 type="application/schema+json",
-                title="Queryable properties",
+                title=LocalizedText(en="Queryable properties"),
             ),
         ]
         return JSONResponse(content=ogc_collection, status_code=status.HTTP_200_OK)
@@ -876,9 +883,11 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
 
         # --- Caching Support ---
 
-        plugin_config: FeaturesPluginConfig = await configs_svc.get_config(
-            FEATURES_PLUGIN_CONFIG_ID, catalog_id=catalog_id, db_resource=conn
+        _pc = await configs_svc.get_config(
+            FeaturesPluginConfig, catalog_id=catalog_id, db_resource=conn
         )
+        assert isinstance(_pc, FeaturesPluginConfig)
+        plugin_config: FeaturesPluginConfig = _pc
 
         cache_key = None
         if plugin_config.cache_on_demand and storage_svc:
@@ -956,7 +965,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
                     href=f"{base_url}?f=html",
                     rel="alternate",
                     type="text/html",
-                    title="This document as HTML",
+                    title=LocalizedText(en="This document as HTML"),
                 ),
             )
 
@@ -1015,12 +1024,15 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
                 links=links,
             )
         except Exception as e:
-            raise handle_exception(
+            _exc = handle_exception(
                 e,
                 resource_name="Features",
                 resource_id=f"{catalog_id}:{collection_id}",
                 operation="get items",
             )
+            if isinstance(_exc, HTTPException):
+                raise _exc
+            return _exc
 
     async def get_item(
         self,
@@ -1100,20 +1112,21 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
         # 4. Return appropriate response
         def _resolve_feature_id(row: _OGCFeature) -> str:
             """Resolve the logical ID from an upsert result row."""
+            props = row.properties or {}
             fid = (
                 row.id
-                or row.properties.get("external_id")
-                or row.properties.get("geoid")
+                or props.get("external_id")
+                or props.get("geoid")
             )
             if (
                 not fid
-                and isinstance(row.properties.get("attributes"), dict)
+                and isinstance(props.get("attributes"), dict)
             ):
-                fid = row.properties["attributes"].get(
+                fid = props["attributes"].get(
                     "id"
-                ) or row.properties["attributes"].get("external_id")
-            if not fid and row.properties.get("geoid"):
-                fid = row.properties["geoid"]
+                ) or props["attributes"].get("external_id")
+            if not fid and props.get("geoid"):
+                fid = props["geoid"]
             if fid and not isinstance(fid, str):
                 fid = str(fid)
             if not fid:
