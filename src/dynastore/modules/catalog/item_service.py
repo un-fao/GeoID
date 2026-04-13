@@ -320,7 +320,8 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         except Exception:
             primary = None
 
-        if primary is not None and primary.driver.driver_type != "driver:records:postgresql":
+        from dynastore.modules.storage.drivers.postgresql import DriverRecordsPostgresql
+        if primary is not None and not isinstance(primary.driver, DriverRecordsPostgresql):
             results = await primary.driver.write_entities(
                 catalog_id,
                 collection_id,

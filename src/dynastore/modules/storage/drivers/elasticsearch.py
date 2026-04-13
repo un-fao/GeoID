@@ -110,7 +110,7 @@ class _ElasticsearchBase:
         if configs is None:
             return ElasticsearchCollectionDriverConfig()
         config = await configs.get_config(
-            self.driver_type,
+            ElasticsearchCollectionDriverConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
             db_resource=db_resource,

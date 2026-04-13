@@ -173,7 +173,7 @@ class DriverRecordsIceberg(ModuleProtocol):
 
         configs = get_protocol(ConfigsProtocol)
         config = await configs.get_config(
-            self.driver_type,
+            IcebergCollectionDriverConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
             db_resource=db_resource,

@@ -99,7 +99,8 @@ async def _try_driver_dispatch(
     except Exception:
         return None
 
-    if resolved is None or resolved.driver_type == "driver:records:postgresql":
+    from dynastore.modules.storage.drivers.postgresql import DriverRecordsPostgresql
+    if resolved is None or isinstance(resolved, DriverRecordsPostgresql):
         return None
 
     effective_limit = (request.limit if request and request.limit else limit) or limit

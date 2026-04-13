@@ -323,7 +323,7 @@ class ConfigsService(ExtensionProtocol):
 
         for driver in get_protocols(CollectionStorageDriverProtocol):
             caps = sorted(getattr(driver, "capabilities", frozenset()))
-            driver_type = getattr(driver, "driver_type", "")
+            driver_type = type(driver).__name__
             plugin_id = getattr(driver, "_plugin_id", f"driver:records:{driver.driver_id}")
             driver_config_caps = []
             try:
@@ -347,7 +347,7 @@ class ConfigsService(ExtensionProtocol):
 
         for driver in get_protocols(AssetDriverProtocol):
             caps = sorted(getattr(driver, "capabilities", frozenset()))
-            driver_type = getattr(driver, "driver_type", "")
+            driver_type = type(driver).__name__
             plugin_id = getattr(driver, "_plugin_id", f"driver:asset:{driver.driver_id}")
             driver_config_caps = []
             try:
@@ -370,7 +370,7 @@ class ConfigsService(ExtensionProtocol):
             ))
 
         for driver in get_protocols(CollectionMetadataDriverProtocol):
-            driver_type = getattr(driver, "driver_type", "")
+            driver_type = type(driver).__name__
             plugin_id = getattr(driver, "_plugin_id", "")
             grouped[driver_type].append(DriverInfo(
                 driver_id=driver.driver_id,
