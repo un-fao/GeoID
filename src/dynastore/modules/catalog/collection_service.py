@@ -500,17 +500,16 @@ class CollectionService:
             # 6b. Pin the resolved routing config at collection level so future
             #     platform default changes don't silently re-route existing collections.
             try:
-                from typing import cast as _cast2
                 from dynastore.modules.storage.routing_config import ROUTING_PLUGIN_CONFIG_ID, RoutingPluginConfig
                 configs = get_protocol(ConfigsProtocol)
                 if configs is None:
                     raise ValueError("ConfigsProtocol not registered")
-                resolved_routing = _cast2(Optional[RoutingPluginConfig], await configs.get_config(
-                    ROUTING_PLUGIN_CONFIG_ID,
+                resolved_routing = await configs.get_config(
+                    RoutingPluginConfig,
                     catalog_id=catalog_id,
                     collection_id=collection_model.id,
                     db_resource=conn,
-                ))
+                )
                 if resolved_routing:
                     await configs.set_config(
                         ROUTING_PLUGIN_CONFIG_ID,

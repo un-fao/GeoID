@@ -51,7 +51,6 @@ from dynastore.modules.storage.driver_config import (
 )
 from dynastore.modules.catalog.sidecars.geometries_config import GeometriesSidecarConfig
 from dynastore.modules.stac.stac_config import (
-    STAC_PLUGIN_CONFIG_ID,
     StacPluginConfig,
     StacAssetDefinition,
     HierarchyStrategy,
@@ -362,11 +361,8 @@ async def create_collection(
     config_manager = get_protocol(ConfigsProtocol)
     if not config_manager:
         raise RuntimeError("ConfigsProtocol not available")
-    stac_config: StacPluginConfig = cast(
-        StacPluginConfig,
-        await cast(ConfigsProtocol, config_manager).get_config(
-            STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id
-        ),
+    stac_config = await config_manager.get_config(
+        StacPluginConfig, catalog_id, collection_id
     )
 
     # Correctly handle the Extent object and its attributes
@@ -795,11 +791,8 @@ async def create_item_from_feature(
         config_manager = get_protocol(ConfigsProtocol)
         if not config_manager:
             raise RuntimeError("ConfigsProtocol not available")
-        stac_config = cast(
-            StacPluginConfig,
-            await cast(ConfigsProtocol, config_manager).get_config(
-                STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id
-            ),
+        stac_config = await config_manager.get_config(
+            StacPluginConfig, catalog_id, collection_id
         )
 
     if feature is None:

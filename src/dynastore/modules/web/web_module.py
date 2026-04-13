@@ -224,7 +224,7 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
         configs = get_protocols(ConfigsProtocol)
         for c in configs:
             try:
-                settings: WebPageSettingsConfig = await c.get_config("web_pages")
+                settings = await c.get_config(WebPageSettingsConfig)
                 return settings.pages
             except Exception as e:
                 logger.debug(f"WebModule: Could not fetch web_pages config: {e}")
