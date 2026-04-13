@@ -92,14 +92,14 @@ class AttributeSchemaEntry(BaseModel):
     
     # TODO add default value validation and SQL code to ddl
     # TODO add check constraint for valid values
-    default: Optional[Any] = Field(None, description="Default value for the attribute")
+    default: Optional[Any] = Field(default=None, description="Default value for the attribute")
 
     unique: bool = Field(
         False, description="Enforce uniqueness (at table/partition level)"
     )
 
     # Metadata
-    description: Optional[str] = Field(None, description="Human-readable description")
+    description: Optional[str] = Field(default=None, description="Human-readable description")
 
     @model_validator(mode="after")
     def validate_default_type(self) -> "AttributeSchemaEntry":
@@ -163,8 +163,7 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
 
 
     # --- Default Values (Legacy/Bulk) ---
-    attribute_defaults: Optional[Dict[str, Any]] = Field(
-        None,
+    attribute_defaults: Optional[Dict[str, Any]] = Field(default=None,
         description="Default values for attributes when not provided in input Feature. "
                     "Note: AttributeSchemaEntry defaults take precedence for columnar fields.",
     )
@@ -176,8 +175,7 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
                     "These fields have expose=False in get_queryable_fields().",
     )
 
-    feature_type_schema: Optional[Dict[str, Any]] = Field(
-        None,
+    feature_type_schema: Optional[Dict[str, Any]] = Field(default=None,
         description="JSON Schema override for Feature properties. "
                     "If None, defaults to all attributes except storage_only_fields. "
                     "Can explicitly include asset_id or other fields in output.",
@@ -216,8 +214,7 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
     )
 
     # Mode A: Relational schema
-    attribute_schema: Optional[List[AttributeSchemaEntry]] = Field(
-        None, description="List of attribute definitions for relational mode"
+    attribute_schema: Optional[List[AttributeSchemaEntry]] = Field(default=None, description="List of attribute definitions for relational mode"
     )
 
     # Mode B: JSONB settings
@@ -234,12 +231,10 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
     )
 
     # Partitioning
-    partition_strategy: Optional[AttributePartitionStrategyPreset] = Field(
-        None,
+    partition_strategy: Optional[AttributePartitionStrategyPreset] = Field(default=None,
         description="Strategy to use for contributing to the global partition key.",
     )
-    partition_attribute: Optional[str] = Field(
-        None,
+    partition_attribute: Optional[str] = Field(default=None,
         description="Attribute name to partition by (must be in identity or have can_partition=True). Required if strategy is BY_ATTRIBUTE_VALUE.",
     )
 

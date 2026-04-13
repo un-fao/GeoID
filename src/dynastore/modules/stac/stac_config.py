@@ -88,23 +88,20 @@ class DatacubeDimension(BaseModel):
     dynamic_source: Optional[DynamicSource] = None
 
     # OGC Dimensions pagination properties
-    size: Optional[int] = Field(
-        None,
+    size: Optional[int] = Field(default=None,
         description=(
             "Total number of discrete members in the dimension. "
             "Allows clients to assess cardinality without downloading values."
         ),
     )
-    href: Optional[str] = Field(
-        None,
+    href: Optional[str] = Field(default=None,
         description=(
             "Link to a paginated endpoint returning dimension members "
             "following OGC API - Common Part 2 pagination conventions "
             "(limit/offset query params, rel:next/prev links)."
         ),
     )
-    generator: Optional[Dict[str, Any]] = Field(
-        None,
+    generator: Optional[Dict[str, Any]] = Field(default=None,
         description=(
             "Generator object describing algorithmic rules for producing "
             "dimension members. Contains type (e.g. 'daily-period'), config, "
@@ -119,32 +116,32 @@ class HierarchyRule(BaseModel):
     
     # Identification
     hierarchy_id: str = Field(..., description="Unique identifier for this hierarchy rule (e.g., 'admin_level_0', 'region').")
-    parent_hierarchy_id: Optional[str] = Field(None, description="The hierarchy_id of the parent level (e.g., 'admin_level_0' for a region level). Used to generate parent/child links between hierarchy levels.")
+    parent_hierarchy_id: Optional[str] = Field(default=None, description="The hierarchy_id of the parent level (e.g., 'admin_level_0' for a region level). Used to generate parent/child links between hierarchy levels.")
     
     # Common Fields
     item_code_field: str = Field(..., description="The feature attribute used as the ID (e.g., iso_code, l4).")
-    parent_code_field: Optional[str] = Field(None, description="The attribute for the parent ID within items (e.g., continent_code). Links items to their parent in the same collection.")
+    parent_code_field: Optional[str] = Field(default=None, description="The attribute for the parent ID within items (e.g., continent_code). Links items to their parent in the same collection.")
     
     # Fixed Strategy Fields
-    level_name: Optional[str] = Field(None, description="Name of this level (e.g. 'Region', 'Level 4').")
-    condition: Optional[str] = Field(None, description="A SQL-like filter string (e.g., type='admin_0', l4 IS NOT NULL).")
+    level_name: Optional[str] = Field(default=None, description="Name of this level (e.g. 'Region', 'Level 4').")
+    condition: Optional[str] = Field(default=None, description="A SQL-like filter string (e.g., type='admin_0', l4 IS NOT NULL).")
     
     # Recursive Strategy Fields
-    root_condition: Optional[str] = Field(None, description="(For Recursive Strategy) A filter to identify root nodes (e.g., parent_code IS NULL).")
+    root_condition: Optional[str] = Field(default=None, description="(For Recursive Strategy) A filter to identify root nodes (e.g., parent_code IS NULL).")
     
     # Virtual Collection Metadata
-    collection_title_template: Optional[str] = Field(None, description="Template for virtual collection title (e.g., '{level_name}: {value}').")
-    collection_description_template: Optional[str] = Field(None, description="Template for virtual collection description.")
+    collection_title_template: Optional[str] = Field(default=None, description="Template for virtual collection title (e.g., '{level_name}: {value}').")
+    collection_description_template: Optional[str] = Field(default=None, description="Template for virtual collection description.")
     
     # Filtering and Links
-    link_properties: Optional[List[str]] = Field(None, description="Properties to expose in hierarchy links.")
-    item_filter_properties: Optional[List[str]] = Field(None, description="Additional properties for item filtering.")
+    link_properties: Optional[List[str]] = Field(default=None, description="Properties to expose in hierarchy links.")
+    item_filter_properties: Optional[List[str]] = Field(default=None, description="Additional properties for item filtering.")
     
     # Metadata
-    datacube_dim: Optional[DatacubeDimension] = Field(None, description="Metadata for OGC Cube dimensions associated with this level.")
+    datacube_dim: Optional[DatacubeDimension] = Field(default=None, description="Metadata for OGC Cube dimensions associated with this level.")
     
     # Virtual View Mapping (deprecated in favor of hierarchy_id)
-    id_alias: Optional[str] = Field(None, description="An alias for the generated collection ID to be used in virtual hierarchy endpoints.")
+    id_alias: Optional[str] = Field(default=None, description="An alias for the generated collection ID to be used in virtual hierarchy endpoints.")
 
 class HierarchyConfig(BaseModel):
     """Defines how to dynamically extract parent/child relationships."""
@@ -186,8 +183,8 @@ class AggregationRule(BaseModel):
     type: AggregationType = Field(..., description="Type of aggregation to perform")
     property: str = Field(..., description="Property to aggregate (e.g., 'properties.asset_code', 'properties.country')")
     limit: int = Field(10, ge=1, le=1000, description="Maximum number of buckets to return")
-    precision: Optional[int] = Field(None, description="Precision for geohash/geotile aggregations (1-12 for geohash)")
-    interval: Optional[str] = Field(None, description="Interval for datetime histograms (e.g., '1d', '1M', '1y')")
+    precision: Optional[int] = Field(default=None, description="Precision for geohash/geotile aggregations (1-12 for geohash)")
+    interval: Optional[str] = Field(default=None, description="Interval for datetime histograms (e.g., '1d', '1M', '1y')")
 
 class AggregationConfig(BaseModel):
     """Configuration for STAC aggregations following OGC extension."""
@@ -248,9 +245,9 @@ class StacAssetDefinition(BaseModel):
     href: Optional[str] = None
     title: Optional[LocalizedText] = None
     description: Optional[LocalizedText] = None
-    type: Optional[str] = Field(None, description="IANA media type (e.g. image/tiff; application=geotiff)")
-    roles: Optional[List[str]] = Field(None, description="Semantic roles: data, overview, thumbnail, metadata, source, …")
-    hreflang: Optional[str] = Field(None, description="RFC 5646 language tag for the href target (STAC Language Extension)")
+    type: Optional[str] = Field(default=None, description="IANA media type (e.g. image/tiff; application=geotiff)")
+    roles: Optional[List[str]] = Field(default=None, description="Semantic roles: data, overview, thumbnail, metadata, source, …")
+    hreflang: Optional[str] = Field(default=None, description="RFC 5646 language tag for the href target (STAC Language Extension)")
 
     @field_validator("title", "description", mode="before")
     @classmethod

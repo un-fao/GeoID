@@ -103,10 +103,10 @@ class GcsPredefinedAcl(StrEnum):
 
 class GcsRetryOptions(BaseModel):
     """Configuration for GCS RPC retries."""
-    initial: Optional[float] = Field(None, description="The initial delay before the first retry, in seconds.")
-    maximum: Optional[float] = Field(None, description="The maximum delay between retries, in seconds.")
-    multiplier: Optional[float] = Field(None, description="The multiplier by which the delay increases after each retry.")
-    deadline: Optional[float] = Field(None, description="The total time allowed for retries, in seconds.")
+    initial: Optional[float] = Field(default=None, description="The initial delay before the first retry, in seconds.")
+    maximum: Optional[float] = Field(default=None, description="The maximum delay between retries, in seconds.")
+    multiplier: Optional[float] = Field(default=None, description="The multiplier by which the delay increases after each retry.")
+    deadline: Optional[float] = Field(default=None, description="The total time allowed for retries, in seconds.")
 
 class GcpLocation(StrEnum):
     """
@@ -135,8 +135,8 @@ class GcpCorsRule(BaseModel):
     """
     origin: List[str] = Field(..., description="The list of Origins allowed to make requests.")
     method: List[str] = Field(default_factory=lambda: ["GET", "HEAD", "OPTIONS"], description="The heart of HTTP methods allowed for CORS requests.")
-    response_header: Optional[List[str]] = Field(None, description="The list of response headers to expose to the client.", alias="responseHeader")
-    max_age_seconds: Optional[int] = Field(None, description="The time in seconds the browser should cache the preflight response.")
+    response_header: Optional[List[str]] = Field(default=None, description="The list of response headers to expose to the client.", alias="responseHeader")
+    max_age_seconds: Optional[int] = Field(default=None, description="The time in seconds the browser should cache the preflight response.")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -192,7 +192,7 @@ class GcpCollectionBucketConfig(PluginConfig):
     These settings can override catalog-level defaults for objects belonging to this collection.
     """
     _plugin_id: ClassVar[Optional[str]] = GCP_COLLECTION_BUCKET_CONFIG_ID
-    custom_metadata_defaults: Optional[Dict[str, str]] = Field(None, description="Default metadata to apply to all objects uploaded to this collection.")
+    custom_metadata_defaults: Optional[Dict[str, str]] = Field(default=None, description="Default metadata to apply to all objects uploaded to this collection.")
     
     # Updated to allow strings (IDs of templates) or full objects
     event_actions: Optional[Dict[GcsNotificationEventType, List[Union[str, TriggeredAction]]]] = Field(
@@ -216,19 +216,19 @@ class ManagedBucketEventing(BaseModel):
     enabled: bool = Field(True, description="If true, the managed eventing system is active.")
     
     # Immutable: The topic, once created for a catalog, should not be changed.
-    topic_id: Optional[str] = Field(None, description="Optional custom ID for the managed topic. If not set, a default ID will be generated (e.g., 'ds-catalog_id-events').")
+    topic_id: Optional[str] = Field(default=None, description="Optional custom ID for the managed topic. If not set, a default ID will be generated (e.g., 'ds-catalog_id-events').")
     
     # Mutable: Subscription details can be updated.
-    subscription: Optional[PushSubscriptionConfig] = Field(None, description="Configuration for the managed push subscription.")
+    subscription: Optional[PushSubscriptionConfig] = Field(default=None, description="Configuration for the managed push subscription.")
     blob_name_prefixes: List[str] = Field(default_factory=lambda: ["catalog/", "collections/"], description="Filter events to objects with these prefixes. If empty, tracks the entire bucket.")
-    event_types: Optional[List[GcsNotificationEventType]] = Field(None, description="A list of event types to listen for. Defaults to OBJECT_FINALIZE if not set.")
+    event_types: Optional[List[GcsNotificationEventType]] = Field(default=None, description="A list of event types to listen for. Defaults to OBJECT_FINALIZE if not set.")
     payload_format: GcsPayloadFormat = Field(GcsPayloadFormat.JSON_API_V1, description="The format of the message payload.")
     
     # --- Output fields managed by the system ---
-    topic_path: Optional[str] = Field(None, description="The full, unique resource path of the managed Pub/Sub topic. This is an output field managed by the system.")
+    topic_path: Optional[str] = Field(default=None, description="The full, unique resource path of the managed Pub/Sub topic. This is an output field managed by the system.")
     gcs_notification_ids: List[str] = Field(default_factory=list, description="The unique IDs of the GCS notification resources on the bucket. This is an output field managed by the system.")
     # Adding bucket_id provides a robust way to link GCS events back to a catalog.
-    bucket_id: Optional[str] = Field(None, description="The ID of the GCS bucket this eventing configuration is tied to. This is an output field managed by the system.")
+    bucket_id: Optional[str] = Field(default=None, description="The ID of the GCS bucket this eventing configuration is tied to. This is an output field managed by the system.")
 
     @property
     def blob_name_prefix(self) -> Optional[str]:
@@ -258,17 +258,17 @@ class GcpEventingConfig(PluginConfig):
 class UploadOptions(BaseModel):
     """Optional parameters for controlling GCS upload behavior."""
 
-    size: Optional[int] = Field(None, description="The maximum number of bytes that can be uploaded using this session. If not known, leave blank.")
-    content_type: Optional[str] = Field(None, description="Type of content being uploaded. Overrides the default if provided.")
-    origin: Optional[str] = Field(None, description="If set, the upload can only be completed by a user-agent that uploads from the given origin.")
-    checksum: Optional[GcsChecksumType] = Field(None, description="The type of checksum to compute to verify the integrity of the object ('md5', 'crc32c', 'auto').")
-    predefined_acl: Optional[GcsPredefinedAcl] = Field(None, description="Predefined access control list to apply to the uploaded object.")
-    if_generation_match: Optional[int] = Field(None, description="Makes the operation conditional on the object's generation matching this value.")
-    if_generation_not_match: Optional[int] = Field(None, description="Makes the operation conditional on the object's generation not matching this value.")
-    if_metageneration_match: Optional[int] = Field(None, description="Makes the operation conditional on the object's metageneration matching this value.")
-    if_metageneration_not_match: Optional[int] = Field(None, description="Makes the operation conditional on the object's metageneration not matching this value.")
+    size: Optional[int] = Field(default=None, description="The maximum number of bytes that can be uploaded using this session. If not known, leave blank.")
+    content_type: Optional[str] = Field(default=None, description="Type of content being uploaded. Overrides the default if provided.")
+    origin: Optional[str] = Field(default=None, description="If set, the upload can only be completed by a user-agent that uploads from the given origin.")
+    checksum: Optional[GcsChecksumType] = Field(default=None, description="The type of checksum to compute to verify the integrity of the object ('md5', 'crc32c', 'auto').")
+    predefined_acl: Optional[GcsPredefinedAcl] = Field(default=None, description="Predefined access control list to apply to the uploaded object.")
+    if_generation_match: Optional[int] = Field(default=None, description="Makes the operation conditional on the object's generation matching this value.")
+    if_generation_not_match: Optional[int] = Field(default=None, description="Makes the operation conditional on the object's generation not matching this value.")
+    if_metageneration_match: Optional[int] = Field(default=None, description="Makes the operation conditional on the object's metageneration matching this value.")
+    if_metageneration_not_match: Optional[int] = Field(default=None, description="Makes the operation conditional on the object's metageneration not matching this value.")
     timeout: Optional[int] = Field(60, description="The amount of time, in seconds, to wait for the server response for the initiation request.")
-    retry: Optional[GcsRetryOptions] = Field(None, description="Custom retry policy parameters for the upload initiation RPC.")
+    retry: Optional[GcsRetryOptions] = Field(default=None, description="Custom retry policy parameters for the upload initiation RPC.")
 
 
 class InitiateUploadRequest(BaseModel):
@@ -280,7 +280,7 @@ class InitiateUploadRequest(BaseModel):
     # Embed the AssetBase model to carry all asset information.
     # The URI will be automatically populated by the system.
     asset: "AssetUploadDefinition"
-    upload_options: Optional[UploadOptions] = Field(None, description="Advanced options for GCS upload behavior.")
+    upload_options: Optional[UploadOptions] = Field(default=None, description="Advanced options for GCS upload behavior.")
 
 class InitiateUploadResponse(BaseModel):
     """Response model for initiating a file upload."""

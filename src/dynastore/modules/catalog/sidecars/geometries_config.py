@@ -117,8 +117,7 @@ class GeometriesStatisticsConfig(BaseModel):
     )
     
     # Centroid
-    centroid_type: Optional[Literal["geometric", "weighted", "median"]] = Field(
-        None,
+    centroid_type: Optional[Literal["geometric", "weighted", "median"]] = Field(default=None,
         description="Type of centroid to compute"
     )
     index_centroid: bool = Field(False, description="Create index on centroid coordinates")
@@ -242,8 +241,7 @@ class GeometriesSidecarConfig(SidecarConfig):
     s2_resolutions: List[int] = Field(default_factory=list, description="S2 resolutions to index (0-30)")
 
     # Partitioning
-    partition_strategy: Optional[GeometryPartitionStrategyPreset] = Field(
-        None, description="Strategy to use for contributing to the global partition key."
+    partition_strategy: Optional[GeometryPartitionStrategyPreset] = Field(default=None, description="Strategy to use for contributing to the global partition key."
     )
     partition_resolution: int = Field(
         0, description="Resolution to use for partitioning (must be in h3_resolutions or s2_resolutions)."
@@ -264,8 +262,7 @@ class GeometriesSidecarConfig(SidecarConfig):
     )
     
     # JSON-FG Place Statistics (3D geometry metrics)
-    place_statistics: Optional[PlaceStatisticsConfig] = Field(
-        None,
+    place_statistics: Optional[PlaceStatisticsConfig] = Field(default=None,
         description=(
             "Configuration for JSON-FG 'place' geometry statistics. "
             "Enables 3D metrics like volume, surface area, z-range for Solid/Prism types. "
@@ -277,8 +274,7 @@ class GeometriesSidecarConfig(SidecarConfig):
     store_bbox: bool = Field(True, description="Store bounding box geometry")
     store_centroid: bool = Field(False, description="Store centroid point")
     
-    feature_type_schema: Optional[Dict[str, Any]] = Field(
-        None,
+    feature_type_schema: Optional[Dict[str, Any]] = Field(default=None,
         description="JSON Schema override for geometry contribution to Feature. "
                     "Can include 'bbox' in properties or customize geometry output."
     )

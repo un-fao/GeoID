@@ -124,7 +124,7 @@ else:
 
         Usage::
 
-            field: WriteOnce[Optional[str]] = Field(None, description="Set once on storage creation.")
+            field: WriteOnce[Optional[str]] = Field(default=None, description="Set once on storage creation.")
 
         This is equivalent to::
 

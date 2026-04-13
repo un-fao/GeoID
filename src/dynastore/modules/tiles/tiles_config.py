@@ -30,8 +30,7 @@ class TilesPluginConfig(PluginConfig):
     enabled: bool = Field(True, description="If False, tile requests will be rejected.")
     
     # Global mask/bounds
-    bbox: Optional[List[Tuple[float, float, float, float]]] = Field(
-        None, 
+    bbox: Optional[List[Tuple[float, float, float, float]]] = Field(default=None, 
         description="Global bounding boxes for the collection/catalog. Requests outside these bounds return 404/Empty. If None, assumes world/max extent."
     )
     
@@ -46,8 +45,7 @@ class TilesPluginConfig(PluginConfig):
     )
     
     # Runtime Generation Settings
-    simplification_by_zoom: Optional[Dict[int, float]] = Field(
-        None, 
+    simplification_by_zoom: Optional[Dict[int, float]] = Field(default=None, 
         description="Map of zoom level to simplification tolerance (in degrees/units). Applied during dynamic generation."
     )
     simplification_algorithm: Optional[SimplificationAlgorithm] = Field(
@@ -83,8 +81,7 @@ class TilesPreseedConfig(PluginConfig):
     )
     
     # Where to seed (Spatial subset)
-    bboxes: Optional[List[Tuple[float, float, float, float]]] = Field(
-        None, 
+    bboxes: Optional[List[Tuple[float, float, float, float]]] = Field(default=None, 
         description="Specific areas to pre-seed. Intersected with TilesPluginConfig.bbox."
     )
     
@@ -95,13 +92,11 @@ class TilesPreseedConfig(PluginConfig):
     )
     
     # Generation Overrides
-    simplification_by_zoom_override: Optional[Dict[int, float]] = Field(
-        None, 
+    simplification_by_zoom_override: Optional[Dict[int, float]] = Field(default=None, 
         description="Override runtime simplification settings for pre-seeded tiles."
     )
     
     # Catalog Level specific
-    collections_to_preseed: Optional[List[str]] = Field(
-        None, 
+    collections_to_preseed: Optional[List[str]] = Field(default=None, 
         description="For Catalog-level config: list of collections to include. If None, applies to all (or logic defined by task)."
     )

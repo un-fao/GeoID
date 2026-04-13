@@ -458,13 +458,11 @@ class DuckDbCollectionDriverConfig(CollectionDriverConfig):
     capabilities: FrozenSet[str] = Field(
         default=frozenset({DriverCapability.ASYNC, DriverCapability.BATCH}),
     )
-    path: Optional[str] = Field(None, description="Read path (file or glob)")
+    path: Optional[str] = Field(default=None, description="Read path (file or glob)")
     format: str = Field("parquet", description="File format: parquet, csv, json, etc.")
-    write_path: Optional[str] = Field(
-        None, description="Separate write path (e.g., SQLite file)"
+    write_path: Optional[str] = Field(default=None, description="Separate write path (e.g., SQLite file)"
     )
-    write_format: Optional[str] = Field(
-        None, description="Write format if different from read"
+    write_format: Optional[str] = Field(default=None, description="Write format if different from read"
     )
 
 
@@ -484,30 +482,30 @@ class DriverRecordsIcebergConfig(CollectionDriverConfig):
 
     # Catalog
     catalog_name: Optional[str] = Field(
-        None, description="OTF catalog name (e.g., Glue, Hive, REST)"
+        default=None, description="OTF catalog name (e.g., Glue, Hive, REST)"
     )
-    catalog_uri: Optional[str] = Field(None, description="OTF catalog URI")
+    catalog_uri: Optional[str] = Field(default=None, description="OTF catalog URI")
     catalog_type: Optional[str] = Field(
-        None,
+        default=None,
         description="Catalog type: sql (default), rest, glue, hive, dynamodb",
     )
     catalog_properties: Optional[Dict[str, Any]] = Field(
-        None, description="Extra catalog-specific properties"
+        default=None, description="Extra catalog-specific properties"
     )
 
     # Warehouse
     warehouse_uri: Optional[str] = Field(
-        None, description="Manual override for warehouse URI."
+        default=None, description="Manual override for warehouse URI."
     )
     warehouse_scheme: Optional[str] = Field(
-        None, description="Manual override for warehouse scheme (gs, s3, file)."
+        default=None, description="Manual override for warehouse scheme (gs, s3, file)."
     )
 
     # Table location
-    namespace: Optional[str] = Field(None, description="OTF namespace/database")
-    table_name: Optional[str] = Field(None, description="OTF table name")
+    namespace: Optional[str] = Field(default=None, description="OTF namespace/database")
+    table_name: Optional[str] = Field(default=None, description="OTF table name")
     uri: Optional[str] = Field(
-        None, description="Primary URI (s3://, gs://, file://, etc.)"
+        default=None, description="Primary URI (s3://, gs://, file://, etc.)"
     )
 
 
