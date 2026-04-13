@@ -90,16 +90,7 @@ class ImmutableMarker:
 
 
 if TYPE_CHECKING:
-    class Immutable(Generic[T]):
-        """Transparent wrapper for type checkers: Immutable[T] is treated as T."""
-
-        def __iter__(self) -> Iterator[Any]: ...
-
-        def __class_getitem__(cls, item: T) -> T: ...  # type: ignore[override]
-
-        def __getattr__(self, name: str) -> Any: ...
-
-        def get(self, key: Any, default: Any = None) -> Any: ...
+    type Immutable[T] = T  # pyright-transparent alias
 else:
     class Immutable:
         """
@@ -121,24 +112,27 @@ class WriteOnceMarker:
     pass
 
 
-class WriteOnce:
-    """A marker for write-once fields.
+if TYPE_CHECKING:
+    type WriteOnce[T] = T  # pyright-transparent alias
+else:
+    class WriteOnce:
+        """A marker for write-once fields.
 
-    The field may be set once from ``None`` to a non-``None`` value (e.g. by
-    ``ensure_storage()``), but once set to a non-``None`` value it cannot be
-    changed.  Attempts to mutate a non-``None`` value raise ``ImmutableConfigError``.
+        The field may be set once from ``None`` to a non-``None`` value (e.g. by
+        ``ensure_storage()``), but once set to a non-``None`` value it cannot be
+        changed.  Attempts to mutate a non-``None`` value raise ``ImmutableConfigError``.
 
-    Usage::
+        Usage::
 
-        field: WriteOnce[Optional[str]] = Field(None, description="Set once on storage creation.")
+            field: WriteOnce[Optional[str]] = Field(None, description="Set once on storage creation.")
 
-    This is equivalent to::
+        This is equivalent to::
 
-        field: Annotated[Optional[str], WriteOnceMarker] = Field(None)
-    """
+            field: Annotated[Optional[str], WriteOnceMarker] = Field(None)
+        """
 
-    def __class_getitem__(cls, item):
-        return Annotated[item, WriteOnceMarker]
+        def __class_getitem__(cls, item):
+            return Annotated[item, WriteOnceMarker]
 
 
 def is_immutable_field(field_info: "FieldInfo") -> bool:

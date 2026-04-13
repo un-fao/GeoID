@@ -255,6 +255,7 @@ class AssetsProtocol(Protocol):
         self,
         schema: str,
         table: str,
+        db_resource: Optional[Any] = None,
     ) -> None:
         """
         Ensures the ``trg_asset_cleanup`` DB trigger is installed on *table*.

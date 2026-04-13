@@ -695,7 +695,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
                 return []
 
             rows = await DQLQuery(
-                query_sql, result_handler=ResultHandler.ALL_DICT
+                query_sql, result_handler=ResultHandler.ALL_DICTS
             ).execute(conn, schema=schema, table=table)
 
             # Also collect fields from attribute sidecar (JSONB keys)
@@ -723,7 +723,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
                 )
                 if attr_exists:
                     attr_rows = await DQLQuery(
-                        query_sql, result_handler=ResultHandler.ALL_DICT
+                        query_sql, result_handler=ResultHandler.ALL_DICTS
                     ).execute(conn, schema=schema, table=attr_table)
                     for row in (attr_rows or []):
                         col_name = row["column_name"]
@@ -924,9 +924,6 @@ class DriverRecordsPostgresql(ModuleProtocol):
                     else:
                         temporal_alias = geom_alias
 
-            elif layer_config.geometry_storage:
-                storage_srid = layer_config.geometry_storage.target_srid
-
             if storage_srid == 4326:
                 spatial_expr = f"ST_Extent({geom_alias}.{geom_col})"
             else:
@@ -1032,7 +1029,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
                     ORDER BY cnt DESC
                     LIMIT 100;
                 """
-                rows = await DQLQuery(sql, result_handler=ResultHandler.ALL_DICT).execute(conn)
+                rows = await DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS).execute(conn)
                 return [{"value": r["val"], "count": r["cnt"]} for r in (rows or [])]
 
             elif aggregation_type == "stats" and field:
