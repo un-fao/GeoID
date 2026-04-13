@@ -197,6 +197,7 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
         self, batch_results: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """Filters a list of results based on the report_content configuration."""
+        assert self.config is not None
         records_to_report = []
         if self.config.report_content == "ALL":
             records_to_report = batch_results
@@ -214,6 +215,7 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
         """Writes a batch of records to the single, persistent temporary file."""
         if not self._temp_report_file:
             return
+        assert self.config is not None
 
         # Stream each result in the batch to the temporary file as a JSON line.
         for result in records_to_report:
@@ -234,6 +236,7 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
         self, records_to_report: List[Dict[str, Any]]
     ):
         """Creates, writes, and uploads a temporary report file for a single chunk."""
+        assert self.config is not None
         with tempfile.NamedTemporaryFile(
             mode="w+", delete=False, suffix=".json", dir=os.environ.get("TMPDIR")
         ) as temp_chunk_file:
@@ -296,6 +299,7 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
         Filters a result dictionary based on the reporter's configuration, controlling which
         top-level fields, attributes, and geometry are included in the final report.
         """
+        assert self.config is not None
         # Make a deep copy to avoid modifying the original object which might be used elsewhere.
         filtered_result = result.copy()
 
@@ -308,15 +312,11 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
                 record["asset_code"] = str(asset_id)
 
             # 1. Filter attributes within the 'record' object if a specific list is provided.
-            if (
-                self.config.reported_attributes is not None
-                and "attributes" in record
-                and isinstance(record["attributes"], dict)
-            ):
+            reported_attrs = self.config.reported_attributes
+            if reported_attrs is not None and isinstance(record.get("attributes"), dict):
+                attrs = record["attributes"]
                 record["attributes"] = {
-                    key: record["attributes"][key]
-                    for key in self.config.reported_attributes
-                    if key in record["attributes"]
+                    key: attrs[key] for key in reported_attrs if key in attrs  # type: ignore[attr-defined]
                 }
 
             # 2. Exclude geometry from the 'record' object if configured to do so.
@@ -342,7 +342,7 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
 
         return filtered_result
 
-    async def task_finished(self, final_status: str, error_message: str = None):
+    async def task_finished(self, final_status: str, error_message: Optional[str] = None):
         if not self.config:
             return
 
@@ -350,6 +350,7 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
         if self.config.report_per_chunk:
             return await self._upload_summary_report(final_status, error_message)
 
+        assert self._temp_report_file is not None
         if self.config.output_format == "JSON":
             self._temp_report_file.write("]")  # End of JSON array
 
@@ -402,6 +403,7 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
         final_detailed_report_path: Optional[str] = None,
     ):
         """Generates and uploads the final summary report."""
+        assert self.config is not None
         # If reporting per chunk, the detailed_report_path is a template. Otherwise, it's the specific file path.
         summary = {
             "task_id": self.task_id,
@@ -417,7 +419,7 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
         summary_report_path = insert_before_extension(self.report_path, f"_summary")
         self._upload_to_gcs(summary_report_path, content=summary_content)
 
-        if self.config.signed_url_enabled:
+        if self.config.signed_url_enabled and self._storage_client is not None:
             try:
                 # Signed URLs are only generated for single-file reports.
                 if final_detailed_report_path:
@@ -439,8 +441,8 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
     def _upload_to_gcs(
         self,
         gcs_path: str,
-        content: str = None,
-        file_path: str = None,
+        content: Optional[str] = None,
+        file_path: Optional[str] = None,
         content_type: str = "application/json",
     ):
         """Helper method to upload content or a file to GCS using the provided client."""
