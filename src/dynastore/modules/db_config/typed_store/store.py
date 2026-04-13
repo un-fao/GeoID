@@ -46,7 +46,7 @@ from dynastore.modules.db_config.query_executor import (
     managed_transaction,
 )
 from dynastore.tools.json import CustomJSONEncoder
-from dynastore.tools.typed_store.backends.ddl import (
+from dynastore.modules.db_config.typed_store.ddl import (
     CONFIGS_SCHEMA,
     PLATFORM_SCHEMAS_DDL,
     tenant_configs_ddl,
