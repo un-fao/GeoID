@@ -104,23 +104,27 @@ class SearchProtocol(Protocol):
 
     async def search_by_geoid(
         self,
-        geoids: List[str],
+        geoids: Optional[List[str]] = None,
         catalog_id: Optional[str] = None,
         limit: int = 100,
+        *,
+        external_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
     ) -> GeoidCollection:
         """
-        Look up geoid values in the obfuscated index.
+        Tenant-scoped lookup against the per-tenant feature index
+        ``{prefix}-geoid-{catalog_id}``.
 
-        Args:
-            geoids: One or more geoid values to search for.
-            catalog_id: If provided, restrict to a single catalog's
-                        obfuscated index. Otherwise searches all obfuscated
-                        indexes (``{prefix}-geoid-*``).
-            limit: Maximum number of results to return.
+        Contract:
+          - ``catalog_id`` is required (the tenant selects the index).
+          - Provide either ``geoids`` (cross-collection lookup within the
+            tenant) or the pair ``(external_id, collection_id)``.
+          - Bare ``external_id`` is rejected — that would let a caller
+            enumerate items across collections.
 
         Returns:
-            ``GeoidCollection`` with ``results`` (list of
-            ``{geoid, catalog_id, collection_id}``) and ``numberReturned``.
+            ``GeoidCollection`` carrying full features (geometry,
+            properties, ``external_id``) plus simplification metadata.
         """
         ...
 

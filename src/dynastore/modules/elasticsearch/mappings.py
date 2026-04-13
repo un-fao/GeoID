@@ -249,16 +249,42 @@ def get_all_index_names(prefix: str) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Obfuscated GeoID index mapping
+# Tenant feature index mapping (formerly "obfuscated geoid index")
 #
-# Used when a catalog has ElasticsearchCatalogConfig.obfuscated = True.
-# Only the geoid UUID is indexed — no geometry, no attributes, no free-text.
-# This index supports a single operation: GET /{index}/_doc/{geoid}.
-# Spatial search, full-text search, and listing are intentionally impossible.
+# Used when a catalog routes writes to the `elasticsearch_obfuscated` driver.
+# Stores the full feature (geometry + properties + external_id) in a single
+# index per tenant (catalog). Access is gated by:
+#   - the DENY policy applied when ElasticsearchCatalogConfig.obfuscated=True
+#   - the tenant-first search contract (requires catalog_id + (geoid OR
+#     (external_id AND collection_id)) — see extensions/search).
+#
+# Docs that would exceed the ES 10MB per-doc limit are shrunk by the
+# `simplify_to_fit` helper in tools/geometry_simplify.py, which records a
+# `simplification_factor` and `simplification_mode` on the stored doc.
 # ---------------------------------------------------------------------------
 
-GEOID_OBFUSCATED_MAPPING: Dict[str, Any] = {
-    "dynamic": False,          # reject any field not declared below
+TENANT_FEATURE_MAPPING: Dict[str, Any] = {
+    "dynamic": False,  # reject unknown top-level fields (typos, smuggling)
+    "properties": {
+        "geoid":                 {"type": "keyword"},
+        "catalog_id":            {"type": "keyword"},
+        "collection_id":         {"type": "keyword"},
+        "external_id":           {"type": "keyword"},
+        "geometry":              {"type": "geo_shape"},
+        "bbox":                  {"type": "float"},
+        "simplification_factor": {"type": "float"},
+        "simplification_mode":   {"type": "keyword"},
+        # Tenant attributes live under a dynamic sub-tree so new fields
+        # are indexed without mapping updates.
+        "properties":            {"type": "object", "dynamic": True},
+    },
+}
+
+# Legacy alias — the 3-field mapping used by existing deployments. Referenced
+# during bootstrap to detect indexes that need to be recreated with
+# TENANT_FEATURE_MAPPING.
+GEOID_OBFUSCATED_MAPPING_LEGACY: Dict[str, Any] = {
+    "dynamic": False,
     "properties": {
         "geoid":         {"type": "keyword"},
         "catalog_id":    {"type": "keyword"},
@@ -268,8 +294,67 @@ GEOID_OBFUSCATED_MAPPING: Dict[str, Any] = {
 
 
 def get_obfuscated_index_name(prefix: str, catalog_id: str) -> str:
-    """Return the name of the geoid-only obfuscated index for a catalog."""
+    """Return the tenant feature index name for a catalog.
+
+    The physical name is kept as `{prefix}-geoid-{catalog_id}` for
+    backward compatibility with existing deployments, even though the
+    index now stores full features.
+    """
     return f"{prefix}-geoid-{catalog_id}"
+
+
+# Semantic alias so new call sites read clearly.
+get_tenant_feature_index_name = get_obfuscated_index_name
+
+
+def build_tenant_feature_doc(
+    item: Any,
+    *,
+    catalog_id: str,
+    collection_id: str,
+    external_id: Any = None,
+) -> Dict[str, Any]:
+    """Build a `TENANT_FEATURE_MAPPING`-shaped doc from a Feature/dict.
+
+    Accepts a Feature pydantic model, a STAC item dict, or a GeoJSON
+    Feature dict. Pulls `geoid` from the item's `id`, `geometry` and
+    `bbox` from the GeoJSON shape, and copies any non-internal
+    `properties` (keys starting with `_` are skipped — those are
+    SFEOS-internal tracking fields like `_external_id`).
+    """
+    if hasattr(item, "model_dump"):
+        src = item.model_dump(by_alias=True, exclude_none=True)
+    elif isinstance(item, dict):
+        src = item
+    else:
+        src = dict(item)
+
+    geoid = src.get("id") or src.get("geoid")
+    raw_props = src.get("properties") or {}
+    props = {k: v for k, v in raw_props.items() if not str(k).startswith("_")}
+
+    doc: Dict[str, Any] = {
+        "geoid": geoid,
+        "catalog_id": catalog_id,
+        "collection_id": collection_id,
+    }
+
+    ext = external_id if external_id is not None else src.get("_external_id")
+    if ext is not None:
+        doc["external_id"] = str(ext)
+
+    geom = src.get("geometry")
+    if geom is not None:
+        doc["geometry"] = geom
+
+    bbox = src.get("bbox")
+    if bbox is not None:
+        doc["bbox"] = list(bbox)
+
+    if props:
+        doc["properties"] = props
+
+    return doc
 
 
 def get_assets_index_name(prefix: str, catalog_id: str) -> str:

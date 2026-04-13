@@ -318,6 +318,7 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
         - REFUSE (``refuse_asset``): raise ``ConflictError`` if any external_id already exists.
         """
         from datetime import datetime, timezone
+        from dynastore.tools.geometry_simplify import simplify_to_fit
 
         db = self._get_db_logic()
         items = self._normalize_entities(entities)
@@ -396,6 +397,14 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
 
             # Default (UPDATE): stable doc_id from external_id or item id.
             # ES `exist_ok=True` (create_item) → upsert in place.
+
+            # Guard against the ES 10MB per-doc limit. For oversize docs
+            # the geometry is simplified in place and the ratio is
+            # recorded so consumers can detect lossy storage.
+            stac_doc, factor, mode = simplify_to_fit(stac_doc)
+            if mode != "none":
+                stac_doc["_simplification_factor"] = factor
+                stac_doc["_simplification_mode"] = mode
 
             prepped_item = await db.bulk_async_prep_create_item(
                 stac_doc, base_url="", exist_ok=True,
@@ -1016,14 +1025,27 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
 # ---------------------------------------------------------------------------
 
 class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
-    """Obfuscated Elasticsearch storage driver.
+    """Tenant-scoped Elasticsearch storage driver (a.k.a. "obfuscated").
 
-    Stores full entity data but only allows search by geoid.  Uses
-    ``dynamic: false`` mapping — no geometry, no attributes, no spatial
-    search.  Manages DENY access policies in its own lifecycle.
+    Writes the full feature (geometry + properties + external_id) into a
+    per-tenant index ``{prefix}-geoid-{catalog_id}`` shared across all
+    collections of the catalog. The mapping is `TENANT_FEATURE_MAPPING`
+    (root ``dynamic: false`` to reject smuggled fields; ``properties.*``
+    is dynamic so tenant attributes index without mapping churn).
+
+    Docs that would exceed the ES 10MB per-doc limit are shrunk by
+    `simplify_to_fit` (`tools/geometry_simplify.py`); the resulting
+    `simplification_factor` and `simplification_mode` are persisted on
+    the doc so clients can tell how much fidelity was lost.
+
+    Search is gated by the tenant-first contract enforced in
+    `extensions/search` (catalog_id required; geoid OR (external_id +
+    collection_id) — never external_id alone).
+
+    Manages DENY access policies in its own lifecycle.
 
     Uses the raw ES client from SFEOS settings (not DatabaseLogic) since
-    the obfuscated index has a custom mapping not managed by SFEOS.
+    the index has a custom mapping not managed by SFEOS.
 
     Registered as ``storage_elasticsearch_obfuscated`` via entry points.
     """
@@ -1081,9 +1103,10 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> List[Feature]:
         from dynastore.modules.elasticsearch.mappings import (
-            get_obfuscated_index_name, GEOID_OBFUSCATED_MAPPING,
+            get_obfuscated_index_name, TENANT_FEATURE_MAPPING, build_tenant_feature_doc,
         )
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
+        from dynastore.tools.geometry_simplify import simplify_to_fit
 
         index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
         items = self._normalize_entities(entities)
@@ -1092,21 +1115,21 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
         if not await es.indices.exists(index=index_name):
             await es.indices.create(
                 index=index_name,
-                body={"mappings": GEOID_OBFUSCATED_MAPPING},
+                body={"mappings": TENANT_FEATURE_MAPPING},
                 ignore=400,
             )
 
-        # Obfuscated driver: only stores geoid — context fields are intentionally omitted.
         bulk_body: list = []
         for item in items:
             geoid = self._extract_item_id(item)
             if not geoid:
                 continue
-            doc = {
-                "geoid": geoid,
-                "catalog_id": catalog_id,
-                "collection_id": collection_id,
-            }
+            doc = build_tenant_feature_doc(
+                item, catalog_id=catalog_id, collection_id=collection_id,
+            )
+            doc, factor, mode = simplify_to_fit(doc)
+            doc["simplification_factor"] = factor
+            doc["simplification_mode"] = mode
             bulk_body.append({"index": {"_index": index_name, "_id": geoid}})
             bulk_body.append(doc)
 
@@ -1143,14 +1166,23 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
             try:
                 resp = await es.get(index=index_name, id=geoid)
                 source = resp["_source"]
+                props = dict(source.get("properties") or {})
+                # Surface tenant-feature bookkeeping in properties so callers
+                # can detect simplification without a separate API.
+                if "external_id" in source:
+                    props["external_id"] = source["external_id"]
+                if "simplification_factor" in source:
+                    props["simplification_factor"] = source["simplification_factor"]
+                if "simplification_mode" in source:
+                    props["simplification_mode"] = source["simplification_mode"]
+                props["catalog_id"] = source.get("catalog_id", catalog_id)
+                props["collection_id"] = source.get("collection_id", collection_id)
                 yield Feature(
                     type="Feature",
                     id=source.get("geoid", geoid),
-                    geometry=None,
-                    properties={
-                        "catalog_id": catalog_id,
-                        "collection_id": collection_id,
-                    },
+                    geometry=source.get("geometry"),
+                    properties=props,
+                    bbox=source.get("bbox"),
                 )
             except Exception:
                 pass
@@ -1191,7 +1223,7 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
         **kwargs,
     ) -> None:
         from dynastore.modules.elasticsearch.mappings import (
-            get_obfuscated_index_name, GEOID_OBFUSCATED_MAPPING,
+            get_obfuscated_index_name, TENANT_FEATURE_MAPPING,
         )
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
 
@@ -1201,7 +1233,7 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
         if not await es.indices.exists(index=index_name):
             await es.indices.create(
                 index=index_name,
-                body={"mappings": GEOID_OBFUSCATED_MAPPING},
+                body={"mappings": TENANT_FEATURE_MAPPING},
                 ignore=400,
             )
 
@@ -1275,9 +1307,10 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
             return
         try:
             from dynastore.modules.elasticsearch.mappings import (
-                get_obfuscated_index_name, GEOID_OBFUSCATED_MAPPING,
+                get_obfuscated_index_name, TENANT_FEATURE_MAPPING, build_tenant_feature_doc,
             )
             from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
+            from dynastore.tools.geometry_simplify import simplify_to_fit
 
             index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
             es = self._get_client()
@@ -1285,17 +1318,20 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
             if not await es.indices.exists(index=index_name):
                 await es.indices.create(
                     index=index_name,
-                    body={"mappings": GEOID_OBFUSCATED_MAPPING},
+                    body={"mappings": TENANT_FEATURE_MAPPING},
                     ignore=400,
                 )
-            await es.index(
-                index=index_name, id=item_id,
-                document={
-                    "geoid": item_id,
-                    "catalog_id": catalog_id,
-                    "collection_id": collection_id,
-                },
+            # Event payload may carry the full STAC item; fall back to a
+            # geoid-only doc when no payload is available.
+            src = payload if isinstance(payload, dict) else {"id": item_id}
+            src.setdefault("id", item_id)
+            doc = build_tenant_feature_doc(
+                src, catalog_id=catalog_id, collection_id=collection_id,
             )
+            doc, factor, mode = simplify_to_fit(doc)
+            doc["simplification_factor"] = factor
+            doc["simplification_mode"] = mode
+            await es.index(index=index_name, id=item_id, document=doc)
         except Exception as e:
             logger.error(
                 "ObfuscatedDriver: index failed for %s/%s/%s: %s",
@@ -1319,9 +1355,10 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
 
         try:
             from dynastore.modules.elasticsearch.mappings import (
-                get_obfuscated_index_name, GEOID_OBFUSCATED_MAPPING,
+                get_obfuscated_index_name, TENANT_FEATURE_MAPPING, build_tenant_feature_doc,
             )
             from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
+            from dynastore.tools.geometry_simplify import simplify_to_fit
 
             index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
             es = self._get_client()
@@ -1329,7 +1366,7 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
             if not await es.indices.exists(index=index_name):
                 await es.indices.create(
                     index=index_name,
-                    body={"mappings": GEOID_OBFUSCATED_MAPPING},
+                    body={"mappings": TENANT_FEATURE_MAPPING},
                     ignore=400,
                 )
 
@@ -1338,12 +1375,14 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
                 geoid = item_doc.get("id")
                 if not geoid:
                     continue
+                doc = build_tenant_feature_doc(
+                    item_doc, catalog_id=catalog_id, collection_id=collection_id,
+                )
+                doc, factor, mode = simplify_to_fit(doc)
+                doc["simplification_factor"] = factor
+                doc["simplification_mode"] = mode
                 bulk_body.append({"index": {"_index": index_name, "_id": geoid}})
-                bulk_body.append({
-                    "geoid": geoid,
-                    "catalog_id": catalog_id,
-                    "collection_id": collection_id,
-                })
+                bulk_body.append(doc)
             if bulk_body:
                 await es.bulk(body=bulk_body)
         except Exception as e:

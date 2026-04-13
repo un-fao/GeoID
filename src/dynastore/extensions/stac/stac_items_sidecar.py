@@ -251,8 +251,8 @@ class StacItemsSidecar(SidecarProtocol):
                     return v
             return v
 
-        if feature.properties is None:
-            feature.properties = {}
+        props: Dict[str, Any] = feature.properties if feature.properties is not None else {}
+        feature.properties = props
 
         from dynastore.tools.language_utils import resolve_localized_field
         from dynastore.models.localization import is_valid_language_key
@@ -263,13 +263,13 @@ class StacItemsSidecar(SidecarProtocol):
         if exts:
             existing: List[str] = getattr(feature, "stac_extensions", []) or []
             if not existing:
-                existing = feature.properties.get("stac_extensions", []) or []
+                existing = props.get("stac_extensions", []) or []
             exts_list: List[str] = exts if isinstance(exts, list) else ([exts] if isinstance(exts, str) else [])
             merged_exts = list(set([*existing, *exts_list]))
             try:
-                feature.stac_extensions = merged_exts
+                setattr(feature, "stac_extensions", merged_exts)
             except Exception:
-                feature.properties["stac_extensions"] = merged_exts
+                props["stac_extensions"] = merged_exts
 
         # 2. Assets Merging
         assets = _maybe_parse(_get("external_assets"))
@@ -287,13 +287,11 @@ class StacItemsSidecar(SidecarProtocol):
 
                 curr_assets = getattr(feature, "assets", None)
                 if curr_assets is None:
-                    if "assets" in feature.properties and isinstance(
-                        feature.properties["assets"], dict
-                    ):
-                        curr_assets = feature.properties["assets"]
+                    if "assets" in props and isinstance(props["assets"], dict):
+                        curr_assets = props["assets"]
                         try:
                             setattr(feature, "assets", curr_assets)
-                            del feature.properties["assets"]
+                            del props["assets"]
                         except Exception:
                             pass
                     else:
@@ -312,14 +310,14 @@ class StacItemsSidecar(SidecarProtocol):
                         except Exception:
                             pass
                 else:
-                    if "assets" not in feature.properties:
-                        feature.properties["assets"] = {}
-                    feature.properties["assets"].update(assets)
+                    if "assets" not in props:
+                        props["assets"] = {}
+                    props["assets"].update(assets)
             except Exception as e:
                 logger.warning(f"Failed to merge STAC assets: {e}")
-                if "assets" not in feature.properties:
-                    feature.properties["assets"] = {}
-                feature.properties["assets"].update(assets)
+                if "assets" not in props:
+                    props["assets"] = {}
+                props["assets"].update(assets)
 
         # 3. Extra Fields
         extra = _maybe_parse(
@@ -348,16 +346,16 @@ class StacItemsSidecar(SidecarProtocol):
                     try:
                         setattr(feature, k, v)
                     except Exception:
-                        feature.properties[k] = v
+                        props[k] = v
                 else:
-                    feature.properties[k] = v
+                    props[k] = v
 
         # Publish to context for downstream consumers (e.g. STAC generator)
         context.publish(self.sidecar_id, {
             "stac_extensions": getattr(feature, "stac_extensions", None)
-            or feature.properties.get("stac_extensions"),
+            or props.get("stac_extensions"),
             "assets": getattr(feature, "assets", None)
-            or feature.properties.get("assets"),
+            or props.get("assets"),
         })
 
 

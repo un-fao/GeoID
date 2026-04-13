@@ -225,33 +225,38 @@ async def search_items(
     from sqlalchemy.ext.asyncio import AsyncEngine
 
     catalogs = get_protocol(CatalogsProtocol)
+    assert catalogs is not None, "CatalogsProtocol not registered"
+    assert search_request.catalog_id is not None, "search_request.catalog_id required"
+    cat_id: str = search_request.catalog_id
 
     # Helper to execute with a connection (reusing if present, connecting if engine)
+    _catalogs = catalogs
+
     async def get_columns_with_conn(resource):
         if isinstance(resource, AsyncEngine):
             async with resource.connect() as conn:
-                return await catalogs.get_collection_column_names(
-                    search_request.catalog_id, target_collections[0], db_resource=conn
+                return await _catalogs.get_collection_column_names(
+                    cat_id, target_collections[0], db_resource=conn
                 )
         else:
-            return await catalogs.get_collection_column_names(
-                search_request.catalog_id, target_collections[0], db_resource=resource
+            return await _catalogs.get_collection_column_names(
+                cat_id, target_collections[0], db_resource=resource
             )
 
     # Resolve layer config in parallel
     initial_collection_ids = search_request.collections or [
         c.id
         for c in await catalogs.list_collections(
-            search_request.catalog_id, limit=1000, db_resource=db_resource
+            cat_id, limit=1000, db_resource=db_resource
         )
     ]
 
     async def _check_layer_def(cid):
         from dynastore.modules.storage.router import get_driver
         from dynastore.modules.storage.routing_config import Operation
-        driver = await get_driver(Operation.READ, search_request.catalog_id, cid)
+        driver = await get_driver(Operation.READ, cat_id, cid)
         return await driver.get_driver_config(
-            search_request.catalog_id, cid, db_resource=db_resource
+            cat_id, cid, db_resource=db_resource
         )
 
     results = await asyncio.gather(
@@ -310,9 +315,10 @@ async def search_items(
     from dynastore.modules.storage.router import get_driver
     from dynastore.modules.storage.routing_config import Operation
 
-    catalogs = get_protocol(CatalogsProtocol)
-    phys_schema = await catalogs.resolve_physical_schema(
-        search_request.catalog_id, db_resource=db_resource
+    catalogs2 = get_protocol(CatalogsProtocol)
+    assert catalogs2 is not None, "CatalogsProtocol not registered"
+    phys_schema = await catalogs2.resolve_physical_schema(
+        cat_id, db_resource=db_resource
     )
 
     # --- Query Planner: Dependency Analysis ---
@@ -374,7 +380,7 @@ async def search_items(
 
         query_selects = []
         raw_selects = [
-            f"'{search_request.catalog_id}' as catalog_id",
+            f"'{cat_id}' as catalog_id",
             f"'{collection_id}' as collection_id",
         ]
 
@@ -514,14 +520,18 @@ async def search_items(
         )
 
         try:
-            _driver = await get_driver(Operation.READ, search_request.catalog_id, collection_id)
-            _location = await _driver.resolve_storage_location(
-                search_request.catalog_id, collection_id, db_resource=db_resource
-            )
-            phys_table = getattr(_location, "physical_table", None)
+            _driver = await get_driver(Operation.READ, cat_id, collection_id)
+            _resolve = getattr(_driver, "resolve_storage_location", None)
+            if _resolve is None:
+                phys_table = None
+            else:
+                _location = await _resolve(
+                    cat_id, collection_id, db_resource=db_resource
+                )
+                phys_table = getattr(_location, "physical_table", None)
         except (ValueError, Exception):
             phys_table = None
-        if not phys_table:
+        if not phys_table or not phys_schema:
             continue
 
         # Build SQL
@@ -641,7 +651,7 @@ async def search_items(
         hydration_params[geoid_param] = geoids
 
         select_parts = [
-            f"SELECT '{search_request.catalog_id}' as catalog_id,"
+            f"SELECT '{cat_id}' as catalog_id,"
             f" '{coll_id}' as collection_id,"
             f" h.geoid, h.transaction_time, h.content_hash"
         ]
@@ -757,7 +767,7 @@ async def search_items(
             async with db_resource.connect() as agg_conn:
                 aggregation_results = await execute_aggregations(
                     agg_conn,
-                    search_request.catalog_id,
+                    cat_id,
                     target_collections,
                     search_request.aggregations,
                     where_sql,
@@ -767,7 +777,7 @@ async def search_items(
         else:
             aggregation_results = await execute_aggregations(
                 db_resource,
-                search_request.catalog_id,
+                cat_id,
                 target_collections,
                 search_request.aggregations,
                 where_sql,
@@ -795,6 +805,7 @@ async def search_collections(
         from dynastore.models.protocols import CatalogsProtocol
 
         catalogs = get_protocol(CatalogsProtocol)
+        assert catalogs is not None, "CatalogsProtocol not registered"
         for cid in effective_catalog_ids:
             schema = await catalogs.resolve_physical_schema(cid, db_resource)
             if schema:

@@ -95,7 +95,11 @@ async def _reindex_collection(
     Stream all items in a collection from AlloyDB and bulk-index into ES.
     Returns the number of documents indexed.
     """
-    from dynastore.modules.elasticsearch.mappings import GEOID_OBFUSCATED_MAPPING
+    from dynastore.modules.elasticsearch.mappings import (
+        TENANT_FEATURE_MAPPING,
+        build_tenant_feature_doc,
+    )
+    from dynastore.tools.geometry_simplify import simplify_to_fit
 
     if mode == "catalog":
         from dynastore.models.protocols.configs import ConfigsProtocol
@@ -149,11 +153,12 @@ async def _reindex_collection(
 
             if mode == "obfuscated":
                 index_name = obfuscated_index
-                doc = {
-                    "geoid": item_id,
-                    "catalog_id": catalog_id,
-                    "collection_id": collection_id,
-                }
+                doc = build_tenant_feature_doc(
+                    feature, catalog_id=catalog_id, collection_id=collection_id,
+                )
+                doc, factor, smode = simplify_to_fit(doc)
+                doc["simplification_factor"] = factor
+                doc["simplification_mode"] = smode
             else:
                 index_name = stac_index
                 if hasattr(feature, "model_dump"):
@@ -206,7 +211,7 @@ class BulkCatalogReindexTask(TaskProtocol):
         from dynastore.modules.elasticsearch.mappings import (
             get_index_name,
             get_obfuscated_index_name,
-            GEOID_OBFUSCATED_MAPPING,
+            TENANT_FEATURE_MAPPING,
         )
         from dynastore.models.protocols import CatalogsProtocol
         from dynastore.tools.discovery import get_protocol
@@ -229,7 +234,7 @@ class BulkCatalogReindexTask(TaskProtocol):
             if not await es.indices.exists(index=obfuscated_index):
                 await es.indices.create(
                     index=obfuscated_index,
-                    body={"mappings": GEOID_OBFUSCATED_MAPPING},
+                    body={"mappings": TENANT_FEATURE_MAPPING},
                 )
             # Remove stale STAC items for this catalog.
             await es.delete_by_query(
@@ -295,7 +300,7 @@ class BulkCollectionReindexTask(TaskProtocol):
         from dynastore.modules.elasticsearch.mappings import (
             get_index_name,
             get_obfuscated_index_name,
-            GEOID_OBFUSCATED_MAPPING,
+            TENANT_FEATURE_MAPPING,
         )
         from dynastore.models.protocols import CatalogsProtocol
         from dynastore.tools.discovery import get_protocol
@@ -316,7 +321,7 @@ class BulkCollectionReindexTask(TaskProtocol):
         if mode == "obfuscated" and not await es.indices.exists(index=obfuscated_index):
             await es.indices.create(
                 index=obfuscated_index,
-                body={"mappings": GEOID_OBFUSCATED_MAPPING},
+                body={"mappings": TENANT_FEATURE_MAPPING},
             )
         count = await _reindex_collection(
             es, catalogs_proto, catalog_id, collection_id,
@@ -338,9 +343,13 @@ class BulkCollectionReindexTask(TaskProtocol):
 
 class ObfuscatedIndexTask(TaskProtocol):
     """
-    Index a single item as {geoid, catalog_id, collection_id} into the
-    obfuscated geoid index. Dispatched per-item by ElasticsearchModule
-    event handlers when the catalog has obfuscated=True.
+    Index a single item as a full tenant-feature doc into the per-tenant
+    index ``{prefix}-geoid-{catalog_id}``. Dispatched per-item by
+    ElasticsearchModule event handlers when the catalog has obfuscated=True.
+
+    The full feature is fetched via ``CatalogsProtocol`` so the dispatcher
+    only needs to send identifiers. Geometry simplification is applied
+    via ``simplify_to_fit`` to honour the ES 10MB per-doc limit.
     """
 
     task_type = "elasticsearch_obfuscated_index"
@@ -349,8 +358,12 @@ class ObfuscatedIndexTask(TaskProtocol):
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
         from dynastore.modules.elasticsearch.mappings import (
             get_obfuscated_index_name,
-            GEOID_OBFUSCATED_MAPPING,
+            TENANT_FEATURE_MAPPING,
+            build_tenant_feature_doc,
         )
+        from dynastore.models.protocols.item_crud import ItemCrudProtocol
+        from dynastore.tools.discovery import get_protocol
+        from dynastore.tools.geometry_simplify import simplify_to_fit
 
         inputs = ObfuscatedIndexInputs.model_validate(payload.inputs)
         index_name = get_obfuscated_index_name(_get_index_prefix(), inputs.catalog_id)
@@ -359,18 +372,34 @@ class ObfuscatedIndexTask(TaskProtocol):
         if not await es.indices.exists(index=index_name):
             await es.indices.create(
                 index=index_name,
-                body={"mappings": GEOID_OBFUSCATED_MAPPING},
+                body={"mappings": TENANT_FEATURE_MAPPING},
             )
-        await es.index(
-            index=index_name,
-            id=inputs.geoid,
-            body={
-                "geoid": inputs.geoid,
-                "catalog_id": inputs.catalog_id,
-                "collection_id": inputs.collection_id,
-            },
-        )
 
+        # Fetch the full feature so we can persist geometry + properties.
+        feature: Any = {"id": inputs.geoid}
+        items_proto = get_protocol(ItemCrudProtocol)
+        if items_proto:
+            try:
+                fetched = await items_proto.get_item(
+                    inputs.catalog_id, inputs.collection_id, inputs.geoid,
+                )
+                if fetched is not None:
+                    feature = fetched
+            except Exception as e:
+                logger.warning(
+                    "ObfuscatedIndexTask: get_item(%s/%s/%s) failed (%s); "
+                    "indexing geoid-only stub.",
+                    inputs.catalog_id, inputs.collection_id, inputs.geoid, e,
+                )
+
+        doc = build_tenant_feature_doc(
+            feature, catalog_id=inputs.catalog_id, collection_id=inputs.collection_id,
+        )
+        doc, factor, mode = simplify_to_fit(doc)
+        doc["simplification_factor"] = factor
+        doc["simplification_mode"] = mode
+
+        await es.index(index=index_name, id=inputs.geoid, body=doc)
         return {"geoid": inputs.geoid, "index": index_name, "status": "indexed"}
 
 

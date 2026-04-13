@@ -355,10 +355,16 @@ class ElasticsearchModule(ModuleProtocol):
     # ------------------------------------------------------------------
 
     async def _ensure_obfuscated_index(self, catalog_id: str) -> None:
-        """Create the geoid-only obfuscated ES index if it does not yet exist."""
+        """Ensure the per-tenant feature ES index exists with the current mapping.
+
+        If the index exists with the legacy 3-field mapping, drop it so the
+        next reindex repopulates it with full features under
+        ``TENANT_FEATURE_MAPPING``. The caller (``enable_obfuscated_mode``)
+        already dispatches a bulk reindex after this returns.
+        """
         from dynastore.modules.elasticsearch import client as es_client
         from dynastore.modules.elasticsearch.mappings import (
-            GEOID_OBFUSCATED_MAPPING,
+            TENANT_FEATURE_MAPPING,
             get_obfuscated_index_name,
         )
 
@@ -369,16 +375,40 @@ class ElasticsearchModule(ModuleProtocol):
 
         index_name = get_obfuscated_index_name(es_client.get_index_prefix(), catalog_id)
         try:
-            if not await es.indices.exists(index=index_name):
-                await es.indices.create(
-                    index=index_name,
-                    body={"mappings": GEOID_OBFUSCATED_MAPPING},
-                )
-                logger.info(
-                    "ElasticsearchModule: Created obfuscated index '%s'.", index_name
-                )
+            if await es.indices.exists(index=index_name):
+                # Detect legacy mapping (no `geometry` field) and drop the
+                # index so it can be recreated with the new shape.
+                try:
+                    current = await es.indices.get_mapping(index=index_name)
+                    props = (
+                        current.get(index_name, {})
+                        .get("mappings", {})
+                        .get("properties", {})
+                    )
+                    if "geometry" not in props:
+                        logger.info(
+                            "ElasticsearchModule: legacy obfuscated mapping detected on '%s', recreating.",
+                            index_name,
+                        )
+                        await es.indices.delete(index=index_name, ignore_unavailable=True)
+                    else:
+                        return
+                except Exception as exc:
+                    logger.warning(
+                        "ElasticsearchModule: mapping inspection failed for '%s': %s",
+                        index_name, exc,
+                    )
+                    return
+
+            await es.indices.create(
+                index=index_name,
+                body={"mappings": TENANT_FEATURE_MAPPING},
+            )
+            logger.info(
+                "ElasticsearchModule: Created tenant feature index '%s'.", index_name
+            )
         except Exception as exc:
-            logger.warning("ElasticsearchModule: Could not create obfuscated index '%s': %s", index_name, exc)
+            logger.warning("ElasticsearchModule: Could not create tenant feature index '%s': %s", index_name, exc)
 
     # ------------------------------------------------------------------
     # Startup: restore in-memory DENY policies

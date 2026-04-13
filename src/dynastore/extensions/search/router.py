@@ -310,7 +310,11 @@ async def post_geoid_scoped(
     request: Request, catalog_id: str, body: GeoidSearchBody,
 ) -> GeoidCollection:
     return await _get_search_service().search_by_geoid(
-        body.geoids, catalog_id=catalog_id, limit=body.limit,
+        body.geoids,
+        catalog_id=catalog_id,
+        limit=body.limit,
+        external_id=body.external_id,
+        collection_id=body.collection_id,
     )
 
 

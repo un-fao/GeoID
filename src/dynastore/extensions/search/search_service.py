@@ -371,40 +371,82 @@ class SearchService(ExtensionProtocol):
 
     async def search_by_geoid(
         self,
-        geoids: List[str],
+        geoids: Optional[List[str]] = None,
         catalog_id: Optional[str] = None,
         limit: int = 100,
+        *,
+        external_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
     ) -> GeoidCollection:
         """
-        Look up geoid values in the obfuscated index.
+        Tenant-scoped lookup against ``{prefix}-geoid-{catalog_id}``.
 
-        If catalog_id is provided, searches only that catalog's obfuscated
-        index ({prefix}-geoid-{catalog_id}). Otherwise searches across all
-        obfuscated indexes ({prefix}-geoid-*).
+        Contract:
+          - ``catalog_id`` is required (the tenant selects the index).
+          - Provide either ``geoids`` (cross-collection lookup within the
+            tenant) or ``(external_id, collection_id)`` together. Bare
+            ``external_id`` is rejected — that would let a caller
+            enumerate across collections.
+
+        Returns full features (geometry + properties + external_id) as
+        recorded in the per-tenant feature index, including any
+        simplification metadata.
         """
-        if catalog_id:
-            index = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
-        else:
-            index = f"{_get_index_prefix()}-geoid-*"
+        from fastapi import HTTPException
 
-        es_body: Dict[str, Any] = {
-            "query": {"terms": {"geoid": geoids}},
-            "size": limit,
-        }
+        if not catalog_id:
+            raise HTTPException(
+                status_code=400,
+                detail="catalog_id is required (tenant scope) for obfuscated lookup.",
+            )
+        has_geoids = bool(geoids)
+        has_external_pair = bool(external_id) and bool(collection_id)
+        if external_id and not collection_id:
+            raise HTTPException(
+                status_code=400,
+                detail="external_id requires collection_id (cross-collection enumeration is not allowed).",
+            )
+        if not has_geoids and not has_external_pair:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide geoids or (external_id, collection_id).",
+            )
+
+        index = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
+
+        if has_geoids:
+            query: Dict[str, Any] = {"terms": {"geoid": geoids}}
+        else:
+            query = {
+                "bool": {
+                    "filter": [
+                        {"term": {"external_id": external_id}},
+                        {"term": {"collection_id": collection_id}},
+                    ]
+                }
+            }
+        es_body: Dict[str, Any] = {"query": query, "size": limit}
 
         es = self._get_es()
         resp = await es.search(index=index, body=es_body, ignore_unavailable=True)
 
         raw_hits = resp.get("hits", {}).get("hits", [])
-        results = [
-            GeoidResult(
-                geoid=h["_source"]["geoid"],
-                catalog_id=h["_source"]["catalog_id"],
-                collection_id=h["_source"]["collection_id"],
-            )
-            for h in raw_hits
-            if "geoid" in h.get("_source", {})
-        ]
+        results: List[GeoidResult] = []
+        for h in raw_hits:
+            src = h.get("_source", {})
+            if "geoid" not in src:
+                continue
+            results.append(GeoidResult(
+                geoid=src["geoid"],
+                catalog_id=src.get("catalog_id", catalog_id),
+                collection_id=src.get("collection_id", collection_id or ""),
+                external_id=src.get("external_id"),
+                geometry=src.get("geometry"),
+                bbox=src.get("bbox"),
+                properties=src.get("properties"),
+                simplification_factor=src.get("simplification_factor"),
+                simplification_mode=src.get("simplification_mode"),
+            ))
 
         return GeoidCollection(
             results=results,
