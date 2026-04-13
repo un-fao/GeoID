@@ -599,11 +599,6 @@ async def reset_dynastore_state(engine=None):
     clear_if_cached(config_service, "_catalog_config_cache")
     clear_if_cached(config_service, "_collection_config_cache")
 
-    # Config manager caches (separate module-level alru_cache instances)
-    from dynastore.modules.catalog import config_manager
-    clear_if_cached(config_manager, "_catalog_config_cache")
-    clear_if_cached(config_manager, "_collection_config_cache")
-
     # Tiles module cleanup (clear_registry resets _active_storage_provider too)
     clear_if_cached(tiles_module, "get_tile_resolution_params")
     clear_if_cached(tiles_module, "get_collection_source_srid")

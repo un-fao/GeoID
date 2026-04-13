@@ -21,8 +21,8 @@
 Dispatches on :class:`Scope` type to the appropriate physical table:
 
 * :class:`PlatformScope`  → ``configs.platform_configs``
-* :class:`CatalogScope`   → ``"<tenant_schema>".catalog_configs``
-* :class:`CollectionScope`→ ``"<tenant_schema>".collection_configs``
+* :class:`CatalogScope`   → ``"<tenant_schema>".typed_catalog_configs``
+* :class:`CollectionScope`→ ``"<tenant_schema>".typed_collection_configs``
 
 The tenant schema is resolved via :class:`CatalogsProtocol` at query time,
 so a single store instance handles every tenant.

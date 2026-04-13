@@ -18,17 +18,21 @@
 
 """DDL for the PostgreSQL :class:`TypedStore` backend.
 
-Three independent tables cover the three built-in scopes:
+Three scope-specific tables + one content-addressed schema registry:
 
-* ``configs.schemas`` — global schema registry (content-addressed).
-* ``configs.platform_configs`` — global one-row-per-class_key store.
-* ``"<tenant_schema>".catalog_configs`` — per-tenant, one-row-per-class_key.
+* ``configs.schemas`` — global schema registry (content-addressed by sha256).
+* ``configs.platform_configs`` — global, one row per ``class_key``.
+* ``"<tenant_schema>".catalog_configs`` — per-tenant, one row per ``class_key``.
 * ``"<tenant_schema>".collection_configs`` — per-tenant, keyed by
   ``(collection_id, class_key)``.
 
-The per-tenant tables live inside the tenant's own PG schema, matching the
-rest of dynastore's tenant isolation model — no ``catalog_id`` column
-needed.
+The ``typed_`` prefix keeps these tables distinct from the legacy
+``configs.platform_configs`` (which is plugin_id-keyed, string-based).  The
+two schemes coexist during migration; once all call sites are moved the
+legacy table can be dropped and the ``typed_`` prefix removed.
+
+Per-tenant tables live inside the tenant's own PG schema, matching
+dynastore's physical tenant isolation — no ``catalog_id`` column needed.
 """
 
 from __future__ import annotations
@@ -61,9 +65,9 @@ CREATE TABLE IF NOT EXISTS {CONFIGS_SCHEMA}.platform_configs (
 
 
 def tenant_configs_ddl(tenant_schema: str) -> str:
-    """Return idempotent DDL for the two per-tenant config tables.
+    """Return idempotent DDL for the two per-tenant typed-config tables.
 
-    The ``tenant_schema`` is validated before interpolation to prevent SQL
+    ``tenant_schema`` is validated before interpolation to prevent SQL
     injection (asyncpg cannot bind identifiers).
     """
     validate_sql_identifier(tenant_schema)

@@ -37,6 +37,9 @@ from dynastore.modules.db_config.platform_config_service import (
     PluginConfig,
     ConfigRegistry,
     enforce_config_immutability,
+    _class_key_for,
+    _register_schema,
+    _schema_id_for,
 )
 from dynastore.modules.db_config.partition_tools import (
     ensure_partition_exists,
@@ -96,10 +99,10 @@ async def _catalog_config_cache(
         if not await check_table_exists(conn, CATALOG_CONFIGS_TABLE, phys_schema):
             return None
 
-        sql = f'SELECT config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE catalog_id = :catalog_id AND plugin_id = :plugin_id;'
+        sql = f'SELECT config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE class_key = :class_key;'
         return await DQLQuery(
             sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
-        ).execute(conn, catalog_id=catalog_id, plugin_id=plugin_id)
+        ).execute(conn, class_key=_class_key_for(plugin_id))
 
 
 @cached(maxsize=16384, ttl=300, namespace="collection_config", ignore=["engine", "catalog_manager"])
@@ -123,14 +126,13 @@ async def _collection_config_cache(
         if not await check_table_exists(conn, COLLECTION_CONFIGS_TABLE, phys_schema):
             return None
 
-        sql = f'SELECT config_data FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE catalog_id = :catalog_id AND collection_id = :collection_id AND plugin_id = :plugin_id;'
+        sql = f'SELECT config_data FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE collection_id = :collection_id AND class_key = :class_key;'
         return await DQLQuery(
             sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
         ).execute(
             conn,
-            catalog_id=catalog_id,
             collection_id=collection_id,
-            plugin_id=plugin_id,
+            class_key=_class_key_for(plugin_id),
         )
 
 
@@ -310,10 +312,10 @@ class ConfigService(ConfigsProtocol):
             if not await check_table_exists(conn, CATALOG_CONFIGS_TABLE, phys_schema):
                 return None
 
-            sql = f'SELECT config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE catalog_id = :catalog_id AND plugin_id = :plugin_id;'
+            sql = f'SELECT config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE class_key = :class_key;'
             data = await DQLQuery(
                 sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
-            ).execute(conn, catalog_id=catalog_id, plugin_id=plugin_id)
+            ).execute(conn, class_key=_class_key_for(plugin_id))
 
         return ConfigRegistry.validate_config(plugin_id, data) if data else None
 
@@ -412,32 +414,39 @@ class ConfigService(ConfigsProtocol):
                     f"Could not resolve physical schema for catalog '{catalog_id}'."
                 )
 
+            class_key = _class_key_for(plugin_id)
+
             if check_immutability:
                 # Dynamic locking query
-                sql = f'SELECT config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE catalog_id = :catalog_id AND plugin_id = :plugin_id FOR UPDATE;'
+                sql = f'SELECT config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE class_key = :class_key FOR UPDATE;'
                 current_data = await DQLQuery(
                     sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
-                ).execute(conn, catalog_id=catalog_id, plugin_id=plugin_id)
+                ).execute(conn, class_key=class_key)
                 if current_data:
                     current_config = ConfigRegistry.validate_config(
                         plugin_id, current_data
                     )
                     enforce_config_immutability(current_config, config)
 
-            # Dynamic upsert
+            # FK: schemas row must exist before referencing it.
+            await _register_schema(conn, config)
+
+            # Dynamic upsert (class_key-keyed; catalog_id is implicit in phys_schema).
             upsert_sql = f"""
-            INSERT INTO "{phys_schema}".{CATALOG_CONFIGS_TABLE} (catalog_id, plugin_id, config_data, updated_at)
-            VALUES (:catalog_id, :plugin_id, :config_data, NOW()) 
-            ON CONFLICT (catalog_id, plugin_id) DO UPDATE SET config_data = EXCLUDED.config_data, updated_at = NOW()
+            INSERT INTO "{phys_schema}".{CATALOG_CONFIGS_TABLE} (class_key, schema_id, config_data, updated_at)
+            VALUES (:class_key, :schema_id, CAST(:config_data AS jsonb), NOW())
+            ON CONFLICT (class_key) DO UPDATE SET
+                schema_id   = EXCLUDED.schema_id,
+                config_data = EXCLUDED.config_data,
+                updated_at  = NOW()
             """
-            # Handle both dict and Pydantic model types
             config_data = (
-                config.model_dump() if hasattr(config, "model_dump") else config
+                config.model_dump(mode="json") if hasattr(config, "model_dump") else config
             )
             await DQLQuery(upsert_sql, result_handler=ResultHandler.ROWCOUNT).execute(
                 conn,
-                catalog_id=catalog_id,
-                plugin_id=plugin_id,
+                class_key=class_key,
+                schema_id=_schema_id_for(plugin_id, config),
                 config_data=json.dumps(config_data, cls=CustomJSONEncoder),
             )
 
@@ -491,14 +500,13 @@ class ConfigService(ConfigsProtocol):
             if not await check_table_exists(conn, COLLECTION_CONFIGS_TABLE, phys_schema):
                 return None
 
-            sql = f'SELECT config_data FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE catalog_id = :catalog_id AND collection_id = :collection_id AND plugin_id = :plugin_id;'
+            sql = f'SELECT config_data FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE collection_id = :collection_id AND class_key = :class_key;'
             data = await DQLQuery(
                 sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
             ).execute(
                 conn,
-                catalog_id=catalog_id,
                 collection_id=collection_id,
-                plugin_id=plugin_id,
+                class_key=_class_key_for(plugin_id),
             )
 
         return ConfigRegistry.validate_config(plugin_id, data) if data else None
@@ -539,15 +547,16 @@ class ConfigService(ConfigsProtocol):
                     f"Could not resolve physical schema for catalog '{catalog_id}'."
                 )
 
+            class_key = _class_key_for(plugin_id)
+
             if check_immutability:
-                sql = f'SELECT config_data FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE catalog_id = :catalog_id AND collection_id = :collection_id AND plugin_id = :plugin_id FOR UPDATE;'
+                sql = f'SELECT config_data FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE collection_id = :collection_id AND class_key = :class_key FOR UPDATE;'
                 current_data = await DQLQuery(
                     sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
                 ).execute(
                     conn,
-                    catalog_id=catalog_id,
                     collection_id=collection_id,
-                    plugin_id=plugin_id,
+                    class_key=class_key,
                 )
                 if current_data:
                     current_config = ConfigRegistry.validate_config(
@@ -555,21 +564,25 @@ class ConfigService(ConfigsProtocol):
                     )
                     enforce_config_immutability(current_config, config)
 
-            # Dynamic upsert
+            # FK: schemas row must exist before referencing it.
+            await _register_schema(conn, config)
+
             upsert_sql = f"""
-            INSERT INTO "{phys_schema}".{COLLECTION_CONFIGS_TABLE} (catalog_id, collection_id, plugin_id, config_data, updated_at)
-            VALUES (:catalog_id, :collection_id, :plugin_id, :config_data, NOW()) 
-            ON CONFLICT (catalog_id, collection_id, plugin_id) DO UPDATE SET config_data = EXCLUDED.config_data, updated_at = NOW()
+            INSERT INTO "{phys_schema}".{COLLECTION_CONFIGS_TABLE} (collection_id, class_key, schema_id, config_data, updated_at)
+            VALUES (:collection_id, :class_key, :schema_id, CAST(:config_data AS jsonb), NOW())
+            ON CONFLICT (collection_id, class_key) DO UPDATE SET
+                schema_id   = EXCLUDED.schema_id,
+                config_data = EXCLUDED.config_data,
+                updated_at  = NOW()
             """
-            # Handle both dict and Pydantic model types
             config_data = (
-                config.model_dump() if hasattr(config, "model_dump") else config
+                config.model_dump(mode="json") if hasattr(config, "model_dump") else config
             )
             await DQLQuery(upsert_sql, result_handler=ResultHandler.ROWCOUNT).execute(
                 conn,
-                catalog_id=catalog_id,
                 collection_id=collection_id,
-                plugin_id=plugin_id,
+                class_key=class_key,
+                schema_id=_schema_id_for(plugin_id, config),
                 config_data=json.dumps(config_data, cls=CustomJSONEncoder),
             )
 
@@ -624,28 +637,31 @@ class ConfigService(ConfigsProtocol):
                     return {"total": 0, "results": []}
 
                 sql = f"""
-                SELECT COUNT(*) OVER() as total_count, plugin_id, config_data
+                SELECT COUNT(*) OVER() as total_count, class_key, config_data
                 FROM \"{phys_schema}\".{COLLECTION_CONFIGS_TABLE}
-                WHERE catalog_id = :catalog_id AND collection_id = :collection_id
-                ORDER BY plugin_id
+                WHERE collection_id = :collection_id
+                ORDER BY class_key
                 LIMIT :limit OFFSET :offset;
                 """
                 rows = await DQLQuery(
                     sql, result_handler=ResultHandler.ALL_DICTS
                 ).execute(
                     conn,
-                    catalog_id=catalog_id,
                     collection_id=collection_id,
                     limit=limit,
                     offset=offset,
                 )
 
             total = rows[0]["total_count"] if rows else 0
+            inverse = {
+                model.class_key(): pid
+                for pid, model in ConfigRegistry.list_registered().items()
+            }
             results = [
                 {
-                    "plugin_id": r["plugin_id"],
+                    "plugin_id": inverse.get(r["class_key"], r["class_key"]),
                     "config": ConfigRegistry.validate_config(
-                        r["plugin_id"], r["config_data"]
+                        inverse.get(r["class_key"], r["class_key"]), r["config_data"]
                     ).model_dump(),
                 }
                 for r in rows
@@ -666,22 +682,25 @@ class ConfigService(ConfigsProtocol):
                     return {"total": 0, "results": []}
 
                 sql = f"""
-                SELECT COUNT(*) OVER() as total_count, plugin_id, config_data
+                SELECT COUNT(*) OVER() as total_count, class_key, config_data
                 FROM \"{phys_schema}\".{CATALOG_CONFIGS_TABLE}
-                WHERE catalog_id = :catalog_id
-                ORDER BY plugin_id
+                ORDER BY class_key
                 LIMIT :limit OFFSET :offset;
                 """
                 rows = await DQLQuery(
                     sql, result_handler=ResultHandler.ALL_DICTS
-                ).execute(conn, catalog_id=catalog_id, limit=limit, offset=offset)
+                ).execute(conn, limit=limit, offset=offset)
 
             total = rows[0]["total_count"] if rows else 0
+            inverse = {
+                model.class_key(): pid
+                for pid, model in ConfigRegistry.list_registered().items()
+            }
             results = [
                 {
-                    "plugin_id": r["plugin_id"],
+                    "plugin_id": inverse.get(r["class_key"], r["class_key"]),
                     "config": ConfigRegistry.validate_config(
-                        r["plugin_id"], r["config_data"]
+                        inverse.get(r["class_key"], r["class_key"]), r["config_data"]
                     ).model_dump(),
                 }
                 for r in rows
@@ -715,15 +734,20 @@ class ConfigService(ConfigsProtocol):
             if not await check_table_exists(conn, CATALOG_CONFIGS_TABLE, phys_schema):
                 return {}
 
-            sql = f'SELECT plugin_id, config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE catalog_id = :catalog_id;'
+            sql = f'SELECT class_key, config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE};'
             rows = await DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS).execute(
-                conn, catalog_id=catalog_id
+                conn
             )
 
-        configs = {}
+        inverse = {
+            model.class_key(): pid
+            for pid, model in ConfigRegistry.list_registered().items()
+        }
+        configs: Dict[str, PluginConfig] = {}
         for row in rows:
-            plugin_id = row["plugin_id"]
+            class_key = row["class_key"]
             config_data = row["config_data"]
+            plugin_id = inverse.get(class_key, class_key)
             configs[plugin_id] = ConfigRegistry.validate_config(plugin_id, config_data)
         return configs
 
@@ -764,39 +788,36 @@ class ConfigService(ConfigsProtocol):
                     if not collection_table_exists:
                         return {"total": 0, "results": []}
                     sql = f"""
-                    SELECT COUNT(*) OVER() as total_count, 'collection' as level, catalog_id, collection_id, plugin_id, config_data
+                    SELECT COUNT(*) OVER() as total_count, 'collection' as level, collection_id, class_key, config_data
                     FROM \"{phys_schema}\".{COLLECTION_CONFIGS_TABLE}
-                    WHERE catalog_id = :catalog_id AND collection_id = :collection_id
+                    WHERE collection_id = :collection_id
                     """
                 else:
                     # Build UNION from whichever tables exist
                     parts = []
                     if catalog_table_exists:
                         parts.append(f"""
-                        SELECT 'catalog' as level, catalog_id, NULL as collection_id, plugin_id, config_data
-                        FROM \"{phys_schema}\".{CATALOG_CONFIGS_TABLE}
-                        WHERE catalog_id = :catalog_id""")
+                        SELECT 'catalog' as level, NULL as collection_id, class_key, config_data
+                        FROM \"{phys_schema}\".{CATALOG_CONFIGS_TABLE}""")
                     if collection_table_exists:
                         parts.append(f"""
-                        SELECT 'collection' as level, catalog_id, collection_id, plugin_id, config_data
-                        FROM \"{phys_schema}\".{COLLECTION_CONFIGS_TABLE}
-                        WHERE catalog_id = :catalog_id""")
+                        SELECT 'collection' as level, collection_id, class_key, config_data
+                        FROM \"{phys_schema}\".{COLLECTION_CONFIGS_TABLE}""")
                     sql = f"""
-                    SELECT COUNT(*) OVER() as total_count, level, catalog_id, collection_id, plugin_id, config_data FROM (
+                    SELECT COUNT(*) OVER() as total_count, level, collection_id, class_key, config_data FROM (
                         {' UNION ALL '.join(parts)}
                     ) sub
                     """
 
                 if query:
-                    sql += " WHERE plugin_id ILIKE :query"
+                    sql += " WHERE class_key ILIKE :query"
 
-                sql += " ORDER BY level, catalog_id, collection_id, plugin_id LIMIT :limit OFFSET :offset;"
+                sql += " ORDER BY level, collection_id, class_key LIMIT :limit OFFSET :offset;"
 
                 rows = await DQLQuery(
                     sql, result_handler=ResultHandler.ALL_DICTS
                 ).execute(
                     conn,
-                    catalog_id=catalog_id,
                     collection_id=collection_id,
                     query=f"%{query}%" if query else None,
                     limit=limit,
@@ -804,16 +825,22 @@ class ConfigService(ConfigsProtocol):
                 )
 
                 total = rows[0]["total_count"] if rows else 0
+                inverse = {
+                    model.class_key(): pid
+                    for pid, model in ConfigRegistry.list_registered().items()
+                }
                 results = []
                 for r in rows:
+                    class_key = r["class_key"]
+                    plugin_id = inverse.get(class_key, class_key)
                     results.append(
                         {
                             "level": r["level"],
-                            "catalog_id": r["catalog_id"],
-                            "collection_id": r["collection_id"],
-                            "plugin_id": r["plugin_id"],
+                            "catalog_id": catalog_id,
+                            "collection_id": r.get("collection_id"),
+                            "plugin_id": plugin_id,
                             "config": ConfigRegistry.validate_config(
-                                r["plugin_id"], r["config_data"]
+                                plugin_id, r["config_data"]
                             ).model_dump(),
                         }
                     )
@@ -848,10 +875,10 @@ class ConfigService(ConfigsProtocol):
             if not await check_table_exists(conn, CATALOG_CONFIGS_TABLE, phys_schema):
                 return False
 
-            sql = f'DELETE FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE catalog_id = :catalog_id AND plugin_id = :plugin_id;'
+            sql = f'DELETE FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE class_key = :class_key;'
             rows_affected = await DQLQuery(
                 sql, result_handler=ResultHandler.ROWCOUNT
-            ).execute(conn, catalog_id=catalog_id, plugin_id=plugin_id)
+            ).execute(conn, class_key=_class_key_for(plugin_id))
 
             if rows_affected > 0:
                 _catalog_config_cache.cache_invalidate(
@@ -910,10 +937,10 @@ class ConfigService(ConfigsProtocol):
             if not await check_table_exists(conn, CATALOG_CONFIGS_TABLE, phys_schema):
                 return False
 
-            sql = f'DELETE FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE catalog_id = :catalog_id AND plugin_id = :plugin_id;'
+            sql = f'DELETE FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE class_key = :class_key;'
             rows_affected = await DQLQuery(
                 sql, result_handler=ResultHandler.ROWCOUNT
-            ).execute(conn, catalog_id=catalog_id, plugin_id=plugin_id)
+            ).execute(conn, class_key=_class_key_for(plugin_id))
 
             if rows_affected > 0:
                 _catalog_config_cache.cache_invalidate(
@@ -942,14 +969,13 @@ class ConfigService(ConfigsProtocol):
             if not await check_table_exists(conn, COLLECTION_CONFIGS_TABLE, phys_schema):
                 return False
 
-            sql = f'DELETE FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE catalog_id = :catalog_id AND collection_id = :collection_id AND plugin_id = :plugin_id;'
+            sql = f'DELETE FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE collection_id = :collection_id AND class_key = :class_key;'
             rows_affected = await DQLQuery(
                 sql, result_handler=ResultHandler.ROWCOUNT
             ).execute(
                 conn,
-                catalog_id=catalog_id,
                 collection_id=collection_id,
-                plugin_id=plugin_id,
+                class_key=_class_key_for(plugin_id),
             )
 
             if rows_affected > 0:

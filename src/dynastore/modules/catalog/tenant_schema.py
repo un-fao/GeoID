@@ -71,27 +71,27 @@ CREATE TABLE IF NOT EXISTS {schema}.metadata (
 );
 """
 
-# 2. CONFIGS (assets table is now created by DriverAssetPostgresql lifecycle hook)
+# 2. CONFIGS — class_key-keyed typed storage (see modules/db_config/typed_store/).
+# Physical tenant isolation: tables live in the tenant's own PG schema, no catalog_id column.
 TENANT_CATALOG_CONFIGS_DDL = """
 CREATE TABLE IF NOT EXISTS {schema}.catalog_configs (
-    catalog_id  VARCHAR NOT NULL,
-    plugin_id   VARCHAR NOT NULL,
-    config_data JSONB NOT NULL,
-    schema_hash VARCHAR(64),
-    updated_at  TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (catalog_id, plugin_id)
+    class_key   TEXT        PRIMARY KEY,
+    schema_id   TEXT        NOT NULL REFERENCES configs.schemas(schema_id),
+    config_data JSONB       NOT NULL,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 """
 TENANT_COLLECTION_CONFIGS_DDL = """
 CREATE TABLE IF NOT EXISTS {schema}.collection_configs (
-    catalog_id VARCHAR NOT NULL,
-    collection_id VARCHAR NOT NULL,
-    plugin_id VARCHAR NOT NULL,
-    config_data JSONB NOT NULL,
-    schema_hash VARCHAR(64),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (catalog_id, collection_id, plugin_id)
+    collection_id TEXT        NOT NULL,
+    class_key     TEXT        NOT NULL,
+    schema_id     TEXT        NOT NULL REFERENCES configs.schemas(schema_id),
+    config_data   JSONB       NOT NULL,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (collection_id, class_key)
 );
+CREATE INDEX IF NOT EXISTS ix_collection_configs_class_key_{schema}
+    ON {schema}.collection_configs (class_key);
 """
 
 # # 4. ASSET FEATURE MAP
@@ -123,7 +123,11 @@ async def initialize_tenant_shell(conn: DbResource, schema: str, catalog_id: str
     
     schema = schema.strip('\'" ')
 
-    # 1. Create Schema
+    # 1. Create Schema (+ ensure the global configs schema/tables exist, since
+    # our tenant DDL FK-references configs.schemas).
+    from dynastore.modules.db_config.typed_store.ddl import PLATFORM_SCHEMAS_DDL
+    await ensure_schema_exists(conn, "configs")
+    await DDLQuery(PLATFORM_SCHEMAS_DDL).execute(conn)
     await ensure_schema_exists(conn, schema)
 
     # 2. Core Tables (Tenant-local, not globally partitioned) - Combined for efficiency

@@ -108,26 +108,24 @@ CREATE TABLE IF NOT EXISTS {schema}.metadata (
 """
 
 
-# 2. CONFIGS (assets table is now created by DriverAssetPostgresql lifecycle hook at priority 5)
+# 2. CONFIGS — class_key-keyed typed storage (see modules/db_config/typed_store/).
+# Physical tenant isolation via the PG schema; no catalog_id column.
 TENANT_CATALOG_CONFIGS_DDL = """
 CREATE TABLE IF NOT EXISTS {schema}.catalog_configs (
-    catalog_id VARCHAR NOT NULL,
-    plugin_id VARCHAR NOT NULL,
-    config_data JSONB NOT NULL,
-    schema_hash VARCHAR(64),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (catalog_id, plugin_id)
+    class_key   TEXT        PRIMARY KEY,
+    schema_id   TEXT        NOT NULL REFERENCES configs.schemas(schema_id),
+    config_data JSONB       NOT NULL,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 """
 TENANT_COLLECTION_CONFIGS_DDL = """
 CREATE TABLE IF NOT EXISTS {schema}.collection_configs (
-    catalog_id VARCHAR NOT NULL,
-    collection_id VARCHAR NOT NULL,
-    plugin_id VARCHAR NOT NULL,
-    config_data JSONB NOT NULL,
-    schema_hash VARCHAR(64),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (catalog_id, collection_id, plugin_id)
+    collection_id TEXT        NOT NULL,
+    class_key     TEXT        NOT NULL,
+    schema_id     TEXT        NOT NULL REFERENCES configs.schemas(schema_id),
+    config_data   JSONB       NOT NULL,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (collection_id, class_key)
 );
 """
 
@@ -528,7 +526,10 @@ class CatalogService(CatalogsProtocol):
             # By creating schema + core tables here (outer tx), all lifecycle hooks
             # are guaranteed to find them ready.
 
-            # 1. Schema
+            # 1. Schema (+ global configs schema/tables for FK references)
+            from dynastore.modules.db_config.typed_store.ddl import PLATFORM_SCHEMAS_DDL
+            await ensure_schema_exists(conn, "configs")
+            await DDLQuery(PLATFORM_SCHEMAS_DDL).execute(conn)
             await ensure_schema_exists(conn, physical_schema)
 
             # 2. Core Tables (collections, assets, catalog_configs, collection_configs)

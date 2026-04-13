@@ -292,40 +292,89 @@ async def _platform_table_exists(conn: DbResource) -> bool:
 
 # --- Schema (Platform Level Only) ---
 
-PLATFORM_CONFIGS_SCHEMA = """
-CREATE SCHEMA IF NOT EXISTS configs;
-CREATE TABLE IF NOT EXISTS configs.platform_configs (
-    plugin_id VARCHAR NOT NULL PRIMARY KEY,
-    config_data JSONB NOT NULL,
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-"""
+# Platform-level DDL now lives in modules/db_config/typed_store/ddl.py.
+# Re-exported here for backwards-compatible imports; content is the new
+# class_key-keyed schema registry + platform_configs layout.
+from dynastore.modules.db_config.typed_store.ddl import (
+    PLATFORM_SCHEMAS_DDL as PLATFORM_CONFIGS_SCHEMA,
+)
 
-# --- Queries ---
+# --- Queries (class_key-keyed, see modules/db_config/typed_store) ---
 
 get_platform_config_query = DQLQuery(
-    "SELECT config_data FROM configs.platform_configs WHERE plugin_id = :plugin_id;",
+    "SELECT config_data FROM configs.platform_configs WHERE class_key = :class_key;",
     result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
 )
 
 upsert_platform_config_query = DQLQuery(
     """
-    INSERT INTO configs.platform_configs (plugin_id, config_data, updated_at) 
-    VALUES (:plugin_id, :config_data, NOW())
-    ON CONFLICT (plugin_id) DO UPDATE SET config_data = EXCLUDED.config_data, updated_at = NOW();
+    INSERT INTO configs.platform_configs (class_key, schema_id, config_data, updated_at)
+    VALUES (:class_key, :schema_id, CAST(:config_data AS jsonb), NOW())
+    ON CONFLICT (class_key) DO UPDATE SET
+        schema_id   = EXCLUDED.schema_id,
+        config_data = EXCLUDED.config_data,
+        updated_at  = NOW();
     """,
     result_handler=ResultHandler.ROWCOUNT,
 )
 
 list_platform_configs_query = DQLQuery(
-    "SELECT plugin_id, config_data FROM configs.platform_configs;",
+    "SELECT class_key, config_data FROM configs.platform_configs;",
     result_handler=ResultHandler.ALL_DICTS,
 )
 
 delete_platform_config_query = DQLQuery(
-    "DELETE FROM configs.platform_configs WHERE plugin_id = :plugin_id;",
+    "DELETE FROM configs.platform_configs WHERE class_key = :class_key;",
     result_handler=ResultHandler.ROWCOUNT,
 )
+
+
+def _class_key_for(plugin_id: str) -> str:
+    """Resolve a plugin_id string to the stored ``class_key``.
+
+    Uses :class:`ConfigRegistry` (populated automatically when PluginConfig
+    subclasses with ``_plugin_id`` are imported).  Unknown plugin_ids are
+    used verbatim as the key (caller may be persisting an ad-hoc generic
+    PluginConfig).
+    """
+    model = ConfigRegistry.get_model(plugin_id)
+    return model.class_key() if model else plugin_id
+
+
+def _schema_id_for(plugin_id: str, config: "PluginConfig") -> str:
+    """Return the content-addressed schema_id for the config being written.
+
+    Prefers the actual class of the instance (covariant writes must pin the
+    subclass's schema).
+    """
+    return type(config).schema_id()
+
+
+_register_schema_query = DQLQuery(
+    """
+    INSERT INTO configs.schemas (schema_id, class_key, schema_json)
+    VALUES (:schema_id, :class_key, CAST(:schema_json AS jsonb))
+    ON CONFLICT (schema_id) DO NOTHING;
+    """,
+    result_handler=ResultHandler.ROWCOUNT,
+)
+
+
+async def _register_schema(conn: DbResource, config: "PluginConfig") -> None:
+    """Upsert the config's current JSON schema into ``configs.schemas``.
+
+    Idempotent — no-op when the ``schema_id`` already exists. Call before
+    any INSERT into ``configs.platform_configs`` /
+    ``<tenant>.catalog_configs`` / ``<tenant>.collection_configs`` because
+    those tables reference ``configs.schemas(schema_id)``.
+    """
+    cls = type(config)
+    await _register_schema_query.execute(
+        conn,
+        schema_id=cls.schema_id(),
+        class_key=cls.class_key(),
+        schema_json=json.dumps(cls.model_json_schema(), sort_keys=True),
+    )
 
 # --- Protocols & Models ---
 
@@ -565,7 +614,9 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
         async with managed_transaction(self.engine) as conn:
             if not await _platform_table_exists(conn):
                 return None
-            return await get_platform_config_query.execute(conn, plugin_id=plugin_id)
+            return await get_platform_config_query.execute(
+                conn, class_key=_class_key_for(plugin_id)
+            )
 
     async def _get_platform_config_internal(
         self, plugin_id: str, db_resource: Optional[DbResource] = None
@@ -580,7 +631,7 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
             if not await _platform_table_exists(db_resource):
                 return None
             data = await get_platform_config_query.execute(
-                db_resource, plugin_id=plugin_id
+                db_resource, class_key=_class_key_for(plugin_id)
             )
         else:
             # Fall back to cached version which creates its own transaction
@@ -603,19 +654,24 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
             db_resource: Optional database connection/engine to use.
         """
         async with managed_transaction(db_resource or self.engine) as conn:
+            class_key = _class_key_for(plugin_id)
             old_config: Optional[PluginConfig] = None
             current_data = await get_platform_config_query.execute(
-                conn, plugin_id=plugin_id
+                conn, class_key=class_key
             )
             if current_data:
                 old_config = ConfigRegistry.validate_config(plugin_id, current_data)
                 if check_immutability:
                     enforce_config_immutability(old_config, config)
 
+            # FK: schemas row must exist before we reference it from platform_configs.
+            await _register_schema(conn, config)
+
             await upsert_platform_config_query.execute(
                 conn,
-                plugin_id=plugin_id,
-                config_data=json.dumps(config.model_dump(), cls=CustomJSONEncoder),
+                class_key=class_key,
+                schema_id=_schema_id_for(plugin_id, config),
+                config_data=json.dumps(config.model_dump(mode="json"), cls=CustomJSONEncoder),
             )
 
             # Compute field-level diff for handlers
@@ -640,10 +696,16 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
         async with managed_transaction(self.engine) as conn:
             rows = await list_platform_configs_query.execute(conn)
 
-        configs = {}
+        # Reverse map class_key -> plugin_id (only for registered configs).
+        inverse = {
+            model.class_key(): pid
+            for pid, model in ConfigRegistry.list_registered().items()
+        }
+        configs: Dict[str, PluginConfig] = {}
         for row in rows:
-            plugin_id = row["plugin_id"]
+            class_key = row["class_key"]
             config_data = row["config_data"]
+            plugin_id = inverse.get(class_key, class_key)
             configs[plugin_id] = ConfigRegistry.validate_config(plugin_id, config_data)
         return configs
 
@@ -653,7 +715,7 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
         """Deletes a configuration at the platform level."""
         async with managed_transaction(db_resource or self.engine) as conn:
             rows_affected = await delete_platform_config_query.execute(
-                conn, plugin_id=plugin_id
+                conn, class_key=_class_key_for(plugin_id)
             )
             if rows_affected > 0:
                 self.get_platform_config_internal_cached.cache_invalidate(plugin_id)
