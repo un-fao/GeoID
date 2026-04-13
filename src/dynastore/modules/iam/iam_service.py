@@ -73,10 +73,10 @@ class IamService(IamProtocol):
         policy_service: Optional[object] = None,
         app_state: Optional[object] = None,
     ):
-        # In V2, we prefer PostgresIamStorage which implements both interfaces
-        self.storage: Union[AbstractIamStorage, AuthorizationStorageProtocol] = (
-            storage or PostgresIamStorage(app_state=app_state)
-        )
+        # In V2, we prefer PostgresIamStorage which implements both interfaces.
+        # Typed as Any because PostgresIamStorage has methods not declared in either
+        # AbstractIamStorage or AuthorizationStorageProtocol (e.g. get_identity_roles).
+        self.storage: Any = storage or PostgresIamStorage(app_state=app_state)
         self.policy_service = policy_service
         self.app_state = app_state
         self._jwt_secret: Optional[str] = None
@@ -155,7 +155,7 @@ class IamService(IamProtocol):
         # It handles caching and physical schema lookup.
         try:
             res = await catalogs.resolve_physical_schema(
-                catalog_id, db_resource=conn or catalogs.engine
+                catalog_id, db_resource=conn or catalogs.engine  # type: ignore[attr-defined]
             )
             if res:
                 return res
@@ -186,7 +186,7 @@ class IamService(IamProtocol):
 
     def get_policy_service(self) -> PermissionProtocol:
         """Returns the policy service for checking permissions."""
-        return self.policy_service
+        return self.policy_service  # type: ignore[return-value]
 
     async def get_effective_permissions(
         self, identity: Dict[str, Any], catalog_id: str, conn: Optional[Any] = None

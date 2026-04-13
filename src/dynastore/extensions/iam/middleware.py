@@ -66,21 +66,27 @@ class IamMiddleware(BaseHTTPMiddleware):
             except RuntimeError:
                 pass
 
-    def lazy_init_manager(self):
+    def lazy_init_manager(self) -> bool:
+        """Returns True if IAM is available, False if this scope runs without IAM."""
         if self._iam_manager is None:
             iam_protocol = get_protocol(IamProtocol)
             if not iam_protocol:
-                raise RuntimeError(
-                    "IamProtocol implementation not found. Ensure IamModule is loaded."
+                logger.debug(
+                    "IamProtocol not registered — IamMiddleware running in pass-through mode."
                 )
+                return False
 
             self._iam_manager = iam_protocol
             self._policy_service = iam_protocol.get_policy_service()
 
             if not self._policy_service:
-                raise RuntimeError(
-                    "PolicyService not available in IamProtocol implementation."
+                logger.warning(
+                    "PolicyService not available in IamProtocol — IamMiddleware running in pass-through mode."
                 )
+                self._iam_manager = None
+                return False
+
+        return True
 
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
@@ -115,7 +121,8 @@ class IamMiddleware(BaseHTTPMiddleware):
         }
 
         if self._iam_manager is None:
-            self.lazy_init_manager()
+            if not self.lazy_init_manager():
+                return await call_next(request)
 
         catalog_id = getattr(request.state, "catalog_id", None)
         if not catalog_id:

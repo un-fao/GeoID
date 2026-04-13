@@ -45,7 +45,10 @@ All drivers register as async event listeners, checking
 import logging
 import re
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Dict, FrozenSet, List, Optional, Union
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, FrozenSet, List, Optional, Union
+
+if TYPE_CHECKING:
+    from dynastore.modules.storage.driver_config import CollectionWritePolicy
 
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols.storage_driver import Capability
@@ -68,13 +71,14 @@ class _ElasticsearchBase:
     """Shared helpers for ES storage drivers."""
 
     _db_logic = None
+    driver_type: str = ""  # overridden by concrete subclasses
 
     @classmethod
     def _get_db_logic(cls):
         """Lazily instantiate SFEOS DatabaseLogic (singleton)."""
         if cls._db_logic is None:
             try:
-                from stac_fastapi.elasticsearch.database_logic import DatabaseLogic
+                from stac_fastapi.elasticsearch.database_logic import DatabaseLogic  # type: ignore[import-not-found]
                 cls._db_logic = DatabaseLogic()
             except ImportError:
                 raise RuntimeError(
@@ -86,7 +90,7 @@ class _ElasticsearchBase:
     @staticmethod
     def _sfeos_available() -> bool:
         try:
-            from stac_fastapi.elasticsearch.database_logic import DatabaseLogic  # noqa: F401
+            from stac_fastapi.elasticsearch.database_logic import DatabaseLogic  # type: ignore[import-not-found]  # noqa: F401
             return True
         except ImportError:
             return False
@@ -103,6 +107,8 @@ class _ElasticsearchBase:
         from dynastore.modules.storage.driver_config import ElasticsearchCollectionDriverConfig
 
         configs = get_protocol(ConfigsProtocol)
+        if configs is None:
+            return ElasticsearchCollectionDriverConfig()
         config = await configs.get_config(
             self.driver_type,
             catalog_id=catalog_id,
@@ -119,21 +125,32 @@ class _ElasticsearchBase:
     ) -> bool:
         """Check if this driver is listed in the routing config for the given scope."""
         try:
+            from typing import cast as _cast
             from dynastore.models.protocols.configs import ConfigsProtocol
             from dynastore.tools.discovery import get_protocol
-            from dynastore.modules.storage.routing_config import ROUTING_PLUGIN_CONFIG_ID
+            from dynastore.modules.storage.routing_config import (
+                ROUTING_PLUGIN_CONFIG_ID,
+                RoutingPluginConfig,
+            )
 
             configs = get_protocol(ConfigsProtocol)
             if not configs:
                 return False
-            routing = await configs.get_config(
-                ROUTING_PLUGIN_CONFIG_ID,
-                catalog_id=catalog_id,
-                collection_id=collection_id,
+            routing = _cast(
+                Optional[RoutingPluginConfig],
+                await configs.get_config(
+                    ROUTING_PLUGIN_CONFIG_ID,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                ),
             )
+            if routing is None:
+                return False
+            from typing import cast as _cast2
+            ops = _cast2(Dict[str, list], routing.operations)
             return any(
                 entry.driver_id == driver_id
-                for entries in routing.operations.values()
+                for entries in ops.values()
                 for entry in entries
             )
         except Exception:
@@ -150,22 +167,31 @@ class _ElasticsearchBase:
         double-indexing.
         """
         try:
+            from typing import cast as _cast
             from dynastore.models.protocols.configs import ConfigsProtocol
             from dynastore.tools.discovery import get_protocol
             from dynastore.modules.storage.routing_config import (
                 ROUTING_PLUGIN_CONFIG_ID,
                 Operation,
+                RoutingPluginConfig,
             )
 
             configs = get_protocol(ConfigsProtocol)
             if not configs:
                 return False
-            routing = await configs.get_config(
-                ROUTING_PLUGIN_CONFIG_ID,
-                catalog_id=catalog_id,
-                collection_id=collection_id,
+            routing = _cast(
+                Optional[RoutingPluginConfig],
+                await configs.get_config(
+                    ROUTING_PLUGIN_CONFIG_ID,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                ),
             )
-            write_entries = routing.operations.get(Operation.WRITE, [])
+            if routing is None:
+                return False
+            from typing import cast as _cast3
+            ops2 = _cast3(Dict[str, list], routing.operations)
+            write_entries = ops2.get(Operation.WRITE, [])
             return any(e.driver_id == driver_id for e in write_entries)
         except Exception:
             return False
@@ -399,7 +425,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
     @staticmethod
     async def _resolve_write_policy(
         catalog_id: str, collection_id: str,
-    ):
+    ) -> "CollectionWritePolicy":
         """Resolve CollectionWritePolicy from the config waterfall."""
         from dynastore.modules.storage.driver_config import (
             CollectionWritePolicy,
@@ -411,18 +437,22 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
         try:
             configs = get_protocol(ConfigsProtocol)
             if configs:
-                return await configs.get_config(
+                result = await configs.get_config(
                     WRITE_POLICY_PLUGIN_ID,
                     catalog_id=catalog_id,
                     collection_id=collection_id,
                 )
+                if isinstance(result, CollectionWritePolicy):
+                    return result
         except Exception:
             pass
         return CollectionWritePolicy()
 
     @staticmethod
-    def _extract_external_id_from_doc(doc: dict, field_path: str) -> Optional[str]:
+    def _extract_external_id_from_doc(doc: dict, field_path: Optional[str]) -> Optional[str]:
         """Extract external_id using a dot-notation path from an ES document."""
+        if field_path is None:
+            return None
         val = doc
         for part in field_path.split("."):
             if isinstance(val, dict):
@@ -437,7 +467,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
     ) -> bool:
         """Check if any ES document with _external_id == external_id exists."""
         try:
-            from stac_fastapi.sfeos_helpers.database import index_alias_by_collection_id
+            from stac_fastapi.sfeos_helpers.database import index_alias_by_collection_id  # type: ignore[import-not-found]
             alias = index_alias_by_collection_id(collection_id)
             resp = await db.client.count(
                 index=alias,
@@ -537,7 +567,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
             from_ = offset if request is None or request.offset is None else request.offset
 
             try:
-                from stac_fastapi.sfeos_helpers.database import index_alias_by_collection_id
+                from stac_fastapi.sfeos_helpers.database import index_alias_by_collection_id  # type: ignore[import-not-found]
                 alias = index_alias_by_collection_id(collection_id)
                 resp = await db.client.search(
                     index=alias, body=search_body, size=size, from_=from_,
@@ -590,7 +620,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
         idempotent — SFEOS ``create_collection_index`` is a no-op if it already exists.
         """
         global _templates_created
-        from stac_fastapi.elasticsearch.database_logic import (
+        from stac_fastapi.elasticsearch.database_logic import (  # type: ignore[import-not-found]
             create_index_templates,
             create_collection_index,
         )
@@ -607,7 +637,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
             # Create the per-collection items index (idempotent).
             db = self._get_db_logic()
             try:
-                from stac_fastapi.sfeos_helpers.database import index_alias_by_collection_id
+                from stac_fastapi.sfeos_helpers.database import index_alias_by_collection_id  # type: ignore[import-not-found]
                 index_name = index_alias_by_collection_id(collection_id)
                 if not await db.client.indices.exists(index=index_name):
                     await db.client.indices.create(
@@ -686,7 +716,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
         except Exception:
             # Already exists — update
             await db.find_collection(collection_id)
-            from stac_fastapi.sfeos_helpers.database import (
+            from stac_fastapi.sfeos_helpers.database import (  # type: ignore[import-not-found]
                 update_catalog_in_index_shared,
             )
             await update_catalog_in_index_shared(
@@ -743,7 +773,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
     # ------------------------------------------------------------------
 
     async def _on_catalog_upsert(
-        self, catalog_id: str = None, payload=None, **kwargs,
+        self, catalog_id: Optional[str] = None, payload=None, **kwargs,
     ):
         if not catalog_id:
             return
@@ -757,7 +787,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
         except Exception as e:
             logger.error("ES driver: catalog upsert failed for '%s': %s", catalog_id, e)
 
-    async def _on_catalog_delete(self, catalog_id: str = None, **kwargs):
+    async def _on_catalog_delete(self, catalog_id: Optional[str] = None, **kwargs):
         if not catalog_id:
             return
         if not await self._is_secondary_for(self.driver_id, catalog_id, None):
@@ -768,7 +798,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
             logger.error("ES driver: catalog delete failed for '%s': %s", catalog_id, e)
 
     async def _on_collection_upsert(
-        self, catalog_id: str = None, collection_id: str = None,
+        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None,
         payload=None, **kwargs,
     ):
         if not catalog_id or not collection_id:
@@ -787,7 +817,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
             )
 
     async def _on_collection_delete(
-        self, catalog_id: str = None, collection_id: str = None, **kwargs,
+        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None, **kwargs,
     ):
         if not catalog_id or not collection_id:
             return
@@ -802,8 +832,8 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
             )
 
     async def _on_item_upsert(
-        self, catalog_id: str = None, collection_id: str = None,
-        item_id: str = None, payload=None, **kwargs,
+        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None,
+        item_id: Optional[str] = None, payload=None, **kwargs,
     ):
         if not catalog_id or not collection_id or not item_id:
             return
@@ -830,7 +860,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
             )
 
     async def _on_item_bulk_upsert(
-        self, catalog_id: str = None, collection_id: str = None,
+        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None,
         payload=None, **kwargs,
     ):
         if not catalog_id or not collection_id:
@@ -863,11 +893,12 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
             )
 
     async def _on_item_delete(
-        self, catalog_id: str = None, collection_id: str = None,
-        item_id: str = None, payload=None, **kwargs,
+        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None,
+        item_id: Optional[str] = None, payload=None, **kwargs,
     ):
         if not item_id:
-            item_id = (payload if isinstance(payload, dict) else {}).get("geoid")
+            _val = (payload if isinstance(payload, dict) else {}).get("geoid")
+            item_id = str(_val) if _val is not None else None
         if not catalog_id or not collection_id or not item_id:
             return
         if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
@@ -891,13 +922,15 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
     ) -> Optional[dict]:
         try:
             from dynastore.modules.catalog.item_service import ItemService
+            from typing import cast as _cast4
             from dynastore.models.protocols import DbProtocol
+            from dynastore.modules.db_config.query_executor import DbResource
             from dynastore.tools.discovery import get_protocol
 
             db = get_protocol(DbProtocol)
             item_svc = get_protocol(ItemService)
             if not item_svc:
-                item_svc = ItemService(engine=db)
+                item_svc = ItemService(engine=_cast4(Optional[DbResource], db))
 
             feature = await item_svc.get_item(catalog_id, collection_id, item_id)
             if feature is None:
@@ -942,7 +975,7 @@ class ElasticsearchStorageDriver(_ElasticsearchBase, ModuleProtocol):
             catalogs = get_protocol(CatalogsProtocol)
             if not catalogs:
                 return None
-            model = await catalogs.get_collection_model(catalog_id, collection_id)
+            model = await catalogs.get_collection_model(catalog_id, collection_id)  # type: ignore[attr-defined]
             if model is None:
                 return None
             doc = model.model_dump(by_alias=True, exclude_none=True) if hasattr(model, "model_dump") else {}
@@ -1236,8 +1269,8 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
     # ------------------------------------------------------------------
 
     async def _on_item_upsert(
-        self, catalog_id: str = None, collection_id: str = None,
-        item_id: str = None, payload=None, **kwargs,
+        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None,
+        item_id: Optional[str] = None, payload=None, **kwargs,
     ):
         if not catalog_id or not collection_id or not item_id:
             return
@@ -1275,7 +1308,7 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
             )
 
     async def _on_item_bulk_upsert(
-        self, catalog_id: str = None, collection_id: str = None,
+        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None,
         payload=None, **kwargs,
     ):
         if not catalog_id or not collection_id:
@@ -1325,11 +1358,12 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
             )
 
     async def _on_item_delete(
-        self, catalog_id: str = None, collection_id: str = None,
-        item_id: str = None, payload=None, **kwargs,
+        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None,
+        item_id: Optional[str] = None, payload=None, **kwargs,
     ):
         if not item_id:
-            item_id = (payload if isinstance(payload, dict) else {}).get("geoid")
+            _val = (payload if isinstance(payload, dict) else {}).get("geoid")
+            item_id = str(_val) if _val is not None else None
         if not catalog_id or not item_id:
             return
         if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
@@ -1430,7 +1464,7 @@ class ElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
                         routing = await configs.get_config(
                             COLLECTION_PLUGIN_CONFIG_ID, catalog_id=catalog_id,
                         )
-                        if self.driver_id in routing.secondary_driver_ids:
+                        if self.driver_id in routing.secondary_driver_ids:  # type: ignore[attr-defined]
                             await self._apply_deny_policy(catalog_id)
                             logger.info(
                                 "ObfuscatedDriver: restored DENY for '%s'.",
@@ -1713,8 +1747,8 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
     # ------------------------------------------------------------------
 
     async def _on_asset_upsert(
-        self, catalog_id: str = None, collection_id: str = None,
-        asset_id: str = None, payload=None, **kwargs,
+        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None,
+        asset_id: Optional[str] = None, payload=None, **kwargs,
     ):
         if not catalog_id or not asset_id:
             return
@@ -1734,11 +1768,12 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
             )
 
     async def _on_asset_delete(
-        self, catalog_id: str = None, collection_id: str = None,
-        asset_id: str = None, payload=None, **kwargs,
+        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None,
+        asset_id: Optional[str] = None, payload=None, **kwargs,
     ):
         if not asset_id:
-            asset_id = (payload if isinstance(payload, dict) else {}).get("asset_id")
+            _val = (payload if isinstance(payload, dict) else {}).get("asset_id")
+            asset_id = str(_val) if _val is not None else None
         if not catalog_id or not asset_id:
             return
         if not await self._is_secondary_for(self.driver_id, catalog_id, collection_id):
@@ -1791,7 +1826,7 @@ class ElasticsearchAssetsDriver(_ElasticsearchBase, ModuleProtocol):
             await db.create_collection(doc, refresh=False)
         except Exception:
             await db.find_collection(collection_id)
-            from stac_fastapi.sfeos_helpers.database import update_catalog_in_index_shared
+            from stac_fastapi.sfeos_helpers.database import update_catalog_in_index_shared  # type: ignore[import-not-found]
             await update_catalog_in_index_shared(db.client, collection_id, doc)
 
     # ------------------------------------------------------------------

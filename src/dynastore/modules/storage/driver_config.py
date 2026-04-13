@@ -169,7 +169,7 @@ class CollectionWritePolicy(PluginConfig):
     _plugin_id: ClassVar[Optional[str]] = "collection:write_policy"
 
     on_conflict: WriteConflictPolicy = Field(
-        WriteConflictPolicy.UPDATE,
+        default=WriteConflictPolicy.UPDATE,
         description=(
             "Item-level conflict policy applied per entity. "
             "UPDATE overwrites in place; NEW_VERSION archives old and inserts "
@@ -185,7 +185,7 @@ class CollectionWritePolicy(PluginConfig):
         ),
     )
     track_asset_id: bool = Field(
-        True,
+        default=True,
         description="Store asset_id from write context in the entity document.",
     )
     external_id_field: Optional[str] = Field(
@@ -199,15 +199,15 @@ class CollectionWritePolicy(PluginConfig):
         ),
     )
     require_external_id: bool = Field(
-        False,
+        default=False,
         description="Refuse entity if external_id cannot be extracted.",
     )
     enable_validity: bool = Field(
-        False,
+        default=False,
         description="Track valid_from / valid_to temporal range per entity.",
     )
     validity_field: str = Field(
-        "valid_from",
+        default="valid_from",
         description="Field to extract validity start from entity.",
     )
 
@@ -290,7 +290,7 @@ class PostgresCollectionDriverConfig(CollectionDriverConfig):
         description="Composite partition config for PG tables.",
     )
     collection_type: str = Field(
-        "VECTOR",
+        default="VECTOR",
         description="Collection type: VECTOR or RASTER.",
     )
 
@@ -434,7 +434,7 @@ class ElasticsearchCollectionDriverConfig(CollectionDriverConfig):
         default=frozenset({DriverCapability.ASYNC}),
     )
     index_prefix: str = Field(
-        "items_",
+        default="items_",
         description=(
             "Item index name prefix.  Default ``items_`` matches SFEOS convention "
             "(env: STAC_ITEMS_INDEX_PREFIX), producing per-collection indexes "

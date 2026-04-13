@@ -65,6 +65,8 @@ class CollectionService:
         self, catalog_id: str, db_resource: Optional[DbResource] = None
     ) -> Optional[str]:
         catalogs = get_protocol(CatalogsProtocol)
+        if catalogs is None:
+            return None
         return await catalogs.resolve_physical_schema(
             catalog_id, db_resource=db_resource
         )
@@ -276,6 +278,9 @@ class CollectionService:
 
         if db_resource:
             return await _execute(db_resource)
+        assert self.engine is not None, "engine required"
+        from sqlalchemy.ext.asyncio import AsyncEngine as _AsyncEngine
+        assert isinstance(self.engine, _AsyncEngine), "engine must be AsyncEngine for get_collection_column_names"
         async with self.engine.connect() as conn:
             return await _execute(conn)
 
@@ -323,6 +328,7 @@ class CollectionService:
         async with managed_transaction(db_resource or self.engine) as conn:
             # Check catalog exists
             catalogs = get_protocol(CatalogsProtocol)
+            assert catalogs is not None, "CatalogsProtocol not registered"
             if not await catalogs.get_catalog_model(catalog_id, db_resource=conn):
                 raise ValueError(f"Catalog '{catalog_id}' does not exist.")
 
@@ -356,14 +362,14 @@ class CollectionService:
                     }
             else:
                 if hasattr(collection_definition, "layer_config"):
-                    layer_config_override = collection_definition.layer_config
+                    layer_config_override = getattr(collection_definition, "layer_config")
 
                 # Check for sidecars in Pydantic model (extra fields)
                 if not layer_config_override and hasattr(
                     collection_definition, "sidecars"
                 ):
                     # We wrap it in a dict to be compatible with CollectionPluginConfig input
-                    layer_config_override = {"sidecars": collection_definition.sidecars}
+                    layer_config_override = {"sidecars": getattr(collection_definition, "sidecars")}
 
             # Layer config override from input
             if layer_config_override and isinstance(layer_config_override, dict):
@@ -395,16 +401,18 @@ class CollectionService:
                 injection_context
             )
             if injected_configs:
+                from typing import cast as _cast
+                from dynastore.modules.storage.driver_config import (
+                    PostgresCollectionDriverConfig,
+                )
                 if layer_config_override is None:
-                    from dynastore.modules.storage.driver_config import (
-                        PostgresCollectionDriverConfig,
-                    )
                     if isinstance(collection_config, PostgresCollectionDriverConfig):
                         layer_config_override = collection_config.model_copy()
                     else:
                         layer_config_override = PostgresCollectionDriverConfig()
 
-                current_sidecars = layer_config_override.sidecars or []
+                pg_override = _cast(PostgresCollectionDriverConfig, layer_config_override)
+                current_sidecars: List[Any] = list(pg_override.sidecars or [])
                 current_types = {s.sidecar_type for s in current_sidecars}
 
                 modified = False
@@ -419,7 +427,8 @@ class CollectionService:
                         modified = True
 
                 if modified:
-                    layer_config_override.sidecars = current_sidecars
+                    pg_override = pg_override.model_copy(update={"sidecars": current_sidecars})
+                    layer_config_override = pg_override
                     logger.info(
                         f"Registry: Injected sidecars for {catalog_id}:{collection_model.id}: {list(current_types)}"
                     )
@@ -458,14 +467,17 @@ class CollectionService:
             #    (check_immutability=False), which is allowed because WriteOnce starts
             #    at None here and is updated to a real value there.
             if layer_config_override:
-                configs = get_protocol(ConfigsProtocol)
-                await configs.set_config(
-                    layer_config_override._plugin_id,
-                    layer_config_override,
-                    catalog_id=catalog_id,
-                    collection_id=collection_model.id,
-                    db_resource=conn,
-                )
+                from dynastore.modules.db_config.platform_config_service import PluginConfig as _PluginConfig
+                if isinstance(layer_config_override, _PluginConfig) and layer_config_override._plugin_id is not None:
+                    configs = get_protocol(ConfigsProtocol)
+                    assert configs is not None, "ConfigsProtocol not registered"
+                    await configs.set_config(
+                        layer_config_override._plugin_id,
+                        layer_config_override,
+                        catalog_id=catalog_id,
+                        collection_id=collection_model.id,
+                        db_resource=conn,
+                    )
 
             # 6. Call write driver's ensure_storage() — creates hub + sidecar tables
             #    and pins physical_table in driver config (check_immutability=False).
@@ -488,14 +500,17 @@ class CollectionService:
             # 6b. Pin the resolved routing config at collection level so future
             #     platform default changes don't silently re-route existing collections.
             try:
+                from typing import cast as _cast2
                 from dynastore.modules.storage.routing_config import ROUTING_PLUGIN_CONFIG_ID, RoutingPluginConfig
                 configs = get_protocol(ConfigsProtocol)
-                resolved_routing: RoutingPluginConfig = await configs.get_config(
+                if configs is None:
+                    raise ValueError("ConfigsProtocol not registered")
+                resolved_routing = _cast2(Optional[RoutingPluginConfig], await configs.get_config(
                     ROUTING_PLUGIN_CONFIG_ID,
                     catalog_id=catalog_id,
                     collection_id=collection_model.id,
                     db_resource=conn,
-                )
+                ))
                 if resolved_routing:
                     await configs.set_config(
                         ROUTING_PLUGIN_CONFIG_ID,
@@ -552,6 +567,7 @@ class CollectionService:
                     else write_policy_input
                 )
                 configs = get_protocol(ConfigsProtocol)
+                assert configs is not None, "ConfigsProtocol not registered"
                 await configs.set_config(
                     WRITE_POLICY_PLUGIN_ID,
                     policy,
@@ -577,6 +593,7 @@ class CollectionService:
                     else feature_type_input
                 )
                 configs = get_protocol(ConfigsProtocol)
+                assert configs is not None, "ConfigsProtocol not registered"
                 await configs.set_config(
                     FEATURE_TYPE_PLUGIN_ID,
                     ft_def,
@@ -603,7 +620,9 @@ class CollectionService:
         # Trigger async lifecycle
         config_snapshot = {}
         try:
-            config_snapshot.update(await configs.list_catalog_configs(catalog_id))
+            _cfg = get_protocol(ConfigsProtocol)
+            if _cfg is not None:
+                config_snapshot.update(await _cfg.list_catalog_configs(catalog_id))
         except Exception:
             pass
 
@@ -622,9 +641,11 @@ class CollectionService:
             "AFTER_COLLECTION_CREATION", identifier=collection_model.id
         )
 
-        return await self.get_collection_model(
+        result = await self.get_collection_model(
             catalog_id, collection_model.id, db_resource=db_resource
         )
+        assert result is not None, f"Collection '{collection_model.id}' not found after creation"
+        return result
 
     async def list_collections(
         self,
@@ -838,18 +859,19 @@ class CollectionService:
 
                 try:
                     configs = get_protocol(ConfigsProtocol)
-                    config_snapshot = {
+                    config_snapshot: Dict[str, Any] = {
                         "catalog_id": catalog_id,
                         "collection_id": collection_id,
                     }
-                    coll_config = await configs.get_config(
-                        COLLECTION_PLUGIN_CONFIG_ID,
-                        catalog_id,
-                        collection_id,
-                        db_resource=conn,
-                    )
-                    if coll_config:
-                        config_snapshot["collection_config"] = coll_config.model_dump()
+                    if configs is not None:
+                        coll_config = await configs.get_config(
+                            COLLECTION_PLUGIN_CONFIG_ID,
+                            catalog_id,
+                            collection_id,
+                            db_resource=conn,
+                        )
+                        if coll_config:
+                            config_snapshot["collection_config"] = coll_config.model_dump()
                 except Exception as e:
                     logger.warning(
                         f"Failed to capture config snapshot for '{catalog_id}:{collection_id}: {e}"

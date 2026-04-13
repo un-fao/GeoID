@@ -220,7 +220,7 @@ class QueryRequest(BaseModel):
         exclude=True,
     )
     raw_where: Optional[str] = Field(
-        None,
+        default=None,
         description="[INTERNAL] Raw SQL WHERE expression. Must only be set by trusted server-side code.",
         json_schema_extra={"x-internal": True},
         exclude=True,
@@ -232,13 +232,13 @@ class QueryRequest(BaseModel):
         exclude=True,
     )
     cql_filter: Optional[str] = Field(
-        None, description="A raw CQL2 filter string to be parsed and validated."
+        default=None, description="A raw CQL2 filter string to be parsed and validated."
     )
     include_total_count: bool = Field(
-        False, description="If True, includes COUNT(*) OVER() as _total_count."
+        default=False, description="If True, includes COUNT(*) OVER() as _total_count."
     )
     item_ids: Optional[List[str]] = Field(
-        None,
+        default=None,
         description=(
             "Filter results to items whose feature-ID (geoid or external_id override) "
             "matches one of these values. Handled by the QueryOptimizer as "
@@ -262,14 +262,14 @@ class QueryResponse(BaseModel):
 
     items: Any = Field(..., description="The result iterator (AsyncIterator) or list")
     total_count: Optional[int] = Field(
-        None, description="Total count of items matching the filter (if requested)"
+        default=None, description="Total count of items matching the filter (if requested)"
     )
 
     # Contextual Configs (to avoid re-fetching)
     catalog_id: str
     collection_id: str
     collection_config: Optional[Any] = Field(
-        None, description="The resolved PostgresCollectionDriverConfig"
+        default=None, description="The resolved PostgresCollectionDriverConfig"
     )
 
     # Execution Metadata

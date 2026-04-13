@@ -19,9 +19,9 @@
 """titiler Templating Extensions."""
 import time
 import json
-from typing import Optional, List, cast
+from typing import Optional, List, Tuple, cast
 from attrs import define
-from jinja2 import Template, Environment
+from jinja2 import Template, Environment  # type: ignore[import-not-found]
 from pydantic import BaseModel, HttpUrl, types
 from itertools import zip_longest
 from fastapi import Query, HTTPException, Header
@@ -35,11 +35,14 @@ from pydantic import BaseModel, Field
 from fastapi import FastAPI, HTTPException, Query, status, Request, Body, Depends, APIRouter
 from typing import Optional, Dict, Any, AsyncGenerator, Union
 import xml.sax
+import xml.sax.handler
 from xml.sax.handler import ContentHandler
 import httpx
 from pydantic import AnyUrl, confloat, HttpUrl
 from contextlib import asynccontextmanager
-from aiohttp.typedefs import LooseCookies, LooseHeaders
+# LooseHeaders / LooseCookies from aiohttp are incompatible with httpx; define as plain dict aliases
+LooseHeaders = Dict[str, Any]
+LooseCookies = Dict[str, Any]
 
 import xml.etree.ElementTree as ET
 import dynastore.extensions.httpx.httpx_service as httpx_service
@@ -48,11 +51,11 @@ from dynastore.tools.cache import cached
 from dynastore.extensions import ExtensionProtocol, get_extension_instance
 
 try:
-    from lxml import etree as lxml_etree
+    from lxml import etree as lxml_etree  # type: ignore[import-not-found]
 except ImportError:
     lxml_etree = None
 try:
-    import ijson
+    import ijson  # type: ignore[import-not-found]
 except ImportError:
     ijson = None
 try:
@@ -69,7 +72,7 @@ logger = logging.getLogger(__name__)
 jinja_env = Environment()
 # {"enable_async":True}
 
-def _extract_headers(h_list=list|dict, headers: Header = dict)->dict:
+def _extract_headers(h_list: Any = None, headers: Any = None) -> dict:  # type: ignore[assignment]
     _headers = {}
     if isinstance(h_list, list):
         for h in h_list:
@@ -82,13 +85,13 @@ def _extract_headers(h_list=list|dict, headers: Header = dict)->dict:
         for k, v in h_list.items():
             k = k.lower()
             if k not in headers:
-                raise Exception(f"Headers {h} not found in headers, unable to send request for h_list: {h_list}")
+                raise Exception(f"Headers {k} not found in headers, unable to send request for h_list: {h_list}")
             _headers[v] = headers.get(k)
 
     return _headers
 
 
-async def _prepare_template_and_model(client:httpx.AsyncClient, model:dict, m_urls:dict, m_urls_h:dict, template:str, t_url:str=None, t_url_h=None, mergeModel:bool=False) -> dict:
+async def _prepare_template_and_model(client: httpx.AsyncClient, model: Optional[dict], m_urls: Optional[dict], m_urls_h: Optional[dict], template: Optional[str], t_url: Optional[str] = None, t_url_h: Any = None, mergeModel: Optional[bool] = False) -> Tuple[Optional[str], dict]:
     
     if m_urls:
         # parallel fetch
@@ -121,7 +124,7 @@ async def _prepare_template_and_model(client:httpx.AsyncClient, model:dict, m_ur
         if t_url:
             assert template == None
             # single fetch
-            template = await download_file(t_url, False, t_url_h)
+            template = await download_file(client, t_url, False, t_url_h)
         else:
             assert template != None
 
@@ -131,7 +134,9 @@ async def _prepare_template_and_model(client:httpx.AsyncClient, model:dict, m_ur
             interpolation_models.update(model)
         if m_urls:
             for key in m_urls.keys():
-                interpolation_models.update(m_urls.get(key))
+                val = m_urls.get(key)
+                if val is not None:
+                    interpolation_models.update(val)
     else:
         interpolation_models = {
             "m" : model or {},
@@ -149,13 +154,13 @@ async def _interpolate_streaming(template, model: dict, escapeTemplate: bool = F
     # Prepare the Jinja2 template
     # Assuming templates are loaded in-memory
     # TODO load from params other options
-    template = jinja_env.from_string(template)
+    jinja_template = jinja_env.from_string(template)
     # Apply auto-escaping if necessary
 
-    template.autoescape = autoEscape
+    jinja_template.autoescape = autoEscape
     # jinja_template = Template(source=template, autoescape=autoEscape)
     try:
-        for chunk in template.stream(model):
+        for chunk in jinja_template.stream(model):
             yield chunk.encode("utf-8")
     except Exception as e:
         yield f"Interpolation error: {str(e)}".encode("utf-8")
@@ -169,13 +174,13 @@ def _interpolate(template: str, model: dict, escapeTemplate: bool = False, autoE
     # Prepare the Jinja2 template
     # Assuming templates are loaded in-memory
     # TODO load from params other options
-    template = jinja_env.from_string(template)
+    jinja_template = jinja_env.from_string(template)
 
     # Apply auto-escaping if necessary
-    template.autoescape = autoEscape
+    jinja_template.autoescape = autoEscape
     # jinja_template = Template(source=template, autoescape=autoEscape)
-    
-    return template.render(model)
+
+    return jinja_template.render(model)
         
 async def _resolve(client: httpx.AsyncClient, template_str: str, resolve_urls: list, resolve_urls_h: list[dict] = []) -> str:
     
@@ -201,11 +206,11 @@ async def _resolve(client: httpx.AsyncClient, template_str: str, resolve_urls: l
         else:
             raise Exception(f"Parameter {key} is not in the document")
 
-    interpolated_template.update(dict(zip(resolve_urls, await download_all(client, urls, as_json, resolve_urls_h))))
+    interpolated_template.update(dict(zip(resolve_urls, await download_all(client, urls, as_json, cast(Optional[List[LooseHeaders]], resolve_urls_h)))))
     try:
-        return json.dumps(interpolated_template).encode("utf-8")
+        return json.dumps(interpolated_template)
     except Exception as e:
-        raise f"Error: {e}".encode("utf-8")
+        raise Exception(f"Error serialising resolved template: {e}") from e
 
 async def _fetch(client: httpx.AsyncClient, url: str, as_json: bool = False, headers: Optional[LooseHeaders] = None, cookies: Optional[LooseCookies] = None, timeout: int = 3, sleep_time: float = 0.01, max_retry_count: int = 1):
     """
@@ -273,18 +278,16 @@ async def download_all(client: httpx.AsyncClient, urls: List[str], as_json: List
     
     assert len(as_json) == len(urls), "The length of as_json must match the length of urls."
 
-    if h_list is None:
-        h_list = [{}] * len(urls)
-    if c_list is None:
-        c_list = [{}] * len(urls)
+    _h_list: List[LooseHeaders] = list(h_list) if h_list is not None else [{}] * len(urls)
+    _c_list: List[LooseCookies] = list(c_list) if c_list is not None else [{}] * len(urls)
 
     # Ensure header and cookie lists are at least as long as the URL list
-    h_list = h_list[:len(urls)] + [{}] * (len(urls) - len(h_list))
-    c_list = c_list[:len(urls)] + [{}] * (len(urls) - len(c_list))
+    _h_list = _h_list[:len(urls)] + [{}] * (len(urls) - len(_h_list))
+    _c_list = _c_list[:len(urls)] + [{}] * (len(urls) - len(_c_list))
     
     tasks = [
         _fetch(client=client, url=url, as_json=json_flag, headers=headers, cookies=cookies)
-        for url, json_flag, headers, cookies in zip(urls, as_json, h_list, c_list)
+        for url, json_flag, headers, cookies in zip(urls, as_json, _h_list, _c_list)
     ]
     return await asyncio.gather(*tasks)
 
@@ -349,7 +352,7 @@ class StreamingXMLHandler(xml.sax.ContentHandler):
                 current['#text'] = content.strip()
 class StreamParser:
     def __init__(self):
-        self.parser = xml.sax.make_parser()
+        self.parser: Any = xml.sax.make_parser()
         self.handler = StreamingXMLHandler()
         self.parser.setContentHandler(self.handler)
         self.parser.setFeature(xml.sax.handler.feature_external_ges, False)
@@ -543,7 +546,7 @@ def _check_headers(which_headers, requests_object, headers, param_name):
                 if which_headers_key in requests_keys:
                     which_headers[which_headers_key]=_extract_headers(which_headers[which_headers_key], headers=headers)
                 else:
-                    raise HTTPException(status_code=500, detail=f"{param_name} keys may match it's corresponding object keys. Exception: {str(e)}")
+                    raise HTTPException(status_code=500, detail=f"{param_name} keys must match its corresponding object keys (key not found: {which_headers_key})")
         except Exception as e:
             raise HTTPException(
                 status_code=500, detail=f"Parameter '{param_name}' should be a valid object: {str(which_headers)}\nException: {str(e)}")
@@ -561,8 +564,8 @@ class TemplatingExtension(ExtensionProtocol):
             logger.warning("Template extension: 'httpx' extension not found. URL fetching capabilities will be disabled.")
 
     @router.get("/resolve_url", response_description="Resolve the url in a json object")
-    async def resolve_url(
-        request: Request,
+    async def resolve_url(  # type: ignore[misc]
+        request: Request,  # type: ignore
         url: str = Query(..., description="The json url to download"),
         key_list: list = Query(..., description="The list of keys to resolve"),
     ):
@@ -570,8 +573,10 @@ class TemplatingExtension(ExtensionProtocol):
         client: httpx.AsyncClient = await get_httpx_client(request)
 
         file_json = await download_file(client, url, as_json=True)
+        if not isinstance(file_json, dict):
+            raise HTTPException(status_code=500, detail="Downloaded file is not a JSON object")
         for key in key_list:
-            if key in file_json.keys():
+            if key in file_json:
                 file_json[key] = await download_file(client, file_json[key], as_json=True)
             else:
                 logger.warning(f"Key {key} does not exist")
@@ -579,8 +584,8 @@ class TemplatingExtension(ExtensionProtocol):
         return file_json
 
     @router.get("/interpolate", response_description="Render template with urls to files and a model")
-    async def interpolate_template_get(
-        request: Request,
+    async def interpolate_template_get(  # type: ignore[misc]
+        request: Request,  # type: ignore
         t: Optional[TemplateParam] = Query(default=None, description="The Jinja2 template"),
         t_url: Optional[str] = Query(default=None, description="URL of the Jinja2 template file"),
         t_url_h: Optional[FlexibleDictParam] = Query(default=None,description="The model (dict as JSON or Python-style string)"),
@@ -656,7 +661,7 @@ class TemplatingExtension(ExtensionProtocol):
                     raise HTTPException(
                         status_code=500, detail="Parameter 'm_urls' should be a valid object")
             
-            for url in m_urls.values():
+            for url in (m_urls or {}).values():
                 try:
                     HttpUrl(url)
                 except Exception:
@@ -669,6 +674,9 @@ class TemplatingExtension(ExtensionProtocol):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Exception: {str(e)}")
         
+        assert template is not None, "Template must be set at this point"
+        _et: bool = et or False
+        _ae: bool = ae or False
         try:
             if ru:
                 assert not stream, "Stream can't be true when resolve url is provided, it assumes an in memory model"
@@ -677,16 +685,16 @@ class TemplatingExtension(ExtensionProtocol):
                 return Response(
                         await _resolve(client,
                             template_str=_interpolate(
-                                template=template, model=model, escapeTemplate=et, autoEscape=ae),
-                            resolve_urls=ru, resolve_urls_h=ru_h),
+                                template=template, model=model, escapeTemplate=_et, autoEscape=_ae),
+                            resolve_urls=ru, resolve_urls_h=cast(List[dict], ru_h) if ru_h else []),
                         media_type=r_mt)
             else:
                 if stream:
-                    return StreamingResponse(await _interpolate_streaming(template=template, model=model, escapeTemplate=et, autoEscape=ae), media_type=r_mt)
+                    return StreamingResponse(_interpolate_streaming(template=template, model=model, escapeTemplate=_et, autoEscape=_ae), media_type=r_mt)
                 else:
                     if not r_mt:
                         r_mt = "application/json"
-                    return Response(_interpolate(template=template, model=model, escapeTemplate=et, autoEscape=ae), media_type=r_mt)
+                    return Response(_interpolate(template=template, model=model, escapeTemplate=_et, autoEscape=_ae), media_type=r_mt)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Exception: {str(e)}")
     class InterpolationRequest(BaseModel):
@@ -705,10 +713,10 @@ class TemplatingExtension(ExtensionProtocol):
         stream: Optional[bool]
         
     @router.post("/interpolate", response_description="Render template with urls to files and a model")
-    async def interpolate_template_post(request: InterpolationRequest):
+    async def interpolate_template_post(request: InterpolationRequest):  # type: ignore[misc]
         t = request.t
         t_url = request.t_url
-        t_url = request.t_url_h
+        t_url_h = request.t_url_h
         m_urls = request.m_urls
         m_urls_h = request.m_urls_h
         m = request.m
@@ -720,11 +728,11 @@ class TemplatingExtension(ExtensionProtocol):
         mm = request.mm
         stream = request.stream
 
-        return interpolate_template_get(request=request, t=t, t_url=t_url, m=m, m_urls=m_urls, m_urls_h=m_urls_h, ru=ru, ru_h=ru_h, ae=ae, et=et, mm=mm, r_mt=r_mt, stream=stream)
+        return await interpolate_template_get(request=request, t=t, t_url=t_url, t_url_h=t_url_h, m=m, m_urls=m_urls, m_urls_h=m_urls_h, ru=ru, ru_h=ru_h, ae=ae, et=et, mm=mm, r_mt=r_mt, stream=stream)  # type: ignore[name-defined]
     
     @router.post("/xml-to-json/stream")
-    async def stream_parse_post(
-        request: Request,
+    async def stream_parse_post(  # type: ignore[misc]
+        request: Request,  # type: ignore
         parser: str = Query("sax", enum=["sax"]),
         attr_prefix: str = Query("@"),
         exclude_attributes: bool = Query(False)
@@ -741,12 +749,12 @@ class TemplatingExtension(ExtensionProtocol):
                 total_size += len(chunk)
                 yield chunk
                 
-        async with stream_xml_source(post_stream()) as handler:
-            return handler.result
+        async with stream_xml_source(post_stream()) as result:
+            return result
 
     @router.get("/xml-to-json/stream")
-    async def stream_parse_get(
-        xml_url: AnyUrl,
+    async def stream_parse_get(  # type: ignore[misc]
+        xml_url: AnyUrl,  # type: ignore
         request: Request,
         parser: str = Query("sax", enum=["sax"]),
         attr_prefix: str = Query("@"),
@@ -769,11 +777,11 @@ class TemplatingExtension(ExtensionProtocol):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
 
     
-    @router.post("/xml-to-json/", 
+    @router.post("/xml-to-json/",
             summary="Convert XML to JSON with security hardening",
             response_description="Converted JSON structure")
-    async def post_xml_to_json(
-        xml_data: str = Body(..., media_type="application/xml", embed=True,
+    async def post_xml_to_json(  # type: ignore[misc]
+        xml_data: str = Body(..., media_type="application/xml", embed=True,  # type: ignore
                             max_length=MAX_XML_SIZE,
                             example="<root><item id='1'>Content</item></root>"),
         parser: str = Query("elementtree", 
@@ -809,8 +817,8 @@ class TemplatingExtension(ExtensionProtocol):
     @router.get("/xml-to-json/",
             summary="Convert XML from URL to JSON",
             response_description="Converted JSON structure")
-    async def get_xml_to_json(
-        request: Request,
+    async def get_xml_to_json(  # type: ignore[misc]
+        request: Request,  # type: ignore
         xml_url: AnyUrl = Query(..., description="URL to fetch XML from"),
         parser: str = Query("elementtree", 
                         description="Parser to use: elementtree, lxml, or xmltodict",

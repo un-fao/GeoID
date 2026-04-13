@@ -33,7 +33,14 @@ Performance: resolution is cached (300 s TTL) keyed on
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Dict, Generic, List, Optional, Protocol, TypeVar, Union, cast, runtime_checkable
+
+if TYPE_CHECKING:
+    from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
+    from dynastore.models.protocols.asset_driver import AssetDriverProtocol
+    AnyDriver = Union["CollectionStorageDriverProtocol", "AssetDriverProtocol"]
+
+_D = TypeVar("_D")
 
 from dynastore.modules.storage.routing_config import (
     ROUTING_ASSETS_PLUGIN_CONFIG_ID,
@@ -53,10 +60,10 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class ResolvedDriver:
+class ResolvedDriver(Generic[_D]):
     """A driver resolved for a specific operation, with its failure policy and write mode."""
 
-    driver: object  # CollectionStorageDriverProtocol or AssetDriverProtocol
+    driver: _D
     on_failure: FailurePolicy = FailurePolicy.FATAL
     write_mode: WriteMode = WriteMode.SYNC
 
@@ -70,7 +77,7 @@ class ResolvedDriver:
 # ---------------------------------------------------------------------------
 
 
-def _build_collection_driver_index() -> Dict[str, object]:
+def _build_collection_driver_index() -> "Dict[str, CollectionStorageDriverProtocol]":
     """Build driver_id → driver instance lookup for collection drivers."""
     from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
     from dynastore.tools.discovery import get_protocols
@@ -78,7 +85,7 @@ def _build_collection_driver_index() -> Dict[str, object]:
     return {d.driver_id: d for d in get_protocols(CollectionStorageDriverProtocol)}
 
 
-def _build_asset_driver_index() -> Dict[str, object]:
+def _build_asset_driver_index() -> "Dict[str, AssetDriverProtocol]":
     """Build driver_id → driver instance lookup for asset drivers."""
     from dynastore.models.protocols.asset_driver import AssetDriverProtocol
     from dynastore.tools.discovery import get_protocols
@@ -107,13 +114,17 @@ async def _resolve_driver_ids_cached(
     if not configs:
         raise RuntimeError("ConfigsProtocol not available — cannot resolve storage routing")
 
-    routing_config = await configs.get_config(
+    from dynastore.modules.storage.routing_config import RoutingPluginConfig as _RPC
+    _raw_config = await configs.get_config(
         routing_plugin_id,
         catalog_id=catalog_id,
         collection_id=collection_id,
     )
+    routing_config = cast(_RPC, _raw_config)
 
-    entries = routing_config.operations.get(operation, [])
+    from dynastore.modules.storage.routing_config import OperationDriverEntry as _ODE
+    _ops = cast(Dict[str, List[_ODE]], routing_config.operations)
+    entries = _ops.get(operation, [])
 
     if hint:
         entries = [e for e in entries if hint in e.hints]
@@ -181,7 +192,7 @@ async def get_driver(
     collection_id: Optional[str] = None,
     *,
     hint: Optional[str] = None,
-):
+) -> "CollectionStorageDriverProtocol":
     """Single-driver resolution for collection READ/SEARCH.
 
     Returns the first matching ``CollectionStorageDriverProtocol`` or raises.
@@ -194,7 +205,8 @@ async def get_driver(
             f"No collection driver found for operation='{operation}', "
             f"hint='{hint}', catalog='{catalog_id}', collection='{collection_id}'"
         )
-    return resolved[0].driver
+    from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol as _CSDP
+    return cast(_CSDP, resolved[0].driver)
 
 
 async def get_write_drivers(
@@ -202,11 +214,13 @@ async def get_write_drivers(
     collection_id: Optional[str] = None,
     *,
     hint: Optional[str] = None,
-) -> List[ResolvedDriver]:
+) -> "List[ResolvedDriver[CollectionStorageDriverProtocol]]":
     """Multi-driver resolution for collection WRITE fan-out."""
-    return await resolve_drivers(
+    from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol as _CSDP
+    result = await resolve_drivers(
         Operation.WRITE, catalog_id, collection_id, hint=hint,
     )
+    return cast(List["ResolvedDriver[_CSDP]"], result)
 
 
 # ---------------------------------------------------------------------------
@@ -245,15 +259,17 @@ async def get_asset_write_drivers(
     collection_id: Optional[str] = None,
     *,
     hint: Optional[str] = None,
-) -> List[ResolvedDriver]:
+) -> "List[ResolvedDriver[AssetDriverProtocol]]":
     """Multi-driver resolution for asset WRITE fan-out."""
-    return await resolve_drivers(
+    from dynastore.models.protocols.asset_driver import AssetDriverProtocol as _ADP
+    result = await resolve_drivers(
         Operation.WRITE,
         catalog_id,
         collection_id,
         hint=hint,
         routing_plugin_id=ROUTING_ASSETS_PLUGIN_CONFIG_ID,
     )
+    return cast(List["ResolvedDriver[_ADP]"], result)
 
 
 # ---------------------------------------------------------------------------
@@ -267,9 +283,7 @@ def invalidate_router_cache(
 ) -> None:
     """Invalidate cached resolution for collection routing."""
     try:
-        from dynastore.tools.cache import cache_clear
-
-        cache_clear(_resolve_driver_ids_cached)
+        getattr(_resolve_driver_ids_cached, "cache_clear")()
     except Exception:
         pass
 

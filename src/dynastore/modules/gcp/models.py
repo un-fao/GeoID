@@ -66,17 +66,17 @@ class PushSubscriptionConfig(BaseModel):
     """Defines the configuration for a Pub/Sub push subscription."""
     subscription_id: str = Field(..., description="The short, user-defined ID for the Pub/Sub subscription.")
     # --- Output fields managed by the system ---
-    subscription_path: Optional[str] = Field(None, description="The full resource path of the created Pub/Sub subscription. This is an output field managed by the system.")
+    subscription_path: Optional[str] = Field(default=None, description="The full resource path of the created Pub/Sub subscription. This is an output field managed by the system.")
     # --- User-configurable subscription settings ---
-    ack_deadline_seconds: int = Field(10, ge=10, le=600, description="The acknowledgment deadline for messages in seconds.")
-    message_retention_duration_days: int = Field(7, ge=1, le=7, description="How long to retain unacknowledged messages in days.")
-    retain_acked_messages: bool = Field(False, description="Whether to retain acknowledged messages.")
-    enable_message_ordering: bool = Field(False, description="If true, messages with the same ordering key are delivered in order.")
-    filter: Optional[str] = Field(None, description="A filter to apply to messages from the topic.")
-    enable_exactly_once_delivery: bool = Field(False, description="If true, enables exactly-once delivery.")
-    dead_letter_policy: Optional[DeadLetterPolicy] = Field(None, description="The dead-lettering configuration for this subscription.")
-    retry_policy: Optional[RetryPolicy] = Field(None, description="The exponential backoff retry policy for this subscription.")
-    expiration_policy: Optional[ExpirationPolicy] = Field(None, description="The time-to-live (TTL) or expiration policy for this subscription.")
+    ack_deadline_seconds: int = Field(default=10, ge=10, le=600, description="The acknowledgment deadline for messages in seconds.")
+    message_retention_duration_days: int = Field(default=7, ge=1, le=7, description="How long to retain unacknowledged messages in days.")
+    retain_acked_messages: bool = Field(default=False, description="Whether to retain acknowledged messages.")
+    enable_message_ordering: bool = Field(default=False, description="If true, messages with the same ordering key are delivered in order.")
+    filter: Optional[str] = Field(default=None, description="A filter to apply to messages from the topic.")
+    enable_exactly_once_delivery: bool = Field(default=False, description="If true, enables exactly-once delivery.")
+    dead_letter_policy: Optional[DeadLetterPolicy] = Field(default=None, description="The dead-lettering configuration for this subscription.")
+    retry_policy: Optional[RetryPolicy] = Field(default=None, description="The exponential backoff retry policy for this subscription.")
+    expiration_policy: Optional[ExpirationPolicy] = Field(default=None, description="The time-to-live (TTL) or expiration policy for this subscription.")
 
 
 class ExternalTopicSubscription(BaseModel):

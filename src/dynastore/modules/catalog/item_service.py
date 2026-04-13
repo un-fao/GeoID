@@ -20,7 +20,11 @@ import asyncio
 import logging
 import json
 from datetime import datetime, timezone
-from typing import List, Optional, Any, Dict, Union, Tuple, cast, AsyncIterator
+from typing import TYPE_CHECKING, List, Optional, Any, Dict, Union, Tuple, cast, AsyncIterator
+
+if TYPE_CHECKING:
+    from dynastore.modules.storage.router import ResolvedDriver
+    from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
 from sqlalchemy import text
 
 import inspect as _inspect
@@ -94,6 +98,8 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         self, catalog_id: str, db_resource: Optional[DbResource] = None
     ) -> Optional[str]:
         catalogs = get_protocol(CatalogsProtocol)
+        if catalogs is None:
+            return None
         return await catalogs.resolve_physical_schema(
             catalog_id, db_resource=db_resource
         )
@@ -120,7 +126,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             except Exception:
                 continue
             if driver and hasattr(driver, "resolve_physical_table"):
-                result = await driver.resolve_physical_table(
+                result = await getattr(driver, "resolve_physical_table")(
                     catalog_id, collection_id, db_resource=db_resource
                 )
                 if result:
@@ -195,7 +201,8 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         if not row:
             return Feature(type="Feature", geometry=None, properties={})
 
-        row_dict = dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
+        _mapping = getattr(row, "_mapping", None)
+        row_dict = dict(_mapping) if _mapping is not None else dict(row)
 
         # Hub contribution: initialise the feature with geoid as the default id.
         # Sidecars (e.g. Attributes) may override this later in the pipeline.
@@ -243,10 +250,12 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                         # inter-sidecar communication.
                         for k, v in data.items():
                             if k not in all_internal and k not in model_fields:
-                                feature.__pydantic_extra__[k] = v
+                                if feature.__pydantic_extra__ is not None:
+                                    feature.__pydantic_extra__[k] = v
                     else:
                         if sid not in model_fields:
-                            feature.__pydantic_extra__[sid] = data
+                            if feature.__pydantic_extra__ is not None:
+                                feature.__pydantic_extra__[sid] = data
         else:
             logger.warning(
                 "No sidecars configured for col_config; returning minimal "
@@ -287,9 +296,9 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             items_list = items
         elif isinstance(items, dict) and items.get("type") == "FeatureCollection":
             items_list = items.get("features", [])
-        elif hasattr(items, "features") and items.type == "FeatureCollection":
+        elif hasattr(items, "features") and getattr(items, "type", None) == "FeatureCollection":
             # Handle FeatureCollection Pydantic model
-            items_list = items.features
+            items_list = getattr(items, "features")
         else:
             # Handle single item passed as list or other iterable
             # Single item (Feature, STACItem, dict)
@@ -362,7 +371,9 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         # ── Branch B: PostgreSQL primary (existing path, untouched) ──────
         async with managed_transaction(db_resource or self.engine) as conn:
             # Fetch generic collection config (driver-agnostic)
-            collection_config = await get_protocol(ConfigsProtocol).get_config(
+            _configs = get_protocol(ConfigsProtocol)
+            assert _configs is not None, "ConfigsProtocol not registered"
+            collection_config = await _configs.get_config(
                 COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
             )
             max_bulk = getattr(collection_config, "max_bulk_features", 10000)
@@ -373,6 +384,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                     f"Split into smaller batches."
                 )
 
+            assert primary is not None, "primary driver required for PostgreSQL write path"
             col_config = await primary.driver.get_driver_config(
                 catalog_id, collection_id, db_resource=conn
             )
@@ -409,7 +421,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 # 1. Normalize Input to Dict
                 raw_item = {}
                 if hasattr(item_data, "model_dump"):
-                    raw_item = item_data.model_dump(by_alias=True, exclude_unset=True)
+                    raw_item = getattr(item_data, "model_dump")(by_alias=True, exclude_unset=True)
                 elif isinstance(item_data, dict):
                     raw_item = item_data
                 else:
@@ -720,7 +732,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             if not item:
                 return 0
 
-            attributes = item.get("attributes", {})
+            attributes = getattr(item, "attributes", None) or {}
             if isinstance(attributes, str):
                 attributes = json.loads(attributes)
 
@@ -786,14 +798,14 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                     from dynastore.modules.storage.routing_config import Operation as _Op
                     _drv = await _get_driver(_Op.WRITE, catalog_id, collection_id)
                     if hasattr(_drv, "set_physical_table"):
-                        await _drv.set_physical_table(
+                        await getattr(_drv, "set_physical_table")(
                             catalog_id, collection_id, phys_table, db_resource=conn
                         )
 
-                if force_create or not await shared_queries.table_exists_query.execute(
+                if catalogs is not None and (force_create or not await shared_queries.table_exists_query.execute(
                     conn, schema=phys_schema, table=phys_table
-                ):
-                    await catalogs.create_physical_collection(
+                )):
+                    await getattr(catalogs, "create_physical_collection")(
                         conn,
                         phys_schema,
                         catalog_id,

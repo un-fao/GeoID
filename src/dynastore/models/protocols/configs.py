@@ -20,10 +20,12 @@
 Configuration management protocol definitions.
 """
 
-from typing import Protocol, Optional, Any, List, Dict, runtime_checkable, TYPE_CHECKING
+from typing import Protocol, Optional, Any, List, Dict, Type, TypeVar, Union, overload, runtime_checkable, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from dynastore.modules.db_config.platform_config_service import PluginConfig
+
+_T_Config = TypeVar("_T_Config", bound="PluginConfig")
 
 
 @runtime_checkable
@@ -31,15 +33,43 @@ class ConfigsProtocol(Protocol):
     """
     Protocol for configuration management operations, enabling decoupled access
     to hierarchical configuration (platform/catalog/collection levels).
-    
+
     This protocol is used by extensions and services to retrieve and manage
     configurations in a loosely-coupled manner, supporting the protocol-based
     discovery pattern.
+
+    Two calling forms are supported:
+
+    * ``get_config(SomeConfigClass, ...)`` — class-as-identity. Return type
+      narrows to ``SomeConfigClass`` and no ``cast()`` is needed at the call
+      site. This is the preferred form.
+    * ``get_config("plugin_id_str", ...)`` — legacy string key. Still supported
+      during migration; return type is the base ``PluginConfig``.
     """
-    
+
+    @overload
+    async def get_config(
+        self,
+        plugin_id: Type[_T_Config],
+        catalog_id: Optional[str] = ...,
+        collection_id: Optional[str] = ...,
+        db_resource: Optional[Any] = ...,
+        config_snapshot: Optional[Dict[str, Any]] = ...,
+    ) -> _T_Config: ...
+
+    @overload
     async def get_config(
         self,
         plugin_id: str,
+        catalog_id: Optional[str] = ...,
+        collection_id: Optional[str] = ...,
+        db_resource: Optional[Any] = ...,
+        config_snapshot: Optional[Dict[str, Any]] = ...,
+    ) -> "PluginConfig": ...
+
+    async def get_config(
+        self,
+        plugin_id: Union[str, Type["PluginConfig"]],
         catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
         db_resource: Optional[Any] = None,
@@ -51,16 +81,17 @@ class ConfigsProtocol(Protocol):
         2. Catalog (if provided)
         3. Platform (global)
         4. Code-level Defaults
-        
+
         Args:
-            plugin_id: The plugin/extension ID
+            plugin_id: Either a ``PluginConfig`` subclass (preferred: return type
+                narrows to that subclass) or a legacy plugin_id string.
             catalog_id: Optional catalog ID for catalog-level config
             collection_id: Optional collection ID for collection-level config
             db_resource: Optional database resource for transaction-aware queries
             config_snapshot: Optional snapshot to satisfy lookups without DB hits
-            
+
         Returns:
-            PluginConfig instance
+            PluginConfig instance (concrete subclass at runtime)
         """
         ...
     

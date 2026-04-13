@@ -61,7 +61,7 @@ class Role(BaseModel):
     A reusable collection of Policies.
     Stored in DB: {schema}.roles
     """
-    id: Optional[str] = Field(None, description="Unique slug, e.g., 'catalog_editor'")
+    id: Optional[str] = Field(default=None, description="Unique slug, e.g., 'catalog_editor'")
     name: str
     description: Optional[str] = None
     level: int = 0

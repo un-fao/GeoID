@@ -379,10 +379,9 @@ class StacVirtualMixin:
                 raise HTTPException(
                     status_code=500, detail="Configs protocol not available."
                 )
-            stac_config_raw = await cm.get_config(
-                STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=conn
+            stac_config = await cm.get_config(
+                StacPluginConfig, catalog_id, collection_id, db_resource=conn
             )
-            stac_config = cast(StacPluginConfig, stac_config_raw)
 
             from dynastore.modules.stac.stac_config import AssetAccessMode
             from fastapi.responses import RedirectResponse

@@ -67,6 +67,7 @@ from typing import (
     Type,
     Dict,
     Set,
+    TypeGuard,
 )
 from pydantic import BaseModel
 from .exceptions import (
@@ -219,7 +220,7 @@ def set_main_app_loop(loop: asyncio.AbstractEventLoop):
 # --- Helper Functions ---
 
 
-def is_async_resource(db_resource: DbResource) -> bool:
+def is_async_resource(db_resource: DbResource) -> TypeGuard[DbAsyncResource]:
     """Determines if a resource supports asynchronous operations."""
     return isinstance(db_resource, (AsyncEngine, AsyncConnection, AsyncSession, AsyncTransaction))
 
@@ -400,7 +401,7 @@ class BaseExecutor:
                 return self._build_and_execute_sync(conn, raw_params)
         return self._build_and_execute_sync(db_resource, raw_params)
 
-    async def _execute_async_workflow(self, db_resource, raw_params):
+    async def _execute_async_workflow(self, db_resource: DbAsyncResource, raw_params):
         if isinstance(db_resource, AsyncEngine):
             # Manual management to extend lock scope over close()
             # This ensures that connection cleanup (rollback/reset) happens while we hold the wire lock.
@@ -442,7 +443,7 @@ class BaseExecutor:
         query_obj, params = cast(BuilderResult, build_result)
         return self._execute_sync(conn, query_obj, params)
 
-    async def _build_and_execute_async(self, conn, raw_params: dict):
+    async def _build_and_execute_async(self, conn: DbAsyncConnection, raw_params: dict):
         async with _connection_lock_scope(conn):
             # Store raw_params so DDLExecutor existence checks can access
             # identifier values (e.g. schema) that TemplateQueryBuilder consumes.
@@ -455,7 +456,7 @@ class BaseExecutor:
             )
             return await self._execute_async(conn, query_obj, params)
 
-    async def _build_and_stream_async(self, conn, raw_params: dict):
+    async def _build_and_stream_async(self, conn: DbAsyncConnection, raw_params: dict):
         async with _connection_lock_scope(conn):
             build_result = self.query_builder_strategy.build(conn, raw_params)
             query_obj, params = (
@@ -478,14 +479,14 @@ class BaseExecutor:
         ) from e
 
     @abstractmethod
-    def _execute_sync(self, conn, query_obj: TextClause, params: dict):
+    def _execute_sync(self, conn: DbSyncConnection, query_obj: TextClause, params: dict):
         pass
 
     @abstractmethod
-    async def _execute_async(self, conn, query_obj: TextClause, params: dict):
+    async def _execute_async(self, conn: DbAsyncConnection, query_obj: TextClause, params: dict):
         pass
 
-    async def _stream_async(self, conn, query_obj: TextClause, params: dict):
+    async def _stream_async(self, conn: DbAsyncConnection, query_obj: TextClause, params: dict):
         raise NotImplementedError(
             f"Streaming not supported by {self.__class__.__name__}"
         )
@@ -510,7 +511,7 @@ class DQLExecutor(BaseExecutor):
         super().__init__(query_builder_strategy, **kwargs)
         self.result_handler = result_handler
 
-    def _execute_sync(self, conn: DbConnection, query_obj: TextClause, params: dict):
+    def _execute_sync(self, conn: DbSyncConnection, query_obj: TextClause, params: dict):
         try:
             result = conn.execute(query_obj, params)
             processed = self.result_handler(result)
@@ -519,7 +520,7 @@ class DQLExecutor(BaseExecutor):
             self._handle_db_exception(e)
 
     async def _execute_async(
-        self, conn: DbConnection, query_obj: TextClause, params: dict
+        self, conn: DbAsyncConnection, query_obj: TextClause, params: dict
     ):
         try:
             result = await conn.execute(query_obj, params)
@@ -530,7 +531,7 @@ class DQLExecutor(BaseExecutor):
             self._handle_db_exception(e)
 
     async def _stream_async(
-        self, conn: DbConnection, query_obj: TextClause, params: dict
+        self, conn: DbAsyncConnection, query_obj: TextClause, params: dict
     ):
         try:
             stream_result = await conn.stream(query_obj, params)
@@ -596,6 +597,7 @@ class DDLExecutor(BaseExecutor):
     async def _call_existence_check(self, conn, params):
         """Invoke existence_check, passing raw_params for inferred checks."""
         check = self.existence_check
+        assert check is not None, "_call_existence_check called with no existence_check set"
         if getattr(check, "_needs_raw_params", False):
             res = check(conn, params, self._raw_params)
         else:
@@ -604,7 +606,7 @@ class DDLExecutor(BaseExecutor):
             res = await res
         return res
 
-    def _execute_sync(self, conn, query_obj: TextClause, params: dict):
+    def _execute_sync(self, conn: DbSyncConnection, query_obj: TextClause, params: dict):
         """Execute DDL with centralized coordination and timeout guards."""
         from .locking_tools import sync_acquire_startup_lock
         import json
@@ -632,22 +634,23 @@ class DDLExecutor(BaseExecutor):
                 tx_conn, lock_key, timeout="10s"
             ) as active_conn:
                 if active_conn:
+                    _active: DbSyncConnection = cast(DbSyncConnection, active_conn)
                     try:
                         # Timeout guard to prevent deadlocks
-                        active_conn.execute(text("SET LOCAL statement_timeout = '30s'"))
+                        _active.execute(text("SET LOCAL statement_timeout = '30s'"))
 
                         # Support multi-statement DDL by splitting
                         statements = split_ddl(stmt_text)
                         if len(statements) > 1:
                             for stmt in statements:
-                                active_conn.execute(text(stmt), params)
+                                _active.execute(text(stmt), params)
                         else:
-                            active_conn.execute(query_obj, params)
+                            _active.execute(query_obj, params)
                     except Exception as e:
                         self._handle_db_exception(e)
         return self._apply_post_processing_sync(None)
 
-    async def _execute_async(self, conn, query_obj: TextClause, params: dict):
+    async def _execute_async(self, conn: DbAsyncConnection, query_obj: TextClause, params: dict):
         """Execute DDL with centralized coordination and timeout guards."""
         from .locking_tools import _get_stable_lock_id
         import json
@@ -691,6 +694,7 @@ class DDLExecutor(BaseExecutor):
 
         try:
             async with managed_transaction(conn) as tx_conn:
+                assert isinstance(tx_conn, (AsyncConnection, AsyncSession)), "DDL async executor requires async connection"
                 # 2. Re-check after acquiring transaction but before locking
                 if self.existence_check:
                     res = False
@@ -775,7 +779,7 @@ class GeoDQLExecutor(DQLExecutor):
 
 
 @contextmanager
-def sync_managed_transaction(db_resource: DbResource):
+def sync_managed_transaction(db_resource: DbSyncResource):
     """Sync re-entrant transaction manager."""
     if isinstance(db_resource, Engine):
         with db_resource.begin() as conn:
@@ -805,7 +809,7 @@ async def managed_transaction(db_resource: Optional[DbResource]):
         raise ValueError("Cannot start managed_transaction: db_resource is None.")
     is_async = is_async_resource(db_resource)
     if isinstance(db_resource, (AsyncEngine, Engine)):
-        if is_async:
+        if isinstance(db_resource, AsyncEngine):
             async with db_resource.begin() as conn:
                 yield conn
         else:
@@ -831,9 +835,9 @@ async def managed_transaction(db_resource: Optional[DbResource]):
                 getattr(getattr(conn, "connection", None), "closed", False) is True
             ):
                 is_closed = True
-            elif isinstance(conn, (SAConnection, AsyncConnection)):
-                # Try to access driver state safely
-                drv = conn.driver_connection
+            elif isinstance(conn, AsyncConnection):
+                # Try to access driver state safely (attribute name may vary by SQLAlchemy version)
+                drv = getattr(conn, "driver_connection", None) or getattr(conn, "sync_connection", None)
                 if (
                     getattr(drv, "is_closed", lambda: False)
                     if callable(getattr(drv, "is_closed", None))
@@ -858,7 +862,7 @@ async def managed_transaction(db_resource: Optional[DbResource]):
         # because if this connection belongs to a parent context manager,
         # an explicit rollback would terminate its transaction logically but
         # leave its context manager open, causing subsequent InvalidRequestErrors.
-        if is_async:
+        if isinstance(conn, (AsyncConnection, AsyncSession)):
             if conn.in_transaction():
                 # Check for poisoned state (SQLAlchemy 2.0)
                 if not getattr(conn, "is_active", True):
@@ -895,6 +899,7 @@ async def managed_transaction(db_resource: Optional[DbResource]):
                     yield conn
 
         else:
+            assert isinstance(conn, (SAConnection, SASession))
             if conn.in_transaction():
                 # Check for poisoned state
                 if not getattr(conn, "is_active", True):
@@ -941,7 +946,7 @@ async def reflect_table(schema: str, table_name: str, db_resource: DbResource) -
         return Table(table_name, _metadata, schema=schema, autoload_with=sync_conn)
 
     async with managed_transaction(db_resource) as conn:
-        if is_async_resource(conn):
+        if isinstance(conn, AsyncConnection):
             return await conn.run_sync(_load)
         return _load(conn)
 
@@ -986,10 +991,10 @@ from .ddl_inference import _infer_existence_check, _ddl_existence_cache
 class DDLQuery(BaseQuery):
     def __init__(self, sql_template, check_query=None, lock_key=None):
         # We wrap check_query into a function that DDLExecutor can use
-        existence_check = None
+        existence_check: Optional[Any] = None
         if check_query:
 
-            async def existence_check(conn, params):
+            async def _existence_check_impl(conn, params):
                 if callable(check_query):
                     # Handle callable (may be async or sync)
                     res = check_query()
@@ -1005,6 +1010,8 @@ class DDLQuery(BaseQuery):
                     check_query, result_handler=ResultHandler.SCALAR
                 ).execute(conn, **params)
 
+            existence_check = _existence_check_impl
+
         elif isinstance(sql_template, str):
             # Auto-infer existence check from CREATE DDL patterns.
             # The inferred check has signature (conn, params, raw_params)
@@ -1012,7 +1019,7 @@ class DDLQuery(BaseQuery):
             inferred = _infer_existence_check(sql_template)
             if inferred:
                 existence_check = inferred
-                existence_check._needs_raw_params = True  # type: ignore[attr-defined]
+                existence_check._needs_raw_params = True
 
         super().__init__(
             sql_template,

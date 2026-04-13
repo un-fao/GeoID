@@ -31,6 +31,7 @@ import inspect
 from contextlib import asynccontextmanager
 from typing import (
     Any,
+    ClassVar,
     Dict,
     Optional,
     Type,
@@ -59,6 +60,7 @@ except ImportError:
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 from dynastore.tools.cache import cached
+from dynastore.tools.typed_store import PersistentModel
 
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
@@ -94,6 +96,10 @@ if TYPE_CHECKING:
         def __iter__(self) -> Iterator[Any]: ...
 
         def __class_getitem__(cls, item: T) -> T: ...  # type: ignore[override]
+
+        def __getattr__(self, name: str) -> Any: ...
+
+        def get(self, key: Any, default: Any = None) -> Any: ...
 else:
     class Immutable:
         """
@@ -324,10 +330,17 @@ delete_platform_config_query = DQLQuery(
 # --- Protocols & Models ---
 
 
-class PluginConfig(BaseModel):
+class PluginConfig(PersistentModel):
     """
     Base class for all mutable plugin configurations.
     MANDATORY: Subclasses must be instantiable without arguments (all fields must have defaults).
+
+    Inherits from :class:`PersistentModel`, so every subclass also auto-registers
+    in :class:`TypedModelRegistry` under its ``class_key`` (defaults to
+    ``__qualname__``; pin with ``_class_key: ClassVar[str] = "OriginalName"`` to
+    survive renames).  This is the class-as-identity half of the config system;
+    the legacy ``_plugin_id`` string continues to work for call sites that have
+    not been migrated yet.
 
     Autodiscovery: subclasses with ``_plugin_id`` are auto-registered::
 
@@ -337,9 +350,13 @@ class PluginConfig(BaseModel):
             _priority: ClassVar[int] = 100
     """
 
+    _plugin_id: ClassVar[Optional[str]] = None
+
     enabled: bool = True
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
+        # PersistentModel.__init_subclass__ registers cls in TypedModelRegistry
+        # keyed by class_key() (defaults to __qualname__).
         super().__init_subclass__(**kwargs)
         plugin_id = cls.__dict__.get("_plugin_id")
         if plugin_id:

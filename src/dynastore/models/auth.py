@@ -52,7 +52,7 @@ class Policy(BaseModel):
     Strict typing here ensures database integrity.
     """
     id: str = Field(..., description="Unique slug, e.g., 'collection:read_public'")
-    version: str = Field("1.0", description="Schema version for future-proofing policy logic.")
+    version: str = Field(default="1.0", description="Schema version for future-proofing policy logic.")
     description: Optional[str] = None
     effect: Literal["ALLOW", "DENY"] = "ALLOW"
     
@@ -63,7 +63,7 @@ class Policy(BaseModel):
     # Fine-grained logic
     conditions: List[Condition] = Field(default_factory=list)
     
-    partition_key: Optional[str] = Field("global", description="Partitioning key for multi-tenant storage.")
+    partition_key: Optional[str] = Field(default="global", description="Partitioning key for multi-tenant storage.")
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

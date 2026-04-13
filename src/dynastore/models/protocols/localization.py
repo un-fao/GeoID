@@ -51,3 +51,10 @@ class LocalizationProtocol(Protocol):
         Validates that multilanguage input is consistent with the provided lang parameter.
         """
         ...
+
+    def localize_model(self, model: Any, lang: str) -> Any:
+        """
+        Localizes a model object to the specified language.
+        Returns the localized model (may be the same object if unchanged).
+        """
+        ...

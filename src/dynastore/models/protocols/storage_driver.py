@@ -159,7 +159,7 @@ class CollectionStorageDriverProtocol(Protocol):
         self,
         catalog_id: str,
         collection_id: str,
-        entities: Union[Feature, FeatureCollection, Dict[str, Any], List[Dict[str, Any]]],
+        entities: Union[Feature, FeatureCollection, Dict[str, Any], List[Dict[str, Any]], List[Feature]],
         *,
         context: Optional[Dict[str, Any]] = None,
         db_resource: Optional[Any] = None,

@@ -20,7 +20,7 @@ import logging
 import json
 import inspect
 import asyncio
-from typing import Optional, Callable, Dict, Any, cast, List, TYPE_CHECKING
+from typing import Optional, Callable, Dict, Any, Type, Union, cast, List, TYPE_CHECKING
 from dynastore.tools.cache import cached
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
@@ -179,7 +179,7 @@ class ConfigManager(ConfigsProtocol):
 
     async def get_config(
         self,
-        plugin_id: str,
+        plugin_id: "Union[str, Type[PluginConfig]]",
         catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
         db_resource: Optional[DbResource] = None,
@@ -192,7 +192,20 @@ class ConfigManager(ConfigsProtocol):
         3. Catalog (if provided)
         4. Platform (global)
         5. Code-level Defaults (via ConfigRegistry)
+
+        ``plugin_id`` may be a ``PluginConfig`` subclass (preferred — return
+        type narrows to that class) or a legacy string id.  When a class is
+        supplied, its ``_plugin_id`` drives the storage lookup.
         """
+        # Normalise class → string id for storage lookup.
+        if isinstance(plugin_id, type):
+            cls_pid = getattr(plugin_id, "_plugin_id", None)
+            if not cls_pid:
+                raise ValueError(
+                    f"{plugin_id.__qualname__} has no _plugin_id; cannot resolve config"
+                )
+            plugin_id = cls_pid
+
         # Tier 0: Snapshot
         if config_snapshot is not None:
             if plugin_id in config_snapshot:

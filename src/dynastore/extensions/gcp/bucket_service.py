@@ -683,14 +683,14 @@ class BucketService(ExtensionProtocol):
         settings from the hierarchy (Catalog > Platform > Default).
         """
         config = await config_provider.get_config(
-            GCP_CATALOG_BUCKET_CONFIG_ID, catalog_id
+            GcpCatalogBucketConfig, catalog_id
         )
         if not isinstance(config, GcpCatalogBucketConfig):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No bucket configuration found for catalog '{catalog_id}'.",
             )
-        return cast(GcpCatalogBucketConfig, config)
+        return config
 
     # @router.put("/catalogs/{catalog_id}/collections/{collection_id}/config/bucket", status_code=status.HTTP_204_NO_CONTENT)
     # async def set_gcp_collection_bucket_config(catalog_id: str, collection_id: str, config: GcpCollectionBucketConfig, gcp_module: GCPModule = Depends(get_gcp_module)):

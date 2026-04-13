@@ -33,7 +33,13 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import List, Optional, Any, Dict, Union, Set, AsyncIterator
+from typing import TYPE_CHECKING, List, Optional, Any, Dict, Union, Set, AsyncIterator
+
+if TYPE_CHECKING:
+    from dynastore.models.shared_models import CatalogUpdate, CollectionUpdate
+    from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
+    from geojson_pydantic import Feature
+    from dynastore.models.query_builder import QueryResponse
 
 import dynastore.modules as dm
 from dynastore.modules import ModuleProtocol
@@ -183,11 +189,11 @@ class CatalogModule(ModuleProtocol):
 
         # --- Instantiate and register internal services ---
         self.log_service = LogService()
-        self.catalog_service = CatalogService(engine=engine)
-        self.collection_service = CollectionService(engine=engine)
+        self.catalog_service = CatalogService(engine=engine)  # type: ignore[abstract]
+        self.collection_service = CollectionService(engine=engine)  # type: ignore[abstract]
         self.items_service = ItemService(engine=engine)
         self.config_service = ConfigService(engine=engine)
-        self.asset_service = AssetService(engine=engine, event_emitter=_asset_event_bridge)
+        self.asset_service = AssetService(engine=engine, event_emitter=_asset_event_bridge)  # type: ignore[abstract]
         self.properties_service = PropertiesService(engine=engine)
         self.localization_service = LocalizationService()
         self.event_service = EventService()
@@ -196,7 +202,7 @@ class CatalogModule(ModuleProtocol):
         self.pg_asset_driver = PostgresAssetDriver(engine=engine)
 
         from dynastore.modules.storage.drivers.postgresql import PostgresStorageDriver
-        self.pg_storage_driver = PostgresStorageDriver()
+        self.pg_storage_driver = PostgresStorageDriver()  # type: ignore[abstract]
 
         from dynastore.modules.storage.driver_enricher import DriverMetadataEnricher
         self.driver_metadata_enricher = DriverMetadataEnricher()
@@ -219,7 +225,7 @@ class CatalogModule(ModuleProtocol):
             ):
                 # Enter plugin lifespan if it exists
                 if hasattr(svc, "lifespan"):
-                    await stack.enter_async_context(svc.lifespan(app_state))
+                    await stack.enter_async_context(svc.lifespan(app_state))  # type: ignore[attr-defined]
                 
                 # Register for discovery
                 register_plugin(svc)
@@ -301,26 +307,36 @@ class CatalogModule(ModuleProtocol):
                 await self.event_service.stop_consumer()
                 # Services cleanup handled by AsyncExitStack (stack.close() via __aexit__)
 
+    # === Private service accessors (assert-narrowed for pyright) ===
+
+    @property
+    def _cs(self) -> CatalogService:
+        assert self.catalog_service is not None
+        return self.catalog_service
+
+    @property
+    def _col_svc(self) -> CollectionService:
+        assert self.collection_service is not None
+        return self.collection_service
+
+    @property
+    def _item_svc(self) -> ItemService:
+        assert self.items_service is not None
+        return self.items_service
+
     # === Unified Protocol Properties (Delegation) ===
 
     @property
     def items(self) -> ItemsProtocol:
-        return self.catalog_service.items
+        return self._cs.items
 
     @property
     def collections(self) -> CollectionsProtocol:
-        return self.catalog_service.collections
-
-    @property
-    def assets(self) -> AssetsProtocol:
-        return self.asset_service
-
-    @property
-    def configs(self) -> ConfigsProtocol:
-        return self.config_manager
+        return self._cs.collections
 
     @property
     def localization(self) -> LocalizationProtocol:
+        assert self.localization_service is not None
         return self.localization_service
 
     # === Delegated CRUD Methods ===
@@ -328,14 +344,14 @@ class CatalogModule(ModuleProtocol):
     async def get_catalog(
         self, catalog_id: str, lang: str = "en", db_resource: Optional[Any] = None
     ) -> Catalog:
-        return await self.catalog_service.get_catalog(
+        return await self._cs.get_catalog(
             catalog_id, lang=lang, db_resource=db_resource
         )
 
     async def get_catalog_model(
         self, catalog_id: str, db_resource: Optional[Any] = None
     ) -> Optional[Catalog]:
-        return await self.catalog_service.get_catalog_model(
+        return await self._cs.get_catalog_model(
             catalog_id, db_resource=db_resource
         )
 
@@ -345,7 +361,7 @@ class CatalogModule(ModuleProtocol):
         lang: str = "en",
         db_resource: Optional[Any] = None,
     ) -> Catalog:
-        return await self.catalog_service.create_catalog(
+        return await self._cs.create_catalog(
             catalog_data, lang=lang, db_resource=db_resource
         )
 
@@ -356,21 +372,21 @@ class CatalogModule(ModuleProtocol):
         lang: str = "en",
         db_resource: Optional[Any] = None,
     ) -> Optional[Catalog]:
-        return await self.catalog_service.update_catalog(
+        return await self._cs.update_catalog(
             catalog_id, updates, lang=lang, db_resource=db_resource
         )
 
     async def delete_catalog(
         self, catalog_id: str, force: bool = False, db_resource: Optional[Any] = None
     ) -> bool:
-        return await self.catalog_service.delete_catalog(
+        return await self._cs.delete_catalog(
             catalog_id, force=force, db_resource=db_resource
         )
 
     async def delete_catalog_language(
         self, catalog_id: str, lang: str, db_resource: Optional[Any] = None
     ) -> bool:
-        return await self.catalog_service.delete_catalog_language(
+        return await self._cs.delete_catalog_language(
             catalog_id, lang, db_resource=db_resource
         )
 
@@ -382,7 +398,7 @@ class CatalogModule(ModuleProtocol):
         db_resource: Optional[Any] = None,
         q: Optional[str] = None,
     ) -> List[Catalog]:
-        return await self.catalog_service.list_catalogs(
+        return await self._cs.list_catalogs(
             limit=limit, offset=offset, lang=lang, db_resource=db_resource, q=q
         )
 
@@ -393,7 +409,7 @@ class CatalogModule(ModuleProtocol):
         offset: int = 0,
         db_resource: Optional[Any] = None,
     ) -> List[Catalog]:
-        return await self.catalog_service.search_catalogs(
+        return await self._cs.search_catalogs(
             filters=filters, limit=limit, offset=offset, db_resource=db_resource
         )
 
@@ -406,7 +422,7 @@ class CatalogModule(ModuleProtocol):
         lang: str = "en",
         db_resource: Optional[Any] = None,
     ) -> Optional[Collection]:
-        return await self.collection_service.get_collection(
+        return await self._col_svc.get_collection(
             catalog_id, collection_id, lang=lang, db_resource=db_resource
         )
 
@@ -418,7 +434,7 @@ class CatalogModule(ModuleProtocol):
         db_resource: Optional[Any] = None,
         **kwargs,
     ) -> Collection:
-        return await self.collection_service.create_collection(
+        return await self._col_svc.create_collection(
             catalog_id, collection_data, lang=lang, db_resource=db_resource, **kwargs
         )
 
@@ -430,8 +446,8 @@ class CatalogModule(ModuleProtocol):
         lang: str = "en",
         db_resource: Optional[Any] = None,
     ) -> Optional[Collection]:
-        return await self.collection_service.update_collection(
-            catalog_id, collection_id, updates, lang=lang, db_resource=db_resource
+        return await self._col_svc.update_collection(
+            catalog_id, collection_id, updates, lang=lang, db_resource=db_resource  # type: ignore[arg-type]
         )
 
     async def delete_collection(
@@ -441,7 +457,7 @@ class CatalogModule(ModuleProtocol):
         force: bool = False,
         db_resource: Optional[Any] = None,
     ) -> bool:
-        return await self.collection_service.delete_collection(
+        return await self._col_svc.delete_collection(
             catalog_id, collection_id, force=force, db_resource=db_resource
         )
 
@@ -452,7 +468,7 @@ class CatalogModule(ModuleProtocol):
         lang: str,
         db_resource: Optional[Any] = None,
     ) -> bool:
-        return await self.collection_service.delete_collection_language(
+        return await self._col_svc.delete_collection_language(
             catalog_id, collection_id, lang, db_resource=db_resource
         )
 
@@ -465,7 +481,7 @@ class CatalogModule(ModuleProtocol):
         db_resource: Optional[Any] = None,
         q: Optional[str] = None,
     ) -> List[Any]:
-        return await self.collection_service.list_collections(
+        return await self._col_svc.list_collections(
             catalog_id, limit=limit, offset=offset, lang=lang, db_resource=db_resource, q=q
         )
 
@@ -480,7 +496,7 @@ class CatalogModule(ModuleProtocol):
         processing_context: Optional[Dict[str, Any]] = None,
     ) -> Union[Dict[str, Any], List[Dict[str, Any]], Any]:
         """Create or update items (single or bulk)."""
-        return await self.items_service.upsert(
+        return await self._item_svc.upsert(
             catalog_id,
             collection_id,
             items,
@@ -495,7 +511,7 @@ class CatalogModule(ModuleProtocol):
         item_id: str,
         db_resource: Optional[Any] = None,
     ) -> Optional[Dict[str, Any]]:
-        return await self.item_service.get_item(
+        return await self._item_svc.get_item(  # type: ignore[return-value]
             catalog_id, collection_id, item_id, db_resource=db_resource
         )
 
@@ -506,7 +522,7 @@ class CatalogModule(ModuleProtocol):
         item_id: str,
         db_resource: Optional[Any] = None,
     ) -> int:
-        return await self.item_service.delete_item(
+        return await self._item_svc.delete_item(
             catalog_id, collection_id, item_id, db_resource=db_resource
         )
 
@@ -518,7 +534,7 @@ class CatalogModule(ModuleProtocol):
         lang: str,
         db_resource: Optional[Any] = None,
     ) -> int:
-        return await self.item_service.delete_item_language(
+        return await self._item_svc.delete_item_language(
             catalog_id, collection_id, ext_id, lang, db_resource=db_resource
         )
 
@@ -529,8 +545,8 @@ class CatalogModule(ModuleProtocol):
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
         db_resource: Optional[Any] = None,
-    ) -> List[Dict[str, Any]]:
-        return await self.item_service.search_items(
+    ) -> "List[Feature]":
+        return await self._item_svc.search_items(
             catalog_id, collection_id, request, config=config, db_resource=db_resource
         )
 
@@ -541,8 +557,8 @@ class CatalogModule(ModuleProtocol):
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
         db_resource: Optional[Any] = None,
-    ) -> AsyncIterator[Dict[str, Any]]:
-        return await self.item_service.stream_items(
+    ) -> "QueryResponse":
+        return await self._item_svc.stream_items(
             catalog_id, collection_id, request, config=config, db_resource=db_resource
         )
 
@@ -554,8 +570,8 @@ class CatalogModule(ModuleProtocol):
         db_resource: Optional[Any] = None,
         allow_missing: bool = False,
     ) -> Optional[str]:
-        return await self.catalog_service.resolve_physical_schema(
-            catalog_id, db_resource=db_resource, allow_missing=allow_missing
+        return await self._cs.resolve_physical_schema(
+            catalog_id, db_resource=db_resource, allow_missing=allow_missing  # type: ignore[arg-type]
         )
 
     async def resolve_datasource(
@@ -566,14 +582,14 @@ class CatalogModule(ModuleProtocol):
         operation: str = "READ",
         hint: Optional[str] = None,
     ):
-        return await self.catalog_service.resolve_datasource(
+        return await self._cs.resolve_datasource(
             catalog_id, collection_id, operation=operation, hint=hint
         )
 
     async def resolve_physical_table(
         self, catalog_id: str, collection_id: str, db_resource: Optional[Any] = None
     ) -> Optional[str]:
-        return await self.catalog_service.resolve_physical_table(
+        return await self._cs.resolve_physical_table(
             catalog_id, collection_id, db_resource=db_resource
         )
 
@@ -584,14 +600,14 @@ class CatalogModule(ModuleProtocol):
         physical_table: str,
         db_resource: Optional[Any] = None,
     ) -> None:
-        return await self.catalog_service.set_physical_table(
+        return await self._cs.set_physical_table(
             catalog_id, collection_id, physical_table, db_resource=db_resource
         )
 
     async def ensure_catalog_exists(
         self, catalog_id: str, lang: str = "en", db_resource: Optional[Any] = None
     ) -> None:
-        return await self.catalog_service.ensure_catalog_exists(
+        return await self._cs.ensure_catalog_exists(
             catalog_id, lang=lang, db_resource=db_resource
         )
 
@@ -602,8 +618,8 @@ class CatalogModule(ModuleProtocol):
         lang: str = "en",
         db_resource: Optional[Any] = None,
     ) -> None:
-        return await self.collection_service.ensure_collection_exists(
-            db_resource, catalog_id, collection_id, lang=lang
+        return await self._col_svc.ensure_collection_exists(
+            db_resource, catalog_id, collection_id, lang=lang  # type: ignore[arg-type]
         )
 
     async def ensure_physical_table_exists(
@@ -613,8 +629,8 @@ class CatalogModule(ModuleProtocol):
         config: "CollectionPluginConfig",
         db_resource: Optional[Any] = None,
     ) -> None:
-        return await self.item_service.ensure_physical_table_exists(
-            catalog_id, collection_id, config, db_resource=db_resource
+        return await self._item_svc.ensure_physical_table_exists(
+            catalog_id, collection_id, config, db_resource=db_resource  # type: ignore[arg-type]
         )
 
     async def ensure_partition_exists(
@@ -625,16 +641,18 @@ class CatalogModule(ModuleProtocol):
         partition_value: Any,
         db_resource: Optional[Any] = None,
     ) -> None:
-        return await self.item_service.ensure_partition_exists(
-            catalog_id, collection_id, config, partition_value, db_resource=db_resource
+        return await self._item_svc.ensure_partition_exists(
+            catalog_id, collection_id, config, partition_value, db_resource=db_resource  # type: ignore[arg-type]
         )
 
     @property
     def assets(self) -> AssetsProtocol:
+        assert self.asset_service is not None
         return self.asset_service
 
     @property
     def configs(self) -> ConfigsProtocol:
+        assert self.config_service is not None
         return self.config_service
 
     def get_config_service(self) -> ConfigService:
@@ -643,6 +661,7 @@ class CatalogModule(ModuleProtocol):
             "get_config_service is deprecated, use the 'configs' protocol property instead.",
             stack_info=True,
         )
+        assert self.config_service is not None
         return self.config_service
 
     def get_asset_service(self) -> AssetService:
@@ -651,27 +670,24 @@ class CatalogModule(ModuleProtocol):
             "get_asset_service is deprecated, use the 'assets' protocol property instead.",
             stack_info=True,
         )
+        assert self.asset_service is not None
         return self.asset_service
 
     @property
     def count_items_by_asset_id_query(self) -> Any:
-        from dynastore.modules.catalog.item_service import (
-            count_items_by_asset_id_query as _query,
-        )
-
-        return _query
+        return self._item_svc.count_items_by_asset_id_query
 
     async def get_collection_config(
         self, catalog_id: str, collection_id: str, db_resource: Optional[Any] = None
     ) -> "CollectionPluginConfig":
-        return await self.catalog_service.get_collection_config(
+        return await self._cs.get_collection_config(
             catalog_id, collection_id, db_resource=db_resource
         )
 
     async def get_collection_column_names(
         self, catalog_id: str, collection_id: str, db_resource: Optional[Any] = None
     ) -> Set[str]:
-        return await self.catalog_service.get_collection_column_names(
+        return await self._cs.get_collection_column_names(
             catalog_id, collection_id, db_resource=db_resource
         )
 
@@ -749,7 +765,7 @@ class CatalogModule(ModuleProtocol):
         assets = get_protocol(AssetsProtocol)
         if assets:
             await assets.delete_assets(
-                catalog_id=catalog_id, hard=False, db_resource=kwargs.get("db_resource")
+                catalog_id=catalog_id, hard=False, db_resource=kwargs.get("db_resource")  # type: ignore[misc]
             )
 
     async def _on_collection_hard_deletion(
@@ -762,7 +778,7 @@ class CatalogModule(ModuleProtocol):
                 catalog_id=catalog_id,
                 collection_id=collection_id,
                 hard=True,
-                db_resource=kwargs.get("db_resource"),
+                db_resource=kwargs.get("db_resource"),  # type: ignore[misc]
             )
 
     async def _on_collection_deletion(
@@ -775,7 +791,7 @@ class CatalogModule(ModuleProtocol):
                 catalog_id=catalog_id,
                 collection_id=collection_id,
                 hard=False,
-                db_resource=kwargs.get("db_resource"),
+                db_resource=kwargs.get("db_resource"),  # type: ignore[misc]
             )
 
     async def _on_task_failed(
@@ -856,8 +872,9 @@ async def list_collections(*args, **kwargs):
 
 
 async def get_collection_config(*args, **kwargs):
-    """Module-level proxy for ConfigsProtocol.get_collection_config"""
-    conf = get_protocol(ConfigsProtocol)
+    """Module-level proxy for CatalogsProtocol.get_collection_config"""
+    from dynastore.models.protocols import CatalogsProtocol as _CatalogsProtocol
+    conf = get_protocol(_CatalogsProtocol)
     if conf:
         return await conf.get_collection_config(*args, **kwargs)
     return None

@@ -39,7 +39,7 @@ from typing import (
 )
 from pydantic import BaseModel, Field, field_validator
 from enum import Enum
-from geojson_pydantic import Feature, FeatureCollection
+from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.db_config.query_executor import DbResource
 
@@ -673,7 +673,7 @@ class SidecarProtocol(ABC):
         self,
         row: Dict[str, Any],
         feature: Feature,
-        context: Dict[str, Any],
+        context: FeaturePipelineContext,
     ) -> None:
         """
         Populate a GeoJSON feature from a database row.

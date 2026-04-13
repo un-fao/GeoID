@@ -231,10 +231,9 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         db_resource: Optional[Any] = None,
     ) -> StacPluginConfig:
         configs_svc = await self._get_configs_service()
-        cfg = await configs_svc.get_config(
-            STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, db_resource=db_resource
+        return await configs_svc.get_config(
+            StacPluginConfig, catalog_id, collection_id, db_resource=db_resource
         )
-        return cast(StacPluginConfig, cfg)
 
     async def get_stac_root_catalog(
         self, request: Request, language: str = Depends(get_language)

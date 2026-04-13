@@ -18,19 +18,28 @@
 
 import asyncio
 import logging
-from typing import Optional, Dict, Tuple, Any
+from typing import TYPE_CHECKING, Optional, Dict, Tuple, Any
 
-try:
+if TYPE_CHECKING:
     from google.api_core import exceptions as google_exceptions
     from google.api_core.exceptions import Aborted
-except ImportError:
-    google_exceptions = None
-    Aborted = None
-
-try:
     from google.cloud import pubsub_v1
-except ImportError:
-    pubsub_v1 = None
+    from google.cloud import storage
+    from dynastore.modules.db_config.query_executor import DbResource
+    from dynastore.models.protocols.configs import ConfigsProtocol
+    from dynastore.modules.gcp.bucket_service import BucketService
+else:
+    try:
+        from google.api_core import exceptions as google_exceptions
+        from google.api_core.exceptions import Aborted
+    except ImportError:
+        google_exceptions = None  # type: ignore[assignment]
+        Aborted = None  # type: ignore[assignment]
+
+    try:
+        from google.cloud import pubsub_v1
+    except ImportError:
+        pubsub_v1 = None  # type: ignore[assignment]
 
 from dynastore.modules.concurrency import run_in_thread
 from dynastore.modules.db_config.query_executor import managed_transaction
@@ -51,7 +60,37 @@ logger = logging.getLogger(__name__)
 
 
 class GcpEventingOpsMixin:
-    """Mixin providing Pub/Sub and eventing operations for GCPModule."""
+    """Mixin providing Pub/Sub and eventing operations for GCPModule.
+
+    Depends on the following methods being provided by the concrete host class (GCPModule):
+    """
+
+    # --- Host interface stubs (provided by GCPModule) ---
+
+    def get_project_id(self) -> Optional[str]: ...
+
+    def get_region(self) -> Optional[str]: ...
+
+    def get_account_email(self) -> Optional[str]: ...
+
+    async def get_self_url(self) -> str: ...
+
+    def get_publisher_client(self) -> "pubsub_v1.PublisherClient": ...
+
+    def get_storage_client(self) -> "storage.Client": ...
+
+    def get_bucket_service(self) -> "BucketService": ...
+
+    def get_subscriber_client(self) -> "pubsub_v1.SubscriberClient": ...
+
+    def get_config_service(self) -> "ConfigsProtocol": ...
+
+    @property
+    def engine(self) -> "DbResource": ...
+
+    async def setup_catalog_gcp_resources(
+        self, catalog_id: str, context: Optional[LifecycleContext] = None
+    ) -> Tuple[str, GcpEventingConfig]: ...
 
     def generate_default_topic_id(self, catalog_id: str) -> str:
         """Generates the deterministic default Pub/Sub topic ID for a catalog."""
@@ -333,7 +372,7 @@ class GcpEventingOpsMixin:
 
         for prefix in prefixes_to_setup:
             match_found = False
-            for notif in existing_notifications:
+            for notif in (existing_notifications or []):
                 # topic_name in GCS notification is the short ID, not full path
                 if notif.topic_name == topic_id and notif.topic_project == project_id:
                     if (
@@ -360,7 +399,7 @@ class GcpEventingOpsMixin:
                 )
 
                 await run_in_thread(notification.create)
-                managed_config.gcs_notification_ids.append(notification.notification_id)
+                managed_config.gcs_notification_ids.append(notification.notification_id or "")
                 logger.info(
                     f"Successfully created GCS notification '{notification.notification_id}' for prefix '{prefix}' on bucket '{bucket_name}'."
                 )
@@ -410,14 +449,14 @@ class GcpEventingOpsMixin:
         else:
             # The custom attributes must be attached to the parent PushConfig object,
             # not the OidcToken object, for them to be included in the push message.
-            oidc_token_config = pubsub_v1.types.PushConfig.OidcToken(
+            oidc_token_config = pubsub_v1.types.PushConfig.OidcToken(  # type: ignore[attr-defined]
                 service_account_email=self.get_account_email(),
                 audience=PUBSUB_JWT_AUDIENCE,
             )
 
             # For compatibility with some library versions, attributes must be placed
             # on the PushConfig. This will send them as HTTP headers.
-            push_config = pubsub_v1.types.PushConfig(
+            push_config = pubsub_v1.types.PushConfig(  # type: ignore[attr-defined]
                 push_endpoint=push_endpoint,
                 oidc_token=oidc_token_config,
                 attributes=attributes,
@@ -575,9 +614,11 @@ class GcpEventingOpsMixin:
         await config_service.set_config(
             GCP_EVENTING_CONFIG_ID, config, catalog_id=catalog_id, db_resource=conn
         )
-        # Re-fetch to confirm and return the validated model
+        # Re-fetch to confirm and return the validated model.
+        # Passing the class (not a string id) narrows the return type to
+        # GcpEventingConfig without a cast().
         return await config_service.get_config(
-            GCP_EVENTING_CONFIG_ID, catalog_id, db_resource=conn
+            GcpEventingConfig, catalog_id, db_resource=conn
         )
 
     async def setup_catalog_eventing(self, catalog_id: str) -> Tuple[str, Any]:

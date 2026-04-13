@@ -105,7 +105,7 @@ async def _try_driver_dispatch(
     effective_limit = (request.limit if request and request.limit else limit) or limit
     effective_offset = (request.offset if request and request.offset else offset) or offset
 
-    items: AsyncIterator[Feature] = resolved.read_entities(
+    items: AsyncIterator[Feature] = await resolved.read_entities(
         catalog_id,
         collection_id,
         entity_ids=entity_ids,
@@ -165,7 +165,45 @@ async def _apply_item_enrichers(
 
 
 class ItemQueryMixin:
-    """Query, search and streaming methods for ItemService."""
+    """Query, search and streaming methods for ItemService.
+
+    Concrete ``ItemService`` must provide: engine, _resolve_physical_schema,
+    _resolve_physical_table, _get_collection_config, map_row_to_feature.
+    """
+
+    # Stubs for attributes provided by ItemService (the concrete class).
+    engine: Optional[DbResource] = None
+
+    async def _resolve_physical_schema(
+        self, catalog_id: str, db_resource: Optional[DbResource] = None
+    ) -> Optional[str]:
+        raise NotImplementedError("ItemQueryMixin requires a concrete _resolve_physical_schema")
+
+    async def _resolve_physical_table(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        db_resource: Optional[DbResource] = None,
+    ) -> Optional[str]:
+        raise NotImplementedError("ItemQueryMixin requires a concrete _resolve_physical_table")
+
+    async def _get_collection_config(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        config_provider: Optional[ConfigsProtocol] = None,
+        db_resource: Optional[DbResource] = None,
+    ) -> Any:
+        raise NotImplementedError("ItemQueryMixin requires a concrete _get_collection_config")
+
+    def map_row_to_feature(
+        self,
+        row: Dict[str, Any],
+        col_config: Any,
+        lang: str = "en",
+        context: Any = None,
+    ) -> Feature:
+        raise NotImplementedError("ItemQueryMixin requires a concrete map_row_to_feature")
 
     async def get_features(
         self,
@@ -198,6 +236,8 @@ class ItemQueryMixin:
                 select=[FieldSelection(field="*")],
             )
 
+        if col_config is None or phys_schema is None or phys_table is None:
+            return []
         optimizer = QueryOptimizer(col_config)
         sql, params = optimizer.build_optimized_query(request, phys_schema, phys_table)
         rows = await _run_query(conn, text(sql), params)
@@ -478,6 +518,8 @@ class ItemQueryMixin:
                 for sc in col_config.sidecars:
                     if sc.feature_id_field_name:
                         sidecar = SidecarRegistry.get_sidecar(sc)
+                        if sidecar is None:
+                            continue
                         sc_table = f"{phys_table}_{sidecar.sidecar_id}"
                         # Delete ALL hub rows linked to this external_id via the sidecar
                         delete_sql = sa_text(
@@ -488,8 +530,10 @@ class ItemQueryMixin:
                             f'AND h.deleted_at IS NULL '
                             f'AND h.geoid = s.geoid'
                         )
-                        result = await conn.execute(delete_sql, {"ext_id": str(item_id)})
-                        rows = result.rowcount
+                        _raw = conn.execute(delete_sql, {"ext_id": str(item_id)})
+                        import inspect as _insp
+                        result = (await _raw) if _insp.isawaitable(_raw) else _raw
+                        rows = getattr(result, "rowcount", 0)
                         break
 
             if not rows:
@@ -583,7 +627,7 @@ class ItemQueryMixin:
             # Open a fresh connection/transaction for streaming to ensure isolation and avoid leaks
             async with managed_transaction(self.engine) as stream_conn:
                 # Use a buffer for higher throughput but still O(1) memory
-                stream = await stream_conn.stream(text(sql), params)
+                stream = await stream_conn.stream(text(sql), params)  # type: ignore[union-attr]
                 async for row in stream:
                     ctx = FeaturePipelineContext(lang=lang, consumer=consumer)
                     yield self.map_row_to_feature(
@@ -637,7 +681,7 @@ class ItemQueryMixin:
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
         db_resource: Optional[Any] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[Feature]:
         """
         Search and retrieve items using optimized query generation.
 
@@ -678,7 +722,7 @@ class ItemQueryMixin:
         limit: Optional[int] = None,
         offset: Optional[int] = None,
         db_resource: Optional[Any] = None,
-    ) -> AsyncIterator[Dict[str, Any]]:
+    ) -> AsyncIterator[Feature]:
         """
         Stream search results from a raw SQL WHERE clause, leveraging the QueryOrchestrator.
 
@@ -734,7 +778,8 @@ class ItemQueryMixin:
                 if col_config.sidecars:
                     for sc_config in col_config.sidecars:
                         sidecar = SidecarRegistry.get_sidecar(sc_config)
-                        all_fields.update(sidecar.get_field_definitions().keys())
+                        if sidecar is not None:
+                            all_fields.update(sidecar.get_field_definitions().keys())
                 columns_to_select = list(all_fields)
 
             where_clauses = [where_clause] if where_clause else []
