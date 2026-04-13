@@ -206,11 +206,11 @@ class UploadStatusResponse(BaseModel):
     ticket_id: str = Field(..., description="The upload session identifier.")
     status: UploadStatus = Field(..., description="Current lifecycle state of the upload.")
     asset_id: Optional[str] = Field(
-        None,
+        default=None,
         description="Asset ID once registration is complete (``status=completed``).",
     )
     error: Optional[str] = Field(
-        None,
+        default=None,
         description="Human-readable error message when ``status=failed``.",
     )
 

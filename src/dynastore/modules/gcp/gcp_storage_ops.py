@@ -34,6 +34,12 @@ logger = logging.getLogger(__name__)
 class GcpStorageOpsMixin:
     """Mixin providing StorageProtocol delegations and AssetUploadProtocol for GCPModule."""
 
+    # --- Host interface stubs (provided by GCPModule) ---
+    _upload_tickets: Dict[str, Dict[str, Any]]
+
+    def get_bucket_service(self) -> Any: ...
+    def get_storage_client(self) -> Any: ...
+
     # --- StorageProtocol Implementation ---
 
     async def get_storage_identifier(self, catalog_id: str) -> Optional[str]:

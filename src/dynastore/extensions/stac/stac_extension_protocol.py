@@ -5,7 +5,7 @@ Extensions implementing this protocol can contribute platform-managed assets
 and extensions to STAC Items and Collections.
 """
 
-from typing import Protocol, List, Set, runtime_checkable, Any, Literal, TYPE_CHECKING
+from typing import Protocol, List, Set, runtime_checkable, Any, Literal, TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     import pystac
@@ -104,8 +104,8 @@ class StacExtensionContext:
         base_url: str,
         catalog_id: str,
         collection_id: str,
-        item_id: str = None,
-        geoid: str = None,
+        item_id: Optional[str] = None,
+        geoid: Optional[str] = None,
         lang: str = "en",
         **kwargs
     ):

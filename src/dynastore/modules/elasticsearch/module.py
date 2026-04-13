@@ -39,11 +39,14 @@ async def _is_es_active(catalog_id: str, collection_id: str) -> bool:
         configs = get_protocol(ConfigsProtocol)
         if not configs:
             return False
+        from dynastore.modules.storage.routing_config import RoutingPluginConfig
         routing = await configs.get_config(
-            ROUTING_PLUGIN_CONFIG_ID,
+            RoutingPluginConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
         )
+        if not isinstance(routing, RoutingPluginConfig):
+            return False
         for entries in routing.operations.values():
             for entry in entries:
                 if entry.driver_id == "DriverRecordsElasticsearch":
@@ -66,7 +69,7 @@ async def _stac_serialize_item(catalog_id: str, collection_id: str, item_id: str
         db = get_protocol(DbProtocol)
         item_svc = get_protocol(ItemService)
         if not item_svc:
-            item_svc = ItemService(engine=db)
+            item_svc = ItemService(engine=db)  # type: ignore[arg-type]
 
         feature = await item_svc.get_item(catalog_id, collection_id, item_id)
         if feature is None:
@@ -110,7 +113,7 @@ async def _stac_serialize_collection(catalog_id: str, collection_id: str) -> Opt
         catalogs = get_protocol(CatalogsProtocol)
         if not catalogs:
             return None
-        model = await catalogs.get_collection_model(catalog_id, collection_id)
+        model = await catalogs.get_collection_model(catalog_id, collection_id)  # type: ignore[attr-defined]
         if model is None:
             return None
         doc = model.model_dump(by_alias=True, exclude_none=True) if hasattr(model, "model_dump") else {}
@@ -192,7 +195,8 @@ class ElasticsearchModule(ModuleProtocol):
             yield
         finally:
             for etype, handler in _registered:
-                events.unregister(etype, handler)
+                if events is not None:
+                    events.unregister(etype, handler)  # type: ignore[attr-defined]
             await es_client.close()
 
     # ------------------------------------------------------------------
@@ -448,7 +452,7 @@ class ElasticsearchModule(ModuleProtocol):
     # Async event handlers
     # ------------------------------------------------------------------
 
-    async def _on_catalog_upsert(self, catalog_id: str = None, payload=None, **kwargs):
+    async def _on_catalog_upsert(self, catalog_id: Optional[str] = None, payload=None, **kwargs):
         if not catalog_id:
             return
         doc = await _stac_serialize_catalog(catalog_id)
@@ -466,7 +470,7 @@ class ElasticsearchModule(ModuleProtocol):
             ).model_dump(),
         )
 
-    async def _on_catalog_delete(self, catalog_id: str = None, **kwargs):
+    async def _on_catalog_delete(self, catalog_id: Optional[str] = None, **kwargs):
         if not catalog_id:
             return
         # Remove any obfuscated DENY policy when the catalog is hard-deleted.
@@ -482,7 +486,7 @@ class ElasticsearchModule(ModuleProtocol):
         )
 
     async def _on_collection_upsert(
-        self, catalog_id: str = None, collection_id: str = None, payload=None, **kwargs,
+        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None, payload=None, **kwargs,
     ):
         if not catalog_id or not collection_id:
             return
@@ -505,7 +509,7 @@ class ElasticsearchModule(ModuleProtocol):
         )
 
     async def _on_collection_delete(
-        self, catalog_id: str = None, collection_id: str = None, **kwargs,
+        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None, **kwargs,
     ):
         if not catalog_id or not collection_id:
             return
@@ -520,7 +524,7 @@ class ElasticsearchModule(ModuleProtocol):
         )
 
     async def _on_item_upsert(
-        self, catalog_id: str = None, collection_id: str = None, item_id: str = None,
+        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None, item_id: Optional[str] = None,
         payload=None, **kwargs,
     ):
         if not catalog_id or not collection_id or not item_id:
@@ -564,7 +568,7 @@ class ElasticsearchModule(ModuleProtocol):
         )
 
     async def _on_item_bulk_upsert(
-        self, catalog_id: str = None, collection_id: str = None, payload=None, **kwargs,
+        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None, payload=None, **kwargs,
     ):
         if not catalog_id or not collection_id:
             return
@@ -613,7 +617,7 @@ class ElasticsearchModule(ModuleProtocol):
             )
 
     async def _on_item_delete(
-        self, catalog_id: str = None, collection_id: str = None, item_id: str = None,
+        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None, item_id: Optional[str] = None,
         payload=None, **kwargs,
     ):
         if not item_id:

@@ -83,7 +83,7 @@ class DatabaseStatusReporter(ReportingInterface):
         update = TaskUpdate(progress=progress_value)
         await self._update_task_async(update)
 
-    async def task_finished(self, final_status: str, error_message: str = None):
+    async def task_finished(self, final_status: str, error_message: Optional[str] = None):
         if not self.task_id: return
         
         update_data = {

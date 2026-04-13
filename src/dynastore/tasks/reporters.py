@@ -70,6 +70,6 @@ class ReportingInterface(Generic[T_CONFIG], ABC):
         pass
 
     @abstractmethod
-    async def task_finished(self, final_status: str, error_message: str = None):
+    async def task_finished(self, final_status: str, error_message: Optional[str] = None):
         """Called once when the task concludes, successfully or with an error."""
         pass

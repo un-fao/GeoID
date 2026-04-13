@@ -157,7 +157,7 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
             db_resource=db_resource,
         )
 
-    async def _on_catalog_failure(self, catalog_id: str, error: str = None, **kwargs):
+    async def _on_catalog_failure(self, catalog_id: str, error: Optional[str] = None, **kwargs):
         # We route this via system catalog for global logging,
         # but preserve the actual failing catalog ID for LogService to extract.
         db_resource = kwargs.pop("db_resource", None)
