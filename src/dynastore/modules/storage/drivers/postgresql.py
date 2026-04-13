@@ -87,13 +87,15 @@ class DriverRecordsPostgresql(ModuleProtocol):
         from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
 
         configs = get_protocol(ConfigsProtocol)
+        if configs is None:
+            return DriverRecordsPostgresqlConfig()
         config = await configs.get_config(
-            DriverRecordsPostgresqlConfig._plugin_id,
+            DriverRecordsPostgresqlConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
             db_resource=db_resource,
         )
-        if config is None or not isinstance(config, DriverRecordsPostgresqlConfig):
+        if not isinstance(config, DriverRecordsPostgresqlConfig):
             return DriverRecordsPostgresqlConfig()
         return config
 
@@ -253,8 +255,12 @@ class DriverRecordsPostgresql(ModuleProtocol):
         )
         updated_config = config.model_copy(update={"physical_table": physical_table})
         configs = get_protocol(ConfigsProtocol)
+        if configs is None:
+            return
+        pid = DriverRecordsPostgresqlConfig._plugin_id
+        assert pid is not None
         await configs.set_config(
-            DriverRecordsPostgresqlConfig._plugin_id,
+            pid,
             updated_config,
             catalog_id=catalog_id,
             collection_id=collection_id,
@@ -288,6 +294,8 @@ class DriverRecordsPostgresql(ModuleProtocol):
         col_config = kwargs.get("col_config")
         physical_table = kwargs.get("physical_table")
         layer_config = kwargs.get("layer_config")
+        if db_resource is None:
+            raise ValueError("ensure_storage requires db_resource")
 
         from dynastore.modules.db_config.query_executor import (
             DDLQuery, DQLQuery, ResultHandler, managed_transaction, managed_nested_transaction,
@@ -393,6 +401,8 @@ class DriverRecordsPostgresql(ModuleProtocol):
         for sidecar_config in col_config.sidecars:
             try:
                 sidecar_impl = SidecarRegistry.get_sidecar(sidecar_config)
+                if sidecar_impl is None:
+                    continue
                 sc_has_validity = sidecar_impl.has_validity()
                 ddl_statements = sidecar_impl.get_ddl(
                     physical_table=physical_table,
@@ -412,14 +422,17 @@ class DriverRecordsPostgresql(ModuleProtocol):
 
         configs = get_protocol(ConfigsProtocol)
         updated_config = col_config.model_copy(update={"physical_table": physical_table})
-        await configs.set_config(
-            DriverRecordsPostgresqlConfig._plugin_id,
-            updated_config,
-            catalog_id=catalog_id,
-            collection_id=collection_id,
-            check_immutability=False,
-            db_resource=db_resource,
-        )
+        if configs is not None:
+            pid = DriverRecordsPostgresqlConfig._plugin_id
+            assert pid is not None
+            await configs.set_config(
+                pid,
+                updated_config,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                check_immutability=False,
+                db_resource=db_resource,
+            )
 
         # --- Store schema hash ---
         try:
@@ -512,6 +525,8 @@ class DriverRecordsPostgresql(ModuleProtocol):
         from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
         import json
 
+        if db_resource is None:
+            raise ValueError("set_collection_metadata requires db_resource")
         schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
 
         def _serialize(val) -> Optional[str]:
