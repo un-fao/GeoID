@@ -501,7 +501,9 @@ class ItemMetadataSidecar(SidecarProtocol):
         from dynastore.models.localization import is_valid_language_key
 
         # Resolve multilanguage title, description, keywords
-        available_langs = set()
+        props: Dict[str, Any] = feature.properties if feature.properties is not None else {}
+        feature.properties = props
+        available_langs: Set[str] = set()
         for field in ["title", "description", "keywords"]:
             val = row.get(f"item_{field}") or row.get(f"stac_{field}") or row.get(field)
             if val is not None:
@@ -513,9 +515,9 @@ class ItemMetadataSidecar(SidecarProtocol):
                     )
                     resolved = resolve_localized_field(parsed, context.lang)
                     if resolved is not None:
-                        feature.properties[field] = resolved
+                        props[field] = resolved
                 else:
-                    feature.properties[field] = parsed
+                    props[field] = parsed
 
         if available_langs:
             context.publish("item_metadata_available_langs", list(available_langs))
@@ -527,7 +529,10 @@ SidecarRegistry.register("item_metadata", ItemMetadataSidecar)
 # ── Migration: rename legacy _stac_metadata tables → _item_metadata ──────
 
 from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
-from sqlalchemy import text as _sa_text
+from dynastore.modules.db_config.query_executor import (
+    DQLQuery,
+    ResultHandler,
+)
 
 
 @lifecycle_registry.sync_catalog_initializer(priority=5)
@@ -536,31 +541,30 @@ async def _migrate_stac_metadata_tables(
 ):
     """Rename legacy ``_stac_metadata`` sidecar tables to ``_item_metadata``.
 
-    Runs once per catalog init; the ``IF EXISTS … AND NOT EXISTS`` guard
-    makes it a safe no-op when the table has already been renamed or
-    never existed.
+    Runs once per catalog init; the existence check makes it a safe no-op
+    when the table has already been renamed or never existed.
     """
-    sql = (
+    rows = await DQLQuery(
         "SELECT tablename FROM pg_tables "
-        "WHERE schemaname = :schema AND tablename LIKE '%\\_stac\\_metadata'"
-    )
-    result = await conn.execute(_sa_text(sql), {"schema": schema})
-    rows = result.fetchall()
-    for (old_name,) in rows:
+        "WHERE schemaname = :schema AND tablename LIKE '%\\_stac\\_metadata'",
+        result_handler=ResultHandler.ALL,
+    ).execute(conn, schema=schema)
+
+    for row in rows or []:
+        old_name = row["tablename"] if isinstance(row, dict) else row[0]
         new_name = old_name.replace("_stac_metadata", "_item_metadata")
-        check = (
+
+        exists = await DQLQuery(
             "SELECT 1 FROM pg_tables "
-            "WHERE schemaname = :schema AND tablename = :new_name"
-        )
-        exists = await conn.execute(
-            _sa_text(check), {"schema": schema, "new_name": new_name}
-        )
-        if exists.fetchone() is None:
-            rename_sql = (
-                f'ALTER TABLE "{schema}"."{old_name}" '
-                f'RENAME TO "{new_name}"'
-            )
-            await conn.execute(_sa_text(rename_sql))
+            "WHERE schemaname = :schema AND tablename = :new_name",
+            result_handler=ResultHandler.ONE_OR_NONE,
+        ).execute(conn, schema=schema, new_name=new_name)
+
+        if exists is None:
+            await DQLQuery(
+                f'ALTER TABLE "{schema}"."{old_name}" RENAME TO "{new_name}"',
+                result_handler=ResultHandler.NONE,
+            ).execute(conn)
             logger.info(
                 f"Migrated sidecar table: {schema}.{old_name} → {new_name}"
             )

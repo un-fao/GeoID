@@ -183,7 +183,7 @@ class FeaturePipelineContext:
 
     # ── Sidecar data access ─────────────────────────────────────────────────
 
-    def publish(self, sidecar_id: str, data: Dict[str, Any]) -> None:
+    def publish(self, sidecar_id: str, data: Any) -> None:
         """
         Store *data* under *sidecar_id* so downstream sidecars can read it.
 
