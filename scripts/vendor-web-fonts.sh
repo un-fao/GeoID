@@ -25,6 +25,10 @@ TMP_DIR="$(mktemp -d)"
 unzip -q "${FA_ZIP}" -d "${TMP_DIR}"
 cp "${TMP_DIR}/fontawesome-free-${FA_VERSION}-web/css/all.min.css" "${VENDOR}/fontawesome/"
 cp -r "${TMP_DIR}/fontawesome-free-${FA_VERSION}-web/webfonts/." "${VENDOR}/fontawesome/webfonts/"
+# all.min.css lives at vendor/fontawesome/all.min.css (not vendor/fontawesome/css/),
+# so its upstream url(../webfonts/...) refs are off by one dir. Rewrite to ./webfonts/.
+sed -i.bak 's|url(\.\./webfonts/|url(./webfonts/|g' "${VENDOR}/fontawesome/all.min.css"
+rm -f "${VENDOR}/fontawesome/all.min.css.bak"
 rm -rf "${FA_ZIP}" "${TMP_DIR}"
 
 # Google Fonts: fetch the CSS, then download each referenced woff2 and
