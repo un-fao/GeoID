@@ -62,7 +62,9 @@ async def get_items_filtered(
     Fetches and filters items from a single collection table, leveraging the new ItemService search pipeline.
     Supports reprojection and CQL filters utilizing automated sidecar joins via the QueryOptimizer.
     """
-    catalogs: CatalogsProtocol = get_protocol(CatalogsProtocol)
+    catalogs = get_protocol(CatalogsProtocol)
+    if catalogs is None:
+        raise HTTPException(status_code=503, detail="CatalogsProtocol unavailable.")
     
     # Construct robust QueryRequest utilizing the optimized execution pipeline
     request = QueryRequest(
@@ -127,7 +129,9 @@ async def get_items_filtered(
             from dynastore.models.protocols import ItemsProtocol
             
             items_svc = get_protocol(ItemsProtocol)
-            
+            if items_svc is None:
+                raise HTTPException(status_code=503, detail="ItemsProtocol unavailable.")
+
             # Fetch full field definitions including sidecars
             # We don't need physical schema/table here as we pass logical IDs
             field_defs = await items_svc.get_collection_fields(
@@ -141,7 +145,7 @@ async def get_items_filtered(
             
             for name, defn in field_defs.items():
                 # Map to SQL expression defined by sidecar (e.g. "a.asset_id", "h.geoid")
-                field_mapping[name] = text(defn.sql_expression)
+                field_mapping[name] = text(getattr(defn, "sql_expression", name))
 
             cql_where, cql_params = parse_cql_filter(
                 cql_filter, 
@@ -199,7 +203,7 @@ async def get_items_filtered(
     rows = []
     total_count = 0
     if rows_proxy:
-        total_count = rows_proxy[0].properties.get("_total_count", 0)
+        total_count = (rows_proxy[0].properties or {}).get("_total_count", 0)
         for row in rows_proxy:
             r = row.model_dump()
             r["properties"].pop("_total_count", None)

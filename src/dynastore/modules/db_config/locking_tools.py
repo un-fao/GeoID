@@ -22,7 +22,7 @@ import asyncio
 import functools
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
-from typing import Optional, Callable, Awaitable, Any, TypeVar, Dict, AsyncGenerator, Set
+from typing import Optional, Callable, Awaitable, Any, TypeVar, Dict, AsyncGenerator, Iterator, Set
 from sqlalchemy import text, Engine
 from sqlalchemy.ext.asyncio import AsyncEngine
 from dynastore.modules.db_config.query_executor import (
@@ -42,7 +42,7 @@ T = TypeVar("T")
 # This makes acquire_lock_if_needed re-entrant: if the same key is requested again
 # within the same coroutine chain, we skip the lock attempt (PostgreSQL advisory
 # xact locks are re-entrant at the DB level too).
-_held_lock_keys: ContextVar[Set[str]] = ContextVar("_held_lock_keys", default=None)
+_held_lock_keys: ContextVar[Optional[Set[str]]] = ContextVar("_held_lock_keys", default=None)
 
 
 def retry_on_lock_conflict(max_retries: int = 5, base_delay: float = 0.5):
@@ -149,7 +149,9 @@ def _get_stable_lock_id(key: str) -> int:
 
 
 @contextmanager
-def sync_acquire_startup_lock(conn: DbResource, lock_key: str, timeout: str = "30s"):
+def sync_acquire_startup_lock(
+    conn: DbResource, lock_key: str, timeout: str = "30s"
+) -> "Iterator[Optional[DbResource]]":
     """
     Synchronous version of acquire_startup_lock for DDL coordination.
     """
@@ -178,7 +180,12 @@ def sync_acquire_startup_lock(conn: DbResource, lock_key: str, timeout: str = "3
 
     if not acquired:
         logger.debug(f"Lock {lock_key} busy, waiting up to {timeout}...")
-        conn.execute(text(f"SET LOCAL lock_timeout = '{timeout}'"))
+        q_set = DDLQuery(f"SET LOCAL lock_timeout = '{timeout}'")
+        q_set._executor._execute_sync(
+            conn,
+            q_set._executor.query_builder_strategy.build(conn, {})[0],
+            {},
+        )
 
         q_wait = DQLQuery(
             "SELECT pg_advisory_xact_lock(:lock_id)", result_handler=ResultHandler.NONE
@@ -234,7 +241,7 @@ async def acquire_startup_lock(
         # If busy, wait with a timeout to prevent deadlocks
         logger.debug(f"Lock {lock_key} busy, waiting up to {timeout}...")
         # We use a local session timeout for safety during the lock wait.
-        await conn.execute(text(f"SET LOCAL lock_timeout = '{timeout}'"))
+        await DDLQuery(f"SET LOCAL lock_timeout = '{timeout}'").execute(conn)
 
         q_wait = DQLQuery(
             "SELECT pg_advisory_xact_lock(:lock_id)", result_handler=ResultHandler.NONE

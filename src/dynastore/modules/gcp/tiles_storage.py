@@ -52,7 +52,7 @@ class TileBucketPreseedStorage(TileStorageSPI):
             raise RuntimeError("CloudIdentityProtocol (GCP) is not available.")
         return provider
 
-    async def save_tile(self, catalog_id: str, collection_id: str, tms_id: str, z: int, x: int, y: int, data: bytes, format: str) -> str:
+    async def save_tile(self, catalog_id: str, collection_id: str, tms_id: str, z: int, x: int, y: int, data: bytes, format: str) -> Optional[str]:
         tile_identifier = f"{catalog_id}/{collection_id}/{tms_id}/{z}/{x}/{y}.{format}"
         try:
             logger.debug(f"Background save task started for tile: {tile_identifier}")
@@ -154,7 +154,8 @@ class TileBucketPreseedStorage(TileStorageSPI):
         if exists:
             # Asynchronously ensure credentials are valid and get a fresh token.
             # This offloads the refresh to a background thread.
-            access_token = await identity_provider.get_fresh_token()
+            get_token = getattr(identity_provider, "get_fresh_token", None)
+            access_token = await get_token() if get_token else None
             
             # Use the IAM API to sign the URL remotely.
             # Use the injected concurrency backend for the blocking signed URL generation.
@@ -196,7 +197,7 @@ class TileBucketPreseedStorage(TileStorageSPI):
         result = await run_in_thread(_delete_all)
         # Clear existence cache for this collection
         if result > 0:
-            self.check_tile_exists.cache_clear()
+            getattr(self.check_tile_exists, "cache_clear", lambda: None)()
         return result
 
     async def delete_storage_for_catalog(self, catalog_id: str):
@@ -218,4 +219,4 @@ class TileBucketPreseedStorage(TileStorageSPI):
 
         await run_in_thread(_delete_all)
         # Clear existence cache
-        self.check_tile_exists.cache_clear()
+        getattr(self.check_tile_exists, "cache_clear", lambda: None)()

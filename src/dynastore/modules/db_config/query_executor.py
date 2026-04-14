@@ -53,6 +53,7 @@ from geoalchemy2.shape import to_shape
 from geoalchemy2.elements import WKBElement, WKTElement, _SpatialElement
 from sqlalchemy import Table, MetaData
 from typing import (
+    Iterator,
     Union,
     List,
     Callable,
@@ -779,7 +780,7 @@ class GeoDQLExecutor(DQLExecutor):
 
 
 @contextmanager
-def sync_managed_transaction(db_resource: DbSyncResource):
+def sync_managed_transaction(db_resource: DbSyncResource) -> Iterator[Any]:
     """Sync re-entrant transaction manager."""
     if isinstance(db_resource, Engine):
         with db_resource.begin() as conn:
