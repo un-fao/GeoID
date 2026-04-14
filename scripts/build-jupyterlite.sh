@@ -29,7 +29,8 @@ cp "${LITE_OUT}/bridge.js" "${LITE_OUT}/../bridge.js.bak" 2>/dev/null || true
 
 WHEEL_ARGS=()
 for w in "${WHEELS_DIR}"/*.whl; do
-    [ -e "$w" ] && WHEEL_ARGS+=("--piplite-wheels=$w")
+    # piplite resolves relative paths against its own cwd; always pass absolute.
+    [ -e "$w" ] && WHEEL_ARGS+=("--piplite-wheels=$(cd "$(dirname "$w")" && pwd)/$(basename "$w")")
 done
 jupyter lite build --lite-dir "${LITE_CONFIG}" --output-dir "${LITE_OUT}" "${WHEEL_ARGS[@]}"
 

@@ -29,10 +29,10 @@ RUN mkdir -p ./lite-output ./lite-config/wheels && \
 
 RUN if [ "${BUILD_JUPYTERLITE}" = "true" ]; then \
         WHEEL_ARGS="" && \
-        for w in ./lite-config/wheels/*.whl; do \
+        for w in /build/lite-config/wheels/*.whl; do \
             [ -e "$w" ] && WHEEL_ARGS="$WHEEL_ARGS --piplite-wheels=$w"; \
         done && \
-        jupyter lite build --lite-dir ./lite-config --output-dir ./lite-output $WHEEL_ARGS; \
+        jupyter lite build --lite-dir /build/lite-config --output-dir /build/lite-output $WHEEL_ARGS; \
     else \
         echo "JupyterLite: stage noop"; \
     fi
