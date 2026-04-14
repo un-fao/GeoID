@@ -149,7 +149,7 @@ class NullSerializer:
     """Passthrough for in-memory backends -- stores objects directly."""
 
     def dumps(self, value: Any) -> bytes:
-        return value  # type: ignore[return-value]
+        return value
 
     def loads(self, data: bytes) -> Any:
         return data
@@ -191,7 +191,10 @@ class MsgPackSerializer:
             )
 
     def dumps(self, value: Any) -> bytes:
-        return self._msgpack.packb(value, use_bin_type=True)
+        result = self._msgpack.packb(value, use_bin_type=True)
+        if result is None:
+            raise RuntimeError("msgpack.packb returned None")
+        return result
 
     def loads(self, data: bytes) -> Any:
         return self._msgpack.unpackb(data, raw=False)
@@ -293,7 +296,7 @@ class LocalAsyncCacheBackend:
             del self._store[key]
             return None
         self._store.move_to_end(key)
-        return entry.value  # type: ignore[return-value]
+        return entry.value
 
     async def set(
         self,
@@ -425,7 +428,7 @@ class LocalSyncCacheBackend:
                 del self._store[key]
                 return None
             self._store.move_to_end(key)
-            return entry.value  # type: ignore[return-value]
+            return entry.value
 
     def set(
         self,
@@ -718,10 +721,10 @@ class CacheManager:
             backend = self._async_backends.get(name)
             if backend is None:
                 raise KeyError(f"No async cache backend named '{name}'")
-            return backend  # type: ignore[return-value]
+            return backend
         if not self._async_backends:
             raise RuntimeError("No async cache backends registered")
-        return min(self._async_backends.values(), key=lambda b: b.priority)  # type: ignore[return-value]
+        return min(self._async_backends.values(), key=lambda b: b.priority)
 
     def get_sync_backend(
         self, name: Optional[str] = None
@@ -730,10 +733,10 @@ class CacheManager:
             backend = self._sync_backends.get(name)
             if backend is None:
                 raise KeyError(f"No sync cache backend named '{name}'")
-            return backend  # type: ignore[return-value]
+            return backend
         if not self._sync_backends:
             raise RuntimeError("No sync cache backends registered")
-        return min(self._sync_backends.values(), key=lambda b: b.priority)  # type: ignore[return-value]
+        return min(self._sync_backends.values(), key=lambda b: b.priority)
 
     def create_cache(self, config: CacheConfig) -> Cache:
         backend = self._default_async
@@ -745,7 +748,7 @@ class CacheManager:
             config=config,
             serializer=NullSerializer(),
             event_listeners=list(self._event_listeners),
-        )  # type: ignore[return-value]
+        )
 
     def add_event_listener(self, listener: CacheEventListener) -> None:
         self._event_listeners.append(listener)
@@ -948,7 +951,7 @@ def cached(
                         return result
 
                     resolved = _resolve_ttl()
-                    await _backend.set(cache_key, result, ttl=resolved)  # type: ignore[arg-type]
+                    await _backend.set(cache_key, result, ttl=resolved)
                     return result
 
             def sync_cache_invalidate_impl(*args: Any, **kwargs: Any) -> None:
@@ -1020,7 +1023,7 @@ def cached(
                     return result
 
                 resolved = _resolve_ttl()
-                _sync_backend.set(cache_key, result, ttl=resolved)  # type: ignore[arg-type]
+                _sync_backend.set(cache_key, result, ttl=resolved)
                 return result
 
             def sync_cache_invalidate(*args: Any, **kwargs: Any) -> None:
