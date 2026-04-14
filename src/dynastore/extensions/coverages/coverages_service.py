@@ -23,6 +23,8 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
+from pydantic import BaseModel
+
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 
 from dynastore.extensions.ogc_base import OGCServiceMixin
@@ -122,7 +124,7 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
     # Landing page & conformance (delegated to OGCServiceMixin)
     # ------------------------------------------------------------------
 
-    async def get_landing_page(self, request: Request) -> cm.CoveragesLandingPage:
+    async def get_landing_page(self, request: Request):
         return await self.ogc_landing_page_handler(request)
 
     async def get_conformance(self, request: Request) -> cm.Conformance:
@@ -150,14 +152,21 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
         datetime_str = request.query_params.get("datetime")
         limit = int(request.query_params.get("limit", "1000"))
 
-        qr = QueryRequest(limit=limit)
+        cql_parts: list[str] = []
         if bbox_str:
             try:
-                qr.bbox = [float(v) for v in bbox_str.split(",")]
+                bbox_nums = [float(v) for v in bbox_str.split(",")]
             except ValueError:
                 raise HTTPException(400, detail="Invalid bbox format")
+            if len(bbox_nums) != 4:
+                raise HTTPException(400, detail="bbox must have 4 values")
+            cql_parts.append(
+                f"S_INTERSECTS(geometry,BBOX({bbox_nums[0]},{bbox_nums[1]},{bbox_nums[2]},{bbox_nums[3]}))"
+            )
         if datetime_str:
-            qr.datetime = datetime_str
+            cql_parts.append(f"T_INTERSECTS(datetime,INTERVAL('{datetime_str}'))")
+
+        qr = QueryRequest(limit=limit, cql_filter=" AND ".join(cql_parts) or None)
 
         try:
             driver = await get_driver(Operation.READ, catalog_id, collection_id)
@@ -165,9 +174,10 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
             raise HTTPException(404, detail=f"Collection '{collection_id}' not found")
 
         features = []
-        async for feature in driver.read_entities(
+        iterator = await driver.read_entities(
             catalog_id, collection_id, request=qr, limit=limit,
-        ):
+        )
+        async for feature in iterator:
             features.append(feature.model_dump(by_alias=True, exclude_none=True))
 
         # Build CoverageJSON response
@@ -225,9 +235,9 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
         general_grid = {}
 
         if extent:
-            extent_dict = extent.model_dump(exclude_none=True) if hasattr(extent, "model_dump") else extent
-            spatial = extent_dict.get("spatial", {})
-            temporal = extent_dict.get("temporal", {})
+            extent_dict = extent.model_dump(exclude_none=True)
+            spatial = extent_dict.get("spatial") or {}
+            temporal = extent_dict.get("temporal") or {}
 
             if spatial.get("bbox"):
                 bbox = spatial["bbox"]
@@ -303,9 +313,9 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
             }
             if fd.description:
                 desc = fd.description
-                if hasattr(desc, "model_dump"):
-                    desc = desc.model_dump(exclude_none=True)
-                field_entry["description"] = desc
+                field_entry["description"] = (
+                    desc.model_dump(exclude_none=True) if isinstance(desc, BaseModel) else desc
+                )
             range_fields.append(field_entry)
 
         return cm.RangeType(type="DataRecord", field=range_fields)
@@ -317,8 +327,8 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
         domain = {"type": "Domain", "domainType": "Grid", "axes": {}}
 
         if collection and collection.extent:
-            extent_dict = collection.extent.model_dump(exclude_none=True) if hasattr(collection.extent, "model_dump") else collection.extent
-            spatial = extent_dict.get("spatial", {})
+            extent_dict = collection.extent.model_dump(exclude_none=True)
+            spatial = extent_dict.get("spatial") or {}
             if spatial.get("bbox"):
                 bbox = spatial["bbox"]
                 first_bbox = bbox[0] if isinstance(bbox[0], list) else bbox
