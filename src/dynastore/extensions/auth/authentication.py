@@ -200,8 +200,10 @@ class Authentication(ExtensionProtocol):
             redirect_uri = form.get("redirect_uri", "")
             client_id = form.get("client_id", "")
 
-            if not code:
+            if not code or not isinstance(code, str):
                 raise HTTPException(400, "Missing authorization code")
+            if not isinstance(redirect_uri, str):
+                redirect_uri = ""
 
             # Resolve relative redirect_uri to absolute
             if redirect_uri.startswith("/"):
@@ -229,7 +231,7 @@ class Authentication(ExtensionProtocol):
             form = await request.form()
             refresh_token_str = form.get("refresh_token")
 
-            if not refresh_token_str:
+            if not refresh_token_str or not isinstance(refresh_token_str, str):
                 raise HTTPException(400, "Missing refresh_token")
 
             if self.identity_provider:
