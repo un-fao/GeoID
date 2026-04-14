@@ -19,7 +19,7 @@
 import random
 import uuid
 import logging
-from osgeo import gdal, ogr, osr, __version__ as gdal_version
+from osgeo import gdal, ogr, osr, __version__ as gdal_version  # type: ignore[import-not-found]
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Any, Optional
 from collections import defaultdict
@@ -151,9 +151,12 @@ def _render_sld_style(
         if filter_element is not None:
             prop_equal = filter_element.find("ogc:PropertyIsEqualTo", ns)
             if prop_equal is not None:
-                prop_name = prop_equal.find("ogc:PropertyName", ns).text
-                prop_literal = prop_equal.find("ogc:Literal", ns).text
-                ogr_layer.SetAttributeFilter(f"{prop_name} = '{prop_literal}'")
+                name_el = prop_equal.find("ogc:PropertyName", ns)
+                literal_el = prop_equal.find("ogc:Literal", ns)
+                prop_name = name_el.text if name_el is not None else None
+                prop_literal = literal_el.text if literal_el is not None else None
+                if prop_name and prop_literal:
+                    ogr_layer.SetAttributeFilter(f"{prop_name} = '{prop_literal}'")
             else:
                 ogr_layer.SetAttributeFilter(
                     None
@@ -168,12 +171,13 @@ def _render_sld_style(
                 color_param = fill.find("sld:CssParameter[@name='fill']", ns)
                 opacity_param = fill.find("sld:CssParameter[@name='fill-opacity']", ns)
                 if color_param is not None and opacity_param is not None:
-                    fill_rgba = _hex_to_rgba(
-                        color_param.text, float(opacity_param.text)
-                    )
-                    gdal.RasterizeLayer(
-                        mem_dataset, [1, 2, 3, 4], ogr_layer, burn_values=fill_rgba
-                    )
+                    color_text = color_param.text
+                    opacity_text = opacity_param.text
+                    if color_text and opacity_text:
+                        fill_rgba = _hex_to_rgba(color_text, float(opacity_text))
+                        gdal.RasterizeLayer(
+                            mem_dataset, [1, 2, 3, 4], ogr_layer, burn_values=fill_rgba
+                        )
 
             stroke = poly_symbolizer.find("sld:Stroke", ns)
             if stroke is not None:
@@ -182,19 +186,20 @@ def _render_sld_style(
                     "sld:CssParameter[@name='stroke-opacity']", ns
                 )
                 if color_param is not None:
-                    opacity = (
-                        float(opacity_param.text) if opacity_param is not None else 1.0
+                    color_text = color_param.text
+                    opacity_text = (
+                        opacity_param.text if opacity_param is not None else None
                     )
-                    stroke_rgba = _hex_to_rgba(color_param.text, opacity)
-                    # Note: This stroke implementation is simplified. A full implementation
-                    # would extract boundaries similar to _render_custom_style.
-                    gdal.RasterizeLayer(
-                        mem_dataset,
-                        [1, 2, 3, 4],
-                        ogr_layer,
-                        burn_values=stroke_rgba,
-                        options=["ALL_TOUCHED=TRUE"],
-                    )
+                    opacity = float(opacity_text) if opacity_text else 1.0
+                    if color_text:
+                        stroke_rgba = _hex_to_rgba(color_text, opacity)
+                        gdal.RasterizeLayer(
+                            mem_dataset,
+                            [1, 2, 3, 4],
+                            ogr_layer,
+                            burn_values=stroke_rgba,
+                            options=["ALL_TOUCHED=TRUE"],
+                        )
 
 
 def _mapbox_gl_filter_to_ogr_sql(gl_filter: List[Any]) -> Optional[str]:
