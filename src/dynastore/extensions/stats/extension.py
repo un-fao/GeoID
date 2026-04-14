@@ -29,12 +29,9 @@ from dynastore.modules.db_config.query_executor import DbResource
 
 logger = logging.getLogger(__name__)
 
-# Try to import StatsProtocol, create dummy if it doesn't exist yet for registry check
-try:
-    from dynastore.models.protocols.stats import StatsProtocol
-except ImportError:
-    class StatsProtocol:
-        pass
+from dynastore.models.protocols.stats import StatsProtocol
+
+
 class StatsExtension(ExtensionProtocol, StatsProtocol):
     priority: int = 100
     engine: Optional[DbResource] = None
@@ -66,14 +63,20 @@ class StatsExtension(ExtensionProtocol, StatsProtocol):
 
     @property
     def catalogs(self) -> CatalogsProtocol:
-        return self.get_protocol(CatalogsProtocol)
+        svc = self.get_protocol(CatalogsProtocol)
+        if svc is None:
+            raise RuntimeError("CatalogsProtocol not registered")
+        return svc
 
     @property
     def database(self) -> DatabaseProtocol:
-        return self.get_protocol(DatabaseProtocol)
+        svc = self.get_protocol(DatabaseProtocol)
+        if svc is None:
+            raise RuntimeError("DatabaseProtocol not registered")
+        return svc
 
     @property
-    def stats_service(self) -> StatsProtocol:
+    def stats_service(self) -> Optional[StatsProtocol]:
         return self.get_protocol(StatsProtocol)
 
     async def log_access(
