@@ -60,6 +60,7 @@ from dynastore.extensions.tools.url import get_root_url
 from dynastore.extensions.tools.language_utils import get_language
 
 from dynastore.modules.catalog.models import Catalog, Collection
+from dynastore.models.shared_models import Link
 from dynastore.extensions.tools.query import parse_ogc_query_request, stream_ogc_features
 
 logger = logging.getLogger(__name__)
@@ -212,6 +213,8 @@ class WFSService(ExtensionProtocol):
 
         This dual structure provides flexibility for different client behaviors.
         """
+        if self.router is None:
+            return
         # The root endpoint is disabled to enforce catalog-scoped requests.
         self.router.add_api_route("", self.handle_root_wfs_request, methods=["GET"])
         self.router.add_api_route(
@@ -319,6 +322,9 @@ class WFSService(ExtensionProtocol):
         catalogs_svc = await self._get_catalogs_service()
         configs_svc = await self._get_configs_service()
 
+        from dynastore.modules.storage.router import get_driver
+        from dynastore.modules.storage.routing_config import Operation
+
         if catalog_id:
             # Scoped request: only fetch collections for the specified catalog.
             catalog_metadata, all_collections_summary = await asyncio.gather(
@@ -328,9 +334,6 @@ class WFSService(ExtensionProtocol):
             if catalog_metadata:
                 # Use the catalog's metadata for the service identification block.
                 service_metadata, _ = catalog_metadata.localize(language)
-
-            from dynastore.modules.storage.router import get_driver
-            from dynastore.modules.storage.routing_config import Operation
 
             vector_collections = []
             for c_summary in all_collections_summary:
@@ -423,7 +426,7 @@ class WFSService(ExtensionProtocol):
         # Introspect using logical IDs; ItemService handles sidecar aggregation.
         async with managed_transaction(conn) as db_conn:
             feature_schema = await wfs_db.introspect_feature_type_schema(
-                db_conn,
+                cast(AsyncConnection, db_conn),
                 catalog_id=schema_prefix,
                 collection_id=collection_id,
             )
@@ -491,9 +494,9 @@ class WFSService(ExtensionProtocol):
         configs_svc = await self._get_configs_service()
         storage_svc = await self._get_storage_service()
 
-        plugin_config: WFSPluginConfig = await configs_svc.get_config(
+        plugin_config = cast(WFSPluginConfig, await configs_svc.get_config(
             WFS_PLUGIN_CONFIG_ID, catalog_id=catalog_id_from_path, ctx=DriverContext(db_resource=conn
-        ))
+        )))
 
         cache_key = None
         if plugin_config.cache_on_demand and storage_svc:
@@ -644,7 +647,7 @@ class WFSService(ExtensionProtocol):
                 rel="prev",
                 href=f"{base_url}?{'&'.join([f'{k}={v}' for k, v in prev_params.items()])}",
                 type=normalized_format,
-                title="Previous page"
+                title=cast(Any, "Previous page"),
             ))
 
         if (start_index + count) < total_count:
@@ -654,7 +657,7 @@ class WFSService(ExtensionProtocol):
                 rel="next",
                 href=f"{base_url}?{'&'.join([f'{k}={v}' for k, v in next_params.items()])}",
                 type=normalized_format,
-                title="Next page"
+                title=cast(Any, "Next page"),
             ))
 
         return stream_ogc_features(

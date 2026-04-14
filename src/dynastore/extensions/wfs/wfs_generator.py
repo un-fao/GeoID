@@ -22,7 +22,7 @@ import orjson
 from fastapi import Request, Response
 
 import logging
-from typing import List, Dict, Any, Optional
+from typing import Iterable, List, Dict, Any, Optional
 
 from xml.etree.ElementTree import (
     Element,
@@ -70,7 +70,7 @@ def _prettify_xml(elem: Element) -> str:
 # --- WFS Response Generators ---
 
 
-def create_exception_report(code: str, locator: str, text_message: str) -> str:
+def create_exception_report(code: str, locator: Optional[str], text_message: str) -> str:
     """
     Creates an OGC-compliant WFS Exception Report in XML format. This is the
     standard and required way to report errors for all WFS operations.
@@ -86,7 +86,7 @@ def create_exception_report(code: str, locator: str, text_message: str) -> str:
         },
     )
     exception = SubElement(
-        root, "ows:Exception", {"exceptionCode": code, "locator": locator}
+        root, "ows:Exception", {"exceptionCode": code, "locator": locator or ""}
     )
     SubElement(exception, "ows:ExceptionText").text = text_message
     return _prettify_xml(root)
@@ -558,55 +558,8 @@ def create_hits_response(
     return _prettify_xml(root)
 
 
-async def create_empty_feature_collection_response(
-    request: Request,
-    schema_prefix: str,
-    collection_id: str,
-    format_enum: OutputFormatEnum,
-):
-    # Import locally to avoid circular dependency
-    from .wfs_service import OutputFormatEnum
-
-    # GeoJSON
-    if format_enum == OutputFormatEnum.GEOJSON:
-        # Create explicit JSON response
-        json_content = {
-            "type": "FeatureCollection",
-            "features": [],
-            "numberMatched": 0,
-            "numberReturned": 0,
-            "timeStamp": datetime.now(timezone.utc).isoformat() + "Z",
-        }
-        return Response(
-            content=orjson.dumps(json_content), media_type="application/json"
-        )
-
-
-    # GML format (usually default)
-    if format_enum in (None, OutputFormatEnum.GML):
-        # Wait, better to let the service pass it or use a simpler heuristic
-        target_namespace = f"{root_wfs_url}/{schema_prefix}"
-        language = request.headers.get("Accept-Language", "en")
-
-        xml_content = create_feature_collection_response(
-            empty_features,
-            schema_prefix,
-            typename,
-            target_namespace,
-            number_matched=0,  # type: ignore
-            language=language,
-            number_returned=0,
-        )
-        return Response(
-            content=xml_content, media_type="application/gml+xml; version=3.2"
-        )
-
-    # Fallback to empty Response with appropriate media type
-    return Response(content="", status_code=200)
-
-
 def create_feature_collection_response(
-    features: FeatureCollection,
+    features: Iterable[Any],
     schema_prefix: str,
     typename: str,
     target_namespace: str,
