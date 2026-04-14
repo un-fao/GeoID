@@ -37,7 +37,6 @@ from dynastore.modules.gcp import gcp_db
 from dynastore.modules.gcp.gcp_config import (
     GcpCatalogBucketConfig,
     GcpLocation,
-    GCP_CATALOG_BUCKET_CONFIG_ID,
 )
 from dynastore.modules.gcp.tools import bucket as bucket_tool
 from dynastore.modules.concurrency import run_in_thread
@@ -322,15 +321,15 @@ class BucketService:
                 if context is not None:
                     # If a context is provided (e.g. from init hook), prioritize it.
                     # crucially: do NOT query the DB here, as the catalog might not be visible yet.
-                    if GCP_CATALOG_BUCKET_CONFIG_ID in context.config:
+                    if GcpCatalogBucketConfig.class_key() in context.config:
                         from dynastore.modules.db_config.platform_config_service import (
                             require_config_class,
                         )
 
                         effective_config = require_config_class(
-                            GCP_CATALOG_BUCKET_CONFIG_ID
+                            GcpCatalogBucketConfig.class_key()
                         ).model_validate(
-                            context.config[GCP_CATALOG_BUCKET_CONFIG_ID]
+                            context.config[GcpCatalogBucketConfig.class_key()]
                         )
                     else:
                         # Snaphot present but key missing -> explicit default

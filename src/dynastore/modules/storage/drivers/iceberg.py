@@ -409,7 +409,6 @@ class DriverRecordsIceberg(ModuleProtocol):
         from dynastore.modules.storage.driver_config import (
             CollectionWritePolicy,
             WriteConflictPolicy,
-            WRITE_POLICY_PLUGIN_ID,
         )
 
         rows = normalize_to_dicts(entities)

@@ -34,7 +34,7 @@ from dynastore.models.protocols import (
     CatalogsProtocol,
     ConfigsProtocol,
 )
-from dynastore.modules.stac.stac_config import STAC_PLUGIN_CONFIG_ID, StacPluginConfig
+from dynastore.modules.stac.stac_config import StacPluginConfig
 from dynastore.tools.db import validate_sql_identifier
 from dynastore.tools.discovery import get_protocol
 from dynastore.extensions.tools.db import get_async_engine
@@ -653,7 +653,7 @@ class StacVirtualMixin(_Host):
             stac_config = cast(
                 StacPluginConfig,
                 await config_manager.get_config(
-                    STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
+                    StacPluginConfig, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
                 )),
             )
 
@@ -841,7 +841,7 @@ class StacVirtualMixin(_Host):
             stac_config = cast(
                 StacPluginConfig,
                 await config_service.get_config(
-                    STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
+                    StacPluginConfig, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
                 )),
             )
 
@@ -953,7 +953,7 @@ class StacVirtualMixin(_Host):
             stac_config = cast(
                 StacPluginConfig,
                 await config_service.get_config(
-                    STAC_PLUGIN_CONFIG_ID, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
+                    StacPluginConfig, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
                 )),
             )
 

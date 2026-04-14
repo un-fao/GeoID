@@ -247,7 +247,6 @@ class RelativeSlashRedirectMiddleware:
 
 class WebConfig(PluginConfig):
     """Configuration for the Web Platform interface."""
-    _class_key: ClassVar[Optional[str]] = "web_config"
     brand_name: str = "Agro-Informatics Platform"
     brand_subtitle: str = "Catalog Services"
     token_key: str = "ds_token"

@@ -52,7 +52,6 @@ from .dto import (
     ConfigListResponse,
     PluginSchemaInfo,
     QuickStartConfigSet,
-    WellKnownPlugin,
     get_plugin_examples,
     PLUGIN_EXAMPLES,
 )

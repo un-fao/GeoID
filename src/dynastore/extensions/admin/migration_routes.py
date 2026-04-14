@@ -274,8 +274,6 @@ async def evolve_collection(
     from dynastore.modules import get_protocol
     from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
     from dynastore.modules.catalog.schema_evolution import SchemaEvolutionEngine
-    from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
-
     catalogs = get_protocol(CatalogsProtocol)
     configs_proto = get_protocol(ConfigsProtocol)
     if not catalogs or not configs_proto:

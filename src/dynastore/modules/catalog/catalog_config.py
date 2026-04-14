@@ -68,8 +68,6 @@ class CompositePartitionConfig(BaseModel):
 
 # --- Main Catalog Config ---
 
-COLLECTION_PLUGIN_CONFIG_ID = "collection"
-
 
 class CollectionPluginConfig(PluginConfig):
     """Collection configuration — structural only.
@@ -81,8 +79,6 @@ class CollectionPluginConfig(PluginConfig):
     Storage routing is handled by ``RoutingPluginConfig``
     (``plugin_id = "collection:drivers"``).
     """
-
-    _class_key: ClassVar[Optional[str]] = COLLECTION_PLUGIN_CONFIG_ID
 
     model_config = {"extra": "allow"}
 

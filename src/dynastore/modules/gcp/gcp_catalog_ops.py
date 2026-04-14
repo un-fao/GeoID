@@ -37,8 +37,6 @@ from dynastore.modules.gcp.gcp_config import (
     GcpCatalogBucketConfig,
     GcpEventingConfig,
     ManagedBucketEventing,
-    GCP_CATALOG_BUCKET_CONFIG_ID,
-    GCP_EVENTING_CONFIG_ID,
     TriggeredAction,
 )
 from dynastore.modules.gcp.models import PushSubscriptionConfig
@@ -102,7 +100,7 @@ class GcpCatalogOpsMixin:
             config_mgr = get_protocol(ConfigsProtocol)
             if config_mgr:
                 # get_config follows the waterfall: Collection -> Catalog -> Platform -> Defaults
-                bucket_config = await config_mgr.get_config(GCP_CATALOG_BUCKET_CONFIG_ID, catalog_id=catalog_id, ctx=DriverContext(db_resource=conn))
+                bucket_config = await config_mgr.get_config(GcpCatalogBucketConfig, catalog_id=catalog_id, ctx=DriverContext(db_resource=conn))
 
             # 2. Check if provisioning is enabled for this catalog
             if not bucket_config.enabled:
@@ -194,17 +192,11 @@ class GcpCatalogOpsMixin:
         )
 
         try:
-            eventing_data = context.config.get(GCP_EVENTING_CONFIG_ID)
+            eventing_data = context.config.get(GcpEventingConfig.class_key())
 
             if eventing_data:
                 try:
-                    from dynastore.modules.db_config.platform_config_service import (
-                        require_config_class,
-                    )
-
-                    eventing_config = require_config_class(
-                        GCP_EVENTING_CONFIG_ID
-                    ).model_validate(eventing_data)
+                    eventing_config = GcpEventingConfig.model_validate(eventing_data)
 
                     if (
                         isinstance(eventing_config, GcpEventingConfig)
@@ -463,7 +455,7 @@ class GcpCatalogOpsMixin:
         """Internal helper to fetch and parse a catalog's bucket config."""
         config_service = self.get_config_service()
         config = await config_service.get_config(
-            GCP_CATALOG_BUCKET_CONFIG_ID, catalog_id
+            GcpCatalogBucketConfig, catalog_id
         )
         return config if isinstance(config, GcpCatalogBucketConfig) else None
 
@@ -473,7 +465,7 @@ class GcpCatalogOpsMixin:
         """Persists the bucket configuration for a catalog."""
         config_service = self.get_config_service()
         await config_service.set_config(
-            GCP_CATALOG_BUCKET_CONFIG_ID, config, catalog_id=catalog_id
+            GcpCatalogBucketConfig, config, catalog_id=catalog_id
         )
         return await config_service.get_config(GcpCatalogBucketConfig, catalog_id)
 

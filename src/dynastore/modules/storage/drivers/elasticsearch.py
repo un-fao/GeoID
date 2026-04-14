@@ -129,7 +129,6 @@ class _ElasticsearchBase:
             from dynastore.models.protocols.configs import ConfigsProtocol
             from dynastore.tools.discovery import get_protocol
             from dynastore.modules.storage.routing_config import (
-                ROUTING_PLUGIN_CONFIG_ID,
                 RoutingPluginConfig,
             )
 
@@ -139,7 +138,7 @@ class _ElasticsearchBase:
             routing = _cast(
                 Optional[RoutingPluginConfig],
                 await configs.get_config(
-                    ROUTING_PLUGIN_CONFIG_ID,
+                    RoutingPluginConfig,
                     catalog_id=catalog_id,
                     collection_id=collection_id,
                 ),
@@ -171,7 +170,6 @@ class _ElasticsearchBase:
             from dynastore.models.protocols.configs import ConfigsProtocol
             from dynastore.tools.discovery import get_protocol
             from dynastore.modules.storage.routing_config import (
-                ROUTING_PLUGIN_CONFIG_ID,
                 Operation,
                 RoutingPluginConfig,
             )
@@ -182,7 +180,7 @@ class _ElasticsearchBase:
             routing = _cast(
                 Optional[RoutingPluginConfig],
                 await configs.get_config(
-                    ROUTING_PLUGIN_CONFIG_ID,
+                    RoutingPluginConfig,
                     catalog_id=catalog_id,
                     collection_id=collection_id,
                 ),
@@ -436,7 +434,6 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
         """Resolve CollectionWritePolicy from the config waterfall."""
         from dynastore.modules.storage.driver_config import (
             CollectionWritePolicy,
-            WRITE_POLICY_PLUGIN_ID,
         )
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.tools.discovery import get_protocol
@@ -445,7 +442,7 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
             configs = get_protocol(ConfigsProtocol)
             if configs:
                 result = await configs.get_config(
-                    WRITE_POLICY_PLUGIN_ID,
+                    CollectionWritePolicy,
                     catalog_id=catalog_id,
                     collection_id=collection_id,
                 )
@@ -1477,7 +1474,7 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
             from dynastore.models.protocols import CatalogsProtocol
             from dynastore.models.protocols.configs import ConfigsProtocol
             from dynastore.tools.discovery import get_protocol
-            from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
+            from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
 
             catalogs_proto = get_protocol(CatalogsProtocol)
             configs = get_protocol(ConfigsProtocol)
@@ -1497,7 +1494,7 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
                         continue
                     try:
                         routing = await configs.get_config(
-                            COLLECTION_PLUGIN_CONFIG_ID, catalog_id=catalog_id,
+                            CollectionPluginConfig, catalog_id=catalog_id,
                         )
                         if type(self).__name__ in routing.secondary_driver_ids:  # type: ignore[attr-defined]
                             await self._apply_deny_policy(catalog_id)

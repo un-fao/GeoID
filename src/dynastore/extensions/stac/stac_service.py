@@ -54,7 +54,7 @@ from dynastore.extensions.stac.search import (
     search_items,
 )
 
-from dynastore.modules.stac.stac_config import STAC_PLUGIN_CONFIG_ID, StacPluginConfig
+from dynastore.modules.stac.stac_config import StacPluginConfig
 
 from dynastore.tools.db import validate_sql_identifier  # type: ignore
 from .stac_models import STACCatalogRequest, stac_localize

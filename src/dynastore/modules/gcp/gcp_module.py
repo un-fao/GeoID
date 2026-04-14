@@ -70,9 +70,6 @@ from dynastore.modules.gcp.gcp_config import (
     ManagedBucketEventing,
     GcpCollectionBucketConfig,
     GcsNotificationEventType,
-    GCP_CATALOG_BUCKET_CONFIG_ID,
-    GCP_EVENTING_CONFIG_ID,
-    GCP_MODULE_CONFIG_ID,
     GcpModuleConfig,
     TriggeredAction,
 )

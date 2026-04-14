@@ -33,7 +33,7 @@ from dynastore.modules.db_config.query_executor import DbEngine
 from dynastore.models.driver_context import DriverContext
 
 # Import Ingestion Configuration
-from dynastore.tasks.ingestion.ingestion_config import INGESTION_CONFIG_ID
+from dynastore.tasks.ingestion.ingestion_config import IngestionPluginConfig
 from dynastore.tasks.ingestion.ingestion_models import TaskIngestionRequest
 from dynastore.tasks.reporters import ReportingInterface
 from .reporters_impl import DatabaseStatusReporter
@@ -114,7 +114,7 @@ async def run_ingestion_task(
 
         # --- Fetch Ingestion Configuration (Mutable Logic) ---
         ingestion_config = await catalog_module.configs.get_config(
-            INGESTION_CONFIG_ID, catalog_id, collection_id
+            IngestionPluginConfig, catalog_id, collection_id
         )
 
         # Initialize Operations

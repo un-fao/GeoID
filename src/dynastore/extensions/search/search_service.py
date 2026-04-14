@@ -549,7 +549,8 @@ class SearchService(ExtensionProtocol):
             from dynastore.tools.discovery import get_protocol
             configs_proto = get_protocol(ConfigsProtocol)
             if configs_proto:
-                cfg = await configs_proto.get_config("elasticsearch", catalog_id=catalog_id)
+                from dynastore.modules.elasticsearch.es_catalog_config import ElasticsearchCatalogConfig
+                cfg = await configs_proto.get_config(ElasticsearchCatalogConfig, catalog_id=catalog_id)
                 if cfg and getattr(cfg, "obfuscated", False):
                     return "obfuscated"
         except Exception:

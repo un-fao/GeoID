@@ -8,7 +8,7 @@ from dynastore.modules import ModuleProtocol
 from dynastore.models.protocols.event_bus import EventBusProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.catalog.event_service import CatalogEventType
-from dynastore.modules.elasticsearch.es_catalog_config import ES_CATALOG_CONFIG_ID
+from dynastore.modules.elasticsearch.es_catalog_config import ElasticsearchCatalogConfig
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ async def _get_es_catalog_config(catalog_id: str):
         configs = get_protocol(ConfigsProtocol)
         if not configs:
             return None
-        return await configs.get_config(ES_CATALOG_CONFIG_ID, catalog_id=catalog_id)
+        return await configs.get_config(ElasticsearchCatalogConfig, catalog_id=catalog_id)
     except Exception as e:
         logger.debug("Could not resolve ES catalog config for '%s': %s", catalog_id, e)
         return None
@@ -34,7 +34,6 @@ async def _is_es_active(catalog_id: str, collection_id: str) -> bool:
     """Return True when the collection has ES as write, secondary, or read driver."""
     try:
         from dynastore.models.protocols.configs import ConfigsProtocol
-        from dynastore.modules.storage.routing_config import ROUTING_PLUGIN_CONFIG_ID
 
         configs = get_protocol(ConfigsProtocol)
         if not configs:
@@ -444,7 +443,7 @@ class ElasticsearchModule(ModuleProtocol):
                     if not catalog_id:
                         continue
                     try:
-                        cfg = await configs.get_config(ES_CATALOG_CONFIG_ID, catalog_id=catalog_id)
+                        cfg = await configs.get_config(ElasticsearchCatalogConfig, catalog_id=catalog_id)
                     except Exception as exc:
                         logger.debug(
                             "ElasticsearchModule: Skipping catalog '%s' — config lookup failed: %s",

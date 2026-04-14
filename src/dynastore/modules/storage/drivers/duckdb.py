@@ -413,7 +413,7 @@ class DriverRecordsDuckdb(ModuleProtocol):
         """Synchronous write — runs inside thread pool."""
         from dynastore.modules.storage.drivers._duckdb_helpers import dicts_to_features
         from dynastore.modules.storage.driver_config import (
-            CollectionWritePolicy, WriteConflictPolicy, WRITE_POLICY_PLUGIN_ID,
+            CollectionWritePolicy, WriteConflictPolicy,
             AssetConflictPolicy,
         )
 
@@ -660,7 +660,7 @@ class DriverRecordsDuckdb(ModuleProtocol):
 
         from dynastore.modules.storage.drivers._duckdb_helpers import normalize_to_dicts
         from dynastore.modules.storage.driver_config import (
-            CollectionWritePolicy, WRITE_POLICY_PLUGIN_ID,
+            CollectionWritePolicy,
         )
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.tools.discovery import get_protocol
@@ -676,7 +676,7 @@ class DriverRecordsDuckdb(ModuleProtocol):
             _configs = get_protocol(ConfigsProtocol)
             if _configs:
                 _p = await _configs.get_config(
-                    WRITE_POLICY_PLUGIN_ID, catalog_id=catalog_id, collection_id=collection_id
+                    CollectionWritePolicy, catalog_id=catalog_id, collection_id=collection_id
                 )
                 if _p is not None:
                     policy = _p

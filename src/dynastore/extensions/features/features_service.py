@@ -49,7 +49,6 @@ from dynastore.models.protocols import (
 from dynastore.tools.discovery import get_protocol
 from dynastore.extensions.features.features_config import (
     FeaturesPluginConfig,
-    FEATURES_PLUGIN_CONFIG_ID,
 )
 from dynastore.extensions.features import ogc_generator, ogc_models
 from .policies import register_features_policies
@@ -73,7 +72,6 @@ from dynastore.extensions.tools.db import get_async_connection, get_async_engine
 from dynastore.modules.db_config.tools import managed_transaction
 from dynastore.modules.db_config.query_executor import DbResource
 import re
-from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
 from . import features_db
 from dynastore.extensions.tools.formatters import OutputFormatEnum, format_response
 from dynastore.extensions.tools.query import parse_ogc_query_request, stream_ogc_features

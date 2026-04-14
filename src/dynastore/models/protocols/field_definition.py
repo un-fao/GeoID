@@ -70,9 +70,6 @@ class EntityLevel(str, Enum):
     ASSET = "asset"
 
 
-FEATURE_TYPE_PLUGIN_ID = "collection:feature_type"
-
-
 class FeatureTypeDefinition(BaseModel):
     """Declared schema for an entity level.
 

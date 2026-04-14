@@ -16,14 +16,11 @@ from typing import ClassVar, List, Optional
 from pydantic import Field
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 
-FEATURES_PLUGIN_CONFIG_ID = "features"
-
 class FeaturesPluginConfig(PluginConfig):
     """
     Runtime configuration for the OGC Features extension.
     Controls caching and visibility.
     """
-    _class_key: ClassVar[Optional[str]] = FEATURES_PLUGIN_CONFIG_ID
     enabled: bool = Field(True, description="If False, Features requests will be rejected.")
     
     # Caching

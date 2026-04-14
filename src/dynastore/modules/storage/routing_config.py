@@ -51,14 +51,6 @@ from dynastore.modules.db_config.platform_config_service import (
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-ROUTING_PLUGIN_CONFIG_ID = "collection:drivers"
-ROUTING_ASSETS_PLUGIN_CONFIG_ID = "assets:drivers"
-
-
 class FailurePolicy(StrEnum):
     """Per-driver failure behaviour within an operation."""
 
@@ -205,8 +197,6 @@ class RoutingPluginConfig(PluginConfig):
     Registered as ``plugin_id = "collection:drivers"`` in the config waterfall.
     """
 
-    _class_key: ClassVar[Optional[str]] = ROUTING_PLUGIN_CONFIG_ID
-
     enabled: bool = Field(default=True, description="Enable this routing configuration.")
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
@@ -240,8 +230,6 @@ class AssetRoutingPluginConfig(PluginConfig):
 
     Registered as ``plugin_id = "assets:drivers"`` in the config waterfall.
     """
-
-    _class_key: ClassVar[Optional[str]] = ROUTING_ASSETS_PLUGIN_CONFIG_ID
 
     enabled: bool = Field(default=True, description="Enable this routing configuration.")
 

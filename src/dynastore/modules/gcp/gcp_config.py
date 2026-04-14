@@ -32,12 +32,6 @@ from dynastore.modules.gcp.models import (
 )
 from enum import Enum, StrEnum
 
-# --- Configuration Identifiers ---
-GCP_MODULE_CONFIG_ID = "gcp_module"
-GCP_CATALOG_BUCKET_CONFIG_ID = "gcp_catalog_bucket"
-GCP_COLLECTION_BUCKET_CONFIG_ID = "gcp_collection_bucket"
-GCP_EVENTING_CONFIG_ID = "gcp_eventing"
-
 # --- Application Hooks ---
 
 async def on_apply_gcp_bucket_config(config: "GcpCatalogBucketConfig", catalog_id: Optional[str], collection_id: Optional[str], db_resource: Optional['DbResource']):
@@ -146,7 +140,6 @@ class GcpCatalogBucketConfig(PluginConfig):
     Defines bucket-level configurations for a catalog. These settings are applied
     when the bucket is first created.
     """
-    _class_key: ClassVar[Optional[str]] = GCP_CATALOG_BUCKET_CONFIG_ID
     _on_apply: ClassVar[Optional[Callable]] = on_apply_gcp_bucket_config
     # Immutable fields: Once the bucket is created, these cannot be changed.
     location: Immutable[Optional[GcpLocation]] = Field(default=os.getenv("REGION", GcpLocation.EUROPE_WEST1), description="The GCP region where the bucket will be created (e.g., 'europe-west1'). If not set, defaults to the application's region.")
@@ -166,7 +159,6 @@ class GcpModuleConfig(PluginConfig):
     """
     Defines global configurations for the GCP module.
     """
-    _class_key: ClassVar[Optional[str]] = GCP_MODULE_CONFIG_ID
     project_id: str = Field(default=os.getenv("PROJECT_ID", "local-project"), description="The GCP Project ID.")
     region: str = Field(default=os.getenv("REGION", "europe-west1"), description="The default GCP region.")
     
@@ -191,7 +183,6 @@ class GcpCollectionBucketConfig(PluginConfig):
     Defines object-level configurations for a specific collection within a bucket.
     These settings can override catalog-level defaults for objects belonging to this collection.
     """
-    _class_key: ClassVar[Optional[str]] = GCP_COLLECTION_BUCKET_CONFIG_ID
     custom_metadata_defaults: Optional[Dict[str, str]] = Field(default=None, description="Default metadata to apply to all objects uploaded to this collection.")
     
     # Updated to allow strings (IDs of templates) or full objects
@@ -241,7 +232,6 @@ class GcpEventingConfig(PluginConfig):
     Defines the complete, mutable eventing configuration for a catalog. This is
     stored independently from the bucket configuration.
     """
-    _class_key: ClassVar[Optional[str]] = GCP_EVENTING_CONFIG_ID
     _on_apply: ClassVar[Optional[Callable]] = on_apply_gcp_eventing_config
     managed_eventing: Optional[ManagedBucketEventing] = Field(default=ManagedBucketEventing(), description="Configuration for the default, system-managed eventing pipeline for the catalog's bucket.")
     custom_subscriptions: List[ExternalTopicSubscription] = Field(default=[], description="A list of additional, custom subscriptions to external (non-managed) Pub/Sub topics.")

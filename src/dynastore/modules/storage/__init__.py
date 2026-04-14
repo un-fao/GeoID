@@ -50,7 +50,6 @@ from dynastore.modules.storage.driver_config import (
     DriverPluginConfig,
     DriverRecordsPostgresqlConfig,
     WriteConflictPolicy,
-    WRITE_POLICY_PLUGIN_ID,
 )
 from dynastore.modules.storage.driver_enricher import DriverMetadataEnricher
 from dynastore.modules.storage.errors import ReadOnlyDriverError, SoftDeleteNotSupportedError
@@ -85,7 +84,6 @@ __all__ = [
     # Write policy
     "CollectionWritePolicy",
     "WriteConflictPolicy",
-    "WRITE_POLICY_PLUGIN_ID",
     # Enricher
     "DriverMetadataEnricher",
     # Routing configs

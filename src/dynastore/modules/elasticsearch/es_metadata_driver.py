@@ -58,8 +58,6 @@ class DriverMetadataElasticsearchConfig(PluginConfig):
     The final index name is ``{index_prefix}_collection_metadata_{catalog_id}``.
     """
 
-    _class_key: ClassVar[Optional[str]] = METADATA_ES_DRIVER_CONFIG_ID
-
     index_prefix: Immutable[str] = Field(
         "meta",
         description=(
@@ -432,7 +430,7 @@ class DriverMetadataElasticsearch:
             return {}
         try:
             return await configs.get_config(
-                METADATA_ES_DRIVER_CONFIG_ID,
+                DriverMetadataElasticsearchConfig,
                 catalog_id=catalog_id,
                 ctx=DriverContext(db_resource=db_resource),
             )

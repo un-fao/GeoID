@@ -73,7 +73,7 @@ class DriverMetadataEnricher:
             Capability,
             CollectionStorageDriverProtocol,
         )
-        from dynastore.modules.storage.routing_config import ROUTING_PLUGIN_CONFIG_ID
+        from dynastore.modules.storage.routing_config import RoutingPluginConfig
         from dynastore.tools.discovery import get_protocol, get_protocols
 
         # Resolve metadata.storage entries from the routing config
@@ -82,7 +82,7 @@ class DriverMetadataEnricher:
             if not configs:
                 return metadata
             routing_config = await configs.get_config(
-                ROUTING_PLUGIN_CONFIG_ID,
+                RoutingPluginConfig,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )

@@ -23,7 +23,6 @@ from dynastore.modules.storage.driver_config import (
     DriverRecordsPostgresqlConfig,
     CollectionWritePolicy,
     WriteConflictPolicy,
-    WRITE_POLICY_PLUGIN_ID,
 )
 from dynastore.models.protocols import ConfigsProtocol
 from dynastore.modules.catalog.sidecars.base import SidecarProtocol

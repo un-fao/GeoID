@@ -46,7 +46,7 @@ from dynastore.modules.db_config.locking_tools import (
 )
 from dynastore.models.protocols import ConfigsProtocol, CatalogsProtocol
 from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
-from .catalog_config import CollectionPluginConfig, COLLECTION_PLUGIN_CONFIG_ID
+from .catalog_config import CollectionPluginConfig
 
 if TYPE_CHECKING:
     from dynastore.modules.catalog.catalog_module import CatalogModule

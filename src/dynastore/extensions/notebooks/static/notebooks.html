@@ -4,9 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Notebooks</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+<link rel="stylesheet" href="/web/static/vendor/vendor.css"/>
 <style>
   :root {
     --bg: #0d1117;
@@ -70,6 +68,11 @@
   .card-title { font-size: 1rem; font-weight: 600; color: #fff; margin-bottom: 6px; }
   .card-desc { font-size: 0.85rem; color: var(--text-dim); margin-bottom: 12px; line-height: 1.4; }
   .card-meta { display: flex; align-items: center; gap: 12px; font-size: 0.78rem; color: var(--text-dim); }
+  .card-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
+  .card-tag {
+    font-size: 0.7rem; padding: 2px 8px; border-radius: 10px;
+    background: var(--surface2); color: var(--text-dim); border: 1px solid var(--border);
+  }
   .card-meta i { width: 14px; text-align: center; }
   .card-badge {
     display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.72rem;
@@ -241,6 +244,24 @@ function getSelectedCatalog() {
   return sel ? sel.value : null;
 }
 
+function getLanguage() {
+  if (window.DynaStoreContext && window.DynaStoreContext.language) return window.DynaStoreContext.language;
+  var qs = new URLSearchParams(window.location.search).get('language');
+  if (qs) return qs;
+  return (document.documentElement.lang || 'en').slice(0, 2);
+}
+
+/** Resolve an i18n value that may be a plain string or a {lang: string} dict. */
+function i18n(val, fallback) {
+  if (val == null) return fallback || '';
+  if (typeof val === 'string') return val;
+  if (typeof val === 'object') {
+    var lang = getLanguage();
+    return val[lang] || val.en || Object.values(val)[0] || (fallback || '');
+  }
+  return String(val);
+}
+
 function getAuthHeaders() {
   const h = { 'Content-Type': 'application/json' };
   if (window.DynaStoreContext && window.DynaStoreContext.token) {
@@ -338,14 +359,26 @@ function renderGrid(type, items) {
     headerDiv.appendChild(badge);
     var title = document.createElement('span');
     title.className = 'card-title';
-    title.textContent = nb.title || nb.notebook_id;
+    title.textContent = i18n(nb.title, nb.notebook_id);
     headerDiv.appendChild(title);
     card.appendChild(headerDiv);
 
     var desc = document.createElement('div');
     desc.className = 'card-desc';
-    desc.textContent = nb.description || '';
+    desc.textContent = i18n(nb.description, '');
     card.appendChild(desc);
+
+    if (Array.isArray(nb.tags) && nb.tags.length) {
+      var tagsDiv = document.createElement('div');
+      tagsDiv.className = 'card-tags';
+      nb.tags.forEach(function(t) {
+        var tag = document.createElement('span');
+        tag.className = 'card-tag';
+        tag.textContent = t;
+        tagsDiv.appendChild(tag);
+      });
+      card.appendChild(tagsDiv);
+    }
 
     var meta = document.createElement('div');
     meta.className = 'card-meta';
@@ -367,12 +400,17 @@ function renderGrid(type, items) {
 }
 
 function filterCards(type) {
-  var q = document.getElementById('search-' + type).value.toLowerCase();
+  var q = document.getElementById('search-' + type).value.toLowerCase().trim();
   var items = type === 'platform' ? platformNotebooks : catalogNotebooks;
+  if (!q) { renderGrid(type, items); return; }
   var filtered = items.filter(function(nb) {
-    return (nb.title || '').toLowerCase().indexOf(q) >= 0 ||
-           (nb.notebook_id || '').toLowerCase().indexOf(q) >= 0 ||
-           (nb.description || '').toLowerCase().indexOf(q) >= 0;
+    var hay = [
+      i18n(nb.title, ''),
+      i18n(nb.description, ''),
+      nb.notebook_id || '',
+      (nb.tags || []).join(' ')
+    ].join(' ').toLowerCase();
+    return hay.indexOf(q) >= 0;
   });
   renderGrid(type, filtered);
 }
@@ -395,7 +433,7 @@ async function openNotebook(type, notebookId) {
     if (data.content && data.content.cells) data = data.content;
     currentNotebook = { id: notebookId, data: data };
     renderNotebook(data);
-    document.getElementById('viewer-title').textContent = (data.metadata && data.metadata.title) || notebookId;
+    document.getElementById('viewer-title').textContent = i18n(data.metadata && data.metadata.title, notebookId);
     document.getElementById('btn-copy-to-catalog').style.display = type === 'platform' ? '' : 'none';
     document.getElementById('viewer').classList.add('open');
   } catch (e) {
@@ -595,7 +633,7 @@ function getLiteBaseUrl() {
   return API_BASE + '/web/extension-static/lite/lab/index.html';
 }
 
-function toggleLiteMode() {
+async function toggleLiteMode() {
   var body = document.getElementById('viewer-body');
   var frame = document.getElementById('lite-frame');
   var label = document.getElementById('btn-run-label');
@@ -611,14 +649,27 @@ function toggleLiteMode() {
     return;
   }
 
+  // Preflight: JupyterLite assets are built at container build time
+  // (BUILD_JUPYTERLITE=true). If missing, fail loudly instead of loading
+  // a 404 into the iframe.
+  var liteUrl = getLiteBaseUrl();
+  try {
+    var probe = await fetch(liteUrl, { method: 'HEAD' });
+    if (!probe.ok) {
+      toast('Run unavailable: JupyterLite assets not built (rebuild with BUILD_JUPYTERLITE=true).', true);
+      return;
+    }
+  } catch (e) {
+    toast('Run unavailable: cannot reach JupyterLite (' + e.message + ')', true);
+    return;
+  }
+
   // Switch to JupyterLite
   body.classList.add('hidden');
   frame.classList.add('active');
   label.textContent = 'View';
   liteActive = true;
 
-  // Load JupyterLite
-  var liteUrl = getLiteBaseUrl();
   frame.src = liteUrl;
 
   // Wait for JupyterLite to signal readiness, then inject notebook

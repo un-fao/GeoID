@@ -25,7 +25,6 @@ async def disable_managed_eventing(app_lifespan):
     from dynastore.tools.discovery import get_protocol
     from dynastore.models.protocols import ConfigsProtocol
     from dynastore.modules.gcp.gcp_config import (
-        GCP_EVENTING_CONFIG_ID,
         GcpEventingConfig,
         ManagedBucketEventing,
     )
@@ -33,7 +32,7 @@ async def disable_managed_eventing(app_lifespan):
     configs = get_protocol(ConfigsProtocol)
     if configs:
         await configs.set_config(
-            GCP_EVENTING_CONFIG_ID,
+            GcpEventingConfig,
             GcpEventingConfig(
                 managed_eventing=ManagedBucketEventing(enabled=False),
             ),

@@ -9,6 +9,18 @@
 (function() {
     console.log("[Bridge] Initializing DynaStore Bridge...");
 
+    // Poll for JupyterLab app global. Returns the app or null after timeout.
+    function waitForJupyterApp(timeoutMs) {
+        return new Promise(function(resolve) {
+            var started = Date.now();
+            (function tick() {
+                if (window.jupyterapp) return resolve(window.jupyterapp);
+                if (Date.now() - started > timeoutMs) return resolve(null);
+                setTimeout(tick, 100);
+            })();
+        });
+    }
+
     // Store context
     window.DYNASTORE_CONTEXT = {
         token: null,
@@ -100,13 +112,16 @@ except Exception as e:
 
                 if (response.ok) {
                     console.log("[Bridge] Notebook written to virtual FS:", filename);
-                    // Navigate JupyterLite to open the notebook
-                    // This uses JupyterLab's command system if available
-                    if (window.jupyterapp) {
-                        window.jupyterapp.commands.execute('docmanager:open', {
-                            path: filename
-                        });
-                    }
+                    // Navigate JupyterLite to open the notebook.
+                    // window.jupyterapp may not be ready yet; poll briefly.
+                    await waitForJupyterApp(10000).then(function(app) {
+                        if (!app) {
+                            console.warn("[Bridge] jupyterapp not ready; notebook is in FS but not auto-opened");
+                            return;
+                        }
+                        app.commands.execute('docmanager:open', { path: filename, factory: 'Notebook' })
+                            .catch(function(e) { console.warn("[Bridge] docmanager:open failed", e); });
+                    });
                 } else {
                     console.warn("[Bridge] Contents API write failed:", response.status);
                     // Fallback: store in sessionStorage for manual load

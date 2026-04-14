@@ -45,7 +45,6 @@ from dynastore.modules.tiles.tiles_models import (
     TileMatrixSet,
 )
 from dynastore.modules.tiles.tiles_config import (
-    TILES_PLUGIN_CONFIG_ID,
     TilesPluginConfig,
 )
 from dynastore.models.protocols import CatalogsProtocol, DatabaseProtocol
@@ -863,14 +862,12 @@ async def get_collection_source_srid(
     async with managed_transaction(engine) as conn:
         # Check logical configuration first for CRS hints
         # We can look for 'source_crs' in TilesPluginConfig at collection level
-        from .tiles_config import TILES_PLUGIN_CONFIG_ID
-
         catalogs = get_protocol(CatalogsProtocol)
         if not catalogs:
             return 4326
         config_service = catalogs.configs
         tiles_config = await config_service.get_config(
-            TILES_PLUGIN_CONFIG_ID, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
+            TilesPluginConfig, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
         ))
 
         source_crs_uri = getattr(tiles_config, "source_crs", None)
@@ -960,13 +957,13 @@ async def get_tile_resolution_params(
         # 3. Resolve Simplification Configuration (Waterfall handled by ConfigManager)
         config_service = catalogs.configs
         tiles_config = await config_service.get_config(
-            TILES_PLUGIN_CONFIG_ID, catalog_id, ctx=DriverContext(db_resource=conn
+            TilesPluginConfig, catalog_id, ctx=DriverContext(db_resource=conn
         ))
         if not tiles_config:
             # If not present, we can initialize it with defaults
             tiles_config = TilesPluginConfig()
             await config_service.set_config(
-                TILES_PLUGIN_CONFIG_ID, tiles_config, catalog_id=catalog_id, ctx=DriverContext(db_resource=conn
+                TilesPluginConfig, tiles_config, catalog_id=catalog_id, ctx=DriverContext(db_resource=conn
             ))
 
         # Extract relevant fields

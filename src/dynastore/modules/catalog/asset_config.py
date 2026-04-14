@@ -29,17 +29,12 @@ from typing import ClassVar, Optional
 
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 
-ASSET_PLUGIN_CONFIG_ID = "asset"
-
-
 class AssetPluginConfig(PluginConfig):
     """Per-collection asset config (structural only).
 
     Routing is now managed by ``AssetRoutingPluginConfig``
     (``plugin_id="assets:drivers"``).
     """
-
-    _class_key: ClassVar[Optional[str]] = ASSET_PLUGIN_CONFIG_ID
 
     model_config = {"extra": "allow"}
 

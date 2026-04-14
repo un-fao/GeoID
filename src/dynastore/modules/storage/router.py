@@ -33,20 +33,21 @@ Performance: resolution is cached (300 s TTL) keyed on
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, Generic, List, Optional, Protocol, TypeVar, Union, cast, runtime_checkable
+from typing import TYPE_CHECKING, Dict, Generic, List, Optional, Protocol, Type, TypeVar, Union, cast, runtime_checkable
 
 if TYPE_CHECKING:
     from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
     from dynastore.models.protocols.asset_driver import AssetDriverProtocol
+    from dynastore.modules.db_config.platform_config_service import PluginConfig
     AnyDriver = Union["CollectionStorageDriverProtocol", "AssetDriverProtocol"]
 
 _D = TypeVar("_D")
 
 from dynastore.modules.storage.routing_config import (
-    ROUTING_ASSETS_PLUGIN_CONFIG_ID,
-    ROUTING_PLUGIN_CONFIG_ID,
+    AssetRoutingPluginConfig,
     FailurePolicy,
     Operation,
+    RoutingPluginConfig,
     WriteMode,
 )
 from dynastore.tools.cache import cached
@@ -100,7 +101,7 @@ def _build_asset_driver_index() -> "Dict[str, AssetDriverProtocol]":
 
 @cached(maxsize=4096, ttl=300, namespace="storage_router", distributed=False)
 async def _resolve_driver_ids_cached(
-    routing_plugin_id: str,
+    routing_plugin_cls: "Type[PluginConfig]",
     catalog_id: str,
     collection_id: Optional[str],
     operation: str,
@@ -116,7 +117,7 @@ async def _resolve_driver_ids_cached(
 
     from dynastore.modules.storage.routing_config import RoutingPluginConfig as _RPC
     _raw_config = await configs.get_config(
-        routing_plugin_id,
+        routing_plugin_cls,
         catalog_id=catalog_id,
         collection_id=collection_id,
     )
@@ -138,7 +139,7 @@ async def resolve_drivers(
     collection_id: Optional[str] = None,
     *,
     hint: Optional[str] = None,
-    routing_plugin_id: str = ROUTING_PLUGIN_CONFIG_ID,
+    routing_plugin_cls: "Type[PluginConfig]" = RoutingPluginConfig,
 ) -> List[ResolvedDriver]:
     """Resolve an ordered list of drivers for the requested operation.
 
@@ -150,18 +151,18 @@ async def resolve_drivers(
         catalog_id: Catalog context.
         collection_id: Optional collection context.
         hint: Optional preference to select specific driver(s).
-        routing_plugin_id: Config key — ``"collection:drivers"`` for collections,
-            ``"assets:drivers"`` for assets.
+        routing_plugin_cls: PluginConfig class — ``RoutingPluginConfig`` for
+            collections, ``AssetRoutingPluginConfig`` for assets.
 
     Returns:
         Ordered list of :class:`ResolvedDriver`. Empty if hint is not
         satisfiable by any configured driver.
     """
     resolved_ids = await _resolve_driver_ids_cached(
-        routing_plugin_id, catalog_id, collection_id, operation, hint,
+        routing_plugin_cls, catalog_id, collection_id, operation, hint,
     )
 
-    if routing_plugin_id == ROUTING_ASSETS_PLUGIN_CONFIG_ID:
+    if routing_plugin_cls is AssetRoutingPluginConfig:
         driver_index = _build_asset_driver_index()
     else:
         driver_index = _build_collection_driver_index()
@@ -244,7 +245,7 @@ async def get_asset_driver(
         catalog_id,
         collection_id,
         hint=hint,
-        routing_plugin_id=ROUTING_ASSETS_PLUGIN_CONFIG_ID,
+        routing_plugin_cls=AssetRoutingPluginConfig,
     )
     if not resolved:
         raise ValueError(
@@ -267,7 +268,7 @@ async def get_asset_write_drivers(
         catalog_id,
         collection_id,
         hint=hint,
-        routing_plugin_id=ROUTING_ASSETS_PLUGIN_CONFIG_ID,
+        routing_plugin_cls=AssetRoutingPluginConfig,
     )
     return cast(List["ResolvedDriver[_ADP]"], result)
 

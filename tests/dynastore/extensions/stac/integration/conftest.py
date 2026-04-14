@@ -3,7 +3,6 @@ import pytest
 from dynastore.models.driver_context import DriverContext
 import dynastore.modules.catalog.catalog_module as catalog_manager
 from dynastore.modules.stac.stac_config import (
-    STAC_PLUGIN_CONFIG_ID,
     StacPluginConfig,
     AggregationConfig,
 )
@@ -95,8 +94,8 @@ async def setup_aggregation_data(
 
     async with managed_transaction(app_lifespan.engine) as conn:
         await configs.set_config(
-            plugin_id=STAC_PLUGIN_CONFIG_ID,
-            config=stac_config,
+            StacPluginConfig,
+            stac_config,
             catalog_id=catalog_id,
             collection_id=collection_id,
             ctx=DriverContext(db_resource=conn),

@@ -4,12 +4,8 @@ from typing import ClassVar, Optional
 from pydantic import Field
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 
-TASKS_PLUGIN_CONFIG_ID = "tasks"
-
-
 class TasksPluginConfig(PluginConfig):
     """Configuration for the Background Tasks module."""
-    _class_key: ClassVar[Optional[str]] = TASKS_PLUGIN_CONFIG_ID
 
     queue_poll_interval: float = Field(
         default_factory=lambda: float(os.environ.get("DYNASTORE_QUEUE_POLL_INTERVAL", "30.0")),

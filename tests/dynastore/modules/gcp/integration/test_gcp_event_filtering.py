@@ -10,7 +10,6 @@ from dynastore.modules.gcp.gcp_config import (
     GcpCatalogBucketConfig,
     GcpEventingConfig,
     ManagedBucketEventing,
-    GCP_EVENTING_CONFIG_ID,
 )
 from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
 from google.cloud import storage
@@ -74,7 +73,7 @@ async def test_gcp_event_filtering_multiple_prefixes(app_lifespan, monkeypatch):
     configs = get_protocol(ConfigsProtocol)
     if configs:
         await configs.set_config(
-            GCP_EVENTING_CONFIG_ID,
+            GcpEventingConfig,
             GcpEventingConfig(managed_eventing=ManagedBucketEventing(enabled=True)),
         )
 
@@ -207,7 +206,7 @@ async def test_gcp_event_filtering_custom_prefixes(app_lifespan, monkeypatch):
     configs = get_protocol(ConfigsProtocol)
     if configs:
         await configs.set_config(
-            GCP_EVENTING_CONFIG_ID,
+            GcpEventingConfig,
             GcpEventingConfig(managed_eventing=ManagedBucketEventing(enabled=True)),
         )
 
@@ -247,7 +246,7 @@ async def test_gcp_event_filtering_custom_prefixes(app_lifespan, monkeypatch):
 
     async with managed_transaction(gcp_module.engine) as conn:
         await gcp_module.get_config_service().set_config(
-            GCP_EVENTING_CONFIG_ID,
+            GcpEventingConfig,
             eventing_config,
             catalog_id=catalog_id,
             db_resource=conn,

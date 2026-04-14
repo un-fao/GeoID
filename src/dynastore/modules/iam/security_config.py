@@ -24,12 +24,8 @@ from typing import ClassVar, List, Optional
 from pydantic import Field
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 
-SECURITY_PLUGIN_CONFIG_ID = "security"
-
-
 class SecurityPluginConfig(PluginConfig):
     """Platform-level security configuration — changeable at runtime."""
-    _class_key: ClassVar[Optional[str]] = SECURITY_PLUGIN_CONFIG_ID
 
     # -- CORS --
     cors_allowed_origins: List[str] = Field(

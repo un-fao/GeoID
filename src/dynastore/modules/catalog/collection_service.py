@@ -33,7 +33,6 @@ from dynastore.modules.db_config.query_executor import (
 from dynastore.modules.catalog.models import Collection, CollectionUpdate, Catalog
 from dynastore.modules.catalog.catalog_config import (
     CollectionPluginConfig,
-    COLLECTION_PLUGIN_CONFIG_ID,
 )
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol, AssetsProtocol
 from dynastore.tools.discovery import get_protocol
@@ -504,7 +503,7 @@ class CollectionService:
             # 6b. Pin the resolved routing config at collection level so future
             #     platform default changes don't silently re-route existing collections.
             try:
-                from dynastore.modules.storage.routing_config import ROUTING_PLUGIN_CONFIG_ID, RoutingPluginConfig
+                from dynastore.modules.storage.routing_config import RoutingPluginConfig
                 configs = get_protocol(ConfigsProtocol)
                 if configs is None:
                     raise ValueError("ConfigsProtocol not registered")
@@ -516,7 +515,7 @@ class CollectionService:
                 )
                 if resolved_routing:
                     await configs.set_config(
-                        ROUTING_PLUGIN_CONFIG_ID,
+                        RoutingPluginConfig,
                         resolved_routing,
                         catalog_id=catalog_id,
                         collection_id=collection_model.id,
@@ -562,7 +561,6 @@ class CollectionService:
             if write_policy_input:
                 from dynastore.modules.storage.driver_config import (
                     CollectionWritePolicy,
-                    WRITE_POLICY_PLUGIN_ID,
                 )
                 policy = (
                     CollectionWritePolicy.model_validate(write_policy_input)
@@ -572,7 +570,7 @@ class CollectionService:
                 configs = get_protocol(ConfigsProtocol)
                 assert configs is not None, "ConfigsProtocol not registered"
                 await configs.set_config(
-                    WRITE_POLICY_PLUGIN_ID,
+                    CollectionWritePolicy,
                     policy,
                     catalog_id=catalog_id,
                     collection_id=collection_model.id,
@@ -588,7 +586,6 @@ class CollectionService:
             if feature_type_input:
                 from dynastore.modules.storage.driver_config import (
                     FeatureTypePluginConfig,
-                    FEATURE_TYPE_PLUGIN_ID,
                 )
                 ft_def = (
                     FeatureTypePluginConfig.model_validate(feature_type_input)
@@ -598,7 +595,7 @@ class CollectionService:
                 configs = get_protocol(ConfigsProtocol)
                 assert configs is not None, "ConfigsProtocol not registered"
                 await configs.set_config(
-                    FEATURE_TYPE_PLUGIN_ID,
+                    FeatureTypePluginConfig,
                     ft_def,
                     catalog_id=catalog_id,
                     collection_id=collection_model.id,
@@ -871,7 +868,7 @@ class CollectionService:
                     }
                     if configs is not None:
                         coll_config = await configs.get_config(
-                            COLLECTION_PLUGIN_CONFIG_ID,
+                            CollectionPluginConfig,
                             catalog_id,
                             collection_id,
                             ctx=DriverContext(db_resource=conn),

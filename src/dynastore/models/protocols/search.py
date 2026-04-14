@@ -132,6 +132,7 @@ class SearchProtocol(Protocol):
         self,
         catalog_id: str,
         mode: Optional[Literal["catalog", "obfuscated"]] = None,
+        driver: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Trigger a full catalog reindex.
@@ -151,6 +152,7 @@ class SearchProtocol(Protocol):
         catalog_id: str,
         collection_id: str,
         mode: Optional[Literal["catalog", "obfuscated"]] = None,
+        driver: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Trigger a single collection reindex.

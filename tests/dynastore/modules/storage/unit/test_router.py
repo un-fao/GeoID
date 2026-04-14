@@ -10,8 +10,7 @@ from dynastore.modules.storage.router import (
     _build_collection_driver_index,
 )
 from dynastore.modules.storage.routing_config import (
-    ROUTING_ASSETS_PLUGIN_CONFIG_ID,
-    ROUTING_PLUGIN_CONFIG_ID,
+    AssetRoutingPluginConfig,
     FailurePolicy,
     Operation,
     OperationDriverEntry,
@@ -163,7 +162,7 @@ class TestResolveDrivers:
                 return_value=[("postgresql", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):
             result = await resolve_drivers(
-                "READ", "cat1", routing_plugin_id=ROUTING_ASSETS_PLUGIN_CONFIG_ID,
+                "READ", "cat1", routing_plugin_cls=AssetRoutingPluginConfig,
             )
             assert len(result) == 1
             assert result[0].driver is pg

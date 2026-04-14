@@ -66,13 +66,13 @@ async def _resolve_metadata_driver_cached(
     # 1. Try routing config (RoutingPluginConfig.metadata.override)
     try:
         from dynastore.models.protocols.configs import ConfigsProtocol
-        from dynastore.modules.storage.routing_config import ROUTING_PLUGIN_CONFIG_ID
+        from dynastore.modules.storage.routing_config import RoutingPluginConfig
         from dynastore.tools.discovery import get_protocol
 
         configs = get_protocol(ConfigsProtocol)
         if configs:
             routing_config = await configs.get_config(
-                ROUTING_PLUGIN_CONFIG_ID, catalog_id=catalog_id
+                RoutingPluginConfig, catalog_id=catalog_id
             )
             entries = routing_config.metadata.override
             if entries:

@@ -322,14 +322,14 @@ class TasksModule(TaskQueueProtocol, ModuleProtocol):
 
                 from dynastore.tools.discovery import get_protocol
                 from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
-                from dynastore.modules.tasks.tasks_config import TASKS_PLUGIN_CONFIG_ID, TasksPluginConfig
+                from dynastore.modules.tasks.tasks_config import TasksPluginConfig
                 
                 poll_interval = 30.0
                 config_mgr = get_protocol(PlatformConfigsProtocol)
                 if config_mgr:
                     try:
                         # get_config can fetch from cache or DB; since we have an engine inside manage_tasks, we pass it safely
-                        tasks_config = await config_mgr.get_config(TASKS_PLUGIN_CONFIG_ID, ctx=DriverContext(db_resource=engine))
+                        tasks_config = await config_mgr.get_config(TasksPluginConfig, ctx=DriverContext(db_resource=engine))
                         if isinstance(tasks_config, TasksPluginConfig):
                             poll_interval = tasks_config.queue_poll_interval
                     except Exception as e:

@@ -38,9 +38,6 @@ from dynastore.modules.gcp.gcp_config import (
     GcpCollectionBucketConfig,
     GcsNotificationEventType,
     TriggeredAction,
-    GCP_CATALOG_BUCKET_CONFIG_ID,
-    GCP_EVENTING_CONFIG_ID,
-    GCP_COLLECTION_BUCKET_CONFIG_ID,
 )
 from dynastore.modules.catalog.event_service import CatalogEventType, register_event_listener
 from dynastore.modules.events.models import (
@@ -164,7 +161,7 @@ async def on_catalog_hard_deletion(engine: DbResource, payload: Dict[str, Any]):
     # config=None triggers force cleanup of deterministic/default resources in the protocol implementation.
     try:
         eventing_config = await configs.get_config(
-            GCP_EVENTING_CONFIG_ID, catalog_id
+            GcpEventingConfig, catalog_id
         )
         await eventing.teardown_catalog_eventing(catalog_id, config=eventing_config)
     except Exception as e:
@@ -207,7 +204,7 @@ async def on_collection_hard_deletion(engine: DbResource, payload: Dict[str, Any
     )
 
     # Check configuration: listen_catalog_events
-    bucket_config = await configs.get_config(GCP_CATALOG_BUCKET_CONFIG_ID, catalog_id)
+    bucket_config = await configs.get_config(GcpCatalogBucketConfig, catalog_id)
     if (
         isinstance(bucket_config, GcpCatalogBucketConfig)
         and not bucket_config.listen_catalog_events
@@ -263,7 +260,7 @@ async def on_collection_hard_deletion(engine: DbResource, payload: Dict[str, Any
 
     # 2. Check managed eventing prefix
     eventing_config = await configs.get_config(
-        GCP_EVENTING_CONFIG_ID, catalog_id
+        GcpEventingConfig, catalog_id
     )
     if isinstance(eventing_config, GcpEventingConfig):
         if (
@@ -387,7 +384,7 @@ async def _trigger_configured_actions(
     # to the catalog level if no collection-specific config is set.
     # This allows actions to be defined at either the catalog or collection level.
     config = await configs.get_config(
-        GCP_COLLECTION_BUCKET_CONFIG_ID, catalog_id, collection_id
+        GcpCollectionBucketConfig, catalog_id, collection_id
     )
 
     if not isinstance(config, GcpCollectionBucketConfig) or not config.event_actions:
@@ -403,7 +400,7 @@ async def _trigger_configured_actions(
     # Look up templates if we encounter strings
     eventing_config = None
     if any(isinstance(a, str) for a in actions_to_run):
-        eventing_config = await configs.get_config(GCP_EVENTING_CONFIG_ID, catalog_id)
+        eventing_config = await configs.get_config(GcpEventingConfig, catalog_id)
 
     metadata = gcs_payload.get("metadata", None)
     if metadata:

@@ -962,10 +962,10 @@ class CatalogService(CatalogsProtocol):
         from dynastore.models.protocols.configs import ConfigsProtocol
 
         configs = get_protocol(ConfigsProtocol)
-        from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
+        from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
 
         return await configs.get_config(  # type: ignore[union-attr]
-            COLLECTION_PLUGIN_CONFIG_ID, catalog_id, ctx=DriverContext(db_resource=db_resource
+            CollectionPluginConfig, catalog_id, ctx=DriverContext(db_resource=db_resource
         ))
 
     async def get_collection_config(

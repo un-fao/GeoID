@@ -29,7 +29,7 @@ from dynastore.modules.db_config.query_executor import (
 )
 from dynastore.models.driver_context import DriverContext
 from dynastore.modules.catalog.catalog_config import (
-    COLLECTION_PLUGIN_CONFIG_ID,
+    CollectionPluginConfig,
 )
 from dynastore.modules.storage.driver_config import (
     DriverRecordsPostgresqlConfig,
@@ -255,7 +255,7 @@ class OneShotMigrator:
             )
 
             await configs.set_config(
-                COLLECTION_PLUGIN_CONFIG_ID,
+                CollectionPluginConfig,
                 updated_config,
                 catalog_id=catalog_id,
                 collection_id=collection_id,

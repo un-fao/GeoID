@@ -5,10 +5,15 @@
     "disabledExtensions": [
       "@jupyterlite/server-extension"
     ],
+    "litePluginSettings": {
+      "@jupyterlite/pyodide-kernel-extension:kernel": {
+        "disablePyPIFallback": true
+      }
+    },
     "settingsOverrides": {
       "@jupyterlab/apputils-extension:themes": {
         "theme": "JupyterLab Dark"
       }
     }
-  }
+  },
 }

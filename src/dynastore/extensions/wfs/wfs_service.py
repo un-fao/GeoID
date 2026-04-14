@@ -49,7 +49,7 @@ from dynastore.extensions.tools.exception_handlers import (
     ExceptionHandler,
     register_extension_handler,
 )
-from .wfs_config import WFS_PLUGIN_CONFIG_ID, WFSPluginConfig
+from .wfs_config import WFSPluginConfig
 
 # --- Refactoring Step ---
 # Import the centralized formatting tools.
@@ -495,7 +495,7 @@ class WFSService(ExtensionProtocol):
         storage_svc = await self._get_storage_service()
 
         plugin_config = cast(WFSPluginConfig, await configs_svc.get_config(
-            WFS_PLUGIN_CONFIG_ID, catalog_id=catalog_id_from_path, ctx=DriverContext(db_resource=conn
+            WFSPluginConfig, catalog_id=catalog_id_from_path, ctx=DriverContext(db_resource=conn
         )))
 
         cache_key = None

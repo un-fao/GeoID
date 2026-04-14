@@ -24,9 +24,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 from dynastore.models.localization import LocalizedText, Language
 
-# --- Configuration Identifiers ---
-STAC_PLUGIN_CONFIG_ID = "stac"
-
 # --- STAC Core & Navigation ---
 
 class StacLink(BaseModel):
@@ -271,7 +268,6 @@ class StacPluginConfig(PluginConfig):
     """
     Mutable STAC metadata and behavior configuration.
     """
-    _class_key: ClassVar[Optional[str]] = STAC_PLUGIN_CONFIG_ID
     # Extension schemas
     enabled_extensions: List[str] = Field(default_factory=list)
     

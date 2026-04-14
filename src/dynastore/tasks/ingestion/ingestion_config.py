@@ -21,9 +21,6 @@ from pydantic import BaseModel, Field, model_validator
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 from dynastore.modules.storage.driver_config import WriteConflictPolicy
 
-# --- Configuration Identifier ---
-INGESTION_CONFIG_ID = "ingestion"
-
 # --- Main Ingestion Config ---
 
 class IngestionPluginConfig(PluginConfig):
@@ -31,7 +28,6 @@ class IngestionPluginConfig(PluginConfig):
     Configuration for the Ingestion Module.
     This can be updated at any time via API.
     """
-    _class_key: ClassVar[Optional[str]] = INGESTION_CONFIG_ID
     # 1. Behavior Rules
     on_conflict: WriteConflictPolicy = Field(
         default=WriteConflictPolicy.NEW_VERSION,

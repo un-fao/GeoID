@@ -655,7 +655,7 @@ async def app_lifespan(
     from starlette.datastructures import State
     from dynastore.models.protocols import ConfigsProtocol
     from dynastore.tools.protocol_helpers import resolve
-    from dynastore.modules.gcp.gcp_config import GCP_MODULE_CONFIG_ID, GcpModuleConfig
+    from dynastore.modules.gcp.gcp_config import GcpModuleConfig
 
     # 0. Isolation Reset
     await reset_dynastore_state(engine=db_engine)
@@ -745,7 +745,7 @@ async def app_lifespan(
                     catalog_visibility_max_retries=30,
                     catalog_visibility_retry_interval=1.0
                 )
-                await configs_svc.set_config(GCP_MODULE_CONFIG_ID, gcp_test_config)
+                await configs_svc.set_config(GcpModuleConfig, gcp_test_config)
                 test_logger.info("Tests: Applied GCP Module config overrides.")
         except Exception as e:
              import logging
@@ -794,7 +794,7 @@ async def app_lifespan_module(request):
     from starlette.datastructures import State
     from dynastore.models.protocols import ConfigsProtocol
     from dynastore.tools.protocol_helpers import resolve
-    from dynastore.modules.gcp.gcp_config import GCP_MODULE_CONFIG_ID, GcpModuleConfig
+    from dynastore.modules.gcp.gcp_config import GcpModuleConfig
     from sqlalchemy.ext.asyncio import create_async_engine
     from sqlalchemy.pool import NullPool
 
@@ -858,7 +858,7 @@ async def app_lifespan_module(request):
                     catalog_visibility_max_retries=30,
                     catalog_visibility_retry_interval=1.0,
                 )
-                await configs_svc.set_config(GCP_MODULE_CONFIG_ID, gcp_cfg)
+                await configs_svc.set_config(GcpModuleConfig, gcp_cfg)
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning(f"Tests: Could not apply GCP config: {e}")

@@ -60,9 +60,7 @@ from dynastore.modules.tiles import tiles_db
 from dynastore.tools.cache import cached
 from dynastore.modules.tiles.tiles_config import (
     TilesPluginConfig,
-    TILES_PLUGIN_CONFIG_ID,
     TilesPreseedConfig,
-    TILES_PRESEED_CONFIG_ID,
 )
 from dynastore.modules.tiles.tiles_models import (
     TileMatrixSetList,
@@ -739,7 +737,7 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
     async def _resolve_request_config(
         config_manager, dataset: str
     ) -> TilesPluginConfig:
-        config = await config_manager.get_config(TILES_PLUGIN_CONFIG_ID, dataset)
+        config = await config_manager.get_config(TilesPluginConfig, dataset)
         if isinstance(config, TilesPluginConfig) and not config.enabled:
             raise HTTPException(
                 status_code=404, detail="Tiles are disabled for this catalog."
@@ -758,7 +756,7 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
             return False
         if len(collections) == 1:
             coll_config = await config_manager.get_config(
-                TILES_PLUGIN_CONFIG_ID, dataset, collections[0]
+                TilesPluginConfig, dataset, collections[0]
             )
             return getattr(coll_config, "cache_on_demand", catalog_cache)
         return catalog_cache
@@ -766,7 +764,7 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
     @staticmethod
     async def _resolve_storage_priority(config_manager, dataset: str) -> List[str]:
         preseed_config = await config_manager.get_config(
-            TILES_PRESEED_CONFIG_ID, dataset
+            TilesPreseedConfig, dataset
         )
         if (
             isinstance(preseed_config, TilesPreseedConfig)

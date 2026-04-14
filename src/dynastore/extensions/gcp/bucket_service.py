@@ -32,9 +32,6 @@ from dynastore.modules.gcp.gcp_config import (
     GcpEventingConfig,
     InitiateUploadRequest,
     InitiateUploadResponse,
-    GCP_CATALOG_BUCKET_CONFIG_ID,
-    GCP_COLLECTION_BUCKET_CONFIG_ID,
-    GCP_EVENTING_CONFIG_ID,
 )
 from dynastore.modules.gcp.models import PUBSUB_JWT_AUDIENCE, GcpBucketDetails
 from google.api_core.retry import Retry

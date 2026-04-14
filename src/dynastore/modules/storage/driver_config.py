@@ -166,8 +166,6 @@ class CollectionWritePolicy(PluginConfig):
           on_asset_conflict = AssetConflictPolicy.REFUSE  # reject whole batch
     """
 
-    _class_key: ClassVar[Optional[str]] = "collection:write_policy"
-
     on_conflict: WriteConflictPolicy = Field(
         default=WriteConflictPolicy.UPDATE,
         description=(
@@ -262,8 +260,6 @@ class DriverRecordsPostgresqlConfig(CollectionDriverConfig):
     CRITICAL: ``sidecars`` and ``partitioning`` are **Immutable** — they
     cannot be changed once the physical table exists.
     """
-
-    _class_key: ClassVar[Optional[str]] = "driver:records:postgresql"
 
     model_config = ConfigDict(extra="allow")
 
@@ -428,8 +424,6 @@ class DriverRecordsElasticsearchConfig(CollectionDriverConfig):
     an external SFEOS app running in read-only mode.
     """
 
-    _class_key: ClassVar[Optional[str]] = "driver:records:elasticsearch"
-
     model_config = ConfigDict(extra="allow")
 
     capabilities: FrozenSet[str] = Field(
@@ -455,8 +449,6 @@ class DuckDbCollectionDriverConfig(CollectionDriverConfig):
     Absorbs fields previously in ``FileStorageLocationConfig``.
     """
 
-    _class_key: ClassVar[Optional[str]] = "driver:records:duckdb"
-
     capabilities: FrozenSet[str] = Field(
         default=frozenset({DriverCapability.ASYNC, DriverCapability.BATCH}),
     )
@@ -473,8 +465,6 @@ class DriverRecordsIcebergConfig(CollectionDriverConfig):
 
     Absorbs fields previously in ``OTFStorageLocationConfig``.
     """
-
-    _class_key: ClassVar[Optional[str]] = "driver:records:iceberg"
 
     model_config = ConfigDict(extra="allow")
 
@@ -519,8 +509,6 @@ class DriverRecordsIcebergConfig(CollectionDriverConfig):
 class DriverAssetPostgresqlConfig(AssetDriverConfig):
     """PostgreSQL asset driver config."""
 
-    _class_key: ClassVar[Optional[str]] = "driver:asset:postgresql"
-
     capabilities: FrozenSet[str] = Field(
         default=frozenset({DriverCapability.SYNC, DriverCapability.TRANSACTIONAL}),
     )
@@ -528,8 +516,6 @@ class DriverAssetPostgresqlConfig(AssetDriverConfig):
 
 class DriverAssetElasticsearchConfig(AssetDriverConfig):
     """Elasticsearch asset driver config."""
-
-    _class_key: ClassVar[Optional[str]] = "driver:asset:elasticsearch"
 
     model_config = ConfigDict(extra="allow")
 
@@ -543,8 +529,6 @@ class DriverAssetElasticsearchConfig(AssetDriverConfig):
 # Convenience helpers
 # ---------------------------------------------------------------------------
 
-WRITE_POLICY_PLUGIN_ID = "collection:write_policy"
-
 # CollectionWritePolicy / FeatureTypePluginConfig auto-register via
 # PluginConfig.__init_subclass__ — no explicit registration needed.
 
@@ -552,7 +536,6 @@ from dynastore.models.protocols.field_definition import (  # noqa: E402
     FeatureTypeDefinition as _FeatureTypeBase,
     FieldDefinition as _FieldDefinition,
     EntityLevel as _EntityLevel,
-    FEATURE_TYPE_PLUGIN_ID,
 )
 
 
@@ -562,8 +545,6 @@ class FeatureTypePluginConfig(PluginConfig):
     Inherits all fields from the protocol-level ``FeatureTypeDefinition``
     and adds ``PluginConfig`` compliance (``enabled``, ``_class_key``).
     """
-
-    _class_key: ClassVar[Optional[str]] = FEATURE_TYPE_PLUGIN_ID
 
     level: _EntityLevel = _EntityLevel.ITEM
     fields: Dict[str, _FieldDefinition] = Field(default_factory=dict)
@@ -617,7 +598,7 @@ async def _on_apply_write_policy(
             return
 
         feature_type = await configs.get_config(
-            FEATURE_TYPE_PLUGIN_ID,
+            FeatureTypePluginConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
         )
@@ -641,4 +622,4 @@ async def _on_apply_write_policy(
         )
 
 
-_CR.register_apply_handler(WRITE_POLICY_PLUGIN_ID, _on_apply_write_policy)
+CollectionWritePolicy.register_apply_handler(_on_apply_write_policy)

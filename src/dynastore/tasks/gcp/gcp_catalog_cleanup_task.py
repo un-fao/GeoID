@@ -86,7 +86,7 @@ class GcpCatalogCleanupTask(TaskProtocol):
     # ------------------------------------------------------------------
 
     async def _cleanup_catalog(self, catalog_id: str, bucket_name: Optional[str] = None) -> Dict[str, Any]:
-        from dynastore.modules.gcp.gcp_config import GCP_EVENTING_CONFIG_ID
+        from dynastore.modules.gcp.gcp_config import GcpEventingConfig
 
         logger.info(
             f"GcpCatalogCleanupTask[CATALOG]: Starting GCP cleanup for catalog '{catalog_id}'."
@@ -101,7 +101,7 @@ class GcpCatalogCleanupTask(TaskProtocol):
             try:
                 if configs:
                     eventing_config = await configs.get_config(
-                        GCP_EVENTING_CONFIG_ID, catalog_id
+                        GcpEventingConfig, catalog_id
                     )
                     await eventing.teardown_catalog_eventing(
                         catalog_id, config=eventing_config
@@ -152,8 +152,6 @@ class GcpCatalogCleanupTask(TaskProtocol):
         self, catalog_id: str, collection_id: str
     ) -> Dict[str, Any]:
         from dynastore.modules.gcp.gcp_config import (
-            GCP_CATALOG_BUCKET_CONFIG_ID,
-            GCP_EVENTING_CONFIG_ID,
             GcpCatalogBucketConfig,
             GcpEventingConfig,
         )
@@ -172,7 +170,7 @@ class GcpCatalogCleanupTask(TaskProtocol):
         # Check configuration flag
         if configs:
             bucket_config = await configs.get_config(
-                GCP_CATALOG_BUCKET_CONFIG_ID, catalog_id
+                GcpCatalogBucketConfig, catalog_id
             )
             if (
                 isinstance(bucket_config, GcpCatalogBucketConfig)
@@ -232,7 +230,7 @@ class GcpCatalogCleanupTask(TaskProtocol):
         if eventing and configs:
             try:
                 eventing_config = await configs.get_config(
-                    GCP_EVENTING_CONFIG_ID, catalog_id
+                    GcpEventingConfig, catalog_id
                 )
                 if isinstance(eventing_config, GcpEventingConfig):
                     managed = eventing_config.managed_eventing

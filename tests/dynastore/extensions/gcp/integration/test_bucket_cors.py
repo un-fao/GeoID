@@ -2,7 +2,7 @@ import pytest
 import logging
 from unittest.mock import MagicMock, patch
 from httpx import AsyncClient, ASGITransport
-from dynastore.modules.gcp.gcp_config import GCP_CATALOG_BUCKET_CONFIG_ID
+from dynastore.modules.gcp.gcp_config import GcpCatalogBucketConfig
 from dynastore.models.protocols import ConfigsProtocol
 from dynastore.modules import get_protocol
 
@@ -39,7 +39,7 @@ async def test_bucket_config_hook_trigger(app_lifespan, catalog_obj):
 
                 # This should trigger the hook in ConfigService -> on_apply_gcp_bucket_config -> GCPModule.apply_storage_config
                 response = await ac.put(
-                    f"/configs/catalogs/{catalog_id}/configs/{GCP_CATALOG_BUCKET_CONFIG_ID}",
+                    f"/configs/catalogs/{catalog_id}/configs/{GcpCatalogBucketConfig._plugin_id}",
                     json=cors_config,
                 )
 
@@ -62,7 +62,7 @@ async def test_eventing_config_hook_trigger(app_lifespan, catalog_obj):
     """
     catalog_id = catalog_obj.id
     app = app_lifespan.app
-    from dynastore.modules.gcp.gcp_config import GCP_EVENTING_CONFIG_ID
+    from dynastore.modules.gcp.gcp_config import GcpEventingConfig
 
     # Mock GCPModule.apply_eventing_config
     with patch(
@@ -74,7 +74,7 @@ async def test_eventing_config_hook_trigger(app_lifespan, catalog_obj):
             eventing_config = {"managed_eventing": {"enabled": True}}
 
             response = await ac.put(
-                f"/configs/catalogs/{catalog_id}/configs/{GCP_EVENTING_CONFIG_ID}",
+                f"/configs/catalogs/{catalog_id}/configs/{GcpEventingConfig._plugin_id}",
                 json=eventing_config,
             )
 

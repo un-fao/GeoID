@@ -36,9 +36,6 @@ from dynastore.modules.db_config.platform_config_service import PluginConfig
 
 logger = logging.getLogger(__name__)
 
-ES_CATALOG_CONFIG_ID = "elasticsearch"
-
-
 async def _on_apply_es_catalog_config(
     config: "ElasticsearchCatalogConfig",
     catalog_id: Optional[str],
@@ -89,7 +86,6 @@ class ElasticsearchCatalogConfig(PluginConfig):
         • A bulk reindex task is dispatched to (re-)populate the STAC items index
           for collections that have search_index=True.
     """
-    _class_key: ClassVar[Optional[str]] = ES_CATALOG_CONFIG_ID
     _on_apply: ClassVar[Optional[Callable]] = _on_apply_es_catalog_config
 
     obfuscated: bool = Field(

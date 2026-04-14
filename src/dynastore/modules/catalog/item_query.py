@@ -20,7 +20,6 @@ from dynastore.modules.db_config.query_executor import (
     managed_transaction,
 )
 from dynastore.modules.catalog.models import Collection
-from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
 from dynastore.modules.storage.driver_config import (
     DriverRecordsPostgresqlConfig,
 )

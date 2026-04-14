@@ -5,7 +5,6 @@ from dynastore.modules.catalog.catalog_config import (
     CollectionPluginConfig,
     CollectionTypeEnum,
     CompositePartitionConfig,
-    COLLECTION_PLUGIN_CONFIG_ID,
 )
 from dynastore.modules.storage.driver_config import (
     DriverRecordsPostgresqlConfig,
@@ -16,8 +15,6 @@ from dynastore.modules.storage.routing_config import (
     Operation,
     OperationDriverEntry,
     FailurePolicy,
-    ROUTING_PLUGIN_CONFIG_ID,
-    ROUTING_ASSETS_PLUGIN_CONFIG_ID,
 )
 
 
@@ -28,8 +25,7 @@ from dynastore.modules.storage.routing_config import (
 
 class TestCollectionPluginConfigDefaults:
     def test_plugin_id(self):
-        assert CollectionPluginConfig._plugin_id == COLLECTION_PLUGIN_CONFIG_ID
-        assert COLLECTION_PLUGIN_CONFIG_ID == "collection"
+        assert CollectionPluginConfig._plugin_id == "collection"
 
     def test_extra_fields_allowed(self):
         cfg = CollectionPluginConfig(custom_field="value")
@@ -86,8 +82,7 @@ class TestCompositePartitionConfig:
 
 class TestRoutingPluginConfig:
     def test_plugin_id(self):
-        assert RoutingPluginConfig._plugin_id == ROUTING_PLUGIN_CONFIG_ID
-        assert ROUTING_PLUGIN_CONFIG_ID == "collection:drivers"
+        assert RoutingPluginConfig._plugin_id == "collection:drivers"
 
     def test_defaults(self):
         cfg = RoutingPluginConfig()
@@ -115,8 +110,7 @@ class TestRoutingPluginConfig:
 
 class TestAssetRoutingPluginConfig:
     def test_plugin_id(self):
-        assert AssetRoutingPluginConfig._plugin_id == ROUTING_ASSETS_PLUGIN_CONFIG_ID
-        assert ROUTING_ASSETS_PLUGIN_CONFIG_ID == "assets:drivers"
+        assert AssetRoutingPluginConfig._plugin_id == "assets:drivers"
 
     def test_defaults(self):
         cfg = AssetRoutingPluginConfig()

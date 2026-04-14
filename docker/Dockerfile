@@ -1,16 +1,41 @@
 # STAGE 0: JupyterLite Builder — pre-builds browser-based Python kernel (Pyodide)
+# Skipped cheaply when BUILD_JUPYTERLITE=false (Cloud Run jobs/workers that
+# never serve /web/pages/notebooks).
 FROM python:3.12-slim AS jupyterlite-builder
+
+ARG BUILD_JUPYTERLITE=false
 
 WORKDIR /build
 
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install jupyterlite-core jupyterlite-pyodide-kernel
+RUN if [ "${BUILD_JUPYTERLITE}" = "true" ]; then \
+        pip install --no-cache-dir jupyterlite-core jupyterlite-pyodide-kernel; \
+    else \
+        echo "JupyterLite builder: skipped (BUILD_JUPYTERLITE=false)"; \
+    fi
 
 COPY src/dynastore/extensions/notebooks/jupyterlite/ ./lite-config/
 
-RUN jupyter lite build \
-    --lite-dir ./lite-config \
-    --output-dir ./lite-output
+# Pre-download piplite wheels so the built site is fully offline-capable
+# (on-prem docker compose / air-gapped Cloud Run). `pip download` emits pure-Python
+# wheels for the requirements — skipped when BUILD_JUPYTERLITE=false.
+RUN mkdir -p ./lite-output ./lite-config/wheels && \
+    if [ "${BUILD_JUPYTERLITE}" = "true" ] && [ -s ./lite-config/requirements.txt ]; then \
+        pip download --no-deps --only-binary=:all: --platform=pyodide_2024_0_wasm32 \
+            --dest ./lite-config/wheels -r ./lite-config/requirements.txt \
+        || pip download --no-deps --only-binary=:all: \
+            --dest ./lite-config/wheels -r ./lite-config/requirements.txt \
+        || echo "JupyterLite: wheel pre-download skipped (packages will fall back to piplite CDN)"; \
+    fi
+
+RUN if [ "${BUILD_JUPYTERLITE}" = "true" ]; then \
+        WHEEL_ARGS="" && \
+        for w in ./lite-config/wheels/*.whl; do \
+            [ -e "$w" ] && WHEEL_ARGS="$WHEEL_ARGS --piplite-wheels=$w"; \
+        done && \
+        jupyter lite build --lite-dir ./lite-config --output-dir ./lite-output $WHEEL_ARGS; \
+    else \
+        echo "JupyterLite: stage noop"; \
+    fi
 
 # STAGE 1: Builder (Production dependencies)
 FROM ghcr.io/osgeo/gdal:ubuntu-full-3.12.3 AS builder
@@ -65,10 +90,16 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     ${VENV_PATH}/bin/pip install --upgrade pip setuptools wheel && \
     ${VENV_PATH}/bin/pip install ".[${SCOPE}]" uvicorn gunicorn
 
-# Overlay JupyterLite assets when scope includes notebooks; bridge.js (committed) is preserved
+# Overlay JupyterLite assets when scope includes notebooks; bridge.js (committed) is preserved.
+# After copy, inject bridge.js into lab/index.html so the host can postMessage
+# LOAD_NOTEBOOK / INIT_CONTEXT into the iframe.
 RUN --mount=type=bind,from=jupyterlite-builder,source=/build/lite-output,target=/tmp/lite-output \
     if [ "${BUILD_JUPYTERLITE}" = "true" ]; then \
-        cp -r /tmp/lite-output/. "${APP_DIR}/src/dynastore/extensions/notebooks/static/lite/" && \
+        LITE_DIR="${APP_DIR}/src/dynastore/extensions/notebooks/static/lite" && \
+        cp -r /tmp/lite-output/. "${LITE_DIR}/" && \
+        if [ -f "${LITE_DIR}/lab/index.html" ] && ! grep -q "bridge.js" "${LITE_DIR}/lab/index.html"; then \
+            sed -i 's#</head>#<script src="../bridge.js"></script></head>#' "${LITE_DIR}/lab/index.html"; \
+        fi && \
         echo "JupyterLite: assets installed"; \
     else \
         echo "JupyterLite: skipped (BUILD_JUPYTERLITE=false)"; \

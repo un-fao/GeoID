@@ -13,7 +13,7 @@ class SearchBody(BaseModel):
         description="Free-text query over id, title, description, and all item properties."
     )
     catalog_id: Optional[str] = Field(
-        None,
+        default=None,
         description="Restrict search to items in a single catalog."
     )
     ids: Optional[List[str]] = Field(
@@ -38,7 +38,7 @@ class SearchBody(BaseModel):
         )
     )
     intersects: Optional[Dict[str, Any]] = Field(
-        None,
+        default=None,
         description="GeoJSON geometry. Only Items whose geometry intersects are returned."
     )
     limit: int = Field(
@@ -63,7 +63,7 @@ class CatalogSearchBody(BaseModel):
     """Body for catalog or collection keyword search."""
     q: Optional[str] = Field(None, description="Free-text query over id, title, description.")
     ids: Optional[List[str]] = Field(None, description="Array of IDs to return.")
-    catalog_id: Optional[str] = Field(None, description="Restrict to a single catalog.")
+    catalog_id: Optional[str] = Field(default=None, description="Restrict to a single catalog.")
     limit: int = Field(10, ge=1, le=10_000)
     token: Optional[str] = Field(None, description="Pagination cursor token.")
     sortby: Optional[str] = Field(

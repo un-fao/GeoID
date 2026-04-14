@@ -36,7 +36,7 @@ from dynastore.modules.db_config.shared_queries import (
 from dynastore.modules.catalog.validation import get_valid_properties
 from dynastore.tools.geospatial import SimplificationAlgorithm
 from .tiles_models import TileMatrixSet
-from .tiles_config import TILES_PLUGIN_CONFIG_ID, TilesPluginConfig
+from .tiles_config import TilesPluginConfig
 from dynastore.modules.db_config.exceptions import InternalValidationError
 
 logger = logging.getLogger(__name__)

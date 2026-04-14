@@ -146,7 +146,6 @@ class GcpStorageOpsMixin:
         import google.api_core.exceptions
         from dynastore.modules.gcp.tools import bucket as bucket_tool
         from dynastore.modules.gcp.gcp_config import (
-            GCP_COLLECTION_BUCKET_CONFIG_ID,
             GcpCollectionBucketConfig,
         )
         from dynastore.tools.identifiers import generate_uuidv7
@@ -200,7 +199,7 @@ class GcpStorageOpsMixin:
         if collection_id and config_provider:
             try:
                 coll_cfg = await config_provider.get_config(
-                    GCP_COLLECTION_BUCKET_CONFIG_ID, catalog_id, collection_id
+                    GcpCollectionBucketConfig, catalog_id, collection_id
                 )
                 if isinstance(coll_cfg, GcpCollectionBucketConfig) and coll_cfg.custom_metadata_defaults:
                     final_metadata = {**coll_cfg.custom_metadata_defaults, **final_metadata}

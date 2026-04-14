@@ -16,14 +16,11 @@ from typing import ClassVar, List, Optional
 from pydantic import Field
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 
-WFS_PLUGIN_CONFIG_ID = "wfs"
-
 class WFSPluginConfig(PluginConfig):
     """
     Runtime configuration for the WFS extension.
     Controls caching and visibility.
     """
-    _class_key: ClassVar[Optional[str]] = WFS_PLUGIN_CONFIG_ID
     enabled: bool = Field(True, description="If False, WFS requests will be rejected.")
     
     # Caching

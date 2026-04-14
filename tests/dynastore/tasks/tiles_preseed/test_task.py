@@ -6,7 +6,7 @@ from dynastore.tasks.tiles_preseed.task import TilePreseedTask
 from dynastore.tasks.tiles_preseed.models import TilePreseedRequest
 from dynastore.modules.tasks.models import TaskPayload, TaskStatusEnum, TaskCreate
 from dynastore.modules.tasks import tasks_module
-from dynastore.modules.tiles.tiles_config import TilesPreseedConfig, TILES_PRESEED_CONFIG_ID
+from dynastore.modules.tiles.tiles_config import TilesPreseedConfig
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
@@ -62,14 +62,14 @@ async def test_tile_preseed_task_run_integration(app_lifespan, in_process_client
     )
     
     # 3. Configure Tiles Plugin for the catalog (to set zoom limits)
-    from dynastore.modules.tiles.tiles_config import TilesPluginConfig, TILES_PLUGIN_CONFIG_ID
+    from dynastore.modules.tiles.tiles_config import TilesPluginConfig
     config_service = get_protocol(ConfigsProtocol)
     tiles_plugin_conf = TilesPluginConfig(
         min_zoom=0,
         max_zoom=2, # Limit zoom for speed
         supported_tms_ids=["WebMercatorQuad"]
     )
-    await config_service.set_catalog_config(catalog_id, TILES_PLUGIN_CONFIG_ID, tiles_plugin_conf)
+    await config_service.set_config(TilesPluginConfig, tiles_plugin_conf, catalog_id=catalog_id)
 
     # 4. Configure Preseed for 'pg' storage
     preseed_conf = TilesPreseedConfig(
@@ -79,7 +79,7 @@ async def test_tile_preseed_task_run_integration(app_lifespan, in_process_client
         storage_priority=["pg"],
         collections_to_preseed=[collection_id]
     )
-    await config_service.set_catalog_config(catalog_id, TILES_PRESEED_CONFIG_ID, preseed_conf)
+    await config_service.set_config(TilesPreseedConfig, preseed_conf, catalog_id=catalog_id)
     
     # 4. Instantiate and Run Task
     task = TilePreseedTask(app_lifespan)

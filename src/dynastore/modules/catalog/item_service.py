@@ -39,7 +39,7 @@ from dynastore.modules.db_config.query_executor import (
     is_async_resource,
 )
 from dynastore.modules.catalog.models import ItemDataForDB, Collection, Catalog
-from dynastore.modules.catalog.catalog_config import COLLECTION_PLUGIN_CONFIG_ID
+from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
 from dynastore.modules.storage.driver_config import (
     DriverRecordsPostgresqlConfig,
 )
@@ -377,7 +377,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             _configs = get_protocol(ConfigsProtocol)
             assert _configs is not None, "ConfigsProtocol not registered"
             collection_config = await _configs.get_config(
-                COLLECTION_PLUGIN_CONFIG_ID, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
+                CollectionPluginConfig, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
             ))
             max_bulk = getattr(collection_config, "max_bulk_features", 10000)
             if len(items_list) > max_bulk:

@@ -26,7 +26,6 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from dynastore.modules.iam.security_config import (
-    SECURITY_PLUGIN_CONFIG_ID,
     SecurityPluginConfig,
 )
 
@@ -68,7 +67,7 @@ class DynamicCORSMiddleware:
             svc = get_protocol(PlatformConfigsProtocol)
             if svc is None:
                 return
-            cfg = await svc.get_config(SECURITY_PLUGIN_CONFIG_ID)
+            cfg = await svc.get_config(SecurityPluginConfig)
             if not isinstance(cfg, SecurityPluginConfig):
                 cfg = SecurityPluginConfig.model_validate(
                     cfg.model_dump() if hasattr(cfg, "model_dump") else {}

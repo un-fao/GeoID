@@ -49,7 +49,6 @@ from dynastore.modules.gcp.gcp_config import (
     GcpEventingConfig,
     ManagedBucketEventing,
     GcsNotificationEventType,
-    GCP_EVENTING_CONFIG_ID,
 )
 from dynastore.modules.gcp.models import (
     PushSubscriptionConfig,
@@ -613,7 +612,7 @@ class GcpEventingOpsMixin:
         config_service = self.get_config_service()
         # Pass the connection to reuse the transaction
         await config_service.set_config(
-            GCP_EVENTING_CONFIG_ID, config, catalog_id=catalog_id, ctx=DriverContext(db_resource=conn
+            GcpEventingConfig, config, catalog_id=catalog_id, ctx=DriverContext(db_resource=conn
         ))
         # Re-fetch to confirm and return the validated model.
         # Passing the class (not a string id) narrows the return type to
@@ -687,7 +686,7 @@ class GcpEventingOpsMixin:
         config_service = self.get_config_service()
         # Pass the connection to reuse the transaction if provided
         config = await config_service.get_config(
-            GCP_EVENTING_CONFIG_ID,
+            GcpEventingConfig,
             catalog_id,
             ctx=DriverContext(db_resource=conn),
             config_snapshot=context.config if context else None,
