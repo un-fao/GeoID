@@ -281,9 +281,10 @@ class SchemaEvolutionEngine:
         _CON_TYPE_MAP = {"p": "PRIMARY KEY", "f": "FOREIGN KEY", "u": "UNIQUE", "c": "CHECK"}
         for r in con_rows:
             cols = r["columns"] if r["columns"] else []
+            ctype = r["constraint_type"] or ""
             ts.constraints[r["name"]] = ConstraintInfo(
                 name=r["name"],
-                constraint_type=_CON_TYPE_MAP.get(r["constraint_type"], r["constraint_type"]),
+                constraint_type=_CON_TYPE_MAP.get(ctype, ctype),
                 columns=cols,
                 definition=r["definition"],
             )
@@ -407,6 +408,8 @@ class SchemaEvolutionEngine:
 
             for sidecar_config in target_config.sidecars:
                 sidecar_impl = SidecarRegistry.get_sidecar(sidecar_config)
+                if sidecar_impl is None:
+                    continue
                 sidecar_id = sidecar_impl.sidecar_id
                 sidecar_table = f"{physical_table}_{sidecar_id}"
 
@@ -448,6 +451,8 @@ class SchemaEvolutionEngine:
             target_sidecar_ids = set()
             for sc in target_config.sidecars:
                 impl = SidecarRegistry.get_sidecar(sc)
+                if impl is None:
+                    continue
                 target_sidecar_ids.add(impl.sidecar_id)
 
             for existing_id in current.sidecars:
