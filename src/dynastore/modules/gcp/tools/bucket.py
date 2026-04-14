@@ -23,16 +23,20 @@ import os
 import logging
 import io
 import asyncio
-try:
+from typing import TYPE_CHECKING, Optional, List, Tuple, Iterator
+if TYPE_CHECKING:
     from google.cloud import storage
     from google.api_core.exceptions import NotFound, Conflict, GoogleAPICallError
-except ImportError:
-    storage = None
-    NotFound = None
-    Conflict = None
-    GoogleAPICallError = None
+else:
+    try:
+        from google.cloud import storage
+        from google.api_core.exceptions import NotFound, Conflict, GoogleAPICallError
+    except ImportError:
+        storage = None
+        NotFound = Exception
+        Conflict = Exception
+        GoogleAPICallError = Exception
 from urllib.parse import urlparse
-from typing import Optional, List, Tuple, Iterator
 from dynastore.modules.gcp.gcp_config import GcpCatalogBucketConfig
 from pydantic import BaseModel
 
@@ -162,7 +166,7 @@ def _create_bucket_sync(
 
         if bucket_config.cdn_enabled:
             logger.info(f"Enabling Cloud CDN for bucket '{bucket_name}'.")
-            bucket.cache_control = "public, max-age=3600" # Example default cache policy
+            setattr(bucket, "cache_control", "public, max-age=3600")
             bucket.patch()
 
         return bucket
@@ -188,6 +192,7 @@ def _create_bucket_sync(
                         f"Bucket {bucket_name} still not visible after 5 retries. Raising."
                     )
                     raise
+        raise RuntimeError(f"Unreachable: bucket {bucket_name} retry exhausted")
     except Exception as e:
         logger.error(f"Failed to create bucket {bucket_name}: {e}", exc_info=True)
         raise
