@@ -68,6 +68,7 @@ class AsyncBufferAggregator:
         self._flush_task: Optional[asyncio.Task] = None
         self._flush_event = asyncio.Event()
         self._last_flush = 0.0  # Lazy initialization on first flush
+        self._flush_exec_lock: Optional[asyncio.Lock] = None
 
     async def add(self, item: Any):
         """Adds an item to the buffer and triggers flush if threshold reached."""
@@ -94,9 +95,9 @@ class AsyncBufferAggregator:
         async def _flush_locked():
             # This second internal lock ensures that callback executions for this
             # specific aggregator are serialized.
-            if not hasattr(self, '_flush_exec_lock'):
+            if self._flush_exec_lock is None:
                 self._flush_exec_lock = asyncio.Lock()
-                
+
             async with self._flush_exec_lock:
                 await self._callback(to_flush)
                 
@@ -167,7 +168,7 @@ class KeyValueAggregator(AsyncBufferAggregator):
         from dynastore.modules.concurrency import run_in_background
 
         async def _flush_locked():
-            if not hasattr(self, '_flush_exec_lock'):
+            if self._flush_exec_lock is None:
                 self._flush_exec_lock = asyncio.Lock()
             async with self._flush_exec_lock:
                 await self._callback(to_flush)

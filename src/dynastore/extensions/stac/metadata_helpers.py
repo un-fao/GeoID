@@ -8,11 +8,15 @@ Provides utilities to:
 """
 
 import logging
-from typing import Dict, Any, List, Set, Optional
+from typing import Dict, Any, List, Set, Optional, TYPE_CHECKING
 from dynastore.tools.language_utils import (
     resolve_localized_field,
     inject_localized_field,
 )
+
+if TYPE_CHECKING:
+    import pystac
+    from dynastore.extensions.stac.stac_extension_protocol import StacExtensionProtocol, StacExtensionContext
 
 logger = logging.getLogger(__name__)
 
