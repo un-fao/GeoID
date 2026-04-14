@@ -21,8 +21,9 @@ import os
 from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import create_async_engine
-from typing import Optional, Any
+from typing import Optional, Any, Protocol, runtime_checkable
 from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.engine import Engine
 from dynastore.modules import ModuleProtocol
 from dynastore.modules.db_config.db_config import DBConfig
 from dynastore.modules.db_config.tools import (
@@ -33,11 +34,25 @@ from dynastore.modules.db_config.tools import (
 from dynastore.models.protocols import DatabaseProtocol
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class DBServiceAppState(Protocol):
+    """Shape of `app_state` consumed by DBService.
+
+    db_config / engine are installed by the db_config module before lifespan runs.
+    sync_engine may be set by datastore for sync SQLAlchemy fallbacks.
+    """
+    db_config: DBConfig
+    engine: Optional[AsyncEngine]
+    sync_engine: Optional[Engine]
+
+
 class DBService(ModuleProtocol, DatabaseProtocol):
     priority: int = 10
-    app_state: object
+    app_state: DBServiceAppState
 
-    def __init__(self, app_state: object):
+    def __init__(self, app_state: DBServiceAppState):
         self.app_state = app_state
 
     @property
@@ -75,7 +90,7 @@ class DBService(ModuleProtocol, DatabaseProtocol):
         return self.engine
 
     @asynccontextmanager
-    async def lifespan(self, app_state: object):
+    async def lifespan(self, app_state: DBServiceAppState):
         """
         Manages the lifespan of the async database engine.
         """
