@@ -58,17 +58,7 @@ from .policies import register_configs_policies
 
 logger = logging.getLogger(__name__)
 
-# Ensure core plugins are registered by importing their config modules if available
-try:
-    import dynastore.modules.catalog.catalog_config
-    import dynastore.modules.tiles.tiles_config
-    import dynastore.modules.stac.stac_config
-    import dynastore.modules.tasks.tasks_config
-    import dynastore.modules.gcp.gcp_config
-    import dynastore.extensions.wfs.wfs_config
-    import dynastore.extensions.features.features_config
-except ImportError as e:
-    logger.debug(f"ConfigsService: Some core configs not available for pre-registration: {e}")
+
 class ConfigsService(ExtensionProtocol):
     priority: int = 100
     """
