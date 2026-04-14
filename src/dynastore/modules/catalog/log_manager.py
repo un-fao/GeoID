@@ -200,7 +200,7 @@ from dynastore.modules.db_config.query_executor import DDLQuery
 from dynastore.models.driver_context import DriverContext
 
 
-@sync_collection_initializer
+@sync_collection_initializer()
 async def _create_logs_partition(
     conn: DbResource, schema: str, catalog_id: str, collection_id: str, **kwargs
 ) -> None:
@@ -225,7 +225,7 @@ async def _create_logs_partition(
     logger.info("Created logs partition '%s.%s'.", schema, partition_table)
 
 
-@sync_collection_hard_destroyer
+@sync_collection_hard_destroyer()
 async def _drop_logs_partition(
     conn: DbResource, schema: str, catalog_id: str, collection_id: str
 ) -> None:
@@ -542,14 +542,21 @@ class LogService(ProtocolPlugin[Any], LogsProtocol):
 
         # If db_resource is provided, write immediately (transactional guarantee) and return ID
         if db_resource or immediate:
-            return await self._write_log_entry(db_resource or self._engine, entry)
+            conn = db_resource or self._engine
+            if conn is None:
+                return None
+            return await self._write_log_entry(conn, entry)
+
+        aggregator = self._aggregator
+        if aggregator is None:
+            return None
 
         if not self._aggregator_started:
             from dynastore.modules.concurrency import default_executor
-            default_executor.submit(self._aggregator.start(), "log_aggregator_start")
+            default_executor.submit(aggregator.start(), "log_aggregator_start")
             self._aggregator_started = True
 
-        await self._aggregator.add(entry)
+        await aggregator.add(entry)
         return None
 
     async def log_info(
@@ -626,7 +633,7 @@ class LogService(ProtocolPlugin[Any], LogsProtocol):
                 async with managed_transaction(self._engine) as conn:
                     phys_schema = await catalogs.resolve_physical_schema(
                         catalog_id, ctx=DriverContext(db_resource=conn)
-                    )  # type: ignore
+                    )
             table_name = "logs"
 
         if not phys_schema:
@@ -689,7 +696,7 @@ class LogService(ProtocolPlugin[Any], LogsProtocol):
                 async with managed_transaction(self._engine) as conn:
                     phys_schema = await catalogs.resolve_physical_schema(
                         catalog_id, ctx=DriverContext(db_resource=conn)
-                    )  # type: ignore
+                    )
             table_name = "logs"
 
         if not phys_schema:
