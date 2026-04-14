@@ -74,7 +74,7 @@ logger = logging.getLogger(__name__)
 
 
 
-@sync_collection_initializer
+@sync_collection_initializer()
 async def _create_collection_events_partition(
     conn: DbResource, schema: str, catalog_id: str, collection_id: str, **kwargs
 ) -> None:
@@ -84,7 +84,7 @@ async def _create_collection_events_partition(
         await bus.init_namespace(schema, collection_id, db_resource=conn)
 
 
-@sync_collection_destroyer
+@sync_collection_destroyer()
 async def _drop_collection_events_partition(
     conn: DbResource, schema: str, catalog_id: str, collection_id: str, **kwargs
 ) -> None:
@@ -229,13 +229,13 @@ class EventService(EventBusProtocol):
 
     def register(self, event_type: Union[EventType, str], listener: Listener):
         """Register an async listener for an event type (legacy, defaults to sync)."""
-        e_val = event_type.value if hasattr(event_type, "value") else event_type
+        e_val = event_type.value if isinstance(event_type, EventType) else event_type
         self._sync_listeners[e_val].append(listener)
         logger.debug(f"Registered listener {listener} for event {e_val}")
 
     def sync_event_listener(self, event_type: Union[EventType, str]):
         """Decorator to register a synchronous (in-transaction) event listener."""
-        e_val = event_type.value if hasattr(event_type, "value") else event_type
+        e_val = event_type.value if isinstance(event_type, EventType) else event_type
 
         def decorator(func: Listener) -> Listener:
             self._sync_listeners[e_val].append(func)
@@ -261,7 +261,7 @@ class EventService(EventBusProtocol):
 
     def unregister(self, event_type: Union[EventType, str], listener: Listener) -> bool:
         """Remove a previously registered listener. Returns True if found and removed."""
-        e_val = event_type.value if hasattr(event_type, "value") else event_type
+        e_val = event_type.value if isinstance(event_type, EventType) else event_type
         for bucket in (self._async_listeners, self._sync_listeners):
             listeners = bucket.get(e_val)
             if listeners and listener in listeners:
@@ -324,7 +324,7 @@ class EventService(EventBusProtocol):
                 await event_storage.publish(
                     event_type=e_val,
                     payload=payload,
-                    scope=scope.name if hasattr(scope, "name") else str(scope),
+                    scope=str(scope),
                     schema_name=schema_name,
                     collection_id=collection_id,
                     db_resource=db_resource,
@@ -555,8 +555,9 @@ class EventService(EventBusProtocol):
     async def stop_consumer(self) -> None:
         """Stop the background event consumer loop gracefully."""
         self._consumer_running = False
-        if getattr(self, "_consumer_task", None):
-            self._consumer_task.cancel()
+        task = getattr(self, "_consumer_task", None)
+        if task is not None:
+            task.cancel()
             self._consumer_task = None
             logger.info("EventService: Durable event consumer task cancelled.")
 
@@ -578,6 +579,8 @@ class EventService(EventBusProtocol):
             from dynastore.models.protocols import DatabaseProtocol
 
             db = get_protocol(DatabaseProtocol)
+            if db is None:
+                raise RuntimeError("DatabaseProtocol not registered")
             async with managed_transaction(db.engine) as txn:
                 await storage.init_catalog_scope(txn, tenant)
 
@@ -600,6 +603,8 @@ class EventService(EventBusProtocol):
             from dynastore.models.protocols import DatabaseProtocol
 
             db = get_protocol(DatabaseProtocol)
+            if db is None:
+                raise RuntimeError("DatabaseProtocol not registered")
             async with managed_transaction(db.engine) as txn:
                 await storage.init_collection_scope(txn, tenant, namespace)
 
@@ -617,6 +622,8 @@ class EventService(EventBusProtocol):
             from dynastore.models.protocols import DatabaseProtocol
 
             db = get_protocol(DatabaseProtocol)
+            if db is None:
+                raise RuntimeError("DatabaseProtocol not registered")
             async with managed_transaction(db.engine) as txn:
                 await storage.drop_collection_scope(txn, tenant, namespace)
 
@@ -628,7 +635,7 @@ class EventService(EventBusProtocol):
 
         async def emitter(event_type: Union[EventType, str], *args, **kwargs):
             e_val = (
-                event_type.value if hasattr(event_type, "value") else event_type
+                event_type.value if isinstance(event_type, EventType) else event_type
             )
             if db_resource and "db_resource" not in kwargs:
                 kwargs["db_resource"] = db_resource
