@@ -75,27 +75,27 @@ class AttributeSchemaEntry(BaseModel):
     """Enhanced schema definition for a single attribute."""
 
     name: str = Field(..., description="Attribute name (column name or JSON key)")
-    type: PostgresType = Field(PostgresType.TEXT, description="PostgreSQL data type")
+    type: PostgresType = Field(default=PostgresType.TEXT, description="PostgreSQL data type")
 
     # Indexing control (B-Tree recommended for numeric/text at scale)
     index: AttributeIndexType = Field(
-        AttributeIndexType.NONE, description="Index strategy for this attribute"
+        default=AttributeIndexType.NONE, description="Index strategy for this attribute"
     )
 
     # Partitioning control
     can_partition: bool = Field(
-        False, description="Whether this attribute can be used in a partition key"
+        default=False, description="Whether this attribute can be used in a partition key"
     )
 
     # Constraints
-    nullable: bool = Field(True, description="Allow NULL values")
+    nullable: bool = Field(default=True, description="Allow NULL values")
     
     # TODO add default value validation and SQL code to ddl
     # TODO add check constraint for valid values
     default: Optional[Any] = Field(default=None, description="Default value for the attribute")
 
     unique: bool = Field(
-        False, description="Enforce uniqueness (at table/partition level)"
+        default=False, description="Enforce uniqueness (at table/partition level)"
     )
 
     # Metadata
@@ -157,7 +157,7 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
 
     # --- Storage Mode ---
     storage_mode: AttributeStorageMode = Field(
-        AttributeStorageMode.AUTOMATIC,
+        default=AttributeStorageMode.AUTOMATIC,
         description="Storage mode: columnar, jsonb, or automatic (based on schema presence)",
     )
 
@@ -183,34 +183,34 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
 
 
     # Identity Columns Configuration
-    enable_external_id: bool = Field(True, description="Store external_id column")
+    enable_external_id: bool = Field(default=True, description="Store external_id column")
     external_id_field: str = Field(
-        "id",
+        default="id",
         description="Input field to map to external_id (e.g. 'id', 'properties.code')",
     )
     index_external_id: bool = Field(
-        True, description="Create unique index on external_id"
+        default=True, description="Create unique index on external_id"
     )
     require_external_id: bool = Field(
-        False, description="Refuse row if external_id missing during ingestion"
+        default=False, description="Refuse row if external_id missing during ingestion"
     )
     external_id_as_feature_id: bool = Field(
-        True, description="Map external_id to feature id (geoid used by default)"
+        default=True, description="Map external_id to feature id (geoid used by default)"
     )
     expose_geoid: bool = Field(
-        False,
+        default=False,
         description="Add geoid to feature properties if external_id is not unique",
     )
 
-    enable_asset_id: bool = Field(True, description="Store asset_id column")
+    enable_asset_id: bool = Field(default=True, description="Store asset_id column")
     asset_id_field: str = Field(
-        "asset_id", description="Input field to map to asset_id"
+        default="asset_id", description="Input field to map to asset_id"
     )
-    index_asset_id: bool = Field(True, description="Create index on asset_id")
+    index_asset_id: bool = Field(default=True, description="Create index on asset_id")
 
     # Validity Configuration
     enable_validity: bool = Field(
-        True, description="Extract and store validity (valid_from/valid_to)"
+        default=True, description="Extract and store validity (valid_from/valid_to)"
     )
 
     # Mode A: Relational schema
@@ -218,9 +218,9 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
     )
 
     # Mode B: JSONB settings
-    jsonb_column_name: str = Field("attributes", description="Name of JSONB column")
+    jsonb_column_name: str = Field(default="attributes", description="Name of JSONB column")
     use_hot_updates: bool = Field(
-        True, description="Enable HOT updates with FILLFACTOR=80"
+        default=True, description="Enable HOT updates with FILLFACTOR=80"
     )
 
     # JSONB functional indexes (Strategic B-Tree indexes on specific JSON paths)

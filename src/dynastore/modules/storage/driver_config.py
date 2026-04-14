@@ -393,6 +393,8 @@ class DriverRecordsPostgresqlConfig(CollectionDriverConfig):
             if not sc_config.enabled:
                 continue
             sidecar = SidecarRegistry.get_sidecar(sc_config)
+            if sidecar is None:
+                continue
             all_fields.update(sidecar.get_field_definitions())
         return all_fields
 
@@ -586,7 +588,7 @@ _ALWAYS_VALID_EXTERNAL_ID_FIELDS = frozenset({"geoid", "id"})
 
 
 async def _on_apply_write_policy(
-    config: "CollectionWritePolicy",
+    config: PluginConfig,
     catalog_id: "Optional[str]",
     collection_id: "Optional[str]",
     db_resource: "Optional[Any]",
@@ -599,6 +601,8 @@ async def _on_apply_write_policy(
     ``external_id_field = "geoid"`` or ``"id"`` are always accepted (system fields).
     If ``feature_type`` is not yet configured, validation is skipped.
     """
+    if not isinstance(config, CollectionWritePolicy):
+        return
     ext_id = config.external_id_field
     if not ext_id or ext_id in _ALWAYS_VALID_EXTERNAL_ID_FIELDS:
         return

@@ -51,7 +51,7 @@ class CompositePartitionConfig(BaseModel):
     These keys must be provided by the enabled sidecars (or the Hub).
     """
 
-    enabled: bool = Field(False, description="Enable partitioning for this collection.")
+    enabled: bool = Field(default=False, description="Enable partitioning for this collection.")
     partition_keys: List[str] = Field(
         default_factory=list,
         description="Ordered list of column names to partition by (e.g. ['asset_id', 'h3_res12']).",

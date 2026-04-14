@@ -96,9 +96,9 @@ class GeometriesStatisticsConfig(BaseModel):
     - JSONB: All stats in single column with functional B-Tree indexes
     - Columnar: Individual typed columns with direct B-Tree indexes
     """
-    enabled: bool = Field(False, description="Enable statistics computation")
+    enabled: bool = Field(default=False, description="Enable statistics computation")
     storage_mode: StatisticStorageMode = Field(
-        StatisticStorageMode.JSONB,
+        default=StatisticStorageMode.JSONB,
         description="Storage mode: JSONB or individual columns"
     )
     
@@ -120,7 +120,7 @@ class GeometriesStatisticsConfig(BaseModel):
     centroid_type: Optional[Literal["geometric", "weighted", "median"]] = Field(default=None,
         description="Type of centroid to compute"
     )
-    index_centroid: bool = Field(False, description="Create index on centroid coordinates")
+    index_centroid: bool = Field(default=False, description="Create index on centroid coordinates")
     
     # Morphological indices (map of index -> should_index)
     morphological_indices: Dict[MorphologicalIndex, bool] = Field(
@@ -140,7 +140,7 @@ class GeometriesStatisticsConfig(BaseModel):
     
     # Legacy GIN support (not recommended for large datasets)
     create_gin_index: bool = Field(
-        False, 
+        default=False, 
         description="Create GIN index on geom_stats JSONB (WARNING: Large at trillion-row scale)"
     )
 
@@ -152,14 +152,14 @@ class PlaceStatisticsConfig(BaseModel):
     These statistics are only meaningful when a 3D precision 'place' member
     is provided (e.g., Solid, Prism, 3D Curve) in a local/engineering CRS.
     """
-    enabled: bool = Field(False, description="Enable JSON-FG place statistics computation")
+    enabled: bool = Field(default=False, description="Enable JSON-FG place statistics computation")
     storage_mode: StatisticStorageMode = Field(
-        StatisticStorageMode.JSONB,
+        default=StatisticStorageMode.JSONB,
         description="Storage mode: JSONB or individual columns"
     )
-    place_column: str = Field("place", description="Column name for the JSON-FG place geometry")
+    place_column: str = Field(default="place", description="Column name for the JSON-FG place geometry")
     coordRefSys_column: Optional[str] = Field(
-        "coordRefSys",
+        default="coordRefSys",
         description="Column name for the coordinate reference system identifier"
     )
     # Volumetric
@@ -181,7 +181,7 @@ class PlaceStatisticsConfig(BaseModel):
     )
     # 3D Morphological
     centroid_3d: bool = Field(
-        False,
+        default=False,
         description="Compute 3D centroid (center of gravity) of volume"
     )
     z_range: StatisticIndexConfig = Field(
@@ -199,7 +199,7 @@ class PlaceStatisticsConfig(BaseModel):
     )
     # Legacy GIN
     create_gin_index: bool = Field(
-        False,
+        default=False,
         description="Create GIN index on place_stats JSONB"
     )
 
@@ -213,13 +213,13 @@ class GeometriesSidecarConfig(SidecarConfig):
     sidecar_type: Literal["geometries"] = "geometries"
     
     # Geometry storage settings
-    target_srid: int = Field(4326, description="Target SRID for geometry storage")
-    target_dimension: TargetDimension = Field(TargetDimension.FORCE_2D)
+    target_srid: int = Field(default=4326, description="Target SRID for geometry storage")
+    target_dimension: TargetDimension = Field(default=TargetDimension.FORCE_2D)
     
     # Column mapping
-    geom_column: str = Field("geom", description="Main geometry column name (source and target)")
+    geom_column: str = Field(default="geom", description="Main geometry column name (source and target)")
     bbox_column: Optional[str] = Field(
-        "bbox_geom", 
+        default="bbox_geom", 
         description="Bounding box column name. If set, a separate column for the spatial extent is managed. Set to None to disable."
     )
 
@@ -229,9 +229,9 @@ class GeometriesSidecarConfig(SidecarConfig):
         return self.bbox_column is not None
     
     # Processing policies
-    invalid_geom_policy: InvalidGeometryPolicy = Field(InvalidGeometryPolicy.ATTEMPT_FIX)
+    invalid_geom_policy: InvalidGeometryPolicy = Field(default=InvalidGeometryPolicy.ATTEMPT_FIX)
     allowed_geometry_types: List[str] = Field(default_factory=list)
-    srid_mismatch_policy: SridMismatchPolicy = Field(SridMismatchPolicy.TRANSFORM)
+    srid_mismatch_policy: SridMismatchPolicy = Field(default=SridMismatchPolicy.TRANSFORM)
     simplification_algorithm: Optional[SimplificationAlgorithm] = None
     simplification_tolerance: Optional[float] = None
     remove_redundant_vertices: bool = False
@@ -244,14 +244,14 @@ class GeometriesSidecarConfig(SidecarConfig):
     partition_strategy: Optional[GeometryPartitionStrategyPreset] = Field(default=None, description="Strategy to use for contributing to the global partition key."
     )
     partition_resolution: int = Field(
-        0, description="Resolution to use for partitioning (must be in h3_resolutions or s2_resolutions)."
+        default=0, description="Resolution to use for partitioning (must be in h3_resolutions or s2_resolutions)."
     )
     
     # Geometry Statistics
     statistics: Optional[GeometriesStatisticsConfig] = Field(
-        GeometriesStatisticsConfig(
+        default=GeometriesStatisticsConfig(
             enabled= True,
-            storage_mode= "columnar",
+            storage_mode=StatisticStorageMode.COLUMNAR,
             area=StatisticIndexConfig(enabled=True, index=True),
             volume=StatisticIndexConfig(enabled=True, index=True),
             length=StatisticIndexConfig(enabled=True, index=True),
@@ -271,8 +271,8 @@ class GeometriesSidecarConfig(SidecarConfig):
     )
     
     # Protocol-Driven Architecture
-    store_bbox: bool = Field(True, description="Store bounding box geometry")
-    store_centroid: bool = Field(False, description="Store centroid point")
+    store_bbox: bool = Field(default=True, description="Store bounding box geometry")
+    store_centroid: bool = Field(default=False, description="Store centroid point")
     
     feature_type_schema: Optional[Dict[str, Any]] = Field(default=None,
         description="JSON Schema override for geometry contribution to Feature. "
