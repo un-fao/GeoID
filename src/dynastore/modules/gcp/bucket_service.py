@@ -337,7 +337,7 @@ class BucketService:
                         effective_config = GcpCatalogBucketConfig(location=GcpLocation(self.region))
                 else:
                     effective_config = await self.config_service.get_config(
-                        GCP_CATALOG_BUCKET_CONFIG_ID, catalog_id, ctx=DriverContext(db_resource=conn
+                        GcpCatalogBucketConfig, catalog_id, ctx=DriverContext(db_resource=conn
                     ))
 
             if not isinstance(effective_config, GcpCatalogBucketConfig):
@@ -348,7 +348,7 @@ class BucketService:
                 effective_config = GcpCatalogBucketConfig(location=GcpLocation(self.region))
                 # Persist the default configuration (idempotent setup)
                 await self.config_service.set_config(
-                    GCP_CATALOG_BUCKET_CONFIG_ID,
+                    GcpCatalogBucketConfig,
                     effective_config,
                     catalog_id=catalog_id,
                     ctx=DriverContext(db_resource=conn),
