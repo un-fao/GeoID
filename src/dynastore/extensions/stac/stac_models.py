@@ -510,6 +510,25 @@ class STACItem(Feature):
                         loc_assets[k] = v
                 validation_dict["assets"] = loc_assets
 
+            # STAC 1.1.0 item-spec requires a rel:"collection" link when the
+            # `collection` property is set. Clients typically omit this link on
+            # create (the server injects it later in stac_generator), so inject
+            # a synthetic one into the validation copy only.
+            if validation_dict.get("collection"):
+                links = list(validation_dict.get("links") or [])
+                if not any(
+                    isinstance(link, dict) and link.get("rel") == "collection"
+                    for link in links
+                ):
+                    links.append(
+                        {
+                            "rel": "collection",
+                            "href": f"./collections/{validation_dict['collection']}",
+                            "type": "application/json",
+                        }
+                    )
+                    validation_dict["links"] = links
+
             # 2. Parse as pystac Item
             stac_item = pystac.Item.from_dict(validation_dict)
 
