@@ -89,7 +89,7 @@ class ElasticsearchCatalogConfig(PluginConfig):
         • A bulk reindex task is dispatched to (re-)populate the STAC items index
           for collections that have search_index=True.
     """
-    _plugin_id: ClassVar[Optional[str]] = ES_CATALOG_CONFIG_ID
+    _class_key: ClassVar[Optional[str]] = ES_CATALOG_CONFIG_ID
     _on_apply: ClassVar[Optional[Callable]] = _on_apply_es_catalog_config
 
     obfuscated: bool = Field(

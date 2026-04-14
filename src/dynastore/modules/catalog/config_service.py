@@ -19,12 +19,10 @@
 import logging
 import json
 import inspect
-import asyncio
-from typing import Optional, Callable, Dict, Any, Type, Union, cast, List, TYPE_CHECKING
+from typing import Optional, Dict, Any, Type, Union, TYPE_CHECKING
 from dynastore.tools.cache import cached
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
-    DDLQuery,
     ResultHandler,
     managed_transaction,
     DbResource,
@@ -33,25 +31,19 @@ from dynastore.models.driver_context import DriverContext
 from dynastore.tools.db import validate_sql_identifier
 from dynastore.tools.json import CustomJSONEncoder
 
-# Updated import: pulling enforcement logic from the platform manager
+# Class-as-identity config API.
 from dynastore.modules.db_config.platform_config_service import (
     PluginConfig,
-    ConfigRegistry,
     enforce_config_immutability,
-    _class_key_for,
+    require_config_class,
+    resolve_config_class,
+    list_registered_configs,
     _register_schema,
-    _schema_id_for,
-)
-from dynastore.modules.db_config.partition_tools import (
-    ensure_partition_exists,
-    ensure_list_hash_partitions,
 )
 from dynastore.modules.db_config.maintenance_tools import ensure_schema_exists
 from dynastore.modules.db_config.locking_tools import (
-    acquire_startup_lock,
     check_table_exists,
 )
-from dynastore.modules.catalog.event_service import event_service
 from dynastore.models.protocols import ConfigsProtocol, CatalogsProtocol
 from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
 from .catalog_config import CollectionPluginConfig, COLLECTION_PLUGIN_CONFIG_ID
@@ -75,18 +67,26 @@ CollectionConfig = PluginConfig
 COLLECTION_CONFIGS_TABLE = "collection_configs"
 CATALOG_CONFIGS_TABLE = "catalog_configs"
 
+
+# Identity normaliser: accept either a class or a class_key string and return
+# (class, class_key).  Endpoints that receive dynamic string path params go
+# through this at the service boundary.
+def _resolve(config_cls: "Union[str, Type[PluginConfig]]") -> "tuple[Type[PluginConfig], str]":
+    cls = require_config_class(config_cls)
+    return cls, cls.class_key()
+
+
 # ==============================================================================
 #  CACHES
 # ==============================================================================
 
 
-# Global caches for shared configuration lookups
 @cached(maxsize=8192, ttl=300, namespace="catalog_config", ignore=["engine", "catalog_manager"])
 async def _catalog_config_cache(
     engine: DbResource,
     catalog_manager: CatalogsProtocol,
     catalog_id: str,
-    plugin_id: str,
+    class_key: str,
 ) -> Optional[dict]:
     """Database fetcher (returned as dict for immutability)."""
     validate_sql_identifier(catalog_id)
@@ -103,7 +103,7 @@ async def _catalog_config_cache(
         sql = f'SELECT config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE class_key = :class_key;'
         return await DQLQuery(
             sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
-        ).execute(conn, class_key=_class_key_for(plugin_id))
+        ).execute(conn, class_key=class_key)
 
 
 @cached(maxsize=16384, ttl=300, namespace="collection_config", ignore=["engine", "catalog_manager"])
@@ -112,7 +112,7 @@ async def _collection_config_cache(
     catalog_manager: CatalogsProtocol,
     catalog_id: str,
     collection_id: str,
-    plugin_id: str,
+    class_key: str,
 ) -> Optional[dict]:
     """Database fetcher (returned as dict for immutability)."""
     validate_sql_identifier(catalog_id)
@@ -133,7 +133,7 @@ async def _collection_config_cache(
         ).execute(
             conn,
             collection_id=collection_id,
-            class_key=_class_key_for(plugin_id),
+            class_key=class_key,
         )
 
 
@@ -143,10 +143,9 @@ async def _collection_config_cache(
 
 
 class ConfigService(ConfigsProtocol):
-    """The Hierarchical Configuration Manager with Framework-Level Immutability Enforcement."""
+    """Hierarchical Configuration Manager with framework-level immutability enforcement."""
 
-    # Protocol attributes
-    priority: int = 10  # Higher priority than CatalogModule
+    priority: int = 10
 
     def __init__(
         self,
@@ -176,7 +175,6 @@ class ConfigService(ConfigsProtocol):
         self._platform_config_service = value
 
     def is_available(self) -> bool:
-        """Returns True if the manager is initialized and ready."""
         return self.engine is not None
 
     def _get_catalog_manager(self) -> CatalogsProtocol:
@@ -191,52 +189,35 @@ class ConfigService(ConfigsProtocol):
             from dynastore.tools.discovery import get_protocol
             self._platform_config_service = get_protocol(PlatformConfigsProtocol)
         if self._platform_config_service is None:
-            # Fallback for late initialization
             from dynastore.modules.db_config.platform_config_service import PlatformConfigService
             self._platform_config_service = PlatformConfigService()
         return self._platform_config_service
 
     async def get_config(
         self,
-        plugin_id: "Union[str, Type[PluginConfig]]",
+        config_cls: "Union[str, Type[PluginConfig]]",
         catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
         ctx: Optional[DriverContext] = None,
         config_snapshot: Optional[Dict[str, Any]] = None,
     ) -> PluginConfig:
-        """
-        Retrieves configuration with a 4-tier waterfall:
+        """Retrieves configuration with a waterfall:
         1. Snapshot (if provided, overrides everything)
         2. Collection (if provided)
         3. Catalog (if provided)
         4. Platform (global)
-        5. Code-level Defaults (via ConfigRegistry)
-
-        ``plugin_id`` may be a ``PluginConfig`` subclass (preferred — return
-        type narrows to that class) or a legacy string id.  When a class is
-        supplied, its ``_plugin_id`` drives the storage lookup.
+        5. Code-level defaults (class default construction)
         """
+        cls, class_key = _resolve(config_cls)
         db_resource = ctx.db_resource if ctx else None
-        # Normalise class → string id for storage lookup.
-        if isinstance(plugin_id, type):
-            cls_pid = getattr(plugin_id, "_plugin_id", None)
-            if not cls_pid:
-                raise ValueError(
-                    f"{plugin_id.__qualname__} has no _plugin_id; cannot resolve config"
-                )
-            plugin_id = cls_pid
-        assert isinstance(plugin_id, str)
 
         # Tier 0: Snapshot
         if config_snapshot is not None:
-            if plugin_id in config_snapshot:
-                data = config_snapshot[plugin_id]
+            if class_key in config_snapshot:
+                data = config_snapshot[class_key]
                 if data:
-                    return ConfigRegistry.validate_config(plugin_id, data)
-            # If a snapshot was explicitly provided, it acts as the authoritative truth 
-            # for the runtime state at that moment (e.g. within an async initialization task).
-            # To prevent Visibility Gap errors, we skip direct DB lookups for Collection/Catalog levels
-            # and fall straight through to the Platform level.
+                    return cls.model_validate(data)
+            # Authoritative snapshot: skip DB tiers, fall through to platform.
             catalog_id = None
             collection_id = None
 
@@ -244,13 +225,13 @@ class ConfigService(ConfigsProtocol):
         if catalog_id and collection_id:
             if not db_resource:
                 data = await self.get_collection_config_internal_cached(
-                    catalog_id, collection_id, plugin_id
+                    catalog_id, collection_id, class_key
                 )
                 if data:
-                    return ConfigRegistry.validate_config(plugin_id, data)
+                    return cls.model_validate(data)
             else:
                 config = await self._get_collection_config_internal(
-                    catalog_id, collection_id, plugin_id, db_resource=db_resource
+                    catalog_id, collection_id, cls, db_resource=db_resource
                 )
                 if config:
                     return config
@@ -259,55 +240,49 @@ class ConfigService(ConfigsProtocol):
         if catalog_id:
             if not db_resource:
                 data = await self.get_catalog_config_internal_cached(
-                    catalog_id, plugin_id
+                    catalog_id, class_key
                 )
                 if data:
-                    return ConfigRegistry.validate_config(plugin_id, data)
+                    return cls.model_validate(data)
             else:
                 config = await self._get_catalog_config_internal(
-                    catalog_id, plugin_id, db_resource=db_resource
+                    catalog_id, cls, db_resource=db_resource
                 )
                 if config:
                     return config
 
-        # Tier 3 & 4: Platform & Defaults
+        # Tier 3 & 4: Platform & defaults
         return await self._get_platform_config_service().get_config(
-            plugin_id, ctx=DriverContext(db_resource=db_resource) if db_resource else None
+            cls, ctx=DriverContext(db_resource=db_resource) if db_resource else None
         )
 
     async def get_catalog_config_internal_cached(
-        self, catalog_id: str, plugin_id: str
+        self, catalog_id: str, class_key: str
     ) -> Optional[dict]:
-        """Global cache for catalog config."""
         assert self.engine is not None, "ConfigService.engine not initialised"
         return await _catalog_config_cache(
-            self.engine, self._get_catalog_manager(), catalog_id, plugin_id
+            self.engine, self._get_catalog_manager(), catalog_id, class_key
         )
 
     async def get_collection_config_internal_cached(
-        self, catalog_id: str, collection_id: str, plugin_id: str
+        self, catalog_id: str, collection_id: str, class_key: str
     ) -> Optional[dict]:
-        """Global cache for collection config."""
         assert self.engine is not None, "ConfigService.engine not initialised"
         return await _collection_config_cache(
-            self.engine, self._get_catalog_manager(), catalog_id, collection_id, plugin_id
+            self.engine, self._get_catalog_manager(), catalog_id, collection_id, class_key
         )
 
-    async def _get_catalog_config_internal_db(
-        self, catalog_id: str, plugin_id: str
-    ) -> Optional[dict]:
-        """Delegates to global cache."""
-        return await self.get_catalog_config_internal_cached(catalog_id, plugin_id)
-
     async def _get_catalog_config_internal(
-        self, catalog_id: str, plugin_id: str, db_resource: Optional[DbResource] = None
+        self,
+        catalog_id: str,
+        cls: Type[PluginConfig],
+        db_resource: Optional[DbResource] = None,
     ) -> Optional[PluginConfig]:
-        """Public fetcher that respects the provided db_resource, falling back to cache."""
+        class_key = cls.class_key()
         if not db_resource:
-            data = await self.get_catalog_config_internal_cached(catalog_id, plugin_id)
-            return ConfigRegistry.validate_config(plugin_id, data) if data else None
+            data = await self.get_catalog_config_internal_cached(catalog_id, class_key)
+            return cls.model_validate(data) if data else None
 
-        # Live query if db_resource provided
         async with managed_transaction(db_resource) as conn:
             phys_schema = await self._get_catalog_manager().resolve_physical_schema(
                 catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True
@@ -321,182 +296,24 @@ class ConfigService(ConfigsProtocol):
             sql = f'SELECT config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE class_key = :class_key;'
             data = await DQLQuery(
                 sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
-            ).execute(conn, class_key=_class_key_for(plugin_id))
+            ).execute(conn, class_key=class_key)
 
-        return ConfigRegistry.validate_config(plugin_id, data) if data else None
-
-    async def set_config(
-        self,
-        plugin_id: str,
-        config: PluginConfig,
-        catalog_id: Optional[str] = None,
-        collection_id: Optional[str] = None,
-        check_immutability: bool = True,
-        ctx: Optional[DriverContext] = None,
-    ) -> None:
-        """
-        Unified method to set configuration at any level.
-        """
-        db_resource = ctx.db_resource if ctx else None
-        if collection_id is not None:
-            # Collection level
-            if catalog_id is None:
-                raise ValueError(
-                    "catalog_id is required when collection_id is provided"
-                )
-            await self._set_collection_config(
-                catalog_id,
-                collection_id,
-                plugin_id,
-                config,
-                check_immutability=check_immutability,
-                db_resource=db_resource,
-            )
-        elif catalog_id is not None:
-            # Catalog level
-            await self._set_catalog_config(
-                catalog_id,
-                plugin_id,
-                config,
-                check_immutability=check_immutability,
-                db_resource=db_resource,
-            )
-        else:
-            # Platform level
-            await self._get_platform_config_service().set_config(
-                plugin_id,
-                config,
-                check_immutability=check_immutability,
-                ctx=DriverContext(db_resource=db_resource) if db_resource else None,
-            )
-
-    async def set_catalog_config(
-        self,
-        catalog_id: str,
-        plugin_id: str,
-        config: PluginConfig,
-        check_immutability: bool = True,
-        db_resource: Optional[DbResource] = None,
-    ) -> None:
-        """Sets configuration at the Catalog level."""
-        await self._set_catalog_config(
-            catalog_id,
-            plugin_id,
-            config,
-            check_immutability=check_immutability,
-            db_resource=db_resource,
-        )
-
-    async def _set_catalog_config(
-        self,
-        catalog_id: str,
-        plugin_id: str,
-        config: PluginConfig,
-        check_immutability: bool = True,
-        db_resource: Optional[DbResource] = None,
-    ) -> None:
-        """Internal: Sets configuration at the Catalog level."""
-        validate_sql_identifier(catalog_id)
-
-        async with managed_transaction(db_resource or self.engine) as conn:
-            # 0. Ensure catalog exists (and thus schema)
-            await self._get_catalog_manager().ensure_catalog_exists(
-                catalog_id, ctx=DriverContext(db_resource=conn)
-            )
-
-            # Resolve physical schema
-            phys_schema = await self._get_catalog_manager().resolve_physical_schema(
-                catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True
-            )
-            if not phys_schema:
-                await self._get_catalog_manager().ensure_catalog_exists(
-                    catalog_id, ctx=DriverContext(db_resource=conn)
-                )
-                phys_schema = await self._get_catalog_manager().resolve_physical_schema(
-                    catalog_id, ctx=DriverContext(db_resource=conn)
-                )
-
-            if not phys_schema:
-                raise ValueError(
-                    f"Could not resolve physical schema for catalog '{catalog_id}'."
-                )
-
-            class_key = _class_key_for(plugin_id)
-
-            if check_immutability:
-                # Dynamic locking query
-                sql = f'SELECT config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE class_key = :class_key FOR UPDATE;'
-                current_data = await DQLQuery(
-                    sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
-                ).execute(conn, class_key=class_key)
-                if current_data:
-                    current_config = ConfigRegistry.validate_config(
-                        plugin_id, current_data
-                    )
-                    enforce_config_immutability(current_config, config)
-
-            # FK: schemas row must exist before referencing it.
-            await _register_schema(conn, config)
-
-            # Dynamic upsert (class_key-keyed; catalog_id is implicit in phys_schema).
-            upsert_sql = f"""
-            INSERT INTO "{phys_schema}".{CATALOG_CONFIGS_TABLE} (class_key, schema_id, config_data, updated_at)
-            VALUES (:class_key, :schema_id, CAST(:config_data AS jsonb), NOW())
-            ON CONFLICT (class_key) DO UPDATE SET
-                schema_id   = EXCLUDED.schema_id,
-                config_data = EXCLUDED.config_data,
-                updated_at  = NOW()
-            """
-            config_data = (
-                config.model_dump(mode="json") if hasattr(config, "model_dump") else config
-            )
-            await DQLQuery(upsert_sql, result_handler=ResultHandler.ROWCOUNT).execute(
-                conn,
-                class_key=class_key,
-                schema_id=_schema_id_for(plugin_id, config),
-                config_data=json.dumps(config_data, cls=CustomJSONEncoder),
-            )
-
-            # Trigger active configuration application (Level 2 - Catalog)
-            apply_handler = ConfigRegistry.get_apply_handler(plugin_id)
-            if apply_handler:
-                try:
-                    res = apply_handler(config, catalog_id, None, conn)
-                    if inspect.isawaitable(res):
-                        await res
-                except Exception as e:
-                    logger.error(
-                        f"Failed to apply catalog configuration for '{plugin_id}' on catalog '{catalog_id}': {e}",
-                        exc_info=True,
-                    )
-
-        _catalog_config_cache.cache_invalidate(
-            self.engine, self._get_catalog_manager(), catalog_id, plugin_id
-        )
-
-    async def _get_collection_config_internal_db(
-        self, catalog_id: str, collection_id: str, plugin_id: str
-    ) -> Optional[dict]:
-        """Delegates to global cache."""
-        return await self.get_collection_config_internal_cached(
-            catalog_id, collection_id, plugin_id
-        )
+        return cls.model_validate(data) if data else None
 
     async def _get_collection_config_internal(
         self,
         catalog_id: str,
         collection_id: str,
-        plugin_id: str,
+        cls: Type[PluginConfig],
         db_resource: Optional[DbResource] = None,
     ) -> Optional[PluginConfig]:
-        """Public fetcher that respects the provided db_resource, falling back to cache."""
+        class_key = cls.class_key()
         if not db_resource:
             data = await self.get_collection_config_internal_cached(
-                catalog_id, collection_id, plugin_id
+                catalog_id, collection_id, class_key
             )
-            return ConfigRegistry.validate_config(plugin_id, data) if data else None
+            return cls.model_validate(data) if data else None
 
-        # Live query if db_resource provided
         async with managed_transaction(db_resource) as conn:
             phys_schema = await self._get_catalog_manager().resolve_physical_schema(
                 catalog_id, ctx=DriverContext(db_resource=conn)
@@ -513,31 +330,57 @@ class ConfigService(ConfigsProtocol):
             ).execute(
                 conn,
                 collection_id=collection_id,
-                class_key=_class_key_for(plugin_id),
+                class_key=class_key,
             )
 
-        return ConfigRegistry.validate_config(plugin_id, data) if data else None
+        return cls.model_validate(data) if data else None
 
-    async def _set_collection_config(
+    async def set_config(
+        self,
+        config_cls: "Union[str, Type[PluginConfig]]",
+        config: PluginConfig,
+        catalog_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
+        check_immutability: bool = True,
+        ctx: Optional[DriverContext] = None,
+    ) -> None:
+        cls, class_key = _resolve(config_cls)
+        db_resource = ctx.db_resource if ctx else None
+        if collection_id is not None:
+            if catalog_id is None:
+                raise ValueError("catalog_id is required when collection_id is provided")
+            await self._set_collection_config(
+                catalog_id, collection_id, cls, config,
+                check_immutability=check_immutability, db_resource=db_resource,
+            )
+        elif catalog_id is not None:
+            await self._set_catalog_config(
+                catalog_id, cls, config,
+                check_immutability=check_immutability, db_resource=db_resource,
+            )
+        else:
+            await self._get_platform_config_service().set_config(
+                cls, config,
+                check_immutability=check_immutability,
+                ctx=DriverContext(db_resource=db_resource) if db_resource else None,
+            )
+
+    async def _set_catalog_config(
         self,
         catalog_id: str,
-        collection_id: str,
-        plugin_id: str,
+        cls: Type[PluginConfig],
         config: PluginConfig,
         check_immutability: bool = True,
         db_resource: Optional[DbResource] = None,
     ) -> None:
-        """Internal: Sets configuration at the Collection level."""
         validate_sql_identifier(catalog_id)
-        validate_sql_identifier(collection_id)
+        class_key = cls.class_key()
 
         async with managed_transaction(db_resource or self.engine) as conn:
-            # 0. Ensure catalog exists (and thus schema)
             await self._get_catalog_manager().ensure_catalog_exists(
                 catalog_id, ctx=DriverContext(db_resource=conn)
             )
 
-            # Resolve physical schema
             phys_schema = await self._get_catalog_manager().resolve_physical_schema(
                 catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True
             )
@@ -554,7 +397,83 @@ class ConfigService(ConfigsProtocol):
                     f"Could not resolve physical schema for catalog '{catalog_id}'."
                 )
 
-            class_key = _class_key_for(plugin_id)
+            if check_immutability:
+                sql = f'SELECT config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE class_key = :class_key FOR UPDATE;'
+                current_data = await DQLQuery(
+                    sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
+                ).execute(conn, class_key=class_key)
+                if current_data:
+                    current_config = cls.model_validate(current_data)
+                    enforce_config_immutability(current_config, config)
+
+            await _register_schema(conn, config)
+
+            upsert_sql = f"""
+            INSERT INTO "{phys_schema}".{CATALOG_CONFIGS_TABLE} (class_key, schema_id, config_data, updated_at)
+            VALUES (:class_key, :schema_id, CAST(:config_data AS jsonb), NOW())
+            ON CONFLICT (class_key) DO UPDATE SET
+                schema_id   = EXCLUDED.schema_id,
+                config_data = EXCLUDED.config_data,
+                updated_at  = NOW()
+            """
+            config_data = (
+                config.model_dump(mode="json") if hasattr(config, "model_dump") else config
+            )
+            await DQLQuery(upsert_sql, result_handler=ResultHandler.ROWCOUNT).execute(
+                conn,
+                class_key=class_key,
+                schema_id=type(config).schema_id(),
+                config_data=json.dumps(config_data, cls=CustomJSONEncoder),
+            )
+
+            for apply_handler in cls.get_apply_handlers():
+                try:
+                    res = apply_handler(config, catalog_id, None, conn)
+                    if inspect.isawaitable(res):
+                        await res
+                except Exception as e:
+                    logger.error(
+                        f"Failed to apply catalog configuration for '{class_key}' on catalog '{catalog_id}': {e}",
+                        exc_info=True,
+                    )
+
+        _catalog_config_cache.cache_invalidate(
+            self.engine, self._get_catalog_manager(), catalog_id, class_key
+        )
+
+    async def _set_collection_config(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        cls: Type[PluginConfig],
+        config: PluginConfig,
+        check_immutability: bool = True,
+        db_resource: Optional[DbResource] = None,
+    ) -> None:
+        validate_sql_identifier(catalog_id)
+        validate_sql_identifier(collection_id)
+        class_key = cls.class_key()
+
+        async with managed_transaction(db_resource or self.engine) as conn:
+            await self._get_catalog_manager().ensure_catalog_exists(
+                catalog_id, ctx=DriverContext(db_resource=conn)
+            )
+
+            phys_schema = await self._get_catalog_manager().resolve_physical_schema(
+                catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True
+            )
+            if not phys_schema:
+                await self._get_catalog_manager().ensure_catalog_exists(
+                    catalog_id, ctx=DriverContext(db_resource=conn)
+                )
+                phys_schema = await self._get_catalog_manager().resolve_physical_schema(
+                    catalog_id, ctx=DriverContext(db_resource=conn)
+                )
+
+            if not phys_schema:
+                raise ValueError(
+                    f"Could not resolve physical schema for catalog '{catalog_id}'."
+                )
 
             if check_immutability:
                 sql = f'SELECT config_data FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE collection_id = :collection_id AND class_key = :class_key FOR UPDATE;'
@@ -566,12 +485,9 @@ class ConfigService(ConfigsProtocol):
                     class_key=class_key,
                 )
                 if current_data:
-                    current_config = ConfigRegistry.validate_config(
-                        plugin_id, current_data
-                    )
+                    current_config = cls.model_validate(current_data)
                     enforce_config_immutability(current_config, config)
 
-            # FK: schemas row must exist before referencing it.
             await _register_schema(conn, config)
 
             upsert_sql = f"""
@@ -589,29 +505,24 @@ class ConfigService(ConfigsProtocol):
                 conn,
                 collection_id=collection_id,
                 class_key=class_key,
-                schema_id=_schema_id_for(plugin_id, config),
+                schema_id=type(config).schema_id(),
                 config_data=json.dumps(config_data, cls=CustomJSONEncoder),
             )
 
-            # Trigger active configuration application (Level 1 - Collection)
-            apply_handler = ConfigRegistry.get_apply_handler(plugin_id)
-            if apply_handler:
+            for apply_handler in cls.get_apply_handlers():
                 try:
                     res = apply_handler(config, catalog_id, collection_id, conn)
                     if inspect.isawaitable(res):
                         await res
                 except Exception as e:
                     logger.error(
-                        f"Failed to apply collection configuration for '{plugin_id}' on '{catalog_id}/{collection_id}': {e}",
+                        f"Failed to apply collection configuration for '{class_key}' on '{catalog_id}/{collection_id}': {e}",
                         exc_info=True,
                     )
 
         _collection_config_cache.cache_invalidate(
-            self.engine, self._get_catalog_manager(), catalog_id, collection_id, plugin_id
+            self.engine, self._get_catalog_manager(), catalog_id, collection_id, class_key
         )
-
-    async def set_platform_config(self, plugin_id: str, config: PluginConfig) -> None:
-        await self._get_platform_config_service().set_config(plugin_id, config)
 
     async def list_configs(
         self,
@@ -621,16 +532,10 @@ class ConfigService(ConfigsProtocol):
         offset: int = 0,
         ctx: Optional[DriverContext] = None,
     ) -> Dict[str, Any]:
-        """
-        Unified method to list configurations at any level with pagination and total count.
-        """
         db_resource = ctx.db_resource if ctx else None
         if collection_id is not None:
-            # Collection level
             if catalog_id is None:
-                raise ValueError(
-                    "catalog_id is required when collection_id is provided"
-                )
+                raise ValueError("catalog_id is required when collection_id is provided")
 
             validate_sql_identifier(catalog_id)
             validate_sql_identifier(collection_id)
@@ -661,24 +566,20 @@ class ConfigService(ConfigsProtocol):
                 )
 
             total = rows[0]["total_count"] if rows else 0
-            inverse = {
-                model.class_key(): pid
-                for pid, model in ConfigRegistry.list_registered().items()
-            }
             results = []
             for r in rows:
                 ck: str = r["class_key"]
-                pid_str: str = inverse.get(ck) or ck
+                cls = resolve_config_class(ck)
+                if cls is None:
+                    logger.warning("Skipping collection_configs row for unknown class_key %r", ck)
+                    continue
                 results.append({
-                    "plugin_id": pid_str,
-                    "config": ConfigRegistry.validate_config(
-                        pid_str, r["config_data"]
-                    ).model_dump(),
+                    "plugin_id": ck,
+                    "config": cls.model_validate(r["config_data"]).model_dump(),
                 })
             return {"total": total, "results": results}
 
         elif catalog_id is not None:
-            # Catalog level
             validate_sql_identifier(catalog_id)
             async with managed_transaction(db_resource or self.engine) as conn:
                 phys_schema = await self._get_catalog_manager().resolve_physical_schema(
@@ -701,29 +602,23 @@ class ConfigService(ConfigsProtocol):
                 ).execute(conn, limit=limit, offset=offset)
 
             total = rows[0]["total_count"] if rows else 0
-            inverse = {
-                model.class_key(): pid
-                for pid, model in ConfigRegistry.list_registered().items()
-            }
             results = []
             for r in rows:
                 ck: str = r["class_key"]
-                pid_str: str = inverse.get(ck) or ck
+                cls = resolve_config_class(ck)
+                if cls is None:
+                    logger.warning("Skipping catalog_configs row for unknown class_key %r", ck)
+                    continue
                 results.append({
-                    "plugin_id": pid_str,
-                    "config": ConfigRegistry.validate_config(
-                        pid_str, r["config_data"]
-                    ).model_dump(),
+                    "plugin_id": ck,
+                    "config": cls.model_validate(r["config_data"]).model_dump(),
                 })
             return {"total": total, "results": results}
         else:
-            # Platform level - implementation in platform_config_service doesn't support pagination yet,
-            # so we fetch all and slice locally for now.
             configs = await self._get_platform_config_service().list_configs()
-            # Simple manual pagination for platform level as it's usually small
             all_results = [
-                {"plugin_id": pid, "config": cfg.model_dump()}
-                for pid, cfg in configs.items()
+                {"plugin_id": klass.class_key(), "config": cfg.model_dump()}
+                for klass, cfg in configs.items()
             ]
             total = len(all_results)
             return {"total": total, "results": all_results[offset : offset + limit]}
@@ -731,7 +626,6 @@ class ConfigService(ConfigsProtocol):
     async def list_catalog_configs(
         self, catalog_id: str, ctx: Optional[DriverContext] = None
     ) -> Dict[str, PluginConfig]:
-        """Lists all configurations explicitly set at the Catalog level."""
         validate_sql_identifier(catalog_id)
         db_resource = ctx.db_resource if ctx else None
 
@@ -746,20 +640,16 @@ class ConfigService(ConfigsProtocol):
                 return {}
 
             sql = f'SELECT class_key, config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE};'
-            rows = await DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS).execute(
-                conn
-            )
+            rows = await DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS).execute(conn)
 
-        inverse = {
-            model.class_key(): pid
-            for pid, model in ConfigRegistry.list_registered().items()
-        }
         configs: Dict[str, PluginConfig] = {}
         for row in rows:
             class_key: str = row["class_key"]
-            config_data = row["config_data"]
-            plugin_id: str = inverse.get(class_key) or class_key
-            configs[plugin_id] = ConfigRegistry.validate_config(plugin_id, config_data)
+            cls = resolve_config_class(class_key)
+            if cls is None:
+                logger.warning("Skipping catalog_configs row for unknown class_key %r", class_key)
+                continue
+            configs[class_key] = cls.model_validate(row["config_data"])
         return configs
 
     async def search(
@@ -771,10 +661,6 @@ class ConfigService(ConfigsProtocol):
         offset: int = 0,
         ctx: Optional["DriverContext"] = None,
     ) -> Dict[str, Any]:
-        """
-        Searches for configurations across the hierarchy.
-        Matches against plugin_id (simple LIKE search).
-        """
         db_resource = ctx.db_resource if ctx else None
         if catalog_id:
             validate_sql_identifier(catalog_id)
@@ -794,8 +680,6 @@ class ConfigService(ConfigsProtocol):
                 if not catalog_table_exists and not collection_table_exists:
                     return {"total": 0, "results": []}
 
-                # Search in both catalog and collection configs if only catalog_id provided
-                # or just collection if collection_id provided.
                 if collection_id:
                     if not collection_table_exists:
                         return {"total": 0, "results": []}
@@ -805,7 +689,6 @@ class ConfigService(ConfigsProtocol):
                     WHERE collection_id = :collection_id
                     """
                 else:
-                    # Build UNION from whichever tables exist
                     parts = []
                     if catalog_table_exists:
                         parts.append(f"""
@@ -837,108 +720,65 @@ class ConfigService(ConfigsProtocol):
                 )
 
                 total = rows[0]["total_count"] if rows else 0
-                inverse = {
-                    model.class_key(): pid
-                    for pid, model in ConfigRegistry.list_registered().items()
-                }
                 results = []
                 for r in rows:
                     class_key: str = r["class_key"]
-                    plugin_id: str = inverse.get(class_key) or class_key
+                    cls = resolve_config_class(class_key)
+                    if cls is None:
+                        continue
                     results.append(
                         {
                             "level": r["level"],
                             "catalog_id": catalog_id,
                             "collection_id": r.get("collection_id"),
-                            "plugin_id": plugin_id,
-                            "config": ConfigRegistry.validate_config(
-                                plugin_id, r["config_data"]
-                            ).model_dump(),
+                            "plugin_id": class_key,
+                            "config": cls.model_validate(r["config_data"]).model_dump(),
                         }
                     )
                 return {"total": total, "results": results}
             else:
-                # Platform search fallback
                 configs = await self._get_platform_config_service().list_configs()
                 all_results = []
-                for pid, cfg in configs.items():
-                    if not query or query.lower() in pid.lower():
+                for klass, cfg in configs.items():
+                    ck = klass.class_key()
+                    if not query or query.lower() in ck.lower():
                         all_results.append(
                             {
                                 "level": "platform",
-                                "plugin_id": pid,
+                                "plugin_id": ck,
                                 "config": cfg.model_dump(),
                             }
                         )
-
                 total = len(all_results)
                 return {"total": total, "results": all_results[offset : offset + limit]}
 
-    async def delete_catalog_config(self, catalog_id: str, plugin_id: str) -> bool:
-        """Deletes a configuration at the Catalog level."""
-        validate_sql_identifier(catalog_id)
-        async with managed_transaction(self.engine) as conn:
-            phys_schema = await self.catalog_manager.resolve_physical_schema(
-                catalog_id, ctx=DriverContext(db_resource=conn)
-            )
-            if not phys_schema:
-                return False
-
-            if not await check_table_exists(conn, CATALOG_CONFIGS_TABLE, phys_schema):
-                return False
-
-            sql = f'DELETE FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE class_key = :class_key;'
-            rows_affected = await DQLQuery(
-                sql, result_handler=ResultHandler.ROWCOUNT
-            ).execute(conn, class_key=_class_key_for(plugin_id))
-
-            if rows_affected > 0:
-                _catalog_config_cache.cache_invalidate(
-                    self.engine, self.catalog_manager, catalog_id, plugin_id
-                )
-                return True
-        return False
-
     async def delete_config(
         self,
-        plugin_id: str,
+        config_cls: "Union[str, Type[PluginConfig]]",
         catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
         ctx: Optional[DriverContext] = None,
     ) -> None:
-        """
-        Unified method to delete configuration at any level.
-        Delegates to specific methods based on provided parameters.
-        Deleting platform config acts as a reset to defaults.
-        """
+        cls, class_key = _resolve(config_cls)
         db_resource = ctx.db_resource if ctx else None
         if collection_id is not None:
-            # Collection level
             if catalog_id is None:
-                raise ValueError(
-                    "catalog_id is required when collection_id is provided"
-                )
+                raise ValueError("catalog_id is required when collection_id is provided")
             await self._delete_collection_config(
-                catalog_id, collection_id, plugin_id, db_resource=db_resource
+                catalog_id, collection_id, class_key, db_resource=db_resource
             )
         elif catalog_id is not None:
-            # Catalog level
             await self._delete_catalog_config(
-                catalog_id, plugin_id, db_resource=db_resource
+                catalog_id, class_key, db_resource=db_resource
             )
         else:
-            # Platform level - delete acts as reset
-            # Note: The provided diff changes this from delete_config to set_config.
-            # Assuming 'config' parameter should be passed, but it's not available here.
-            # Reverting to original behavior of calling delete_config on the service.
             await self._get_platform_config_service().delete_config(
-                plugin_id, ctx=DriverContext(db_resource=db_resource) if db_resource else None
+                cls, ctx=DriverContext(db_resource=db_resource) if db_resource else None
             )
 
     async def _delete_catalog_config(
-        self, catalog_id: str, plugin_id: str, db_resource: Optional[DbResource] = None
+        self, catalog_id: str, class_key: str, db_resource: Optional[DbResource] = None
     ) -> bool:
-        """Internal: Deletes a configuration at the Catalog level."""
         validate_sql_identifier(catalog_id)
         async with managed_transaction(db_resource or self.engine) as conn:
             phys_schema = await self._get_catalog_manager().resolve_physical_schema(
@@ -953,11 +793,11 @@ class ConfigService(ConfigsProtocol):
             sql = f'DELETE FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE class_key = :class_key;'
             rows_affected = await DQLQuery(
                 sql, result_handler=ResultHandler.ROWCOUNT
-            ).execute(conn, class_key=_class_key_for(plugin_id))
+            ).execute(conn, class_key=class_key)
 
             if rows_affected > 0:
                 _catalog_config_cache.cache_invalidate(
-                    self.engine, self.catalog_manager, catalog_id, plugin_id
+                    self.engine, self.catalog_manager, catalog_id, class_key
                 )
                 return True
         return False
@@ -966,10 +806,9 @@ class ConfigService(ConfigsProtocol):
         self,
         catalog_id: str,
         collection_id: str,
-        plugin_id: str,
+        class_key: str,
         db_resource: Optional[DbResource] = None,
     ) -> bool:
-        """Internal: Deletes a configuration at the Collection level."""
         validate_sql_identifier(catalog_id)
         validate_sql_identifier(collection_id)
         async with managed_transaction(db_resource or self.engine) as conn:
@@ -988,7 +827,7 @@ class ConfigService(ConfigsProtocol):
             ).execute(
                 conn,
                 collection_id=collection_id,
-                class_key=_class_key_for(plugin_id),
+                class_key=class_key,
             )
 
             if rows_affected > 0:
@@ -997,7 +836,7 @@ class ConfigService(ConfigsProtocol):
                     self.catalog_manager,
                     catalog_id,
                     collection_id,
-                    plugin_id,
+                    class_key,
                 )
                 return True
         return False

@@ -31,7 +31,7 @@ class IngestionPluginConfig(PluginConfig):
     Configuration for the Ingestion Module.
     This can be updated at any time via API.
     """
-    _plugin_id: ClassVar[Optional[str]] = INGESTION_CONFIG_ID
+    _class_key: ClassVar[Optional[str]] = INGESTION_CONFIG_ID
     # 1. Behavior Rules
     on_conflict: WriteConflictPolicy = Field(
         default=WriteConflictPolicy.NEW_VERSION,

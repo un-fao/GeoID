@@ -297,13 +297,14 @@ class BucketManager:
                     # If a context is provided (e.g. from init hook), prioritize it.
                     # crucially: do NOT query the DB here, as the catalog might not be visible yet.
                     if GCP_CATALOG_BUCKET_CONFIG_ID in context.config:
-                        from dynastore.modules.db_config.platform_config_manager import (
-                            ConfigRegistry,
+                        from dynastore.modules.db_config.platform_config_service import (
+                            require_config_class,
                         )
 
-                        effective_config = ConfigRegistry.validate_config(
-                            GCP_CATALOG_BUCKET_CONFIG_ID,
-                            context.config[GCP_CATALOG_BUCKET_CONFIG_ID],
+                        effective_config = require_config_class(
+                            GCP_CATALOG_BUCKET_CONFIG_ID
+                        ).model_validate(
+                            context.config[GCP_CATALOG_BUCKET_CONFIG_ID]
                         )
                     else:
                         # Snaphot present but key missing -> explicit default

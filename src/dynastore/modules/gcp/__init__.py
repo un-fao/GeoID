@@ -35,7 +35,7 @@ except ImportError as e:
 
 try:
     # By importing the gcp_config here, we ensure that the PluginConfig models
-    # are registered with the central ConfigRegistry when the GCP module is loaded.
+    # auto-register via PluginConfig.__init_subclass__ when the GCP module loads.
     from dynastore.modules.gcp import gcp_config
 except ImportError as e:
     logger.debug(f"GCP Module: gcp_config skipped due to missing dependencies: {e}")

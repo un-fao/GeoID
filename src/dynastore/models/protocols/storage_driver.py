@@ -463,7 +463,7 @@ class CollectionStorageDriverProtocol(Protocol):
     ) -> Any:
         """Fetch this driver's typed config from the config waterfall.
 
-        Each driver resolves its own ``_plugin_id`` (e.g. ``"driver:records:postgresql"``,
+        Each driver resolves its own ``_class_key`` (e.g. ``"driver:records:postgresql"``,
         ``"driver:records:elasticsearch"``) and returns the matching
         ``CollectionDriverConfig`` subclass.  Returns code defaults when no
         config has been stored.

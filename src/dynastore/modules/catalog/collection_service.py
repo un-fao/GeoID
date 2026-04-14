@@ -42,7 +42,6 @@ from dynastore.tools.async_utils import signal_bus
 from dynastore.tools.json import CustomJSONEncoder
 from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry, LifecycleContext
 from dynastore.modules.db_config import shared_queries
-from dynastore.modules.db_config.platform_config_service import ConfigRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -473,11 +472,11 @@ class CollectionService:
             #    at None here and is updated to a real value there.
             if layer_config_override:
                 from dynastore.modules.db_config.platform_config_service import PluginConfig as _PluginConfig
-                if isinstance(layer_config_override, _PluginConfig) and layer_config_override._plugin_id is not None:
+                if isinstance(layer_config_override, _PluginConfig):
                     configs = get_protocol(ConfigsProtocol)
                     assert configs is not None, "ConfigsProtocol not registered"
                     await configs.set_config(
-                        layer_config_override._plugin_id,
+                        type(layer_config_override),
                         layer_config_override,
                         catalog_id=catalog_id,
                         collection_id=collection_model.id,

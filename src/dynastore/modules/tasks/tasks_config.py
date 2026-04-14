@@ -9,7 +9,7 @@ TASKS_PLUGIN_CONFIG_ID = "tasks"
 
 class TasksPluginConfig(PluginConfig):
     """Configuration for the Background Tasks module."""
-    _plugin_id: ClassVar[Optional[str]] = TASKS_PLUGIN_CONFIG_ID
+    _class_key: ClassVar[Optional[str]] = TASKS_PLUGIN_CONFIG_ID
 
     queue_poll_interval: float = Field(
         default_factory=lambda: float(os.environ.get("DYNASTORE_QUEUE_POLL_INTERVAL", "30.0")),

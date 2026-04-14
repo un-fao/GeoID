@@ -39,7 +39,7 @@ class AssetPluginConfig(PluginConfig):
     (``plugin_id="assets:drivers"``).
     """
 
-    _plugin_id: ClassVar[Optional[str]] = ASSET_PLUGIN_CONFIG_ID
+    _class_key: ClassVar[Optional[str]] = ASSET_PLUGIN_CONFIG_ID
 
     model_config = {"extra": "allow"}
 

@@ -20,7 +20,7 @@
 Per-driver plugin configurations.
 
 Each driver instance registers its own ``PluginConfig`` subclass with
-``_plugin_id = "driver:{domain}:{driver_id}"``.  The config is stored/retrieved via
+``_class_key = "driver:{domain}:{driver_id}"``.  The config is stored/retrieved via
 the existing config API and 4-tier waterfall
 (collection > catalog > platform > code defaults).
 
@@ -166,7 +166,7 @@ class CollectionWritePolicy(PluginConfig):
           on_asset_conflict = AssetConflictPolicy.REFUSE  # reject whole batch
     """
 
-    _plugin_id: ClassVar[Optional[str]] = "collection:write_policy"
+    _class_key: ClassVar[Optional[str]] = "collection:write_policy"
 
     on_conflict: WriteConflictPolicy = Field(
         default=WriteConflictPolicy.UPDATE,
@@ -220,8 +220,8 @@ class CollectionWritePolicy(PluginConfig):
 class DriverPluginConfig(PluginConfig):
     """Base for all per-driver configs.
 
-    Subclasses **must** set ``_plugin_id = "driver:{domain}:{driver_id}"`` to
-    auto-register with the ``ConfigRegistry``.
+    Subclasses **must** set ``_class_key = "driver:{domain}:{driver_id}"`` to
+    auto-register with the typed-store class registry.
 
     Fields shared across all drivers:
 
@@ -263,7 +263,7 @@ class DriverRecordsPostgresqlConfig(CollectionDriverConfig):
     cannot be changed once the physical table exists.
     """
 
-    _plugin_id: ClassVar[Optional[str]] = "driver:records:postgresql"
+    _class_key: ClassVar[Optional[str]] = "driver:records:postgresql"
 
     model_config = ConfigDict(extra="allow")
 
@@ -428,7 +428,7 @@ class DriverRecordsElasticsearchConfig(CollectionDriverConfig):
     an external SFEOS app running in read-only mode.
     """
 
-    _plugin_id: ClassVar[Optional[str]] = "driver:records:elasticsearch"
+    _class_key: ClassVar[Optional[str]] = "driver:records:elasticsearch"
 
     model_config = ConfigDict(extra="allow")
 
@@ -455,7 +455,7 @@ class DuckDbCollectionDriverConfig(CollectionDriverConfig):
     Absorbs fields previously in ``FileStorageLocationConfig``.
     """
 
-    _plugin_id: ClassVar[Optional[str]] = "driver:records:duckdb"
+    _class_key: ClassVar[Optional[str]] = "driver:records:duckdb"
 
     capabilities: FrozenSet[str] = Field(
         default=frozenset({DriverCapability.ASYNC, DriverCapability.BATCH}),
@@ -474,7 +474,7 @@ class DriverRecordsIcebergConfig(CollectionDriverConfig):
     Absorbs fields previously in ``OTFStorageLocationConfig``.
     """
 
-    _plugin_id: ClassVar[Optional[str]] = "driver:records:iceberg"
+    _class_key: ClassVar[Optional[str]] = "driver:records:iceberg"
 
     model_config = ConfigDict(extra="allow")
 
@@ -519,7 +519,7 @@ class DriverRecordsIcebergConfig(CollectionDriverConfig):
 class DriverAssetPostgresqlConfig(AssetDriverConfig):
     """PostgreSQL asset driver config."""
 
-    _plugin_id: ClassVar[Optional[str]] = "driver:asset:postgresql"
+    _class_key: ClassVar[Optional[str]] = "driver:asset:postgresql"
 
     capabilities: FrozenSet[str] = Field(
         default=frozenset({DriverCapability.SYNC, DriverCapability.TRANSACTIONAL}),
@@ -529,7 +529,7 @@ class DriverAssetPostgresqlConfig(AssetDriverConfig):
 class DriverAssetElasticsearchConfig(AssetDriverConfig):
     """Elasticsearch asset driver config."""
 
-    _plugin_id: ClassVar[Optional[str]] = "driver:asset:elasticsearch"
+    _class_key: ClassVar[Optional[str]] = "driver:asset:elasticsearch"
 
     model_config = ConfigDict(extra="allow")
 
@@ -545,10 +545,8 @@ class DriverAssetElasticsearchConfig(AssetDriverConfig):
 
 WRITE_POLICY_PLUGIN_ID = "collection:write_policy"
 
-# Register CollectionWritePolicy so the waterfall can look it up
-from dynastore.modules.db_config.platform_config_service import ConfigRegistry as _CR  # noqa: E402
-
-_CR.register(WRITE_POLICY_PLUGIN_ID, CollectionWritePolicy)
+# CollectionWritePolicy / FeatureTypePluginConfig auto-register via
+# PluginConfig.__init_subclass__ — no explicit registration needed.
 
 from dynastore.models.protocols.field_definition import (  # noqa: E402
     FeatureTypeDefinition as _FeatureTypeBase,
@@ -562,18 +560,15 @@ class FeatureTypePluginConfig(PluginConfig):
     """PluginConfig wrapper for FeatureTypeDefinition — registerable in the waterfall.
 
     Inherits all fields from the protocol-level ``FeatureTypeDefinition``
-    and adds ``PluginConfig`` compliance (``enabled``, ``_plugin_id``).
+    and adds ``PluginConfig`` compliance (``enabled``, ``_class_key``).
     """
 
-    _plugin_id: ClassVar[Optional[str]] = FEATURE_TYPE_PLUGIN_ID
+    _class_key: ClassVar[Optional[str]] = FEATURE_TYPE_PLUGIN_ID
 
     level: _EntityLevel = _EntityLevel.ITEM
     fields: Dict[str, _FieldDefinition] = Field(default_factory=dict)
     exclude_fields: Optional[List[str]] = None
     metadata_fields: Optional[Dict[str, Any]] = None
-
-
-_CR.register(FEATURE_TYPE_PLUGIN_ID, FeatureTypePluginConfig)
 
 
 # ---------------------------------------------------------------------------

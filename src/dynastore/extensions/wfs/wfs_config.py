@@ -23,7 +23,7 @@ class WFSPluginConfig(PluginConfig):
     Runtime configuration for the WFS extension.
     Controls caching and visibility.
     """
-    _plugin_id: ClassVar[Optional[str]] = WFS_PLUGIN_CONFIG_ID
+    _class_key: ClassVar[Optional[str]] = WFS_PLUGIN_CONFIG_ID
     enabled: bool = Field(True, description="If False, WFS requests will be rejected.")
     
     # Caching

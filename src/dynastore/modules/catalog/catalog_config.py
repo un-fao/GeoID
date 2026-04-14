@@ -82,7 +82,7 @@ class CollectionPluginConfig(PluginConfig):
     (``plugin_id = "collection:drivers"``).
     """
 
-    _plugin_id: ClassVar[Optional[str]] = COLLECTION_PLUGIN_CONFIG_ID
+    _class_key: ClassVar[Optional[str]] = COLLECTION_PLUGIN_CONFIG_ID
 
     model_config = {"extra": "allow"}
 

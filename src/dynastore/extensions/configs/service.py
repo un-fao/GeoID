@@ -33,8 +33,10 @@ from dynastore.modules import get_protocol
 from dynastore.extensions.web.decorators import expose_web_page
 from dynastore.models.protocols import WebModuleProtocol, ConfigsProtocol
 from dynastore.modules.db_config.platform_config_service import (
-    ConfigRegistry,
     enforce_config_immutability,
+    require_config_class,
+    resolve_config_class,
+    list_registered_configs,
 )
 from dynastore.modules.db_config.exceptions import (
     ImmutableConfigError,
@@ -250,8 +252,8 @@ class ConfigsService(ExtensionProtocol):
     async def get_config_schemas(self) -> Dict[str, Any]:
         """Retrieves JSON schemas for all registered configuration models."""
         schemas: Dict[str, Any] = {}
-        for plugin_id, config_class in ConfigRegistry._registry.items():
-            schemas[plugin_id] = config_class.model_json_schema()
+        for class_key, config_class in list_registered_configs().items():
+            schemas[class_key] = config_class.model_json_schema()
         return schemas
 
     # --- Discovery Endpoint ---
@@ -271,15 +273,15 @@ class ConfigsService(ExtensionProtocol):
         Use ``?with_schema=true`` to also retrieve each plugin's JSON Schema
         and docstring, which is useful for building dynamic UIs.
         """
-        plugins = ConfigRegistry._registry
+        plugins = list_registered_configs()
         if with_schema:
             return JSONResponse(
                 content={
-                    plugin_id: {
+                    class_key: {
                         "description": model.__doc__ or "No description provided.",
                         "schema": model.model_json_schema(),
                     }
-                    for plugin_id, model in plugins.items()
+                    for class_key, model in plugins.items()
                 }
             )
         return list(plugins.keys())
@@ -316,11 +318,12 @@ class ConfigsService(ExtensionProtocol):
         for driver in get_protocols(CollectionStorageDriverProtocol):
             caps = sorted(getattr(driver, "capabilities", frozenset()))
             driver_type = type(driver).__name__
-            plugin_id = getattr(driver, "_plugin_id", f"driver:records:{type(driver).__name__}")
+            class_key = getattr(driver, "_class_key", f"driver:records:{type(driver).__name__}")
             driver_config_caps = []
             try:
-                dcfg = ConfigRegistry.create_default(plugin_id)
-                driver_config_caps = sorted(getattr(dcfg, "capabilities", frozenset()))
+                dcls = resolve_config_class(class_key)
+                if dcls is not None:
+                    driver_config_caps = sorted(getattr(dcls(), "capabilities", frozenset()))
             except Exception:
                 pass
             grouped[driver_type].append(DriverInfo(
@@ -340,11 +343,12 @@ class ConfigsService(ExtensionProtocol):
         for driver in get_protocols(AssetDriverProtocol):
             caps = sorted(getattr(driver, "capabilities", frozenset()))
             driver_type = type(driver).__name__
-            plugin_id = getattr(driver, "_plugin_id", f"driver:asset:{type(driver).__name__}")
+            class_key = getattr(driver, "_class_key", f"driver:asset:{type(driver).__name__}")
             driver_config_caps = []
             try:
-                dcfg = ConfigRegistry.create_default(plugin_id)
-                driver_config_caps = sorted(getattr(dcfg, "capabilities", frozenset()))
+                dcls = resolve_config_class(class_key)
+                if dcls is not None:
+                    driver_config_caps = sorted(getattr(dcls(), "capabilities", frozenset()))
             except Exception:
                 pass
             grouped[driver_type].append(DriverInfo(
@@ -363,7 +367,7 @@ class ConfigsService(ExtensionProtocol):
 
         for driver in get_protocols(CollectionMetadataDriverProtocol):
             driver_type = type(driver).__name__
-            plugin_id = getattr(driver, "_plugin_id", "")
+            class_key = getattr(driver, "_class_key", "")
             grouped[driver_type].append(DriverInfo(
                 driver_id=type(driver).__name__,
                 driver_type=driver_type,
@@ -434,16 +438,14 @@ class ConfigsService(ExtensionProtocol):
         Resolves hierarchy: Collection > Catalog > Platform > Default.
         """
         try:
-            if not ConfigRegistry.get_model(plugin_id):
+            cls = resolve_config_class(plugin_id)
+            if cls is None:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Configuration plugin '{plugin_id}' is not registered.",
                 )
 
-            # This call uses the JIT logic: it returns the resolved config (default if nothing else exists)
-            config = await self.configs.get_config(
-                plugin_id, catalog_id, collection_id
-            )
+            config = await self.configs.get_config(cls, catalog_id, collection_id)
             return config
         except Exception as e:
             logger.error(f"Error fetching collection config: {e}", exc_info=True)
@@ -458,11 +460,11 @@ class ConfigsService(ExtensionProtocol):
         This writes to the 'collection_configs' table.
         """
         try:
-            # Validate input against registered schema
-            config_model = ConfigRegistry.validate_config(plugin_id, body)
+            cls = require_config_class(plugin_id)
+            config_model = cls.model_validate(body)
 
             validated_config = await self.configs.set_config(
-                plugin_id, config_model, catalog_id, collection_id
+                cls, config_model, catalog_id, collection_id
             )
             return validated_config
 
@@ -482,8 +484,9 @@ class ConfigsService(ExtensionProtocol):
         Deletes the configuration override for a plugin at the Collection level.
         The effective configuration will revert to Catalog, Platform, or Code defaults.
         """
+        cls = require_config_class(plugin_id)
         await self.configs.delete_config(
-            plugin_id, catalog_id=catalog_id, collection_id=collection_id
+            cls, catalog_id=catalog_id, collection_id=collection_id
         )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -496,15 +499,15 @@ class ConfigsService(ExtensionProtocol):
         Resolves hierarchy: Catalog > Platform > Default.
         """
         try:
-            if not ConfigRegistry.get_model(plugin_id):
+            cls = resolve_config_class(plugin_id)
+            if cls is None:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Configuration plugin '{plugin_id}' is not registered.",
                 )
 
-            # Passing None for collection_id triggers resolution up to Catalog level
             config = await self.configs.get_config(
-                plugin_id, catalog_id, collection_id=None
+                cls, catalog_id, collection_id=None
             )
             return config
         except Exception as e:
@@ -519,11 +522,11 @@ class ConfigsService(ExtensionProtocol):
         Overrides the configuration for a plugin at the Catalog level.
         """
         try:
-            # Validate input against registered schema
-            config_model = ConfigRegistry.validate_config(plugin_id, body)
+            cls = require_config_class(plugin_id)
+            config_model = cls.model_validate(body)
 
             validated_config = await self.configs.set_config(
-                plugin_id, config_model, catalog_id, collection_id=None
+                cls, config_model, catalog_id, collection_id=None
             )
             return validated_config
         except Exception as e:
@@ -540,7 +543,8 @@ class ConfigsService(ExtensionProtocol):
         Deletes the configuration override for a plugin at the Catalog level.
         The effective configuration will revert to Platform or Code defaults.
         """
-        await self.configs.delete_config(plugin_id, catalog_id=catalog_id)
+        cls = require_config_class(plugin_id)
+        await self.configs.delete_config(cls, catalog_id=catalog_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # Platform Level
@@ -552,14 +556,15 @@ class ConfigsService(ExtensionProtocol):
         Resolves hierarchy: Platform > Default.
         """
         try:
-            if not ConfigRegistry.get_model(plugin_id):
+            cls = resolve_config_class(plugin_id)
+            if cls is None:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Configuration plugin '{plugin_id}' is not registered.",
                 )
 
             config = await self.configs.get_config(
-                plugin_id, catalog_id=None, collection_id=None
+                cls, catalog_id=None, collection_id=None
             )
             return config
         except Exception as e:
@@ -571,19 +576,18 @@ class ConfigsService(ExtensionProtocol):
         """
         Sets the global platform default configuration for a plugin.
         """
-        model_class = ConfigRegistry.get_model(plugin_id)
-        if not model_class:
+        cls = resolve_config_class(plugin_id)
+        if cls is None:
             raise HTTPException(
                 status_code=404,
                 detail=f"Configuration plugin '{plugin_id}' is not registered.",
             )
 
         try:
-            # Validate input against registered schema
-            config_model = ConfigRegistry.validate_config(plugin_id, body)
+            config_model = cls.model_validate(body)
 
             validated_config = await self.configs.set_config(
-                plugin_id, config_model, catalog_id=None, collection_id=None
+                cls, config_model, catalog_id=None, collection_id=None
             )
             return validated_config
         except Exception as e:
@@ -600,7 +604,8 @@ class ConfigsService(ExtensionProtocol):
         Deletes the configuration override for a plugin at the Platform level.
         The effective configuration will revert to the Code defaults.
         """
-        await self.configs.delete_config(plugin_id)
+        cls = require_config_class(plugin_id)
+        await self.configs.delete_config(cls)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # --- Examples & Quick-start ---
@@ -768,9 +773,10 @@ class ConfigsService(ExtensionProtocol):
 
         for plugin_id, config_data in payload.configs.items():
             try:
-                config_model = ConfigRegistry.validate_config(plugin_id, config_data)
+                cls = require_config_class(plugin_id)
+                config_model = cls.model_validate(config_data)
                 await self.configs.set_config(
-                    plugin_id, config_model, catalog_id, collection_id
+                    cls, config_model, catalog_id, collection_id
                 )
                 results.append(BulkApplyResultEntry(plugin_id=plugin_id, status="ok"))
                 applied += 1

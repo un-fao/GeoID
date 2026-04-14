@@ -16,7 +16,7 @@
 Push-based dynamic CORS middleware.
 
 Rebuilds the inner Starlette CORSMiddleware when SecurityPluginConfig
-changes via the ConfigRegistry on_apply callback -- no polling.
+changes via the PluginConfig apply handler on_apply callback -- no polling.
 """
 
 import logging
@@ -37,7 +37,7 @@ _cors_instance: Optional["DynamicCORSMiddleware"] = None
 
 
 class DynamicCORSMiddleware:
-    """Wraps Starlette CORSMiddleware; rebuilt on push from ConfigRegistry."""
+    """Wraps Starlette CORSMiddleware; rebuilt on push from PluginConfig apply handler."""
 
     def __init__(self, app: ASGIApp):
         global _cors_instance
@@ -83,7 +83,7 @@ class DynamicCORSMiddleware:
 
 
 # ---------------------------------------------------------------------------
-#  Push callback -- registered with ConfigRegistry
+#  Push callback -- registered with PluginConfig apply handler
 # ---------------------------------------------------------------------------
 
 
@@ -93,7 +93,7 @@ def on_security_config_changed(
     collection_id: Optional[str],
     db_resource: Optional[object],
 ) -> None:
-    """Called by ConfigRegistry when security config is written."""
+    """Called by PluginConfig apply handler when security config is written."""
     if _cors_instance is None:
         return
     if not isinstance(config, SecurityPluginConfig):

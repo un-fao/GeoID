@@ -58,7 +58,7 @@ class DriverMetadataElasticsearchConfig(PluginConfig):
     The final index name is ``{index_prefix}_collection_metadata_{catalog_id}``.
     """
 
-    _plugin_id: ClassVar[Optional[str]] = METADATA_ES_DRIVER_CONFIG_ID
+    _class_key: ClassVar[Optional[str]] = METADATA_ES_DRIVER_CONFIG_ID
 
     index_prefix: Immutable[str] = Field(
         "meta",
@@ -70,12 +70,7 @@ class DriverMetadataElasticsearchConfig(PluginConfig):
     )
 
 
-# Register config with the waterfall
-from dynastore.modules.db_config.platform_config_service import (  # noqa: E402
-    ConfigRegistry as _MetaCR,
-)
-
-_MetaCR.register(METADATA_ES_DRIVER_CONFIG_ID, DriverMetadataElasticsearchConfig)
+# DriverMetadataElasticsearchConfig auto-registers via PluginConfig.__init_subclass__.
 
 
 async def _on_apply_es_metadata_driver_config(
@@ -109,7 +104,7 @@ async def _on_apply_es_metadata_driver_config(
             )
 
 
-_MetaCR.register_apply_handler(METADATA_ES_DRIVER_CONFIG_ID, _on_apply_es_metadata_driver_config)
+DriverMetadataElasticsearchConfig.register_apply_handler(_on_apply_es_metadata_driver_config)
 
 # ---------------------------------------------------------------------------
 # Mapping — explicit typing only for fields ES cannot auto-detect

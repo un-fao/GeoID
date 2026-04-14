@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Optional, Protocol, Type, TypeVar
 from dynastore.tools.plugin import ProtocolPlugin
 
 if TYPE_CHECKING:
-    from dynastore.models.protocols.config_registry import ConfigRegistryProtocol
+    from dynastore.models.protocols.configs import ConfigsProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ class HasConfigService(Protocol):
     to the centralized Configuration Manager.
     """
 
-    def get_config_service(self) -> Optional[ConfigRegistryProtocol]:
+    def get_config_service(self) -> Optional["ConfigsProtocol"]:
         """Returns the configuration manager instance."""
         ...
 

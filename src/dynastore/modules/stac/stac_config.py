@@ -271,7 +271,7 @@ class StacPluginConfig(PluginConfig):
     """
     Mutable STAC metadata and behavior configuration.
     """
-    _plugin_id: ClassVar[Optional[str]] = STAC_PLUGIN_CONFIG_ID
+    _class_key: ClassVar[Optional[str]] = STAC_PLUGIN_CONFIG_ID
     # Extension schemas
     enabled_extensions: List[str] = Field(default_factory=list)
     

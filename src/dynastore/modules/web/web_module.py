@@ -62,14 +62,10 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
 
         """Module lifecycle management."""
         self._initialize_discovery()
-        
-        # Register the configuration schema for web pages
-        configs = get_protocols(ConfigsProtocol)
-        for c in configs:
-            from dynastore.modules.db_config.platform_config_service import ConfigRegistry
-            if not ConfigRegistry.get_model("web_pages"):
-                ConfigRegistry.register("web_pages", WebPageSettingsConfig)
-        
+
+        # WebPageSettingsConfig auto-registers via PluginConfig.__init_subclass__
+        # at import time — no explicit registration needed.
+
         # Automatic discovery of protocol implementers
         self._discover_contributors()
 

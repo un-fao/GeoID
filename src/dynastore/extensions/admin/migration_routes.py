@@ -567,7 +567,7 @@ async def import_catalog_configs(
 ) -> Dict[str, Any]:
     from dynastore.modules import get_protocol
     from dynastore.models.protocols import ConfigsProtocol
-    from dynastore.modules.db_config.platform_config_service import ConfigRegistry
+    from dynastore.modules.db_config.platform_config_service import resolve_config_class
 
     configs = get_protocol(ConfigsProtocol)
     if not configs:
@@ -584,13 +584,13 @@ async def import_catalog_configs(
             f"/{entry.collection_id}" if entry.collection_id else ""
         )
         try:
-            model_class = ConfigRegistry.get_model(entry.plugin_id)
+            model_class = resolve_config_class(entry.plugin_id)
             if not model_class:
                 errors.append(f"{label}: plugin not registered, skipped")
                 continue
-            config_model = ConfigRegistry.validate_config(entry.plugin_id, entry.config_data)
+            config_model = model_class.model_validate(entry.config_data)
             await configs.set_config(
-                entry.plugin_id,
+                model_class,
                 config_model,
                 catalog_id=catalog_id,
                 collection_id=entry.collection_id,

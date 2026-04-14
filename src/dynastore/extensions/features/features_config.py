@@ -23,7 +23,7 @@ class FeaturesPluginConfig(PluginConfig):
     Runtime configuration for the OGC Features extension.
     Controls caching and visibility.
     """
-    _plugin_id: ClassVar[Optional[str]] = FEATURES_PLUGIN_CONFIG_ID
+    _class_key: ClassVar[Optional[str]] = FEATURES_PLUGIN_CONFIG_ID
     enabled: bool = Field(True, description="If False, Features requests will be rejected.")
     
     # Caching

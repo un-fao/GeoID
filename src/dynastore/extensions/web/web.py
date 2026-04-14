@@ -26,7 +26,7 @@ import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime
-from typing import List, Any, Dict, Optional, Callable, cast
+from typing import List, Any, ClassVar, Dict, Optional, Callable, cast
 
 from fastapi import APIRouter, FastAPI, Response, HTTPException, Request, Query, Header
 
@@ -187,7 +187,7 @@ WEB_CONFORMANCE_URIS = [
 
 from pydantic import Field
 from dynastore.models.protocols.web import WebModuleProtocol, WebPageProtocol, StaticFilesProtocol
-from dynastore.modules.db_config.platform_config_service import PluginConfig, ConfigRegistry
+from dynastore.modules.db_config.platform_config_service import PluginConfig
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.routing import Match, Router
@@ -247,6 +247,7 @@ class RelativeSlashRedirectMiddleware:
 
 class WebConfig(PluginConfig):
     """Configuration for the Web Platform interface."""
+    _class_key: ClassVar[Optional[str]] = "web_config"
     brand_name: str = "Agro-Informatics Platform"
     brand_subtitle: str = "Catalog Services"
     token_key: str = "ds_token"
@@ -255,7 +256,7 @@ class WebConfig(PluginConfig):
     root_path: str = Field(default_factory=lambda: os.getenv("API_ROOT_PATH", "").rstrip("/"))
 
 
-ConfigRegistry.register("web_config", WebConfig)
+
 class Web(ExtensionProtocol):
     """
     Core web platform extension.
@@ -343,14 +344,13 @@ class Web(ExtensionProtocol):
         logger.info("WebService: Policies registered.")
 
         # Register push-based CORS config handler
-        from dynastore.modules.db_config.platform_config_service import ConfigRegistry
+        from dynastore.modules.iam.security_config import SecurityPluginConfig
         from dynastore.extensions.web.cors_middleware import (
-            SECURITY_PLUGIN_CONFIG_ID,
             on_security_config_changed,
             _cors_instance,
         )
-        ConfigRegistry.register_apply_handler(
-            SECURITY_PLUGIN_CONFIG_ID, cast(Any, on_security_config_changed)
+        SecurityPluginConfig.register_apply_handler(
+            cast(Any, on_security_config_changed)
         )
         if _cors_instance is not None:
             await _cors_instance.initialize_from_db()

@@ -17,10 +17,10 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-Configuration management protocol definitions.
+Configuration management protocol definitions (class-as-identity only).
 """
 
-from typing import Protocol, Optional, Any, List, Dict, Type, TypeVar, Union, overload, runtime_checkable, TYPE_CHECKING
+from typing import Protocol, Optional, Any, Dict, Type, TypeVar, runtime_checkable, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from dynastore.modules.db_config.platform_config_service import PluginConfig
@@ -32,73 +32,33 @@ _T_Config = TypeVar("_T_Config", bound="PluginConfig")
 @runtime_checkable
 class ConfigsProtocol(Protocol):
     """
-    Protocol for configuration management operations, enabling decoupled access
-    to hierarchical configuration (platform/catalog/collection levels).
+    Protocol for configuration management operations (class-as-identity only).
 
-    This protocol is used by extensions and services to retrieve and manage
-    configurations in a loosely-coupled manner, supporting the protocol-based
-    discovery pattern.
-
-    Two calling forms are supported:
-
-    * ``get_config(SomeConfigClass, ...)`` — class-as-identity. Return type
-      narrows to ``SomeConfigClass`` and no ``cast()`` is needed at the call
-      site. This is the preferred form.
-    * ``get_config("plugin_id_str", ...)`` — legacy string key. Still supported
-      during migration; return type is the base ``PluginConfig``.
+    ``get_config(SomeConfigClass, ...)`` — every PluginConfig subclass is its
+    own identity.  Return type narrows to that class.  No string-form legacy
+    id is accepted.
     """
 
-    @overload
     async def get_config(
         self,
-        plugin_id: Type[_T_Config],
-        catalog_id: Optional[str] = ...,
-        collection_id: Optional[str] = ...,
-        ctx: Optional["DriverContext"] = ...,
-        config_snapshot: Optional[Dict[str, Any]] = ...,
-    ) -> _T_Config: ...
-
-    @overload
-    async def get_config(
-        self,
-        plugin_id: str,
-        catalog_id: Optional[str] = ...,
-        collection_id: Optional[str] = ...,
-        ctx: Optional["DriverContext"] = ...,
-        config_snapshot: Optional[Dict[str, Any]] = ...,
-    ) -> "PluginConfig": ...
-
-    async def get_config(
-        self,
-        plugin_id: Union[str, Type["PluginConfig"]],
+        config_cls: Type[_T_Config],
         catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
         ctx: Optional["DriverContext"] = None,
         config_snapshot: Optional[Dict[str, Any]] = None,
-    ) -> "PluginConfig":
+    ) -> _T_Config:
         """
         Retrieves configuration with 4-tier waterfall:
         1. Collection (if provided)
         2. Catalog (if provided)
         3. Platform (global)
         4. Code-level Defaults
-
-        Args:
-            plugin_id: Either a ``PluginConfig`` subclass (preferred: return type
-                narrows to that subclass) or a legacy plugin_id string.
-            catalog_id: Optional catalog ID for catalog-level config
-            collection_id: Optional collection ID for collection-level config
-            db_resource: Optional database resource for transaction-aware queries
-            config_snapshot: Optional snapshot to satisfy lookups without DB hits
-
-        Returns:
-            PluginConfig instance (concrete subclass at runtime)
         """
         ...
-    
+
     async def set_config(
         self,
-        plugin_id: str,
+        config_cls: Type["PluginConfig"],
         config: "PluginConfig",
         catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
@@ -110,17 +70,9 @@ class ConfigsProtocol(Protocol):
         - If collection_id is provided: sets at collection level
         - If only catalog_id is provided: sets at catalog level
         - If neither is provided: sets at platform level
-        
-        Args:
-            plugin_id: The plugin/extension ID
-            config: Configuration to set
-            catalog_id: Optional catalog ID for catalog-level config
-            collection_id: Optional collection ID for collection-level config
-            check_immutability: Whether to enforce immutability checks
-            db_resource: Optional database resource for transaction-aware operations
         """
         ...
-    
+
     async def list_configs(
         self,
         catalog_id: Optional[str] = None,
@@ -130,20 +82,8 @@ class ConfigsProtocol(Protocol):
         ctx: Optional["DriverContext"] = None,
     ) -> Dict[str, Any]:
         """
-        Lists all configurations at the specified level with pagination:
-        - If collection_id is provided: lists collection-level configs
-        - If only catalog_id is provided: lists catalog-level configs
-        - If neither is provided: lists platform-level configs
-        
-        Args:
-            catalog_id: Optional catalog ID
-            collection_id: Optional collection ID
-            limit: Pagination limit
-            offset: Pagination offset
-            db_resource: Optional database resource for transaction-aware queries
-            
-        Returns:
-            Dictionary containing 'total' and 'results' (list of configuration dictionaries)
+        Lists all configurations at the specified level with pagination.
+        Returns ``{"total": int, "results": list[{"class_key": str, "config": dict}]}``.
         """
         ...
 
@@ -153,14 +93,13 @@ class ConfigsProtocol(Protocol):
         ctx: Optional["DriverContext"] = None,
     ) -> Dict[str, Any]:
         """
-        Returns all configurations for a catalog as a simple dictionary (mapping: plugin_id -> data).
-        This is typically used to generate a config_snapshot for lifecycle hooks.
+        Returns all configurations for a catalog as a dict keyed by class_key.
         """
         ...
-    
+
     async def delete_config(
         self,
-        plugin_id: str,
+        config_cls: Type["PluginConfig"],
         catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
         ctx: Optional["DriverContext"] = None,
@@ -170,14 +109,6 @@ class ConfigsProtocol(Protocol):
         - If collection_id is provided: deletes collection-level config
         - If only catalog_id is provided: deletes catalog-level config
         - If neither is provided: deletes platform-level config (acts as reset to defaults)
-        
-        Note: Deleting a platform config effectively resets to code-level defaults.
-        
-        Args:
-            plugin_id: The plugin/extension ID
-            catalog_id: Optional catalog ID
-            collection_id: Optional collection ID
-            db_resource: Optional database resource for transaction-aware operations
         """
         ...
 
@@ -192,16 +123,6 @@ class ConfigsProtocol(Protocol):
     ) -> Dict[str, Any]:
         """
         Searches for configurations across the hierarchy.
-        
-        Args:
-            query: Optional search query (matches against plugin_id)
-            catalog_id: Optional catalog ID filter
-            collection_id: Optional collection ID filter
-            limit: Pagination limit
-            offset: Pagination offset
-            db_resource: Optional database resource for transaction-aware queries
-            
-        Returns:
-            Dictionary containing 'total' and 'results'
+        ``query`` is matched against class_key (ILIKE).
         """
         ...

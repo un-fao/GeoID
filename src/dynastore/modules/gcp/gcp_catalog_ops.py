@@ -199,12 +199,12 @@ class GcpCatalogOpsMixin:
             if eventing_data:
                 try:
                     from dynastore.modules.db_config.platform_config_service import (
-                        ConfigRegistry,
+                        require_config_class,
                     )
 
-                    eventing_config = ConfigRegistry.validate_config(
-                        GCP_EVENTING_CONFIG_ID, eventing_data
-                    )
+                    eventing_config = require_config_class(
+                        GCP_EVENTING_CONFIG_ID
+                    ).model_validate(eventing_data)
 
                     if (
                         isinstance(eventing_config, GcpEventingConfig)

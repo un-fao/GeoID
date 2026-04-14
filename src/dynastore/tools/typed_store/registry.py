@@ -65,6 +65,15 @@ class TypedModelRegistry:
         key = model.class_key()
         existing = cls._by_key.get(key)
         if existing is not None and existing is not model:
+            # Tolerate re-import of the same class via alternate module paths
+            # (entry-point scanning can import a module twice); only reject when
+            # two genuinely distinct classes collide on the same key.
+            if (
+                existing.__module__ == model.__module__
+                and existing.__qualname__ == model.__qualname__
+            ):
+                cls._by_key[key] = model
+                return
             raise ValueError(
                 f"Duplicate class_key {key!r}: "
                 f"{existing.__module__}.{existing.__qualname__} vs "

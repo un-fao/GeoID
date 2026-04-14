@@ -29,7 +29,7 @@ SECURITY_PLUGIN_CONFIG_ID = "security"
 
 class SecurityPluginConfig(PluginConfig):
     """Platform-level security configuration — changeable at runtime."""
-    _plugin_id: ClassVar[Optional[str]] = SECURITY_PLUGIN_CONFIG_ID
+    _class_key: ClassVar[Optional[str]] = SECURITY_PLUGIN_CONFIG_ID
 
     # -- CORS --
     cors_allowed_origins: List[str] = Field(

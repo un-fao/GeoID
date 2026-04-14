@@ -258,10 +258,8 @@ class DriverRecordsPostgresql(ModuleProtocol):
         configs = get_protocol(ConfigsProtocol)
         if configs is None:
             return
-        pid = DriverRecordsPostgresqlConfig._plugin_id
-        assert pid is not None
         await configs.set_config(
-            pid,
+            DriverRecordsPostgresqlConfig,
             updated_config,
             catalog_id=catalog_id,
             collection_id=collection_id,
@@ -424,10 +422,8 @@ class DriverRecordsPostgresql(ModuleProtocol):
         configs = get_protocol(ConfigsProtocol)
         updated_config = col_config.model_copy(update={"physical_table": physical_table})
         if configs is not None:
-            pid = DriverRecordsPostgresqlConfig._plugin_id
-            assert pid is not None
             await configs.set_config(
-                pid,
+                DriverRecordsPostgresqlConfig,
                 updated_config,
                 catalog_id=catalog_id,
                 collection_id=collection_id,

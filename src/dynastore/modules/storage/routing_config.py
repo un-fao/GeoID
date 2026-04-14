@@ -205,7 +205,7 @@ class RoutingPluginConfig(PluginConfig):
     Registered as ``plugin_id = "collection:drivers"`` in the config waterfall.
     """
 
-    _plugin_id: ClassVar[Optional[str]] = ROUTING_PLUGIN_CONFIG_ID
+    _class_key: ClassVar[Optional[str]] = ROUTING_PLUGIN_CONFIG_ID
 
     enabled: bool = Field(default=True, description="Enable this routing configuration.")
 
@@ -241,7 +241,7 @@ class AssetRoutingPluginConfig(PluginConfig):
     Registered as ``plugin_id = "assets:drivers"`` in the config waterfall.
     """
 
-    _plugin_id: ClassVar[Optional[str]] = ROUTING_ASSETS_PLUGIN_CONFIG_ID
+    _class_key: ClassVar[Optional[str]] = ROUTING_ASSETS_PLUGIN_CONFIG_ID
 
     enabled: bool = Field(default=True, description="Enable this routing configuration.")
 
@@ -308,24 +308,24 @@ def _validate_routing_entries(
 
             # 4. write_mode compatibility — check DriverCapability.ASYNC
             if entry.write_mode == WriteMode.ASYNC:
-                # Resolve driver config by the driver instance's own _plugin_id.
-                # This avoids constructing the plugin_id from the short driver_id,
-                # which would break with the driver:records:*/driver:asset:* namespace.
+                # Resolve driver config by the driver instance's own _class_key.
                 try:
                     from dynastore.modules.db_config.platform_config_service import (
-                        ConfigRegistry,
+                        resolve_config_class,
                     )
 
-                    driver_plugin_id = getattr(driver, "_plugin_id", None)
-                    if driver_plugin_id:
-                        driver_config = ConfigRegistry.create_default(driver_plugin_id)
-                        config_caps = getattr(driver_config, "capabilities", frozenset())
-                        if DriverCapability.ASYNC not in config_caps:
-                            raise ValueError(
-                                f"{label}: write_mode='async' requires "
-                                f"DriverCapability.ASYNC on driver '{entry.driver_id}'. "
-                                f"Driver capabilities: {sorted(config_caps)}"
-                            )
+                    driver_class_key = getattr(driver, "_class_key", None)
+                    if driver_class_key:
+                        driver_cls = resolve_config_class(driver_class_key)
+                        if driver_cls is not None:
+                            driver_config = driver_cls()
+                            config_caps = getattr(driver_config, "capabilities", frozenset())
+                            if DriverCapability.ASYNC not in config_caps:
+                                raise ValueError(
+                                    f"{label}: write_mode='async' requires "
+                                    f"DriverCapability.ASYNC on driver '{entry.driver_id}'. "
+                                    f"Driver capabilities: {sorted(config_caps)}"
+                                )
                 except ValueError:
                     raise  # re-raise validation errors
                 except Exception:
@@ -476,9 +476,7 @@ async def _on_apply_asset_routing_config(
                     )
 
 
-# Register handlers
-from dynastore.modules.db_config.platform_config_service import ConfigRegistry  # noqa: E402
-
+# Register handlers on the config classes themselves.
 _HandlerSig = Callable[[PluginConfig, Optional[str], Optional[str], Optional[Any]], Any]
-ConfigRegistry.register_apply_handler(ROUTING_PLUGIN_CONFIG_ID, cast(_HandlerSig, _on_apply_routing_config))
-ConfigRegistry.register_apply_handler(ROUTING_ASSETS_PLUGIN_CONFIG_ID, cast(_HandlerSig, _on_apply_asset_routing_config))
+RoutingPluginConfig.register_apply_handler(cast(_HandlerSig, _on_apply_routing_config))
+AssetRoutingPluginConfig.register_apply_handler(cast(_HandlerSig, _on_apply_asset_routing_config))
