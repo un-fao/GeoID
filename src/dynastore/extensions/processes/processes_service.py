@@ -37,7 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from dynastore.extensions import ExtensionProtocol
 from dynastore.extensions.tools.db import get_async_connection, get_async_engine
 from dynastore.extensions.tools.exception_handlers import http_errors
-from dynastore.extensions.tools.security import get_principal
+from dynastore.extensions.iam.guards import get_principal_optional as get_principal
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
 
@@ -933,11 +933,8 @@ class ProcessesService(ExtensionProtocol):
     - Uses the 'tasks' module to manage jobs (task executions).
     """
 
+    conformance_uris = PROCESSES_CONFORMANCE
     router = router
-
-    def __init__(self):
-        from dynastore.extensions.tools.conformance import register_conformance_uris
-        register_conformance_uris(PROCESSES_CONFORMANCE)
 
 
 

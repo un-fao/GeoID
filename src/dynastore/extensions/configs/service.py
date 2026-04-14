@@ -82,12 +82,14 @@ class ConfigsService(ExtensionProtocol):
         self.router = APIRouter(prefix="/configs", tags=["Configurations"])
         self._setup_routes()
 
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
+
     def configure_app(self, app: FastAPI):
-        """Register the Configuration Editor as a web page via WebModuleProtocol."""
-        web = get_protocol(WebModuleProtocol)
-        if web:
-            web.scan_and_register_providers(self)
-            logger.info("ConfigsService: Web page registered via WebModuleProtocol.")
+        """Web pages are discovered by WebModule via the WebPageContributor
+        capability protocol (see get_web_pages above)."""
+        return None
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):

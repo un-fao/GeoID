@@ -68,7 +68,6 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
         super().__init__()
         self.app = app
         self.router = APIRouter(prefix="/coverages", tags=["OGC API - Coverages"])
-        self._register_ogc_conformance()
         self._register_routes()
 
     # ------------------------------------------------------------------

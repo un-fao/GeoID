@@ -25,7 +25,8 @@ from contextlib import asynccontextmanager
 
 from dynastore.extensions import ExtensionProtocol
 from dynastore.modules import get_protocol
-from dynastore.models.protocols import IamProtocol, WebModuleProtocol
+from dynastore.models.protocols import WebModuleProtocol
+from dynastore.modules.iam.iam_service import IamService
 from dynastore.models.protocols.policies import PermissionProtocol, Policy, Role, Principal
 
 from .models import (
@@ -56,19 +57,21 @@ def _require_admin(request: Request):
     return principal
 
 
-def _get_iam_manager():
+def _get_iam_manager() -> IamService:
     """Dependency: returns the IamService from the protocol registry."""
-    mgr = get_protocol(IamProtocol)
-    if not mgr:
+    mgr = get_protocol(IamService)
+    if mgr is None:
         raise HTTPException(status_code=503, detail="Auth service not available.")
-    # The protocol instance may be the service directly (registered via register_plugin)
-    # or a module wrapper with _iam_manager attribute.
-    return getattr(mgr, "_iam_manager", mgr)
+    return mgr
 class AdminService(ExtensionProtocol):
     priority: int = 200
     """Admin REST API — user, role, policy, and catalog assignment management."""
 
     router: APIRouter = APIRouter(tags=["Admin"], prefix="/admin")
+
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
 
     def configure_app(self, app: FastAPI):
         # Include migration admin sub-routers
@@ -77,13 +80,8 @@ class AdminService(ExtensionProtocol):
         self.router.include_router(schema_router, prefix="")
         self.router.include_router(configs_router, prefix="")
 
-        # Register the admin panel page in the web console sidebar
-        web = get_protocol(WebModuleProtocol)
-        if web:
-            web.scan_and_register_providers(self)
-            logger.info("AdminService: Web page registered via WebModuleProtocol.")
-        else:
-            logger.debug("WebModuleProtocol not available yet; admin page will be registered at Web lifespan scan.")
+        # Web pages are discovered by WebModule via the WebPageContributor
+        # capability protocol (see get_web_pages below).
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):

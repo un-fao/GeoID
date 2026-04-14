@@ -29,7 +29,7 @@ Developer guide for all shared utility modules. **Before writing new helpers, ch
 | String type parsing | `tools.json` | `parse_string_to_python_type()` |
 | Pydantic dict parsing | `tools.pydantic` | `FlexibleDictParam`, `TemplateParam` |
 | URL helpers | `extensions.tools.url` | `build_sibling_redirect()`, `get_base_url()` |
-| Auth dependency | `extensions.tools.security` | `get_principal()` |
+| Auth dependency | `extensions.iam.guards` | `get_principal()`, `get_principal_optional()`, `require_sysadmin()`, `require_admin()`, `require_authenticated()` |
 | Request state access | `extensions.tools.request_state` | `get_principal()`, `get_catalog_id()` |
 | Conflict to HTTP 409 | `extensions.tools.conflict_handler` | `conflict_to_409()` |
 | OGC response envelope | `extensions.tools.formatters` | `OGCResponseMetadata` |
@@ -300,7 +300,7 @@ root = get_root_url(request)
 
 ```python
 # FastAPI dependency (resolves JWT -> Principal)
-from dynastore.extensions.tools.security import get_principal
+from dynastore.extensions.iam.guards import get_principal, require_sysadmin
 
 # Typed request.state accessors (replaces scattered getattr)
 from dynastore.extensions.tools.request_state import get_principal, get_catalog_id, get_principal_role

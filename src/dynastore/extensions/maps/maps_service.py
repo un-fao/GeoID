@@ -126,31 +126,54 @@ from .policies import register_maps_policies
 class MapsService(ExtensionProtocol):
     priority: int = 100
     """Provides OGC API - Maps (WMS-like) functionality with filtering and Tiling."""
+    conformance_uris = OGC_API_MAPS_URIS
     router:APIRouter = APIRouter(tags=["OGC API - Maps (WMS)"], prefix="/maps")
     process_pool: Optional[ProcessPoolExecutor] = None
 
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
+
+    def get_static_assets(self):
+        from dynastore.extensions.tools.web_collect import collect_static_assets
+        return collect_static_assets(self)
+
     def configure_app(self, app: FastAPI):
         """Early configuration for the Maps extension."""
-        # Register @expose_web_page methods via WebModuleProtocol
-        from dynastore.modules import get_protocol
-        from dynastore.models.protocols import WebModuleProtocol
-        web = get_protocol(WebModuleProtocol)
-        if web:
-            web.scan_and_register_providers(self)
-            logger.info("MapsService: Web pages registered via WebModuleProtocol.")
+        # Web pages / static assets are discovered by WebModule via the
+        # WebPageContributor / StaticAssetProvider capability protocols.
+        return None
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
-        from dynastore.extensions.tools.conformance import register_conformance_uris
-        register_conformance_uris(OGC_API_MAPS_URIS)
         register_maps_policies()
-        logger.info("Maps Service startup: Conformance and process pool starting...")
+        logger.info("Maps Service startup: policies and process pool starting...")
         MapsService.process_pool = ProcessPoolExecutor()
         app.state.maps_config = MapsConfig()
         yield
         logger.info("Maps Service shutdown: closing process pool.")
         if MapsService.process_pool:
             MapsService.process_pool.shutdown(wait=True)
+
+    def contribute(self, ref):
+        """AssetContributor: emit a map-preview link when the resource has a bbox."""
+        from dynastore.models.protocols.asset_contrib import AssetLink
+        if ref.bbox is None or ref.item_id is None:
+            return
+        bbox_str = ",".join(str(c) for c in ref.bbox)
+        style_q = f"&style={ref.style}" if ref.style else ""
+        href = (
+            f"{ref.base_url}{self.router.prefix}/{ref.catalog_id}/map"
+            f"?collections={ref.collection_id}&bbox={bbox_str}"
+            f"&crs=EPSG:4326&width=512&height=512{style_q}"
+        )
+        yield AssetLink(
+            key="map_preview",
+            href=href,
+            title="Rendered Map Preview",
+            media_type="image/png",
+            roles=("thumbnail", "visual"),
+        )
 
     @router.get("/", response_model=MapsLandingPage)
     async def get_maps_landing_page(request: Request):

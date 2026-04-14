@@ -297,11 +297,11 @@ async def sysadmin_api_client(base_url, app_lifespan):
     Mints a JWT with sysadmin role via IamService.
     """
     from dynastore.tools.discovery import get_protocol
-    from dynastore.models.protocols.iam import IamProtocol
+    from dynastore.models.protocols import AuthenticatorProtocol
 
-    iam_svc = get_protocol(IamProtocol)
+    iam_svc = get_protocol(AuthenticatorProtocol)
     if not iam_svc:
-        raise RuntimeError("IamProtocol not available")
+        raise RuntimeError("AuthenticatorProtocol not available")
 
     token = await _mint_test_jwt(iam_svc, roles=["sysadmin"])
     headers = {"Authorization": f"Bearer {token}"}
@@ -332,9 +332,9 @@ async def sysadmin_in_process_client(app_lifespan):
     """
     from httpx import AsyncClient, ASGITransport
     from dynastore.tools.discovery import get_protocol
-    from dynastore.models.protocols.iam import IamProtocol
+    from dynastore.models.protocols import AuthenticatorProtocol
 
-    iam_svc = get_protocol(IamProtocol)
+    iam_svc = get_protocol(AuthenticatorProtocol)
     headers = {}
 
     if iam_svc:
@@ -356,12 +356,13 @@ async def authenticated_api_client(app_lifespan, base_url):
     Yields (client, principal) tuple.
     """
     from dynastore.tools.discovery import get_protocol
-    from dynastore.models.protocols.iam import IamProtocol
+    from dynastore.models.protocols import AuthenticatorProtocol, PrincipalAdminProtocol
     from dynastore.models.auth import Principal
 
-    iam_svc = get_protocol(IamProtocol)
-    if not iam_svc:
-        pytest.skip("IamProtocol not available")
+    iam_svc = get_protocol(AuthenticatorProtocol)
+    principal_admin = get_protocol(PrincipalAdminProtocol)
+    if not iam_svc or not principal_admin:
+        pytest.skip("IAM authenticator/principal-admin protocols not available")
 
     subject_id = f"test-user-{generate_test_id()}"
     principal = Principal(
@@ -369,7 +370,7 @@ async def authenticated_api_client(app_lifespan, base_url):
         subject_id=subject_id,
         roles=["admin"],
     )
-    created = await iam_svc.create_principal(principal)
+    created = await principal_admin.create_principal(principal)
 
     token = await _mint_test_jwt(iam_svc, roles=["admin"], subject=subject_id)
     headers = {"Authorization": f"Bearer {token}"}

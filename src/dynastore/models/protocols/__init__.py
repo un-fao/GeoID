@@ -53,7 +53,6 @@ from dynastore.models.protocols.tasks import TasksProtocol
 from dynastore.models.protocols.task_queue import TaskQueueProtocol
 from dynastore.models.protocols.event_bus import EventBusProtocol
 from dynastore.models.protocols.event_storage import EventStorageProtocol
-from dynastore.models.protocols.iam import IamProtocol
 from dynastore.models.protocols.proxy import ProxyProtocol
 from dynastore.models.protocols.database import DatabaseProtocol
 DbProtocol = DatabaseProtocol
@@ -71,6 +70,26 @@ from dynastore.models.protocols.metadata_driver import CollectionMetadataDriverP
 from dynastore.models.protocols.asset_driver import AssetDriverProtocol
 from dynastore.models.protocols.enrichment import CollectionMetadataEnricherProtocol
 from dynastore.models.protocols.asset_enricher import AssetEnricherProtocol
+from dynastore.models.protocols.asset_contrib import (
+    AssetContributor,
+    AssetLink,
+    ResourceRef,
+)
+from dynastore.models.protocols.conformance import ConformanceContributor
+from dynastore.models.protocols.web_ui import (
+    WebPageContributor,
+    StaticAssetProvider,
+    WebPageSpec,
+    StaticAsset,
+)
+from dynastore.models.protocols.authentication import AuthenticatorProtocol
+from dynastore.models.protocols.authorization import (
+    AuthorizerProtocol,
+    Permission,
+)
+from dynastore.models.protocols.authorization_context import SecurityContext
+from dynastore.models.protocols.role_admin import RoleAdminProtocol
+from dynastore.models.protocols.principal_admin import PrincipalAdminProtocol
 from dynastore.models.protocols.catalog_enricher import CatalogEnricherProtocol
 from dynastore.models.protocols.item_enricher import ItemEnricherProtocol
 from dynastore.models.protocols.bigquery import BigQueryProtocol
@@ -118,7 +137,6 @@ __all__ = [
     "TaskQueueProtocol",
     "EventBusProtocol",
     "EventStorageProtocol",
-    "IamProtocol",
     "ProxyProtocol",
     "DatabaseProtocol",
     "DbProtocol",
@@ -136,6 +154,20 @@ __all__ = [
     "AssetDriverProtocol",
     "CollectionMetadataEnricherProtocol",
     "AssetEnricherProtocol",
+    "AssetContributor",
+    "AssetLink",
+    "ResourceRef",
+    "ConformanceContributor",
+    "WebPageContributor",
+    "StaticAssetProvider",
+    "WebPageSpec",
+    "StaticAsset",
+    "AuthenticatorProtocol",
+    "AuthorizerProtocol",
+    "Permission",
+    "SecurityContext",
+    "RoleAdminProtocol",
+    "PrincipalAdminProtocol",
     "FieldCapability",
     "FieldDefinition",
     "EntityLevel",

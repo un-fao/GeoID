@@ -21,8 +21,11 @@
 import re
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Set
+from typing import Dict, List, Set
 from pydantic import BaseModel
+
+from dynastore.modules import get_protocols
+from dynastore.models.protocols.conformance import ConformanceContributor
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +49,7 @@ class ConformanceSummary(BaseModel):
     not_implemented: List[str]
 
 
-# --- In-Memory Registry ---
-
-_REGISTERED_URIS: Set[str] = set()
-
-# Pattern map: standard display name -> regex matching its conformance URIs
+# --- Pattern map: standard display name -> regex matching its conformance URIs
 _STANDARD_PATTERNS: Dict[str, str] = {
     "OGC API Features": r"ogcapi-features",
     "STAC API": r"stacspec\.org|stac-api",
@@ -86,31 +85,30 @@ _ALL_OGC_STANDARDS = [
     "OGC Dimensions",
 ]
 
-# --- Public API for Registration and Retrieval ---
+# --- Public API ---
 
-def register_conformance_uris(uris: List[str]):
-    """
-    Allows a DynaStore extension to register its supported conformance classes.
-    This is called by each extension once at application startup.
-    """
-    _REGISTERED_URIS.update(uris)
-    logger.info(f"Registered {len(uris)} new conformance URIs.")
+def _collect_uris() -> Set[str]:
+    """Gather conformance URIs from every registered `ConformanceContributor`."""
+    uris: Set[str] = set()
+    for contributor in get_protocols(ConformanceContributor):
+        declared = getattr(contributor, "conformance_uris", None) or []
+        uris.update(declared)
+    return uris
+
 
 def get_active_conformance() -> Conformance:
-    """
-    Returns the dynamically-built list of all registered conformance classes.
-    """
-    return Conformance(conformsTo=sorted(list(_REGISTERED_URIS)))
+    """Dynamically-built list of all conformance classes contributed by loaded extensions."""
+    return Conformance(conformsTo=sorted(_collect_uris()))
 
 
 def get_conformance_summary() -> ConformanceSummary:
     """
     Returns a structured summary of OGC API compliance grouped by standard family.
-    Classifies each registered conformance URI into its parent standard using
+    Classifies each contributed conformance URI into its parent standard using
     regex patterns, computes per-standard counts, and lists standards with
-    zero registered URIs as not_implemented.
+    zero coverage as not_implemented.
     """
-    all_uris = sorted(_REGISTERED_URIS)
+    all_uris = sorted(_collect_uris())
 
     # Bucket URIs into standard families
     buckets: Dict[str, List[str]] = {name: [] for name in _STANDARD_PATTERNS}

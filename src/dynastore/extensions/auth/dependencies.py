@@ -3,21 +3,23 @@ from fastapi.security import OAuth2PasswordBearer
 from typing import Optional, List
 
 from dynastore.modules import get_protocol
-from dynastore.models.protocols import IamProtocol
+from dynastore.tools.discovery import get_protocols
+from dynastore.models.protocols.authentication import AuthenticatorProtocol
+from dynastore.modules.iam.interfaces import IdentityProviderProtocol
 from dynastore.models.auth import Principal
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-async def get_iam_protocol() -> IamProtocol:
-    protocol = get_protocol(IamProtocol)
+async def get_authenticator() -> AuthenticatorProtocol:
+    protocol = get_protocol(AuthenticatorProtocol)
     if not protocol:
-        raise HTTPException(status_code=500, detail="IAM protocol implementation not available")
+        raise HTTPException(status_code=500, detail="Authenticator implementation not available")
     return protocol
 
 async def get_current_active_user(
     request: Request,
     token: str = Depends(oauth2_scheme),
-    manager: IamProtocol = Depends(get_iam_protocol)
+    manager: AuthenticatorProtocol = Depends(get_authenticator),
 ) -> Principal:
     """
     Validates the token and returns the current active principal (user).
@@ -29,7 +31,7 @@ async def get_current_active_user(
     catalog_id = request.path_params.get("catalog_id")
 
     # Try V2 Identity (JWT via identity providers)
-    for provider in manager.get_identity_providers():
+    for provider in get_protocols(IdentityProviderProtocol):
         try:
             identity = await provider.validate_token(token)
             if identity:

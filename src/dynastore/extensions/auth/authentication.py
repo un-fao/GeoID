@@ -107,6 +107,10 @@ class Authentication(ExtensionProtocol):
     # Active identity provider instance (set during lifespan)
     identity_provider = None
 
+    def get_static_assets(self):
+        from dynastore.extensions.tools.web_collect import collect_static_assets
+        return collect_static_assets(self)
+
     @expose_static("auth")
     def _provide_auth_static(self) -> List[str]:
         """Expose auth static files."""

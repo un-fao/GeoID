@@ -31,9 +31,9 @@ from dynastore.models.driver_context import DriverContext
 from sqlalchemy import text
 from dynastore.models.protocols import (
     ConfigsProtocol,
-    IamProtocol,
     StorageProtocol,
 )
+from dynastore.models.protocols.authentication import AuthenticatorProtocol
 
 
 import dynastore.modules.db_config.shared_queries as shared_queries
@@ -112,6 +112,14 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
     protocol_title = "DynaStore OGC API - STAC"
     protocol_description = "SpatioTemporal Asset Catalog API for discovery and access"
 
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
+
+    def get_static_assets(self):
+        from dynastore.extensions.tools.web_collect import collect_static_assets
+        return collect_static_assets(self)
+
     def configure_app(self, app: FastAPI):
         """Early configuration for the STAC extension."""
         # Register sidecar in the registry (IoC)
@@ -121,13 +129,9 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         SidecarRegistry.register("stac_metadata", StacItemsSidecar)
         logger.info("STACService: STAC metadata sidecar registered.")
 
-        # Register @expose_web_page methods via WebModuleProtocol
-        from dynastore.modules import get_protocol
-        from dynastore.models.protocols import WebModuleProtocol
-        web = get_protocol(WebModuleProtocol)
-        if web:
-            web.scan_and_register_providers(self)
-            logger.info("STACService: Web pages registered via WebModuleProtocol.")
+        # Web pages / static assets are discovered by WebModule via the
+        # WebPageContributor / StaticAssetProvider capability protocols —
+        # implemented on this class via collect_web_pages/collect_static_assets.
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
@@ -163,8 +167,6 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         return sorted(files)[offset : offset + limit]
 
     def __init__(self, app: Optional[FastAPI] = None):
-        self._register_ogc_conformance()
-        logger.info("STACService: Successfully registered conformance classes.")
         self.app = app
         self._register_routes()
 
@@ -262,7 +264,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             roles = set(principal.roles)
             if "admin" in roles and "sysadmin" not in roles:
                 try:
-                    iam = get_protocol(IamProtocol)
+                    iam = get_protocol(AuthenticatorProtocol)
                     if iam and iam.storage:
                         accessible_ids = set(
                             await iam.storage.get_catalogs_for_identity(

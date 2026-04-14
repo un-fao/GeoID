@@ -36,6 +36,10 @@ class Geoid(ExtensionProtocol, WebOverrideProtocol, WebPageProtocol, StaticFiles
 
     priority: int = -10  # Load before Web so policies are ready
 
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
+
     def __init__(self, app: FastAPI):
         self.app = app
 

@@ -48,7 +48,6 @@ from .exceptions import (
 from dynastore.modules.db_config.tools import managed_transaction
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import (
-    IamProtocol,
     PropertiesProtocol,
     DatabaseProtocol,
     CatalogsProtocol,
@@ -60,7 +59,7 @@ from dynastore.models.driver_context import DriverContext
 logger = logging.getLogger(__name__)
 
 
-class IamService(IamProtocol):
+class IamService:
     """
     Business Logic Layer for IAG v2.0.
     Handles the Identity -> Context -> Principal resolution and API Key management.

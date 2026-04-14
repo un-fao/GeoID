@@ -43,7 +43,6 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, FastAPI
 
 from dynastore.extensions.protocols import ExtensionProtocol
-from dynastore.extensions.tools.conformance import register_conformance_uris
 from dynastore.models.driver_context import DriverContext
 
 logger = logging.getLogger(__name__)
@@ -61,6 +60,7 @@ UPSERT_BATCH_SIZE = 500
 # ---------------------------------------------------------------------------
 # OGC Dimensions conformance URIs (profile of OGC API - Records)
 # ---------------------------------------------------------------------------
+# Mirrors spec/building-blocks/bblocks.json in ogc-dimensions — keep both in sync.
 OGC_DIMENSIONS_URIS = [
     "http://www.opengis.net/spec/ogc-dimensions/1.0/conf/core",
     "http://www.opengis.net/spec/ogc-dimensions/1.0/conf/dimension-collection",
@@ -377,6 +377,7 @@ async def _materialize_all_dimensions(dimensions: Dict[str, Any]) -> None:
 
 class DimensionsExtension(ExtensionProtocol):
     priority: int = 200
+    conformance_uris = OGC_DIMENSIONS_URIS
 
     def __init__(self, app: FastAPI):
         self.app = app
@@ -488,8 +489,6 @@ class DimensionsExtension(ExtensionProtocol):
         self.router = APIRouter(prefix="/dimensions", tags=["OGC Dimensions"])
         self.router.include_router(dimensions_router)
 
-        register_conformance_uris(OGC_DIMENSIONS_URIS)
-
         logger.info(
             "OGC Dimensions extension loaded — %d dimensions registered",
             len(DIMENSIONS),
@@ -497,13 +496,11 @@ class DimensionsExtension(ExtensionProtocol):
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
-        register_conformance_uris(OGC_DIMENSIONS_URIS)
-
         # Materialize all dimension members as Records
         await _materialize_all_dimensions(self._dimensions)
 
         logger.info(
-            "DimensionsExtension: conformance + materialization complete "
+            "DimensionsExtension: materialization complete "
             "(OGC Dimensions profile of OGC API - Records)."
         )
         yield

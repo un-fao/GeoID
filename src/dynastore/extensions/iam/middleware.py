@@ -30,19 +30,19 @@ from starlette.responses import Response, JSONResponse
 from dynastore.modules.iam.conditions import condition_manager, EvaluationContext
 from dynastore.models.protocols.stats import StatsProtocol
 from dynastore.models.protocols.policies import PermissionProtocol
-from dynastore.models.protocols.iam import IamProtocol
+from dynastore.models.protocols.authentication import AuthenticatorProtocol
 from dynastore.modules.iam.models import PolicyBundle
 
 logger = logging.getLogger(__name__)
 
 
 class IamMiddleware(BaseHTTPMiddleware):
-    _iam_manager: Optional[IamProtocol] = None
+    _iam_manager: Optional[AuthenticatorProtocol] = None
     _policy_service: Optional[PermissionProtocol] = None
 
     def __init__(self, app, **kwargs):
         super().__init__(app)
-        self._iam_manager: Optional[IamProtocol] = None
+        self._iam_manager: Optional[AuthenticatorProtocol] = None
         self._policy_service: Optional[PermissionProtocol] = None
 
     def _emit_audit(
@@ -69,22 +69,22 @@ class IamMiddleware(BaseHTTPMiddleware):
     def lazy_init_manager(self) -> bool:
         """Returns True if IAM is available, False if this scope runs without IAM."""
         if self._iam_manager is None:
-            iam_protocol = get_protocol(IamProtocol)
-            if not iam_protocol:
+            authenticator = get_protocol(AuthenticatorProtocol)
+            if not authenticator:
                 logger.debug(
-                    "IamProtocol not registered — IamMiddleware running in pass-through mode."
+                    "AuthenticatorProtocol not registered — IamMiddleware running in pass-through mode."
                 )
                 return False
 
-            self._iam_manager = iam_protocol
-            self._policy_service = iam_protocol.get_policy_service()
-
-            if not self._policy_service:
+            policy_service = get_protocol(PermissionProtocol)
+            if not policy_service:
                 logger.warning(
-                    "PolicyService not available in IamProtocol — IamMiddleware running in pass-through mode."
+                    "PermissionProtocol not registered — IamMiddleware running in pass-through mode."
                 )
-                self._iam_manager = None
                 return False
+
+            self._iam_manager = authenticator
+            self._policy_service = policy_service
 
         return True
 

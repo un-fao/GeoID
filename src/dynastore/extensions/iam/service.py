@@ -22,7 +22,6 @@ import logging
 import uuid
 import re
 import secrets
-from types import SimpleNamespace
 from pydantic import BaseModel, Field, model_validator
 from contextlib import asynccontextmanager
 from fastapi import (
@@ -32,20 +31,19 @@ from fastapi import (
     status,
     Request,
     FastAPI,
-    Security,
     Query,
 )
 from fastapi.openapi.utils import get_openapi
 from typing import List, Optional, Any, Dict, Literal
 from datetime import datetime
 from uuid import UUID
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 import os
 from fastapi.responses import HTMLResponse
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.web import expose_web_page
-from dynastore.models.protocols import IamProtocol, WebModuleProtocol
+from dynastore.models.protocols import WebModuleProtocol
+from dynastore.modules.iam.iam_service import IamService
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.db_config.tools import normalize_db_url
 from dynastore.modules.db_config.query_executor import DbResource
@@ -67,7 +65,6 @@ from dynastore.modules.stats.storage import (
     AccessLogPage,
     StatsSummary,
 )
-from dynastore.models.protocols import IamProtocol
 from dynastore.modules import get_protocol
 from dynastore.models.protocols.policies import PermissionProtocol
 from dynastore.modules.iam.exceptions import (
@@ -121,8 +118,11 @@ def register_iam_service_policies():
     logger.debug("IAM service policies registered via PermissionProtocol.")
 
 
-# Security Schemes
-http_bearer = HTTPBearer(auto_error=False, scheme_name="HTTPBearer")
+from dynastore.extensions.iam.guards import (
+    require_admin,
+    require_sysadmin,
+    ensure_sysadmin_if_targeting_admin,
+)
 
 # --- DTOs (Data Transfer Objects) ---
 
@@ -189,156 +189,7 @@ class PrincipalUpdateRequest(BaseModel):
     policy: Optional[PolicyBundle] = None
 
 
-# --- Robust Security Dependencies ---
-
-
-async def require_admin_privileges(
-    request: Request,
-    bearer: Optional[HTTPAuthorizationCredentials] = Security(http_bearer),
-):
-    """
-    Guards Administrative Endpoints (The /iam/admin/* scope).
-    Allows access if:
-    1. Valid Bearer Token belongs to SYSADMIN or ADMIN role.
-    2. OR, Valid Bearer Token is the System Admin Key.
-    """
-    # The middleware has already validated the token and set the principal/role.
-    if getattr(request.state, "policy_allowed", False):
-        return  # Access Granted via Policy Engine decision
-
-    principal_role = getattr(request.state, "principal_role", None)
-
-    # Check for list of roles if generalized
-    roles = (
-        getattr(request.state, "principal", SimpleNamespace(roles=[])).roles
-        if hasattr(request.state, "principal") and request.state.principal
-        else []
-    )
-    if not roles and principal_role:
-        roles = (
-            [principal_role]
-            if isinstance(principal_role, str)
-            else [principal_role.value]
-        )
-
-    if any(r in ["sysadmin", "admin"] for r in roles):
-        return  # Access Granted as Admin User
-
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="Administrative privileges required (Admin Role).",
-    )
-
-
-async def require_sysadmin_privileges(
-    request: Request,
-    bearer: Optional[HTTPAuthorizationCredentials] = Security(http_bearer),
-):
-    """
-    Guards System Bootstrap Endpoints (The /iam/sysadmin/* scope).
-    Strictly requires a Principal explicitly marked as SYSADMIN or the System Key.
-    """
-    # Sysadmin Role Check (from Middleware)
-    principal_role = getattr(request.state, "principal_role", None)
-
-    roles = (
-        getattr(request.state, "principal", SimpleNamespace(roles=[])).roles
-        if hasattr(request.state, "principal") and request.state.principal
-        else []
-    )
-    if not roles and principal_role:
-        roles = (
-            [principal_role]
-            if isinstance(principal_role, str)
-            else [principal_role.value]
-        )
-
-    if "sysadmin" in roles:
-        return
-
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="System Administrator privileges required.",
-    )
-
-async def get_iam_principal(
-    request: Request,
-    bearer: Optional[HTTPAuthorizationCredentials] = Security(http_bearer),
-) -> Principal:
-    """Standard dependency for user-facing endpoints."""
-    # 1. Check if Middleware already authenticated a User Principal
-    if hasattr(request.state, "principal") and request.state.principal:
-        return request.state.principal
-
-    # 2. Check if Middleware authenticated a System Admin
-    principal_role = getattr(request.state, "principal_role", None)
-    if principal_role == "sysadmin":
-        return Principal(
-            id=UUID("00000000-0000-0000-0000-000000000000"),
-            display_name="sysadmin",
-            subject_id="sysadmin",
-            attributes={
-                "role": "sysadmin",
-                "description": "System Administrator (Synthetic)",
-            },
-        )
-
-    # Fallback — no valid authentication found
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing credentials."
-    )
-
-
-async def get_iam_principal_optional(
-    request: Request,
-    bearer: Optional[HTTPAuthorizationCredentials] = Security(http_bearer),
-) -> Optional[Principal]:
-    """
-    Standard dependency for optional authentication.
-    Returns Principal if authenticated, None otherwise (instead of 401).
-    """
-    # 1. Check if Middleware already authenticated a User Principal
-    if hasattr(request.state, "principal") and request.state.principal:
-        return request.state.principal
-
-    # 2. Check if Middleware authenticated a System Admin
-    principal_role = getattr(request.state, "principal_role", None)
-    if principal_role == "sysadmin":
-        return Principal(
-            id=UUID("00000000-0000-0000-0000-000000000000"),
-            display_name="sysadmin",
-            subject_id="sysadmin",
-            attributes={
-                "role": "sysadmin",
-                "description": "System Administrator (Synthetic)",
-            },
-        )
-
-    # Fallback — no valid authentication found
-    return None
-
-
-# --- Helper: Privilege Escalation Check ---
-
-
-def ensure_sysadmin_if_targeting_admin(request: Request, target_role: str):
-    """
-    Business Logic Rule: Only a SYSADMIN can manage (create/delete) an ADMIN or SYSADMIN.
-    Admins can only manage regular users.
-    """
-    if target_role in ["sysadmin", "admin"]:
-        # Check current caller
-        caller_role = getattr(request.state, "principal_role", [])
-        if isinstance(caller_role, str):
-            caller_role = [caller_role]
-
-        if "sysadmin" in caller_role:
-            return  # Allowed
-
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Insufficient privileges: Only System Administrators can manage Admin accounts.",
-        )
+# Guards live in `extensions/iam/guards.py`; see top-of-file imports.
 class IamExtension(ExtensionProtocol):
     priority: int = 100
     # Base router for high-level categorization
@@ -355,10 +206,14 @@ class IamExtension(ExtensionProtocol):
     # Stats Endpoints (kept from removed credentials router)
     stats_router: APIRouter = APIRouter(prefix="/credentials", tags=["Credentials"])
 
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
+
     def __init__(self, app: Optional[FastAPI] = None):
         super().__init__()
         self.app = app
-        self._iam_manager: Optional[IamProtocol] = None
+        self._iam_manager: Optional[IamService] = None
         self._policy_service: Optional[PermissionProtocol] = None
         self._engine: Optional[DbResource] = None
 
@@ -380,57 +235,57 @@ class IamExtension(ExtensionProtocol):
 
         # Governance
         self.gov_router.add_api_route(
-            "/policies", self.create_access_policy, methods=["POST"], response_model=Policy, dependencies=[Depends(require_admin_privileges)]
+            "/policies", self.create_access_policy, methods=["POST"], response_model=Policy, dependencies=[Depends(require_admin)]
         )
         self.gov_router.add_api_route(
-            "/policies/{policy_id}", self.update_access_policy, methods=["PUT"], response_model=Policy, dependencies=[Depends(require_admin_privileges)]
+            "/policies/{policy_id}", self.update_access_policy, methods=["PUT"], response_model=Policy, dependencies=[Depends(require_admin)]
         )
         self.gov_router.add_api_route(
-            "/policies", self.search_access_policies, methods=["GET"], response_model=List[Policy], dependencies=[Depends(require_admin_privileges)]
+            "/policies", self.search_access_policies, methods=["GET"], response_model=List[Policy], dependencies=[Depends(require_admin)]
         )
         self.gov_router.add_api_route(
-            "/policies/{policy_id}", self.delete_access_policy, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin_privileges)]
+            "/policies/{policy_id}", self.delete_access_policy, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin)]
         )
         self.gov_router.add_api_route(
-            "/roles", self.list_roles, methods=["GET"], response_model=List[Role], dependencies=[Depends(require_admin_privileges)]
+            "/roles", self.list_roles, methods=["GET"], response_model=List[Role], dependencies=[Depends(require_admin)]
         )
         self.gov_router.add_api_route(
-            "/roles", self.create_role, methods=["POST"], response_model=Role, dependencies=[Depends(require_admin_privileges)]
+            "/roles", self.create_role, methods=["POST"], response_model=Role, dependencies=[Depends(require_admin)]
         )
         self.gov_router.add_api_route(
-            "/roles/{name}", self.update_role, methods=["PUT"], response_model=Role, dependencies=[Depends(require_admin_privileges)]
+            "/roles/{name}", self.update_role, methods=["PUT"], response_model=Role, dependencies=[Depends(require_admin)]
         )
         self.gov_router.add_api_route(
-            "/roles/{name}", self.delete_role, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin_privileges)]
+            "/roles/{name}", self.delete_role, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin)]
         )
         self.gov_router.add_api_route(
-            "/hierarchies", self.add_role_hierarchy, methods=["POST"], status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin_privileges)]
+            "/hierarchies", self.add_role_hierarchy, methods=["POST"], status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin)]
         )
         self.gov_router.add_api_route(
-            "/hierarchies", self.remove_role_hierarchy, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin_privileges)]
+            "/hierarchies", self.remove_role_hierarchy, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin)]
         )
         self.gov_router.add_api_route(
-            "/hierarchies/{role_name}", self.get_role_hierarchy, methods=["GET"], response_model=List[str], dependencies=[Depends(require_admin_privileges)]
+            "/hierarchies/{role_name}", self.get_role_hierarchy, methods=["GET"], response_model=List[str], dependencies=[Depends(require_admin)]
         )
         self.gov_router.add_api_route(
-            "/principals", self.create_principal, methods=["POST"], response_model=Principal, dependencies=[Depends(require_admin_privileges)]
+            "/principals", self.create_principal, methods=["POST"], response_model=Principal, dependencies=[Depends(require_admin)]
         )
         self.gov_router.add_api_route(
-            "/principals/{principal_id}", self.update_principal, methods=["PUT"], response_model=Principal, dependencies=[Depends(require_admin_privileges)]
+            "/principals/{principal_id}", self.update_principal, methods=["PUT"], response_model=Principal, dependencies=[Depends(require_admin)]
         )
         self.gov_router.add_api_route(
-            "/principals", self.search_principals, methods=["GET"], response_model=List[Principal], dependencies=[Depends(require_admin_privileges)]
+            "/principals", self.search_principals, methods=["GET"], response_model=List[Principal], dependencies=[Depends(require_admin)]
         )
         self.gov_router.add_api_route(
-            "/principals/{principal_id}", self.delete_principal, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin_privileges)]
+            "/principals/{principal_id}", self.delete_principal, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin)]
         )
 
         # Stats
         self.stats_router.add_api_route(
-            "/stats/summary", self.get_system_stats_summary, methods=["GET"], response_model=StatsSummary, dependencies=[Depends(require_admin_privileges)]
+            "/stats/summary", self.get_system_stats_summary, methods=["GET"], response_model=StatsSummary, dependencies=[Depends(require_admin)]
         )
         self.stats_router.add_api_route(
-            "/stats/logs", self.get_system_access_logs, methods=["GET"], response_model=AccessLogPage, dependencies=[Depends(require_admin_privileges)]
+            "/stats/logs", self.get_system_access_logs, methods=["GET"], response_model=AccessLogPage, dependencies=[Depends(require_admin)]
         )
 
 
@@ -467,10 +322,8 @@ class IamExtension(ExtensionProtocol):
 
         app.openapi = custom_openapi
 
-        # Register admin panel web page
-        web = get_protocol(WebModuleProtocol)
-        if web:
-            web.scan_and_register_providers(self)
+        # Web pages are discovered by WebModule via the WebPageContributor
+        # capability protocol (see get_web_pages below).
 
         # Sub-routers are mounted to self.router in __init__
         # The central extension loader will handle app.include_router(self.router)
@@ -556,7 +409,9 @@ class IamExtension(ExtensionProtocol):
         
         # Initialize instance attributes
         self._iam_manager = await self._get_iam_manager()
-        self._policy_service = self._iam_manager.get_policy_service()
+        self._policy_service = get_protocol(PermissionProtocol)
+        if self._policy_service is None:
+            raise RuntimeError("PermissionProtocol implementation not found.")
         
         from dynastore.models.protocols import DatabaseProtocol
         db_protocol = get_protocol(DatabaseProtocol)
@@ -577,24 +432,22 @@ class IamExtension(ExtensionProtocol):
 
         yield
 
-    async def _get_iam_manager(self) -> IamProtocol:
+    async def _get_iam_manager(self) -> IamService:
         if self._iam_manager is None:
-            svc = get_protocol(IamProtocol)
+            svc = get_protocol(IamService)
             if not svc:
-                raise RuntimeError("IAM protocol implementation not found")
+                raise RuntimeError("IamService implementation not found")
             self._iam_manager = svc
         return self._iam_manager
 
     @property
-    def iam_manager(self) -> IamProtocol:
+    def iam_manager(self) -> IamService:
         if self._iam_manager is None:
-             # This might happen if accessed before lifespan, try to resolve
-             import asyncio
-             try:
-                 # We can't use await in property, but we can return the protocol if available
-                 return get_protocol(IamProtocol)
-             except Exception:
-                 pass
+            # Accessed before lifespan completed — try to resolve from the registry.
+            svc = get_protocol(IamService)
+            if svc is None:
+                raise RuntimeError("IamService implementation not found")
+            return svc
         return self._iam_manager
 
     @property

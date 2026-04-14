@@ -18,28 +18,20 @@
 
 # dynastore/extensions/stac/asset_factory.py
 
-import pystac
-from pydantic import BaseModel
-from pydantic import BaseModel, ConfigDict
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Callable,
-    Dict,
-    List,
-    Optional,
-    Protocol,
-    Type,
-    TypeVar,
-    Union,
-    cast,
-    runtime_checkable,
-)
-from dynastore.extensions import get_extension_instance
-from dynastore.modules.stac.stac_config import StacPluginConfig
-from fastapi import Request
-
 import logging
+from typing import Optional, Union
+
+import pystac
+from fastapi import Request
+from pydantic import BaseModel, ConfigDict
+
+from dynastore.modules import get_protocols
+from dynastore.modules.stac.stac_config import StacPluginConfig
+from dynastore.models.protocols.asset_contrib import (
+    AssetContributor,
+    AssetLink,
+    ResourceRef,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +39,6 @@ logger = logging.getLogger(__name__)
 class AssetContext(BaseModel):
     """A structured model for the context required to generate dynamic assets."""
 
-    # Allow arbitrary types like fastapi.Request, which Pydantic cannot generate a schema for.
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     base_url: str
@@ -58,171 +49,93 @@ class AssetContext(BaseModel):
     asset_id: Optional[str] = None
 
 
-# Safely import service classes for type checking and name resolution.
-try:
-    from dynastore.extensions.features.features_service import OGCFeaturesService
-except ImportError:
-    OGCFeaturesService = None
-try:
-    from dynastore.extensions.maps.maps_service import MapsService
-except ImportError:
-    MapsService = None
-try:
-    from dynastore.extensions.tiles.tiles_service import TilesService
-except ImportError:
-    TilesService = None
-
-# --- Asset Provider Functions ---
-# We use a Union to allow these to apply to both Items and Collections (STAC 1.0.0+)
 StacTarget = Union[pystac.Item, pystac.Collection]
 
 
-def _add_ogc_features_asset(item: StacTarget, context: AssetContext):
-    """Adds an asset for the OGC API - Features endpoint."""
-    if not OGCFeaturesService:
-        return
-    instance = get_extension_instance(OGCFeaturesService.get_name())
-    if not instance:
-        return
+def _to_resource_ref(target: StacTarget, context: AssetContext) -> ResourceRef:
+    is_item = isinstance(target, pystac.Item)
+    bbox = tuple(target.bbox) if is_item and target.bbox is not None else None
+    return ResourceRef(
+        catalog_id=context.catalog_id,
+        collection_id=context.collection_id,
+        item_id=target.id if is_item else None,
+        bbox=bbox,
+        geometry=getattr(target, "geometry", None) if is_item else None,
+        base_url=context.base_url,
+        style=context.request.query_params.get("style"),
+        extras={"asset_id": context.asset_id} if context.asset_id else {},
+    )
 
-    base_url = context.base_url
-    asset_href = f"{base_url}{instance.router.prefix}/catalogs/{context.catalog_id}/collections/{context.collection_id}/items/{item.id}"
-    item.add_asset(
-        key="geojson",
+
+def _attach(target: StacTarget, link: AssetLink) -> None:
+    target.add_asset(
+        key=link.key,
         asset=pystac.Asset(
-            href=asset_href,
-            title="OGC API Feature",
-            media_type=pystac.MediaType.GEOJSON,
-            roles=["data"],
+            href=link.href,
+            title=link.title,
+            media_type=link.media_type,
+            roles=list(link.roles) or None,
         ),
     )
 
 
-def _add_ogc_maps_asset(item: StacTarget, context: AssetContext):
-    """Adds a dynamic asset for the OGC API - Maps render of this item."""
-    if not MapsService:
-        return
-    instance = get_extension_instance(MapsService.get_name())
-    if not instance:
-        return
+def _add_source_file_asset(item: StacTarget, context: AssetContext) -> None:
+    """STAC-local: source-file asset derived from the item's `asset_id` property.
 
-    base_url = context.base_url
-    # Check if a style was requested in the original STAC item request
-    style_param = context.request.query_params.get("style")
-    style_query_str = f"&style={style_param}" if style_param else ""
-
-    if item.bbox is None:
-        return
-
-    bbox_str = ",".join(map(str, item.bbox))
-    asset_href = (
-        f"{base_url}{instance.router.prefix}/{context.catalog_id}/map"
-        f"?collections={context.collection_id}&bbox={bbox_str}"
-        f"&crs=EPSG:4326&width=512&height=512{style_query_str}"
-    )
-
-    item.add_asset(
-        key="map_preview",
-        asset=pystac.Asset(
-            href=asset_href,
-            title="Rendered Map Preview",
-            media_type="image/png",
-            roles=["thumbnail", "visual"],
-        ),
-    )
-
-
-def _add_ogc_tiles_asset(item: StacTarget, context: AssetContext):
-    """Adds a dynamic asset for the OGC API - Tiles endpoint."""
-    if not TilesService:
-        return
-    instance = get_extension_instance(TilesService.get_name())
-    if not instance:
-        return
-
-    base_url = context.base_url
-    # This is a template URL, as tiles are accessed by Z/X/Y
-    asset_href = f"{base_url}{instance.router.prefix}/{context.catalog_id}/tiles/{{z}}/{{x}}/{{y}}.mvt?collections={context.collection_id}"
-    item.add_asset(
-        key="vector_tiles",
-        asset=pystac.Asset(
-            href=asset_href,
-            title="Vector Tiles (MVT)",
-            media_type="application/vnd.mapbox-vector-tile",
-            roles=["tiles"],
-        ),
-    )
-
-
-def _add_source_file_asset(item: StacTarget, context: AssetContext):
-    """
-    Adds a dynamic asset pointing to the original source file.
-    The actual HREF resolution (proxy vs direct) is handled at runtime.
+    This is not a cross-protocol contribution — it's STAC-specific and stays
+    here rather than being exposed as an `AssetContributor`.
     """
     asset_id = context.asset_id or item.properties.get("asset_id")
     if not asset_id:
         return
-
-    # We generate a stable internal link that the STAC service will resolve
-    # or redirect based on runtime policy/configuration.
-    base_url = context.base_url
-    asset_href = f"{base_url}/stac/catalogs/{context.catalog_id}/collections/{context.collection_id}/assets/{asset_id}/source"
-
+    href = (
+        f"{context.base_url}/stac/catalogs/{context.catalog_id}"
+        f"/collections/{context.collection_id}/assets/{asset_id}/source"
+    )
     item.add_asset(
         "source_file",
         pystac.Asset(
-            href=asset_href, title="Original Source File", roles=["data", "source"]
+            href=href, title="Original Source File", roles=["data", "source"]
         ),
     )
 
 
 def _add_source_asset_to_collection(
     collection: pystac.Collection, context: AssetContext
-):
-    """
-    Adds the source asset file to a virtual collection.
-    Used when a collection represents an ingested asset.
-    """
+) -> None:
+    """STAC-local: source-file asset for virtual collections that wrap a single asset."""
     if not context.asset_id:
         return
-
-    base_url = context.base_url
-    asset_href = f"{base_url}/stac/catalogs/{context.catalog_id}/collections/{context.collection_id}/assets/{context.asset_id}/source"
-
+    href = (
+        f"{context.base_url}/stac/catalogs/{context.catalog_id}"
+        f"/collections/{context.collection_id}/assets/{context.asset_id}/source"
+    )
     collection.add_asset(
         "source_file",
         pystac.Asset(
-            href=asset_href, title="Original Ingested File", roles=["source", "data"]
+            href=href, title="Original Ingested File", roles=["source", "data"]
         ),
     )
 
 
-# --- Asset Provider Registry ---
-ASSET_PROVIDERS: List[Callable[[StacTarget, AssetContext], None]] = [
-    _add_ogc_features_asset,
-    _add_ogc_maps_asset,
-    _add_ogc_tiles_asset,
-    _add_source_file_asset,
-]
-
-COLLECTION_ASSET_PROVIDERS: List[Callable[[pystac.Collection, AssetContext], None]] = [
-    _add_source_asset_to_collection,
-]
-
-
-def add_dynamic_assets(item: StacTarget, context: AssetContext):
-    """
-    Iterates through registered asset providers and adds assets to a STAC Item or Collection
-    if the corresponding service extensions are enabled and loaded.
-    """
-    # Determine if this is a Collection or Item
+def add_dynamic_assets(item: StacTarget, context: AssetContext) -> None:
+    """Attach cross-protocol `AssetContributor` links plus STAC-local source assets."""
+    ref = _to_resource_ref(item, context)
     is_collection = isinstance(item, pystac.Collection)
 
-    providers = COLLECTION_ASSET_PROVIDERS if is_collection else ASSET_PROVIDERS
-
-    for provider in providers:
-        try:
-            provider(item, context)
-        except Exception as e:
-            # Log error but don't fail the entire item generation
-            logger.error(f"Error adding dynamic asset with {provider.__name__}: {e}")
+    if is_collection:
+        _add_source_asset_to_collection(item, context)
+    else:
+        for contributor in sorted(
+            get_protocols(AssetContributor), key=lambda c: getattr(c, "priority", 100)
+        ):
+            try:
+                for link in contributor.contribute(ref):
+                    _attach(item, link)
+            except Exception as e:
+                logger.error(
+                    "AssetContributor %s failed: %s",
+                    type(contributor).__name__,
+                    e,
+                )
+        _add_source_file_asset(item, context)

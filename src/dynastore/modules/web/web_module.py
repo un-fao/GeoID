@@ -27,6 +27,7 @@ from contextlib import asynccontextmanager
 from dynastore.tools.language_utils import resolve_localized_field
 from dynastore.modules import ModuleProtocol, get_protocols
 from dynastore.models.protocols.web import WebModuleProtocol, WebPageProtocol, StaticFilesProtocol, WebOverrideProtocol
+from dynastore.models.protocols.web_ui import WebPageContributor, StaticAssetProvider
 from dynastore.models.protocols.configs import ConfigsProtocol
 from .models import WebPageConfig, WebPageSettingsConfig
 
@@ -70,8 +71,8 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
                 ConfigRegistry.register("web_pages", WebPageSettingsConfig)
         
         # Automatic discovery of protocol implementers
-        self.scan_and_register_providers(None) # Scan global protocols
-        
+        self._discover_contributors()
+
         yield
 
 
@@ -185,39 +186,56 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
             return []
 
 
-    def scan_and_register_providers(self, instance: Any = None):
+    def _discover_contributors(self) -> None:
+        """Discover web-page / static-asset contributors via the protocol
+        registry.  No reflective class-walking across foreign extensions —
+        each contributor self-describes via ``get_web_pages()`` and
+        ``get_static_assets()``.
         """
-        Scans an object instance (or global protocols if instance is None) 
-        for web providers.
-        """
-        if instance:
-            # Legacy/Decorator-based scanning
-            for name, method in inspect.getmembers(instance, predicate=inspect.ismethod):
-                if hasattr(method, "_web_static_prefix"):
-                    prefix = getattr(method, "_web_static_prefix").strip("/")
-                    self.register_static_provider(prefix, method)
+        # WebPageContributor: capability-protocol producers
+        for contributor in get_protocols(WebPageContributor):
+            try:
+                for spec in contributor.get_web_pages():
+                    self.register_web_page(spec.to_config(), spec.handler)
+            except Exception as e:
+                logger.error(
+                    f"WebModule: Failed to register WebPageContributor from {contributor}: {e}"
+                )
 
-                if hasattr(method, "_web_page_config"):
-                    config = getattr(method, "_web_page_config")
-                    self.register_web_page(config, method)
-        else:
-            # Protocol-based scanning
-            for page_prov in get_protocols(WebPageProtocol):
-                try:
-                    config = page_prov.get_web_page_config()
-                    handler = getattr(page_prov, "render_page", None)
-                    if handler:
-                        self.register_web_page(config, handler)
-                except Exception as e:
-                    logger.error(f"WebModule: Failed to register WebPageProtocol from {page_prov}: {e}")
+        # StaticAssetProvider: capability-protocol producers
+        for provider in get_protocols(StaticAssetProvider):
+            try:
+                for asset in provider.get_static_assets():
+                    self.register_static_provider(
+                        asset.prefix.strip("/"), asset.files_provider
+                    )
+            except Exception as e:
+                logger.error(
+                    f"WebModule: Failed to register StaticAssetProvider from {provider}: {e}"
+                )
 
-            for static_prov in get_protocols(StaticFilesProtocol):
-                try:
-                    prefix = static_prov.get_static_prefix().strip("/")
-                    # We wrap the protocol in a provider-like callable for now
-                    self.register_static_provider(prefix, static_prov)
-                except Exception as e:
-                    logger.error(f"WebModule: Failed to register StaticFilesProtocol from {static_prov}: {e}")
+        # Legacy WebPageProtocol (render_page + get_web_page_config) — still
+        # supported for extensions that use the object-oriented style.
+        for page_prov in get_protocols(WebPageProtocol):
+            try:
+                config = page_prov.get_web_page_config()
+                handler = getattr(page_prov, "render_page", None)
+                if handler:
+                    self.register_web_page(config, handler)
+            except Exception as e:
+                logger.error(
+                    f"WebModule: Failed to register WebPageProtocol from {page_prov}: {e}"
+                )
+
+        # Legacy StaticFilesProtocol — still supported for richer providers.
+        for static_prov in get_protocols(StaticFilesProtocol):
+            try:
+                prefix = static_prov.get_static_prefix().strip("/")
+                self.register_static_provider(prefix, static_prov)
+            except Exception as e:
+                logger.error(
+                    f"WebModule: Failed to register StaticFilesProtocol from {static_prov}: {e}"
+                )
 
     async def _get_overrides(self) -> Dict[str, WebPageConfig]:
         """Fetch persistent overrides from the config system."""

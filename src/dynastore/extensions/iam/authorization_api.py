@@ -28,7 +28,8 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 from dynastore.modules import get_protocol
-from dynastore.models.protocols import IamProtocol, CatalogsProtocol
+from dynastore.models.protocols import CatalogsProtocol
+from dynastore.models.protocols.authentication import AuthenticatorProtocol
 from dynastore.models.auth import Principal
 from dynastore.extensions.tools.exception_handlers import http_errors
 from dynastore.models.driver_context import DriverContext
@@ -97,12 +98,12 @@ class CatalogAccessResponse(BaseModel):
 
 async def get_storage():
     """Get storage instance."""
-    iam_protocol = get_protocol(IamProtocol)
-    if not iam_protocol:
+    authenticator = get_protocol(AuthenticatorProtocol)
+    if not authenticator:
         raise HTTPException(
-            status_code=500, detail="IAM protocol implementation not available"
+            status_code=500, detail="Authenticator implementation not available"
         )
-    return iam_protocol.storage
+    return authenticator.storage
 
 
 async def get_catalogs_protocol() -> CatalogsProtocol:

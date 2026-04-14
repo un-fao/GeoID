@@ -38,7 +38,6 @@ from typing import Optional, List, cast
 
 from fastapi import HTTPException, Request, Response, status
 
-from dynastore.extensions.tools.conformance import register_conformance_uris
 from dynastore.extensions.tools.ogc_common_models import Conformance, LandingPage
 from dynastore.extensions.tools.url import get_root_url
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
@@ -68,15 +67,6 @@ class OGCServiceMixin:
     # --- Cached protocol references (per-instance) ---
     _ogc_catalogs_protocol: Optional[CatalogsProtocol] = None
     _ogc_configs_protocol: Optional[ConfigsProtocol] = None
-
-    # ------------------------------------------------------------------
-    # Conformance registration
-    # ------------------------------------------------------------------
-
-    def _register_ogc_conformance(self) -> None:
-        """Register this protocol's conformance URIs (call once in __init__)."""
-        if self.conformance_uris:
-            register_conformance_uris(self.conformance_uris)
 
     # ------------------------------------------------------------------
     # Lifecycle helpers

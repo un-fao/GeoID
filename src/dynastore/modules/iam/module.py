@@ -30,6 +30,7 @@ from dynastore.models.auth import (
 from .iam_service import IamService
 from .iam_storage import AbstractIamStorage
 from .policies import PolicyService
+from .authorization.iam_authorizer import IamAuthorizer
 from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
 from dynastore.modules.db_config import maintenance_tools
 from dynastore.modules.db_config.query_executor import DbResource
@@ -44,6 +45,7 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
     priority: int = 100
     _iam_manager: Optional[IamService] = None
     _policy_service: Optional[PolicyService] = None
+    _authorizer: Optional[IamAuthorizer] = None
     storage: Optional[AbstractIamStorage] = None
     _pending_tasks: list = []
 
@@ -96,6 +98,12 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             # Register plugins
             register_plugin(self._iam_manager)
 
+            # Register the AuthorizerProtocol implementor. When IAM is loaded,
+            # `require_permission` routes through IamAuthorizer; otherwise
+            # DefaultAuthorizer enforces fail-closed role-only checks.
+            self._authorizer = IamAuthorizer()
+            register_plugin(self._authorizer)
+
             # IdP factory — IDP_TYPE selects the backend (default: oidc)
             # KEYCLOAK_* vars are read as fallbacks for backward compatibility.
             # See modules/iam/identity_providers/README.md for adding new types.
@@ -143,6 +151,9 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
 
             # Unregister plugins on exit
             unregister_plugin(self._iam_manager)
+            if self._authorizer is not None:
+                unregister_plugin(self._authorizer)
+                self._authorizer = None
             # IamService stops via AsyncExitStack
         
         # Finally unregister self

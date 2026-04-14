@@ -27,7 +27,7 @@ from tests.dynastore.test_utils import generate_test_id
 
 import logging
 from dynastore.tools.discovery import get_protocol
-from dynastore.models.protocols.iam import IamProtocol
+from dynastore.modules.iam.iam_service import IamService
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +35,9 @@ logger = logging.getLogger(__name__)
 @pytest_asyncio.fixture
 async def created_user_email(sysadmin_in_process_client: AsyncClient) -> str:
     """Creates a principal with identity link and returns their email."""
-    iam_protocol = get_protocol(IamProtocol)
-    assert iam_protocol is not None
-    storage = iam_protocol.storage
+    iam_service = get_protocol(IamService)
+    assert iam_service is not None
+    storage = iam_service.storage
     assert storage is not None
 
     email = f"test_{generate_test_id(12)}@example.com"

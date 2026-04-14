@@ -92,7 +92,16 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
     Uses PyProj for CRS handling and PostGIS for dynamic MVT generation.
     """
 
+    conformance_uris: List[str] = OGC_API_TILES_URIS
     router: APIRouter
+
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
+
+    def get_static_assets(self):
+        from dynastore.extensions.tools.web_collect import collect_static_assets
+        return collect_static_assets(self)
 
     def configure_app(self, app: FastAPI):
         """Early configuration for the Tiles extension."""
@@ -104,6 +113,23 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
         self.router = APIRouter(tags=["OGC API - Tiles"], prefix="/tiles")
         self._register_routes()
         logger.info("Tiles Service: Initializing.")
+
+    def contribute(self, ref):
+        """AssetContributor: emit a vector-tiles XYZ template link for items."""
+        from dynastore.models.protocols.asset_contrib import AssetLink
+        if ref.item_id is None:
+            return
+        href = (
+            f"{ref.base_url}{self.router.prefix}/{ref.catalog_id}"
+            f"/tiles/{{z}}/{{x}}/{{y}}.mvt?collections={ref.collection_id}"
+        )
+        yield AssetLink(
+            key="vector_tiles",
+            href=href,
+            title="Vector Tiles (MVT)",
+            media_type="application/vnd.mapbox-vector-tile",
+            roles=("tiles",),
+        )
 
     def _register_routes(self):
         # Tile Matrix Sets
@@ -181,10 +207,8 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
         """Manages the Tiles Service configuration."""
-        from dynastore.extensions.tools.conformance import register_conformance_uris
-        register_conformance_uris(OGC_API_TILES_URIS)
         register_tiles_policies()
-        logger.info("Tiles Service startup: Conformance and policies registered.")
+        logger.info("Tiles Service startup: policies registered.")
         yield
         logger.info("Tiles Service shutdown.")
 

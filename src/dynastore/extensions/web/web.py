@@ -37,7 +37,6 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from dynastore.extensions import ExtensionProtocol, get_extension_instance
 from dynastore.extensions.tools.conformance import (
-    register_conformance_uris,
     get_active_conformance,
     Conformance,
 )
@@ -261,20 +260,20 @@ class Web(ExtensionProtocol):
     """
     Core web platform extension.
 
-    All pages (home, docs, dashboard) and static prefixes (static, website,
-    dashboard, extension-static) are registered exclusively via the
-    @expose_web_page / @expose_static decorator scan that runs in configure_app.
+    Pages (home, docs, dashboard) and static prefixes (static, website,
+    dashboard, extension-static) are declared via the @expose_web_page /
+    @expose_static decorators and surfaced through the
+    WebPageContributor / StaticAssetProvider capability protocols
+    implemented on this class.  WebModule iterates those protocols during
+    its own lifespan — no reflective class-walking across extensions.
 
-    This class intentionally does NOT inherit WebPageProtocol or
-    StaticFilesProtocol — that would trigger a second registration of the
-    same handlers through the global protocol scan in WebModule.lifespan,
-    causing every page to render its content twice.
-
-    Other extensions (e.g. Geoid, Tiles, STAC) that implement those protocols
-    are discovered by the decorator scan AND the global scan; the deduplication
-    guard in WebModule.register_web_page prevents double-rendering.
+    Legacy WebPageProtocol / StaticFilesProtocol implementations on other
+    extensions are still honoured by WebModule; the deduplication guard in
+    WebModule.register_web_page prevents double-rendering when both paths
+    provide the same handler.
     """
 
+    conformance_uris = WEB_CONFORMANCE_URIS
     priority: int = 100  # High number = low priority (registers last)
     router: APIRouter = APIRouter(prefix="/web", tags=["Dynastore Web Service"])
 
@@ -307,15 +306,9 @@ class Web(ExtensionProtocol):
         app.router.redirect_slashes = False
         app.add_middleware(RelativeSlashRedirectMiddleware)
 
-        # Discover and register static / page providers from other extensions.
-        # Skip self — Web.__init__() already called scan_and_register_providers(self).
-        if hasattr(app.state, "ordered_configs"):
-            logger.info(
-                "WebService: Scanning other extensions for static content providers..."
-            )
-            for config in app.state.ordered_configs:
-                if config.instance and config.instance is not self:
-                    self.scan_and_register_providers(config.instance)
+        # Discovery of page/static providers across extensions now happens
+        # in WebModule.lifespan via the WebPageContributor / StaticAssetProvider
+        # capability protocols — no reflective class-walking here.
 
         # Add root redirect if no other root endpoint exists.
         # This assumes the 'web' extension is loaded LAST in DYNASTORE_EXTENSION_MODULES
@@ -368,12 +361,6 @@ class Web(ExtensionProtocol):
     def __init__(self, app: Optional[FastAPI] = None):
         self.app = app
 
-        # Conformance URIs
-        register_conformance_uris(WEB_CONFORMANCE_URIS)
-        logger.info(
-            "WebService: Successfully registered generic web conformance classes."
-        )
-
         # Use __file__ with helper to find root
         self.project_root = _find_project_root(
             __file__, ["setup.py", "pyproject.toml", "main.py"]
@@ -405,8 +392,6 @@ class Web(ExtensionProtocol):
 
         # Self-register via discovery if possible
         self.web_module = get_protocol(WebModuleProtocol)
-        if self.web_module:
-            self.web_module.scan_and_register_providers(self)
 
         self._register_routes()
 
@@ -640,15 +625,17 @@ class Web(ExtensionProtocol):
         logger.info(f"Documentation scan complete. Found {len(registry)} documents.")
         return registry
 
-    # No WebPageProtocol / StaticFilesProtocol methods here.
-    # All pages and static prefixes are registered via @expose_web_page /
-    # @expose_static decorators, discovered by Web.configure_app() calling
-    # web_module.scan_and_register_providers(instance) for each extension.
+    # Pages / static prefixes are declared via @expose_web_page / @expose_static
+    # decorators and surfaced through the WebPageContributor / StaticAssetProvider
+    # capability protocols implemented below.
 
-    # Legacy method compatibility
-    def scan_and_register_providers(self, instance: Any):
-        if self.web_module:
-            self.web_module.scan_and_register_providers(instance)
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
+
+    def get_static_assets(self):
+        from dynastore.extensions.tools.web_collect import collect_static_assets
+        return collect_static_assets(self)
 
     @expose_web_page(page_id="home", title="Home", icon="fa-home", priority=-100)
     def home_page(self, language: str = "en"):

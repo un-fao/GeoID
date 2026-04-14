@@ -7,6 +7,7 @@ from fastapi import Query
 
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.web import expose_static, expose_web_page
+from dynastore.extensions.iam.guards import require_sysadmin
 from dynastore.modules.notebooks import notebooks_module as notebook_service
 from dynastore.modules.notebooks.models import NotebookCreate, Notebook, PlatformNotebookCreate, PlatformNotebook, OwnerType
 
@@ -14,11 +15,6 @@ from dynastore.modules.notebooks.models import NotebookCreate, Notebook, Platfor
 def _get_current_active_user():
     from dynastore.extensions.auth.dependencies import get_current_active_user
     return get_current_active_user
-
-
-def _require_sysadmin_privileges():
-    from dynastore.extensions.iam.service import require_sysadmin_privileges
-    return require_sysadmin_privileges
 
 import logging
 import os
@@ -40,6 +36,14 @@ class NotebooksExtension(ExtensionProtocol):
     - JupyterLite static assets for in-browser execution
     """
     router = APIRouter(prefix="/notebooks", tags=["Notebooks"])
+
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
+
+    def get_static_assets(self):
+        from dynastore.extensions.tools.web_collect import collect_static_assets
+        return collect_static_assets(self)
 
     def __init__(self, app: Optional[FastAPI] = None):
         super().__init__()
@@ -164,7 +168,7 @@ class NotebooksExtension(ExtensionProtocol):
         self,
         notebook_id: str,
         content: Dict[str, Any],
-        current_user=Depends(_require_sysadmin_privileges()),
+        _: None = Depends(require_sysadmin),
     ):
         """Create or update a platform notebook (sysadmin only)."""
         title = content.get("metadata", {}).get("title", notebook_id)
@@ -182,7 +186,7 @@ class NotebooksExtension(ExtensionProtocol):
     async def delete_platform_notebook(
         self,
         notebook_id: str,
-        current_user=Depends(_require_sysadmin_privileges()),
+        _: None = Depends(require_sysadmin),
     ):
         """Soft-delete a platform notebook (sysadmin only)."""
         await notebook_service.delete_platform_notebook(notebook_id)

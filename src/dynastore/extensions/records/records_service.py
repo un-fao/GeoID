@@ -86,7 +86,6 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin):
         super().__init__()
         self.app = app
         self.router = APIRouter(prefix="/records", tags=["OGC API - Records"])
-        self._register_ogc_conformance()
         self._register_routes()
 
     # ------------------------------------------------------------------

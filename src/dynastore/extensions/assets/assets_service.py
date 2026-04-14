@@ -36,7 +36,7 @@ from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.models.protocols import AssetsProtocol, AssetUploadProtocol, UploadTicket, UploadStatusResponse
 from dynastore.tools.protocol_helpers import get_engine
 from dynastore.extensions.tools.exception_handlers import handle_exception
-from dynastore.extensions.tools.security import get_principal
+from dynastore.extensions.iam.guards import get_principal_optional as get_principal
 from dynastore.models.auth import Principal
 from fastapi import Depends
 from dynastore.modules.catalog.catalog_module import CatalogModule
