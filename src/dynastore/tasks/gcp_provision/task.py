@@ -64,7 +64,7 @@ class ProvisioningTask(TaskProtocol):
     async def run(self, payload: TaskPayload[GcpProvisionInputs]) -> Dict[str, Any]:
         try:
             inputs = payload.inputs
-            catalog_id = inputs.catalog_id if hasattr(inputs, 'catalog_id') else inputs.get('catalog_id')
+            catalog_id = inputs.catalog_id
             if not catalog_id:
                 raise ValueError("Missing 'catalog_id' in task inputs")
 
@@ -72,11 +72,12 @@ class ProvisioningTask(TaskProtocol):
 
             # 1. Resolve storage protocol (GCP)
             storage = _get_storage_protocol()
-            
+
             # 2. Setup the bucket and eventing idempotently
-            if hasattr(storage, "setup_catalog_gcp_resources"):
-                # Using the native GCP module method which provisions both bucket and eventing
-                bucket_name, _ = await storage.setup_catalog_gcp_resources(catalog_id)
+            setup_gcp = getattr(storage, "setup_catalog_gcp_resources", None)
+            if setup_gcp is not None:
+                # Native GCP module method provisions both bucket and eventing
+                bucket_name, _ = await setup_gcp(catalog_id)
             else:
                 # Fallback for mocked storage
                 bucket_name = await storage.ensure_storage_for_catalog(catalog_id)
@@ -126,7 +127,7 @@ class GcpDestroyCatalogTask(TaskProtocol):
 
     async def run(self, payload: TaskPayload[GcpProvisionInputs]) -> Dict[str, Any]:
         inputs = payload.inputs
-        catalog_id = inputs.catalog_id if hasattr(inputs, 'catalog_id') else inputs.get('catalog_id')
+        catalog_id = inputs.catalog_id
         if not catalog_id:
             raise ValueError("Missing 'catalog_id' in task inputs")
 
@@ -135,17 +136,21 @@ class GcpDestroyCatalogTask(TaskProtocol):
         # 1. Teardown eventing (optional)
         eventing = get_protocol(EventingProtocol)
         if eventing:
-            try:
-                await eventing.teardown_catalog_notifications(catalog_id)
-                logger.info(f"GcpDestroyCatalogTask: Eventing removed for catalog '{catalog_id}'.")
-            except Exception as e:
-                logger.warning(f"GcpDestroyCatalogTask: Failed to teardown eventing for '{catalog_id}': {e}")
+            teardown = getattr(eventing, "teardown_catalog_notifications", None)
+            if teardown is not None:
+                try:
+                    await teardown(catalog_id)
+                    logger.info(f"GcpDestroyCatalogTask: Eventing removed for catalog '{catalog_id}'.")
+                except Exception as e:
+                    logger.warning(f"GcpDestroyCatalogTask: Failed to teardown eventing for '{catalog_id}': {e}")
 
         # 2. Delete/cleanup storage
         try:
             storage = _get_storage_protocol()
-            await storage.delete_catalog_bucket(catalog_id)
-            logger.info(f"GcpDestroyCatalogTask: Bucket resources for '{catalog_id}' deleted.")
+            delete_bucket = getattr(storage, "delete_catalog_bucket", None)
+            if delete_bucket is not None:
+                await delete_bucket(catalog_id)
+                logger.info(f"GcpDestroyCatalogTask: Bucket resources for '{catalog_id}' deleted.")
         except Exception as e:
             logger.warning(f"GcpDestroyCatalogTask: Failed to delete storage for '{catalog_id}': {e}")
 
