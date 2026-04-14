@@ -108,7 +108,7 @@ class OidcIdentityProvider(IdentityProviderProtocol):
         import httpx
         return httpx.AsyncClient()
 
-    async def _ensure_meta(self) -> None:
+    async def _ensure_meta(self) -> Dict[str, Any]:
         """
         Fetch and cache OIDC discovery metadata.
 
@@ -120,7 +120,7 @@ class OidcIdentityProvider(IdentityProviderProtocol):
         if self._meta and self._meta_fetched_at:
             age = (now - self._meta_fetched_at).total_seconds()
             if age < self._meta_ttl:
-                return
+                return self._meta
 
         discovery_url = f"{self.issuer_url}/.well-known/openid-configuration"
         try:
@@ -143,6 +143,10 @@ class OidcIdentityProvider(IdentityProviderProtocol):
             else:
                 logger.error("OIDC discovery failed: %s", e)
                 raise
+
+        if self._meta is None:
+            raise RuntimeError("OIDC metadata unavailable after discovery")
+        return self._meta
 
     def _public_endpoint(self, internal_url: str) -> str:
         """
@@ -176,6 +180,8 @@ class OidcIdentityProvider(IdentityProviderProtocol):
 
         try:
             await self._ensure_meta()
+            if self._jwks_client is None:
+                raise RuntimeError("JWKS client not initialised")
             signing_key = self._jwks_client.get_signing_key_from_jwt(token)
             claims = jwt.decode(
                 token,
@@ -244,9 +250,9 @@ class OidcIdentityProvider(IdentityProviderProtocol):
         """Return the browser-facing authorization URL."""
         from urllib.parse import urlencode
 
-        await self._ensure_meta()
+        meta = await self._ensure_meta()
         # Use the public-facing endpoint for browser redirects
-        auth_endpoint = self._public_endpoint(self._meta["authorization_endpoint"])
+        auth_endpoint = self._public_endpoint(meta["authorization_endpoint"])
         params = {
             "client_id": self.client_id,
             "response_type": "code",
@@ -263,8 +269,8 @@ class OidcIdentityProvider(IdentityProviderProtocol):
         client_secret: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Exchange an authorization code for tokens."""
-        await self._ensure_meta()
-        token_endpoint = self._meta["token_endpoint"]
+        meta = await self._ensure_meta()
+        token_endpoint = meta["token_endpoint"]
         data: Dict[str, str] = {
             "grant_type": "authorization_code",
             "code": code,
@@ -287,8 +293,8 @@ class OidcIdentityProvider(IdentityProviderProtocol):
         client_secret: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Exchange a refresh token for a new access token."""
-        await self._ensure_meta()
-        token_endpoint = self._meta["token_endpoint"]
+        meta = await self._ensure_meta()
+        token_endpoint = meta["token_endpoint"]
         data: Dict[str, str] = {
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
@@ -306,8 +312,8 @@ class OidcIdentityProvider(IdentityProviderProtocol):
 
     async def get_user_info(self, access_token: str) -> Dict[str, Any]:
         """Fetch the user profile from the OIDC UserInfo endpoint."""
-        await self._ensure_meta()
-        userinfo_endpoint = self._meta["userinfo_endpoint"]
+        meta = await self._ensure_meta()
+        userinfo_endpoint = meta["userinfo_endpoint"]
         client = self._get_http_client()
         async with client as c:
             response = await c.get(
