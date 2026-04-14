@@ -148,7 +148,7 @@ async def apply_migrations(
         )
 
     result = await run_migrations(
-        engine, dry_run=body.dry_run, scope=body.scope  # type: ignore[arg-type]
+        engine, dry_run=body.dry_run, scope=body.scope
     )
 
     action = "previewed" if body.dry_run else "applied"
@@ -384,13 +384,16 @@ async def list_collection_backups(
     from dynastore.modules.storage.routing_config import Operation
 
     catalogs = get_protocol(CatalogsProtocol)
+    if catalogs is None:
+        raise HTTPException(status_code=503, detail="CatalogsProtocol unavailable.")
     schema = await catalogs.resolve_physical_schema(catalog_id, allow_missing=True)
     if not schema:
         raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
 
     # Get physical_table from driver config
     driver = await get_driver(Operation.READ, catalog_id, collection_id)
-    physical_table = await driver.resolve_physical_table(catalog_id, collection_id) if hasattr(driver, "resolve_physical_table") else None
+    resolve = getattr(driver, "resolve_physical_table", None)
+    physical_table = await resolve(catalog_id, collection_id) if resolve else None
     if not physical_table:
         raise HTTPException(status_code=404, detail="Collection has no physical table.")
 
@@ -436,12 +439,15 @@ async def drop_collection_backup(
     from dynastore.modules.storage.routing_config import Operation
 
     catalogs = get_protocol(CatalogsProtocol)
+    if catalogs is None:
+        raise HTTPException(status_code=503, detail="CatalogsProtocol unavailable.")
     schema = await catalogs.resolve_physical_schema(catalog_id, allow_missing=True)
     if not schema:
         raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
 
     driver = await get_driver(Operation.READ, catalog_id, collection_id)
-    physical_table = await driver.resolve_physical_table(catalog_id, collection_id) if hasattr(driver, "resolve_physical_table") else None
+    resolve = getattr(driver, "resolve_physical_table", None)
+    physical_table = await resolve(catalog_id, collection_id) if resolve else None
     if not physical_table:
         raise HTTPException(status_code=404, detail="Collection has no physical table.")
 
@@ -522,6 +528,8 @@ async def export_catalog_configs(
 
     # Collection-level overrides: enumerate collections then fetch per-collection configs
     catalogs = get_protocol(CatalogsProtocol)
+    if catalogs is None:
+        raise HTTPException(status_code=503, detail="CatalogsProtocol unavailable.")
     schema = await catalogs.resolve_physical_schema(catalog_id, allow_missing=True) if catalogs else None
 
     collection_entries: List[Dict[str, Any]] = []
