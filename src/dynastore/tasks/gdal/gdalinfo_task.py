@@ -35,8 +35,6 @@ from dynastore.modules.processes.models import (
 from dynastore.modules.catalog.asset_tasks_spi import AssetTasksSPI
 from dynastore.tasks.protocols import TaskProtocol
 from dynastore.models.protocols import AssetsProtocol
-from dynastore.tools.protocol_helpers import get_engine
-
 from dynastore.modules import get_protocol
 from dynastore.modules.gdal import service as gdal_module
 from dynastore.modules.gdal.models import RasterInfo, VectorInfo
@@ -110,12 +108,14 @@ class GdalInfoTask(TaskProtocol, AssetTasksSPI):
         # payload.inputs is a generic InputType which might be a dict or a model
         # checks to ensure we can access the 'inputs' field
         raw_inputs = payload.inputs
-        if hasattr(raw_inputs, "inputs"):
+        inputs: Dict[str, Any]
+        if isinstance(raw_inputs, ExecuteRequest):
             inputs = raw_inputs.inputs
         elif isinstance(raw_inputs, dict):
-            inputs = raw_inputs.get("inputs", {})
+            nested = raw_inputs.get("inputs", raw_inputs)
+            inputs = nested if isinstance(nested, dict) else {}
         else:
-            inputs = raw_inputs
+            inputs = {}
 
         asset_uri = inputs.get("asset_uri")
         asset_id = inputs.get("asset_id")
@@ -133,15 +133,12 @@ class GdalInfoTask(TaskProtocol, AssetTasksSPI):
             catalog_id = inputs.get("catalog_id")
             collection_id = inputs.get("collection_id")
             assets = get_protocol(AssetsProtocol)
-            if assets:
-                engine = get_engine()
-                if engine:
-                    asset = await assets.get_asset(
-                        catalog_id,
-                        asset_id,
-                        collection_id=collection_id,
-                        db_resource=engine,
-                    )
+            if assets and catalog_id and asset_id:
+                asset = await assets.get_asset(
+                    asset_id=asset_id,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                )
 
         if asset is None:
             raise ValueError(f"Asset '{asset_id}' could not be resolved.")
@@ -166,12 +163,11 @@ class GdalInfoTask(TaskProtocol, AssetTasksSPI):
             assets = get_protocol(AssetsProtocol)
             if assets is None:
                 raise ValueError("AssetsProtocol implementation is not available.")
-            engine = get_engine()
-            if engine is None:
-                raise ValueError("Database engine is not available.")
 
             catalog_id = inputs.get("catalog_id")
             collection_id = inputs.get("collection_id")
+            if not catalog_id:
+                raise ValueError("catalog_id is missing in task inputs for GdalInfoTask.")
 
             # Fetch fresh asset to ensure we are not overwriting concurrent changes
             # and to get the base for our merge.
@@ -179,7 +175,6 @@ class GdalInfoTask(TaskProtocol, AssetTasksSPI):
                 asset_id=asset_id,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
-                db_resource=engine,
             )
 
             if not fresh_asset:
@@ -201,13 +196,10 @@ class GdalInfoTask(TaskProtocol, AssetTasksSPI):
             final_metadata["gdalinfo"] = info
 
             await assets.update_asset(
-                asset_id=fresh_asset.asset_id
-                if hasattr(fresh_asset, "asset_id")
-                else fresh_asset.id,
+                asset_id=fresh_asset.asset_id,
                 update=AssetUpdate(metadata=final_metadata),
                 catalog_id=catalog_id,
                 collection_id=collection_id,
-                db_resource=engine,
             )
             logger.info(f"Asset '{asset_id}' metadata enriched with GDAL info.")
 
