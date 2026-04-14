@@ -35,6 +35,7 @@ from dynastore.modules.db_config.query_executor import (
 )
 from dynastore.modules.db_config.locking_tools import acquire_startup_lock
 from dynastore.models.protocols import (
+    CatalogsProtocol,
     ConfigsProtocol,
     PropertiesProtocol,
     DatabaseProtocol,
@@ -780,6 +781,8 @@ async def subscribe(
     subscription_data: EventSubscriptionCreate, engine: Optional[DbResource] = None
 ) -> EventSubscription:
     events = get_protocol(EventStorageProtocol)
+    if events is None:
+        raise RuntimeError("EventStorageProtocol not available.")
     return await events.subscribe(subscription_data, engine)
 
 
@@ -787,6 +790,8 @@ async def unsubscribe(
     subscriber_name: str, event_type: str, engine: Optional[DbResource] = None
 ) -> Optional[EventSubscription]:
     events = get_protocol(EventStorageProtocol)
+    if events is None:
+        raise RuntimeError("EventStorageProtocol not available.")
     return await events.unsubscribe(subscriber_name, event_type, engine)
 
 
@@ -794,4 +799,6 @@ async def get_subscriptions_for_event_type(
     event_type: str, engine: Optional[DbResource] = None
 ) -> List[EventSubscription]:
     events = get_protocol(EventStorageProtocol)
+    if events is None:
+        raise RuntimeError("EventStorageProtocol not available.")
     return await events.get_subscriptions_for_event_type(event_type, engine)

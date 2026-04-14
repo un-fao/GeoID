@@ -86,10 +86,12 @@ def discover_tasks(include_only: Optional[List[str]] = None):
         # Extract some metadata from the class if possible
         definition = None
         if hasattr(cls, "get_definition"):
-            definition = cls.get_definition() # type: ignore
+            definition = cls.get_definition()
         elif hasattr(cls, "get_process_definition"):
-            definition = cls.get_process_definition() # type: ignore
+            definition = cls.get_process_definition()
 
+        if key is None:
+            continue
         _DYNASTORE_TASKS[key] = TaskConfig(
             cls=cls,
             type="task",
@@ -117,6 +119,7 @@ def _register_task(target_cls: Type[TaskProtocol], registration_name: Optional[s
             except (ValueError, IndexError):
                 registration_name = target_cls.__name__
 
+    assert registration_name is not None
     if registration_name in _DYNASTORE_TASKS:
         if _DYNASTORE_TASKS[registration_name].cls == target_cls:
             return target_cls
@@ -130,13 +133,13 @@ def _register_task(target_cls: Type[TaskProtocol], registration_name: Optional[s
         definition = target_cls.get_process_definition() # type: ignore
 
     _DYNASTORE_TASKS[registration_name] = TaskConfig(
-        cls=target_cls, 
+        cls=target_cls,
         type=type,
         module_name=target_cls.__module__,
         name=registration_name,
         definition=definition
     )
-    target_cls._registered_name = registration_name
+    setattr(target_cls, "_registered_name", registration_name)
     logger.info(f"Registered task: {target_cls.__name__} (as '{registration_name}')")
     return target_cls
 
@@ -252,10 +255,11 @@ async def manage_tasks(app_state: object, include_only: Optional[List[str]] = No
                 # Instantiate
                 import inspect
                 sig = inspect.signature(config.cls.__init__)
+                factory = cast(Any, config.cls)
                 if "app_state" in sig.parameters:
-                    instance = config.cls(app_state=app_state)
+                    instance = factory(app_state=app_state)
                 else:
-                    instance = config.cls()
+                    instance = factory()
                 
                 config.instance = instance
                 
