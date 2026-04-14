@@ -20,7 +20,7 @@ import re
 import logging
 import uuid
 import time
-from typing import List, Optional, Tuple, Any, Dict
+from typing import List, Optional, Tuple, Any, Dict, cast
 from uuid import UUID
 from dynastore.tools.cache import cached
 import json
@@ -77,7 +77,10 @@ class PolicyService:
         if not catalog_id or catalog_id == "_system_":
             return "iam"
 
-        db_resource = conn or self.storage.engine
+        if catalogs is None:
+            raise RuntimeError("CatalogsProtocol not available.")
+
+        db_resource = conn or cast(Any, self.storage).engine
         # Use allow_missing=True during tenant initialization when catalog may not exist yet
         res = await catalogs.resolve_physical_schema(
             catalog_id, ctx=DriverContext(db_resource=db_resource), allow_missing=True
@@ -91,7 +94,7 @@ class PolicyService:
         """Initializes storage for the specified catalog/schema."""
         schema = await self._resolve_schema(catalog_id, conn=conn)
         async with managed_transaction(conn or self._engine) as db:
-            await self.storage.initialize(conn=db, schema=schema)
+            await cast(Any, self.storage).initialize(conn=db, schema=schema)
 
     async def check_permission(
         self, principal: Principal, action: str, resource: str
@@ -144,7 +147,7 @@ class PolicyService:
         """Invalidates the evaluation cache."""
         try:
             # Clear the @cached cache for get_effective_policies
-            self.get_effective_policies.cache_clear()
+            cast(Any, self.get_effective_policies).cache_clear()
         except AttributeError:
             # In case the decorator is missing or hasn't finished wrapping
             pass
