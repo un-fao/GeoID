@@ -320,7 +320,10 @@ class TilePGPreseedStorage(TileStorageSPI):
 
     def __init__(self):
         self.engine = _get_engine()
-        self.catalogs = get_protocol(CatalogsProtocol)
+        catalogs = get_protocol(CatalogsProtocol)
+        if catalogs is None:
+            raise RuntimeError("CatalogsProtocol is not registered")
+        self.catalogs = catalogs
 
     async def _get_schema(self, catalog_id: str) -> str:
         catalogs = get_protocol(CatalogsProtocol)
@@ -624,7 +627,7 @@ async def ensure_preseed_storage_exists(conn: DbResource, schema: str):
     await DDLQuery(index_ddl).execute(conn)
 
 
-@lifecycle_registry.sync_catalog_initializer
+@lifecycle_registry.sync_catalog_initializer()
 async def initialize_tiles_tenant_slice(conn: DbResource, schema: str, catalog_id: str):
     """Initializes the tiles module's slice of the tenant schema."""
     await ensure_preseed_storage_exists(conn, schema)
@@ -886,7 +889,10 @@ async def get_collection_source_srid(
 
         try:
             driver = await get_driver(Operation.READ, catalog_id, collection_id)
-            location = await driver.resolve_storage_location(
+            resolve = getattr(driver, "resolve_storage_location", None)
+            if resolve is None:
+                return 4326
+            location = await resolve(
                 catalog_id, collection_id, db_resource=conn
             )
         except (ValueError, Exception):
@@ -933,7 +939,10 @@ async def get_tile_resolution_params(
 
         try:
             driver = await get_driver(Operation.READ, catalog_id, collection_id)
-            location = await driver.resolve_storage_location(
+            resolve = getattr(driver, "resolve_storage_location", None)
+            if resolve is None:
+                return {}
+            location = await resolve(
                 catalog_id, collection_id, db_resource=conn
             )
         except (ValueError, Exception):
@@ -955,7 +964,7 @@ async def get_tile_resolution_params(
         ))
         if not tiles_config:
             # If not present, we can initialize it with defaults
-            tiles_config = TilesPluginConfig(storage_priority=["bucket", "pg"])
+            tiles_config = TilesPluginConfig()
             await config_service.set_config(
                 TILES_PLUGIN_CONFIG_ID, tiles_config, catalog_id=catalog_id, ctx=DriverContext(db_resource=conn
             ))
