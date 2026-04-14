@@ -24,7 +24,7 @@ Email-based authorization management with self-service and admin endpoints.
 
 from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, EmailStr
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, cast
 from datetime import datetime
 
 from dynastore.modules import get_protocol
@@ -103,7 +103,7 @@ async def get_storage():
         raise HTTPException(
             status_code=500, detail="Authenticator implementation not available"
         )
-    return authenticator.storage
+    return cast(Any, authenticator).storage
 
 
 async def get_catalogs_protocol() -> CatalogsProtocol:
@@ -137,7 +137,7 @@ async def resolve_catalog_schema(catalog_id: str) -> str:
     catalog_module = await get_catalogs_protocol()
     try:
         schema = await catalog_module.resolve_physical_schema(
-            catalog_id, ctx=DriverContext(db_resource=catalog_module.engine)
+            catalog_id, ctx=DriverContext(db_resource=cast(Any, catalog_module).engine)
         )
         if not schema:
             raise HTTPException(
@@ -231,14 +231,14 @@ async def get_my_catalogs(request: Request):
 
     # 1. Get all catalogs
     catalog_module = await get_catalogs_protocol()
-    all_catalogs = await catalog_module.list_catalogs(ctx=DriverContext(db_resource=catalog_module.engine))
+    all_catalogs = await catalog_module.list_catalogs(ctx=DriverContext(db_resource=cast(Any, catalog_module).engine))
 
     for catalog in all_catalogs:
         # Get roles for this catalog
         try:
             # Re-fetch catalog_module if needed or use the existing one
             catalog_schema = await catalog_module.resolve_physical_schema(
-                catalog.id, ctx=DriverContext(db_resource=catalog_module.engine)
+                catalog.id, ctx=DriverContext(db_resource=cast(Any, catalog_module).engine)
             )
             catalog_roles = await storage.get_identity_roles(
                 provider, subject_id, schema=catalog_schema
@@ -279,6 +279,9 @@ async def get_my_effective_authorization(request: Request, catalog_id: str):
         auth = await storage.get_identity_authorization(
             provider, subject_id, schema="iam"
         )
+
+    if not provider or not subject_id:
+        raise HTTPException(status_code=401, detail="Identity missing provider/subject")
 
     return EffectiveAuthorizationResponse(
         email=email,
@@ -417,7 +420,7 @@ async def get_user_catalogs(email: EmailStr):
         # Get roles for this catalog
         try:
             catalog_schema = await catalog_module.resolve_physical_schema(
-                cat_id, ctx=DriverContext(db_resource=catalog_module.engine)
+                cat_id, ctx=DriverContext(db_resource=cast(Any, catalog_module).engine)
             )
             catalog_roles = await storage.get_identity_roles(
                 provider, subject_id, schema=catalog_schema
@@ -460,6 +463,9 @@ async def get_user_effective_authorization(email: EmailStr, catalog_id: str):
         auth = await storage.get_identity_authorization(
             provider, subject_id, schema="iam"
         )
+
+    if not provider or not subject_id:
+        raise HTTPException(status_code=401, detail="Identity missing provider/subject")
 
     return EffectiveAuthorizationResponse(
         email=email,
