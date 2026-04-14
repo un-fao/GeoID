@@ -24,20 +24,10 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.tools.db import get_async_connection
 
-# Import the module we are exposing
-from dynastore.modules.crs.crs_module import (
-    create_crs,
-    update_crs,
-    list_crs,
-    search_crs,
-    get_crs_by_uri,
-    get_crs_by_name,
-    delete_crs
-)
 from dynastore.modules.crs.models import CRS, CRSCreate
 
-# Import catalog module for validation
 from dynastore.models.protocols import CatalogsProtocol
+from dynastore.models.protocols.crs import CRSProtocol
 from dynastore.tools.discovery import get_protocol
 
 logger = logging.getLogger(__name__)
@@ -107,6 +97,13 @@ class CRSExtension(ExtensionProtocol):
     def catalogs(self) -> CatalogsProtocol:
         return self.get_protocol(CatalogsProtocol)
 
+    @property
+    def crs(self) -> CRSProtocol:
+        svc = get_protocol(CRSProtocol)
+        if svc is None:
+            raise HTTPException(status_code=503, detail="CRS service not registered")
+        return svc
+
 
     async def create_crs_endpoint(
         self,
@@ -122,7 +119,7 @@ class CRSExtension(ExtensionProtocol):
             raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
 
         try:
-            new_crs = await create_crs(conn, catalog_id, crs_data)
+            new_crs = await self.crs.create_crs(conn, catalog_id, crs_data)
             return new_crs
         except Exception as e:
             logger.error(f"Failed to create CRS '{crs_data.crs_uri}' for catalog '{catalog_id}': {e}")
@@ -143,7 +140,7 @@ class CRSExtension(ExtensionProtocol):
         if not await self.catalogs.get_catalog(catalog_id, conn):
             raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
             
-        updated_crs = await update_crs(conn, catalog_id, crs_uri, crs_data)
+        updated_crs = await self.crs.update_crs(conn, catalog_id, crs_uri, crs_data)
         if not updated_crs:
             raise HTTPException(status_code=404, detail=f"CRS with URI '{crs_uri}' not found in catalog '{catalog_id}'.")
         return updated_crs
@@ -159,7 +156,7 @@ class CRSExtension(ExtensionProtocol):
         if not await self.catalogs.get_catalog(catalog_id, conn):
             raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
         
-        return await list_crs(conn, catalog_id, limit, offset)
+        return await self.crs.list_crs(conn, catalog_id, limit, offset)
 
 
     async def search_crs_endpoint(
@@ -173,7 +170,7 @@ class CRSExtension(ExtensionProtocol):
         if not await self.catalogs.get_catalog(catalog_id, conn):
             raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
         
-        return await search_crs(conn, catalog_id, q, limit, offset)
+        return await self.crs.search_crs(conn, catalog_id, q, limit, offset)
 
 
     async def get_crs_by_name_endpoint(
@@ -182,7 +179,7 @@ class CRSExtension(ExtensionProtocol):
         crs_name: str,
         conn: AsyncConnection = Depends(get_async_connection)
     ):
-        crs = await get_crs_by_name(conn, catalog_id, crs_name)
+        crs = await self.crs.get_crs_by_name(conn, catalog_id, crs_name)
         if not crs:
             raise HTTPException(status_code=404, detail=f"CRS with name '{crs_name}' not found.")
         return crs
@@ -204,7 +201,7 @@ class CRSExtension(ExtensionProtocol):
         
         This allows this endpoint to serve as the authoritative resolution URL for OGC API Features.
         """
-        crs = await get_crs_by_uri(conn, catalog_id, crs_uri)
+        crs = await self.crs.get_crs_by_uri(conn, catalog_id, crs_uri)
         if not crs:
             raise HTTPException(status_code=404, detail=f"CRS with URI '{crs_uri}' not found.")
         
@@ -227,7 +224,7 @@ class CRSExtension(ExtensionProtocol):
         if not await self.catalogs.get_catalog(catalog_id, conn):
             raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
 
-        success = await delete_crs(conn, catalog_id, crs_uri)
+        success = await self.crs.delete_crs(conn, catalog_id, crs_uri)
         if not success:
             raise HTTPException(status_code=404, detail=f"CRS with URI '{crs_uri}' not found.")
         

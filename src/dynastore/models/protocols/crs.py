@@ -25,26 +25,16 @@ class CRSProtocol(Protocol):
     Protocol for managing and resolving Coordinate Reference Systems (CRS).
     """
 
-    async def get_crs_by_uri(self, conn: DbResource, catalog_id: str, crs_uri: str) -> Optional[Any]:
-        """
-        Fetches a single CRS definition by its URI.
-        """
-        ...
+    async def create_crs(self, conn: DbResource, catalog_id: str, crs_data: Any) -> Any: ...
 
-    async def get_crs_by_name(self, conn: DbResource, catalog_id: str, crs_name: str) -> Optional[Any]:
-        """
-        Fetches a single CRS definition by its name.
-        """
-        ...
+    async def update_crs(self, conn: DbResource, catalog_id: str, crs_uri: str, crs_data: Any) -> Optional[Any]: ...
 
-    async def list_crs(self, conn: DbResource, catalog_id: str, limit: int = 20, offset: int = 0) -> List[Any]:
-        """
-        Lists all CRS definitions for a specific catalog.
-        """
-        ...
+    async def delete_crs(self, conn: DbResource, catalog_id: str, crs_uri: str) -> bool: ...
 
-    async def search_crs(self, conn: DbResource, catalog_id: str, search_term: str, limit: int = 20, offset: int = 0) -> List[Any]:
-        """
-        Searches for CRS definitions.
-        """
-        ...
+    async def get_crs_by_uri(self, conn: DbResource, catalog_id: str, crs_uri: str) -> Optional[Any]: ...
+
+    async def get_crs_by_name(self, conn: DbResource, catalog_id: str, crs_name: str) -> Optional[Any]: ...
+
+    async def list_crs(self, conn: DbResource, catalog_id: str, limit: int = 20, offset: int = 0) -> List[Any]: ...
+
+    async def search_crs(self, conn: DbResource, catalog_id: str, search_term: str, limit: int = 20, offset: int = 0) -> List[Any]: ...

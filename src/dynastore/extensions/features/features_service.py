@@ -81,13 +81,7 @@ from dynastore.modules.catalog.sidecars.base import ConsumerType
 
 logger = logging.getLogger(__name__)
 
-# Legacy check for CRS module (maintained for compatibility)
-crs_module_available = False
-try:
-    from dynastore.modules.crs import crs_module
-    crs_module_available = True
-except ImportError:
-    pass
+from dynastore.models.protocols.crs import CRSProtocol
 
 # Define the conformance classes this specific extension provides.
 OGC_API_FEATURES_URIS = [
@@ -199,9 +193,10 @@ async def _resolve_crs_uri_to_srid(
     if match:
         return int(match.group(1))
 
-    if crs_module_available:
-        crs_def = await crs_module.get_crs_by_uri(conn, catalog_id, crs_uri)
-        if crs_def and hasattr(crs_def, "srid"):
+    crs_svc = get_protocol(CRSProtocol)
+    if crs_svc is not None:
+        crs_def = await crs_svc.get_crs_by_uri(conn, catalog_id, crs_uri)
+        if crs_def is not None and hasattr(crs_def, "srid"):
             return crs_def.srid
 
     raise HTTPException(
@@ -229,9 +224,25 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
         super().__init__()
         self.app = app
         self.router = APIRouter(prefix="/features", tags=["OGC API - Features"])
-        self._register_ogc_conformance()
         self._storage_protocol: Optional[StorageProtocol] = None
         self._register_routes()
+
+    def contribute(self, ref):
+        """AssetContributor: emit a GeoJSON feature link for items."""
+        from dynastore.models.protocols.asset_contrib import AssetLink
+        if ref.item_id is None:
+            return
+        href = (
+            f"{ref.base_url}{self.router.prefix}"
+            f"/catalogs/{ref.catalog_id}/collections/{ref.collection_id}/items/{ref.item_id}"
+        )
+        yield AssetLink(
+            key="geojson",
+            href=href,
+            title="OGC API Feature",
+            media_type="application/geo+json",
+            roles=("data",),
+        )
 
     def _register_routes(self):
         """Registers all OGC API Features routes."""

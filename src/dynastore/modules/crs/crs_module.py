@@ -27,6 +27,7 @@ from dynastore.models.protocols import DatabaseProtocol, CRSProtocol
 from dynastore.modules.db_config.query_executor import managed_transaction, DDLQuery
 from dynastore.modules.db_config.query_executor import DbResource
 from dynastore.modules.db_config import maintenance_tools
+from dynastore.modules.db_config.partition_tools import ensure_partition_exists
 from .models import CRS, CRSCreate
 from . import queries
 
@@ -136,37 +137,3 @@ class CRSModule(ModuleProtocol, CRSProtocol):
             conn, catalog_id=catalog_id, crs_uri=crs_uri
         )
         return rows_affected > 0
-
-# Generic wrapper functions for backward compatibility if needed, 
-# but new code should use get_protocol(CRSProtocol).
-# We keep them if CRSExtension or other files import them directly.
-
-async def get_crs_by_uri(conn: DbResource, catalog_id: str, crs_uri: str) -> Optional[CRS]:
-    crs_mod = get_protocol(CRSProtocol)
-    if crs_mod:
-        return await crs_mod.get_crs_by_uri(conn, catalog_id, crs_uri)
-    return None
-
-async def create_crs(conn: DbResource, catalog_id: str, crs_data: CRSCreate) -> CRS:
-    crs_mod = get_protocol(CRSProtocol)
-    return await crs_mod.create_crs(conn, catalog_id, crs_data)
-
-async def update_crs(conn: DbResource, catalog_id: str, crs_uri: str, crs_data: CRSCreate) -> Optional[CRS]:
-    crs_mod = get_protocol(CRSProtocol)
-    return await crs_mod.update_crs(conn, catalog_id, crs_uri, crs_data)
-
-async def list_crs(conn: DbResource, catalog_id: str, limit: int = 20, offset: int = 0) -> List[CRS]:
-    crs_mod = get_protocol(CRSProtocol)
-    return await crs_mod.list_crs(conn, catalog_id, limit, offset)
-
-async def search_crs(conn: DbResource, catalog_id: str, search_term: str, limit: int = 20, offset: int = 0) -> List[CRS]:
-    crs_mod = get_protocol(CRSProtocol)
-    return await crs_mod.search_crs(conn, catalog_id, search_term, limit, offset)
-
-async def get_crs_by_name(conn: DbResource, catalog_id: str, crs_name: str) -> Optional[CRS]:
-    crs_mod = get_protocol(CRSProtocol)
-    return await crs_mod.get_crs_by_name(conn, catalog_id, crs_name)
-
-async def delete_crs(conn: DbResource, catalog_id: str, crs_uri: str) -> bool:
-    crs_mod = get_protocol(CRSProtocol)
-    return await crs_mod.delete_crs(conn, catalog_id, crs_uri)

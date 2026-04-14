@@ -742,15 +742,17 @@ async def _resolve_srid_logic(
         crs_str.startswith("http") or "://" in crs_str or crs_str.startswith("urn:")
     ):
         try:
-            from dynastore.modules.crs import crs_module
+            from dynastore.models.protocols.crs import CRSProtocol
+            from dynastore.tools.discovery import get_protocol
 
-            custom_crs = await crs_module.get_crs_by_uri(conn, catalog_id, crs_str)
-            if custom_crs:
-                # Use the definition from crs_module for pyproj resolution
-                crs_str = custom_crs.definition.definition
+            crs_svc = get_protocol(CRSProtocol)
+            if crs_svc is not None:
+                custom_crs = await crs_svc.get_crs_by_uri(conn, catalog_id, crs_str)
+                if custom_crs:
+                    crs_str = custom_crs.definition.definition
         except Exception as e:
             logger.debug(
-                f"Could not lookup CRS '{crs_str}' in crs_module for catalog '{catalog_id}': {e}"
+                f"Could not lookup CRS '{crs_str}' for catalog '{catalog_id}': {e}"
             )
 
     try:
