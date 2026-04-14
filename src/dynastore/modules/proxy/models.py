@@ -50,6 +50,6 @@ class AnalyticsPage(BaseModel):
     
     # NEW: Support for the aggregated stats returned by the optimized driver
     aggregations: Optional[Dict[str, Any]] = Field(
-        None, 
+        default=None,
         description="Summary statistics (total_clicks, clicks_per_day, etc.) if requested."
     )

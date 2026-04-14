@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS {schema}.short_urls_catalog PARTITION OF {schema}.sho
 FOR VALUES IN ('_catalog_');
 """
 
-@lifecycle_registry.sync_catalog_initializer
+@lifecycle_registry.sync_catalog_initializer()
 async def _initialize_proxy_tenant_slice(conn: DbResource, schema: str, catalog_id: str):
     """Initializes the proxy module's slice of the tenant schema (URL shortening only)."""
     from dynastore.modules.db_config.query_executor import DDLQuery
@@ -76,7 +76,7 @@ from dynastore.tools.db import sanitize_for_sql_identifier
 from dynastore.models.driver_context import DriverContext
 
 
-@sync_collection_initializer
+@sync_collection_initializer()
 async def _initialize_proxy_collection(conn: DbResource, schema: str, catalog_id: str, collection_id: str, **kwargs):
     """Creates a partition for the collection in the proxy table."""
     from dynastore.modules.db_config.query_executor import DDLQuery
@@ -95,7 +95,7 @@ async def _initialize_proxy_collection(conn: DbResource, schema: str, catalog_id
     logger.info(f"Created proxy partition for collection '{collection_id}' in schema '{schema}'.")
 
 
-@sync_collection_destroyer
+@sync_collection_destroyer()
 async def _destroy_proxy_collection(conn: DbResource, schema: str, catalog_id: str, collection_id: str):
     """Drops the partition for the collection in the proxy table."""
     from dynastore.modules.db_config.query_executor import DDLQuery
@@ -119,6 +119,8 @@ class ProxyModule(ModuleProtocol, ProxyProtocol):
         """ProxyProtocol: Creates a short URL."""
         from dynastore.models.protocols import CatalogsProtocol
         catalogs = get_protocol(CatalogsProtocol)
+        if catalogs is None:
+            raise RuntimeError("CatalogsProtocol not registered")
         async with managed_transaction(engine) as tx_engine:
             schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=tx_engine))
             if not schema:
@@ -129,7 +131,11 @@ class ProxyModule(ModuleProtocol, ProxyProtocol):
         """ProxyProtocol: Retrieves a list of short URLs by collection."""
         from dynastore.models.protocols import CatalogsProtocol
         catalogs = get_protocol(CatalogsProtocol)
+        if catalogs is None:
+            raise RuntimeError("CatalogsProtocol not registered")
         schema = await catalogs.resolve_physical_schema(catalog_id)
+        if schema is None:
+            raise ValueError(f"Catalog '{catalog_id}' not found.")
         async with managed_transaction(engine) as conn:
             return await self.storage_driver.select_urls_by_collection(conn, schema, collection_id, limit, offset)
 
@@ -137,6 +143,8 @@ class ProxyModule(ModuleProtocol, ProxyProtocol):
         """ProxyProtocol: Retrieves a long URL."""
         from dynastore.models.protocols import CatalogsProtocol
         catalogs = get_protocol(CatalogsProtocol)
+        if catalogs is None:
+            raise RuntimeError("CatalogsProtocol not registered")
         async with managed_transaction(engine) as tx_engine:
             schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=tx_engine))
             if not schema:
@@ -147,6 +155,8 @@ class ProxyModule(ModuleProtocol, ProxyProtocol):
         """ProxyProtocol: Logs a redirect event to Elasticsearch."""
         from dynastore.models.protocols import CatalogsProtocol
         catalogs = get_protocol(CatalogsProtocol)
+        if catalogs is None:
+            raise RuntimeError("CatalogsProtocol not registered")
         async with managed_transaction(engine) as tx_engine:
             schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=tx_engine))
             if not schema:
@@ -158,6 +168,8 @@ class ProxyModule(ModuleProtocol, ProxyProtocol):
         """ProxyProtocol: Gets analytics from Elasticsearch."""
         from dynastore.models.protocols import CatalogsProtocol
         catalogs = get_protocol(CatalogsProtocol)
+        if catalogs is None:
+            raise RuntimeError("CatalogsProtocol not registered")
         async with managed_transaction(engine) as tx_engine:
             schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=tx_engine))
             if not schema:
@@ -172,6 +184,8 @@ class ProxyModule(ModuleProtocol, ProxyProtocol):
         """ProxyProtocol: Deletes a short URL."""
         from dynastore.models.protocols import CatalogsProtocol
         catalogs = get_protocol(CatalogsProtocol)
+        if catalogs is None:
+            raise RuntimeError("CatalogsProtocol not registered")
         async with managed_transaction(engine) as tx_engine:
             schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=tx_engine))
             if not schema:
