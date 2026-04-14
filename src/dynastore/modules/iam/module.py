@@ -192,6 +192,9 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
 
     async def _persist_policy(self, policy: Any):
         """Persist a policy to the database via storage upsert."""
+        policy_service = self._policy_service
+        if policy_service is None:
+            return
         try:
             from dynastore.modules.db_config.query_executor import managed_transaction
             from dynastore.models.protocols import DatabaseProtocol
@@ -199,9 +202,9 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             engine = db.engine if db else None
 
             async with managed_transaction(engine) as conn:
-                await self._policy_service.storage.update_policy(policy, schema="iam", conn=conn)
+                await policy_service.storage.update_policy(policy, schema="iam", conn=conn)
                 logger.debug(f"Persisted policy: {policy.id}")
-                self._policy_service.invalidate_cache()
+                policy_service.invalidate_cache()
         except Exception as e:
             logger.warning(f"Failed to persist policy {policy.id}: {e}")
 
@@ -213,6 +216,10 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
         policies for the same role (e.g. 'anonymous') during startup.
         """
         async with self._role_lock:
+            storage = self.storage
+            policy_service = self._policy_service
+            if storage is None or policy_service is None:
+                return
             try:
                 from dynastore.modules.db_config.query_executor import managed_transaction
                 from dynastore.models.protocols import DatabaseProtocol
@@ -220,16 +227,16 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
                 engine = db.engine if db else None
 
                 async with managed_transaction(engine) as conn:
-                    existing = await self.storage.get_role(role.name, schema="iam", conn=conn)
+                    existing = await storage.get_role(role.name, schema="iam", conn=conn)
                     if existing:
                         # Merge policies
                         merged_policies = list(set(existing.policies + role.policies))
                         role = role.model_copy(update={"policies": merged_policies})
-                        await self.storage.update_role(role, schema="iam", conn=conn)
+                        await storage.update_role(role, schema="iam", conn=conn)
                     else:
-                        await self.storage.create_role(role, schema="iam", conn=conn)
+                        await storage.create_role(role, schema="iam", conn=conn)
                     logger.debug(f"Persisted role: {role.name}")
-                    self._policy_service.invalidate_cache()
+                    policy_service.invalidate_cache()
             except Exception as e:
                 logger.warning(f"Failed to persist role {role.name}: {e}")
 
@@ -272,7 +279,7 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
 
 
 
-@lifecycle_registry.sync_catalog_initializer
+@lifecycle_registry.sync_catalog_initializer()
 async def initialize_iam_tenant(conn: DbResource, schema: str, catalog_id: str):
     """Initializes IAM and Policy tables within a tenant schema."""
     logger.info(
