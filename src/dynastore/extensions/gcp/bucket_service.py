@@ -303,12 +303,12 @@ class BucketService(ExtensionProtocol):
                     status_code=500, detail="Configuration service unavailable."
                 )
             collection_config = await config_manager.get_config(
-                GCP_COLLECTION_BUCKET_CONFIG_ID,
+                GcpCollectionBucketConfig,
                 request.catalog_id,
                 request.collection_id,
             )
             if (
-                isinstance(collection_config, GcpCollectionBucketConfig)
+                collection_config is not None
                 and collection_config.custom_metadata_defaults
             ):
                 # Defaults from config are applied first, request metadata can override them.
@@ -525,18 +525,24 @@ class BucketService(ExtensionProtocol):
         """
         bucket_name = "unknown"
         blob_path = "unknown"
+        if request.catalog_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="catalog_id is required for upload initiation.",
+            )
+        catalog_id = request.catalog_id
         try:
             # Ensure the target catalog/collection exist before proceeding.
             # Using catalogs_provider for logical entity management.
             await storage_provider.prepare_upload_target(
-                catalog_id=request.catalog_id,
+                catalog_id=catalog_id,
                 collection_id=request.collection_id,
             )
 
             # --- DURABLE PROVISIONING GATE ---
             # Instead of JIT creation (which is fragile and slow), we check
             # the authoritative status from the catalog record.
-            catalog = await catalogs_provider.get_catalog(request.catalog_id)
+            catalog = await catalogs_provider.get_catalog(catalog_id)
             if catalog.provisioning_status != "ready":
                 if catalog.provisioning_status == "failed":
                     raise HTTPException(
@@ -552,7 +558,7 @@ class BucketService(ExtensionProtocol):
 
             storage_client = storage_client_provider.get_storage_client()
             bucket_name = await storage_provider.get_storage_identifier(
-                request.catalog_id
+                catalog_id
             )
             if not bucket_name:
                 raise HTTPException(
