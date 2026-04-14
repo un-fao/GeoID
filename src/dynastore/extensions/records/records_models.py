@@ -88,7 +88,7 @@ class RecordProperties(BaseModel):
     rights: Optional[str] = None
     created: Optional[str] = None
     updated: Optional[str] = None
-    type: Optional[str] = Field(None, description="Record type (e.g. 'dimension-member').")
+    type: Optional[str] = Field(default=None, description="Record type (e.g. 'dimension-member').")
     time: Optional[RecordTime] = None
 
 
@@ -104,7 +104,7 @@ class Record(BaseModel):
     type: str = "Feature"
     id: Optional[str] = None
     geometry: Optional[Any] = None
-    properties: RecordProperties = Field(default_factory=RecordProperties)
+    properties: RecordProperties = Field(default_factory=lambda: RecordProperties())
     links: Optional[List[Link]] = None
 
 
@@ -142,8 +142,8 @@ class RecordsCatalogCollection(BaseModel):
     crs: Optional[List[str]] = None
     keywords: Optional[List[str]] = None
     cube_dimensions: Optional[Dict[str, Any]] = Field(
-        None,
-        alias="cube:dimensions",
+        default=None,
+        serialization_alias="cube:dimensions",
         description="STAC Datacube Extension dimension metadata with generator config.",
     )
 

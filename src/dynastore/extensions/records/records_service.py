@@ -321,7 +321,7 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin):
         items_protocol = cast(ItemsProtocol, catalogs_svc)
 
         feature = await items_protocol.get_item(
-            catalog_id, collection_id, record_id, db_resource=conn,
+            catalog_id, collection_id, record_id, ctx=DriverContext(db_resource=conn),
         )
         if not feature:
             raise HTTPException(status_code=404, detail=f"Record '{record_id}' not found.")

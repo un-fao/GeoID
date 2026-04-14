@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Union, cast
 from geojson_pydantic import Feature as _GeoJSONFeature
 
 from dynastore.models.protocols import ItemsProtocol
+from dynastore.models.localization import LocalizedText
 from dynastore.models.shared_models import Link
 from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
 from dynastore.tools.discovery import get_protocol
@@ -125,7 +126,7 @@ def collection_to_records_collection(
             href=f"{self_url}/items",
             rel="items",
             type="application/geo+json",
-            title="Records in this collection",
+            title=LocalizedText(en="Records in this collection"),
         ),
     ]
 
@@ -141,7 +142,7 @@ def collection_to_records_collection(
                 href=f"{dim_base}/members",
                 rel="items",
                 type="application/geo+json",
-                title="Dimension members (generator API)",
+                title=LocalizedText(en="Dimension members (generator API)"),
             ),
         )
         links.append(
@@ -149,7 +150,7 @@ def collection_to_records_collection(
                 href=f"{dim_base}/queryables",
                 rel="queryables",
                 type="application/schema+json",
-                title="Queryable member properties",
+                title=LocalizedText(en="Queryable member properties"),
             ),
         )
         # Check generator capabilities for inverse/hierarchical links
@@ -161,7 +162,7 @@ def collection_to_records_collection(
                         href=f"{dim_base}/inverse",
                         rel="describedby",
                         type="application/json",
-                        title="Value-to-member inverse mapping",
+                        title=LocalizedText(en="Value-to-member inverse mapping"),
                     ),
                 )
             caps = gen_meta.get("capabilities", [])
@@ -171,7 +172,7 @@ def collection_to_records_collection(
                         href=f"{dim_base}/children",
                         rel="children",
                         type="application/geo+json",
-                        title="Hierarchical children navigation",
+                        title=LocalizedText(en="Hierarchical children navigation"),
                     ),
                 )
             break  # single dimension per collection
