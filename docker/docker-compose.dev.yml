@@ -29,8 +29,10 @@ services:
       target: development
       args:
         SCOPE: ${CATALOG_SCOPE:-scope_catalog}
+        BUILD_JUPYTERLITE: "true"
     volumes:
       - ../src:/dynastore/src # Hot reload mount
+      - /dynastore/src/dynastore/extensions/notebooks/static/lite # preserve baked JupyterLite assets
     env_file: .env
     depends_on:
       db:
@@ -58,8 +60,11 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: development
+      args:
+        BUILD_JUPYTERLITE: "true"
     volumes:
       - ../src:/dynastore/src
+      - /dynastore/src/dynastore/extensions/notebooks/static/lite # preserve baked JupyterLite assets
     depends_on:
       db:
         condition: service_healthy
@@ -82,6 +87,7 @@ services:
       target: development
       args:
         SCOPE: ${WORKER_SCOPE:-scope_worker}
+        BUILD_JUPYTERLITE: "false"
     env_file: .env
     depends_on:
       db:
@@ -111,8 +117,10 @@ services:
       target: development
       args:
         SCOPE: ${TOOLS_SCOPE:-scope_tools}
+        BUILD_JUPYTERLITE: "true"
     volumes:
       - ../src:/dynastore/src
+      - /dynastore/src/dynastore/extensions/notebooks/static/lite # preserve baked JupyterLite assets
     env_file: .env
     depends_on:
       db:
@@ -136,8 +144,10 @@ services:
       target: development
       args:
         SCOPE: ${MAPS_SCOPE:-scope_maps}
+        BUILD_JUPYTERLITE: "true"
     volumes:
       - ../src:/dynastore/src
+      - /dynastore/src/dynastore/extensions/notebooks/static/lite # preserve baked JupyterLite assets
     env_file: .env
     depends_on:
       db:
