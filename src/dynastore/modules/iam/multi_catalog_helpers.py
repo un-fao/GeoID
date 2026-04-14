@@ -174,33 +174,38 @@ async def list_catalogs_for_identity(
         Dict with global flag and list of catalog codes
     """
     from dynastore.modules import get_protocol
-    from dynastore.models.protocols import CatalogsProtocol
-    
+    from dynastore.models.protocols import CatalogsProtocol, DatabaseProtocol
+
     # Check for global principal
     global_principal = await iam_manager.storage.get_principal_by_identity(
         provider=provider,
         subject_id=subject_id,
         schema="catalog"  # Global schema
     )
-    
+
     # Get all catalogs
     catalogs = get_protocol(CatalogsProtocol)
-    all_catalogs = await catalogs.list_catalogs(ctx=DriverContext(db_resource=catalogs.engine))
-    
+    if catalogs is None:
+        raise RuntimeError("CatalogsProtocol implementation not registered.")
+    db = get_protocol(DatabaseProtocol)
+    if db is None:
+        raise RuntimeError("DatabaseProtocol implementation not registered.")
+    all_catalogs = await catalogs.list_catalogs(ctx=DriverContext(db_resource=db.engine))
+
     # Check each catalog for principal
     catalog_list = []
     for catalog in all_catalogs:
         try:
-            schema = await iam_manager._resolve_schema(catalog["id"])
+            schema = await iam_manager._resolve_schema(catalog.id)
             principal = await iam_manager.storage.get_principal_by_identity(
                 provider=provider,
                 subject_id=subject_id,
                 schema=schema
             )
             if principal:
-                catalog_list.append(catalog["id"])
+                catalog_list.append(catalog.id)
         except Exception as e:
-            logger.warning(f"Failed to check catalog {catalog['id']}: {e}")
+            logger.warning(f"Failed to check catalog {catalog.id}: {e}")
     
     return {
         "global": global_principal is not None,
