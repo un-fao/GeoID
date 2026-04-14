@@ -6,7 +6,14 @@ from pydantic import BaseModel, Field
 from dynastore.tasks.protocols import TaskProtocol
 from dynastore.modules.tasks.models import TaskPayload, TaskStatusEnum
 from dynastore.tools.protocol_helpers import get_engine
-from dynastore.modules.processes.models import Process, ExecuteRequest, StatusInfo
+from dynastore.modules.processes.models import (
+    Process,
+    ProcessOutput,
+    ExecuteRequest,
+    StatusInfo,
+    JobControlOptions,
+    TransmissionMode,
+)
 from dynastore.modules.processes.schema_gen import pydantic_to_process_inputs
 from dynastore.tasks.tools import initialize_reporters
 from dynastore.tools.async_utils import SyncQueueIterator
@@ -44,10 +51,10 @@ EXPORT_FEATURES_PROCESS_DEFINITION = Process(
     description="Exports features from a collection to a file in Cloud Storage with optional CQL filtering and property projection.",
     inputs=pydantic_to_process_inputs(ExportFeaturesRequest),
     outputs={
-        "result": {"title": "Result", "schema": {"type": "object"}}
+        "result": ProcessOutput.model_validate({"title": "Result", "schema": {"type": "object"}})
     },
-    jobControlOptions=["async-execute"],
-    outputTransmission=["value"]
+    jobControlOptions=[JobControlOptions.ASYNC_EXECUTE],
+    outputTransmission=[TransmissionMode.VALUE]
 )
 class ExportFeaturesTask(TaskProtocol[Process, TaskPayload[ExecuteRequest], Optional[StatusInfo]]):
     priority: int = 100
@@ -61,7 +68,9 @@ class ExportFeaturesTask(TaskProtocol[Process, TaskPayload[ExecuteRequest], Opti
     async def run(self, payload: TaskPayload[ExecuteRequest]) -> Optional[StatusInfo]:
         task_id = payload.task_id
         engine = get_engine()
-        
+        if engine is None:
+            raise RuntimeError("No database engine available.")
+
         try:
             inputs = payload.inputs.inputs
             request = ExportFeaturesRequest(**inputs)
@@ -126,6 +135,8 @@ class ExportFeaturesTask(TaskProtocol[Process, TaskPayload[ExecuteRequest], Opti
                 
                 # 2. Upload to storage
                 formatter = format_map.get(request.output_format)
+                if formatter is None:
+                    raise RuntimeError(f"No formatter registered for {request.output_format}")
                 upload_stream_to_gcs(
                     byte_stream=byte_stream,
                     destination_uri=request.destination_uri,
@@ -148,26 +159,20 @@ class ExportFeaturesTask(TaskProtocol[Process, TaskPayload[ExecuteRequest], Opti
 
             # Notify finished
             for r in reporters:
-                await r.task_finished(
-                    str(task_id),
-                    {"status": "success", "destination": request.destination_uri}
-                )
-            
+                await r.task_finished("SUCCESS")
+
             logger.info(f"ExportFeaturesTask {task_id} completed successfully.")
-            
+
         except Exception as e:
             logger.error(f"ExportFeaturesTask {task_id} failed: {e}", exc_info=True)
             if 'reporters' in locals():
                 for r in reporters:
-                    await r.task_finished(
-                        str(task_id),
-                        {"status": "failed", "error": str(e)}
-                    )
+                    await r.task_finished("FAILED", error_message=str(e))
             raise e
-            
+
         return StatusInfo(
-            jobID=str(task_id),
-            status=TaskStatusEnum.COMPLETED, 
-            message="Export completed", 
+            jobID=task_id,
+            status=TaskStatusEnum.COMPLETED,
+            message="Export completed",
             links=[]
         )
