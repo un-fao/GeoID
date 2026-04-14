@@ -459,7 +459,7 @@ class DuckDbCollectionDriverConfig(CollectionDriverConfig):
         default=frozenset({DriverCapability.ASYNC, DriverCapability.BATCH}),
     )
     path: Optional[str] = Field(default=None, description="Read path (file or glob)")
-    format: str = Field("parquet", description="File format: parquet, csv, json, etc.")
+    format: str = Field(default="parquet", description="File format: parquet, csv, json, etc.")
     write_path: Optional[str] = Field(default=None, description="Separate write path (e.g., SQLite file)"
     )
     write_format: Optional[str] = Field(default=None, description="Write format if different from read"

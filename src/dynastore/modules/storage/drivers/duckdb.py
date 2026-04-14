@@ -262,13 +262,11 @@ class DriverRecordsDuckdb(ModuleProtocol):
             if not configs:
                 return None
             config = await configs.get_config(
-                DuckDbCollectionDriverConfig._plugin_id,
+                DuckDbCollectionDriverConfig,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )
-            if isinstance(config, DuckDbCollectionDriverConfig):
-                return config
-            return None
+            return config
         except Exception:
             return None
 
@@ -435,6 +433,9 @@ class DriverRecordsDuckdb(ModuleProtocol):
                 if valid_to:
                     row.setdefault("valid_to", str(valid_to))
 
+        if loc.write_path is None:
+            raise RuntimeError("DuckDB driver: write_path is required for write operations.")
+
         with _borrow_conn(timeout=DuckDBConfig.write_timeout) as conn:
             write_fmt = loc.write_format or "sqlite"
             if write_fmt == "sqlite":
@@ -514,6 +515,9 @@ class DriverRecordsDuckdb(ModuleProtocol):
         """Synchronous delete — runs inside thread pool."""
         from dynastore.tools.db import validate_sql_identifier
         validate_sql_identifier(collection_id)
+
+        if loc.write_path is None:
+            raise RuntimeError("DuckDB driver: write_path is required for delete operations.")
 
         with _borrow_conn(timeout=DuckDBConfig.write_timeout) as conn:
             _try_load_extension_on(conn, "sqlite")
