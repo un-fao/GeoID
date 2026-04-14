@@ -35,18 +35,18 @@ fetch_google_font() {
     local css_url="https://fonts.googleapis.com/css2?${css_query}"
     local tmp_css
     tmp_css="$(mktemp -t gfont.XXXXXX.css)"
-    curl -fsSL -A "Mozilla/5.0 (X11; Linux x86_64) vendor-script" \
+    # Modern browser UA so Google serves woff2 instead of ttf.
+    curl -fsSL -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" \
         -o "${tmp_css}" "${css_url}"
 
-    # Extract woff2 URLs, download each, rewrite CSS
+    # Extract font URLs (woff2 preferred, fallback to ttf), download each, rewrite CSS.
     while IFS= read -r url; do
         local fname
         fname="$(basename "${url%%\?*}")"
         curl -fsSL -o "${VENDOR}/fonts/${fname}" "${url}"
-        # Replace the absolute URL with a relative one
         # shellcheck disable=SC2001
         sed -i.bak "s|${url}|./fonts/${fname}|g" "${tmp_css}"
-    done < <(grep -oE "https://[^)]+\.woff2" "${tmp_css}" | sort -u)
+    done < <(grep -oE "https://[^)]+\.(woff2|ttf)" "${tmp_css}" | sort -u)
 
     rm -f "${tmp_css}.bak"
     mv "${tmp_css}" "${VENDOR}/${out_name}"

@@ -17,7 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from typing import Dict, Any, Optional, List, Annotated
+from typing import Dict, Any, Optional, List, Annotated, cast
 from dynastore.modules import get_protocol
 from fastapi import (
     FastAPI,
@@ -412,7 +412,13 @@ class AssetService(ExtensionProtocol):
 
     @property
     def assets(self) -> AssetsProtocol:
-        return self.get_protocol(AssetsProtocol)
+        svc = self.get_protocol(AssetsProtocol)
+        if svc is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="AssetsProtocol implementation not available.",
+            )
+        return svc
 
     @property
     def upload_provider(self) -> Optional[AssetUploadProtocol]:
@@ -450,7 +456,7 @@ class AssetService(ExtensionProtocol):
             raise handle_exception(
                 e,
                 resource_name="Asset",
-                resource_id=f"{catalog_id}:{asset_in.id}",
+                resource_id=f"{catalog_id}:{asset_in.asset_id}",
                 operation="Catalog asset creation",
             )
 
@@ -573,7 +579,7 @@ class AssetService(ExtensionProtocol):
             raise handle_exception(
                 e,
                 resource_name="Asset",
-                resource_id=f"{catalog_id}:{collection_id}:{asset_in.id}",
+                resource_id=f"{catalog_id}:{collection_id}:{asset_in.asset_id}",
                 operation="Collection asset creation",
             )
 
@@ -707,7 +713,7 @@ class AssetService(ExtensionProtocol):
         catalog_id: str = Path(..., description="Catalog that will own the uploaded asset."),
         body: UploadRequest = Body(
             ...,
-            examples={
+            openapi_examples={
                 "raster_geotiff": {
                     "summary": "Upload a GeoTIFF raster",
                     "description": "Upload a satellite scene. The GCS backend returns a signed resumable PUT URL.",
@@ -795,7 +801,7 @@ class AssetService(ExtensionProtocol):
         collection_id: str = Path(..., description="Collection scope for the asset."),
         body: UploadRequest = Body(
             ...,
-            examples={
+            openapi_examples={
                 "raster_geotiff": {
                     "summary": "Upload a GeoTIFF to a collection",
                     "description": "Upload a Landsat scene to the 'landsat_scenes' collection.",
@@ -942,14 +948,15 @@ class AssetService(ExtensionProtocol):
         yet cleaned up its data. Only call this **after** the referencing
         collection or table has been dropped.
         """
-        from dynastore.models.shared_models import CoreAssetReferenceType
+        from dynastore.models.shared_models import CoreAssetReferenceType, AssetReferenceType
 
         # Convert the path string to a typed enum value if it matches a known type
+        typed_ref_type: AssetReferenceType
         try:
             typed_ref_type = CoreAssetReferenceType(ref_type)
         except (ValueError, TypeError):
             # Accept unknown values as raw strings (forward-compat with unknown driver types)
-            typed_ref_type = ref_type  # type: ignore[assignment]
+            typed_ref_type = cast(AssetReferenceType, ref_type)
 
         asset = await self.assets.get_asset(asset_id=asset_id, catalog_id=catalog_id)
         if not asset:
@@ -993,10 +1000,11 @@ class AssetService(ExtensionProtocol):
                         import inspect
 
                         sig = inspect.signature(cls.__init__)
+                        factory = cast(Any, cls)
                         if "app_state" in sig.parameters:
-                            instance = cls(app_state=app_state)
+                            instance = factory(app_state=app_state)
                         else:
-                            instance = cls()
+                            instance = factory()
                     else:
                         instance = cls()
 
@@ -1223,6 +1231,11 @@ class AssetService(ExtensionProtocol):
         # Most likely, the runner of the process will be triggered.
 
         engine = get_engine()
+        if engine is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Database engine not available.",
+            )
 
         # SPI Adapter Layer: try to get the task instance to call its specialized adapter if available.
         from dynastore.tasks import get_all_task_configs
