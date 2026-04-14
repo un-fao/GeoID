@@ -1330,7 +1330,6 @@ async function demoAction(action) {
             end_date: Optional[datetime] = Query(
                 None, description="End date for stats aggregation."
             ),
-            request: Optional[Request] = None,
         ):
             # Resolve schema using CatalogsProtocol
             from dynastore.modules import get_protocol
