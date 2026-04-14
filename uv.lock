@@ -712,7 +712,6 @@ all = [
     { name = "google-cloud-storage" },
     { name = "h3" },
     { name = "httpx" },
-    { name = "identify-middleware", extra = ["fastapi", "google"] },
     { name = "jsonschema" },
     { name = "lxml" },
     { name = "markdown" },
@@ -751,7 +750,6 @@ api-catalog = [
     { name = "google-cloud-storage" },
     { name = "h3" },
     { name = "httpx" },
-    { name = "identify-middleware", extra = ["fastapi", "google"] },
     { name = "jsonschema" },
     { name = "markdown" },
     { name = "opensearch-py", extra = ["async"] },
@@ -804,7 +802,6 @@ api-full = [
     { name = "google-cloud-storage" },
     { name = "h3" },
     { name = "httpx" },
-    { name = "identify-middleware", extra = ["fastapi", "google"] },
     { name = "jsonschema" },
     { name = "lxml" },
     { name = "markdown" },
@@ -844,7 +841,6 @@ api-maps = [
     { name = "google-cloud-storage" },
     { name = "h3" },
     { name = "httpx" },
-    { name = "identify-middleware", extra = ["fastapi", "google"] },
     { name = "jinja2" },
     { name = "markdown" },
     { name = "ogc-dimensions" },
@@ -932,12 +928,10 @@ assets = [
 ]
 auth = [
     { name = "fastapi" },
-    { name = "identify-middleware", extra = ["fastapi", "google"] },
     { name = "python-multipart" },
 ]
 auth-grp = [
     { name = "fastapi" },
-    { name = "identify-middleware", extra = ["fastapi", "google"] },
     { name = "pydantic", extra = ["email"] },
     { name = "pyjwt" },
     { name = "python-multipart" },
@@ -1082,7 +1076,6 @@ extension-assets = [
 ]
 extension-auth = [
     { name = "fastapi" },
-    { name = "identify-middleware", extra = ["fastapi", "google"] },
     { name = "python-multipart" },
 ]
 extension-base = [
@@ -1263,7 +1256,6 @@ geoid-service = [
     { name = "google-cloud-storage" },
     { name = "h3" },
     { name = "httpx" },
-    { name = "identify-middleware", extra = ["fastapi", "google"] },
     { name = "jsonschema" },
     { name = "markdown" },
     { name = "opensearch-py", extra = ["async"] },
@@ -1503,7 +1495,6 @@ scope-geoid = [
     { name = "google-cloud-storage" },
     { name = "h3" },
     { name = "httpx" },
-    { name = "identify-middleware", extra = ["fastapi", "google"] },
     { name = "jsonschema" },
     { name = "markdown" },
     { name = "msgpack" },
@@ -2025,7 +2016,6 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'extension-httpx'" },
     { name = "httpx", marker = "extra == 'extension-template'", specifier = ">=0.24.1" },
     { name = "httpx", marker = "extra == 'module-gcp'" },
-    { name = "identify-middleware", extras = ["fastapi", "google"], marker = "extra == 'extension-auth'", git = "https://github.com/un-fao/identify-middleware.git?rev=ref" },
     { name = "jinja2", marker = "extra == 'extension-template'", specifier = ">=3.1.6" },
     { name = "jsonschema", marker = "extra == 'extension-processes'" },
     { name = "lxml", marker = "extra == 'geospatial-io'", specifier = "==6.0.2" },
@@ -2076,18 +2066,6 @@ requires-dist = [
     { name = "xmltodict", marker = "extra == 'extension-template'", specifier = ">=0.13.0" },
 ]
 provides-extras = ["module-storage", "module-storage-duckdb", "module-storage-iceberg", "module-catalog", "module-gcp", "module-datastore", "module-db-config", "module-iam", "module-db", "module-crs", "module-events", "module-elasticsearch", "module-gdal", "module-tiles", "module-cache", "module-tasks", "module-proxy", "module-styles", "module-stats", "module-notebooks", "extension-base", "extension-web", "extension-httpx", "extension-catalog", "extension-stac", "extension-auth", "extension-template", "extension-processes", "extension-features", "extension-tiles", "extension-tasks", "extension-proxy", "extension-gdal", "extension-styles", "extension-iam", "extension-logs", "extension-configs", "extension-stats", "extension-crs", "extension-events", "extension-wfs", "extension-admin", "extension-assets", "extension-notebooks", "extension-records", "extension-search", "extension-gcp-bucket", "extension-geoid", "extension-maps", "extension-coverages", "extension-dwh", "extension-dimensions", "task-gdal", "task-gcp-provision", "task-elasticsearch", "task-elasticsearch-indexer", "task-ingestion", "task-dwh-join", "task-export-features", "task-tiles-preseed", "catalog", "gcp", "datastore", "db-config", "iam", "db", "crs", "cache", "events", "elasticsearch", "gdal", "maps", "stac", "stats", "web", "geoid", "processes", "features", "styles", "tiles", "tasks", "proxy", "logs", "assets", "configs", "search", "storage", "auth", "template", "dimensions", "notebooks", "geospatial-core", "geospatial-io", "geospatial", "db-async", "db-sync", "core", "catalog-grp", "maps-grp", "google-grp", "auth-grp", "tools-grp", "monitor-grp", "index-grp", "task-base", "ingestion", "task-dwh-join-job", "task-ingestion-job", "task-export-features-job", "task-tiles-preseed-job", "task-gdal-job", "api-open", "api-catalog", "api-maps", "api-maps-open", "api-features", "api-full", "geoid-service", "worker-service", "catalog-local", "worker-local", "scope-catalog", "scope-geoid", "scope-worker", "scope-tools", "scope-maps", "all", "test", "dev", "mvt", "dwh", "psycopg-pool"]
-
-[[package]]
-name = "ecdsa"
-version = "0.19.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "six" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/25/ca/8de7744cb3bc966c85430ca2d0fcaeea872507c6a4cf6e007f7fe269ed9d/ecdsa-0.19.2.tar.gz", hash = "sha256:62635b0ac1ca2e027f82122b5b81cb706edc38cd91c63dda28e4f3455a2bf930", size = 202432, upload-time = "2026-03-26T09:58:17.675Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/51/79/119091c98e2bf49e24ed9f3ae69f816d715d2904aefa6a2baa039a2ba0b0/ecdsa-0.19.2-py2.py3-none-any.whl", hash = "sha256:840f5dc5e375c68f36c1a7a5b9caad28f95daa65185c9253c0c08dd952bb7399", size = 150818, upload-time = "2026-03-26T09:58:15.808Z" },
-]
 
 [[package]]
 name = "email-validator"
@@ -2773,25 +2751,6 @@ wheels = [
 ]
 
 [[package]]
-name = "identify-middleware"
-version = "0.2.0"
-source = { git = "https://github.com/un-fao/identify-middleware.git?rev=ref#5ca3570b848d16bf339ec90aa9ac849f5250f4a6" }
-dependencies = [
-    { name = "httpx" },
-    { name = "pydantic" },
-    { name = "python-jose", extra = ["cryptography"] },
-]
-
-[package.optional-dependencies]
-fastapi = [
-    { name = "fastapi" },
-    { name = "starlette-session" },
-]
-google = [
-    { name = "google-auth" },
-]
-
-[[package]]
 name = "idna"
 version = "3.11"
 source = { registry = "https://pypi.org/simple" }
@@ -2819,15 +2778,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503, upload-time = "2025-10-18T21:55:43.219Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
-]
-
-[[package]]
-name = "itsdangerous"
-version = "2.2.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/9c/cb/8ac0172223afbccb63986cc25049b154ecfb5e85932587206f42317be31d/itsdangerous-2.2.0.tar.gz", hash = "sha256:e0050c0b7da1eea53ffaf149c0cfbb5c6e2e2b69c4bef22c81fa6eb73e5f6173", size = 54410, upload-time = "2024-04-16T21:28:15.614Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/04/96/92447566d16df59b2a776c0fb82dbc4d9e07cd95062562af01e408583fc4/itsdangerous-2.2.0-py3-none-any.whl", hash = "sha256:c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef", size = 16234, upload-time = "2024-04-16T21:28:14.499Z" },
 ]
 
 [[package]]
@@ -4423,25 +4373,6 @@ wheels = [
 ]
 
 [[package]]
-name = "python-jose"
-version = "3.5.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "ecdsa" },
-    { name = "pyasn1" },
-    { name = "rsa" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c6/77/3a1c9039db7124eb039772b935f2244fbb73fc8ee65b9acf2375da1c07bf/python_jose-3.5.0.tar.gz", hash = "sha256:fb4eaa44dbeb1c26dcc69e4bd7ec54a1cb8dd64d3b4d81ef08d90ff453f2b01b", size = 92726, upload-time = "2025-05-28T17:31:54.288Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d9/c3/0bd11992072e6a1c513b16500a5d07f91a24017c5909b02c72c62d7ad024/python_jose-3.5.0-py2.py3-none-any.whl", hash = "sha256:abd1202f23d34dfad2c3d28cb8617b90acf34132c7afd60abd0b0b7d3cb55771", size = 34624, upload-time = "2025-05-28T17:31:52.802Z" },
-]
-
-[package.optional-dependencies]
-cryptography = [
-    { name = "cryptography" },
-]
-
-[[package]]
 name = "python-multipart"
 version = "0.0.22"
 source = { registry = "https://pypi.org/simple" }
@@ -4949,19 +4880,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c4/68/79977123bb7be889ad680d79a40f339082c1978b5cfcf62c2d8d196873ac/starlette-0.52.1.tar.gz", hash = "sha256:834edd1b0a23167694292e94f597773bc3f89f362be6effee198165a35d62933", size = 2653702, upload-time = "2026-01-18T13:34:11.062Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/81/0d/13d1d239a25cbfb19e740db83143e95c772a1fe10202dda4b76792b114dd/starlette-0.52.1-py3-none-any.whl", hash = "sha256:0029d43eb3d273bc4f83a08720b4912ea4b071087a3b48db01b7c839f7954d74", size = 74272, upload-time = "2026-01-18T13:34:09.188Z" },
-]
-
-[[package]]
-name = "starlette-session"
-version = "0.4.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "itsdangerous" },
-    { name = "starlette" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/0a/76/e973d473cfabcce37d8bc3832de51f0b22dd29d49d41ce58ec6e7daadc9b/starlette_session-0.4.3.tar.gz", hash = "sha256:5b50a1c91a2ca1cf594574c0b386eea5dbed140dcb397ee73f0c43956bd2bfcc", size = 6105, upload-time = "2022-10-29T14:32:48.497Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/45/fd/eaff58a14a6b7a2dccd4ec6c82883bde5fcd9b256065c9e24423b8f33a12/starlette_session-0.4.3-py3-none-any.whl", hash = "sha256:bfc2559ec0fec566b44865f20d1c4262b1132de867a936abe8771cf139cbbe0b", size = 6473, upload-time = "2022-10-29T14:32:46.981Z" },
 ]
 
 [[package]]
