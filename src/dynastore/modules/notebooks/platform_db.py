@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from dynastore.modules.db_config.query_executor import DDLQuery, DQLQuery, ResultHandler
+from dynastore.modules.db_config.query_executor import DDLQuery, DQLQuery, ResultHandler, DbResource
 from dynastore.modules.db_config.exceptions import ResourceNotFoundError
 from dynastore.tools.cache import cached
 from .models import PlatformNotebookCreate, OwnerType
@@ -47,7 +47,7 @@ def _serialize_localized(value) -> Optional[str]:
     return json.dumps(str(value))
 
 
-async def seed_platform_notebook(conn: AsyncConnection, notebook: PlatformNotebookCreate) -> None:
+async def seed_platform_notebook(conn: DbResource, notebook: PlatformNotebookCreate) -> None:
     """Insert a platform notebook only if it does not already exist."""
     query = text("""
         INSERT INTO notebooks.platform_notebooks
@@ -66,10 +66,10 @@ async def seed_platform_notebook(conn: AsyncConnection, notebook: PlatformNotebo
         "registered_by": notebook.registered_by,
         "owner_type": notebook.owner_type.value,
     }
-    await conn.execute(query, params)
+    await DQLQuery(query, result_handler=ResultHandler.NONE).execute(conn, **params)
 
 
-async def seed_platform_notebooks(conn: AsyncConnection) -> int:
+async def seed_platform_notebooks(conn: DbResource) -> int:
     """Seed all registered platform notebooks. Returns count of entries processed."""
     from .example_registry import get_registered_notebooks
 
@@ -82,7 +82,7 @@ async def seed_platform_notebooks(conn: AsyncConnection) -> int:
 
 
 async def list_platform_notebooks(
-    conn: AsyncConnection,
+    conn: DbResource,
     *,
     q: Optional[str] = None,
     tags: Optional[List[str]] = None,
@@ -139,7 +139,7 @@ async def list_platform_notebooks(
 
 
 @cached(maxsize=256, ttl=300, jitter=30, namespace="platform_notebooks_get", ignore=["conn"])
-async def get_platform_notebook(conn: AsyncConnection, notebook_id: str) -> Dict[str, Any]:
+async def get_platform_notebook(conn: DbResource, notebook_id: str) -> Dict[str, Any]:
     """Retrieve a platform notebook by ID. Cached for 5 min."""
     query = text("""
         SELECT notebook_id, title, description, content, metadata, registered_by,
@@ -156,7 +156,7 @@ async def get_platform_notebook(conn: AsyncConnection, notebook_id: str) -> Dict
 
 
 async def save_platform_notebook(
-    conn: AsyncConnection, notebook: PlatformNotebookCreate
+    conn: DbResource, notebook: PlatformNotebookCreate
 ) -> Dict[str, Any]:
     """Upsert a platform notebook (sysadmin use). Invalidates cache."""
     query = text("""
@@ -194,15 +194,18 @@ async def save_platform_notebook(
     return result
 
 
-async def soft_delete_platform_notebook(conn: AsyncConnection, notebook_id: str) -> None:
+async def soft_delete_platform_notebook(conn: DbResource, notebook_id: str) -> None:
     """Soft-delete a platform notebook. Invalidates cache."""
     query = text("""
         UPDATE notebooks.platform_notebooks
         SET deleted_at = NOW()
         WHERE notebook_id = :notebook_id AND deleted_at IS NULL
+        RETURNING notebook_id
     """)
-    result = await conn.execute(query, {"notebook_id": notebook_id})
-    if result.rowcount == 0:
+    result = await DQLQuery(
+        query, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
+    ).execute(conn, notebook_id=notebook_id)
+    if result is None:
         raise ResourceNotFoundError(f"Platform notebook '{notebook_id}' not found")
     # Invalidate caches after delete
     list_platform_notebooks.cache_clear()

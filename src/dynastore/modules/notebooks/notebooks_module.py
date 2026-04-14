@@ -66,6 +66,8 @@ class NotebooksModule(ModuleProtocol):
         db = get_protocol(DatabaseProtocol)
         engine = db.engine if db else None
         schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=db_resource) if db_resource else None) if catalogs else None
+        if schema is None:
+            raise ValueError(f"Catalog '{catalog_id}' not found.")
         async with managed_transaction(db_resource or engine) as conn:
             from .notebooks_db import get_notebook as db_get_notebook
             data = await db_get_notebook(conn, schema, notebook_id)
@@ -84,6 +86,8 @@ class NotebooksModule(ModuleProtocol):
         db = get_protocol(DatabaseProtocol)
         engine = db.engine if db else None
         schema = await catalogs.resolve_physical_schema(catalog_id) if catalogs else None
+        if schema is None:
+            raise ValueError(f"Catalog '{catalog_id}' not found.")
         async with managed_transaction(engine) as conn:
             from .notebooks_db import list_notebooks as db_list_notebooks
             return await db_list_notebooks(conn, schema, q=q, tags=tags, limit=limit, offset=offset)
@@ -93,6 +97,8 @@ class NotebooksModule(ModuleProtocol):
         db = get_protocol(DatabaseProtocol)
         engine = db.engine if db else None
         schema = await catalogs.resolve_physical_schema(catalog_id) if catalogs else None
+        if schema is None:
+            raise ValueError(f"Catalog '{catalog_id}' not found.")
         async with managed_transaction(engine) as conn:
             from .notebooks_db import soft_delete_notebook
             await soft_delete_notebook(conn, schema, notebook_id)
@@ -103,6 +109,8 @@ class NotebooksModule(ModuleProtocol):
         db = get_protocol(DatabaseProtocol)
         engine = db.engine if db else None
         schema = await catalogs.resolve_physical_schema(catalog_id) if catalogs else None
+        if schema is None:
+            raise ValueError(f"Catalog '{catalog_id}' not found.")
         async with managed_transaction(engine) as conn:
             from .notebooks_db import save_notebook as db_save_notebook
             data = await db_save_notebook(conn, schema, catalog_id, notebook, owner_id=owner_id)
@@ -114,6 +122,8 @@ class NotebooksModule(ModuleProtocol):
         db = get_protocol(DatabaseProtocol)
         engine = db.engine if db else None
         schema = await catalogs.resolve_physical_schema(catalog_id) if catalogs else None
+        if schema is None:
+            raise ValueError(f"Catalog '{catalog_id}' not found.")
         async with managed_transaction(engine) as conn:
             from .platform_db import get_platform_notebook
             from .notebooks_db import copy_from_platform as db_copy
