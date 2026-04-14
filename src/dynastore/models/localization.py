@@ -29,6 +29,7 @@ from typing import (
     Union,
     Set,
     TYPE_CHECKING,
+    ClassVar,
     Protocol,
     runtime_checkable,
 )
@@ -442,6 +443,15 @@ class InternalColumnProtocol(Protocol):
 class LocalizableModelMixin:
     """A mixin to provide localization and merge methods to Pydantic models."""
 
+    if TYPE_CHECKING:
+        # Host-class (Pydantic BaseModel) attributes used by mixin methods.
+        model_fields: ClassVar[Dict[str, Any]]
+
+        def model_dump(self, **kwargs: Any) -> Dict[str, Any]: ...
+
+        @classmethod
+        def model_validate(cls, obj: Any, **kwargs: Any) -> Self: ...
+
     def localize(
         self, lang: str, include_language_keys: bool = False
     ) -> Tuple[Dict[str, Any], Set[str]]:
@@ -522,7 +532,7 @@ class LocalizableModelMixin:
 
             current_field_value = getattr(self, field_name, None)
 
-            if hasattr(current_field_value, "merge_updates"):
+            if current_field_value is not None and hasattr(current_field_value, "merge_updates"):
                 updated_field_obj = current_field_value.merge_updates(new_value, lang)
                 if isinstance(updated_field_obj, BaseModel):
                     updated_data[field_name] = updated_field_obj.model_dump(by_alias=True, exclude_none=True)
