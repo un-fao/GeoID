@@ -18,6 +18,7 @@
 
 import logging
 from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
 from contextlib import asynccontextmanager
 from dynastore.modules.db_config.db_config import DBConfig
 from dynastore.modules.db_config.tools import (
@@ -28,16 +29,24 @@ from dynastore.modules.db_config.tools import (
 from dynastore.modules.db_config.query_executor import managed_transaction
 import os
 from dynastore.modules import ModuleProtocol
-from typing import Optional, Any
+from typing import Optional, Any, Protocol, runtime_checkable
 
 from dynastore.models.protocols import DatabaseProtocol
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class DatastoreAppState(Protocol):
+    """State attributes this module attaches to the shared AppState namespace."""
+    sync_engine: Optional[Engine]
+
+
 class DatastoreModule(ModuleProtocol, DatabaseProtocol):
     priority: int = 7
-    app_state: object
+    app_state: DatastoreAppState
 
-    def __init__(self, app_state: object):
+    def __init__(self, app_state: DatastoreAppState):
         self.app_state = app_state
 
     @property
@@ -71,7 +80,7 @@ class DatastoreModule(ModuleProtocol, DatabaseProtocol):
         return get_engine()
 
     @asynccontextmanager
-    async def lifespan(self, app_state: object):
+    async def lifespan(self, app_state: DatastoreAppState):
         """
         Manages the lifespan for the synchronous database engine.
         """
