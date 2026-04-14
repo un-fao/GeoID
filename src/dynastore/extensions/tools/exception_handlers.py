@@ -60,9 +60,9 @@ class ExceptionHandler:
 
     def handle(
         self, exception: Exception, context: Optional[Dict[str, Any]] = None
-    ) -> Optional[Union[HTTPException, Response]]:
+    ) -> Optional[HTTPException]:
         """
-        Convert the exception to an HTTPException or Response (e.g. XML), or return None if unable to handle.
+        Convert the exception to an HTTPException, or return None if unable to handle.
 
         Args:
             exception: The exception to handle
@@ -85,11 +85,15 @@ class ConflictExceptionHandler(ExceptionHandler):
     def handle(
         self, exception: Exception, context: Optional[Dict[str, Any]] = None
     ) -> Optional[HTTPException]:
+        from sqlalchemy.exc import IntegrityError
+
         from dynastore.extensions.tools.conflict_handler import conflict_to_409
+        from dynastore.modules.db_config.exceptions import DatabaseError
 
         context = context or {}
         resource_name = context.get("resource_name", "Resource")
         resource_id = context.get("resource_id")
+        assert isinstance(exception, (DatabaseError, IntegrityError))
         return conflict_to_409(
             exception, resource_name=resource_name, resource_id=resource_id
         )
@@ -269,7 +273,7 @@ class ExceptionHandlerRegistry:
         exception: Exception,
         context: Optional[Dict[str, Any]] = None,
         reraise_unhandled: bool = True,
-    ) -> Union[HTTPException, Response]:
+    ) -> HTTPException:
         """
         Process exception through registered handlers.
 
@@ -330,7 +334,7 @@ def handle_exception(
     resource_id: Optional[str] = None,
     operation: Optional[str] = None,
     reraise_unhandled: bool = True,
-) -> Union[HTTPException, Response]:
+) -> HTTPException:
     """
     Handle an exception using registered handlers.
 

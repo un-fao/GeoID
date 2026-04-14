@@ -28,52 +28,8 @@ from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
-# Enums — well-known plugin identifiers
+# (WellKnownPlugin removed — configs are now identified by Pydantic class_key)
 # ---------------------------------------------------------------------------
-
-
-class WellKnownPlugin(StrEnum):
-    """Discoverable plugin identifiers registered by core modules.
-
-    Use ``GET /configs/plugins`` for the live list; this enum documents
-    the most common ones for IDE auto-complete and OpenAPI examples.
-
-    Driver configs follow the namespace ``driver:{domain}:{driver_id}``:
-    - ``driver:records:*``  — collection item storage drivers
-    - ``driver:asset:*``    — asset storage drivers
-    - ``driver:collection:metadata:*`` — collection metadata backends
-    """
-
-    # Routing
-    COLLECTION_DRIVERS = "collection:drivers"
-    ASSETS_DRIVERS = "assets:drivers"
-    # Collection-scoped policies
-    WRITE_POLICY = "collection:write_policy"
-    FEATURE_TYPE = "collection:feature_type"
-    ASSET_FEATURE_TYPE = "asset:feature_type"
-    # Service/structural configs
-    COLLECTION = "collection"
-    ASSET = "asset"
-    STAC = "stac"
-    # Record storage driver configs
-    DRIVER_RECORDS_POSTGRESQL = "driver:records:postgresql"
-    DRIVER_RECORDS_ELASTICSEARCH = "driver:records:elasticsearch"
-    DRIVER_RECORDS_DUCKDB = "driver:records:duckdb"
-    DRIVER_RECORDS_ICEBERG = "driver:records:iceberg"
-    # Asset storage driver configs
-    DRIVER_ASSET_POSTGRESQL = "driver:asset:postgresql"
-    DRIVER_ASSET_ELASTICSEARCH = "driver:asset:elasticsearch"
-    # Metadata backend driver configs
-    DRIVER_COLLECTION_METADATA_POSTGRESQL = "driver:collection:metadata:postgresql"
-    DRIVER_COLLECTION_METADATA_ELASTICSEARCH = "driver:collection:metadata:elasticsearch"
-    # Other service configs
-    TILES = "tiles"
-    TILES_PRESEED = "tiles_preseed"
-    TASKS = "tasks"
-    FEATURES = "features"
-    WFS = "wfs"
-    INGESTION = "ingestion"
-    SECURITY = "security"
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +98,7 @@ class DriverInfo(BaseModel):
 
     driver_id: str = Field(..., description="Unique driver identifier (used in routing config).")
     driver_type: str = Field(
-        "",
+        default="",
         description="Driver class name (e.g. 'DriverRecordsPostgresql'). Multiple driver_ids may share a class.",
     )
     domain: str = Field(
@@ -174,7 +130,7 @@ class DriverInfo(BaseModel):
         default_factory=list,
         description="Hints this driver is optimized for (used for auto-selection).",
     )
-    available: bool = Field(True, description="Whether the driver is currently available.")
+    available: bool = Field(default=True, description="Whether the driver is currently available.")
 
 
 class DriverListResponse(BaseModel):
@@ -785,7 +741,7 @@ _TASKS_EXAMPLE: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 PLUGIN_EXAMPLES: Dict[str, List[Dict[str, Any]]] = {
-    WellKnownPlugin.COLLECTION_DRIVERS: [
+    "RoutingPluginConfig": [
         _ROUTING_PG_EXAMPLE,
         _ROUTING_PG_ES_EXAMPLE,
         _ROUTING_ES_ONLY_EXAMPLE,
@@ -794,38 +750,38 @@ PLUGIN_EXAMPLES: Dict[str, List[Dict[str, Any]]] = {
         _ROUTING_GEOPARQUET_EXAMPLE,
         _ROUTING_PG_ES_WITH_METADATA_EXAMPLE,
     ],
-    WellKnownPlugin.ASSETS_DRIVERS: [
+    "AssetRoutingPluginConfig": [
         _ROUTING_ASSETS_PG_EXAMPLE,
         _ROUTING_ASSETS_ES_EXAMPLE,
     ],
-    WellKnownPlugin.DRIVER_RECORDS_POSTGRESQL: [
+    "DriverRecordsPostgresqlConfig": [
         _DRIVER_PG_MINIMAL_EXAMPLE,
         _DRIVER_PG_PARTITIONED_EXAMPLE,
     ],
-    WellKnownPlugin.DRIVER_RECORDS_ELASTICSEARCH: [
+    "DriverRecordsElasticsearchConfig": [
         _DRIVER_ES_EXAMPLE,
         _DRIVER_ES_RASTER_EXAMPLE,
         _DRIVER_ES_CUSTOM_MAPPING_EXAMPLE,
     ],
-    WellKnownPlugin.DRIVER_ASSET_ELASTICSEARCH: [
+    "DriverAssetElasticsearchConfig": [
         _DRIVER_ES_ASSETS_EXAMPLE,
     ],
-    WellKnownPlugin.DRIVER_RECORDS_DUCKDB: [
+    "DriverRecordsDuckdbConfig": [
         _DRIVER_DUCKDB_PARQUET_EXAMPLE,
         _DRIVER_DUCKDB_CSV_EXAMPLE,
         _DRIVER_DUCKDB_GEOPARQUET_EXAMPLE,
     ],
-    WellKnownPlugin.STAC: [_STAC_MINIMAL_EXAMPLE, _STAC_DATACUBE_EXAMPLE],
-    WellKnownPlugin.COLLECTION: [_COLLECTION_EXAMPLE],
-    WellKnownPlugin.TILES: [_TILES_EXAMPLE],
-    WellKnownPlugin.FEATURES: [_FEATURES_EXAMPLE],
-    WellKnownPlugin.TASKS: [_TASKS_EXAMPLE],
+    "StacPluginConfig": [_STAC_MINIMAL_EXAMPLE, _STAC_DATACUBE_EXAMPLE],
+    "CollectionPluginConfig": [_COLLECTION_EXAMPLE],
+    "TilesPluginConfig": [_TILES_EXAMPLE],
+    "FeaturesPluginConfig": [_FEATURES_EXAMPLE],
+    "TasksPluginConfig": [_TASKS_EXAMPLE],
 }
 
 
-def get_plugin_examples(plugin_id: str) -> Optional[List[Dict[str, Any]]]:
-    """Return OpenAPI examples for a known plugin, or ``None``."""
-    return PLUGIN_EXAMPLES.get(plugin_id)
+def get_plugin_examples(class_key: str) -> Optional[List[Dict[str, Any]]]:
+    """Return OpenAPI examples for a known plugin class_key, or ``None``."""
+    return PLUGIN_EXAMPLES.get(class_key)
 
 
 # ---------------------------------------------------------------------------
