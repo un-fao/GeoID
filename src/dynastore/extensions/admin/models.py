@@ -1,7 +1,7 @@
 #    Copyright 2026 FAO
 #    Licensed under the Apache License, Version 2.0 (the "License").
 
-from typing import Optional, List
+from typing import Literal, Optional, List
 from pydantic import BaseModel, Field
 
 
@@ -57,14 +57,14 @@ class PolicyCreate(BaseModel):
     description: Optional[str] = None
     actions: List[str]
     resources: List[str]
-    effect: str = "ALLOW"
+    effect: Literal["ALLOW", "DENY"] = "ALLOW"
 
 
 class PolicyUpdate(BaseModel):
     description: Optional[str] = None
     actions: Optional[List[str]] = None
     resources: Optional[List[str]] = None
-    effect: Optional[str] = None
+    effect: Optional[Literal["ALLOW", "DENY"]] = None
 
 
 class PolicyResponse(BaseModel):
@@ -72,7 +72,7 @@ class PolicyResponse(BaseModel):
     description: Optional[str] = None
     actions: List[str]
     resources: List[str]
-    effect: str
+    effect: Literal["ALLOW", "DENY"]
     partition_key: Optional[str] = None
 
 
