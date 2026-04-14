@@ -49,6 +49,10 @@ class NotebooksExtension(ExtensionProtocol):
         super().__init__()
         self.app = app
         self._static_dir = os.path.join(os.path.dirname(__file__), "static")
+        # Lite assets are baked at image-build time. Override via JUPYTERLITE_DIR
+        # so they can live outside the hot-reload bind mount in dev compose
+        # (which would otherwise mask them under src/.../static/lite/).
+        self._lite_dir = os.environ.get("JUPYTERLITE_DIR") or os.path.join(self._static_dir, "lite")
         self._register_routes()
 
     @asynccontextmanager
@@ -271,12 +275,11 @@ class NotebooksExtension(ExtensionProtocol):
 
     @expose_static("lite")
     def serve_lite_static(self) -> List[str]:
-        """Serve JupyterLite static assets."""
-        static_dir = os.path.join(self._static_dir, "lite")
-        files = []
-        if not os.path.isdir(static_dir):
+        """Serve JupyterLite static assets from ``self._lite_dir``."""
+        files: List[str] = []
+        if not os.path.isdir(self._lite_dir):
             return files
-        for root, _, filenames in os.walk(static_dir):
+        for root, _, filenames in os.walk(self._lite_dir):
             for filename in filenames:
                 files.append(os.path.join(root, filename))
         return files

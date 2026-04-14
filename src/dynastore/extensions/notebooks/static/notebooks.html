@@ -436,6 +436,9 @@ async function openNotebook(type, notebookId) {
     document.getElementById('viewer-title').textContent = i18n(data.metadata && data.metadata.title, notebookId);
     document.getElementById('btn-copy-to-catalog').style.display = type === 'platform' ? '' : 'none';
     document.getElementById('viewer').classList.add('open');
+    // Jump straight into JupyterLab so the user gets per-cell Run + editable
+    // contents; the read-only preview remains reachable via the View toggle.
+    toggleLiteMode();
   } catch (e) {
     toast('Failed to load notebook: ' + e.message, true);
   }

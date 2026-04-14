@@ -93,14 +93,24 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # Overlay JupyterLite assets when scope includes notebooks; bridge.js (committed) is preserved.
 # After copy, inject bridge.js into lab/index.html so the host can postMessage
 # LOAD_NOTEBOOK / INIT_CONTEXT into the iframe.
+# Install JupyterLite assets into /opt/jupyterlite (outside ${APP_DIR}/src so the
+# dev hot-reload bind mount does not mask them). The notebooks extension reads
+# JUPYTERLITE_DIR and serves this path via @expose_static("lite"). bridge.js is
+# copied from the committed source tree alongside lab/, then injected into
+# lab/index.html as <script src="../bridge.js"> so the host can postMessage
+# LOAD_NOTEBOOK / INIT_CONTEXT into the iframe.
+ENV JUPYTERLITE_DIR=/opt/jupyterlite
+# Ensure the dir exists unconditionally so the runtime-stage COPY --from=builder
+# does not fail when BUILD_JUPYTERLITE=false (worker / job images).
+RUN mkdir -p ${JUPYTERLITE_DIR}
 RUN --mount=type=bind,from=jupyterlite-builder,source=/build/lite-output,target=/tmp/lite-output \
     if [ "${BUILD_JUPYTERLITE}" = "true" ]; then \
-        LITE_DIR="${APP_DIR}/src/dynastore/extensions/notebooks/static/lite" && \
-        cp -r /tmp/lite-output/. "${LITE_DIR}/" && \
-        if [ -f "${LITE_DIR}/lab/index.html" ] && ! grep -q "bridge.js" "${LITE_DIR}/lab/index.html"; then \
-            sed -i 's#</head>#<script src="../bridge.js"></script></head>#' "${LITE_DIR}/lab/index.html"; \
+        cp -r /tmp/lite-output/. "${JUPYTERLITE_DIR}/" && \
+        cp "${APP_DIR}/src/dynastore/extensions/notebooks/static/lite/bridge.js" "${JUPYTERLITE_DIR}/bridge.js" && \
+        if [ -f "${JUPYTERLITE_DIR}/lab/index.html" ] && ! grep -q "bridge.js" "${JUPYTERLITE_DIR}/lab/index.html"; then \
+            sed -i 's#</head>#<script src="../bridge.js"></script></head>#' "${JUPYTERLITE_DIR}/lab/index.html"; \
         fi && \
-        echo "JupyterLite: assets installed"; \
+        echo "JupyterLite: assets installed at ${JUPYTERLITE_DIR}"; \
     else \
         echo "JupyterLite: skipped (BUILD_JUPYTERLITE=false)"; \
     fi
@@ -162,6 +172,10 @@ WORKDIR ${APP_DIR}
 # Copy venv and source from builder (PROD ONLY)
 COPY --from=builder ${VENV_PATH} ${VENV_PATH}
 COPY --from=builder ${APP_DIR} ${APP_DIR}
+# JupyterLite assets live outside APP_DIR so the dev hot-reload mount cannot
+# mask them; missing in worker/job images where BUILD_JUPYTERLITE=false.
+ENV JUPYTERLITE_DIR=/opt/jupyterlite
+COPY --from=builder /opt/ /opt/
 # Scripts are already in /usr/local/bin from builder stage if we inherit,
 # but runtime inherits from gdal, so we still need to copy them from builder.
 COPY --from=builder /usr/local/bin/start.sh /usr/local/bin/start.sh

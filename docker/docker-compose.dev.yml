@@ -32,7 +32,6 @@ services:
         BUILD_JUPYTERLITE: "true"
     volumes:
       - ../src:/dynastore/src # Hot reload mount
-      - /dynastore/src/dynastore/extensions/notebooks/static/lite # preserve baked JupyterLite assets
     env_file: .env
     depends_on:
       db:
@@ -64,7 +63,6 @@ services:
         BUILD_JUPYTERLITE: "true"
     volumes:
       - ../src:/dynastore/src
-      - /dynastore/src/dynastore/extensions/notebooks/static/lite # preserve baked JupyterLite assets
     depends_on:
       db:
         condition: service_healthy
@@ -120,7 +118,6 @@ services:
         BUILD_JUPYTERLITE: "true"
     volumes:
       - ../src:/dynastore/src
-      - /dynastore/src/dynastore/extensions/notebooks/static/lite # preserve baked JupyterLite assets
     env_file: .env
     depends_on:
       db:
@@ -147,7 +144,6 @@ services:
         BUILD_JUPYTERLITE: "true"
     volumes:
       - ../src:/dynastore/src
-      - /dynastore/src/dynastore/extensions/notebooks/static/lite # preserve baked JupyterLite assets
     env_file: .env
     depends_on:
       db:
