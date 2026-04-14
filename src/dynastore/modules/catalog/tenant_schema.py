@@ -94,19 +94,6 @@ CREATE INDEX IF NOT EXISTS ix_collection_configs_class_key_{schema}
     ON {schema}.collection_configs (class_key);
 """
 
-# # 4. ASSET FEATURE MAP
-# TENANT_ASSET_FEATURE_MAP_DDL = """
-# CREATE TABLE IF NOT EXISTS {schema}.asset_feature_map (
-#     asset_id VARCHAR NOT NULL,
-#     catalog_id VARCHAR NOT NULL,
-#     collection_id VARCHAR NOT NULL,
-#     feature_geoid UUID NOT NULL,
-#     created_at TIMESTAMPTZ DEFAULT NOW(),
-#     PRIMARY KEY (collection_id, asset_id, feature_geoid)
-# );
-# CREATE INDEX IF NOT EXISTS idx_asset_feature_map_feature_geoid ON {schema}.asset_feature_map (feature_geoid);
-# """
-
 # ==============================================================================
 #  INITIALIZATION LOGIC
 # ==============================================================================

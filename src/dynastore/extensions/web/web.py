@@ -26,7 +26,7 @@ import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime
-from typing import List, Any, Dict, Optional, Callable
+from typing import List, Any, Dict, Optional, Callable, cast
 
 from fastapi import APIRouter, FastAPI, Response, HTTPException, Request, Query, Header
 
@@ -191,7 +191,8 @@ from dynastore.models.protocols.web import WebModuleProtocol, WebPageProtocol, S
 from dynastore.modules.db_config.platform_config_service import PluginConfig, ConfigRegistry
 
 from starlette.types import ASGIApp, Receive, Scope, Send
-from starlette.routing import Match, get_route_path
+from starlette.routing import Match, Router
+from starlette._utils import get_route_path
 from dynastore.models.driver_context import DriverContext
 
 
@@ -213,7 +214,6 @@ class RelativeSlashRedirectMiddleware:
 
     def _get_router(self) -> "Router | None":
         """Walk the middleware stack to find the underlying Router."""
-        from starlette.routing import Router
         app = self.app
         while app is not None:
             if isinstance(app, Router):
@@ -357,7 +357,7 @@ class Web(ExtensionProtocol):
             _cors_instance,
         )
         ConfigRegistry.register_apply_handler(
-            SECURITY_PLUGIN_CONFIG_ID, on_security_config_changed
+            SECURITY_PLUGIN_CONFIG_ID, cast(Any, on_security_config_changed)
         )
         if _cors_instance is not None:
             await _cors_instance.initialize_from_db()
@@ -1276,7 +1276,7 @@ async function demoAction(action) {
                 except Exception as e:
                     logger.debug(f"Dashboard catalogs: could not resolve identity: {e}")
 
-            catalogs_provider: CatalogsProtocol = get_protocol(CatalogsProtocol)
+            catalogs_provider: Optional[CatalogsProtocol] = get_protocol(CatalogsProtocol)
             if not catalogs_provider:
                 return []
 
@@ -1287,7 +1287,7 @@ async function demoAction(action) {
                 # Authenticated non-sysadmin: forward principal filter so the
                 # protocol can restrict to catalogs the caller administers.
                 try:
-                    cats = await catalogs_provider.list_catalogs(
+                    cats = await cast(Any, catalogs_provider).list_catalogs(
                         limit=limit, offset=offset, q=q, principal_id=principal_id
                     )
                 except TypeError:
@@ -1310,7 +1310,7 @@ async function demoAction(action) {
             from dynastore.models.protocols import CollectionsProtocol
             from dynastore.tools.discovery import get_protocol, register_plugin
 
-            collections_provider: CollectionsProtocol = get_protocol(
+            collections_provider: Optional[CollectionsProtocol] = get_protocol(
                 CollectionsProtocol
             )
             if collections_provider:
@@ -1343,17 +1343,17 @@ async function demoAction(action) {
             end_date: Optional[datetime] = Query(
                 None, description="End date for stats aggregation."
             ),
-            request: Request = None,
+            request: Optional[Request] = None,
         ):
             # Resolve schema using CatalogsProtocol
             from dynastore.modules import get_protocol
             from dynastore.models.protocols import CatalogsProtocol
 
             catalogs = get_protocol(CatalogsProtocol)
-            db_resource = catalogs.engine if catalogs else None
+            db_resource = getattr(catalogs, "engine", None) if catalogs else None
 
             schema = "catalog"
-            if catalog_id and catalog_id != "_system_":
+            if catalog_id and catalog_id != "_system_" and catalogs is not None:
                 try:
                     schema = (
                         await catalogs.resolve_physical_schema(
@@ -1386,7 +1386,7 @@ async function demoAction(action) {
 
         @self.router.get("/dashboard/tasks", response_class=JSONResponse)
         async def get_dashboard_tasks():
-            tasks_ext = getattr(self.app.state, "tasks", None)
+            tasks_ext = getattr(self.app.state, "tasks", None) if self.app else None
             if tasks_ext:
                 tasks = await tasks_ext.get_tasks()
                 return tasks
@@ -1449,7 +1449,7 @@ async function demoAction(action) {
                 from dynastore.tools.protocol_helpers import get_engine
 
                 engine = get_engine()
-                events = await catalog_mod.event_service.search_events(
+                events = await cast(Any, catalog_mod).event_service.search_events(
                     engine=engine,
                     catalog_id=catalog_id,
                     collection_id=collection_id,
