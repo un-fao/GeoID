@@ -21,7 +21,7 @@ import datetime
 from typing import Dict, Any, Optional, List
 import pystac
 from pystac.extensions.projection import ProjectionExtension
-from pystac.extensions.raster import RasterExtension, RasterBand
+from pystac.extensions.raster import RasterExtension, RasterBand, DataType, Statistics
 from pystac.extensions.eo import EOExtension, Band as EOBand
 from pystac.extensions.table import TableExtension, Column
 from pystac.extensions.file import FileExtension
@@ -31,18 +31,18 @@ logger = logging.getLogger(__name__)
 # --- Type Mappings (from user algorithm) ---
 
 # Mapping GDAL Raster Data Types to STAC Raster Extension Data Types
-GDAL_TO_STAC_DTYPE = {
-    "Byte": "uint8",
-    "UInt16": "uint16",
-    "Int16": "int16",
-    "UInt32": "uint32",
-    "Int32": "int32",
-    "Float32": "float32",
-    "Float64": "float64",
-    "CInt16": "cint16",
-    "CInt32": "cint32",
-    "CFloat32": "cfloat32",
-    "CFloat64": "cfloat64"
+GDAL_TO_STAC_DTYPE: dict[str, DataType] = {
+    "Byte": DataType.UINT8,
+    "UInt16": DataType.UINT16,
+    "Int16": DataType.INT16,
+    "UInt32": DataType.UINT32,
+    "Int32": DataType.INT32,
+    "Float32": DataType.FLOAT32,
+    "Float64": DataType.FLOAT64,
+    "CInt16": DataType.CINT16,
+    "CInt32": DataType.CINT32,
+    "CFloat32": DataType.CFLOAT32,
+    "CFloat64": DataType.CFLOAT64,
 }
 
 # Mapping OGR Field Types to STAC Table Extension Types
@@ -271,16 +271,16 @@ def create_stac_description(
                 if "noDataValue" in b:
                     stac_band.nodata = b["noDataValue"]
                 if "type" in b:
-                    stac_band.data_type = GDAL_TO_STAC_DTYPE.get(b["type"], "float32")
+                    stac_band.data_type = GDAL_TO_STAC_DTYPE.get(b["type"], DataType.FLOAT32)
                 if "unit" in b:
                     stac_band.unit = b["unit"]
-                stats = {}
-                if "min" in b: stats["minimum"] = b["min"]
-                if "max" in b: stats["maximum"] = b["max"]
-                if "mean" in b: stats["mean"] = b["mean"]
-                if "stdDev" in b: stats["stddev"] = b["stdDev"]
-                if stats:
-                    stac_band.statistics = stats
+                if any(k in b for k in ("min", "max", "mean", "stdDev")):
+                    stac_band.statistics = Statistics.create(
+                        minimum=b.get("min"),
+                        maximum=b.get("max"),
+                        mean=b.get("mean"),
+                        stddev=b.get("stdDev"),
+                    )
                 bands_data.append(stac_band)
                     
         raster_ext.bands = bands_data
@@ -293,10 +293,10 @@ def create_stac_description(
             columns = []
             if "fields" in layer:
                 for f in layer["fields"]:
-                    col = Column.create(
-                        name=f["name"],
-                        type=OGR_TO_STAC_TABLE_TYPE.get(f["type"], "string")
-                    )
+                    col = Column({
+                        "name": f["name"],
+                        "type": OGR_TO_STAC_TABLE_TYPE.get(f["type"], "string"),
+                    })
                     columns.append(col)
             table_ext.columns = columns
             if "featureCount" in layer:
@@ -316,6 +316,7 @@ def create_stac_description(
 
         item.add_asset("data", asset)
 
-    collection.extent.spatial = pystac.SpatialExtent([item.bbox])
+    if item.bbox is not None:
+        collection.extent.spatial = pystac.SpatialExtent([item.bbox])
     collection.add_item(item)
     return collection

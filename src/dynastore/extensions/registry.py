@@ -19,7 +19,7 @@
 # dynastore/extensions/registry.py
 
 import logging
-from typing import Dict, Type, TypeVar, Optional, List, cast
+from typing import Any, Dict, Type, TypeVar, Optional, List, cast
 from dataclasses import dataclass
 import warnings
 
@@ -56,7 +56,7 @@ def _register_extension(cls: Type[T_Extension], registration_name: Optional[str]
         logger.warning(f"Extension '{registration_name}' is already registered. Overwriting.")
         
     _DYNASTORE_EXTENSIONS[registration_name] = ExtensionConfig(cls=cls)
-    cls._registered_name = registration_name
+    setattr(cls, "_registered_name", registration_name)
     logger.info(f"Registered extension: {cls.__name__} (as '{registration_name}')")
     return cls
 
@@ -111,7 +111,7 @@ def discover_extensions(include_only: Optional[List[str]] = None):
  
     logger.info(f"--- DISCOVERED EXTENSIONS: {list(_DYNASTORE_EXTENSIONS.keys())} ---")
 
-def instantiate_extensions(app: object, include_only: Optional[List[str]] = None):
+def instantiate_extensions(app: Any, include_only: Optional[List[str]] = None):
     """
     Instantiates all discovered extensions.
     """
@@ -145,12 +145,13 @@ def instantiate_extensions(app: object, include_only: Optional[List[str]] = None
         try:
             import inspect
             sig = inspect.signature(cls)
+            factory = cast(Any, cls)
             if "app" in sig.parameters:
-                instance = cls(app=app)
+                instance = factory(app=app)
             elif "app_state" in sig.parameters:
-                instance = cls(app_state=getattr(app, 'state', app))
+                instance = factory(app_state=getattr(app, 'state', app))
             else:
-                instance = cls()
+                instance = factory()
             
             config.instance = instance
             
@@ -170,7 +171,7 @@ def instantiate_extensions(app: object, include_only: Optional[List[str]] = None
         app.state.ordered_configs = ordered_configs
         logger.info(f"Attached {len(ordered_configs)} ordered extension configs to app.state")
 
-def apply_app_configurations(app: object):
+def apply_app_configurations(app: Any):
     """
     Applies configurations to the FastAPI app for all successfully instantiated extensions.
     """
