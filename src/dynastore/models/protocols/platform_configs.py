@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from typing import Protocol, Optional, Any, Dict, runtime_checkable, TYPE_CHECKING
+from typing import Protocol, Optional, Type, Union, Dict, runtime_checkable, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from dynastore.modules.db_config.platform_config_service import PluginConfig
@@ -36,7 +36,9 @@ class PlatformConfigsProtocol(Protocol):
         ...
 
     async def get_config(
-        self, plugin_id: str, ctx: Optional["DriverContext"] = None
+        self,
+        config_cls: Union[str, Type["PluginConfig"]],
+        ctx: Optional["DriverContext"] = None,
     ) -> "PluginConfig":
         """
         Retrieves a platform-level configuration or its default.
@@ -45,7 +47,7 @@ class PlatformConfigsProtocol(Protocol):
 
     async def set_config(
         self,
-        plugin_id: str,
+        config_cls: Union[str, Type["PluginConfig"]],
         config: "PluginConfig",
         check_immutability: bool = True,
         ctx: Optional["DriverContext"] = None,
@@ -55,14 +57,16 @@ class PlatformConfigsProtocol(Protocol):
         """
         ...
 
-    async def list_configs(self) -> Dict[str, "PluginConfig"]:
+    async def list_configs(self) -> Dict[Type["PluginConfig"], "PluginConfig"]:
         """
         Lists all platform-level configurations.
         """
         ...
 
     async def delete_config(
-        self, plugin_id: str, ctx: Optional["DriverContext"] = None
+        self,
+        config_cls: Union[str, Type["PluginConfig"]],
+        ctx: Optional["DriverContext"] = None,
     ) -> bool:
         """
         Deletes a platform-level configuration (resets to defaults).
