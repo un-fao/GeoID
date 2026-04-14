@@ -7,7 +7,7 @@ This document describes the web dashboard framework, the `@expose_web_page` deco
 The web extension serves the single-page dashboard and manages page registration from all extensions. Each extension can contribute pages, static assets, and API endpoints to the dashboard without modifying the web extension itself.
 
 ```
-WebModule (module)          — page registry, scan_and_register_providers()
+WebModule (module)          — page registry, iterates get_protocols(WebPageContributor)
 WebService (extension)      — routes, SPA shell, /web/config/pages endpoint
 @expose_web_page decorator  — declarative page registration on any extension
 ```
@@ -32,14 +32,13 @@ async def provide_map_viewer(self, request: Request):
     return HTMLResponse(...)
 ```
 
-The decorator attaches a `_web_page_config` dict to the method. During startup, `WebModule.scan_and_register_providers(instance)` discovers all decorated methods on an extension instance and registers them in the central page registry.
+The decorator attaches a `_web_page_config` dict to the method. The extension's `get_web_pages()` implementation (from `extensions/tools/web_collect.collect_web_pages`) emits a `WebPageSpec` per decorated method, satisfying `WebPageContributor` via structural subtyping. `WebModule` iterates `get_protocols(WebPageContributor)` during startup.
 
 ### Discovery Flow
 
 ```
-1. Extension.__init__() or configure_app()
-   → calls web.scan_and_register_providers(self)
-2. WebModule iterates methods with _web_page_config attribute
+1. WebModule.lifespan() iterates get_protocols(WebPageContributor)
+2. Each contributor yields WebPageSpec(page_id, title, handler, icon, priority, ...)
 3. Each page is registered with dedup guard (page_id uniqueness)
 4. GET /web/config/pages returns filtered page list based on user roles
 5. SPA shell renders navigation from the page list
@@ -54,7 +53,7 @@ The `/web/config/pages` endpoint filters pages by the authenticated user's roles
 
 ### Static Asset Registration
 
-Extensions can also register static file directories:
+Extensions can also register static file directories. `@expose_static` populates `get_static_assets()`, satisfying `StaticAssetProvider`:
 
 ```python
 @expose_static(prefix="/maps/static")
