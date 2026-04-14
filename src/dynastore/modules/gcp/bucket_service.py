@@ -18,12 +18,15 @@
 
 import logging
 import asyncio
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
 
-try:
+if TYPE_CHECKING:
     from google.cloud import storage
-except ImportError:
-    storage = None
+else:
+    try:
+        from google.cloud import storage
+    except ImportError:
+        storage = None
 
 from dynastore.modules.db_config.query_executor import managed_transaction, DbResource
 from dynastore.models.driver_context import DriverContext
@@ -33,6 +36,7 @@ from dynastore.tools.discovery import get_protocol
 from dynastore.modules.gcp import gcp_db
 from dynastore.modules.gcp.gcp_config import (
     GcpCatalogBucketConfig,
+    GcpLocation,
     GCP_CATALOG_BUCKET_CONFIG_ID,
 )
 from dynastore.modules.gcp.tools import bucket as bucket_tool
@@ -66,7 +70,10 @@ class BucketService:
             return self._engine
         from dynastore.tools.protocol_helpers import get_engine
 
-        return get_engine()
+        engine = get_engine()
+        if engine is None:
+            raise RuntimeError("No database engine available.")
+        return engine
 
     @property
     def config_service(self) -> ConfigsProtocol:
@@ -153,21 +160,16 @@ class BucketService:
                         logger.info(
                             f"Logical collection '{catalog_id}:{collection_id}' does not exist for upload. Creating it now."
                         )
-                        from dynastore.modules.catalog.models import (
-                            Collection,
-                            Extent,
-                            SpatialExtent,
-                            TemporalExtent,
-                        )
+                        from dynastore.modules.catalog.models import Collection
 
-                        default_collection_metadata = Collection(
-                            id=collection_id,
-                            title=f"Auto-created collection for {collection_id}",
-                            extent=Extent(
-                                spatial=SpatialExtent(bbox=[(0, 0, 0, 0)]),
-                                temporal=TemporalExtent(interval=[(None, None)]),
-                            ),
-                        )
+                        default_collection_metadata = Collection.model_validate({
+                            "id": collection_id,
+                            "title": f"Auto-created collection for {collection_id}",
+                            "extent": {
+                                "spatial": {"bbox": [[0.0, 0.0, 0.0, 0.0]]},
+                                "temporal": {"interval": [[None, None]]},
+                            },
+                        })
                         # This creates only the logical collection record, without a LayerConfig.
                         await catalogs.create_collection(
                             catalog_id, default_collection_metadata, ctx=DriverContext(db_resource=conn)
@@ -331,7 +333,7 @@ class BucketService:
                         )
                     else:
                         # Snaphot present but key missing -> explicit default
-                        effective_config = GcpCatalogBucketConfig(location=self.region)
+                        effective_config = GcpCatalogBucketConfig(location=GcpLocation(self.region))
                 else:
                     effective_config = await self.config_service.get_config(
                         GCP_CATALOG_BUCKET_CONFIG_ID, catalog_id, ctx=DriverContext(db_resource=conn
@@ -342,7 +344,7 @@ class BucketService:
                 logger.debug(
                     f"No GcpCatalogBucketConfig found for catalog '{catalog_id}'. Using default settings."
                 )
-                effective_config = GcpCatalogBucketConfig(location=self.region)
+                effective_config = GcpCatalogBucketConfig(location=GcpLocation(self.region))
                 # Persist the default configuration (idempotent setup)
                 await self.config_service.set_config(
                     GCP_CATALOG_BUCKET_CONFIG_ID,
@@ -466,7 +468,7 @@ class BucketService:
             if config.cors is not None:
                 cors_list = []
                 for rule in config.cors:
-                    rule_dict = {
+                    rule_dict: Dict[str, Any] = {
                         "origin": rule.origin,
                         "method": rule.method,
                     }
