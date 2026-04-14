@@ -79,12 +79,14 @@ _MetaCR.register(METADATA_ES_DRIVER_CONFIG_ID, DriverMetadataElasticsearchConfig
 
 
 async def _on_apply_es_metadata_driver_config(
-    config: DriverMetadataElasticsearchConfig,
+    config: PluginConfig,
     catalog_id: Optional[str],
     collection_id: Optional[str],
     db_resource: Optional[Any],
 ) -> None:
     """Create the ES metadata index for the catalog when the driver config is applied."""
+    if not isinstance(config, DriverMetadataElasticsearchConfig):
+        return
     if not catalog_id:
         return  # platform-level config — no catalog to create index for
 
@@ -95,14 +97,16 @@ async def _on_apply_es_metadata_driver_config(
         if getattr(d, "driver_id", None) == "elasticsearch_metadata"
     ]
     for driver in drivers:
-        if hasattr(driver, "ensure_storage"):
-            try:
-                await driver.ensure_storage(catalog_id)
-            except Exception as exc:
-                logger.warning(
-                    "ensure_storage failed for elasticsearch_metadata on catalog '%s': %s",
-                    catalog_id, exc,
-                )
+        ensure = getattr(driver, "ensure_storage", None)
+        if ensure is None:
+            continue
+        try:
+            await ensure(catalog_id)
+        except Exception as exc:
+            logger.warning(
+                "ensure_storage failed for elasticsearch_metadata on catalog '%s': %s",
+                catalog_id, exc,
+            )
 
 
 _MetaCR.register_apply_handler(METADATA_ES_DRIVER_CONFIG_ID, _on_apply_es_metadata_driver_config)
@@ -194,7 +198,6 @@ class DriverMetadataElasticsearch:
         MetadataCapability.READ,
         MetadataCapability.WRITE,
         MetadataCapability.SEARCH,
-        MetadataCapability.CQL_FILTER,
         MetadataCapability.SPATIAL_FILTER,
         MetadataCapability.AGGREGATION,
     })
@@ -295,7 +298,7 @@ class DriverMetadataElasticsearch:
             index=index_name,
             id=collection_id,
             body=doc,
-            refresh="wait_for",
+            refresh="wait_for",  # type: ignore[call-arg]
         )
 
     async def delete_metadata(
@@ -318,11 +321,13 @@ class DriverMetadataElasticsearch:
                     index=index_name,
                     id=collection_id,
                     body={"doc": {"_deleted": True}},
-                    refresh="wait_for",
+                    refresh="wait_for",  # type: ignore[call-arg]
                 )
             else:
                 await client.delete(
-                    index=index_name, id=collection_id, refresh="wait_for"
+                    index=index_name,
+                    id=collection_id,
+                    refresh="wait_for",  # type: ignore[call-arg]
                 )
         except Exception as e:
             logger.debug("delete_metadata ES error for %s/%s: %s", catalog_id, collection_id, e)
@@ -387,16 +392,11 @@ class DriverMetadataElasticsearch:
                     }
                 })
 
-        # CQL2-JSON filter
+        # CQL2-JSON filter — not yet implemented for ES metadata driver
         if filter_cql:
-            try:
-                from dynastore.modules.tools.cql import cql2_json_to_es_query
-
-                es_filter = cql2_json_to_es_query(filter_cql)
-                if es_filter:
-                    filter_clauses.append(es_filter)
-            except Exception as e:
-                logger.warning("CQL2-JSON to ES conversion failed: %s", e)
+            logger.warning(
+                "CQL2-JSON filter on ES metadata index is not implemented; ignoring"
+            )
 
         query_body: Dict[str, Any] = {
             "bool": {
