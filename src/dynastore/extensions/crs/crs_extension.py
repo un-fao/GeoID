@@ -28,6 +28,7 @@ from dynastore.modules.crs.models import CRS, CRSCreate
 
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.models.protocols.crs import CRSProtocol
+from dynastore.models.driver_context import DriverContext
 from dynastore.tools.discovery import get_protocol
 
 logger = logging.getLogger(__name__)
@@ -95,7 +96,10 @@ class CRSExtension(ExtensionProtocol):
 
     @property
     def catalogs(self) -> CatalogsProtocol:
-        return self.get_protocol(CatalogsProtocol)
+        svc = get_protocol(CatalogsProtocol)
+        if svc is None:
+            raise HTTPException(status_code=503, detail="Catalogs service not registered")
+        return svc
 
     @property
     def crs(self) -> CRSProtocol:
@@ -115,7 +119,7 @@ class CRSExtension(ExtensionProtocol):
         Registers a new CRS definition. 
         Validates WKT structure against OGC 18-010r11 via the internal model validators.
         """
-        if not await self.catalogs.get_catalog(catalog_id, conn):
+        if not await self.catalogs.get_catalog(catalog_id, ctx=DriverContext(db_resource=conn)):
             raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
 
         try:
@@ -137,7 +141,7 @@ class CRSExtension(ExtensionProtocol):
         if crs_uri != crs_data.crs_uri:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="CRS URI in path does not match URI in payload.")
 
-        if not await self.catalogs.get_catalog(catalog_id, conn):
+        if not await self.catalogs.get_catalog(catalog_id, ctx=DriverContext(db_resource=conn)):
             raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
             
         updated_crs = await self.crs.update_crs(conn, catalog_id, crs_uri, crs_data)
@@ -153,7 +157,7 @@ class CRSExtension(ExtensionProtocol):
         limit: int = Query(20, ge=1, le=1000),
         offset: int = Query(0, ge=0)
     ):
-        if not await self.catalogs.get_catalog(catalog_id, conn):
+        if not await self.catalogs.get_catalog(catalog_id, ctx=DriverContext(db_resource=conn)):
             raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
         
         return await self.crs.list_crs(conn, catalog_id, limit, offset)
@@ -167,7 +171,7 @@ class CRSExtension(ExtensionProtocol):
         limit: int = Query(20, ge=1, le=1000),
         offset: int = Query(0, ge=0)
     ):
-        if not await self.catalogs.get_catalog(catalog_id, conn):
+        if not await self.catalogs.get_catalog(catalog_id, ctx=DriverContext(db_resource=conn)):
             raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
         
         return await self.crs.search_crs(conn, catalog_id, q, limit, offset)
@@ -221,7 +225,7 @@ class CRSExtension(ExtensionProtocol):
         crs_uri: str,
         conn: AsyncConnection = Depends(get_async_connection)
     ):
-        if not await self.catalogs.get_catalog(catalog_id, conn):
+        if not await self.catalogs.get_catalog(catalog_id, ctx=DriverContext(db_resource=conn)):
             raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
 
         success = await self.crs.delete_crs(conn, catalog_id, crs_uri)
