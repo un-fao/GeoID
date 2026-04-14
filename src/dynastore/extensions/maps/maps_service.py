@@ -34,6 +34,7 @@ import dynastore.modules.tiles.tiles_module as tms_manager
 from dynastore.modules.db_config import shared_queries
 from dynastore.tools.ogc_common import parse_subset_parameter
 from . import maps_db
+from dynastore.models.localization import LocalizedText
 from .maps_models import MapsLandingPage, DatasetMaps, MapContent, Link
 from .maps_config import MapsConfig
 from dynastore.extensions.protocols import ExtensionProtocol
@@ -179,11 +180,11 @@ class MapsService(ExtensionProtocol):
     async def get_maps_landing_page(request: Request):
         # Correctly discover catalogs from the catalog_module
         catalogs = await catalog_manager.list_catalogs(limit=1000)
-        links = [Link(href=str(request.url), rel="self", type="application/json", title="this document")]
+        links = [Link(href=str(request.url), rel="self", type="application/json", title=LocalizedText(en="this document"))]
         for cat in catalogs:
             links.append(Link(
                 href=str(request.url_for('get_dataset_maps', dataset=cat.id)),
-                rel="dataset", type="application/json", title=f"Maps for dataset '{cat.id}'"
+                rel="dataset", type="application/json", title=LocalizedText(en=f"Maps for dataset '{cat.id}'")
             ))
         return MapsLandingPage(links=links)
 
@@ -213,7 +214,7 @@ class MapsService(ExtensionProtocol):
         for coll in collections:
             map_links = [
                 Link(href=f"{request.url}/map?collections={coll.id}&bbox=-180,-90,180,90&crs=EPSG:4326", rel="item", type="image/png"),
-                Link(href=f"{request.url}/map/tiles", rel="http://www.opengis.net/def/rel/ogc/1.0/tilesets-map", type="application/json", title="Map Tilesets")
+                Link(href=f"{request.url}/map/tiles", rel="http://www.opengis.net/def/rel/ogc/1.0/tilesets-map", type="application/json", title=LocalizedText(en="Map Tilesets"))
             ]
             maps.append(MapContent(title=coll.title, links=map_links))
         
@@ -348,6 +349,11 @@ class MapsService(ExtensionProtocol):
         except ValueError as e:
             logger.error(f"Render Fetch Error: {e}")
             raise HTTPException(status_code=400, detail=str(e))
+        if layer_config is None or layer_config.geometry_storage is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{valid_collections[0]}' has no geometry storage config.",
+            )
 
         # 8. Render Image
         style_to_render = await _get_style_to_render(
@@ -437,7 +443,12 @@ class MapsService(ExtensionProtocol):
         except ValueError as e:
             logger.error(f"Data Error: {e}")
             raise HTTPException(status_code=400, detail=str(e))
-        
+        if layer_config is None or layer_config.geometry_storage is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{valid_collections[0]}' has no geometry storage config.",
+            )
+
         # Fetch style to render
         style_to_render = await _get_style_to_render(
             conn, dataset, valid_collections[0] if valid_collections else None, style
