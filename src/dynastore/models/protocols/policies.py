@@ -79,6 +79,14 @@ class PermissionProtocol(Protocol):
         custom_policies: Optional[List["Policy"]] = None,
     ) -> Tuple[bool, str]: ...
 
+    async def provision_default_policies(
+        self,
+        catalog_id: Optional[str] = None,
+        conn: Optional[Any] = None,
+        schema: Optional[str] = None,
+        force: bool = False,
+    ) -> None: ...
+
     # --- Extension injection points ---
 
     def register_policy(self, policy: Policy) -> Policy: ...

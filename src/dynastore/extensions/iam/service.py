@@ -452,6 +452,8 @@ class IamExtension(ExtensionProtocol):
 
     @property
     def policy_service(self) -> PermissionProtocol:
+        if self._policy_service is None:
+            raise RuntimeError("PermissionProtocol not initialized; lifespan has not run.")
         return self._policy_service
 
     # ==========================================
@@ -504,7 +506,7 @@ class IamExtension(ExtensionProtocol):
         catalog_id = getattr(request.state, "catalog_id", None)
 
         # 1. Fetch existing
-        existing = await self.policy_manager.get_policy(policy_id, catalog_id=catalog_id)
+        existing = await self.policy_service.get_policy(policy_id, catalog_id=catalog_id)
         if not existing:
             raise HTTPException(status_code=404, detail="Policy not found.")
 
@@ -538,8 +540,8 @@ class IamExtension(ExtensionProtocol):
         """Search and list policies."""
         catalog_id = getattr(request.state, "catalog_id", None)
         return await self.policy_service.search_policies(
-            resource_pattern=resource,
-            action_pattern=action,
+            resource_pattern=resource or ".*",
+            action_pattern=action or ".*",
             limit=limit,
             offset=offset,
             catalog_id=catalog_id,
@@ -547,7 +549,7 @@ class IamExtension(ExtensionProtocol):
 
     async def delete_access_policy(self, request: Request, policy_id: UUID):
         catalog_id = getattr(request.state, "catalog_id", None)
-        deleted = await self.policy_service.delete_policy(policy_id, catalog_id=catalog_id)
+        deleted = await self.policy_service.delete_policy(str(policy_id), catalog_id=catalog_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Policy not found")
 
