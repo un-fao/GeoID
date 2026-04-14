@@ -18,29 +18,40 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from typing import Dict, Any, Tuple, Optional, Set, Union
+from typing import Dict, Any, Tuple, Optional, Set, Union, TYPE_CHECKING
 from sqlalchemy import text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.sql import column as sql_column
 
 logger = logging.getLogger(__name__)
 
-# Optional dependency for safe CQL2/ECQL parsing
-try:
+# Optional dependency for safe CQL2/ECQL parsing.
+# TYPE_CHECKING branch pins the imports as non-Optional for pyright; at runtime
+# the try/except installs real modules or raises ImportError from the public
+# parse_* entry points via the PYGEOFILTER_AVAILABLE guard.
+if TYPE_CHECKING:
     from pygeofilter.parsers.cql2_text import parse as parse_cql2_text
     from pygeofilter.parsers.cql2_json import parse as parse_cql2_json
     from pygeofilter.parsers.ecql import parse as parse_ecql
     from pygeofilter.backends.sqlalchemy import to_filter
     from pygeofilter.ast import Attribute
     PYGEOFILTER_AVAILABLE = True
-except ImportError:
-    PYGEOFILTER_AVAILABLE = False
-    parse_cql2_text = None
-    parse_cql2_json = None
-    parse_ecql = None
-    to_filter = None
-    Attribute = None
-    logger.warning("`pygeofilter` not installed. CQL parsing will be disabled.")
+else:
+    try:
+        from pygeofilter.parsers.cql2_text import parse as parse_cql2_text
+        from pygeofilter.parsers.cql2_json import parse as parse_cql2_json
+        from pygeofilter.parsers.ecql import parse as parse_ecql
+        from pygeofilter.backends.sqlalchemy import to_filter
+        from pygeofilter.ast import Attribute
+        PYGEOFILTER_AVAILABLE = True
+    except ImportError:
+        PYGEOFILTER_AVAILABLE = False
+        parse_cql2_text = None
+        parse_cql2_json = None
+        parse_ecql = None
+        to_filter = None
+        Attribute = None
+        logger.warning("`pygeofilter` not installed. CQL parsing will be disabled.")
 
 
 def _extract_property_names(node) -> Set[str]:
