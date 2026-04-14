@@ -32,7 +32,7 @@ from dynastore.models.query_builder import (
     FilterOperator,
     SortOrder,
 )
-from dynastore.models.shared_models import Feature
+from dynastore.models.ogc import Feature
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.protocols.items import ItemsProtocol
 
@@ -91,9 +91,9 @@ class QueryOptimizer:
         Must be stateless (no DB lookups) to support O(1) streaming.
         """
         items_service = get_protocol(ItemsProtocol)
-        feature = items_service.map_row_to_feature(row, col_config, lang=lang)
-
-        return feature
+        if items_service is None:
+            raise RuntimeError("ItemsProtocol implementation is not registered")
+        return items_service.map_row_to_feature(row, col_config, lang=lang)
 
     def validate_query(self, query: QueryRequest) -> List[str]:
         """
@@ -309,27 +309,27 @@ class QueryOptimizer:
 
             if sel.field in self.field_index:
                 sidecar, _ = self.field_index[sel.field]
-                required_sidecars.add(sidecar.config.sidecar_id)
+                required_sidecars.add(sidecar.sidecar_id)
 
         # Check filters
         for filt in query.filters:
             if filt.field in self.field_index:
                 sidecar, _ = self.field_index[filt.field]
-                required_sidecars.add(sidecar.config.sidecar_id)
+                required_sidecars.add(sidecar.sidecar_id)
 
         # Check sort
         if query.sort:
             for sort in query.sort:
                 if sort.field in self.field_index:
                     sidecar, _ = self.field_index[sort.field]
-                    required_sidecars.add(sidecar.config.sidecar_id)
+                    required_sidecars.add(sidecar.sidecar_id)
 
         # Check group by
         if query.group_by:
             for field in query.group_by:
                 if field in self.field_index:
                     sidecar, _ = self.field_index[field]
-                    required_sidecars.add(sidecar.config.sidecar_id)
+                    required_sidecars.add(sidecar.sidecar_id)
 
         # Always include the geometry sidecar for full Feature responses.
         # Without this, queries that only filter by non-spatial fields (e.g.
@@ -467,7 +467,7 @@ class QueryOptimizer:
                 param_name = f"{param_prefix}_{param_name}"
 
             # Resolve operator via FilterOperator.to_sql() — single source of truth
-            if hasattr(filt.operator, "to_sql"):
+            if isinstance(filt.operator, FilterOperator):
                 op_sql = filt.operator.to_sql()
                 is_spatial = filt.spatial_op or filt.operator.is_spatial
                 is_range = filt.operator.is_range
