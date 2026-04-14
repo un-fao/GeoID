@@ -47,7 +47,7 @@ def test_register_with_path():
     assert len(entries) == 1
     assert entries[0].notebook_id == "file-nb"
     assert entries[0].content == nb_content
-    assert entries[0].title == "From File"
+    assert entries[0].title.en == "From File"
 
     tmp_path.unlink()
 
@@ -86,4 +86,4 @@ def test_title_fallback_to_notebook_id():
         notebook_content={"cells": [], "metadata": {}},
     )
     entries = get_registered_notebooks()
-    assert entries[0].title == "no-title"
+    assert entries[0].title.en == "no-title"
