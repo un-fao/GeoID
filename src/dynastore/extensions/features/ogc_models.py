@@ -224,6 +224,7 @@ class Catalogs(BaseModel):
 
 
 class Queryables(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     type: str = "object"
     title: str
     properties: Dict[str, Any]
@@ -243,7 +244,7 @@ class FeatureDefinition(Feature):
 class FeatureCollectionDefinition(FeatureCollection):
     """Input model for bulk creation."""
 
-    features: List[FeatureDefinition]
+    features: List[FeatureDefinition] = Field(default_factory=list)
 
 
 from pydantic import Discriminator, Tag

@@ -58,25 +58,25 @@ def create_landing_page(
             href=f"{base_url}/features/",
             rel="self",
             type="application/json",
-            title="This document",
+            title=cast(Any, "This document"),
         ),
         Link(
             href=f"{base_url}/features/catalogs",
             rel="catalogs",
             type="application/json",
-            title="List of catalogs",
+            title=cast(Any, "List of catalogs"),
         ),
         Link(
             href=f"{base_url}/conformance",
             rel="conformance",
             type="application/json",
-            title="Conformance classes",
+            title=cast(Any, "Conformance classes"),
         ),
         Link(
             href=f"{base_url}/api",
             rel="service-doc",
             type="application/json",
-            title="API documentation",
+            title=cast(Any, "API documentation"),
         ),
     ]
     return ogc_models.LandingPage(
@@ -218,6 +218,8 @@ async def create_queryables_response(
 ) -> ogc_models.Queryables:
     """Generates the queryables response for a collection using Sidecar FieldDefinitions."""
     catalogs = get_protocol(CatalogsProtocol)
+    if catalogs is None:
+        raise HTTPException(status_code=503, detail="CatalogsProtocol not registered")
     collection: Optional[CoreCollection] = await catalogs.get_collection(
         catalog_id, collection_id
     )
@@ -228,8 +230,7 @@ async def create_queryables_response(
 
     queryables_url = get_url(request)
 
-    # Base properties
-    properties = {
+    properties: Dict[str, Any] = {
         "geometry": {
             "type": "object",
             "$ref": "https://geojson.org/schema/Geometry.json",
@@ -276,11 +277,11 @@ async def create_queryables_response(
                 properties[col_name] = {"title": col_name, "type": "string"}
 
     localized, _ = collection.localize(language)
-    return ogc_models.Queryables(
-        link=queryables_url,
-        title=localized.get("title") or collection_id,
-        properties=properties,
-    )
+    return ogc_models.Queryables.model_validate({
+        "$id": queryables_url,
+        "title": localized.get("title") or collection_id,
+        "properties": properties,
+    })
 
 
 def _process_feature_for_db(
@@ -301,7 +302,8 @@ def _process_feature_for_db(
         geom_dict = feature.geometry.model_dump()
 
         # Defensively look for ID in top level or properties
-        external_id = feature.id or feature.properties.get("id")
+        props = feature.properties or {}
+        external_id = feature.id or props.get("id")
         logger.debug(f"Processing feature for DB: id={external_id}")
 
         return feature.model_dump(by_alias=True, exclude_unset=True)
