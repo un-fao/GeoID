@@ -17,7 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, cast
 from sqlalchemy import text
 
 from dynastore.modules.db_config.query_executor import (
@@ -69,6 +69,8 @@ class OneShotMigrator:
             # 1. Fetch Current Config
             configs = get_protocol(ConfigsProtocol)
             catalogs = get_protocol(CatalogsProtocol)
+            if configs is None or catalogs is None:
+                raise RuntimeError("ConfigsProtocol and CatalogsProtocol required for migration.")
 
             from dynastore.modules.storage.router import get_driver as _get_driver
             from dynastore.modules.storage.routing_config import Operation
@@ -129,7 +131,7 @@ class OneShotMigrator:
                 # We need to create the Hub table mirroring the source but ONLY core columns
                 # For simplicity, we assume we want a standard Hub structure
                 # Routes through the write driver's ensure_storage()
-                await catalogs.create_physical_collection(
+                await cast(Any, catalogs).create_physical_collection(
                     conn,
                     phys_schema,
                     catalog_id,

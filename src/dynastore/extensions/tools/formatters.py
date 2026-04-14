@@ -21,7 +21,7 @@
 import logging
 import re
 from enum import Enum
-from typing import Iterable, Dict, Any, Optional
+from typing import Iterable, Dict, Any, Optional, cast
 
 # File: src/dynastore/extensions/formatters.py
 
@@ -186,29 +186,31 @@ def format_response(
         # GML usually comes pre-formatted or handled by a specific generator
         # For now, if it's already a generator of bytes, just return it.
         async def _byte_streamer():
+            src = cast(Any, features)
             if hasattr(features, '__aiter__'):
-                async for chunk in features: yield chunk
+                async for chunk in src: yield chunk
             else:
-                for chunk in features: yield chunk
+                for chunk in src: yield chunk
         
         return StreamingResponse(content=_byte_streamer(), media_type=formatter["media_type"])
 
     # 3. Handle Other Formats (CSV, GPKG, etc.) - BRIDGE SYNC WRITERS
     # These writers currently expect a sync Generator[Feature, None, None]
     def _get_sync_gen():
+        src = cast(Any, features)
         if hasattr(features, '__aiter__'):
             # This is slow but necessary if the upstream is async and we need sync
             import asyncio
             loop = asyncio.new_event_loop()
             async def _consume():
                 res = []
-                async for f in features: res.append(f)
+                async for f in src: res.append(f)
                 return res
             items = loop.run_until_complete(_consume())
             loop.close()
             for x in items: yield x
         else:
-            for x in features: yield x
+            for x in src: yield x
 
     feature_dicts = (f.model_dump(by_alias=True) if hasattr(f, 'model_dump') else f for f in _get_sync_gen())
 
