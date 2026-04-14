@@ -82,7 +82,7 @@ def configure_swagger_ui(app: FastAPI):
         <script src="{static_url}/swagger_custom.js"></script>
         """
         
-        original_content = response.body.decode("utf-8")
+        original_content = bytes(response.body).decode("utf-8")
         new_content = original_content.replace("</body>", f"{custom_js}</body>")
         return HTMLResponse(new_content)
 
@@ -149,7 +149,7 @@ def setup_global_help_endpoint(app: FastAPI):
 
     # Register hidden route
     route_path = "/_help/{name}"
-    if not any(route.path == route_path for route in app.routes):
+    if not any(getattr(route, "path", None) == route_path for route in app.routes):
         app.add_api_route(
             route_path, 
             global_extension_help_handler, 
@@ -162,7 +162,7 @@ def enrich_extension_metadata(app: FastAPI, config: ExtensionConfig, router: API
     """
     Checks for a README, creates the help route, and enriches OpenAPI tags.
     """
-    extension_name = config.cls._registered_name
+    extension_name = getattr(config.cls, "_registered_name", config.cls.__name__)
     
     try:
         extension_dir = os.path.dirname(inspect.getfile(config.cls))
@@ -183,11 +183,9 @@ def enrich_extension_metadata(app: FastAPI, config: ExtensionConfig, router: API
                 logger.error(f"Error reading readme for description: {e}")
                 readme_content = "Documentation available. Click to open full view."
 
-            # Calculate safe_help_url
-            try:
-                root_path_prefix = get_root_url(None).rstrip("/")
-            except Exception:
-                root_path_prefix = app.root_path.rstrip("/")
+            # Calculate safe_help_url — at enrichment time we have no Request,
+            # so fall back to the app's root_path (set at FastAPI() construction).
+            root_path_prefix = app.root_path.rstrip("/")
             
             if not root_path_prefix.startswith("/"):
                 root_path_prefix = "/" + root_path_prefix
@@ -198,7 +196,9 @@ def enrich_extension_metadata(app: FastAPI, config: ExtensionConfig, router: API
             tags_to_enrich = set()
             if router.tags: tags_to_enrich.update(router.tags)
             for route in router.routes:
-                if hasattr(route, "tags") and route.tags: tags_to_enrich.update(route.tags)
+                route_tags = getattr(route, "tags", None)
+                if route_tags:
+                    tags_to_enrich.update(route_tags)
             if not tags_to_enrich: tags_to_enrich.add(extension_name)
 
             # --- HEADER GENERATION ---
