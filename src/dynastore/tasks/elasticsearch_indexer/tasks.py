@@ -161,7 +161,7 @@ async def _reindex_collection(
                 doc["simplification_mode"] = smode
             else:
                 index_name = stac_index
-                if hasattr(feature, "model_dump"):
+                if isinstance(feature, BaseModel):
                     doc = feature.model_dump(by_alias=True, exclude_none=True, mode="json")
                 else:
                     doc = json.loads(json.dumps(dict(feature), default=_json_default))
@@ -240,14 +240,14 @@ class BulkCatalogReindexTask(TaskProtocol):
             await es.delete_by_query(
                 index=stac_index,
                 body={"query": {"term": {"catalog_id": catalog_id}}},
-                ignore_unavailable=True,
+                params={"ignore_unavailable": "true"},
             )
         else:
             # Remove stale obfuscated docs for this catalog.
             await es.delete_by_query(
                 index=obfuscated_index,
                 body={"query": {"match_all": {}}},
-                ignore_unavailable=True,
+                params={"ignore_unavailable": "true"},
             )
 
         # Reindex all collections.

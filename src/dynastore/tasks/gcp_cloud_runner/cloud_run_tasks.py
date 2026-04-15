@@ -1,7 +1,9 @@
 import logging
-from typing import Dict, Any
+from typing import Any, Optional, cast
 from dynastore.tasks import _register_task, discover_tasks, get_all_task_configs
-from dynastore.modules.gcp.tools.jobs import load_job_config 
+from dynastore.modules.gcp.tools.jobs import load_job_config
+from dynastore.modules.processes.models import Process
+from dynastore.tasks.protocols import TaskProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +26,8 @@ def _create_cloud_run_task_class(task_type: str, job_name: str, process_definiti
         is_placeholder = True
 
         @staticmethod
-        def get_definition() -> Process:
-            return GCP_CLOUD_RUNNER_PROCESS_DEFINITION
+        def get_definition() -> Optional[Process]:
+            return process_definition
 
     return DynamicCloudRunTask
 
@@ -77,5 +79,5 @@ async def register_cloud_run_jobs_as_tasks():
 
         # Register the dynamically created class.
         # The 'registration_name' parameter is crucial as it's what processes_service.py will use.
-        _register_task(DynamicCloudRunTask, registration_name=normalized_task_type)
+        _register_task(cast(type[TaskProtocol], DynamicCloudRunTask), registration_name=normalized_task_type)
         logger.info(f"Dynamically registered placeholder task '{normalized_task_type}' for Cloud Run job '{job_name}'.")

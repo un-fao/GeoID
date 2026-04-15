@@ -54,10 +54,7 @@ def _build_extras_graph() -> Dict[str, Set[str]]:
     # Discover all packages contributing to dynastore entry-point groups
     package_names: Set[str] = {"DynaStore"}
     for group in ("dynastore.modules", "dynastore.extensions", "dynastore.tasks"):
-        try:
-            eps = importlib.metadata.entry_points(group=group)
-        except TypeError:
-            eps = importlib.metadata.entry_points().get(group, [])
+        eps = importlib.metadata.entry_points(group=group)
         for ep in eps:
             if hasattr(ep, "dist") and ep.dist:
                 package_names.add(ep.dist.metadata["Name"])
@@ -260,8 +257,9 @@ def _clear_protocol_caches() -> None:
 
 # Expose cache_clear on the wrapper functions so callers (e.g. tests) can
 # invalidate the caches via `get_protocol.cache_clear()`.
-get_protocol.cache_clear = _clear_protocol_caches  # type: ignore[attr-defined]
-get_protocols.cache_clear = _clear_protocol_caches  # type: ignore[attr-defined]
+get_protocol.cache_clear = _clear_protocol_caches
+get_protocols.cache_clear = _clear_protocol_caches
+
 
 def discover_and_load_plugins(group: str, include_only: Optional[List[str]] = None) -> Dict[str, Type[Any]]:
     """
@@ -288,11 +286,7 @@ def discover_and_load_plugins(group: str, include_only: Optional[List[str]] = No
         target_names = resolve_scope(",".join(include_only))
 
     # 2. Get all entry points for the specified group
-    try:
-        eps = importlib.metadata.entry_points(group=group)
-    except TypeError:
-        # Fallback for older importlib.metadata versions
-        eps = importlib.metadata.entry_points().get(group, [])
+    eps = importlib.metadata.entry_points(group=group)
 
     for entry_point in eps:
         # 3. Filtering logic
@@ -329,11 +323,8 @@ def get_installed_module_metadata() -> List[Dict[str, str]]:
     groups = ["dynastore.modules", "dynastore.extensions", "dynastore.tasks"]
     
     for group in groups:
-        try:
-            eps = importlib.metadata.entry_points(group=group)
-        except TypeError:
-            eps = importlib.metadata.entry_points().get(group, [])
-            
+        eps = importlib.metadata.entry_points(group=group)
+
         for ep in eps:
             # Basic metadata derived from the entry point
             item = {

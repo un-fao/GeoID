@@ -283,7 +283,10 @@ class ExecutionEngine:
         await tasks_mgr.update_task(engine, job_id, update, schema=db_schema)
 
         # Re-fetch to return the updated state
-        return await tasks_mgr.get_task(engine, job_id, schema=db_schema)
+        updated = await tasks_mgr.get_task(engine, job_id, schema=db_schema)
+        if updated is None:
+            raise ValueError(f"Job '{job_id}' disappeared after update.")
+        return updated
 
     async def start_job(
         self,
@@ -387,7 +390,10 @@ class ExecutionEngine:
         )
         logger.info("ExecutionEngine: dismissed job '%s'.", job_id)
 
-        return await tasks_mgr.get_task(engine, job_id, schema=db_schema)
+        dismissed = await tasks_mgr.get_task(engine, job_id, schema=db_schema)
+        if dismissed is None:
+            raise ValueError(f"Job '{job_id}' disappeared after dismiss.")
+        return dismissed
 
     # ------------------------------------------------------------------
     # Dispatcher path — claimed tasks from the queue

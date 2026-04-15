@@ -21,7 +21,7 @@ class TasksProtocol(Protocol):
     """Protocol for the tasks management system and persistence."""
 
     async def create_task(
-        self, engine: DbResource, task_data: Any, schema: str
+        self, engine: DbResource, task_data: Any, schema: str, initial_status: str = "PENDING"
     ) -> Any:
         """Creates a new task within a specific physical schema."""
         ...

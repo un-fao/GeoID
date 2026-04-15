@@ -44,6 +44,10 @@ class GcpCloudRunRunner(RunnerProtocol, ProtocolPlugin[Any]):
     """
     _job_map_cache: Dict[str, str] = {}
 
+    @property
+    def capabilities(self) -> Any:
+        return {"backend": "gcp_cloud_run"}
+
     async def setup(self, app_state: Any):
         """
         Discovers Cloud Run jobs from the configuration and dynamically registers
@@ -62,7 +66,7 @@ class GcpCloudRunRunner(RunnerProtocol, ProtocolPlugin[Any]):
         """Returns True if a Cloud Run Job is configured for this task type."""
         return task_type in self._job_map_cache
 
-    async def run(self, context: RunnerContext) -> Task:
+    async def run(self, context: RunnerContext) -> Optional[Task]:
         """
         Creates a task record and dispatches the job to the configured Cloud Run
         environment.
@@ -102,7 +106,7 @@ class GcpCloudRunRunner(RunnerProtocol, ProtocolPlugin[Any]):
 
         # --- Adaptation: Always wrap as ProcessTaskPayload if process, else pass as-is ---
         payload = None
-        if hasattr(task_config, "definition") and isinstance(task_config.definition, Process):
+        if task_config is not None and isinstance(getattr(task_config, "definition", None), Process):
             # If context.inputs is already a dict from ExecuteRequest, reconstruct the model
             if isinstance(context.inputs, dict) and "inputs" in context.inputs:
                 exec_req = ExecuteRequest(**context.inputs)
@@ -133,7 +137,7 @@ class GcpCloudRunRunner(RunnerProtocol, ProtocolPlugin[Any]):
             logger.error(f"Failed to trigger Cloud Run job '{job_name}' for task '{new_task.task_id}': {e}", exc_info=True)
             await tasks_module.update_task(conn=context.engine, task_id=new_task.task_id,
                                      update_data=TaskUpdate(
-                                         status="FAILED",
+                                         status=TaskStatusEnum.FAILED,
                                          error_message=str(e)
                                      ),
                                      schema=context.db_schema
