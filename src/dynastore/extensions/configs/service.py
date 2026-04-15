@@ -420,6 +420,8 @@ class ConfigsService(ExtensionProtocol):
 
             config = await self.configs.get_config(cls, catalog_id, collection_id)
             return config
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error fetching collection config: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
@@ -483,6 +485,8 @@ class ConfigsService(ExtensionProtocol):
                 cls, catalog_id, collection_id=None
             )
             return config
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error fetching catalog config: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
@@ -540,6 +544,8 @@ class ConfigsService(ExtensionProtocol):
                 cls, catalog_id=None, collection_id=None
             )
             return config
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error fetching platform config: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))

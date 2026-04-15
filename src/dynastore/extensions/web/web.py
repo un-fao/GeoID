@@ -76,7 +76,7 @@ def register_web_policies():
             "/.well-known/.*",
             "/processes.*",
             "/configs/schemas",
-            "/configs/web_config",
+            f"/configs/{WebConfig.class_key()}",
             "/configs/plugins",
         ],
         effect="ALLOW",
