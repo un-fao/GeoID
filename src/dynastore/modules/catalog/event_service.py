@@ -389,7 +389,6 @@ class EventService(EventBusProtocol):
         catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
         identity_id: Optional[str] = None,
-        dedup_key: Optional[str] = None,
         db_resource: Optional[Any] = None,
     ) -> Optional[str]:
         """Delegates to EventDriverProtocol."""
@@ -406,7 +405,6 @@ class EventService(EventBusProtocol):
             catalog_id=catalog_id,
             collection_id=collection_id,
             identity_id=identity_id,
-            dedup_key=dedup_key,
             db_resource=db_resource,
         )
 

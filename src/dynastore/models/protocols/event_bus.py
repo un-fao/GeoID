@@ -41,7 +41,7 @@ class EventBusProtocol(EventsProtocol, Protocol):
     Protocol for durable event bus operations.
 
     Provides outbox semantics on top of EventsProtocol:
-    - Publish events to durable storage with deduplication
+    - Publish events to durable storage
     - Consume events in batches (SKIP LOCKED)
     - Acknowledge (delete) or negative-acknowledge (dead-letter)
     - Automatic consumer lifecycle based on registered listeners
@@ -59,13 +59,12 @@ class EventBusProtocol(EventsProtocol, Protocol):
         catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
         identity_id: Optional[str] = None,
-        dedup_key: Optional[str] = None,
         db_resource: Optional[Any] = None,
-    ) -> Optional[str]:
+    ) -> str:
         """
         Publish an event to the durable outbox.
 
-        Returns event_id on success, or None if dedup_key already exists.
+        Returns event_id on success.
         If db_resource is provided, the INSERT participates in the caller's
         transaction (transactional outbox pattern).
         """

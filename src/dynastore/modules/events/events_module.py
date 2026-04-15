@@ -70,6 +70,9 @@ logger = logging.getLogger(__name__)
 
 _EVENTS_SCHEMA = os.getenv("DYNASTORE_EVENTS_SCHEMA", "events")
 
+# Dev note: the schema is rebuilt from scratch on clean startup. When evolving
+# this DDL, run `DROP SCHEMA events CASCADE` before restart — the per-shard
+# leaf partitions are plain `FOR VALUES IN (N)` with no sub-partitioning.
 GLOBAL_EVENTS_TABLE_DDL = f"""
 CREATE SCHEMA IF NOT EXISTS "{_EVENTS_SCHEMA}";
 CREATE TABLE IF NOT EXISTS {_EVENTS_SCHEMA}.events (
@@ -82,38 +85,24 @@ CREATE TABLE IF NOT EXISTS {_EVENTS_SCHEMA}.events (
     identity_id   VARCHAR(255),
     payload       JSONB         NOT NULL DEFAULT '{{}}',
     status        VARCHAR       NOT NULL DEFAULT 'PENDING',
-    dedup_key     VARCHAR(512),
     created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     processed_at  TIMESTAMPTZ,
     error_message TEXT,
     retry_count   INT           NOT NULL DEFAULT 0,
-    shard         SMALLINT      GENERATED ALWAYS AS (
-                      (abs(hashtext(coalesce(catalog_id, 'PLATFORM'))) % 16)::smallint
-                  ) STORED,
-    PRIMARY KEY (shard, created_at, event_id)
+    shard         SMALLINT      NOT NULL,
+    PRIMARY KEY (shard, event_id)
 ) PARTITION BY LIST (shard);
 """
 
 GLOBAL_EVENTS_INDEXES_DDL = f"""
-CREATE INDEX IF NOT EXISTS idx_events_queue
-    ON {_EVENTS_SCHEMA}.events (status, created_at)
+CREATE INDEX IF NOT EXISTS idx_events_pending
+    ON {_EVENTS_SCHEMA}.events (shard, created_at)
     WHERE status = 'PENDING';
-CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedup
-    ON {_EVENTS_SCHEMA}.events (dedup_key, shard)
-    WHERE dedup_key IS NOT NULL AND status NOT IN ('DEAD_LETTER');
-CREATE INDEX IF NOT EXISTS idx_events_schema
-    ON {_EVENTS_SCHEMA}.events (schema_name, event_type);
+CREATE INDEX IF NOT EXISTS idx_events_processing
+    ON {_EVENTS_SCHEMA}.events (processed_at)
+    WHERE status = 'PROCESSING';
 CREATE INDEX IF NOT EXISTS idx_events_event_id
     ON {_EVENTS_SCHEMA}.events (event_id);
-CREATE INDEX IF NOT EXISTS idx_events_catalog
-    ON {_EVENTS_SCHEMA}.events (catalog_id, event_type, created_at)
-    WHERE catalog_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_events_collection
-    ON {_EVENTS_SCHEMA}.events (collection_id, event_type, created_at)
-    WHERE collection_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_events_identity
-    ON {_EVENTS_SCHEMA}.events (identity_id, event_type, created_at)
-    WHERE identity_id IS NOT NULL;
 
 CREATE OR REPLACE FUNCTION {_EVENTS_SCHEMA}.notify_event_ready()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
@@ -191,16 +180,14 @@ _publish_query = DQLQuery(
     f"""
     INSERT INTO {_EVENTS_SCHEMA}.events
         (event_type, scope, schema_name, catalog_id, collection_id, identity_id,
-         payload, dedup_key)
+         payload, shard)
     VALUES
         (:event_type, :scope, :schema_name, :catalog_id, :collection_id,
-         :identity_id, :payload, :dedup_key)
-    ON CONFLICT (dedup_key, shard)
-        WHERE dedup_key IS NOT NULL AND status NOT IN ('DEAD_LETTER')
-        DO NOTHING
+         :identity_id, :payload,
+         (abs(hashtext(coalesce(:catalog_id, 'PLATFORM'))) % 16)::smallint)
     RETURNING event_id::text;
     """,
-    result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
+    result_handler=ResultHandler.SCALAR_ONE,
 )
 
 _consume_query = DQLQuery(
@@ -208,8 +195,8 @@ _consume_query = DQLQuery(
     UPDATE {_EVENTS_SCHEMA}.events
     SET status = 'PROCESSING',
         processed_at = NOW()
-    WHERE (shard, created_at, event_id) IN (
-        SELECT shard, created_at, event_id FROM {_EVENTS_SCHEMA}.events
+    WHERE (shard, event_id) IN (
+        SELECT shard, event_id FROM {_EVENTS_SCHEMA}.events
         WHERE status = 'PENDING'
           AND (:shard IS NULL OR shard = :shard)
           AND (:scope = 'ALL' OR scope = :scope)
@@ -218,7 +205,7 @@ _consume_query = DQLQuery(
         FOR UPDATE SKIP LOCKED
     )
     RETURNING event_id::text, event_type, scope, schema_name, catalog_id,
-              collection_id, identity_id, payload, created_at, dedup_key, retry_count;
+              collection_id, identity_id, payload, created_at, retry_count;
     """,
     result_handler=ResultHandler.ALL_DICTS,
 )
@@ -227,6 +214,95 @@ _ack_query = DQLQuery(
     f"DELETE FROM {_EVENTS_SCHEMA}.events WHERE event_id = ANY(:event_ids);",
     result_handler=ResultHandler.NONE,
 )
+
+# ---------------------------------------------------------------------------
+# pg_cron job helpers (retention + reaper)
+# ---------------------------------------------------------------------------
+
+_RETENTION_JOB_NAME = f"events_{_EVENTS_SCHEMA}_retention"
+_PENDING_ALERT_JOB_NAME = f"events_{_EVENTS_SCHEMA}_pending_alert"
+_REAPER_JOB_NAME = f"events_{_EVENTS_SCHEMA}_reaper"
+
+
+def _cron_block(job_name: str, schedule: str, command: str) -> str:
+    """Idempotent pg_cron re-registration snippet.
+
+    pg_cron's `cron.schedule` treats the command as opaque text; we embed it
+    inside a dollar-quoted literal so inner single-quotes pass through safely.
+    """
+    return f"""
+    DO $SAFE$
+    BEGIN
+        IF EXISTS (SELECT 1 FROM cron.job WHERE jobname = '{job_name}') THEN
+            PERFORM cron.unschedule('{job_name}');
+        END IF;
+    END $SAFE$;
+    SELECT cron.schedule('{job_name}', '{schedule}', $CMD$ {command} $CMD$);
+    """
+
+
+async def _register_events_retention(conn: Any, dead_letter_days: int) -> None:
+    """Register DLQ pruning and PENDING-age alert cron jobs."""
+    prune_cmd = (
+        f"DELETE FROM {_EVENTS_SCHEMA}.events "
+        f"WHERE status = 'DEAD_LETTER' "
+        f"AND created_at < NOW() - INTERVAL '{dead_letter_days} days'"
+    )
+    alert_cmd = (
+        "DO $ALERT$ DECLARE r RECORD; BEGIN "
+        f"FOR r IN SELECT shard, count(*) AS n, "
+        f"EXTRACT(EPOCH FROM NOW()-min(created_at))::bigint AS oldest_age_sec "
+        f"FROM {_EVENTS_SCHEMA}.events "
+        f"WHERE status = 'PENDING' "
+        f"AND created_at < NOW() - INTERVAL '{dead_letter_days} days' "
+        f"GROUP BY shard LOOP "
+        f"RAISE WARNING 'events.pending_stale shard=% count=% oldest_age_sec=%', "
+        f"r.shard, r.n, r.oldest_age_sec; "
+        "END LOOP; END $ALERT$"
+    )
+    await DDLQuery(
+        _cron_block(_RETENTION_JOB_NAME, "0 3 * * *", prune_cmd)
+        + _cron_block(_PENDING_ALERT_JOB_NAME, "15 3 * * *", alert_cmd)
+    ).execute(conn)
+
+
+async def _register_events_reaper(
+    conn: Any, timeout_minutes: int, max_retries: int
+) -> None:
+    """Register stuck-PROCESSING reaper (every 5 minutes)."""
+    reaper_cmd = (
+        f"WITH expired AS ("
+        f"SELECT shard, event_id, retry_count FROM {_EVENTS_SCHEMA}.events "
+        f"WHERE status = 'PROCESSING' "
+        f"AND processed_at < NOW() - INTERVAL '{timeout_minutes} minutes' "
+        f"FOR UPDATE SKIP LOCKED"
+        f") "
+        f"UPDATE {_EVENTS_SCHEMA}.events e "
+        f"SET status = CASE WHEN expired.retry_count + 1 >= {max_retries} "
+        f"THEN 'DEAD_LETTER' ELSE 'PENDING' END, "
+        f"retry_count = expired.retry_count + 1, "
+        f"error_message = 'reaped stale PROCESSING' "
+        f"FROM expired "
+        f"WHERE e.shard = expired.shard AND e.event_id = expired.event_id"
+    )
+    await DDLQuery(
+        _cron_block(_REAPER_JOB_NAME, "*/5 * * * *", reaper_cmd)
+    ).execute(conn)
+
+
+_backlog_query = DQLQuery(
+    f"""
+    SELECT shard,
+           count(*) AS pending,
+           EXTRACT(EPOCH FROM NOW()-min(created_at))::bigint AS oldest_age_sec
+      FROM {_EVENTS_SCHEMA}.events
+     WHERE status = 'PENDING'
+     GROUP BY shard
+    HAVING count(*) > :warn_threshold;
+    """,
+    result_handler=ResultHandler.ALL_DICTS,
+)
+
 
 _nack_query = DQLQuery(
     f"""
@@ -378,7 +454,6 @@ class EventsModule(ModuleProtocol):
             EventDriverCapability.NOTIFICATION,
             EventDriverCapability.SUBSCRIBE,
             EventDriverCapability.DEAD_LETTER,
-            EventDriverCapability.EXACTLY_ONCE,
         })
 
     def has_capability(self, cap: str) -> bool:
@@ -424,50 +499,24 @@ class EventsModule(ModuleProtocol):
                 )
             logger.info("EventsModule: %s.events ready.", _EVENTS_SCHEMA)
 
-            # Create 16 shard sub-partitions and per-shard maintenance jobs
+            # Create 16 shard leaf partitions (single-level LIST partitioning)
             async with managed_transaction(self._engine) as conn:
-                from dynastore.modules.db_config.maintenance_tools import (
-                    ensure_future_partitions,
-                    register_retention_policy,
-                    register_partition_creation_policy,
-                )
-
-                global_retention = int(os.getenv("GLOBAL_EVENT_RETENTION_DAYS", "30"))
-
                 for shard_id in range(16):
                     await DDLQuery(
                         f"""
                         CREATE TABLE IF NOT EXISTS {_EVENTS_SCHEMA}.events_s{shard_id}
                         PARTITION OF {_EVENTS_SCHEMA}.events
-                        FOR VALUES IN ({shard_id})
-                        PARTITION BY RANGE (created_at);
+                        FOR VALUES IN ({shard_id});
                         """
                     ).execute(conn)
 
-                    await ensure_future_partitions(
-                        conn,
-                        schema=_EVENTS_SCHEMA,
-                        table=f"events_s{shard_id}",
-                        interval="monthly",
-                        periods_ahead=3,
-                        column="created_at",
-                    )
-                    await register_partition_creation_policy(
-                        conn,
-                        schema=_EVENTS_SCHEMA,
-                        table=f"events_s{shard_id}",
-                        interval="monthly",
-                        periods_ahead=3,
-                    )
-                    await register_retention_policy(
-                        conn,
-                        schema=_EVENTS_SCHEMA,
-                        table=f"events_s{shard_id}",
-                        policy="prune",
-                        interval="daily",
-                        retention_period=f"{global_retention} days",
-                        column="created_at",
-                    )
+                policy = self.accumulation_policy
+                await _register_events_retention(conn, policy.dead_letter_days)
+                await _register_events_reaper(
+                    conn,
+                    timeout_minutes=int(os.getenv("EVENT_PROCESSING_TIMEOUT_MINUTES", "15")),
+                    max_retries=policy.max_retries,
+                )
 
             logger.info("EventsModule: Global events shard partitions configured.")
         except Exception:
@@ -520,8 +569,23 @@ class EventsModule(ModuleProtocol):
             )
 
         logger.info("EventsModule: Initialisation complete. Event storage is active.")
-        yield
-        logger.info("EventsModule: Shutdown complete.")
+
+        backlog_task = asyncio.create_task(
+            self._backlog_monitor_loop(
+                warn_threshold=int(os.getenv("EVENT_BACKLOG_WARN", "10000")),
+                cadence_seconds=int(os.getenv("EVENT_BACKLOG_CADENCE_SEC", "60")),
+            ),
+            name="events_backlog_monitor",
+        )
+        try:
+            yield
+        finally:
+            backlog_task.cancel()
+            try:
+                await backlog_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            logger.info("EventsModule: Shutdown complete.")
 
     # ------------------------------------------------------------------
     # EventDriverProtocol — DDL lifecycle
@@ -580,6 +644,43 @@ class EventsModule(ModuleProtocol):
                     pass  # connection drop releases lock automatically
 
     # ------------------------------------------------------------------
+    # Backlog monitor (leader-elected)
+    # ------------------------------------------------------------------
+
+    async def _backlog_monitor_loop(
+        self, warn_threshold: int, cadence_seconds: int
+    ) -> None:
+        """Log per-shard backlog warnings when PENDING count exceeds threshold.
+
+        Runs on the leader only (advisory lock); other instances sleep waiting
+        for the lock. On cancellation or connection drop the lock releases.
+        """
+        try:
+            async with self.acquire_consumer_lock("events_backlog_monitor"):
+                from dynastore.tools.protocol_helpers import get_engine
+                engine = self._engine or get_engine()
+                while True:
+                    try:
+                        async with managed_transaction(engine) as conn:
+                            rows = await _backlog_query.execute(
+                                conn, warn_threshold=warn_threshold
+                            )
+                        for row in rows or []:
+                            logger.warning(
+                                "events.backlog shard=%s pending=%s oldest_age_sec=%s",
+                                row["shard"],
+                                row["pending"],
+                                row["oldest_age_sec"],
+                            )
+                    except Exception:
+                        logger.exception("events.backlog monitor query failed")
+                    await asyncio.sleep(cadence_seconds)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("events.backlog monitor task exiting")
+
+    # ------------------------------------------------------------------
     # EventDriverProtocol — produce
     # ------------------------------------------------------------------
 
@@ -592,12 +693,11 @@ class EventsModule(ModuleProtocol):
         catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
         identity_id: Optional[str] = None,
-        dedup_key: Optional[str] = None,
         db_resource: Optional[DbResource] = None,
-    ) -> Optional[str]:
-        """Insert an event into the global outbox. Returns event_id or None (dedup)."""
+    ) -> str:
+        """Insert an event into the global outbox. Returns event_id."""
 
-        async def _run(conn: Any) -> Optional[str]:
+        async def _run(conn: Any) -> str:
             payload_str = orjson.dumps(payload).decode()
             return await _publish_query.execute(
                 conn,
@@ -608,7 +708,6 @@ class EventsModule(ModuleProtocol):
                 collection_id=collection_id,
                 identity_id=identity_id,
                 payload=payload_str,
-                dedup_key=dedup_key,
             )
 
         if db_resource is not None:

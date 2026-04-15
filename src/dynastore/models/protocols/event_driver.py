@@ -20,7 +20,7 @@ accommodates multiple backend types (PostgreSQL outbox, GCP Pub/Sub, JMS, EventA
 
 Implementations:
   - PostgreSQL (default): ``EventsModule`` in dynastore.modules.events
-    Capabilities: PERSISTENCE, LOCKING, NOTIFICATION, SUBSCRIBE, DEAD_LETTER, EXACTLY_ONCE
+    Capabilities: PERSISTENCE, LOCKING, NOTIFICATION, SUBSCRIBE, DEAD_LETTER
     DeliveryMode: AT_LEAST_ONCE
   - Other backends: implement a subset of capabilities and declare them accordingly.
 
@@ -85,9 +85,6 @@ class EventDriverCapability:
     DEAD_LETTER = "dead_letter"
     """Exhausted events are moved to a dead-letter queue."""
 
-    EXACTLY_ONCE = "exactly_once"
-    """Idempotent INSERT via dedup_key."""
-
 
 # ---------------------------------------------------------------------------
 # Delivery mode constants
@@ -102,9 +99,6 @@ class DeliveryMode:
 
     AT_LEAST_ONCE = "at_least_once"
     """Retry on failure — default for PG transactional outbox."""
-
-    EXACTLY_ONCE = "exactly_once"
-    """Idempotent INSERT + dedup_key; each logical event processed once."""
 
 
 # ---------------------------------------------------------------------------
@@ -250,14 +244,12 @@ class EventDriverProtocol(Protocol):
         catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
         identity_id: Optional[str] = None,
-        dedup_key: Optional[str] = None,
         db_resource: Optional[Any] = None,
-    ) -> Optional[str]:
+    ) -> str:
         """
         Persist an event to the durable outbox.
 
-        Returns the ``event_id`` (str) on success, or ``None`` if the event
-        was deduplicated (dedup_key already present with a non-terminal status).
+        Returns the ``event_id`` on success.
 
         If ``db_resource`` is supplied the INSERT participates in the caller's
         existing transaction (transactional outbox pattern), otherwise the
