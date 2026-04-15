@@ -29,8 +29,6 @@ from dynastore.modules.db_config.query_executor import (
     DbEngine,
     DbConnection,
 )
-from dynastore.modules.db_config.exceptions import QueryExecutionError
-
 from dynastore.modules.db_config.partition_tools import ensure_partition_exists  # type: ignore
 from dynastore.modules.db_config.locking_tools import (
     acquire_startup_lock,
@@ -91,10 +89,11 @@ async def ensure_enum_type(conn: DbResource, type_name: str, labels: list[str]):
     """
     Safely ensures a custom ENUM type exists, handling concurrent creation.
 
-    This function uses an isolated transaction (SAVEPOINT) to attempt the
-    `CREATE TYPE` command. If the type already exists (as is common when
-    multiple services start up), the sub-transaction is rolled back, but the
-    main transaction remains healthy, preventing the application from crashing.
+    Uses a ``check_query`` against ``pg_type`` to skip creation when the type
+    already exists in the target namespace. This avoids races between
+    concurrent startup hooks that would otherwise raise
+    ``UniqueViolationError`` on ``pg_type_typname_nsp_index`` and poison the
+    surrounding transaction.
     """
     from dynastore.tools.db import validate_sql_identifier
     validate_sql_identifier(type_name)
@@ -102,17 +101,17 @@ async def ensure_enum_type(conn: DbResource, type_name: str, labels: list[str]):
     label_str = ", ".join([f"'{label}'" for label in escaped_labels])
     create_type_sql = f'CREATE TYPE "{type_name}" AS ENUM ({label_str});'
 
-    try:
-        from dynastore.modules.db_config.tools import isolated_transaction
-
-        # Use the isolated_transaction context manager to wrap the DDL.
-        async with isolated_transaction(conn):
-            logger.debug(f"Attempting to create ENUM type '{type_name}'...")
-            await DDLQuery(create_type_sql).execute(conn)
-            logger.info(f"Successfully created ENUM type '{type_name}'.")
-    except QueryExecutionError as e:
-        logger.error(f"Unexpected error creating ENUM '{type_name}': {e}")
-        raise
+    await DDLQuery(
+        create_type_sql,
+        check_query=(
+            "SELECT 1 FROM pg_type t "
+            "JOIN pg_namespace n ON n.oid = t.typnamespace "
+            "WHERE t.typname = :type_name "
+            "AND n.nspname = ANY (current_schemas(true))"
+        ),
+        lock_key=f"enum_type_{type_name}",
+    ).execute(conn, type_name=type_name)
+    logger.info(f"ENUM type '{type_name}' verified/ready.")
 
 
 async def ensure_future_partitions(

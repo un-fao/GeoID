@@ -22,6 +22,8 @@ class TilesPluginConfig(PluginConfig):
     Runtime configuration for the Tiles extension.
     Controls visibility, bounds, and on-the-fly generation settings.
     """
+    _class_key: ClassVar[str] = "tiles"
+
     # Enabled by default if this config exists/is loaded.
     enabled: bool = Field(True, description="If False, tile requests will be rejected.")
     

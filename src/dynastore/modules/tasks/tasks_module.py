@@ -377,13 +377,15 @@ async def ensure_task_storage_exists(conn: DbResource, schema: str):
         logger.info(f"TasksModule: Global tasks table '{schema}.tasks' exists. Skipping DDL.")
         return
 
-    # Step 1: Create tasks table (IF NOT EXISTS — safe for existing DBs)
-    await DDLQuery(GLOBAL_TASKS_TABLE_DDL).execute(
-        conn,
-        schema=schema,
+    # Step 1: Create tasks table under advisory lock + existence guard to
+    # serialize concurrent startups. Without this, two workers racing on
+    # `CREATE TABLE tasks` both fall through IF NOT EXISTS's toctou window
+    # and collide on the implicit composite type row in pg_type.
+    await DDLQuery(
+        GLOBAL_TASKS_TABLE_DDL,
+        check_query=tasks_table_exists,
         lock_key=f"{schema}_tasks",
-        existence_check=tasks_table_exists,
-    )
+    ).execute(conn, schema=schema)
 
     # Step 2: Create indexes and triggers
     await DDLQuery(GLOBAL_TASKS_INDEXES_DDL).execute(conn, schema=schema)
