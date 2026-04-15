@@ -79,7 +79,9 @@ TILE_MATRIX_SETS_COMMENT_DDL = "COMMENT ON TABLE tiles.tile_matrix_sets IS 'Stor
 
 # --- Module Implementation ---
 class TilesModule(ModuleProtocol, DatabaseProtocol):
-    priority: int = 0
+    # Must start after CatalogModule (priority=20) because boot-time tile
+    # storage provider selection depends on CatalogsProtocol being registered.
+    priority: int = 25
     """
     The foundational module for managing custom TileMatrixSets.
     It owns the `tiles.tile_matrix_sets` table and provides the core logic

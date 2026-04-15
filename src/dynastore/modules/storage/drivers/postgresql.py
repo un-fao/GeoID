@@ -297,7 +297,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
             raise ValueError("ensure_storage requires db_resource")
 
         from dynastore.modules.db_config.query_executor import (
-            DDLQuery, DQLQuery, ResultHandler, managed_transaction, managed_nested_transaction,
+            DDLQuery, DQLQuery, ResultHandler, managed_transaction,
         )
         from dynastore.tools.discovery import get_protocol
         from dynastore.models.protocols.configs import ConfigsProtocol
@@ -430,30 +430,6 @@ class DriverRecordsPostgresql(ModuleProtocol):
                 check_immutability=False,
                 ctx=DriverContext(db_resource=db_resource),
             )
-
-        # --- Store schema hash ---
-        try:
-            import hashlib
-            import json as _json
-            config_dump = col_config.model_dump() if hasattr(col_config, "model_dump") else {}
-            schema_hash = hashlib.sha256(
-                _json.dumps(config_dump, sort_keys=True, default=str).encode()
-            ).hexdigest()
-            async with managed_nested_transaction(db_resource):
-                await DQLQuery(
-                    f'UPDATE "{schema}".collection_configs '
-                    f'SET schema_hash = :schema_hash, updated_at = NOW() '
-                    f'WHERE catalog_id = :catalog_id AND collection_id = :collection_id '
-                    f"AND plugin_id = 'collection';",
-                    result_handler=ResultHandler.NONE,
-                ).execute(
-                    db_resource,
-                    schema_hash=schema_hash,
-                    catalog_id=catalog_id,
-                    collection_id=collection_id,
-                )
-        except Exception as e:
-            logger.warning("Failed to store schema hash: %s", e)
 
         # --- Ensure asset cleanup trigger ---
         am = get_protocol(AssetsProtocol)
