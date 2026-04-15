@@ -51,6 +51,10 @@ class AssetDriverProtocol(Protocol):
     preferred_for: FrozenSet[str]
     supported_hints: FrozenSet[str]
 
+    def is_available(self) -> bool:
+        """Health check — returning False hides the driver from discovery."""
+        ...
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------

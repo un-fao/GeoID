@@ -286,22 +286,19 @@ class ConfigsService(ExtensionProtocol):
         return list(plugins.keys())
 
     async def list_storage_drivers(self) -> Any:
-        """List all registered storage drivers grouped by driver_type.
+        """List all registered drivers grouped by the protocol/domain they serve.
 
-        Returns a dict keyed by ``driver_type`` (e.g. ``"driver:records:postgresql"``).
-        Use the ``driver_id`` values in ``collection:drivers`` or ``assets:drivers``
-        routing config.
+        Response shape: ``{domain: {class_name: DriverInfo}}``. Domains are
+        ``"collections"``, ``"assets"``, ``"collection_metadata"`` — matching
+        the slots in the routing config. Use the inner class names as
+        ``driver_id`` values in ``collection:drivers`` / ``assets:drivers``.
         """
-        from collections import defaultdict
-
         from dynastore.extensions.configs.dto import DriverInfo, DriverListResponse
         from dynastore.models.protocols.asset_driver import AssetDriverProtocol
         from dynastore.models.protocols.metadata_driver import CollectionMetadataDriverProtocol
         from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
         from dynastore.modules.storage.routing_config import derive_supported_operations
-        from dynastore.tools.discovery import get_protocols
-
-        grouped: dict = defaultdict(list)
+        from dynastore.tools.discovery import get_all_protocols
 
         def _driver_description(driver) -> dict:
             desc = getattr(driver, "description", None)
@@ -309,77 +306,47 @@ class ConfigsService(ExtensionProtocol):
                 return {}
             if isinstance(desc, dict):
                 return desc
-            # LocalizedText or similar
             if hasattr(desc, "model_dump"):
                 return {k: v for k, v in desc.model_dump().items() if v}
             return {}
 
-        for driver in get_protocols(CollectionStorageDriverProtocol):
-            caps = sorted(getattr(driver, "capabilities", frozenset()))
-            driver_type = type(driver).__name__
-            class_key = getattr(driver, "_class_key", f"driver:records:{type(driver).__name__}")
-            driver_config_caps = []
+        def _config_caps(class_key: str) -> list:
             try:
                 dcls = resolve_config_class(class_key)
                 if dcls is not None:
-                    driver_config_caps = sorted(getattr(dcls(), "capabilities", frozenset()))
+                    return sorted(getattr(dcls(), "capabilities", frozenset()))
             except Exception:
                 pass
-            grouped[driver_type].append(DriverInfo(
-                driver_id=type(driver).__name__,
-                driver_type=driver_type,
-                domain="collections",
-                description=_driver_description(driver),
-                capabilities=caps,
-                driver_capabilities=driver_config_caps,
-                supported_operations=sorted(derive_supported_operations(
-                    getattr(driver, "capabilities", frozenset())
-                )),
-                supported_hints=sorted(getattr(driver, "supported_hints", frozenset())),
-                preferred_for=sorted(getattr(driver, "preferred_for", frozenset())),
-            ))
+            return []
 
-        for driver in get_protocols(AssetDriverProtocol):
-            caps = sorted(getattr(driver, "capabilities", frozenset()))
-            driver_type = type(driver).__name__
-            class_key = getattr(driver, "_class_key", f"driver:asset:{type(driver).__name__}")
-            driver_config_caps = []
-            try:
-                dcls = resolve_config_class(class_key)
-                if dcls is not None:
-                    driver_config_caps = sorted(getattr(dcls(), "capabilities", frozenset()))
-            except Exception:
-                pass
-            grouped[driver_type].append(DriverInfo(
-                driver_id=type(driver).__name__,
-                driver_type=driver_type,
-                domain="assets",
+        def _info(driver, config_class_key: str | None, available: bool) -> DriverInfo:
+            caps = driver.capabilities
+            return DriverInfo(
                 description=_driver_description(driver),
-                capabilities=caps,
-                driver_capabilities=driver_config_caps,
-                supported_operations=sorted(derive_supported_operations(
-                    getattr(driver, "capabilities", frozenset())
-                )),
-                supported_hints=sorted(getattr(driver, "supported_hints", frozenset())),
-                preferred_for=sorted(getattr(driver, "preferred_for", frozenset())),
-            ))
+                capabilities=sorted(caps),
+                driver_capabilities=_config_caps(config_class_key) if config_class_key else [],
+                supported_operations=sorted(derive_supported_operations(caps)) if config_class_key else [],
+                supported_hints=sorted(driver.supported_hints),
+                preferred_for=sorted(driver.preferred_for),
+                available=available,
+            )
 
-        for driver in get_protocols(CollectionMetadataDriverProtocol):
-            driver_type = type(driver).__name__
-            class_key = getattr(driver, "_class_key", "")
-            grouped[driver_type].append(DriverInfo(
-                driver_id=type(driver).__name__,
-                driver_type=driver_type,
-                domain="collection_metadata",
-                description=_driver_description(driver),
-                capabilities=sorted(getattr(driver, "capabilities", frozenset())),
-                driver_capabilities=[],
-                supported_operations=[],
-                supported_hints=sorted(getattr(driver, "supported_hints", frozenset())),
-                preferred_for=sorted(getattr(driver, "preferred_for", frozenset())),
-            ))
+        drivers: Dict[str, Dict[str, DriverInfo]] = {
+            "collections": {
+                type(d).__name__: _info(d, f"driver:records:{type(d).__name__}", d.is_available())
+                for d in get_all_protocols(CollectionStorageDriverProtocol)
+            },
+            "assets": {
+                type(d).__name__: _info(d, f"driver:asset:{type(d).__name__}", d.is_available())
+                for d in get_all_protocols(AssetDriverProtocol)
+            },
+            "collection_metadata": {
+                type(d).__name__: _info(d, None, await d.is_available())
+                for d in get_all_protocols(CollectionMetadataDriverProtocol)
+            },
+        }
 
-        return DriverListResponse(drivers=dict(grouped))
+        return DriverListResponse(drivers=drivers)
 
     # --- Configuration Listing Endpoints ---
 

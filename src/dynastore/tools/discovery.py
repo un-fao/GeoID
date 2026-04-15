@@ -213,6 +213,46 @@ def get_protocols(protocol: Type[T]) -> List[T]:
     return cast(List[T], _get_protocols_cached(protocol))
 
 
+def get_all_protocols(protocol: Type[T]) -> List[T]:
+    """Return all registered instances of the given protocol — including
+    those whose ``is_available()`` currently returns False. Intended for
+    introspection UIs (e.g. driver listings for a configurator)."""
+    discovered: List[Any] = []
+    seen: set = set()
+
+    def _accept(obj: Any) -> bool:
+        obj_id = id(obj)
+        if obj_id in seen or not isinstance(obj, protocol):
+            return False
+        seen.add(obj_id)
+        return True
+
+    for instance in _DYNASTORE_PLUGINS:
+        if _accept(instance):
+            discovered.append(instance)
+
+    from dynastore.modules import _DYNASTORE_MODULES
+    for config in _DYNASTORE_MODULES.values():
+        if config.instance and _accept(config.instance):
+            discovered.append(config.instance)
+
+    try:
+        from dynastore.extensions.registry import _DYNASTORE_EXTENSIONS
+        for config in _DYNASTORE_EXTENSIONS.values():
+            if config.instance and _accept(config.instance):
+                discovered.append(config.instance)
+    except (ImportError, ModuleNotFoundError):
+        pass
+
+    from dynastore.tasks import _DYNASTORE_TASKS
+    for config in _DYNASTORE_TASKS.values():
+        if config.instance and _accept(config.instance):
+            discovered.append(config.instance)
+
+    discovered.sort(key=lambda x: getattr(x, "priority", 100))
+    return cast(List[T], discovered)
+
+
 def _clear_protocol_caches() -> None:
     _get_protocol_cached.cache_clear()
     _get_protocols_cached.cache_clear()

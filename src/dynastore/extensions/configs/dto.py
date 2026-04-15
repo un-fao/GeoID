@@ -96,16 +96,6 @@ class EffectiveConfigResponse(BaseModel):
 class DriverInfo(BaseModel):
     """Metadata about a registered storage driver."""
 
-    driver_id: str = Field(..., description="Unique driver identifier (used in routing config).")
-    driver_type: str = Field(
-        default="",
-        description="Driver class name (e.g. 'DriverRecordsPostgresql'). Multiple driver_ids may share a class.",
-    )
-    domain: str = Field(
-        ...,
-        description="Domain this driver serves: 'collections', 'assets', or 'collection_metadata'.",
-        examples=["collections", "assets", "collection_metadata"],
-    )
     description: Dict[str, str] = Field(
         default_factory=dict,
         description="Multilanguage description of the driver (ClassVar[LocalizedText] from the class).",
@@ -134,16 +124,17 @@ class DriverInfo(BaseModel):
 
 
 class DriverListResponse(BaseModel):
-    """All registered storage drivers grouped by driver_type.
+    """All registered storage drivers, grouped by the protocol/domain they serve.
 
-    Keys are driver_type strings (e.g. ``"driver:records:postgresql"``).
-    Each value is a list of driver instances sharing that type.
-    Use ``driver_id`` values in ``collection:drivers`` routing config.
+    Outer key is the domain (``"collections"``, ``"assets"``,
+    ``"collection_metadata"``) — matches the slot in routing config.
+    Inner key is the implementation class name (e.g. ``"DriverRecordsPostgresql"``),
+    used as the ``driver_id`` in ``collection:drivers`` / ``assets:drivers``.
     """
 
-    drivers: Dict[str, List[DriverInfo]] = Field(
+    drivers: Dict[str, Dict[str, DriverInfo]] = Field(
         default_factory=dict,
-        description="driver_type → list of driver implementations.",
+        description="domain → {class name → driver info}.",
     )
 
 

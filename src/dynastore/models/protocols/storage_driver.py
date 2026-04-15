@@ -150,6 +150,10 @@ class CollectionStorageDriverProtocol(Protocol):
     supported_hints: FrozenSet[str]
     # description: ClassVar[LocalizedText]  — declared in each concrete driver class
 
+    def is_available(self) -> bool:
+        """Health check — returning False hides the driver from discovery."""
+        ...
+
     async def write_entities(
         self,
         catalog_id: str,
