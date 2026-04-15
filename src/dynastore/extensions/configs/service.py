@@ -319,29 +319,36 @@ class ConfigsService(ExtensionProtocol):
                 pass
             return []
 
-        def _info(driver, config_class_key: str | None, available: bool) -> DriverInfo:
+        def _routable_info(driver, config_class_key: str, available: bool) -> DriverInfo:
             caps = driver.capabilities
             return DriverInfo(
                 description=_driver_description(driver),
                 capabilities=sorted(caps),
-                driver_capabilities=_config_caps(config_class_key) if config_class_key else [],
-                supported_operations=sorted(derive_supported_operations(caps)) if config_class_key else [],
+                driver_capabilities=_config_caps(config_class_key),
+                supported_operations=sorted(derive_supported_operations(caps)),
                 supported_hints=sorted(driver.supported_hints),
                 preferred_for=sorted(driver.preferred_for),
                 available=available,
             )
 
+        def _metadata_info(driver, available: bool) -> DriverInfo:
+            return DriverInfo(
+                description=_driver_description(driver),
+                capabilities=sorted(driver.capabilities),
+                available=available,
+            )
+
         drivers: Dict[str, Dict[str, DriverInfo]] = {
             "collections": {
-                type(d).__name__: _info(d, f"driver:records:{type(d).__name__}", d.is_available())
+                type(d).__name__: _routable_info(d, f"driver:records:{type(d).__name__}", d.is_available())
                 for d in get_all_protocols(CollectionStorageDriverProtocol)
             },
             "assets": {
-                type(d).__name__: _info(d, f"driver:asset:{type(d).__name__}", d.is_available())
+                type(d).__name__: _routable_info(d, f"driver:asset:{type(d).__name__}", d.is_available())
                 for d in get_all_protocols(AssetDriverProtocol)
             },
             "collection_metadata": {
-                type(d).__name__: _info(d, None, await d.is_available())
+                type(d).__name__: _metadata_info(d, await d.is_available())
                 for d in get_all_protocols(CollectionMetadataDriverProtocol)
             },
         }
