@@ -487,38 +487,6 @@ async def ensure_task_storage_exists(conn: DbResource, schema: str):
             f"(pg_cron unavailable?): {e}"
         )
 
-    # --- Task maintenance cron jobs ---
-    from dynastore.modules.db_config.maintenance_tools import register_cron_job
-
-    completed_retention = int(os.getenv("TASK_COMPLETED_RETENTION_DAYS", "30"))
-    dlq_retention = int(os.getenv("TASK_DLQ_RETENTION_DAYS", "90"))
-
-    try:
-        await register_cron_job(
-            conn,
-            job_name=f"purge_completed_tasks_{schema}",
-            schedule="0 5 * * *",  # Daily 05:00
-            command=(
-                f"DELETE FROM {schema}.tasks "
-                f"WHERE status IN ('COMPLETED', 'FAILED') "
-                f"AND finished_at < NOW() - INTERVAL '{completed_retention} days';"
-            ),
-        )
-        await register_cron_job(
-            conn,
-            job_name=f"purge_dead_letter_tasks_{schema}",
-            schedule="0 5 1 * *",  # 1st of month 05:00
-            command=(
-                f"DELETE FROM {schema}.tasks "
-                f"WHERE status = 'DEAD_LETTER' "
-                f"AND finished_at < NOW() - INTERVAL '{dlq_retention} days';"
-            ),
-        )
-    except Exception as e:
-        logger.warning(
-            f"TasksModule: cron job registration failed for {schema}.tasks "
-            f"(pg_cron unavailable?): {e}"
-        )
 
 
 # --- Public API Functions ---
