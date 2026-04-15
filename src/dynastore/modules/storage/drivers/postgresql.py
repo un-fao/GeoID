@@ -66,6 +66,8 @@ class DriverRecordsPostgresql(ModuleProtocol):
         Capability.INTROSPECTION,
         Capability.COUNT,
         Capability.AGGREGATION,
+        Capability.REQUIRED_ENFORCEMENT,
+        Capability.UNIQUE_ENFORCEMENT,
     })
     preferred_for: FrozenSet[str] = frozenset({"features", "write"})
     supported_hints: FrozenSet[str] = frozenset({"features", "write", "metadata"})
@@ -358,6 +360,47 @@ class DriverRecordsPostgresql(ModuleProtocol):
             "geoid": "UUID",
             "asset_id": "VARCHAR(255)",
         }
+
+        # Bridge FeatureTypePluginConfig.fields → attributes sidecar so that
+        # required=True / unique=True materialize as NOT NULL / UNIQUE in the
+        # generated DDL (COLUMNAR mode).
+        try:
+            from dynastore.modules.storage.driver_config import (
+                FeatureTypePluginConfig,
+            )
+            from dynastore.modules.catalog.sidecars.attributes_config import (
+                FeatureAttributeSidecarConfig,
+            )
+            from dynastore.modules.storage.field_constraints import (
+                bridge_feature_type_to_attribute_schema,
+            )
+
+            configs = get_protocol(ConfigsProtocol)
+            ft_cfg = None
+            if configs is not None:
+                ft_cfg = await configs.get_config(
+                    FeatureTypePluginConfig,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                    ctx=DriverContext(db_resource=db_resource),
+                )
+            if ft_cfg is not None and getattr(ft_cfg, "fields", None):
+                new_sidecars = []
+                for sc in col_config.sidecars:
+                    if isinstance(sc, FeatureAttributeSidecarConfig):
+                        new_sidecars.append(
+                            bridge_feature_type_to_attribute_schema(ft_cfg, sc)
+                        )
+                    else:
+                        new_sidecars.append(sc)
+                col_config = col_config.model_copy(
+                    update={"sidecars": new_sidecars}
+                )
+        except Exception as exc:
+            logger.debug(
+                "feature_type → attribute_schema bridge skipped for %s/%s: %s",
+                catalog_id, collection_id, exc,
+            )
 
         if col_config.partitioning.enabled:
             partition_keys = col_config.partitioning.partition_keys
@@ -781,10 +824,27 @@ class DriverRecordsPostgresql(ModuleProtocol):
             if col_config and col_config.sidecars:
                 try:
                     from dynastore.modules.catalog.query_optimizer import QueryOptimizer
+                    from dynastore.modules.catalog.sidecars.attributes_config import (
+                        FeatureAttributeSidecarConfig,
+                    )
+
                     optimizer = QueryOptimizer(col_config)
                     sidecar_fields = optimizer.get_all_queryable_fields()
+
+                    # Collect NOT NULL / UNIQUE flags from the attributes sidecar
+                    # so introspection round-trips what ensure_storage materialised.
+                    schema_flags: Dict[str, Dict[str, bool]] = {}
+                    for sc in col_config.sidecars:
+                        if isinstance(sc, FeatureAttributeSidecarConfig) and sc.attribute_schema:
+                            for entry in sc.attribute_schema:
+                                schema_flags[entry.name] = {
+                                    "required": not entry.nullable,
+                                    "unique": bool(entry.unique),
+                                }
+
                     result = {}
                     for name, fd in sidecar_fields.items():
+                        flags = schema_flags.get(name, {})
                         result[name] = ProtocolFieldDefinition(
                             name=fd.name,
                             alias=fd.alias,
@@ -793,9 +853,34 @@ class DriverRecordsPostgresql(ModuleProtocol):
                             capabilities=list(fd.capabilities),
                             data_type=fd.data_type,
                             expose=fd.expose,
+                            required=flags.get("required", False),
+                            unique=flags.get("unique", False),
                             aggregations=fd.aggregations,
                             transformations=fd.transformations,
                         )
+
+                    # Overlay FeatureTypePluginConfig-declared flags (authoritative).
+                    try:
+                        from dynastore.models.protocols.configs import ConfigsProtocol
+                        from dynastore.modules.storage.driver_config import (
+                            FeatureTypePluginConfig,
+                        )
+                        from dynastore.modules.storage.field_constraints import (
+                            overlay_feature_type_flags,
+                        )
+                        from dynastore.tools.discovery import get_protocol
+
+                        configs = get_protocol(ConfigsProtocol)
+                        if configs is not None:
+                            ft_cfg = await configs.get_config(
+                                FeatureTypePluginConfig,
+                                catalog_id=catalog_id,
+                                collection_id=collection_id,
+                                ctx=DriverContext(db_resource=conn),
+                            )
+                            result = overlay_feature_type_flags(ft_cfg, result)
+                    except Exception:
+                        pass
                     return result
                 except Exception:
                     pass

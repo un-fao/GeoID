@@ -608,6 +608,15 @@ class FeatureTypePluginConfig(PluginConfig):
     fields: Dict[str, _FieldDefinition] = Field(default_factory=dict)
     exclude_fields: Optional[List[str]] = None
     metadata_fields: Optional[Dict[str, Any]] = None
+    allow_app_level_enforcement: bool = Field(
+        default=False,
+        description=(
+            "If True, fall back to service-layer enforcement of required/unique "
+            "constraints when the primary driver does not advertise "
+            "REQUIRED_ENFORCEMENT/UNIQUE_ENFORCEMENT. If False (default), "
+            "config admission is rejected for unsupported constraints."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -681,3 +690,95 @@ async def _on_apply_write_policy(
 
 
 CollectionWritePolicy.register_apply_handler(_on_apply_write_policy)
+
+
+# ---------------------------------------------------------------------------
+# Apply handler — feature_type required/unique vs primary-driver capabilities
+# ---------------------------------------------------------------------------
+
+
+async def _on_apply_feature_type(
+    config: PluginConfig,
+    catalog_id: "Optional[str]",
+    collection_id: "Optional[str]",
+    db_resource: "Optional[Any]",
+) -> None:
+    """Validate that constrained fields are supported by the primary write driver.
+
+    If any ``FieldDefinition`` declares ``required=True`` or ``unique=True``,
+    the collection's primary WRITE driver must advertise the matching
+    ``Capability.REQUIRED_ENFORCEMENT`` / ``UNIQUE_ENFORCEMENT`` — unless
+    ``allow_app_level_enforcement=True`` is set, which opts into service-layer
+    fallback enforcement.
+    """
+    if not isinstance(config, FeatureTypePluginConfig):
+        return
+    if not (catalog_id and collection_id):
+        return
+
+    constrained_required = [n for n, f in config.fields.items() if f.required]
+    constrained_unique = [n for n, f in config.fields.items() if f.unique]
+    if not constrained_required and not constrained_unique:
+        return
+    if config.allow_app_level_enforcement:
+        return
+
+    try:
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.models.protocols.storage_driver import (
+            Capability,
+            CollectionStorageDriverProtocol,
+        )
+        from dynastore.modules.storage.routing_config import (
+            Operation,
+            RoutingPluginConfig,
+        )
+        from dynastore.tools.discovery import get_protocol, get_protocols
+
+        configs = get_protocol(ConfigsProtocol)
+        if not configs:
+            return
+
+        routing = await configs.get_config(
+            RoutingPluginConfig,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+        )
+        write_entries = (routing.operations or {}).get(Operation.WRITE) or []
+        if not write_entries:
+            return
+        primary_id = write_entries[0].driver_id
+
+        drivers = get_protocols(CollectionStorageDriverProtocol) or []
+        primary = next(
+            (d for d in drivers if getattr(d, "__class__", type(d)).__name__ == primary_id),
+            None,
+        )
+        if primary is None:
+            return
+        caps = getattr(primary, "capabilities", frozenset())
+
+        if constrained_required and Capability.REQUIRED_ENFORCEMENT not in caps:
+            raise ValueError(
+                f"feature_type declares required=True fields {constrained_required} "
+                f"but primary write driver '{primary_id}' lacks REQUIRED_ENFORCEMENT. "
+                f"Switch primary driver, drop the constraints, or set "
+                f"allow_app_level_enforcement=True to opt into service-layer fallback."
+            )
+        if constrained_unique and Capability.UNIQUE_ENFORCEMENT not in caps:
+            raise ValueError(
+                f"feature_type declares unique=True fields {constrained_unique} "
+                f"but primary write driver '{primary_id}' lacks UNIQUE_ENFORCEMENT. "
+                f"Switch primary driver, drop the constraints, or set "
+                f"allow_app_level_enforcement=True to opt into service-layer fallback."
+            )
+    except ValueError:
+        raise
+    except Exception as exc:
+        _logger.debug(
+            "feature_type constraint validation skipped for %s/%s: %s",
+            catalog_id, collection_id, exc,
+        )
+
+
+FeatureTypePluginConfig.register_apply_handler(_on_apply_feature_type)

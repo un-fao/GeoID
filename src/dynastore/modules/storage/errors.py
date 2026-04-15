@@ -46,3 +46,36 @@ class ConflictError(Exception):
         super().__init__(message)
         self.geoid = geoid
         self.matcher = matcher
+
+
+class RequiredFieldMissingError(Exception):
+    """A ``FieldDefinition.required=True`` field was null/missing on write.
+
+    Raised either by the service-layer fallback helper (when the primary
+    driver lacks ``Capability.REQUIRED_ENFORCEMENT``) or surfaced from a
+    driver-native NOT NULL violation. Maps to HTTP 400.
+    """
+
+    def __init__(self, message: str, *, field: str | None = None) -> None:
+        super().__init__(message)
+        self.field = field
+
+
+class UniqueConstraintViolationError(Exception):
+    """A ``FieldDefinition.unique=True`` field collided with an existing value.
+
+    Raised either by the service-layer fallback helper (when the primary
+    driver lacks ``Capability.UNIQUE_ENFORCEMENT``) or surfaced from a
+    driver-native UNIQUE violation. Maps to HTTP 409.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        field: str | None = None,
+        value: object | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.field = field
+        self.value = value

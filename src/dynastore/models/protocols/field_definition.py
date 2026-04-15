@@ -48,6 +48,8 @@ class FieldDefinition(BaseModel):
     data_type: str  # "geometry", "text", "integer", "jsonb", "float", "boolean", "timestamp", etc.
     sql_expression: str = ""  # Driver-specific SQL expression for the field (e.g. "h.geom", "a.asset_id").
     expose: bool = True  # Whether to expose in public APIs (OGC, STAC)
+    required: bool = False  # Reject feature if value is null/missing
+    unique: bool = False    # Value must be unique within the collection
     aggregations: Optional[List[str]] = None   # None or ["*"] = all, [] = none, ["count","sum"] = specific
     transformations: Optional[List[str]] = None
 

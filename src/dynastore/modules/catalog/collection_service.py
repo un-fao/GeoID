@@ -482,6 +482,56 @@ class CollectionService:
                         ctx=DriverContext(db_resource=conn),
                     )
 
+            # 5b. Persist write_policy + feature_type (if provided) BEFORE
+            #     ensure_storage so the driver can materialise required/unique
+            #     constraints at DDL time (FeatureTypePluginConfig.fields →
+            #     NOT NULL / UNIQUE in the attributes sidecar).
+            write_policy_input = None
+            feature_type_input = None
+            if isinstance(collection_definition, dict):
+                write_policy_input = collection_definition.get("write_policy")
+                feature_type_input = collection_definition.get("feature_type")
+            else:
+                write_policy_input = getattr(collection_definition, "write_policy", None)
+                feature_type_input = getattr(collection_definition, "feature_type", None)
+
+            if write_policy_input:
+                from dynastore.modules.storage.driver_config import (
+                    CollectionWritePolicy,
+                )
+                policy = (
+                    CollectionWritePolicy.model_validate(write_policy_input)
+                    if isinstance(write_policy_input, dict)
+                    else write_policy_input
+                )
+                configs = get_protocol(ConfigsProtocol)
+                assert configs is not None, "ConfigsProtocol not registered"
+                await configs.set_config(
+                    CollectionWritePolicy,
+                    policy,
+                    catalog_id=catalog_id,
+                    collection_id=collection_model.id,
+                    ctx=DriverContext(db_resource=conn),
+                )
+            if feature_type_input:
+                from dynastore.modules.storage.driver_config import (
+                    FeatureTypePluginConfig,
+                )
+                ft_def = (
+                    FeatureTypePluginConfig.model_validate(feature_type_input)
+                    if isinstance(feature_type_input, dict)
+                    else feature_type_input
+                )
+                configs = get_protocol(ConfigsProtocol)
+                assert configs is not None, "ConfigsProtocol not registered"
+                await configs.set_config(
+                    FeatureTypePluginConfig,
+                    ft_def,
+                    catalog_id=catalog_id,
+                    collection_id=collection_model.id,
+                    ctx=DriverContext(db_resource=conn),
+                )
+
             # 6. Call write driver's ensure_storage() — creates hub + sidecar tables
             #    and pins physical_table in driver config (check_immutability=False).
             #    Skipped gracefully when no storage drivers are registered (e.g. tests
@@ -552,55 +602,8 @@ class CollectionService:
                     catalog_id, collection_model.id, _meta_e,
                 )
 
-            # 8. Persist write_policy if provided in the collection definition.
-            write_policy_input = None
-            if isinstance(collection_definition, dict):
-                write_policy_input = collection_definition.get("write_policy")
-            elif hasattr(collection_definition, "write_policy"):
-                write_policy_input = getattr(collection_definition, "write_policy", None)
-            if write_policy_input:
-                from dynastore.modules.storage.driver_config import (
-                    CollectionWritePolicy,
-                )
-                policy = (
-                    CollectionWritePolicy.model_validate(write_policy_input)
-                    if isinstance(write_policy_input, dict)
-                    else write_policy_input
-                )
-                configs = get_protocol(ConfigsProtocol)
-                assert configs is not None, "ConfigsProtocol not registered"
-                await configs.set_config(
-                    CollectionWritePolicy,
-                    policy,
-                    catalog_id=catalog_id,
-                    collection_id=collection_model.id,
-                    ctx=DriverContext(db_resource=conn),
-                )
-
-            # 9. Persist feature_type if provided in the collection definition.
-            feature_type_input = None
-            if isinstance(collection_definition, dict):
-                feature_type_input = collection_definition.get("feature_type")
-            elif hasattr(collection_definition, "feature_type"):
-                feature_type_input = getattr(collection_definition, "feature_type", None)
-            if feature_type_input:
-                from dynastore.modules.storage.driver_config import (
-                    FeatureTypePluginConfig,
-                )
-                ft_def = (
-                    FeatureTypePluginConfig.model_validate(feature_type_input)
-                    if isinstance(feature_type_input, dict)
-                    else feature_type_input
-                )
-                configs = get_protocol(ConfigsProtocol)
-                assert configs is not None, "ConfigsProtocol not registered"
-                await configs.set_config(
-                    FeatureTypePluginConfig,
-                    ft_def,
-                    catalog_id=catalog_id,
-                    collection_id=collection_model.id,
-                    ctx=DriverContext(db_resource=conn),
-                )
+            # Steps 8 & 9 (write_policy + feature_type persistence) moved to
+            # step 5b above so ensure_storage can honour constraints.
 
         # Resolve physical_table for async lifecycle context (PG driver only; None for others).
         # Use db_resource when available so uncommitted catalog/collection rows are visible.

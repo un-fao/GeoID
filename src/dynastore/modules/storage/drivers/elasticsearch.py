@@ -324,6 +324,13 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
         if not items:
             return []
 
+        # Service-layer enforcement of FieldDefinition.required / .unique for
+        # drivers (like ES) that don't advertise native REQUIRED_ENFORCEMENT /
+        # UNIQUE_ENFORCEMENT. Only runs when the collection's
+        # FeatureTypePluginConfig has allow_app_level_enforcement=True; otherwise
+        # config admission would have already rejected the constraints.
+        await self._enforce_field_constraints(catalog_id, collection_id, items)
+
         # Resolve write policy from the config waterfall.
         policy = await self._resolve_write_policy(catalog_id, collection_id)
 
@@ -426,6 +433,57 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
             await db.bulk_async(collection_id, prepped_bulk, refresh=False)
 
         return written
+
+    async def _enforce_field_constraints(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        items: List[Any],
+    ) -> None:
+        """App-level fallback enforcement of FieldDefinition.required / .unique.
+
+        Only runs when the collection's FeatureTypePluginConfig has
+        ``allow_app_level_enforcement=True`` (otherwise admission would have
+        rejected any constrained fields). Raises
+        ``RequiredFieldMissingError`` (HTTP 400) or
+        ``UniqueConstraintViolationError`` (HTTP 409).
+        """
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.modules.storage.driver_config import FeatureTypePluginConfig
+        from dynastore.modules.storage.field_constraints import (
+            check_required, check_unique,
+        )
+        from dynastore.tools.discovery import get_protocol
+
+        configs = get_protocol(ConfigsProtocol)
+        if not configs:
+            return
+        try:
+            ft = await configs.get_config(
+                FeatureTypePluginConfig,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+            )
+        except Exception:
+            return
+        if not isinstance(ft, FeatureTypePluginConfig) or not ft.allow_app_level_enforcement:
+            return
+
+        feature_dicts = [
+            it if isinstance(it, dict) else (
+                it.model_dump(by_alias=True, exclude_none=False)
+                if hasattr(it, "model_dump") else dict(it)
+            )
+            for it in items
+        ]
+        check_required(ft.fields, feature_dicts)
+
+        async def _exists(field_name: str, value: Any) -> bool:
+            # In-batch dedup only for now; a proper ES term query per unique
+            # field is a follow-up (driver-specific CQL2/term construction).
+            return False
+
+        await check_unique(ft.fields, feature_dicts, exists=_exists)
 
     @staticmethod
     async def _resolve_write_policy(

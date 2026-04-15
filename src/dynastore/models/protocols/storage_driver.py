@@ -113,6 +113,10 @@ class Capability:
     EXTERNAL_ID_TRACKING = "external_id_tracking"  # driver tracks external_id per feature
     TEMPORAL_VALIDITY = "temporal_validity"          # driver tracks valid_from / valid_to
 
+    # --- Field constraints (FieldDefinition.required / .unique) ---
+    REQUIRED_ENFORCEMENT = "required_enforcement"  # driver enforces NOT-NULL at storage layer
+    UNIQUE_ENFORCEMENT = "unique_enforcement"      # driver enforces UNIQUE at storage layer
+
     # --- Analytics & introspection ---
     INTROSPECTION = "introspection"  # schema discovery (field names, types)
     COUNT = "count"                  # efficient entity counting

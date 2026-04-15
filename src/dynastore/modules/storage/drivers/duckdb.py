@@ -223,6 +223,10 @@ class DriverRecordsDuckdb(ModuleProtocol):
         Capability.ATTRIBUTE_FILTER,
         Capability.EXTERNAL_ID_TRACKING,
         Capability.TEMPORAL_VALIDITY,
+        # REQUIRED_ENFORCEMENT / UNIQUE_ENFORCEMENT: not advertised.
+        # DuckDB stores feature properties in a single JSON VARCHAR column,
+        # so field-level NOT NULL / UNIQUE cannot be enforced natively.
+        # Opt into app-level fallback via FeatureTypePluginConfig.allow_app_level_enforcement.
     })
     preferred_for: FrozenSet[str] = frozenset({"analytics"})
     supported_hints: FrozenSet[str] = frozenset({"analytics"})

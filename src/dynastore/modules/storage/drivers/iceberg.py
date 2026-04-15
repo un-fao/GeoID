@@ -149,6 +149,11 @@ class DriverRecordsIceberg(ModuleProtocol):
         Capability.SOURCE_REFERENCE,
         Capability.EXTERNAL_ID_TRACKING,
         Capability.TEMPORAL_VALIDITY,
+        # REQUIRED_ENFORCEMENT / UNIQUE_ENFORCEMENT: not advertised.
+        # Iceberg schema here stores feature properties as a single StringType
+        # blob, so field-level required/unique cannot be enforced natively.
+        # (Iceberg also has no UNIQUE primitive at all.)
+        # Opt into app-level fallback via FeatureTypePluginConfig.allow_app_level_enforcement.
     })
     preferred_for: FrozenSet[str] = frozenset({"analytics", "features", "write"})
     supported_hints: FrozenSet[str] = frozenset({"analytics", "features", "write"})
