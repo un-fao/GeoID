@@ -313,12 +313,29 @@ class TasksModule(TaskQueueProtocol, ModuleProtocol):
                 executor = get_background_executor()
                 schema = get_task_schema()
 
-                # Ensure the tasks table exists before the dispatcher starts
-                # We use an advisory lock to prevent DDL deadlocks in parallel tests
+                # Ensure the tasks table + current-month partition exist before
+                # the dispatcher starts. The advisory lock must be held on the
+                # SAME connection as the DDL, otherwise two concurrent revisions
+                # can both observe "table missing" and race to create it (and
+                # its partitions). Using the locked_conn yielded by
+                # acquire_startup_lock guarantees that.
                 from dynastore.modules.db_config.locking_tools import acquire_startup_lock
-                async with acquire_startup_lock(engine, f"tasks_storage_init.{schema}"):
-                    async with managed_transaction(engine) as conn:
-                        await ensure_task_storage_exists(conn, schema)
+                async with acquire_startup_lock(
+                    engine, f"tasks_storage_init.{schema}"
+                ) as locked_conn:
+                    if locked_conn is None:
+                        raise RuntimeError(
+                            f"TasksModule: could not acquire startup lock for '{schema}.tasks' "
+                            "initialization — refusing to start dispatcher."
+                        )
+                    await ensure_task_storage_exists(locked_conn, schema)
+
+                # Post-condition: verify current-month partition is visible on a
+                # fresh connection. If it's not, crash loud — Cloud Run will
+                # restart the pod rather than letting the dispatcher spin on
+                # "relation does not exist".
+                async with managed_transaction(engine) as probe_conn:
+                    await _assert_current_partition_ready(probe_conn, schema)
 
                 from dynastore.tools.discovery import get_protocol
                 from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
@@ -357,11 +374,39 @@ class TasksModule(TaskQueueProtocol, ModuleProtocol):
 # that hosts the global table (default: "tasks").
 
 
+async def _assert_current_partition_ready(conn: DbResource, schema: str) -> None:
+    """
+    Readiness probe: confirm the current-month partition of {schema}.tasks is
+    visible before starting the dispatcher. Raises RuntimeError on failure.
+
+    Uses to_regclass() on the fully-qualified child partition name (tasks_YYYY_MM)
+    so that the check is reliable under concurrent DDL — unlike pg_tables, which
+    can briefly lag.
+    """
+    now = datetime.now(timezone.utc)
+    partition_name = f"tasks_{now.strftime('%Y_%m')}"
+    fq_name = f'"{schema}"."{partition_name}"'
+    result = await DQLQuery(
+        "SELECT to_regclass(:fq)",
+        result_handler=ResultHandler.SCALAR,
+    ).execute(conn, fq=fq_name)
+    if result is None:
+        raise RuntimeError(
+            f"TasksModule: current-month partition {schema}.{partition_name} is "
+            "missing after ensure_task_storage_exists — refusing to start dispatcher."
+        )
+    logger.info(f"TasksModule: partition {schema}.{partition_name} is ready.")
+
+
 async def ensure_task_storage_exists(conn: DbResource, schema: str):
     """
     Ensures that the global tasks table exists in the specified schema.
-    Called once at startup. The schema is typically 'tasks' (configurable via
-    DYNASTORE_TASK_SCHEMA env var).
+    Called at every startup. All steps are idempotent and must run every time:
+    table/index DDL use IF NOT EXISTS, partition + retention/cron helpers all
+    check-then-create. The table-existence check is NOT used to short-circuit
+    the rest of this function — otherwise a restart after a month rollover
+    would never create the current-month partition and the dispatcher would
+    hit "relation does not exist" on claim_batch.
 
     Note: events table is now owned by EventsModule (priority=11).
     """
@@ -373,10 +418,6 @@ async def ensure_task_storage_exists(conn: DbResource, schema: str):
     async def tasks_table_exists():
         return await check_table_exists(conn, "tasks", schema)
 
-    if await tasks_table_exists():
-        logger.info(f"TasksModule: Global tasks table '{schema}.tasks' exists. Skipping DDL.")
-        return
-
     # Step 1: Create tasks table under advisory lock + existence guard to
     # serialize concurrent startups. Without this, two workers racing on
     # `CREATE TABLE tasks` both fall through IF NOT EXISTS's toctou window
@@ -387,7 +428,7 @@ async def ensure_task_storage_exists(conn: DbResource, schema: str):
         lock_key=f"{schema}_tasks",
     ).execute(conn, schema=schema)
 
-    # Step 2: Create indexes and triggers
+    # Step 2: Create indexes and triggers (idempotent: IF NOT EXISTS / OR REPLACE)
     await DDLQuery(GLOBAL_TASKS_INDEXES_DDL).execute(conn, schema=schema)
 
     # Ensure partitions for tasks table
