@@ -335,6 +335,7 @@ class EventsModule(ModuleProtocol):
             logger.info("EventsModule: Global events partition management configured.")
         except Exception:
             logger.exception("EventsModule: Failed to initialise global events storage.")
+            raise
 
         # 2. Create webhook subscriptions table
         try:
@@ -345,6 +346,7 @@ class EventsModule(ModuleProtocol):
                     await DDLQuery(SUBSCRIPTIONS_SCHEMA_INDEX).execute(conn)
         except Exception:
             logger.exception("EventsModule: Failed to initialise subscriptions schema.")
+            raise
 
         # 3. Load / generate platform API key
         global PLATFORM_API_KEY
