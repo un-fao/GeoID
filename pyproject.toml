@@ -31,8 +31,14 @@ build-backend = "setuptools.build_meta"
 # pip normalizes _ to - internally (PEP 685); no effect on resolution.
 # ==========================================================================
 module_storage = []
+module_storage_postgresql = []
 module_storage_duckdb = ["duckdb>=1.0.0"]
 module_storage_iceberg = ["pyiceberg[sql-postgres]>=0.9.0", "pyarrow>=14.0.0"]
+module_storage_elasticsearch = ["dynastore[module_elasticsearch]"]
+module_storage_elasticsearch_obfuscated = ["dynastore[module_elasticsearch]"]
+module_storage_elasticsearch_assets = ["dynastore[module_elasticsearch]"]
+module_metadata_postgresql = []
+module_metadata_elasticsearch = ["dynastore[module_elasticsearch]"]
 module_catalog = ["dynastore[geospatial_core]", "sqlalchemy>=2.0.0"]
 module_gcp = ["gcloud-aio-storage==9.6.0", "google-cloud-bigquery==3.24.0", "google-cloud-run", "google-cloud-storage>=3.1.0", "google-cloud-pubsub", "gcsfs>=2024.5.0", "charset-normalizer", "httpx"]
 module_datastore = ["dynastore[db_sync]", "psycopg2-binary>=2.9.7"]
@@ -175,6 +181,8 @@ auth_grp = ["dynastore[iam,auth,extension_admin]"]
 tools_grp = ["dynastore[extension_httpx,template,dimensions,notebooks]"]
 monitor_grp = ["dynastore[stats,logs]"]
 index_grp = ["dynastore[elasticsearch,task_elasticsearch_indexer]"]
+# drivers_grp — all storage/asset/metadata drivers (both collection and asset domains)
+drivers_grp = ["dynastore[module_storage_postgresql,module_storage_duckdb,module_storage_iceberg,module_storage_elasticsearch,module_storage_elasticsearch_obfuscated,module_storage_elasticsearch_assets,module_metadata_postgresql,module_metadata_elasticsearch]"]
 
 # ==========================================================================
 # TASK GROUPINGS (sync-db)
@@ -272,7 +280,7 @@ worker_local = ["dynastore[worker_service,monitor_grp]"]
 # Prefixed with scope_ to avoid collision with module-level extras above.
 # ==========================================================================
 # scope_catalog: catalog API without auth — open for local testing
-scope_catalog = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,task_gcp_provision,module_cache,notebooks]"]
+scope_catalog = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,task_gcp_provision,module_cache,notebooks,drivers_grp]"]
 # scope_geoid: catalog + geoid UI + auth/iam — maps to geospatial-auth in cloud
 scope_geoid = ["dynastore[scope_catalog,extension_geoid,auth_grp]"]
 # scope_worker: background task processor — headless Cloud Run job runner
@@ -280,7 +288,7 @@ scope_worker = ["dynastore[core,module_catalog,gcp,extension_dwh,index_grp,tasks
 # scope_tools: proxy + template tools service — no auth
 scope_tools = ["dynastore[core,template,notebooks,cache]"]
 # scope_maps: map tiles/styles service — no auth
-scope_maps = ["dynastore[core,catalog_grp,google_grp,maps_grp,monitor_grp,module_cache,notebooks]"]
+scope_maps = ["dynastore[core,catalog_grp,google_grp,maps_grp,monitor_grp,module_cache,notebooks,index_grp,drivers_grp]"]
 
 # ==========================================================================
 # DEVELOPMENT & TESTING
