@@ -52,7 +52,8 @@ from dynastore.models.protocols.events import EventsProtocol
 from dynastore.models.protocols.tasks import TasksProtocol
 from dynastore.models.protocols.task_queue import TaskQueueProtocol
 from dynastore.models.protocols.event_bus import EventBusProtocol
-from dynastore.models.protocols.event_storage import EventStorageProtocol
+from dynastore.models.protocols.event_driver import EventDriverProtocol
+EventStorageProtocol = EventDriverProtocol  # backward-compat alias
 from dynastore.models.protocols.proxy import ProxyProtocol
 from dynastore.models.protocols.database import DatabaseProtocol
 DbProtocol = DatabaseProtocol
@@ -136,6 +137,7 @@ __all__ = [
     "TasksProtocol",
     "TaskQueueProtocol",
     "EventBusProtocol",
+    "EventDriverProtocol",
     "EventStorageProtocol",
     "ProxyProtocol",
     "DatabaseProtocol",
