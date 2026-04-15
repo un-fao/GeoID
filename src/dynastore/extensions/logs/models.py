@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict
 from dynastore.tools.json import CustomJSONEncoder
@@ -30,3 +30,10 @@ class LogEntryCreate(BaseModel):
     message: Optional[str] = None
     details: Optional[Dict[str, Any]] = None
     is_system: bool = False
+
+
+class LogsListResponse(BaseModel):
+    """Response wrapper for log list endpoints with optional Kibana dashboard link."""
+    logs: List[LogEntry]
+    total: Optional[int] = None
+    kibana_dashboard_url: Optional[str] = None

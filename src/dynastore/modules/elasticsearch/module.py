@@ -190,6 +190,29 @@ class ElasticsearchModule(ModuleProtocol):
 
         from dynastore.modules.elasticsearch import client as es_client
         await es_client.init()
+
+        # Register log backend for batch log persistence
+        from dynastore.modules.elasticsearch.log_backend import ElasticsearchLogBackend
+        from dynastore.modules.elasticsearch.mappings import LOG_MAPPING, get_log_index_name
+
+        log_backend = ElasticsearchLogBackend()
+        self.register_plugin(log_backend)
+
+        # Ensure log index exists
+        es = es_client.get_client()
+        if es is not None:
+            index_name = get_log_index_name(es_client.get_index_prefix())
+            try:
+                if not await es.indices.exists(index=index_name):
+                    await es.indices.create(index=index_name, body={"mappings": LOG_MAPPING})
+                    logger.info("ElasticsearchModule: Created log index '%s'.", index_name)
+            except Exception as exc:
+                logger.warning(
+                    "ElasticsearchModule: Could not ensure log index '%s': %s",
+                    index_name,
+                    exc,
+                )
+
         try:
             yield
         finally:

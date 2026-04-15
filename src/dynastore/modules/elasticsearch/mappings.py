@@ -360,3 +360,23 @@ def build_tenant_feature_doc(
 def get_assets_index_name(prefix: str, catalog_id: str) -> str:
     """Return the name of the assets index for a catalog."""
     return f"{prefix}-assets-{catalog_id}"
+
+
+def get_log_index_name(prefix: str) -> str:
+    """Return the name of the logs index."""
+    return f"{prefix}-logs"
+
+
+LOG_MAPPING: Dict[str, Any] = {
+    "dynamic": False,
+    "properties": {
+        "id": {"type": "keyword"},
+        "catalog_id": {"type": "keyword"},
+        "collection_id": {"type": "keyword"},
+        "event_type": {"type": "keyword"},
+        "level": {"type": "keyword"},
+        "is_system": {"type": "boolean"},
+        "message": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+        "timestamp": {"type": "date"},
+    },
+}

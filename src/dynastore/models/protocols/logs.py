@@ -31,11 +31,11 @@ class LogsProtocol(Protocol):
     """
     Protocol for logging operations, enabling decoupled access to buffered
     log ingestion and querying.
-    
+
     This protocol is used by extensions and services to log events and query
     logs in a loosely-coupled manner, supporting the protocol-based discovery pattern.
     """
-    
+
     async def log_event(
         self,
         catalog_id: str,
@@ -50,7 +50,7 @@ class LogsProtocol(Protocol):
     ) -> Optional[int]:
         """
         Main entry point for logging events.
-        
+
         Args:
             catalog_id: The catalog this event relates to
             event_type: Type of event
@@ -61,7 +61,7 @@ class LogsProtocol(Protocol):
             db_resource: Optional database connection for immediate write
             immediate: If True, flush immediately if buffer is not full
             is_system: Whether this is a system-level log
-            
+
         Returns:
             Log ID if written immediately, None otherwise
         """
@@ -78,7 +78,7 @@ class LogsProtocol(Protocol):
     async def log_error(self, catalog_id: str, event_type: str, message: str, **kwargs) -> None:
         """Convenience wrapper for ERROR level logs."""
         ...
-    
+
     async def list_logs(
         self,
         catalog_id: str,
@@ -104,9 +104,50 @@ class LogsProtocol(Protocol):
         Retrieve a specific log entry by ID.
         """
         ...
-    
+
     async def flush(self) -> None:
         """
         Flushes all buffered log entries to the database immediately.
+        """
+        ...
+
+
+@runtime_checkable
+class LogBackendProtocol(Protocol):
+    """
+    Protocol for pluggable log backend implementations.
+
+    Modules implement this to receive batched log entries from LogService.
+    Multiple backends can coexist (e.g., PostgreSQL + Elasticsearch + GCP Cloud Logging).
+    Discovered via get_protocol(LogBackendProtocol).
+
+    Implementations should:
+    - Not raise exceptions; log failures internally and return error status
+    - Handle gracefully when backend is not initialized (return skipped status)
+    - Be idempotent (duplicate entries with same ID are tolerable)
+    - Scrub PII as appropriate (details field is NOT forwarded by LogService, but message may contain sensitive data)
+    """
+
+    async def write_batch(self, entries: List["LogEntryCreate"]) -> Dict[str, Any]:
+        """
+        Write a batch of log entries to this backend.
+
+        Args:
+            entries: List of LogEntryCreate objects to persist
+
+        Returns:
+            Status dict with keys:
+            - "status": "success" | "skipped" | "error"
+            - "count": number of entries written
+            - "backend": name of this backend
+            - Optional: "error" (error message if status="error")
+        """
+        ...
+
+    @property
+    def name(self) -> str:
+        """
+        Unique identifier for this backend (e.g., 'elasticsearch', 'gcp_cloud_logging').
+        Used for logging and debugging.
         """
         ...

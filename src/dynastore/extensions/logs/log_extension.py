@@ -18,10 +18,12 @@
 
 import logging
 import json
+import os
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from contextlib import asynccontextmanager
 from dynastore.extensions.protocols import ExtensionProtocol
+from dynastore.extensions.iam.guards import require_admin, require_sysadmin
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     ResultHandler,
@@ -32,14 +34,25 @@ from dynastore.modules.catalog.catalog_module import register_event_listener
 from dynastore.models.shared_models import SYSTEM_CATALOG_ID, SYSTEM_LOGS_TABLE
 from dynastore.modules.catalog.log_manager import log_event
 from fastapi import APIRouter, HTTPException, Depends, Query
-from .models import LogEntryCreate, LogEntry
+from .models import LogEntryCreate, LogEntry, LogsListResponse
 from dynastore.modules.catalog.event_service import CatalogEventType
 from dynastore.models.protocols.catalogs import CatalogsProtocol
 from dynastore.models.protocols.database import DatabaseProtocol
 from dynastore.tools.discovery import get_protocol
-import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _kibana_url() -> Optional[str]:
+    """Build Kibana dashboard URL if KIBANA_URL is set and ES client is active."""
+    from dynastore.modules.elasticsearch.client import get_client
+    from dynastore.modules.elasticsearch.mappings import get_log_index_name, get_index_prefix
+
+    base = os.environ.get("KIBANA_URL", "").rstrip("/")
+    if not base or get_client() is None:
+        return None
+    index = get_log_index_name(get_index_prefix())
+    return f"{base}#/discover?_g=(filters:!(),refreshInterval:(pause:!t),time:(from:now-24h,to:now))&_a=(index:'{index}')"
 
 
 from dynastore.models.protocols.logs import LogsProtocol
@@ -57,22 +70,25 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
             "/system",
             self.get_system_logs,
             methods=["GET"],
-            response_model=List[LogEntry],
+            response_model=LogsListResponse,
             summary="Retrieve global system-level logs",
+            dependencies=[Depends(require_sysadmin)],
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/logs",
             self.get_catalog_logs,
             methods=["GET"],
-            response_model=List[LogEntry],
+            response_model=LogsListResponse,
             summary="Retrieve logs for a specific catalog",
+            dependencies=[Depends(require_admin)],
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/collections/{collection_id}/logs",
             self.get_collection_logs,
             methods=["GET"],
-            response_model=List[LogEntry],
+            response_model=LogsListResponse,
             summary="Retrieve logs for a specific collection",
+            dependencies=[Depends(require_admin)],
         )
 
     @property
@@ -290,14 +306,18 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
         level: Optional[str] = Query(None),
         limit: int = 100,
         offset: int = 0,
-    ):
+    ) -> LogsListResponse:
         """Retrieve global system-level logs."""
-        return await self.search_logs(
+        logs = await self.search_logs(
             catalog_id="_system_",
             event_type=event_type,
             level=level,
             limit=limit,
             offset=offset,
+        )
+        return LogsListResponse(
+            logs=logs,
+            kibana_dashboard_url=_kibana_url(),
         )
 
     async def get_catalog_logs(
@@ -307,17 +327,21 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
         level: Optional[str] = Query(None),
         limit: int = 100,
         offset: int = 0,
-    ):
+    ) -> LogsListResponse:
         """
         Retrieve logs for a specific catalog.
         If the catalog has been hard-deleted, this may return final lifecycle events from the system log.
         """
-        return await self.search_logs(
+        logs = await self.search_logs(
             catalog_id=catalog_id,
             event_type=event_type,
             level=level,
             limit=limit,
             offset=offset,
+        )
+        return LogsListResponse(
+            logs=logs,
+            kibana_dashboard_url=_kibana_url(),
         )
 
     async def get_collection_logs(
@@ -328,13 +352,17 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
         level: Optional[str] = Query(None),
         limit: int = 100,
         offset: int = 0,
-    ):
+    ) -> LogsListResponse:
         """Retrieve logs for a specific collection."""
-        return await self.search_logs(
+        logs = await self.search_logs(
             catalog_id=catalog_id,
             collection_id=collection_id,
             event_type=event_type,
             level=level,
             limit=limit,
             offset=offset,
+        )
+        return LogsListResponse(
+            logs=logs,
+            kibana_dashboard_url=_kibana_url(),
         )

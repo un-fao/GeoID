@@ -388,7 +388,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # Include all .html and .sql files found within any package
-"*" = ["*.html", "*.sql", "*.md", "*.css", "*.js", "*.txt", "*.png", "*.jpg", "*.jpeg", "*.gif", "*.ipynb", "static/**"]
+"*" = ["*.html", "*.sql", "*.md", "*.css", "*.js", "*.txt", "*.png", "*.jpg", "*.jpeg", "*.gif", "*.ipynb", "*.ndjson", "static/**"]
 
 [project.urls]
 Homepage = "https://github.com/un-fao/dynastore/"

@@ -348,7 +348,7 @@ class LogService(ProtocolPlugin[Any], LogsProtocol):
             logger.info("LogService shutdown complete.")
 
     async def _flush_batch(self, entries: List[LogEntryCreate]):
-        """Callback for AsyncBufferAggregator."""
+        """Callback for AsyncBufferAggregator. Writes to PG then dispatches to backends."""
         if not self._engine:
             return
 
@@ -375,6 +375,27 @@ class LogService(ProtocolPlugin[Any], LogsProtocol):
             logger.debug(f"Flushed {len(entries)} log entries to database.")
         except Exception as e:
             logger.error(f"Failed to flush log entries: {e}", exc_info=True)
+
+        # Dispatch to registered log backends (ES, GCP Cloud Logging, etc.)
+        try:
+            from dynastore.models.protocols.logs import LogBackendProtocol
+
+            backends = get_protocol(LogBackendProtocol)
+            if backends:
+                # get_protocol may return a single instance or a list; normalize to list
+                backend_list = [backends] if not isinstance(backends, list) else backends
+                for backend in backend_list:
+                    try:
+                        result = await backend.write_batch(entries)
+                        logger.debug(
+                            "Log backend '%s' result: %s", backend.name, result
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Log backend '%s' failed: %s", backend.name, exc
+                        )
+        except Exception as exc:
+            logger.warning("Failed to dispatch logs to backends: %s", exc)
 
     async def flush(self):
         """Manually trigger a flush (legacy support)."""

@@ -24,13 +24,13 @@ Provides endpoints for retrieving individual logs and listing logs with filterin
 import logging
 from typing import Optional, List
 from contextlib import asynccontextmanager
-from fastapi import APIRouter, HTTPException, Query, status, FastAPI
+from fastapi import APIRouter, HTTPException, Query, status, FastAPI, Depends
+from dynastore.extensions.iam.guards import require_admin, require_sysadmin
 from dynastore.models.protocols.logs import LogsProtocol
 from dynastore.tools.discovery import get_protocol
+from dynastore.extensions.protocols import ExtensionProtocol
 
 logger = logging.getLogger(__name__)
-
-from dynastore.extensions.protocols import ExtensionProtocol
 
 class LogExtensionAPI(ExtensionProtocol):
     priority: int = 100
@@ -49,10 +49,30 @@ class LogExtensionAPI(ExtensionProtocol):
         self._register_routes()
 
     def _register_routes(self):
-        self.router.add_api_route("/catalogs/{catalog_id}/logs/{log_id}", self.get_log, methods=["GET"])
-        self.router.add_api_route("/catalogs/{catalog_id}", self.list_catalog_logs, methods=["GET"])
-        self.router.add_api_route("/catalogs/{catalog_id}/collections/{collection_id}", self.list_collection_logs, methods=["GET"])
-        self.router.add_api_route("/system", self.list_system_logs, methods=["GET"])
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/logs/{log_id}",
+            self.get_log,
+            methods=["GET"],
+            dependencies=[Depends(require_admin)],
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}",
+            self.list_catalog_logs,
+            methods=["GET"],
+            dependencies=[Depends(require_admin)],
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}",
+            self.list_collection_logs,
+            methods=["GET"],
+            dependencies=[Depends(require_admin)],
+        )
+        self.router.add_api_route(
+            "/system",
+            self.list_system_logs,
+            methods=["GET"],
+            dependencies=[Depends(require_sysadmin)],
+        )
 
     @staticmethod
     @asynccontextmanager

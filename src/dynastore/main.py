@@ -20,7 +20,11 @@
 import logging
 from types import SimpleNamespace
 import asyncio
-from fastapi import FastAPI
+import json
+import uuid
+from contextvars import ContextVar
+from fastapi import FastAPI, Request
+from starlette.middleware.base import BaseHTTPMiddleware
 import sys
 import os
 from contextlib import asynccontextmanager
@@ -34,14 +38,60 @@ from fastapi.concurrency import run_in_threadpool
 # --- Initialize Concurrency Backend ---
 # Since this is the FastAPI entry point, we use FastAPI's threadpool runner.
 set_concurrency_backend(run_in_threadpool)
+
+# --- Correlation ID Management ---
+_correlation_id_var: ContextVar[str | None] = ContextVar("correlation_id", default=None)
+
+
+class _CorrelationFilter(logging.Filter):
+    """Add correlation_id from context to all log records."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.correlation_id = _correlation_id_var.get(None)  # type: ignore[attr-defined]
+        return True
+
+
+class _JsonFormatter(logging.Formatter):
+    """Format log records as JSON."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S.%f"),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "service": os.getenv("SERVICE_NAME", "dynastore"),
+            "correlation_id": getattr(record, "correlation_id", None),
+        }
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload)
+
+
+class CorrelationIdMiddleware(BaseHTTPMiddleware):
+    """Propagate X-Request-ID header as correlation ID through context."""
+
+    async def dispatch(self, request: Request, call_next):
+        cid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        token = _correlation_id_var.set(cid)
+        try:
+            response = await call_next(request)
+            response.headers["X-Request-ID"] = cid
+            return response
+        finally:
+            _correlation_id_var.reset(token)
+
+
 # --- Logging Configuration ---
-log_level_name = os.getenv('LOG_LEVEL', 'INFO').upper()
+log_level_name = os.getenv("LOG_LEVEL", "INFO").upper()
 log_level = getattr(logging, log_level_name, logging.INFO)
-logging.basicConfig(
-    level=log_level,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    stream=sys.stdout,
-)
+
+_handler = logging.StreamHandler(sys.stdout)
+_handler.setFormatter(_JsonFormatter())
+_handler.addFilter(_CorrelationFilter())
+logging.root.setLevel(log_level)
+logging.root.handlers = [_handler]
+
 logger = logging.getLogger(__name__)
 
 # --- Combined Application Lifecycle ---
@@ -91,6 +141,9 @@ app = FastAPI(
     redoc_url=None, # We will serve custom redoc
     swagger_ui_parameters={"defaultModelsExpandDepth": -1} # Optional: hide models by default
 )
+
+# Add correlation ID middleware
+app.add_middleware(CorrelationIdMiddleware)
 
 @app.get("/health", tags=["Web Health"])
 async def health_check():
