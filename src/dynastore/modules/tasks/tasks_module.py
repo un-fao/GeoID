@@ -61,6 +61,18 @@ def get_task_schema() -> str:
     """Returns the default schema for global tasks."""
     return os.getenv("DYNASTORE_TASK_SCHEMA", "tasks")
 
+
+def get_task_lookback() -> timedelta:
+    """Returns the lookback window for claim queries.
+
+    Controls which partitions the planner scans — only partitions whose
+    timestamp range overlaps [now - lookback, now] are touched.
+    Configure via DYNASTORE_TASK_LOOKBACK_DAYS (default: 30).
+    Set to match the retention period to avoid scanning pruned partitions.
+    """
+    days = int(os.getenv("DYNASTORE_TASK_LOOKBACK_DAYS", "30"))
+    return timedelta(days=days)
+
 # --- DDL Definitions ---
 
 # --- Step 1: Table creation only (IF NOT EXISTS safe) ---
@@ -815,9 +827,9 @@ async def claim_next(
     # Build WHERE conditions for execution mode + task type pairs
     conditions = []
     now = datetime.now(timezone.utc)
-    # Partition pruning hint: only scan recent partitions for PENDING tasks.
-    # Tasks older than 30 days should have been completed or dead-lettered.
-    lookback = now - timedelta(days=30)
+    # Partition pruning hint: only scan partitions within the lookback window.
+    # Configurable via DYNASTORE_TASK_LOOKBACK_DAYS (default: 30).
+    lookback = now - get_task_lookback()
     params: Dict[str, Any] = {
         "locked_until": locked_until,
         "owner_id": owner_id,
@@ -891,7 +903,7 @@ async def claim_batch(
 
     conditions = []
     now = datetime.now(timezone.utc)
-    lookback = now - timedelta(days=30)
+    lookback = now - get_task_lookback()
     params: Dict[str, Any] = {
         "locked_until": locked_until,
         "owner_id": owner_id,
@@ -914,6 +926,11 @@ async def claim_batch(
 
     mode_filter = " OR ".join(conditions)
 
+    # Fairness: pick the oldest PENDING task per tenant (schema_name) first,
+    # then fill remaining batch slots from those results. This prevents a
+    # single high-volume tenant from monopolising all claim slots.
+    # DISTINCT ON (schema_name) ORDER BY schema_name, timestamp ASC
+    # returns exactly one row per tenant — the oldest eligible task.
     sql = f"""
         UPDATE {task_schema}.tasks
         SET status = 'ACTIVE',
@@ -922,14 +939,18 @@ async def claim_batch(
             started_at = COALESCE(started_at, NOW()),
             last_heartbeat_at = NOW()
         WHERE (timestamp, task_id) IN (
-            SELECT timestamp, task_id FROM {task_schema}.tasks
-            WHERE status = 'PENDING'
-              AND timestamp >= :lookback
-              AND (locked_until IS NULL OR locked_until <= :now)
-              AND ({mode_filter})
-            ORDER BY timestamp ASC
+            SELECT timestamp, task_id
+            FROM (
+                SELECT DISTINCT ON (schema_name) timestamp, task_id
+                FROM {task_schema}.tasks
+                WHERE status = 'PENDING'
+                  AND timestamp >= :lookback
+                  AND (locked_until IS NULL OR locked_until <= :now)
+                  AND ({mode_filter})
+                ORDER BY schema_name, timestamp ASC
+                FOR UPDATE SKIP LOCKED
+            ) fair
             LIMIT :batch_size
-            FOR UPDATE SKIP LOCKED
         )
         RETURNING task_id, schema_name, scope, task_type, execution_mode,
                   caller_id, inputs, collection_id, retry_count, max_retries,
