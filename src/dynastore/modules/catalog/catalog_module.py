@@ -71,8 +71,6 @@ from dynastore.models.protocols import (
     PropertiesProtocol,
     LocalizationProtocol,
 )
-from dynastore.models.protocols.event_bus import EventBusProtocol
-
 from dynastore.tools.discovery import register_plugin, get_protocol
 from dynastore.modules.catalog.catalog_service import CatalogService
 from dynastore.modules.catalog.collection_service import CollectionService
@@ -240,13 +238,6 @@ class CatalogModule(ModuleProtocol):
 
             async with managed_transaction(engine) as conn:
                 await ensure_schema_exists(conn, "catalog")
-                
-                # Initialize tenant event space if available
-                event_bus = get_protocol(EventBusProtocol)
-                if event_bus:
-                    from dynastore.modules.db_config.locking_tools import check_table_exists
-                    if not await check_table_exists(conn, "catalog_events", "catalog"):
-                        await event_bus.init_tenant_events("catalog", db_resource=conn)
 
                 # Centralized system-level maintenance initialization
                 await initialize_system_logs(conn)

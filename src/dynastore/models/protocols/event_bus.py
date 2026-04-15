@@ -56,7 +56,9 @@ class EventBusProtocol(EventsProtocol, Protocol):
         payload: Dict[str, Any],
         scope: str = "PLATFORM",
         schema_name: Optional[str] = None,
+        catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
+        identity_id: Optional[str] = None,
         dedup_key: Optional[str] = None,
         db_resource: Optional[Any] = None,
     ) -> Optional[str]:
@@ -134,35 +136,3 @@ class EventBusProtocol(EventsProtocol, Protocol):
         """Stop the background event consumer loop gracefully."""
         ...
 
-    # --- Tenant event space lifecycle ---
-
-    async def init_tenant_events(self, tenant: str, **extras: Any) -> None:
-        """
-        Register a tenant as an event space (idempotent).
-
-        Creates the necessary tables, partitions, triggers, and cron jobs
-        for tenant-scoped event storage.
-
-        Implementations may accept ``db_resource`` in *extras* for
-        transactional participation with the caller's DDL.
-        """
-        ...
-
-    async def init_namespace(
-        self, tenant: str, namespace: str, **extras: Any
-    ) -> None:
-        """
-        Register a namespace within a tenant event space (idempotent).
-
-        Creates the necessary partitioning/storage for namespace-scoped
-        events (e.g. collection-level event partition).
-        """
-        ...
-
-    async def drop_events(
-        self, tenant: str, namespace: str, **extras: Any
-    ) -> None:
-        """
-        Remove event storage for a namespace within a tenant.
-        """
-        ...

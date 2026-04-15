@@ -45,7 +45,7 @@ from dynastore.modules.events.primitives import (
     define_event,
 )
 from dynastore.models.shared_models import EventType, SYSTEM_SCHEMA
-from dynastore.models.protocols import EventsProtocol, EventStorageProtocol
+from dynastore.models.protocols import EventsProtocol, EventDriverProtocol
 from dynastore.models.protocols.event_bus import EventBusProtocol
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
@@ -59,16 +59,9 @@ from dynastore.modules.db_config.locking_tools import (
     check_trigger_exists,
     check_function_exists,
     check_table_exists,
-    _get_stable_lock_id,
 )
 from dynastore.modules.db_config.exceptions import TableNotFoundError
-from sqlalchemy import text as _sql_text
 from dynastore.tools.json import CustomJSONEncoder
-from dynastore.modules.catalog.lifecycle_manager import (
-    lifecycle_registry,
-    sync_collection_initializer,
-    sync_collection_destroyer,
-)
 from dynastore.modules.db_config.maintenance_tools import register_cron_job
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.concurrency import get_background_executor
@@ -77,25 +70,6 @@ from dynastore.models.driver_context import DriverContext
 logger = logging.getLogger(__name__)
 
 
-
-@sync_collection_initializer()
-async def _create_collection_events_partition(
-    conn: DbResource, schema: str, catalog_id: str, collection_id: str, **kwargs
-) -> None:
-    """Delegates partition creation to EventBusProtocol."""
-    bus = get_protocol(EventBusProtocol)
-    if bus:
-        await bus.init_namespace(schema, collection_id, db_resource=conn)
-
-
-@sync_collection_destroyer()
-async def _drop_collection_events_partition(
-    conn: DbResource, schema: str, catalog_id: str, collection_id: str, **kwargs
-) -> None:
-    """Delegates partition destruction to EventBusProtocol."""
-    bus = get_protocol(EventBusProtocol)
-    if bus:
-        await bus.drop_events(schema, collection_id, db_resource=conn)
 class CatalogEventType(EventType):
     # Catalog Lifecycle
     BEFORE_CATALOG_CREATION = define_event(
@@ -181,7 +155,6 @@ class CatalogEventType(EventType):
         "after_asset_hard_deletion", EventScope.COLLECTION
     )
 
-
     # Item Lifecycle
     BEFORE_ITEM_CREATION = define_event("before_item_creation", EventScope.COLLECTION)
     ITEM_CREATION = define_event("item_creation", EventScope.COLLECTION)
@@ -204,9 +177,13 @@ class CatalogEventType(EventType):
     )
 
     # Bulk Event Lifecycle
-    BEFORE_BULK_ITEM_CREATION = define_event("before_bulk_item_creation", EventScope.COLLECTION)
+    BEFORE_BULK_ITEM_CREATION = define_event(
+        "before_bulk_item_creation", EventScope.COLLECTION
+    )
     BULK_ITEM_CREATION = define_event("bulk_item_creation", EventScope.COLLECTION)
-    AFTER_BULK_ITEM_CREATION = define_event("after_bulk_item_creation", EventScope.COLLECTION)
+    AFTER_BULK_ITEM_CREATION = define_event(
+        "after_bulk_item_creation", EventScope.COLLECTION
+    )
 
     # Task Lifecycle Events (platform-scoped, fired by runners - no module coupling)
     TASK_FAILED = define_event("task.failed", EventScope.PLATFORM)
@@ -214,13 +191,11 @@ class CatalogEventType(EventType):
 Listener = Callable[..., Coroutine[Any, Any, None]]
 
 
-
-
 class EventService(EventBusProtocol):
     """
     Manages event registration, emission, and persistence.
     Implements EventBusProtocol (which extends EventsProtocol) for durable
-    event delivery via the global tasks.events outbox table.
+    event delivery via the global events outbox table.
     """
 
     # Shared state for listeners across all instances (Singleton behavior for registration)
@@ -293,25 +268,21 @@ class EventService(EventBusProtocol):
         """
         e_val = event_type.value if isinstance(event_type, EventType) else event_type
 
-        # Optional: Validate event existence
         if not EventRegistry.is_valid(e_val):
             logger.debug(f"Emitting unregistered event type: {e_val}")
 
         # 1. Persistence (Outbox Pattern)
-        # Determine scope based on registry or heuristics
         scope = EventRegistry._events.get(e_val, EventScope.PLATFORM)
-
-        # Override scope logic based on known types for backward compat if registry is empty/partial
         is_global_event = scope == EventScope.PLATFORM
 
         if db_resource:
             catalog_id = kwargs.get("catalog_id")
             collection_id = kwargs.get("collection_id")
+            identity_id = kwargs.get("identity_id")
             payload = {"args": args, "kwargs": kwargs}
             schema_name = None
 
             if not is_global_event and catalog_id:
-                # For tenant-specific events, we need the physical schema
                 from dynastore.models.protocols import CatalogsProtocol
                 from dynastore.tools.discovery import get_protocol
 
@@ -321,16 +292,16 @@ class EventService(EventBusProtocol):
                         catalog_id, ctx=DriverContext(db_resource=db_resource)
                     )
 
-            from dynastore.models.protocols import EventStorageProtocol
-            from dynastore.tools.discovery import get_protocol
-            event_storage = get_protocol(EventStorageProtocol)
-            if event_storage:
-                await event_storage.publish(
+            event_driver = get_protocol(EventDriverProtocol)
+            if event_driver:
+                await event_driver.publish(
                     event_type=e_val,
                     payload=payload,
                     scope=str(scope),
                     schema_name=schema_name,
+                    catalog_id=catalog_id,
                     collection_id=collection_id,
+                    identity_id=identity_id,
                     db_resource=db_resource,
                 )
 
@@ -386,19 +357,21 @@ class EventService(EventBusProtocol):
     async def search_events(
         self,
         engine: DbResource,
-        catalog_id: str,
+        catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
+        identity_id: Optional[str] = None,
         event_type: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """Searches events across system and tenant schemas."""
-        storage = get_protocol(EventStorageProtocol)
-        if storage:
-            return await storage.search_events(
+        """Search events in the global outbox. Delegates to EventDriverProtocol."""
+        driver = get_protocol(EventDriverProtocol)
+        if driver:
+            return await driver.search_events(
                 engine=engine,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
+                identity_id=identity_id,
                 event_type=event_type,
                 limit=limit,
                 offset=offset,
@@ -413,22 +386,26 @@ class EventService(EventBusProtocol):
         payload: Dict[str, Any],
         scope: str = "PLATFORM",
         schema_name: Optional[str] = None,
+        catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
+        identity_id: Optional[str] = None,
         dedup_key: Optional[str] = None,
         db_resource: Optional[Any] = None,
     ) -> Optional[str]:
-        """Delegates to EventStorageProtocol."""
-        storage = get_protocol(EventStorageProtocol)
-        if not storage:
-            logger.warning("EventStorageProtocol not available for publish")
+        """Delegates to EventDriverProtocol."""
+        driver = get_protocol(EventDriverProtocol)
+        if not driver:
+            logger.warning("EventDriverProtocol not available for publish")
             return None
-        
-        return await storage.publish(
+
+        return await driver.publish(
             event_type=event_type,
             payload=payload,
             scope=scope,
             schema_name=schema_name,
+            catalog_id=catalog_id,
             collection_id=collection_id,
+            identity_id=identity_id,
             dedup_key=dedup_key,
             db_resource=db_resource,
         )
@@ -438,37 +415,24 @@ class EventService(EventBusProtocol):
         engine: Any,
         batch_size: int = 100,
     ) -> List[Dict[str, Any]]:
-        """
-        Claim and return a batch of pending events.
-        Delegates to EventStorageProtocol.
-        """
-        from dynastore.models.protocols import EventStorageProtocol
-        from dynastore.tools.discovery import get_protocol
-        
-        event_storage = get_protocol(EventStorageProtocol)
-        if not event_storage:
-            logger.warning("EventStorageProtocol not available for consume_batch")
+        """Claim and return a batch of pending events. Delegates to EventDriverProtocol."""
+        driver = get_protocol(EventDriverProtocol)
+        if not driver:
+            logger.warning("EventDriverProtocol not available for consume_batch")
             return []
-            
-        return await event_storage.consume_batch(scope="PLATFORM", batch_size=batch_size)
+        return await driver.consume_batch(scope="PLATFORM", batch_size=batch_size)
 
     async def ack(
         self,
         engine: Any,
         event_ids: List[str],
     ) -> None:
-        """
-        Acknowledge consumed events. Delegates to EventStorageProtocol.
-        """
+        """Acknowledge consumed events. Delegates to EventDriverProtocol."""
         if not event_ids:
             return
-
-        from dynastore.models.protocols import EventStorageProtocol
-        from dynastore.tools.discovery import get_protocol
-        
-        event_storage = get_protocol(EventStorageProtocol)
-        if event_storage:
-            await event_storage.ack(event_ids=event_ids)
+        driver = get_protocol(EventDriverProtocol)
+        if driver:
+            await driver.ack(event_ids=event_ids)
 
     async def nack(
         self,
@@ -476,41 +440,38 @@ class EventService(EventBusProtocol):
         event_id: str,
         error: str,
     ) -> None:
-        """
-        Negative-acknowledge a consumed event. Delegates to EventStorageProtocol.
-        """
-        from dynastore.models.protocols import EventStorageProtocol
-        from dynastore.tools.discovery import get_protocol
-        
-        event_storage = get_protocol(EventStorageProtocol)
-        if event_storage:
-            await event_storage.nack(event_id=event_id, error=error)
+        """Negative-acknowledge a consumed event. Delegates to EventDriverProtocol."""
+        driver = get_protocol(EventDriverProtocol)
+        if driver:
+            await driver.nack(event_id=event_id, error=error)
 
     def has_listeners(self) -> bool:
         """Returns True if any async event listeners are registered."""
         return bool(self._async_listeners)
 
-    async def _run_consume_loop(
+    async def _consume_shard(
         self,
+        shard_id: int,
         shutdown_event: Any,
         *,
-        scope: str = "PLATFORM",
-        channels: Optional[List[str]] = None,
+        scope: str,
     ) -> None:
-        """Inner consume/dispatch/ack loop. Caller must hold the leader lock."""
-        logger.info("EventService async consumer loop started (scope=%s).", scope)
-        from dynastore.models.protocols import EventStorageProtocol
-
+        """One consumer task per shard — own connection, own SKIP LOCKED scan."""
+        logger.info(
+            "EventService: shard consumer started (shard=%d, scope=%s).", shard_id, scope
+        )
         while not getattr(shutdown_event, "is_set", lambda: False)():
             try:
-                event_storage = get_protocol(EventStorageProtocol)
-                if not event_storage:
+                driver = get_protocol(EventDriverProtocol)
+                if not driver:
                     await asyncio.sleep(5.0)
                     continue
 
-                events = await self.consume_batch(None, batch_size=100)
+                events = await driver.consume_batch(
+                    scope=scope, batch_size=100, shard=shard_id
+                )
                 if not events:
-                    await event_storage.wait_for_events(timeout=10.0)
+                    await driver.wait_for_events(timeout=10.0)
                     continue
 
                 for event in events:
@@ -527,23 +488,49 @@ class EventService(EventBusProtocol):
                             kwargs = payload.get("kwargs", {})
                             await listener(*args, **kwargs)
 
-                        await self.ack(None, [event_id])
+                        await driver.ack(event_ids=[event_id])
                     except Exception as e:
-                        logger.error(f"Failed to process event {event_id}: {e}", exc_info=True)
-                        await self.nack(None, event_id, str(e))
+                        logger.error(
+                            f"Failed to process event {event_id}: {e}", exc_info=True
+                        )
+                        await driver.nack(event_id=event_id, error=str(e))
 
             except asyncio.CancelledError:
                 raise
             except TableNotFoundError as e:
                 logger.warning(
-                    "EventService consumer: table missing (%s); backing off 60s.", e
+                    "EventService shard %d: table missing (%s); backing off 60s.",
+                    shard_id, e,
                 )
                 await asyncio.sleep(60.0)
             except Exception as e:
-                logger.error(f"EventService background consumer error: {e}", exc_info=True)
+                logger.error(
+                    f"EventService shard {shard_id} consumer error: {e}", exc_info=True
+                )
                 await asyncio.sleep(5.0)
 
-        logger.info("EventService async consumer loop stopped (scope=%s).", scope)
+        logger.info(
+            "EventService: shard consumer stopped (shard=%d, scope=%s).", shard_id, scope
+        )
+
+    async def _run_consume_loop(
+        self,
+        shutdown_event: Any,
+        *,
+        scope: str = "PLATFORM",
+        channels: Optional[List[str]] = None,
+    ) -> None:
+        """Spawn 16 shard consumer tasks and wait for all to complete."""
+        logger.info("EventService: starting 16-shard consume loop (scope=%s).", scope)
+        tasks = [
+            asyncio.create_task(
+                self._consume_shard(shard_id, shutdown_event, scope=scope),
+                name=f"EventShard:{shard_id}",
+            )
+            for shard_id in range(16)
+        ]
+        await asyncio.gather(*tasks)
+        logger.info("EventService: 16-shard consume loop stopped (scope=%s).", scope)
 
     async def start_consumer(
         self,
@@ -554,10 +541,10 @@ class EventService(EventBusProtocol):
         channels: Optional[List[str]] = None,
     ) -> None:
         """
-        Start the background event consumer under a Postgres session-scoped
-        advisory lock. Every worker fleet-wide calls this; exactly one wins
-        and runs the consume loop. On pod/worker death the lock is released
-        automatically and a waiter takes over — no polling, no heartbeat.
+        Start the background event consumer under a distributed advisory lock.
+        Every worker fleet-wide calls this; exactly one wins and runs the
+        consume loop. On pod/worker death the lock is released automatically
+        and a waiter takes over.
         """
         if getattr(self, "_consumer_running", False):
             logger.warning("EventService: Consumer already running.")
@@ -566,57 +553,23 @@ class EventService(EventBusProtocol):
         self._consumer_running = True
         self._consumer_task = None
 
-        from dynastore.tools.protocol_helpers import get_engine
-
-        engine = get_engine()
-        if engine is None:
-            logger.error(
-                "EventService: no DB engine available — consumer will not start."
-            )
-            self._consumer_running = False
-            return
-
-        lock_id = _get_stable_lock_id(leader_key)
-        events_schema = os.getenv("DYNASTORE_EVENTS_SCHEMA", "events")
-
         async def _leader_loop():
             while not getattr(shutdown_event, "is_set", lambda: False)():
                 try:
-                    async with engine.connect() as conn:
-                        # Autocommit: advisory lock + table-exists probe must
-                        # not live inside an implicit transaction that rolls back
-                        # on probe failure.
-                        conn = await conn.execution_options(
-                            isolation_level="AUTOCOMMIT"
+                    driver = get_protocol(EventDriverProtocol)
+                    if not driver:
+                        logger.warning(
+                            "EventService: EventDriverProtocol not available; retrying in 5s."
                         )
-                        await conn.execute(
-                            _sql_text("SELECT pg_advisory_lock(:lock_id)"),
-                            {"lock_id": lock_id},
-                        )
+                        await asyncio.sleep(5.0)
+                        continue
+
+                    async with driver.acquire_consumer_lock(leader_key) as is_leader:
+                        if not is_leader:
+                            return
                         logger.info(
-                            "EventService: leadership acquired (key=%s).",
-                            leader_key,
+                            "EventService: leadership acquired (key=%s).", leader_key
                         )
-
-                        if not await check_table_exists(conn, "events", events_schema):
-                            logger.error(
-                                "EventService: %s.events missing after leader "
-                                "acquisition; releasing lock and retrying in 30s.",
-                                events_schema,
-                            )
-                            try:
-                                await conn.execute(
-                                    _sql_text("SELECT pg_advisory_unlock(:lock_id)"),
-                                    {"lock_id": lock_id},
-                                )
-                            except Exception:
-                                logger.debug(
-                                    "EventService: advisory_unlock failed on retry path.",
-                                    exc_info=True,
-                                )
-                            await asyncio.sleep(30.0)
-                            continue
-
                         await self._run_consume_loop(
                             shutdown_event,
                             scope=scope,
@@ -652,72 +605,6 @@ class EventService(EventBusProtocol):
             self._consumer_task = None
             logger.info("EventService: Durable event consumer task cancelled.")
 
-    # --- Tenant event space lifecycle ---
-
-    async def init_tenant_events(self, tenant: str, **extras: Any) -> None:
-        """Register a tenant as an event space. Delegates to EventStorageProtocol."""
-        storage = get_protocol(EventStorageProtocol)
-        if not storage:
-            logger.warning(
-                "EventStorageProtocol not available — cannot init tenant '%s'.",
-                tenant,
-            )
-            return
-        conn = extras.get("db_resource")
-        if conn:
-            await storage.init_catalog_scope(conn, tenant)
-        else:
-            from dynastore.models.protocols import DatabaseProtocol
-
-            db = get_protocol(DatabaseProtocol)
-            if db is None:
-                raise RuntimeError("DatabaseProtocol not registered")
-            async with managed_transaction(db.engine) as txn:
-                await storage.init_catalog_scope(txn, tenant)
-
-    async def init_namespace(
-        self, tenant: str, namespace: str, **extras: Any
-    ) -> None:
-        """Register a namespace within a tenant event space. Delegates to EventStorageProtocol."""
-        storage = get_protocol(EventStorageProtocol)
-        if not storage:
-            logger.warning(
-                "EventStorageProtocol not available — cannot init namespace '%s.%s'.",
-                tenant,
-                namespace,
-            )
-            return
-        conn = extras.get("db_resource")
-        if conn:
-            await storage.init_collection_scope(conn, tenant, namespace)
-        else:
-            from dynastore.models.protocols import DatabaseProtocol
-
-            db = get_protocol(DatabaseProtocol)
-            if db is None:
-                raise RuntimeError("DatabaseProtocol not registered")
-            async with managed_transaction(db.engine) as txn:
-                await storage.init_collection_scope(txn, tenant, namespace)
-
-    async def drop_events(
-        self, tenant: str, namespace: str, **extras: Any
-    ) -> None:
-        """Remove event storage for a namespace within a tenant."""
-        storage = get_protocol(EventStorageProtocol)
-        if not storage:
-            return
-        conn = extras.get("db_resource")
-        if conn:
-            await storage.drop_collection_scope(conn, tenant, namespace)
-        else:
-            from dynastore.models.protocols import DatabaseProtocol
-
-            db = get_protocol(DatabaseProtocol)
-            if db is None:
-                raise RuntimeError("DatabaseProtocol not registered")
-            async with managed_transaction(db.engine) as txn:
-                await storage.drop_collection_scope(txn, tenant, namespace)
-
     @asynccontextmanager
     async def transaction(
         self, detached: bool = False, db_resource: Optional[DbResource] = None
@@ -731,13 +618,7 @@ class EventService(EventBusProtocol):
             if db_resource and "db_resource" not in kwargs:
                 kwargs["db_resource"] = db_resource
 
-            # Store immediately if persistent
             await self.emit(event_type, *args, **kwargs)
-
-            # Buffer for potential future use (though emit handles async dispatch already)
-            # If 'detached' logic was intended to defer ALL processing, we'd need to block emit here.
-            # But standard 'emit' separates sync/async.
-            # This transaction manager seems to be for grouping logic primarily.
             buffer.append((e_val, args, kwargs))
 
         yield emitter
@@ -761,5 +642,3 @@ async def emit_event(
     **kwargs,
 ):
     await event_service.emit(event_type, *args, db_resource=db_resource, **kwargs)
-
-

@@ -19,8 +19,8 @@
 import asyncio
 import logging
 import os
-from typing import Any, Dict, List, Optional
 from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Dict, FrozenSet, List, Optional
 
 import orjson
 from dynastore.modules import ModuleProtocol, get_protocol
@@ -33,13 +33,21 @@ from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     ResultHandler,
 )
-from dynastore.modules.db_config.locking_tools import acquire_startup_lock
+from dynastore.modules.db_config.locking_tools import (
+    acquire_startup_lock,
+    _get_stable_lock_id,
+)
 from dynastore.models.protocols import (
     CatalogsProtocol,
     ConfigsProtocol,
     PropertiesProtocol,
     DatabaseProtocol,
-    EventStorageProtocol,
+    EventDriverProtocol,
+)
+from dynastore.models.protocols.event_driver import (
+    AccumulationPolicy,
+    DeliveryMode,
+    EventDriverCapability,
 )
 from .models import (
     EventSubscription,
@@ -52,7 +60,7 @@ from .primitives import (
     define_event,
     SystemEventType,
 )
-from . import catalog_integration
+from sqlalchemy import text as _sql_text
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +77,9 @@ CREATE TABLE IF NOT EXISTS {_EVENTS_SCHEMA}.events (
     event_type    VARCHAR       NOT NULL,
     scope         VARCHAR(50)   NOT NULL DEFAULT 'PLATFORM',
     schema_name   VARCHAR(255),
+    catalog_id    VARCHAR(255),
     collection_id VARCHAR(255),
+    identity_id   VARCHAR(255),
     payload       JSONB         NOT NULL DEFAULT '{{}}',
     status        VARCHAR       NOT NULL DEFAULT 'PENDING',
     dedup_key     VARCHAR(512),
@@ -77,8 +87,11 @@ CREATE TABLE IF NOT EXISTS {_EVENTS_SCHEMA}.events (
     processed_at  TIMESTAMPTZ,
     error_message TEXT,
     retry_count   INT           NOT NULL DEFAULT 0,
-    PRIMARY KEY (created_at, event_id)
-) PARTITION BY RANGE (created_at);
+    shard         SMALLINT      GENERATED ALWAYS AS (
+                      (abs(hashtext(coalesce(catalog_id, 'PLATFORM'))) % 16)::smallint
+                  ) STORED,
+    PRIMARY KEY (shard, created_at, event_id)
+) PARTITION BY LIST (shard);
 """
 
 GLOBAL_EVENTS_INDEXES_DDL = f"""
@@ -86,12 +99,21 @@ CREATE INDEX IF NOT EXISTS idx_events_queue
     ON {_EVENTS_SCHEMA}.events (status, created_at)
     WHERE status = 'PENDING';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedup
-    ON {_EVENTS_SCHEMA}.events (dedup_key, created_at)
+    ON {_EVENTS_SCHEMA}.events (dedup_key, shard)
     WHERE dedup_key IS NOT NULL AND status NOT IN ('DEAD_LETTER');
 CREATE INDEX IF NOT EXISTS idx_events_schema
     ON {_EVENTS_SCHEMA}.events (schema_name, event_type);
 CREATE INDEX IF NOT EXISTS idx_events_event_id
     ON {_EVENTS_SCHEMA}.events (event_id);
+CREATE INDEX IF NOT EXISTS idx_events_catalog
+    ON {_EVENTS_SCHEMA}.events (catalog_id, event_type, created_at)
+    WHERE catalog_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_events_collection
+    ON {_EVENTS_SCHEMA}.events (collection_id, event_type, created_at)
+    WHERE collection_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_events_identity
+    ON {_EVENTS_SCHEMA}.events (identity_id, event_type, created_at)
+    WHERE identity_id IS NOT NULL;
 
 CREATE OR REPLACE FUNCTION {_EVENTS_SCHEMA}.notify_event_ready()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
@@ -109,18 +131,8 @@ CREATE TRIGGER on_event_insert
     EXECUTE FUNCTION {_EVENTS_SCHEMA}.notify_event_ready();
 """
 
-from dynastore.modules.events.tenant_ddl import (
-    TENANT_CATALOG_EVENTS_DDL,
-    TENANT_CATALOG_EVENTS_DL_DDL,
-    TENANT_COLLECTION_EVENTS_DDL,
-    TENANT_COLLECTION_EVENTS_DEFAULT_PARTITION_DDL,
-    TENANT_COLLECTION_EVENTS_DL_DDL,
-    build_tenant_notify_ddl,
-    build_tenant_cron_ddl,
-)
-
 # ---------------------------------------------------------------------------
-# Subscription table DDL (unchanged from original)
+# Subscription table DDL
 # ---------------------------------------------------------------------------
 
 SUBSCRIPTIONS_SCHEMA = f"""
@@ -178,10 +190,12 @@ _MAX_RETRIES = 3
 _publish_query = DQLQuery(
     f"""
     INSERT INTO {_EVENTS_SCHEMA}.events
-        (event_type, scope, schema_name, collection_id, payload, dedup_key)
+        (event_type, scope, schema_name, catalog_id, collection_id, identity_id,
+         payload, dedup_key)
     VALUES
-        (:event_type, :scope, :schema_name, :collection_id, :payload, :dedup_key)
-    ON CONFLICT (dedup_key, created_at)
+        (:event_type, :scope, :schema_name, :catalog_id, :collection_id,
+         :identity_id, :payload, :dedup_key)
+    ON CONFLICT (dedup_key, shard)
         WHERE dedup_key IS NOT NULL AND status NOT IN ('DEAD_LETTER')
         DO NOTHING
     RETURNING event_id::text;
@@ -194,16 +208,17 @@ _consume_query = DQLQuery(
     UPDATE {_EVENTS_SCHEMA}.events
     SET status = 'PROCESSING',
         processed_at = NOW()
-    WHERE (created_at, event_id) IN (
-        SELECT created_at, event_id FROM {_EVENTS_SCHEMA}.events
+    WHERE (shard, created_at, event_id) IN (
+        SELECT shard, created_at, event_id FROM {_EVENTS_SCHEMA}.events
         WHERE status = 'PENDING'
+          AND (:shard IS NULL OR shard = :shard)
           AND (:scope = 'ALL' OR scope = :scope)
         ORDER BY created_at ASC
         LIMIT :batch_size
         FOR UPDATE SKIP LOCKED
     )
-    RETURNING event_id::text, event_type, scope, schema_name, collection_id,
-              payload, created_at, dedup_key, retry_count;
+    RETURNING event_id::text, event_type, scope, schema_name, catalog_id,
+              collection_id, identity_id, payload, created_at, dedup_key, retry_count;
     """,
     result_handler=ResultHandler.ALL_DICTS,
 )
@@ -211,24 +226,6 @@ _consume_query = DQLQuery(
 _ack_query = DQLQuery(
     f"DELETE FROM {_EVENTS_SCHEMA}.events WHERE event_id = ANY(:event_ids);",
     result_handler=ResultHandler.NONE,
-)
-
-_tenant_catalog_event_insert_query = DQLQuery(
-    """
-    INSERT INTO {schema}.catalog_events (event_type, catalog_id, payload)
-    VALUES (:event_type, :catalog_id, :payload)
-    RETURNING id;
-    """,
-    result_handler=ResultHandler.SCALAR_ONE,
-)
-
-_tenant_collection_event_insert_query = DQLQuery(
-    """
-    INSERT INTO {schema}.collection_events (event_type, catalog_id, collection_id, item_id, payload)
-    VALUES (:event_type, :catalog_id, :collection_id, :item_id, :payload)
-    RETURNING id;
-    """,
-    result_handler=ResultHandler.SCALAR_ONE,
 )
 
 _nack_query = DQLQuery(
@@ -248,28 +245,156 @@ _nack_query = DQLQuery(
 
 
 # ---------------------------------------------------------------------------
+# Catalog event listeners (inlined from catalog_integration.py)
+# ---------------------------------------------------------------------------
+
+async def _on_catalog_creation(catalog_id: str, *args, **kwargs):
+    try:
+        await _module_publish(
+            event_type="catalog_creation",
+            payload={"catalog_id": catalog_id},
+        )
+    except Exception as e:
+        logger.error("Failed to dispatch event catalog_creation: %s", e, exc_info=True)
+
+
+async def _on_catalog_deletion(catalog_id: str, *args, **kwargs):
+    try:
+        await _module_publish(
+            event_type="catalog_deletion",
+            payload={"catalog_id": catalog_id},
+        )
+    except Exception as e:
+        logger.error("Failed to dispatch event catalog_deletion: %s", e, exc_info=True)
+
+
+async def _on_catalog_hard_deletion(catalog_id: str, *args, **kwargs):
+    try:
+        await _module_publish(
+            event_type="catalog_hard_deletion",
+            payload={"catalog_id": catalog_id},
+        )
+    except Exception as e:
+        logger.error("Failed to dispatch event catalog_hard_deletion: %s", e, exc_info=True)
+
+
+async def _on_collection_creation(catalog_id: str, collection_id: str, *args, **kwargs):
+    try:
+        await _module_publish(
+            event_type="collection_creation",
+            payload={"catalog_id": catalog_id, "collection_id": collection_id},
+        )
+    except Exception as e:
+        logger.error("Failed to dispatch event collection_creation: %s", e, exc_info=True)
+
+
+async def _on_collection_deletion(catalog_id: str, collection_id: str, *args, **kwargs):
+    try:
+        await _module_publish(
+            event_type="collection_deletion",
+            payload={"catalog_id": catalog_id, "collection_id": collection_id},
+        )
+    except Exception as e:
+        logger.error("Failed to dispatch event collection_deletion: %s", e, exc_info=True)
+
+
+async def _on_collection_hard_deletion(catalog_id: str, collection_id: str, *args, **kwargs):
+    try:
+        await _module_publish(
+            event_type="collection_hard_deletion",
+            payload={"catalog_id": catalog_id, "collection_id": collection_id},
+        )
+    except Exception as e:
+        logger.error("Failed to dispatch event collection_hard_deletion: %s", e, exc_info=True)
+
+
+async def _module_publish(event_type: str, payload: Dict[str, Any]) -> None:
+    """Publish to the global outbox via the module instance."""
+    driver = get_protocol(EventDriverProtocol)
+    if driver:
+        await driver.publish(
+            event_type=event_type,
+            payload=payload,
+            scope="PLATFORM",
+            catalog_id=payload.get("catalog_id"),
+        )
+
+
+def register_catalog_listeners() -> None:
+    """Register EventsModule's lifecycle → outbox listeners.
+
+    Other modules extend the bus via register_event_listener() in their own
+    lifespan.  This function is intentionally separate so the GCP module (and
+    future modules) can register additional catalog-event listeners without
+    coupling to catalog_integration.py.
+    """
+    from dynastore.modules.catalog.event_service import (
+        register_event_listener,
+        CatalogEventType,
+    )
+
+    register_event_listener(CatalogEventType.CATALOG_CREATION, _on_catalog_creation)
+    register_event_listener(CatalogEventType.CATALOG_DELETION, _on_catalog_deletion)
+    register_event_listener(CatalogEventType.CATALOG_HARD_DELETION, _on_catalog_hard_deletion)
+    register_event_listener(CatalogEventType.COLLECTION_CREATION, _on_collection_creation)
+    register_event_listener(CatalogEventType.COLLECTION_DELETION, _on_collection_deletion)
+    register_event_listener(CatalogEventType.COLLECTION_HARD_DELETION, _on_collection_hard_deletion)
+    logger.info("EventsModule: Registered catalog event listeners.")
+
+
+# ---------------------------------------------------------------------------
 # EventsModule
 # ---------------------------------------------------------------------------
 
 
 class EventsModule(ModuleProtocol):
     """
-    Owns all event storage and provides the EventStorageProtocol.
+    Owns all event storage and provides the EventDriverProtocol.
 
     Responsibilities:
-    - Create and manage events.events (global outbox) + per-catalog tables
+    - Create and manage events.events (global outbox, 16-shard partitioned)
     - Implement publish / consume_batch / ack / nack / wait_for_events
     - Manage webhook subscriptions (platform.event_subscriptions)
-    - Register catalog lifecycle listeners (when CatalogsProtocol is present)
+    - Expose distributed advisory lock via acquire_consumer_lock
+    - Register catalog lifecycle listeners
 
     Priority 11: starts after DBService (10), before TasksModule (15) and CatalogModule (20).
     """
 
     priority: int = 11
-    supports_notify: bool = True
 
     def __init__(self, app_state: object):
         self._engine: Optional[DbEngine] = None
+
+    # ------------------------------------------------------------------
+    # EventDriverProtocol — capability declaration
+    # ------------------------------------------------------------------
+
+    @property
+    def capabilities(self) -> FrozenSet[str]:
+        return frozenset({
+            EventDriverCapability.PERSISTENCE,
+            EventDriverCapability.LOCKING,
+            EventDriverCapability.NOTIFICATION,
+            EventDriverCapability.SUBSCRIBE,
+            EventDriverCapability.DEAD_LETTER,
+            EventDriverCapability.EXACTLY_ONCE,
+        })
+
+    def has_capability(self, cap: str) -> bool:
+        return cap in self.capabilities
+
+    @property
+    def delivery_mode(self) -> str:
+        return DeliveryMode.AT_LEAST_ONCE
+
+    @property
+    def accumulation_policy(self) -> AccumulationPolicy:
+        return AccumulationPolicy(
+            retention_days=int(os.getenv("EVENT_RETENTION_DAYS", "7")),
+            dead_letter_days=int(os.getenv("GLOBAL_EVENT_RETENTION_DAYS", "30")),
+            max_retries=_MAX_RETRIES,
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -286,7 +411,9 @@ class EventsModule(ModuleProtocol):
             return
 
         # 1. Create global events table (guarded by advisory lock for multi-instance safety)
-        logger.info("EventsModule: Initialising global events storage (%s.events)…", _EVENTS_SCHEMA)
+        logger.info(
+            "EventsModule: Initialising global events storage (%s.events)…", _EVENTS_SCHEMA
+        )
         try:
             async with managed_transaction(self._engine) as conn:
                 await DDLQuery(GLOBAL_EVENTS_TABLE_DDL).execute(
@@ -297,7 +424,7 @@ class EventsModule(ModuleProtocol):
                 )
             logger.info("EventsModule: %s.events ready.", _EVENTS_SCHEMA)
 
-            # Ensure RANGE partitions exist for the global events table
+            # Create 16 shard sub-partitions and per-shard maintenance jobs
             async with managed_transaction(self._engine) as conn:
                 from dynastore.modules.db_config.maintenance_tools import (
                     ensure_future_partitions,
@@ -305,34 +432,44 @@ class EventsModule(ModuleProtocol):
                     register_partition_creation_policy,
                 )
 
-                global_retention = int(
-                    os.getenv("GLOBAL_EVENT_RETENTION_DAYS", "30")
-                )
-                await ensure_future_partitions(
-                    conn,
-                    schema=_EVENTS_SCHEMA,
-                    table="events",
-                    interval="monthly",
-                    periods_ahead=3,
-                    column="created_at",
-                )
-                await register_retention_policy(
-                    conn,
-                    schema=_EVENTS_SCHEMA,
-                    table="events",
-                    policy="prune",
-                    interval="daily",
-                    retention_period=f"{global_retention} days",
-                    column="created_at",
-                )
-                await register_partition_creation_policy(
-                    conn,
-                    schema=_EVENTS_SCHEMA,
-                    table="events",
-                    interval="monthly",
-                    periods_ahead=3,
-                )
-            logger.info("EventsModule: Global events partition management configured.")
+                global_retention = int(os.getenv("GLOBAL_EVENT_RETENTION_DAYS", "30"))
+
+                for shard_id in range(16):
+                    await DDLQuery(
+                        f"""
+                        CREATE TABLE IF NOT EXISTS {_EVENTS_SCHEMA}.events_s{shard_id}
+                        PARTITION OF {_EVENTS_SCHEMA}.events
+                        FOR VALUES IN ({shard_id})
+                        PARTITION BY RANGE (created_at);
+                        """
+                    ).execute(conn)
+
+                    await ensure_future_partitions(
+                        conn,
+                        schema=_EVENTS_SCHEMA,
+                        table=f"events_s{shard_id}",
+                        interval="monthly",
+                        periods_ahead=3,
+                        column="created_at",
+                    )
+                    await register_partition_creation_policy(
+                        conn,
+                        schema=_EVENTS_SCHEMA,
+                        table=f"events_s{shard_id}",
+                        interval="monthly",
+                        periods_ahead=3,
+                    )
+                    await register_retention_policy(
+                        conn,
+                        schema=_EVENTS_SCHEMA,
+                        table=f"events_s{shard_id}",
+                        policy="prune",
+                        interval="daily",
+                        retention_period=f"{global_retention} days",
+                        column="created_at",
+                    )
+
+            logger.info("EventsModule: Global events shard partitions configured.")
         except Exception:
             logger.exception("EventsModule: Failed to initialise global events storage.")
             raise
@@ -366,25 +503,28 @@ class EventsModule(ModuleProtocol):
                     )
                     await props.set_property(API_KEY_NAME, PLATFORM_API_KEY, "system")
             except RuntimeError as e:
-                logger.warning("PropertiesProtocol not available: %s. Cannot load '%s'.", e, API_KEY_NAME)
+                logger.warning(
+                    "PropertiesProtocol not available: %s. Cannot load '%s'.", e, API_KEY_NAME
+                )
 
         # 4. Register catalog integration listeners (deferred until CatalogsProtocol is present)
         from dynastore.models.protocols import CatalogsProtocol
         if get_protocol(CatalogsProtocol):
             try:
-                catalog_integration.register_all_listeners()
-                logger.info("EventsModule: Registered catalog event listeners.")
+                register_catalog_listeners()
             except Exception:
                 logger.exception("EventsModule: Failed to register catalog listeners.")
         else:
-            logger.info("EventsModule: CatalogsProtocol not loaded — skipping catalog listeners.")
+            logger.info(
+                "EventsModule: CatalogsProtocol not loaded — skipping catalog listeners."
+            )
 
         logger.info("EventsModule: Initialisation complete. Event storage is active.")
         yield
         logger.info("EventsModule: Shutdown complete.")
 
     # ------------------------------------------------------------------
-    # EventStorageProtocol — DDL
+    # EventDriverProtocol — DDL lifecycle
     # ------------------------------------------------------------------
 
     async def initialize(self, conn: Any) -> None:
@@ -393,130 +533,54 @@ class EventsModule(ModuleProtocol):
         await DDLQuery(GLOBAL_EVENTS_INDEXES_DDL).execute(conn)
 
     async def init_catalog_scope(self, conn: Any, catalog_schema: str) -> None:
-        """Create per-catalog event table and indexes inside *catalog_schema*."""
-        from dynastore.modules.db_config.maintenance_tools import register_cron_job
-        from dynastore.modules.db_config.locking_tools import check_table_exists, check_function_exists
-        from dynastore.modules.events.tenant_ddl import (
-            TENANT_CATALOG_EVENTS_DDL,
-            TENANT_CATALOG_EVENTS_DL_DDL,
-            TENANT_COLLECTION_EVENTS_DDL,
-            TENANT_COLLECTION_EVENTS_DL_DDL,
-            TENANT_COLLECTION_EVENTS_DEFAULT_PARTITION_DDL,
-            build_tenant_notify_ddl,
-            build_tenant_cron_ddl,
-        )
-
-        schema = catalog_schema
-
-        async def _check_all_tables_exist(active_conn=None, params=None):
-            target = active_conn or conn
-            exists_1 = await check_table_exists(target, "catalog_events", schema)
-            exists_2 = await check_table_exists(target, "catalog_events_dead_letter", schema)
-            exists_3 = await check_table_exists(target, "collection_events", schema)
-            exists_4 = await check_table_exists(target, "collection_events_dead_letter", schema)
-            exists_5 = await check_table_exists(target, "collection_events_default", schema)
-            return all([exists_1, exists_2, exists_3, exists_4, exists_5])
-
-        combined_ddl = (
-            TENANT_CATALOG_EVENTS_DDL
-            + TENANT_CATALOG_EVENTS_DL_DDL
-            + TENANT_COLLECTION_EVENTS_DDL
-            + TENANT_COLLECTION_EVENTS_DL_DDL
-            + TENANT_COLLECTION_EVENTS_DEFAULT_PARTITION_DDL
-        )
-
-        await DDLQuery(
-            combined_ddl,
-            check_query=_check_all_tables_exist,
-            lock_key=f"{schema}_event_tables_init",
-        ).execute(conn, schema=schema)
-
-        # --- NOTIFY function + triggers (catalog and collection share one function) ---
-        func_name, notify_func, triggers = build_tenant_notify_ddl(schema)
-
-        async def check_notify_resources(active_conn=None, params=None):
-            target_conn = active_conn or conn
-            return await check_function_exists(target_conn, func_name, schema)
-
-        await DDLQuery(
-            notify_func + triggers,
-            check_query=check_notify_resources,
-            lock_key=f"init_{schema}_{func_name}",
-        ).execute(conn, schema=schema)
-
-        # --- pg_cron maintenance jobs ---
-        for job_name, schedule, command in build_tenant_cron_ddl(schema):
-            await register_cron_job(conn, job_name=job_name, schedule=schedule, command=command)
+        """No-op. The global shard-partitioned outbox serves all catalogs."""
+        pass
 
     async def init_collection_scope(
         self, conn: Any, catalog_schema: str, collection_id: str
     ) -> None:
-        """Creates a per-collection LIST partition in collection_events."""
-        from dynastore.modules.db_config.locking_tools import check_table_exists
-
-        # Sanitise collection_id for use as a table name suffix
-        safe_suffix = collection_id.replace("-", "_").replace(".", "_")
-        partition_table = f"collection_events_{safe_suffix}"
-
-        # PostgreSQL identifier limit is 63 chars. Apply stable hash truncation if needed.
-        if len(partition_table) > 63:
-            import hashlib
-
-            h = hashlib.sha1(collection_id.encode()).hexdigest()[:8]
-            partition_table = f"collection_events_{h}"
-
-        async def partition_exists(active_conn=None, params=None):
-            return await check_table_exists(
-                active_conn or conn, partition_table, catalog_schema
-            )
-
-        create_ddl = (
-            f'CREATE TABLE IF NOT EXISTS "{catalog_schema}"."{partition_table}" '
-            f'PARTITION OF "{catalog_schema}".collection_events '
-            f"FOR VALUES IN ('{collection_id}');"
-        )
-
-        await DDLQuery(
-            create_ddl,
-            check_query=partition_exists,
-            lock_key=f"{catalog_schema}_{partition_table}_init",
-        ).execute(conn)
-        logger.info(
-            "EventsModule: Created collection_events partition '%s.%s'.",
-            catalog_schema,
-            partition_table,
-        )
+        """No-op. The global shard-partitioned outbox serves all collections."""
+        pass
 
     async def drop_collection_scope(
         self, conn: Any, catalog_schema: str, collection_id: str
     ) -> None:
-        """Removes a per-collection LIST partition from collection_events."""
-        # Sanitise collection_id
-        safe_suffix = collection_id.replace("-", "_").replace(".", "_")
-        partition_table = f"collection_events_{safe_suffix}"
-
-        if len(partition_table) > 63:
-            import hashlib
-
-            h = hashlib.sha1(collection_id.encode()).hexdigest()[:8]
-            partition_table = f"collection_events_{h}"
-
-        # DETACH and DROP
-        # We use CONCURRENTLY if possible? No, DDLQuery uses regular EXECUTE.
-        # Idempotent drop:
-        drop_ddl = f'DROP TABLE IF EXISTS "{catalog_schema}"."{partition_table}";'
-
-        await DDLQuery(
-            drop_ddl, lock_key=f"{catalog_schema}_{partition_table}_drop"
-        ).execute(conn)
-        logger.info(
-            "EventsModule: Dropped collection_events partition '%s.%s'.",
-            catalog_schema,
-            partition_table,
-        )
+        """No-op. The global outbox does not maintain per-collection partitions."""
+        pass
 
     # ------------------------------------------------------------------
-    # EventStorageProtocol — produce
+    # EventDriverProtocol — distributed lock
+    # ------------------------------------------------------------------
+
+    @asynccontextmanager
+    async def acquire_consumer_lock(self, key: str) -> AsyncIterator[bool]:
+        """
+        Acquire a PostgreSQL session-scoped advisory lock on a dedicated
+        AUTOCOMMIT connection.
+
+        Yields True if this worker became the leader; the lock is held for
+        the lifetime of the context.  On connection drop (pod/worker death)
+        the lock is released automatically — no heartbeat needed.
+        """
+        lock_id = _get_stable_lock_id(key)
+        async with self._engine.connect() as conn:
+            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            await conn.execute(
+                _sql_text("SELECT pg_advisory_lock(:id)"), {"id": lock_id}
+            )
+            logger.info("EventsModule: consumer lock acquired (key=%s).", key)
+            try:
+                yield True
+            finally:
+                try:
+                    await conn.execute(
+                        _sql_text("SELECT pg_advisory_unlock(:id)"), {"id": lock_id}
+                    )
+                except Exception:
+                    pass  # connection drop releases lock automatically
+
+    # ------------------------------------------------------------------
+    # EventDriverProtocol — produce
     # ------------------------------------------------------------------
 
     async def publish(
@@ -525,58 +589,27 @@ class EventsModule(ModuleProtocol):
         payload: Dict[str, Any],
         scope: str = "PLATFORM",
         schema_name: Optional[str] = None,
+        catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
+        identity_id: Optional[str] = None,
         dedup_key: Optional[str] = None,
         db_resource: Optional[DbResource] = None,
     ) -> Optional[str]:
         """Insert an event into the global outbox. Returns event_id or None (dedup)."""
-        import orjson
 
         async def _run(conn: Any) -> Optional[str]:
             payload_str = orjson.dumps(payload).decode()
-            
-            # 1. Always insert into the global outbox (events.events)
-            event_id = await _publish_query.execute(
+            return await _publish_query.execute(
                 conn,
                 event_type=event_type,
                 scope=scope,
                 schema_name=schema_name,
+                catalog_id=catalog_id,
                 collection_id=collection_id,
+                identity_id=identity_id,
                 payload=payload_str,
                 dedup_key=dedup_key,
             )
-            
-            # 2. If it's a tenant event, insert into the tenant's localized history table
-            if schema_name and scope in ("CATALOG", "COLLECTION"):
-                try:
-                    # catalog_id is usually derived from schema_name in this context or passed in payload
-                    # We'll extract catalog_id from payload if available, else derive from schema
-                    # Wait, payload usually has catalog_id
-                    cat_id = payload.get("catalog_id") or schema_name.split("_")[0]
-                    
-                    if scope == "COLLECTION" or collection_id:
-                        await _tenant_collection_event_insert_query.execute(
-                            conn,
-                            schema=schema_name,
-                            catalog_id=cat_id,
-                            collection_id=collection_id,
-                            item_id=payload.get("item_id"),
-                            event_type=event_type,
-                            payload=payload_str,
-                        )
-                    else:
-                        await _tenant_catalog_event_insert_query.execute(
-                            conn,
-                            schema=schema_name,
-                            catalog_id=cat_id,
-                            event_type=event_type,
-                            payload=payload_str,
-                        )
-                except Exception as e:
-                    # Tenant table might not exist yet if catalog isn't fully initialized; log and continue
-                    logger.warning(f"Failed to insert tenant event {event_type} into {schema_name}: {e}")
-                    
-            return event_id
 
         if db_resource is not None:
             return await _run(db_resource)
@@ -587,19 +620,22 @@ class EventsModule(ModuleProtocol):
             return await _run(conn)
 
     # ------------------------------------------------------------------
-    # EventStorageProtocol — consume / ack / nack
+    # EventDriverProtocol — consume / ack / nack
     # ------------------------------------------------------------------
 
     async def consume_batch(
         self,
         scope: str = "PLATFORM",
         batch_size: int = 100,
+        shard: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """Claim a batch of PENDING events for *scope* using SKIP LOCKED."""
+        """Claim a batch of PENDING events for *scope* (and optionally *shard*) using SKIP LOCKED."""
         from dynastore.tools.protocol_helpers import get_engine
         engine = self._engine or get_engine()
         async with managed_transaction(engine) as conn:
-            rows = await _consume_query.execute(conn, scope=scope, batch_size=batch_size)
+            rows = await _consume_query.execute(
+                conn, scope=scope, batch_size=batch_size, shard=shard
+            )
         return rows or []
 
     async def ack(self, event_ids: List[str]) -> None:
@@ -626,90 +662,62 @@ class EventsModule(ModuleProtocol):
     async def search_events(
         self,
         engine: Any,
-        catalog_id: str,
+        catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
+        identity_id: Optional[str] = None,
         event_type: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """Search for events across global and tenant tables."""
+        """Search for events in the global outbox."""
         async with managed_transaction(engine) as conn:
-            base_clauses = ["catalog_id = :catalog_id"]
-            params = {"catalog_id": catalog_id, "limit": limit, "offset": offset}
+            clauses = []
+            params: Dict[str, Any] = {"limit": limit, "offset": offset}
 
+            if catalog_id and catalog_id != "_system_":
+                clauses.append("catalog_id = :catalog_id")
+                params["catalog_id"] = catalog_id
             if collection_id:
-                base_clauses.append("collection_id = :collection_id")
+                clauses.append("collection_id = :collection_id")
                 params["collection_id"] = collection_id
+            if identity_id:
+                clauses.append("identity_id = :identity_id")
+                params["identity_id"] = identity_id
             if event_type:
-                base_clauses.append("event_type = :event_type")
+                clauses.append("event_type = :event_type")
                 params["event_type"] = event_type
 
-            where_clause = " AND ".join(base_clauses)
-            queries = []
-
-            # Global Events (for _system_ or matching payload->>'catalog_id')
-            sys_where = where_clause
-            if catalog_id == "_system_":
-                sys_where = where_clause.replace("catalog_id = :catalog_id", "TRUE")
-            else:
-                # payload->>'catalog_id' = :catalog_id
-                sys_where = sys_where.replace("catalog_id = :catalog_id", "(payload->>'catalog_id' = :catalog_id)")
-
-            queries.append(
-                f"SELECT event_id::text as id, event_type, payload->>'catalog_id' as catalog_id, collection_id, NULL as item_id, payload, created_at, status "
-                f"FROM {_EVENTS_SCHEMA}.events WHERE {sys_where}"
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            sql = (
+                f"SELECT event_id::text as id, event_type, catalog_id, collection_id, "
+                f"identity_id, payload, created_at, status "
+                f"FROM {_EVENTS_SCHEMA}.events {where} "
+                f"ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
             )
-
-            # Tenant Events
-            if catalog_id != "_system_":
-                catalogs_provider = get_protocol(CatalogsProtocol)
-                if catalogs_provider:
-                    physical_schema = await catalogs_provider.resolve_physical_schema(catalog_id)
-                    if physical_schema:
-                        if not collection_id:
-                            queries.append(
-                                f"SELECT id::text, event_type, catalog_id, NULL as collection_id, NULL as item_id, payload, created_at, status "
-                                f'FROM "{physical_schema}".catalog_events WHERE {where_clause}'
-                            )
-                        queries.append(
-                            f"SELECT id::text, event_type, catalog_id, collection_id, item_id, payload, created_at, status "
-                            f'FROM "{physical_schema}".collection_events WHERE {where_clause}'
-                        )
-
-            final_sql = " UNION ALL ".join(queries)
-            final_sql = f"SELECT * FROM ({final_sql}) AS combined ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
-
             try:
                 rows = await DQLQuery(
-                    final_sql, result_handler=ResultHandler.ALL_DICTS
+                    sql, result_handler=ResultHandler.ALL_DICTS
                 ).execute(conn, **params)
-                return rows
+                return rows or []
             except Exception as e:
-                logger.debug(f"Event Search failed: {e}")
-                
-            return []
+                logger.debug("Event search failed: %s", e)
+                return []
 
     # ------------------------------------------------------------------
-    # EventStorageProtocol — consumer notification
+    # EventDriverProtocol — consumer notification
     # ------------------------------------------------------------------
 
     async def wait_for_events(self, timeout: float = 10.0) -> None:
-        """
-        Wait until an event signal arrives on 'dynastore_events_channel' or
-        *timeout* seconds elapse.
-
-        Allows the event consumer to avoid tight polling. Implementations
-        without pub/sub will naturally fall back to sleeping for `timeout` seconds.
-        """
+        """Wait until an event signal arrives or *timeout* seconds elapse."""
         from dynastore.tools.async_utils import signal_bus
         await signal_bus.wait_for("dynastore_events_channel", timeout=timeout)
 
     # ------------------------------------------------------------------
-    # EventsModule — create_event (top-level API, publish to own outbox)
+    # EventsModule — create_event (top-level API)
     # ------------------------------------------------------------------
 
     async def create_event(self, event_type: str, payload: Dict[str, Any]) -> None:
-        """Publish an event to the global outbox (replaces Procrastinate task dispatch)."""
+        """Publish an event to the global outbox."""
         try:
             await self.publish(event_type=event_type, payload=payload, scope="PLATFORM")
             logger.debug("EventsModule: published event '%s'.", event_type)
@@ -753,7 +761,9 @@ class EventsModule(ModuleProtocol):
                 conn, subscriber_name=subscriber_name, event_type=event_type
             )
         if sub_dict:
-            logger.info("Subscription removed for '%s' on event '%s'.", subscriber_name, event_type)
+            logger.info(
+                "Subscription removed for '%s' on event '%s'.", subscriber_name, event_type
+            )
             return EventSubscription.model_validate(sub_dict)
         return None
 
@@ -774,33 +784,33 @@ class EventsModule(ModuleProtocol):
 # ---------------------------------------------------------------------------
 
 async def create_event(event_type: str, payload: Dict[str, Any]) -> None:
-    events = get_protocol(EventStorageProtocol)
-    if events:
-        await events.publish(event_type=event_type, payload=payload, scope="PLATFORM")
+    driver = get_protocol(EventDriverProtocol)
+    if driver:
+        await driver.publish(event_type=event_type, payload=payload, scope="PLATFORM")
 
 
 async def subscribe(
     subscription_data: EventSubscriptionCreate, engine: Optional[DbResource] = None
 ) -> EventSubscription:
-    events = get_protocol(EventStorageProtocol)
-    if events is None:
-        raise RuntimeError("EventStorageProtocol not available.")
-    return await events.subscribe(subscription_data, engine)
+    driver = get_protocol(EventDriverProtocol)
+    if driver is None:
+        raise RuntimeError("EventDriverProtocol not available.")
+    return await driver.subscribe(subscription_data, engine)
 
 
 async def unsubscribe(
     subscriber_name: str, event_type: str, engine: Optional[DbResource] = None
 ) -> Optional[EventSubscription]:
-    events = get_protocol(EventStorageProtocol)
-    if events is None:
-        raise RuntimeError("EventStorageProtocol not available.")
-    return await events.unsubscribe(subscriber_name, event_type, engine)
+    driver = get_protocol(EventDriverProtocol)
+    if driver is None:
+        raise RuntimeError("EventDriverProtocol not available.")
+    return await driver.unsubscribe(subscriber_name, event_type, engine)
 
 
 async def get_subscriptions_for_event_type(
     event_type: str, engine: Optional[DbResource] = None
 ) -> List[EventSubscription]:
-    events = get_protocol(EventStorageProtocol)
-    if events is None:
-        raise RuntimeError("EventStorageProtocol not available.")
-    return await events.get_subscriptions_for_event_type(event_type, engine)
+    driver = get_protocol(EventDriverProtocol)
+    if driver is None:
+        raise RuntimeError("EventDriverProtocol not available.")
+    return await driver.get_subscriptions_for_event_type(event_type, engine)
