@@ -678,7 +678,7 @@ function sendInitContext() {
       type: 'INIT_CONTEXT',
       token: token || null,
       catalogCode: getSelectedCatalog(),
-      baseUrl: API_BASE,
+      baseUrl: window.location.origin + API_BASE,
     }, '*');
     liteInitialized = true;
   } catch (e) { /* iframe may not be ready */ }
