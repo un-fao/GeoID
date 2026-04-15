@@ -1172,14 +1172,14 @@ async def _list_files(
             href=str(request.url),
             rel="self",
             type="application/json",
-            title="Current Page",
+            title=cast(Any, "Current Page"),
         )
     )
     # After iterating, the `next_page_token` attribute on the iterator is populated.
     if blob_iterator.next_page_token:
         next_url = f"{base_url}&page_token={blob_iterator.next_page_token}"
         links.append(
-            Link(href=next_url, rel="next", type="application/json", title="Next Page")
+            Link(href=next_url, rel="next", type="application/json", title=cast(Any, "Next Page"))
         )
 
     return files, links

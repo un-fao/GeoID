@@ -47,7 +47,7 @@ class StylesService(protocols.ExtensionProtocol, StylesProtocol):
     """
     router: APIRouter = APIRouter(prefix="/styles", tags=["OGC API - Styles"])
 
-    def __init__(self, app: FastAPI = None):
+    def __init__(self, app: Optional[FastAPI] = None):
         app = app
 
     @router.post("/catalogs/{catalog_id}/collections/{collection_id}/styles", response_model=Style, status_code=status.HTTP_201_CREATED)
@@ -82,7 +82,7 @@ class StylesService(protocols.ExtensionProtocol, StylesProtocol):
             return await styles_db.create_style(conn, catalog_id, collection_id, style)
         except IntegrityError as e:
             # asyncpg specific check for unique violation on (catalog_id, collection_id, style_id)
-            if e.orig and hasattr(e.orig, "sqlstate") and e.orig.sqlstate == '23505': # unique_violation
+            if e.orig and getattr(e.orig, "sqlstate", None) == '23505': # unique_violation
                 raise HTTPException(status_code=409, detail=f"Style with ID '{style.style_id}' already exists for this collection.")
             raise e
 
