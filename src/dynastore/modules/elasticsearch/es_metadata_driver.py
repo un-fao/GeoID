@@ -191,6 +191,7 @@ class DriverMetadataElasticsearch:
         MetadataCapability.READ,
         MetadataCapability.WRITE,
         MetadataCapability.SEARCH,
+        MetadataCapability.CQL_FILTER,
         MetadataCapability.SPATIAL_FILTER,
         MetadataCapability.AGGREGATION,
     })

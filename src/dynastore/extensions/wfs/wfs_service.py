@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from contextlib import asynccontextmanager
 
 from dynastore.modules.db_config.query_executor import managed_transaction
+from dynastore.modules.db_config.exceptions import TableNotFoundError, SchemaNotFoundError
 
 from dynastore.extensions import get_extension_instance
 from dynastore.extensions.tools.db import get_async_connection, get_async_engine
@@ -588,6 +589,21 @@ class WFSService(ExtensionProtocol):
         except ValueError as e:
             xml = wfs_generator.create_exception_report("InvalidParameterValue", None, str(e))
             return Response(content=xml, media_type="application/xml", status_code=400)
+        except (TableNotFoundError, SchemaNotFoundError):
+            # Physical hub table/schema has not been materialized yet (lazy creation
+            # on first write). Return an empty FeatureCollection in the requested
+            # format rather than a 500.
+            from dynastore.models.query_builder import QueryResponse
+            async def _empty():
+                if False:
+                    yield  # pragma: no cover
+            query_response = QueryResponse(
+                items=_empty(),
+                total_count=0,
+                catalog_id=schema_prefix,
+                collection_id=collection_id,
+                collection_config=None,
+            )
 
         total_count = query_response.total_count or 0
 
