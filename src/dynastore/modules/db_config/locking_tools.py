@@ -350,32 +350,35 @@ async def execute_safe_ddl(
 async def check_table_exists(
     conn: DbResource, table_name: str, schema: str = "platform"
 ) -> bool:
-    """Checks if a table exists in the given schema."""
+    """Checks if a table (or partition) exists in the given schema.
+
+    Uses to_regclass() which is transaction-visible and handles concurrent DDL
+    correctly — unlike pg_tables which can briefly lag after a COMMIT.
+    Returns False if the relation is absent; propagates connection errors.
+    """
     from dynastore.modules.db_config.maintenance_tools import DQLQuery, ResultHandler
 
-    query = DQLQuery(
-        "SELECT 1 FROM pg_tables WHERE schemaname = :schema AND tablename = :table",
+    fq = f'"{schema}"."{table_name}"'
+    res = await DQLQuery(
+        "SELECT to_regclass(:fq)",
         result_handler=ResultHandler.SCALAR,
-    )
-    try:
-        res = await query.execute(conn, schema=schema, table=table_name)
-        return res is not None
-    except Exception:
-        return False
+    ).execute(conn, fq=fq)
+    return res is not None
 
 
 async def check_schema_exists(conn: DbResource, schema_name: str) -> bool:
-    """Checks if a schema exists."""
+    """Checks if a schema exists.
+
+    Uses to_regnamespace() for the same transaction-visibility guarantees as
+    check_table_exists. Propagates connection errors instead of masking them.
+    """
     from dynastore.modules.db_config.maintenance_tools import DQLQuery, ResultHandler
 
-    query = DQLQuery(
-        "SELECT 1 FROM pg_namespace WHERE nspname = :schema",
+    res = await DQLQuery(
+        "SELECT to_regnamespace(:schema)",
         result_handler=ResultHandler.SCALAR,
-    )
-    try:
-        return await query.execute(conn, schema=schema_name) is not None
-    except Exception:
-        return False
+    ).execute(conn, schema=schema_name)
+    return res is not None
 
 
 async def check_extension_exists(conn: DbResource, extension_name: str) -> bool:

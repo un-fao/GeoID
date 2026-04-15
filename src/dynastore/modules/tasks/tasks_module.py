@@ -431,7 +431,8 @@ async def ensure_task_storage_exists(conn: DbResource, schema: str):
     # Step 2: Create indexes and triggers (idempotent: IF NOT EXISTS / OR REPLACE)
     await DDLQuery(GLOBAL_TASKS_INDEXES_DDL).execute(conn, schema=schema)
 
-    # Ensure partitions for tasks table
+    # Step 3: Ensure current + future partitions exist.
+    # Critical path — must succeed for the dispatcher to start.
     await maintenance_tools.ensure_future_partitions(
         conn,
         schema=schema,
@@ -440,22 +441,39 @@ async def ensure_task_storage_exists(conn: DbResource, schema: str):
         periods_ahead=12,
         column="timestamp",
     )
-    await maintenance_tools.register_retention_policy(
-        conn,
-        schema=schema,
-        table="tasks",
-        policy="prune",
-        interval="daily",
-        retention_period="1 month",
-        column="timestamp",
-    )
-    await maintenance_tools.register_partition_creation_policy(
-        conn,
-        schema=schema,
-        table="tasks",
-        interval="monthly",
-        periods_ahead=3,
-    )
+
+    # Steps 4+: pg_cron registration — operational, not structural.
+    # If pg_cron is not installed or misconfigured these steps warn rather than
+    # rolling back the table and partition creation above.
+    try:
+        await maintenance_tools.register_retention_policy(
+            conn,
+            schema=schema,
+            table="tasks",
+            policy="prune",
+            interval="daily",
+            retention_period="1 month",
+            column="timestamp",
+        )
+    except Exception as e:
+        logger.warning(
+            f"TasksModule: register_retention_policy failed for {schema}.tasks "
+            f"(pg_cron unavailable?): {e}"
+        )
+
+    try:
+        await maintenance_tools.register_partition_creation_policy(
+            conn,
+            schema=schema,
+            table="tasks",
+            interval="monthly",
+            periods_ahead=3,
+        )
+    except Exception as e:
+        logger.warning(
+            f"TasksModule: register_partition_creation_policy failed for {schema}.tasks "
+            f"(pg_cron unavailable?): {e}"
+        )
 
     # --- Task maintenance cron jobs ---
     from dynastore.modules.db_config.maintenance_tools import register_cron_job
@@ -463,26 +481,32 @@ async def ensure_task_storage_exists(conn: DbResource, schema: str):
     completed_retention = int(os.getenv("TASK_COMPLETED_RETENTION_DAYS", "30"))
     dlq_retention = int(os.getenv("TASK_DLQ_RETENTION_DAYS", "90"))
 
-    await register_cron_job(
-        conn,
-        job_name=f"purge_completed_tasks_{schema}",
-        schedule="0 5 * * *",  # Daily 05:00
-        command=(
-            f"DELETE FROM {schema}.tasks "
-            f"WHERE status IN ('COMPLETED', 'FAILED') "
-            f"AND finished_at < NOW() - INTERVAL '{completed_retention} days';"
-        ),
-    )
-    await register_cron_job(
-        conn,
-        job_name=f"purge_dead_letter_tasks_{schema}",
-        schedule="0 5 1 * *",  # 1st of month 05:00
-        command=(
-            f"DELETE FROM {schema}.tasks "
-            f"WHERE status = 'DEAD_LETTER' "
-            f"AND finished_at < NOW() - INTERVAL '{dlq_retention} days';"
-        ),
-    )
+    try:
+        await register_cron_job(
+            conn,
+            job_name=f"purge_completed_tasks_{schema}",
+            schedule="0 5 * * *",  # Daily 05:00
+            command=(
+                f"DELETE FROM {schema}.tasks "
+                f"WHERE status IN ('COMPLETED', 'FAILED') "
+                f"AND finished_at < NOW() - INTERVAL '{completed_retention} days';"
+            ),
+        )
+        await register_cron_job(
+            conn,
+            job_name=f"purge_dead_letter_tasks_{schema}",
+            schedule="0 5 1 * *",  # 1st of month 05:00
+            command=(
+                f"DELETE FROM {schema}.tasks "
+                f"WHERE status = 'DEAD_LETTER' "
+                f"AND finished_at < NOW() - INTERVAL '{dlq_retention} days';"
+            ),
+        )
+    except Exception as e:
+        logger.warning(
+            f"TasksModule: cron job registration failed for {schema}.tasks "
+            f"(pg_cron unavailable?): {e}"
+        )
 
 
 # --- Public API Functions ---
