@@ -19,6 +19,7 @@
 import logging
 import asyncio
 import json
+import os
 from typing import (
     List,
     Optional,
@@ -58,7 +59,10 @@ from dynastore.modules.db_config.locking_tools import (
     check_trigger_exists,
     check_function_exists,
     check_table_exists,
+    _get_stable_lock_id,
 )
+from dynastore.modules.db_config.exceptions import TableNotFoundError
+from sqlalchemy import text as _sql_text
 from dynastore.tools.json import CustomJSONEncoder
 from dynastore.modules.catalog.lifecycle_manager import (
     lifecycle_registry,
@@ -486,10 +490,74 @@ class EventService(EventBusProtocol):
         """Returns True if any async event listeners are registered."""
         return bool(self._async_listeners)
 
-    async def start_consumer(self, shutdown_event: Any) -> None:
+    async def _run_consume_loop(
+        self,
+        shutdown_event: Any,
+        *,
+        scope: str = "PLATFORM",
+        channels: Optional[List[str]] = None,
+    ) -> None:
+        """Inner consume/dispatch/ack loop. Caller must hold the leader lock."""
+        logger.info("EventService async consumer loop started (scope=%s).", scope)
+        from dynastore.models.protocols import EventStorageProtocol
+
+        while not getattr(shutdown_event, "is_set", lambda: False)():
+            try:
+                event_storage = get_protocol(EventStorageProtocol)
+                if not event_storage:
+                    await asyncio.sleep(5.0)
+                    continue
+
+                events = await self.consume_batch(None, batch_size=100)
+                if not events:
+                    await event_storage.wait_for_events(timeout=10.0)
+                    continue
+
+                for event in events:
+                    event_type_str = event.get("event_type", "")
+                    payload = event.get("payload", {})
+                    if isinstance(payload, str):
+                        payload = json.loads(payload)
+
+                    event_id = str(event.get("event_id") or event.get("id"))
+                    try:
+                        async_listeners = self._async_listeners.get(event_type_str, [])
+                        for listener in async_listeners:
+                            args = payload.get("args", [])
+                            kwargs = payload.get("kwargs", {})
+                            await listener(*args, **kwargs)
+
+                        await self.ack(None, [event_id])
+                    except Exception as e:
+                        logger.error(f"Failed to process event {event_id}: {e}", exc_info=True)
+                        await self.nack(None, event_id, str(e))
+
+            except asyncio.CancelledError:
+                raise
+            except TableNotFoundError as e:
+                logger.warning(
+                    "EventService consumer: table missing (%s); backing off 60s.", e
+                )
+                await asyncio.sleep(60.0)
+            except Exception as e:
+                logger.error(f"EventService background consumer error: {e}", exc_info=True)
+                await asyncio.sleep(5.0)
+
+        logger.info("EventService async consumer loop stopped (scope=%s).", scope)
+
+    async def start_consumer(
+        self,
+        shutdown_event: Any,
+        *,
+        scope: str = "PLATFORM",
+        leader_key: str = "dynastore.events.consumer.v1",
+        channels: Optional[List[str]] = None,
+    ) -> None:
         """
-        Start the background event consumer that processes events from
-        the global outbox using EventStorageProtocol.wait_for_events.
+        Start the background event consumer under a Postgres session-scoped
+        advisory lock. Every worker fleet-wide calls this; exactly one wins
+        and runs the consume loop. On pod/worker death the lock is released
+        automatically and a waiter takes over — no polling, no heartbeat.
         """
         if getattr(self, "_consumer_running", False):
             logger.warning("EventService: Consumer already running.")
@@ -498,59 +566,82 @@ class EventService(EventBusProtocol):
         self._consumer_running = True
         self._consumer_task = None
 
-        async def _consumer_loop():
-            logger.info("EventService async consumer loop started.")
-            from dynastore.models.protocols import EventStorageProtocol
-            from dynastore.tools.discovery import get_protocol
+        from dynastore.tools.protocol_helpers import get_engine
 
+        engine = get_engine()
+        if engine is None:
+            logger.error(
+                "EventService: no DB engine available — consumer will not start."
+            )
+            self._consumer_running = False
+            return
+
+        lock_id = _get_stable_lock_id(leader_key)
+        events_schema = os.getenv("DYNASTORE_EVENTS_SCHEMA", "events")
+
+        async def _leader_loop():
             while not getattr(shutdown_event, "is_set", lambda: False)():
                 try:
-                    event_storage = get_protocol(EventStorageProtocol)
-                    if not event_storage:
-                        await asyncio.sleep(5.0)
-                        continue
+                    async with engine.connect() as conn:
+                        # Autocommit: advisory lock + table-exists probe must
+                        # not live inside an implicit transaction that rolls back
+                        # on probe failure.
+                        conn = await conn.execution_options(
+                            isolation_level="AUTOCOMMIT"
+                        )
+                        await conn.execute(
+                            _sql_text("SELECT pg_advisory_lock(:lock_id)"),
+                            {"lock_id": lock_id},
+                        )
+                        logger.info(
+                            "EventService: leadership acquired (key=%s).",
+                            leader_key,
+                        )
 
-                    events = await self.consume_batch(None, batch_size=100)
-                    if not events:
-                        # Wait for new events rather than busy-polling
-                        await event_storage.wait_for_events(timeout=10.0)
-                        continue
+                        if not await check_table_exists(conn, "events", events_schema):
+                            logger.error(
+                                "EventService: %s.events missing after leader "
+                                "acquisition; releasing lock and retrying in 30s.",
+                                events_schema,
+                            )
+                            try:
+                                await conn.execute(
+                                    _sql_text("SELECT pg_advisory_unlock(:lock_id)"),
+                                    {"lock_id": lock_id},
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "EventService: advisory_unlock failed on retry path.",
+                                    exc_info=True,
+                                )
+                            await asyncio.sleep(30.0)
+                            continue
 
-                    for event in events:
-                        event_type_str = event.get("event_type", "")
-                        payload = event.get("payload", {})
-                        if isinstance(payload, str):
-                            import json
-                            payload = json.loads(payload)
-
-                        event_id = str(event.get("event_id") or event.get("id"))
-                        try:
-                            async_listeners = self._async_listeners.get(event_type_str, [])
-                            for listener in async_listeners:
-                                args = payload.get("args", [])
-                                kwargs = payload.get("kwargs", {})
-                                await listener(*args, **kwargs)
-
-                            await self.ack(None, [event_id])
-                        except Exception as e:
-                            logger.error(f"Failed to process event {event_id}: {e}", exc_info=True)
-                            await self.nack(None, event_id, str(e))
-
+                        await self._run_consume_loop(
+                            shutdown_event,
+                            scope=scope,
+                            channels=channels or ["dynastore_events_channel"],
+                        )
                 except asyncio.CancelledError:
                     break
-                except Exception as e:
-                    logger.error(f"EventService background consumer error: {e}", exc_info=True)
+                except Exception:
+                    logger.exception(
+                        "EventService leader loop error; reconnecting in 5s."
+                    )
                     await asyncio.sleep(5.0)
 
             self._consumer_running = False
-            logger.info("EventService async consumer loop stopped.")
+            logger.info("EventService: leader loop stopped (key=%s).", leader_key)
 
-        from dynastore.modules.concurrency import get_background_executor
         executor = get_background_executor()
         self._consumer_task = executor.submit(
-            _consumer_loop(), task_name="EventServiceConsumerLoop"
+            _leader_loop(), task_name=f"EventServiceLeader:{leader_key}"
         )
-        logger.info("EventService: Durable event consumer started via EventStorageProtocol.")
+        logger.info(
+            "EventService: leader-elected consumer started (key=%s, scope=%s).",
+            leader_key,
+            scope,
+        )
 
     async def stop_consumer(self) -> None:
         """Stop the background event consumer loop gracefully."""
