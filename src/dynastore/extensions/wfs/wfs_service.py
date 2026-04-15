@@ -62,6 +62,7 @@ from dynastore.extensions.tools.language_utils import get_language
 
 from dynastore.modules.catalog.models import Catalog, Collection
 from dynastore.models.shared_models import Link
+from dynastore.models.localization import LocalizedText
 from dynastore.extensions.tools.query import parse_ogc_query_request, stream_ogc_features
 
 logger = logging.getLogger(__name__)
@@ -663,7 +664,7 @@ class WFSService(ExtensionProtocol):
                 rel="prev",
                 href=f"{base_url}?{'&'.join([f'{k}={v}' for k, v in prev_params.items()])}",
                 type=normalized_format,
-                title=cast(Any, "Previous page"),
+                title=LocalizedText(en="Previous page"),
             ))
 
         if (start_index + count) < total_count:
@@ -673,7 +674,7 @@ class WFSService(ExtensionProtocol):
                 rel="next",
                 href=f"{base_url}?{'&'.join([f'{k}={v}' for k, v in next_params.items()])}",
                 type=normalized_format,
-                title=cast(Any, "Next page"),
+                title=LocalizedText(en="Next page"),
             ))
 
         return stream_ogc_features(

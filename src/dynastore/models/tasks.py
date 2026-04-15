@@ -133,6 +133,7 @@ For a deeper dive into architecture and operational best practices, see the [Dyn
 
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, Dict, Any, TypeVar, Generic, List
+from dynastore.models.shared_models import Link
 from uuid import UUID, uuid4
 from datetime import datetime, timezone, UTC, timedelta
 from enum import Enum
@@ -311,7 +312,7 @@ class Task(TaskBase):
     retry_count: int = Field(default=0)
     max_retries: int = Field(default=3)
 
-    links: List[Dict[str, Any]] = Field(default_factory=list)
+    links: List[Link] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

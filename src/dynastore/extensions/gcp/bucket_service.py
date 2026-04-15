@@ -26,6 +26,7 @@ from dynastore.modules.db_config.exceptions import ImmutableConfigError
 from google.cloud.storage.blob import Blob
 from typing import Optional, Dict, Any, cast
 from dynastore.models.shared_models import Link
+from dynastore.models.localization import LocalizedText
 from dynastore.modules.gcp.gcp_config import (
     GcpCatalogBucketConfig,
     GcpCollectionBucketConfig,
@@ -1172,14 +1173,14 @@ async def _list_files(
             href=str(request.url),
             rel="self",
             type="application/json",
-            title=cast(Any, "Current Page"),
+            title=LocalizedText(en="Current Page"),
         )
     )
     # After iterating, the `next_page_token` attribute on the iterator is populated.
     if blob_iterator.next_page_token:
         next_url = f"{base_url}&page_token={blob_iterator.next_page_token}"
         links.append(
-            Link(href=next_url, rel="next", type="application/json", title=cast(Any, "Next Page"))
+            Link(href=next_url, rel="next", type="application/json", title=LocalizedText(en="Next Page"))
         )
 
     return files, links

@@ -19,6 +19,7 @@
 from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from dynastore.models.localization import LocalizedText
 from uuid import UUID
 from datetime import datetime
 from dynastore.models.shared_models import Link
@@ -248,7 +249,7 @@ def task_to_status_info(task: "Task", links: Optional[List[Link]] = None) -> Sta
     # Ensure 'self' link is present
     has_self = any(l.rel == "self" for l in info.links)
     if not has_self:
-        info.links.append(Link(rel="self", type="application/json", title="this job", href=""))
+        info.links.append(Link(rel="self", type="application/json", title=LocalizedText(en="this job"), href=""))
 
     # If successful, ensure results link is present
     if task.status == TaskStatusEnum.COMPLETED:
@@ -257,7 +258,7 @@ def task_to_status_info(task: "Task", links: Optional[List[Link]] = None) -> Sta
             info.links.append(Link(
                 rel="http://www.opengis.net/def/rel/ogc/1.0/results",
                 type="application/json",
-                title="job results",
+                title=LocalizedText(en="job results"),
                 href=""
             ))
 

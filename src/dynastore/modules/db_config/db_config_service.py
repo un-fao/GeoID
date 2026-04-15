@@ -18,6 +18,7 @@
 
 import logging
 from contextlib import asynccontextmanager, AsyncExitStack
+from typing import Optional, Protocol, runtime_checkable, Any
 from dynastore.modules import ModuleProtocol
 from .db_config import DBConfig
 
@@ -25,6 +26,15 @@ logger = logging.getLogger(__name__)
 
 from dynastore.tools.discovery import register_plugin, unregister_plugin
 from .platform_config_service import PlatformConfigService
+
+
+@runtime_checkable
+class DBConfigAppState(Protocol):
+    db_config: Optional[DBConfig]
+    engine: Any
+    sync_engine: Any
+
+
 class DBConfigModule(ModuleProtocol):
     priority: int = 0
     
@@ -33,10 +43,13 @@ class DBConfigModule(ModuleProtocol):
 
     def get_config(self) -> DBConfig:
         """Returns the current database configuration."""
-        return self.app_state.db_config
+        cfg = self.app_state.db_config
+        if cfg is None:
+            raise RuntimeError("DBConfigModule.get_config() called before lifespan start")
+        return cfg
 
     @asynccontextmanager
-    async def lifespan(self, app_state: object):
+    async def lifespan(self, app_state: DBConfigAppState):
         """Manages the configuration's presence in the app state during the app's lifecycle."""
         logger.info("DBConfigModule: Lifespan starting up.")
         self.app_state = app_state

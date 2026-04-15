@@ -65,8 +65,9 @@ async def lifespan(app: FastAPI):
             # Flush any pending policy/role registrations from extensions
             from dynastore.models.protocols.policies import PermissionProtocol
             pm = modules.get_protocol(PermissionProtocol)
-            if pm and hasattr(pm, "flush_pending_registrations"):
-                await pm.flush_pending_registrations()
+            flush = getattr(pm, "flush_pending_registrations", None)
+            if flush is not None:
+                await flush()
             logger.info("--- [main.py] Web Extensions are active. Application is running. ---")
             yield
 
@@ -108,7 +109,7 @@ async def health_check():
 async def custom_swagger_ui_html():
     from fastapi.openapi.docs import get_swagger_ui_html
     return get_swagger_ui_html(
-        openapi_url=app.openapi_url,
+        openapi_url=app.openapi_url or "/openapi.json",
         title=app.title + " - Swagger UI",
         swagger_favicon_url="/web/static/dynastore.png"
     )
@@ -118,7 +119,7 @@ async def custom_swagger_ui_html():
 async def custom_redoc_html():
     from fastapi.openapi.docs import get_redoc_html
     return get_redoc_html(
-        openapi_url=app.openapi_url,
+        openapi_url=app.openapi_url or "/openapi.json",
         title=app.title + " - ReDoc",
         redoc_favicon_url="/web/static/dynastore.png"
     )
