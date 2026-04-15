@@ -20,16 +20,18 @@
 import logging
 import importlib.resources
 import uuid
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status, FastAPI
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncConnection
 from dynastore.extensions.tools.db import get_async_connection
+from dynastore.extensions.iam.guards import get_principal_optional as get_principal
 
 # Import the generic tasks module and its models
 from dynastore.modules.tasks import tasks_module
 from dynastore.modules.tasks.models import Task
 from dynastore.extensions.protocols import ExtensionProtocol
+from dynastore.models.protocols.principal_admin import Principal
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 logger = logging.getLogger(__name__)
@@ -60,7 +62,8 @@ class TasksService(ExtensionProtocol):
         catalog_id: str,
         conn: AsyncConnection = Depends(get_async_connection),
         limit: int = Query(20, ge=1, le=100),
-        offset: int = Query(0, ge=0)
+        offset: int = Query(0, ge=0),
+        principal: Optional[Principal] = Depends(get_principal),
     ):
         """Retrieves a paginated list of all tasks for a specific catalog."""
         from dynastore.modules.tasks.tasks_module import _resolve_catalog_schema
@@ -71,7 +74,8 @@ class TasksService(ExtensionProtocol):
     async def get_task_status_catalog(
         catalog_id: str,
         task_id: uuid.UUID,
-        conn: AsyncConnection = Depends(get_async_connection)
+        conn: AsyncConnection = Depends(get_async_connection),
+        principal: Optional[Principal] = Depends(get_principal),
     ):
         """Fetches the complete record for a single task within a catalog."""
         from dynastore.modules.tasks.tasks_module import _resolve_catalog_schema

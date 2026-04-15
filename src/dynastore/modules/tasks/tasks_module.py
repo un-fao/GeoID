@@ -106,7 +106,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_schema_status
 -- unique indexes on partitioned tables. Per-partition uniqueness.
 -- cross-partition dedup enforced at the application layer in enqueue().
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_dedup
-    ON {schema}.tasks (dedup_key, timestamp)
+    ON {schema}.tasks (schema_name, dedup_key, timestamp)
     WHERE dedup_key IS NOT NULL AND status NOT IN ('COMPLETED', 'FAILED', 'DEAD_LETTER');
 CREATE INDEX IF NOT EXISTS idx_tasks_caller
     ON {schema}.tasks (caller_id);
@@ -635,9 +635,9 @@ async def update_task(
 
     set_sql = ", ".join(set_clauses)
 
-    sql = f'UPDATE {task_schema}.tasks SET {set_sql} WHERE task_id = :task_id RETURNING *;'
+    sql = f'UPDATE {task_schema}.tasks SET {set_sql} WHERE task_id = :task_id AND schema_name = :schema_name RETURNING *;'
 
-    query_params = {**update_fields, "task_id": task_id}
+    query_params = {**update_fields, "task_id": task_id, "schema_name": schema}
 
     updated_task_dict = await DQLQuery(
         sql, result_handler=ResultHandler.ONE_DICT
@@ -651,9 +651,9 @@ async def update_task(
 async def get_task(conn: DbResource, task_id: uuid.UUID, schema: str) -> Optional[Task]:
     """Retrieves a single task by its ID from the global tasks table."""
     task_schema = get_task_schema()
-    sql = f'SELECT * FROM {task_schema}.tasks WHERE task_id = :task_id;'
+    sql = f'SELECT * FROM {task_schema}.tasks WHERE task_id = :task_id AND schema_name = :schema_name;'
     task_dict = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
-        conn, task_id=task_id
+        conn, task_id=task_id, schema_name=schema
     )
     return Task.model_validate(task_dict) if task_dict else None
 
@@ -714,12 +714,13 @@ async def enqueue(
             check_sql = f"""
                 SELECT task_id FROM {task_schema}.tasks
                 WHERE dedup_key = :dedup_key
+                  AND schema_name = :schema_name
                   AND status NOT IN ('COMPLETED', 'FAILED', 'DEAD_LETTER')
                 LIMIT 1;
             """
             existing = await DQLQuery(
                 check_sql, result_handler=ResultHandler.ONE_DICT
-            ).execute(conn, dedup_key=dedup_key)
+            ).execute(conn, dedup_key=dedup_key, schema_name=schema_name)
             if existing:
                 return None
 
@@ -730,7 +731,7 @@ async def enqueue(
                 VALUES
                     (:task_id, :schema_name, :scope, :caller_id, :task_type, :type,
                      :execution_mode, :inputs, :timestamp, :collection_id, :dedup_key)
-                ON CONFLICT (dedup_key, timestamp)
+                ON CONFLICT (schema_name, dedup_key, timestamp)
                     WHERE dedup_key IS NOT NULL
                     AND status NOT IN ('COMPLETED', 'FAILED', 'DEAD_LETTER')
                 DO NOTHING
