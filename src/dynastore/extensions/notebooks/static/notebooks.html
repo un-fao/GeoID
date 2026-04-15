@@ -154,6 +154,9 @@
 <!-- Markdown rendering (sanitized by marked.js defaults — no raw HTML passthrough) -->
 <script src="https://cdn.jsdelivr.net/npm/marked@14/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+<!-- Warm the Lab app entry in parallel with the cards fetch.
+     Cache-Control on /web/lite/build/** is immutable, so subsequent opens hit disk cache. -->
+<link rel="prefetch" href="/web/lite/lab/index.html">
 </head>
 <body>
 <div class="panel">
@@ -436,9 +439,7 @@ async function openNotebook(type, notebookId) {
     document.getElementById('viewer-title').textContent = i18n(data.metadata && data.metadata.title, notebookId);
     document.getElementById('btn-copy-to-catalog').style.display = type === 'platform' ? '' : 'none';
     document.getElementById('viewer').classList.add('open');
-    // Jump straight into JupyterLab so the user gets per-cell Run + editable
-    // contents; the read-only preview remains reachable via the View toggle.
-    toggleLiteMode();
+    openInLite(type, notebookId);
   } catch (e) {
     toast('Failed to load notebook: ' + e.message, true);
   }
@@ -628,112 +629,159 @@ function shareNotebook() {
 }
 
 // --- JupyterLite integration ---
-let liteActive = false;
-let liteReady = false;
+// Strategy: parent maintains a `window.preloadedNotebooks` cache of every
+// known notebook keyed by its in-FS path. The bridge.js IIFE reads this
+// synchronously from window.parent on iframe load (same-origin sandbox), so
+// JupyterLab can resolve `?path=<notebook>` deep-links from a populated
+// contents shim. JupyterLite 0.7's lab build doesn't expose window.jupyterapp,
+// so we use URL deep-links instead of docmanager:open.
+window.preloadedNotebooks = window.preloadedNotebooks || {};
+
+let liteActive = false;   // UI state: is the Lab iframe visible right now?
+let liteReady = false;    // has the bridge signalled NOTEBOOK_READY at least once?
+let liteInitialized = false; // has INIT_CONTEXT been posted?
+const seededPaths = new Set(); // paths whose content we've fetched into the cache
+let currentLitePath = null;    // path currently loaded in the iframe (for deduping reloads)
 
 function getLiteBaseUrl() {
-  // JupyterLite assets served by the notebooks extension's @expose_static("lite")
-  // provider, mounted under the web extension at /web/lite/.
-  return '/web/lite/lab/index.html';
+  // The `notebooks/` build is JupyterLite's classic single-notebook interface;
+  // unlike `lab/`, it exposes the application instance as window.jupyterapp,
+  // which the bridge needs to call serviceManager.contents.save() on.
+  return '/web/lite/notebooks/index.html';
 }
 
-async function toggleLiteMode() {
+// Boot the iframe lazily — first card click triggers the load. We attach a
+// load handler that sends INIT_CONTEXT once the bridge is alive.
+function ensureLiteLoaded(path) {
+  var frame = document.getElementById('lite-frame');
+  if (!frame) return;
+  var targetUrl = getLiteBaseUrl() + (path ? '?path=' + encodeURIComponent(path) : '');
+  if (frame.src && currentLitePath === path) return;
+  // Bind once
+  if (!frame._liteHandlerBound) {
+    frame._liteHandlerBound = true;
+    frame.addEventListener('load', function() {
+      // Bridge IIFE runs synchronously on doc parse; INIT_CONTEXT can fire now.
+      setTimeout(sendInitContext, 50);
+    });
+  }
+  currentLitePath = path;
+  frame.src = targetUrl;
+}
+
+function sendInitContext() {
+  var frame = document.getElementById('lite-frame');
+  if (!frame || !frame.contentWindow) return;
+  var token = window.DynaStoreContext && window.DynaStoreContext.token;
+  try {
+    frame.contentWindow.postMessage({
+      type: 'INIT_CONTEXT',
+      token: token || null,
+      catalogCode: getSelectedCatalog(),
+      baseUrl: API_BASE,
+    }, '*');
+    liteInitialized = true;
+  } catch (e) { /* iframe may not be ready */ }
+}
+
+// Fetch one notebook body and stash it in the parent-window cache so the
+// bridge can seed CONTENTS_STORE synchronously on the next iframe load.
+async function cacheNotebook(subdir, notebookId, useAuth) {
+  var path = (subdir ? subdir + '/' : '') + notebookId + '.ipynb';
+  if (seededPaths.has(path)) return path;
+  var url = subdir
+    ? API_BASE + '/notebooks/' + encodeURIComponent(subdir) + '/' + encodeURIComponent(notebookId)
+    : API_BASE + '/notebooks/' + encodeURIComponent(notebookId);
+  try {
+    var r = await fetch(url, useAuth ? { headers: getAuthHeaders() } : undefined);
+    if (!r.ok) return null;
+    var d = await r.json();
+    if (d && d.content && d.content.cells) d = d.content;
+    if (!d || !d.cells) return null;
+    window.preloadedNotebooks[path] = d;
+    seededPaths.add(path);
+    return path;
+  } catch (e) { return null; }
+}
+
+// Cache every known notebook so the JupyterLab file browser lists them all.
+async function cacheAllNotebooks() {
+  for (var i = 0; i < platformNotebooks.length; i++) {
+    await cacheNotebook('platform', platformNotebooks[i].notebook_id, false);
+  }
+  var cat = getSelectedCatalog();
+  if (cat) {
+    for (var j = 0; j < catalogNotebooks.length; j++) {
+      await cacheNotebook(cat, catalogNotebooks[j].notebook_id, true);
+    }
+  }
+}
+
+async function openInLite(type, notebookId) {
+  var frame = document.getElementById('lite-frame');
+  var body = document.getElementById('viewer-body');
+  body.classList.add('hidden');
+  frame.classList.add('active');
+  document.getElementById('btn-run-label').textContent = 'View';
+  liteActive = true;
+
+  var subdir = type === 'platform' ? 'platform' : getSelectedCatalog();
+  // Make sure target + everything else we know about is cached BEFORE the
+  // iframe loads, so the bridge's synchronous seed picks it all up.
+  await cacheNotebook(subdir, notebookId, type !== 'platform');
+  cacheAllNotebooks(); // background, fire-and-forget for siblings
+
+  var path = (subdir ? subdir + '/' : '') + notebookId + '.ipynb';
+  ensureLiteLoaded(path);
+}
+
+function toggleLiteMode() {
   var body = document.getElementById('viewer-body');
   var frame = document.getElementById('lite-frame');
   var label = document.getElementById('btn-run-label');
-
   if (liteActive) {
-    // Switch back to read-only view
     body.classList.remove('hidden');
     frame.classList.remove('active');
-    frame.src = '';
     label.textContent = 'Run';
     liteActive = false;
-    liteReady = false;
-    return;
+  } else {
+    body.classList.add('hidden');
+    frame.classList.add('active');
+    label.textContent = 'View';
+    liteActive = true;
   }
-
-  // Preflight: JupyterLite assets are built at container build time
-  // (BUILD_JUPYTERLITE=true). If missing, fail loudly instead of loading
-  // a 404 into the iframe.
-  var liteUrl = getLiteBaseUrl();
-  try {
-    // GET (not HEAD — the static route only registers GET).
-    var probe = await fetch(liteUrl, { method: 'GET' });
-    if (!probe.ok) {
-      toast('Run unavailable: JupyterLite assets not built (rebuild with BUILD_JUPYTERLITE=true).', true);
-      return;
-    }
-  } catch (e) {
-    toast('Run unavailable: cannot reach JupyterLite (' + e.message + ')', true);
-    return;
-  }
-
-  // Switch to JupyterLite
-  body.classList.add('hidden');
-  frame.classList.add('active');
-  label.textContent = 'View';
-  liteActive = true;
-
-  frame.src = liteUrl;
-
-  // Wait for JupyterLite to signal readiness, then inject notebook
-  frame.onload = function() {
-    // Give JupyterLite time to initialize, then send notebook content
-    setTimeout(function() { sendNotebookToLite(); }, 3000);
-  };
 }
 
-function sendNotebookToLite() {
-  if (!currentNotebook || !currentNotebook.data) return;
-  var frame = document.getElementById('lite-frame');
-  if (!frame.contentWindow) return;
-
-  var token = null;
-  if (window.DynaStoreContext && window.DynaStoreContext.token) {
-    token = window.DynaStoreContext.token;
-  }
-
-  // Send context + notebook content via postMessage
-  frame.contentWindow.postMessage({
-    type: 'INIT_CONTEXT',
-    token: token,
-    catalogCode: getSelectedCatalog(),
-    baseUrl: API_BASE
-  }, '*');
-
-  frame.contentWindow.postMessage({
-    type: 'LOAD_NOTEBOOK',
-    notebook: currentNotebook.data,
-    notebookId: currentNotebook.id
-  }, '*');
-}
-
-// Listen for NOTEBOOK_READY from JupyterLite iframe
 window.addEventListener('message', function(event) {
-  if (event.data && event.data.type === 'NOTEBOOK_READY') {
-    if (liteReady) return; // Idempotent: bridge may re-emit this during boot
-    liteReady = true;
-    sendNotebookToLite();
+  if (!event.data || !event.data.type) return;
+  if (event.data.type === 'NOTEBOOK_READY') {
+    liteReady = true; // informational; nothing to flush in deep-link model
   }
 });
 
-// Reset lite state when viewer closes
+// Hide the viewer but keep the iframe warm so the next card click is instant.
 var _origCloseViewer = closeViewer;
 closeViewer = function() {
   liteActive = false;
-  liteReady = false;
   var frame = document.getElementById('lite-frame');
-  if (frame) { frame.src = ''; frame.classList.remove('active'); }
+  if (frame) frame.classList.remove('active');
   var body = document.getElementById('viewer-body');
-  if (body) { body.classList.remove('hidden'); }
+  if (body) body.classList.remove('hidden');
   var label = document.getElementById('btn-run-label');
-  if (label) { label.textContent = 'Run'; }
+  if (label) label.textContent = 'Run';
   _origCloseViewer();
 };
 
+// When the selected catalog changes, refresh the catalog notebook cache.
+if (window.addEventListener) {
+  window.addEventListener('dynastore-context-change', async function() {
+    await loadCatalogNotebooks();
+    cacheAllNotebooks();
+  });
+}
+
 // --- Init ---
-loadPlatformNotebooks();
+loadPlatformNotebooks().then(function() { cacheAllNotebooks(); });
 </script>
 </body>
 </html>

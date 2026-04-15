@@ -17,6 +17,53 @@
     // button (`saveNotebookToDynaStore`) still persists to DynaStore.
     const CONTENTS_STORE = Object.create(null);
     const CONTENTS_RE = /\/api\/contents(\/|$)([^?#]*)/;
+
+    // Synchronously seed from parent before JupyterLab boots — same-origin
+    // iframe (sandbox allow-same-origin) so window.parent is reachable. The
+    // host populates window.preloadedNotebooks before opening any notebook.
+    try {
+        const parentCache = window.parent && window.parent.preloadedNotebooks;
+        if (parentCache && typeof parentCache === 'object') {
+            const now = new Date().toISOString();
+            const dirs = new Set();
+            for (const path of Object.keys(parentCache)) {
+                const nb = parentCache[path];
+                if (!nb || !nb.cells) continue;
+                CONTENTS_STORE[path] = {
+                    name: path.split('/').pop(),
+                    path: path,
+                    type: 'notebook',
+                    format: 'json',
+                    content: nb,
+                    writable: true,
+                    created: now,
+                    last_modified: now,
+                    mimetype: null,
+                    size: null,
+                };
+                const slash = path.lastIndexOf('/');
+                if (slash > 0) dirs.add(path.slice(0, slash));
+            }
+            for (const d of dirs) {
+                if (!CONTENTS_STORE[d]) {
+                    CONTENTS_STORE[d] = {
+                        name: d.split('/').pop(),
+                        path: d,
+                        type: 'directory',
+                        format: 'json',
+                        content: null,
+                        writable: true,
+                        created: now,
+                        last_modified: now,
+                    };
+                }
+            }
+            console.log("[Bridge] Pre-seeded " + Object.keys(parentCache).length + " notebook(s) from parent cache.");
+        }
+    } catch (e) {
+        console.warn("[Bridge] parent cache read failed:", e);
+    }
+
     const origFetch = window.fetch.bind(window);
     window.fetch = function(input, init) {
         try {
@@ -48,19 +95,88 @@
                     }));
                 }
                 if (method === 'GET') {
+                    // JupyterLite drives request <dir>/all.json to enumerate
+                    // bundled files. Synthesize one from CONTENTS_STORE so the
+                    // file browser shows everything we've seeded.
+                    if (path.endsWith('all.json') || path === 'all.json') {
+                        const dirPath = path === 'all.json' ? '' : path.slice(0, -('all.json'.length)).replace(/\/+$/, '');
+                        const prefix = dirPath ? dirPath + '/' : '';
+                        const seenAll = Object.create(null);
+                        const entries = [];
+                        for (const k of Object.keys(CONTENTS_STORE)) {
+                            if (!k.startsWith(prefix)) continue;
+                            const rest = k.slice(prefix.length);
+                            if (!rest) continue;
+                            const slash = rest.indexOf('/');
+                            const childKey = slash === -1 ? k : (prefix + rest.slice(0, slash));
+                            if (seenAll[childKey]) continue;
+                            seenAll[childKey] = 1;
+                            const e = CONTENTS_STORE[childKey] || {
+                                name: rest.slice(0, slash === -1 ? rest.length : slash),
+                                path: childKey,
+                                type: slash === -1 ? 'notebook' : 'directory',
+                                format: 'json', writable: true, content: null,
+                                created: now, last_modified: now,
+                            };
+                            entries.push(Object.assign({}, e, { content: null }));
+                        }
+                        return Promise.resolve(new Response(JSON.stringify(entries), {
+                            status: 200, headers: { 'Content-Type': 'application/json' }
+                        }));
+                    }
                     const entry = CONTENTS_STORE[path];
-                    if (entry) {
+                    if (entry && entry.type !== 'directory') {
                         return Promise.resolve(new Response(JSON.stringify(entry), {
                             status: 200, headers: { 'Content-Type': 'application/json' }
                         }));
                     }
-                    if (path === '' || path === '/') {
-                        const items = Object.values(CONTENTS_STORE).map(function(e) {
-                            return Object.assign({}, e, { content: null });
-                        });
+                    // Directory listing: root ('') or any stored directory path.
+                    // JupyterLab's file browser fetches GET /api/contents/<dir> expecting
+                    // type=directory with `content` populated by direct children only.
+                    const normDir = path.replace(/\/+$/, '');
+                    const isRoot = normDir === '';
+                    if (isRoot || (entry && entry.type === 'directory')) {
+                        const prefix = isRoot ? '' : normDir + '/';
+                        const seen = Object.create(null);
+                        const items = [];
+                        for (const k of Object.keys(CONTENTS_STORE)) {
+                            if (!k.startsWith(prefix)) continue;
+                            const rest = k.slice(prefix.length);
+                            if (!rest || rest === '') continue;
+                            const slash = rest.indexOf('/');
+                            if (slash === -1) {
+                                const e = CONTENTS_STORE[k];
+                                if (seen[e.path]) continue;
+                                seen[e.path] = 1;
+                                items.push(Object.assign({}, e, { content: null }));
+                            } else {
+                                const childDir = prefix + rest.slice(0, slash);
+                                if (seen[childDir]) continue;
+                                seen[childDir] = 1;
+                                const existing = CONTENTS_STORE[childDir];
+                                items.push(existing
+                                    ? Object.assign({}, existing, { content: null })
+                                    : {
+                                        name: rest.slice(0, slash),
+                                        path: childDir,
+                                        type: 'directory',
+                                        format: 'json',
+                                        content: null,
+                                        writable: true,
+                                        created: now,
+                                        last_modified: now,
+                                    });
+                            }
+                        }
                         return Promise.resolve(new Response(JSON.stringify({
-                            name: '', path: '', type: 'directory', format: 'json',
-                            content: items, writable: true, created: now, last_modified: now
+                            name: isRoot ? '' : (normDir.split('/').pop() || ''),
+                            path: normDir,
+                            type: 'directory',
+                            format: 'json',
+                            content: items,
+                            writable: true,
+                            created: (entry && entry.created) || now,
+                            last_modified: (entry && entry.last_modified) || now,
                         }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
                     }
                     return Promise.resolve(new Response(JSON.stringify({ message: 'Not found' }), {
@@ -79,16 +195,64 @@
     };
     window.DYNASTORE_CONTENTS_STORE = CONTENTS_STORE;
 
-    // Poll for JupyterLab app global. Returns the app or null after timeout.
+    // Poll for the JupyterLab application instance. The /notebooks/ and
+    // /tree/ single-page builds expose it as `window.jupyterapp`; the /lab/
+    // build does not expose any global, so we stick with the classic builds.
     function waitForJupyterApp(timeoutMs) {
         return new Promise(function(resolve) {
             var started = Date.now();
             (function tick() {
-                if (window.jupyterapp) return resolve(window.jupyterapp);
+                var app = window.jupyterapp || window.jupyterlab;
+                if (app && app.commands && app.serviceManager) return resolve(app);
                 if (Date.now() - started > timeoutMs) return resolve(null);
                 setTimeout(tick, 100);
             })();
         });
+    }
+
+    // Seed notebooks into JupyterLite's real contents manager (indexedDB-
+    // backed LocalForageDrive). The fetch shim above is a fallback — the
+    // native drives bypass fetch entirely, so we must call
+    // serviceManager.contents.save() for files to appear in the file
+    // browser and be openable via docmanager:open.
+    async function seedNotebooksViaContentsManager(app) {
+        const parentCache = window.parent && window.parent.preloadedNotebooks;
+        if (!parentCache || typeof parentCache !== 'object') return 0;
+        const paths = Object.keys(parentCache);
+        let saved = 0;
+        for (const path of paths) {
+            const nb = parentCache[path];
+            if (!nb || !nb.cells) continue;
+            try {
+                // Ensure parent directories exist — Lite's drive requires it.
+                const parts = path.split('/');
+                let dir = '';
+                for (let i = 0; i < parts.length - 1; i++) {
+                    dir = dir ? dir + '/' + parts[i] : parts[i];
+                    try {
+                        await app.serviceManager.contents.get(dir, { content: false });
+                    } catch (e) {
+                        try {
+                            await app.serviceManager.contents.save(dir, {
+                                type: 'directory',
+                                format: 'json',
+                                content: null,
+                            });
+                        } catch (e2) {}
+                    }
+                }
+                await app.serviceManager.contents.save(path, {
+                    type: 'notebook',
+                    format: 'json',
+                    content: nb,
+                });
+                saved++;
+            } catch (e) {
+                console.warn('[Bridge] contents.save failed for', path, e);
+            }
+        }
+        console.log('[Bridge] Seeded', saved, 'of', paths.length, 'notebooks via contents manager.');
+        return saved;
     }
 
     // Store context
@@ -98,6 +262,34 @@
         baseUrl: null,
         stacItems: null
     };
+
+    // Kick off seeding as soon as the app is ready. This is independent of
+    // INIT_CONTEXT so notebooks appear even before host posts auth context.
+    (async function bootSeed() {
+        const app = await waitForJupyterApp(30000);
+        if (!app) {
+            console.warn('[Bridge] jupyterapp never appeared; contents-manager seeding skipped.');
+            return;
+        }
+        window.DYNASTORE_JUPYTER_APP = app;
+        await seedNotebooksViaContentsManager(app);
+        // Refresh file browser if present (/tree/ build) so seeded files show.
+        try {
+            if (app.commands.hasCommand('filebrowser:refresh')) {
+                app.commands.execute('filebrowser:refresh').catch(() => {});
+            }
+        } catch (e) {}
+        // If URL has ?path=, the app may have already failed to open it
+        // before we seeded; retry via docmanager:open now that it exists.
+        try {
+            const q = new URLSearchParams(window.location.search);
+            const wanted = q.get('path');
+            if (wanted && app.commands.hasCommand('docmanager:open')) {
+                await app.commands.execute('docmanager:open', { path: wanted, factory: 'Notebook' }).catch(() => {});
+            }
+        } catch (e) {}
+        try { window.parent.postMessage({ type: 'LITE_SEED_COMPLETE' }, '*'); } catch (e) {}
+    })();
 
     window.addEventListener('message', async (event) => {
         if (!event.data || !event.data.type) return;
@@ -148,64 +340,124 @@ except Exception as e:
                     console.error("[Bridge] Failed to configure Python environment", e);
                 }
             } else {
-                console.warn("[Bridge] pyodideReadyPromise not found. JupyterLite may not be fully loaded.");
-                // Still signal readiness so the host can retry
+                // Pyodide hasn't exposed its ready promise yet — this is normal
+                // during boot; the host guards against repeated READY signals.
+                console.debug("[Bridge] pyodideReadyPromise not found yet; signalling READY anyway.");
                 window.parent.postMessage({ type: 'NOTEBOOK_READY' }, '*');
             }
         }
 
-        // --- LOAD_NOTEBOOK: inject a notebook into JupyterLite ---
+        // --- LOAD_NOTEBOOK: write one notebook into the shim + optionally open it ---
         if (event.data.type === 'LOAD_NOTEBOOK') {
-            console.log("[Bridge] Received LOAD_NOTEBOOK", event.data.notebookId);
-            const { notebook, notebookId } = event.data;
-
+            const { notebook, notebookId, subdir, autoOpen } = event.data;
             if (!notebook || !notebook.cells) {
                 console.error("[Bridge] Invalid notebook content");
                 return;
             }
+            const path = _seedNotebook(subdir, notebookId, notebook);
+            console.log("[Bridge] LOAD_NOTEBOOK seeded:", path);
+            if (autoOpen !== false) _openInLab(path);
+        }
 
-            // Attempt to load via JupyterLite Contents API
-            try {
-                const filename = (notebookId || 'notebook') + '.ipynb';
-                const contentsUrl = '/api/contents/' + encodeURIComponent(filename);
-
-                // Write the notebook to JupyterLite's virtual filesystem
-                const response = await fetch(contentsUrl, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        type: 'notebook',
-                        format: 'json',
-                        content: notebook
-                    })
-                });
-
-                if (response.ok) {
-                    console.log("[Bridge] Notebook written to virtual FS:", filename);
-                    // Navigate JupyterLite to open the notebook.
-                    // window.jupyterapp may not be ready yet; poll briefly.
-                    await waitForJupyterApp(10000).then(function(app) {
-                        if (!app) {
-                            console.warn("[Bridge] jupyterapp not ready; notebook is in FS but not auto-opened");
-                            return;
-                        }
-                        app.commands.execute('docmanager:open', { path: filename, factory: 'Notebook' })
-                            .catch(function(e) { console.warn("[Bridge] docmanager:open failed", e); });
-                    });
-                } else {
-                    console.warn("[Bridge] Contents API write failed:", response.status);
-                    // Fallback: store in sessionStorage for manual load
-                    sessionStorage.setItem('dynastore_notebook', JSON.stringify(notebook));
-                    sessionStorage.setItem('dynastore_notebook_id', notebookId || 'notebook');
-                    console.log("[Bridge] Notebook stored in sessionStorage as fallback.");
-                }
-            } catch (e) {
-                console.warn("[Bridge] Contents API not available, using sessionStorage fallback:", e.message);
-                sessionStorage.setItem('dynastore_notebook', JSON.stringify(notebook));
-                sessionStorage.setItem('dynastore_notebook_id', notebookId || 'notebook');
+        // --- LOAD_NOTEBOOK_BATCH: preload many notebooks at once, no auto-open ---
+        if (event.data.type === 'LOAD_NOTEBOOK_BATCH') {
+            const items = Array.isArray(event.data.items) ? event.data.items : [];
+            let seeded = 0;
+            for (const it of items) {
+                if (!it || !it.notebook || !it.notebook.cells) continue;
+                _seedNotebook(it.subdir, it.notebookId, it.notebook);
+                seeded++;
             }
+            console.log("[Bridge] LOAD_NOTEBOOK_BATCH seeded", seeded, "notebooks");
+            // Refresh JupyterLab's file browser so newly seeded files show up
+            try {
+                const app = await waitForJupyterApp(20000);
+                if (app && app.commands.hasCommand('filebrowser:refresh')) {
+                    app.commands.execute('filebrowser:refresh').catch(function() {});
+                }
+            } catch (e) {}
+        }
+
+        // --- OPEN_NOTEBOOK: open an already-seeded notebook by path ---
+        if (event.data.type === 'OPEN_NOTEBOOK') {
+            const path = event.data.path;
+            if (path) _openInLab(path);
         }
     });
+
+    function _seedNotebook(subdir, notebookId, notebook) {
+        const name = (notebookId || 'notebook') + '.ipynb';
+        const path = (subdir ? subdir.replace(/^\/+|\/+$/g, '') + '/' : '') + name;
+        const now = new Date().toISOString();
+        CONTENTS_STORE[path] = {
+            name: name,
+            path: path,
+            type: 'notebook',
+            format: 'json',
+            content: notebook,
+            writable: true,
+            created: CONTENTS_STORE[path]?.created || now,
+            last_modified: now,
+            mimetype: null,
+            size: null,
+        };
+        // Ensure the parent directory entry exists so the file browser lists it
+        if (subdir) {
+            const dir = subdir.replace(/^\/+|\/+$/g, '');
+            if (dir && !CONTENTS_STORE[dir]) {
+                CONTENTS_STORE[dir] = {
+                    name: dir.split('/').pop(),
+                    path: dir,
+                    type: 'directory',
+                    format: 'json',
+                    content: null,
+                    writable: true,
+                    created: now,
+                    last_modified: now,
+                };
+            }
+        }
+        // Also push into the real contents manager if the app is ready.
+        const app = window.DYNASTORE_JUPYTER_APP;
+        if (app && app.serviceManager) {
+            (async () => {
+                try {
+                    if (subdir) {
+                        const dir = subdir.replace(/^\/+|\/+$/g, '');
+                        try { await app.serviceManager.contents.get(dir, { content: false }); }
+                        catch (e) {
+                            try { await app.serviceManager.contents.save(dir, { type: 'directory', format: 'json', content: null }); }
+                            catch (e2) {}
+                        }
+                    }
+                    await app.serviceManager.contents.save(path, {
+                        type: 'notebook', format: 'json', content: notebook,
+                    });
+                } catch (e) {
+                    console.warn('[Bridge] live contents.save failed for', path, e);
+                }
+            })();
+        }
+        return path;
+    }
+
+    async function _openInLab(path) {
+        const app = await waitForJupyterApp(30000);
+        if (!app) {
+            // Last-resort deep-link: ask the host to reload the iframe with ?path=
+            // so JupyterLab opens the notebook from the contents shim on boot.
+            console.warn("[Bridge] jupyterlab not ready; requesting deep-link open for " + path);
+            try {
+                window.parent.postMessage({ type: 'LITE_DEEP_LINK_OPEN', path: path }, '*');
+            } catch (e) {}
+            return;
+        }
+        try {
+            await app.commands.execute('docmanager:open', { path: path, factory: 'Notebook' });
+        } catch (e) {
+            console.warn("[Bridge] docmanager:open failed for " + path, e);
+        }
+    }
 
     // Custom Save Handler: persist notebooks back to DynaStore
     window.saveNotebookToDynaStore = async function(name, content) {

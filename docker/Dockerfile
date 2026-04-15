@@ -107,9 +107,14 @@ RUN --mount=type=bind,from=jupyterlite-builder,source=/build/lite-output,target=
     if [ "${BUILD_JUPYTERLITE}" = "true" ]; then \
         cp -r /tmp/lite-output/. "${JUPYTERLITE_DIR}/" && \
         cp "${APP_DIR}/src/dynastore/extensions/notebooks/static/lite/bridge.js" "${JUPYTERLITE_DIR}/bridge.js" && \
-        if [ -f "${JUPYTERLITE_DIR}/lab/index.html" ] && ! grep -q "bridge.js" "${JUPYTERLITE_DIR}/lab/index.html"; then \
-            sed -i 's#</head>#<script src="../bridge.js"></script></head>#' "${JUPYTERLITE_DIR}/lab/index.html"; \
-        fi && \
+        for sub in lab notebooks tree edit; do \
+            if [ -f "${JUPYTERLITE_DIR}/${sub}/index.html" ]; then \
+                if ! grep -q "bridge.js" "${JUPYTERLITE_DIR}/${sub}/index.html"; then \
+                    sed -i 's#</head>#<script src="../bridge.js"></script></head>#' "${JUPYTERLITE_DIR}/${sub}/index.html"; \
+                fi; \
+                python3 -c "import re,sys; p='${JUPYTERLITE_DIR}/${sub}/index.html'; s=open(p).read(); new=re.sub(r'(id=\"jupyter-config-data\"[^>]*>)\s*\{\s*\}\s*(<)', r'\1{\"exposeAppInBrowser\": \"true\"}\2', s); open(p,'w').write(new) if new!=s else None"; \
+            fi; \
+        done && \
         echo "JupyterLite: assets installed at ${JUPYTERLITE_DIR}"; \
     else \
         echo "JupyterLite: skipped (BUILD_JUPYTERLITE=false)"; \

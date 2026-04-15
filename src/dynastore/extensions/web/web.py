@@ -915,7 +915,9 @@ async function demoAction(action) {
     def _provide_extension_static(self) -> List[str]:
         return self._provide_default_static()
 
-    async def serve_file(self, file_path: str) -> Response:
+    async def serve_file(
+        self, file_path: str, extra_headers: Optional[Dict[str, str]] = None
+    ) -> Response:
         if not os.path.isfile(file_path):
             raise HTTPException(status_code=404, detail="File not found")
 
@@ -940,10 +942,47 @@ async function demoAction(action) {
         try:
             with open(file_path, "rb") as f:
                 content = f.read()
-            return Response(content=content, media_type=media_type)
+            return Response(
+                content=content, media_type=media_type, headers=extra_headers or None
+            )
         except Exception as e:
             logger.error(f"Error serving file {file_path}: {e}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
+
+    @staticmethod
+    def _cache_headers_for(prefix: str, rel_path: str) -> Dict[str, str]:
+        # Content-hashed bundles + versioned wheels: cache forever
+        IMMUTABLE = "public, max-age=31536000, immutable"
+        MEDIA_30D = "public, max-age=2592000"
+        VENDOR_1D = "public, max-age=86400"
+        NO_CACHE = "no-cache, must-revalidate"
+
+        if prefix == "lite":
+            # App entry points and behaviour-critical scripts must revalidate
+            sensitive = {
+                "lab/index.html", "index.html", "jupyter-lite.json",
+                "service-worker.js", "bridge.js",
+            }
+            if rel_path in sensitive:
+                return {"Cache-Control": NO_CACHE}
+            if (rel_path.startswith("build/")
+                    or rel_path.startswith("pypi/")
+                    or rel_path.startswith("extensions/")):
+                return {"Cache-Control": IMMUTABLE}
+            ext = os.path.splitext(rel_path)[1].lower()
+            if ext in {".woff2", ".woff", ".ttf", ".png", ".ico", ".svg", ".jpg", ".jpeg"}:
+                return {"Cache-Control": MEDIA_30D}
+            if ext in {".html", ".json"}:
+                return {"Cache-Control": NO_CACHE}
+            return {"Cache-Control": VENDOR_1D}
+
+        if prefix == "static":
+            ext = os.path.splitext(rel_path)[1].lower()
+            if ext in {".html"}:
+                return {"Cache-Control": NO_CACHE}
+            return {"Cache-Control": VENDOR_1D}
+
+        return {"Cache-Control": NO_CACHE}
 
     def _register_routes(self):
 
@@ -1512,4 +1551,5 @@ async function demoAction(action) {
                 )
                 raise HTTPException(status_code=404, detail="File not found")
 
-            return await self.serve_file(target_file)
+            cache_headers = self._cache_headers_for(prefix, lookup_key)
+            return await self.serve_file(target_file, extra_headers=cache_headers)
