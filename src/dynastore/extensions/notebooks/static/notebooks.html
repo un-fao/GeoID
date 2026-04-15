@@ -712,8 +712,8 @@ function sendNotebookToLite() {
 // Listen for NOTEBOOK_READY from JupyterLite iframe
 window.addEventListener('message', function(event) {
   if (event.data && event.data.type === 'NOTEBOOK_READY') {
+    if (liteReady) return; // Idempotent: bridge may re-emit this during boot
     liteReady = true;
-    // Re-send notebook if we have one queued
     sendNotebookToLite();
   }
 });
