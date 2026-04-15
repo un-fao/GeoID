@@ -251,6 +251,15 @@ class GeometriesSidecar(SidecarProtocol):
             columns.append(f"{col} BIGINT")
             known_columns.add(col)
 
+        # Geohash generated column (ST_GeoHash is IMMUTABLE → safe for STORED)
+        if self.config.geohash_precision:
+            gh_prec = self.config.geohash_precision
+            columns.append(
+                f"geohash CHAR({gh_prec}) GENERATED ALWAYS AS "
+                f"(ST_GeoHash({self.config.geom_column}, {gh_prec})) STORED"
+            )
+            known_columns.add("geohash")
+
         # Add Statistics Columns
         if self.config.statistics and self.config.statistics.enabled:
             stats_cfg = self.config.statistics
@@ -355,6 +364,9 @@ class GeometriesSidecar(SidecarProtocol):
             col = f"s2_res{res}"
             if col in known_columns:
                 ddl += f'\nCREATE INDEX IF NOT EXISTS "idx_{table_name}_s2_{res}" ON {{schema}}."{table_name}" ({col});'
+
+        if self.config.geohash_precision and "geohash" in known_columns:
+            ddl += f'\nCREATE INDEX IF NOT EXISTS "idx_{table_name}_geohash" ON {{schema}}."{table_name}" (geohash);'
 
         # Add Statistics Indexes
         if self.config.statistics and self.config.statistics.enabled:
@@ -1348,6 +1360,60 @@ class GeometriesSidecar(SidecarProtocol):
     def get_identity_columns(self) -> List[str]:
         """Returns identity columns for this sidecar (only geoid)."""
         return ["geoid"]
+
+    async def resolve_existing_item(
+        self,
+        conn,
+        physical_schema: str,
+        physical_table: str,
+        processing_context: Dict[str, Any],
+        matcher: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve by GEOHASH matcher.
+
+        Uses the stored generated column ``geohash`` on the geometry sidecar
+        (populated by ``ST_GeoHash(geom, precision)``) to find a prior feature
+        co-located at the configured precision.  Returns the active (non-
+        soft-deleted) hub row with its ``content_hash`` so the caller can
+        hash-gate NEW_VERSION / UPDATE decisions.
+
+        Returns ``None`` when:
+          - matcher is not GEOHASH (owned by another sidecar)
+          - ``geohash_precision`` is not configured on this sidecar
+          - the incoming context lacks a usable geometry
+          - no co-located record exists
+        """
+        if matcher != "geohash":
+            return None
+        if not self.config.geohash_precision:
+            return None
+
+        wkb_hex = processing_context.get("wkb_hex_processed")
+        if not wkb_hex:
+            return None
+
+        sc_table = f"{physical_table}_{self.sidecar_id}"
+        sql = f"""
+            SELECT h.geoid, h.content_hash
+            FROM "{physical_schema}"."{physical_table}" h
+            JOIN "{physical_schema}"."{sc_table}" s ON s.geoid = h.geoid
+            WHERE h.deleted_at IS NULL
+              AND s.geohash = ST_GeoHash(
+                  ST_GeomFromEWKB(decode(:wkb, 'hex')),
+                  :prec
+              )
+            ORDER BY h.transaction_time DESC
+            LIMIT 1;
+        """
+        from sqlalchemy import text
+        result = await conn.execute(  # type: ignore[union-attr, misc]
+            text(sql),
+            {"wkb": wkb_hex, "prec": self.config.geohash_precision},
+        )
+        row = result.fetchone()
+        if row:
+            return dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
+        return None
 
     def get_internal_columns(self) -> set:
         """

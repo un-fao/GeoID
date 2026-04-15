@@ -28,5 +28,21 @@ class SoftDeleteNotSupportedError(Exception):
 
 
 class ConflictError(Exception):
-    """Write refused because an entity with the same external_id already exists
-    and the collection write policy is ``REFUSE``."""
+    """Write refused because identity resolution matched an existing entity
+    and the collection write policy rejects the write (``REFUSE_FAIL``).
+
+    Carries the matched ``geoid`` and the ``matcher`` name that triggered the
+    conflict so callers can surface actionable diagnostics (HTTP 409 body,
+    batch error reports).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        geoid: object | None = None,
+        matcher: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.geoid = geoid
+        self.matcher = matcher

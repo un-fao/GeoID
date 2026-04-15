@@ -102,23 +102,44 @@ class DriverCapability(StrEnum):
 class WriteConflictPolicy(StrEnum):
     """Item-level conflict policy — applied per entity when identity already exists.
 
-    Drivers that declare ``Capability.EXTERNAL_ID_TRACKING`` read this policy
-    from ``CollectionWritePolicy`` via the config waterfall and apply it during
-    ``write_entities()``.  Drivers without that capability fall back to their
-    native behaviour (typically UPDATE).
+    Drivers read this policy from ``CollectionWritePolicy`` via the config
+    waterfall and apply it during ``write_entities()`` after identity is
+    resolved by one of the configured :class:`IdentityMatcher` strategies.
 
-    Identity keys:
-      - ``geoid``: always a new UUID, always unique. Never duplicated, even by
-        ``new_version`` (which archives the old entity and inserts a fresh one
-        with a new geoid).  This is the system identity key.
-      - ``external_id``: optional.  When ``external_id_field`` is set, a fresh
-        geoid is always generated and conflict resolution uses external_id.
-        When absent, conflict resolution uses geoid directly.
+    Actions:
+      - ``UPDATE``          — overwrite the existing entity's mutable fields in place
+      - ``NEW_VERSION``     — archive the existing row (set validity upper bound)
+                              and insert a fresh one with a new ``geoid``
+      - ``REFUSE``          — skip this entity, return None, continue the batch
+      - ``REFUSE_RETURN``   — skip the insert but return the *existing* matched
+                              feature to the caller (idempotent read-through)
+      - ``REFUSE_FAIL``     — raise :class:`ConflictError` and abort the batch
     """
 
-    UPDATE = "update"           # overwrite in place (default)
-    NEW_VERSION = "new_version" # archive old, insert new with new geoid
-    REFUSE = "refuse"           # skip this entity, continue batch
+    UPDATE = "update"
+    NEW_VERSION = "new_version"
+    REFUSE = "refuse"
+    REFUSE_RETURN = "refuse_return"
+    REFUSE_FAIL = "refuse_fail"
+
+
+class IdentityMatcher(StrEnum):
+    """Strategies for deciding whether an incoming feature matches an existing one.
+
+    Matchers are evaluated in the order declared on
+    ``CollectionWritePolicy.identity_matchers``; the first one that resolves a
+    record wins.  Each sidecar implements the matchers it owns via its
+    ``resolve_existing_item(..., matcher=...)`` method.
+
+    - ``EXTERNAL_ID``  — match on ``write_policy.external_id_field`` (attributes sidecar)
+    - ``GEOHASH``      — match on geohash of the incoming geometry at
+                         ``geohash_precision`` (geometries sidecar, uses ST_GeoHash)
+    - ``CONTENT_HASH`` — match on ``hub.content_hash`` (geometry-derived fingerprint)
+    """
+
+    EXTERNAL_ID = "external_id"
+    GEOHASH = "geohash"
+    CONTENT_HASH = "content_hash"
 
 
 class AssetConflictPolicy(StrEnum):
@@ -164,14 +185,25 @@ class CollectionWritePolicy(PluginConfig):
 
           on_conflict = WriteConflictPolicy.REFUSE        # skip item duplicates
           on_asset_conflict = AssetConflictPolicy.REFUSE  # reject whole batch
+
+    Identity matchers:
+      ``identity_matchers`` is an ordered list; the first matcher that resolves
+      a record wins.  Unknown / unsupported matchers are silently skipped so a
+      collection can opt into GEOHASH without requiring every sidecar to grow
+      implementations at once.
+
+    Hash-gated versioning:
+      When ``skip_if_unchanged_content_hash=True`` a match that has an identical
+      ``content_hash`` to the incoming feature short-circuits the action:
+      NEW_VERSION degrades to a no-op, UPDATE degrades to REFUSE_RETURN.  This
+      covers "create new version only if attribute/geometry hash changed".
     """
 
     on_conflict: WriteConflictPolicy = Field(
         default=WriteConflictPolicy.UPDATE,
         description=(
-            "Item-level conflict policy applied per entity. "
-            "UPDATE overwrites in place; NEW_VERSION archives old and inserts "
-            "new with a fresh geoid; REFUSE skips the entity and continues."
+            "Item-level action when identity matches. "
+            "UPDATE | NEW_VERSION | REFUSE | REFUSE_RETURN | REFUSE_FAIL."
         ),
     )
     on_asset_conflict: Optional[AssetConflictPolicy] = Field(
@@ -180,6 +212,32 @@ class CollectionWritePolicy(PluginConfig):
             "Asset-level (batch-level) conflict policy, checked before item processing. "
             "None = no batch-level check. "
             "REFUSE rejects the entire asset batch if any duplicate identity is found."
+        ),
+    )
+    identity_matchers: List[IdentityMatcher] = Field(
+        default_factory=lambda: [IdentityMatcher.EXTERNAL_ID],
+        description=(
+            "Ordered matcher chain. First matcher returning a record wins. "
+            "Each matcher is delegated to the sidecar that owns the underlying "
+            "column (EXTERNAL_ID → attributes, GEOHASH → geometries, "
+            "CONTENT_HASH → hub via attributes sidecar)."
+        ),
+    )
+    geohash_precision: int = Field(
+        default=9,
+        ge=1,
+        le=12,
+        description=(
+            "ST_GeoHash precision used when IdentityMatcher.GEOHASH is active. "
+            "1=~5000km, 6=~1.2km, 9=~5m, 12=~4cm."
+        ),
+    )
+    skip_if_unchanged_content_hash: bool = Field(
+        default=False,
+        description=(
+            "If True, matched features whose content_hash equals the incoming one "
+            "bypass NEW_VERSION (treated as no-op) and collapse UPDATE to "
+            "REFUSE_RETURN.  Enables 'new version only when payload differs'."
         ),
     )
     track_asset_id: bool = Field(

@@ -1482,10 +1482,23 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         physical_schema: str,
         physical_table: str,
         processing_context: Dict[str, Any],
+        matcher: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
+        """Resolve by EXTERNAL_ID (default) or CONTENT_HASH matcher.
+
+        ``matcher`` is a :class:`IdentityMatcher` string.  Unknown matchers
+        and those owned by another sidecar return None.
         """
-        Resolves existing item by external_id (or other identity fields).
-        """
+        if matcher is None:
+            matcher = "external_id"
+
+        if matcher == "content_hash":
+            return await self._resolve_by_content_hash(
+                conn, physical_schema, physical_table, processing_context
+            )
+        if matcher != "external_id":
+            return None
+
         if not self.config.enable_external_id:
             return None
 
@@ -1533,6 +1546,39 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         if row:
             return dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
 
+        return None
+
+    async def _resolve_by_content_hash(
+        self,
+        conn: DbResource,
+        physical_schema: str,
+        physical_table: str,
+        processing_context: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Match on the hub's ``content_hash`` fingerprint (geometry-derived).
+
+        The fingerprint is computed in ``tools.geospatial.prepare_geometry_for_upsert``
+        and flows through ``processing_context["content_hash"]`` when the geometries
+        sidecar's pipeline populates it.  Returns the active hub row with its
+        ``content_hash`` so callers can short-circuit no-op writes.
+        """
+        content_hash = processing_context.get("content_hash")
+        if not content_hash:
+            return None
+
+        from sqlalchemy import text
+        sql = f"""
+            SELECT h.geoid, h.content_hash
+            FROM "{physical_schema}"."{physical_table}" h
+            WHERE h.content_hash = :ch
+              AND h.deleted_at IS NULL
+            ORDER BY h.transaction_time DESC
+            LIMIT 1;
+        """
+        result = await conn.execute(text(sql), {"ch": content_hash})  # type: ignore[union-attr, misc]
+        row = result.fetchone()
+        if row:
+            return dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
         return None
 
     def _extract_value(self, data: Dict[str, Any], path: str) -> Any:

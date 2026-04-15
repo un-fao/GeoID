@@ -911,22 +911,22 @@ class SidecarProtocol(ABC):
         physical_schema: str,
         physical_table: str,
         processing_context: Dict[str, Any],
+        matcher: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
-        Resolves an existing item based on the sidecar's identity logic (e.g. external_id).
-
-        This method allows a sidecar to identify if an incoming item matches an existing one,
-        enabling upsert/versioning logic.
+        Resolves an existing item using the requested identity matcher.
 
         Args:
             conn: Database connection.
             physical_schema: Physical schema name.
             physical_table: Physical table name (Hub).
-            processing_context: Context containing resolved IDs.
+            processing_context: Context containing resolved IDs / geometry.
+            matcher: IdentityMatcher string (EXTERNAL_ID | GEOHASH | CONTENT_HASH).
+                     Sidecars return None for matchers they do not own.
 
         Returns:
-            Dictionary representing the existing item (must include 'geoid', and optionally 'validity'),
-            or None if not found or not applicable.
+            Dictionary with at least 'geoid' (and 'validity', 'content_hash'
+            when available) of the matched row, or None if no match.
         """
         return None
 

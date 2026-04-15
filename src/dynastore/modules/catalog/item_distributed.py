@@ -23,7 +23,9 @@ from dynastore.modules.storage.driver_config import (
     DriverRecordsPostgresqlConfig,
     CollectionWritePolicy,
     WriteConflictPolicy,
+    IdentityMatcher,
 )
+from dynastore.modules.storage.errors import ConflictError
 from dynastore.models.protocols import ConfigsProtocol
 from dynastore.modules.catalog.sidecars.base import SidecarProtocol
 from dynastore.tools.discovery import get_protocol
@@ -93,16 +95,30 @@ class ItemDistributedMixin(_Host):
                 return None
 
         # Standardized Identity Resolution via Sidecar Protocol
+        # Iterate over the configured matcher chain in order; first match wins.
         active_rec = None
+        matched_via = None
+        matchers = (
+            list(write_policy.identity_matchers)
+            if write_policy and write_policy.identity_matchers
+            else [IdentityMatcher.EXTERNAL_ID]
+        )
         if on_conflict != WriteConflictPolicy.NEW_VERSION:
-            for sidecar in sidecars:
-                active_rec = await sidecar.resolve_existing_item(
-                    conn, phys_schema, phys_table, processing_context
-                )
-                if active_rec:
-                    logger.info(
-                        f"DISTRIBUTED UPSERT: found active record geoid={active_rec.get('geoid')} (via {sidecar.sidecar_id})"
+            for matcher in matchers:
+                for sidecar in sidecars:
+                    rec = await sidecar.resolve_existing_item(
+                        conn, phys_schema, phys_table, processing_context,
+                        matcher=str(matcher),
                     )
+                    if rec:
+                        active_rec = rec
+                        matched_via = (matcher, sidecar.sidecar_id)
+                        logger.info(
+                            f"DISTRIBUTED UPSERT: found active record "
+                            f"geoid={rec.get('geoid')} (matcher={matcher}, sidecar={sidecar.sidecar_id})"
+                        )
+                        break
+                if active_rec:
                     break
 
         # 1.6 Additional Checks: Asset-level (batch-level) collision guard.
@@ -117,6 +133,51 @@ class ItemDistributedMixin(_Host):
                             f"Feature rejected: Identity/Unique collision found (via {sidecar.sidecar_id})"
                         )
                         return None
+
+        # 1.7 Hash gating: if enabled and an unchanged content_hash matches,
+        # short-circuit the action to avoid churning identical rows.
+        if (
+            active_rec
+            and write_policy
+            and write_policy.skip_if_unchanged_content_hash
+        ):
+            incoming_ch = processing_context.get("content_hash") or hub_payload.get("content_hash")
+            if incoming_ch and active_rec.get("content_hash") == incoming_ch:
+                logger.info(
+                    "DISTRIBUTED UPSERT: content_hash unchanged — collapsing "
+                    f"{on_conflict} to REFUSE_RETURN (geoid={active_rec.get('geoid')})"
+                )
+                on_conflict = WriteConflictPolicy.REFUSE_RETURN
+
+        # 1.8 REFUSE_FAIL: raise immediately so the batch aborts.
+        if active_rec and on_conflict == WriteConflictPolicy.REFUSE_FAIL:
+            matcher_name = matched_via[0] if matched_via else "unknown"
+            raise ConflictError(
+                f"Write refused: identity match via {matcher_name} "
+                f"(geoid={active_rec.get('geoid')}); policy=REFUSE_FAIL",
+                geoid=active_rec.get("geoid"),
+                matcher=str(matcher_name),
+            )
+
+        # 1.9 REFUSE_RETURN: echo the existing feature without writing.
+        if active_rec and on_conflict == WriteConflictPolicy.REFUSE_RETURN:
+            logger.info(
+                "DISTRIBUTED UPSERT: REFUSE_RETURN — returning existing feature "
+                f"geoid={active_rec.get('geoid')}"
+            )
+            optimizer = QueryOptimizer(col_config)
+            fetch_req = QueryRequest(
+                raw_where="h.geoid = :target_geoid",
+                raw_params={"target_geoid": active_rec["geoid"]},
+                limit=1,
+            )
+            sql, params = optimizer.build_optimized_query(fetch_req, phys_schema, phys_table)
+            row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
+                conn, **params
+            )
+            if row is None:
+                return None
+            return self.map_row_to_feature(dict(row), col_config)
 
         result = None
         # 2. Execution Path

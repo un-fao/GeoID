@@ -239,6 +239,15 @@ class GeometriesSidecarConfig(SidecarConfig):
     # Spatial indexes configuration
     h3_resolutions: List[int] = Field(default_factory=list, description="H3 resolutions to index (0-15)")
     s2_resolutions: List[int] = Field(default_factory=list, description="S2 resolutions to index (0-30)")
+    geohash_precision: Optional[int] = Field(
+        default=None, ge=1, le=12,
+        description=(
+            "If set, a STORED generated column `geohash CHAR(N)` (N=precision, 1-12) "
+            "is added to the geometry sidecar, populated by ST_GeoHash(geom, N), "
+            "with a B-tree index.  Used by CollectionWritePolicy.IdentityMatcher.GEOHASH "
+            "for spatial-locality-based deduplication on write."
+        ),
+    )
 
     # Partitioning
     partition_strategy: Optional[GeometryPartitionStrategyPreset] = Field(default=None, description="Strategy to use for contributing to the global partition key."
