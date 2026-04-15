@@ -1,29 +1,64 @@
 # Tasks Module
 
-The `Tasks` module provides a background job and task management system for DynaStore. In Cellular Mode, tasks are decentralized and stored within tenant-specific schemas.
+Background job queue for DynaStore. Tasks are stored in one global PG table
+(`{DYNASTORE_TASK_SCHEMA}.tasks`, default `tasks.tasks`) RANGE-partitioned by
+`timestamp` (monthly). Multi-tenancy is modelled via columns, not per-tenant tables.
 
-## Cellular Architecture
+## Architecture
 
-Tasks are no longer stored in a global `tasks.tasks` table. Instead:
-- **Tenant Isolation**: Each catalog (tenant) has its own `tasks` table within its physical schema.
-- **DDL Provisioning**: Task tables and their partitions are automatically provisioned when the first task for a tenant is created or when a catalog is initialized.
-- **Schema Resolution**: Operations like `create_task` and `get_task` require an explicit `schema` parameter to target the correct isolated storage.
+```
+tasks.tasks  PARTITION BY RANGE (timestamp)
+  ├─ schema_name   VARCHAR   tenant discriminator (PG schema slug)
+  ├─ task_id       UUID      row identifier
+  ├─ scope         VARCHAR   CATALOG | SYSTEM | ASSET
+  ├─ caller_id     VARCHAR   originator (user id or "system:platform")
+  ├─ task_type     VARCHAR   registered runner key
+  ├─ dedup_key     VARCHAR   optional; per-tenant uniqueness in non-terminal rows
+  └─ ...
+```
+
+A single global dispatcher claims tasks across all tenants via `FOR UPDATE SKIP LOCKED`.
+Runners receive the `schema_name` so they can operate in the correct tenant context.
 
 ## Key Components
 
-- **`TasksModule`**: Manages the module lifecycle and ensures partitions and retention policies are registered.
-- **`tasks_module.py`**: Core logic for task CRUD operations, schema provisioning, and partition management.
-- **`runners.py`**: Base classes and utilities for implementing task runners.
-- **`models.py`**: Pydantic models for tasks (e.g., `Task`, `TaskCreate`).
+| File | Purpose |
+|---|---|
+| `tasks_module.py` | `TasksModule` (priority=15), DDL, CRUD (`enqueue`, `get_task`, `update_task`, `list_tasks`, `claim_batch`) |
+| `dispatcher.py` | Global dispatcher; claim loop → runner dispatch |
+| `queue.py` | `TaskQueue`; pg_notify LISTEN with polling fallback |
+| `execution.py` | `ExecutionEngine`; routes tasks to registered runners by type |
+| `runners.py` | `BaseTaskRunner` base class |
+| `models.py` | `Task`, `TaskCreate`, `TaskUpdate` Pydantic models |
+| `tasks_config.py` | `TasksPluginConfig` (`queue_poll_interval`) |
+
+## Tenant Isolation
+
+- All CRUD operations (`get_task`, `update_task`) filter on **both** `task_id` and
+  `schema_name`. A task_id alone is not tenant-safe.
+- The dedup unique index `idx_tasks_dedup` is keyed on `(schema_name, dedup_key, timestamp)`.
+  Two tenants sharing the same `dedup_key` do not collide.
+- The cross-partition dedup guard in `enqueue()` is also scoped by `schema_name`.
+
+## Initialization
+
+On startup `TasksModule` (priority=15, before `CatalogModule` at 20):
+
+1. Acquires an advisory lock for the duration of all DDL — prevents concurrent-revision
+   races on Cloud Run rolling deploys.
+2. Creates the `tasks` table, indexes, and pg_notify triggers if absent.
+3. Ensures 12 monthly future partitions exist and registers retention cron jobs.
+4. Asserts the current-month partition is present before starting the dispatcher.
 
 ## Task Attribution
 
-- **Caller ID**: Every task is tagged with a `caller_id`.
-- **User Tasks**: Attributed to the logged-in user's identifier.
-- **System Tasks**: Attributed to `system:platform` (defined in `ApiKeyModule`) for background or administrative operations.
+Every task carries a `caller_id`:
+- **User tasks** — the authenticated user's identifier.
+- **System tasks** — `system:platform` (set by `ApiKeyModule`).
 
-## Partitioning and Retention
+## Environment Variables
 
-The module uses PG-native partitioning (by timestamp) and automatic retention:
-- **Partitions**: Monthly partitions are pre-provisioned.
-- **Retention**: Data is automatically pruned based on the registered policy (default: 1 month).
+| Variable | Default | Description |
+|---|---|---|
+| `DYNASTORE_TASK_SCHEMA` | `tasks` | Schema that holds the global tasks table |
+| `DYNASTORE_QUEUE_POLL_INTERVAL` | `30.0` | Fallback poll interval in seconds |

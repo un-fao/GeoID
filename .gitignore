@@ -145,11 +145,13 @@ web_service.py
 .python-version
 deprecated/**
 
-# AI / Agent artifacts
+# AI / Agent artifacts — never commit
 .claude/
 .memory/
 plans/
 skills/
+.aider*
+.cursorrules
 
 # System Files
 .DS_Store
