@@ -10,7 +10,7 @@ from dynastore.modules.storage.driver_config import (
     DriverRecordsPostgresqlConfig,
 )
 
-PG_DRIVER_PLUGIN_ID = DriverRecordsPostgresqlConfig._plugin_id
+PG_DRIVER_PLUGIN_ID = DriverRecordsPostgresqlConfig
 from dynastore.modules.db_config.exceptions import ImmutableConfigError
 
 

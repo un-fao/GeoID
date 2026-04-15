@@ -48,11 +48,6 @@ def get_catalog_id(request: Request) -> Optional[str]:
     return getattr(request.state, "catalog_id", None)
 
 
-def get_api_key_hash(request: Request) -> Optional[str]:
-    """Return the hashed API key used for this request, or None."""
-    return getattr(request.state, "api_key_hash", None)
-
-
 def get_principal_id(request: Request) -> Optional[str]:
     """Return the effective principal ID, or None."""
     return getattr(request.state, "principal_id", None)

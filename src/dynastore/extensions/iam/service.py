@@ -722,7 +722,6 @@ class IamExtension(ExtensionProtocol):
         self, # Added self
         request: Request,
         principal_id: Optional[str] = None,
-        api_key_hash: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
     ):
@@ -731,7 +730,6 @@ class IamExtension(ExtensionProtocol):
         return await get_stats_summary(
             self._engine, # Changed _engine to self._engine
             principal_id=principal_id,
-            api_key_hash=api_key_hash,
             start_date=start_date,
             end_date=end_date,
             schema=schema,
@@ -741,7 +739,6 @@ class IamExtension(ExtensionProtocol):
         self, # Added self
         request: Request,
         principal_id: Optional[str] = None,
-        api_key_hash: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         cursor: Optional[str] = None,
@@ -752,7 +749,6 @@ class IamExtension(ExtensionProtocol):
         return await get_access_logs(
             self._engine, # Changed _engine to self._engine
             principal_id=principal_id,
-            api_key_hash=api_key_hash,
             start_date=start_date,
             end_date=end_date,
             cursor=cursor,

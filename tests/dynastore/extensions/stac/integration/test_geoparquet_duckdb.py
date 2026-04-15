@@ -150,7 +150,7 @@ async def test_geoparquet_duckdb_pipeline(
         "format": "parquet",
     }
     r = await in_process_client.put(
-        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/configs/driver:records:duckdb",
+        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/configs/DuckDbCollectionDriverConfig",
         json=duckdb_config,
     )
     assert r.status_code in (200, 201), f"DuckDB config failed: {r.text}"
@@ -165,7 +165,7 @@ async def test_geoparquet_duckdb_pipeline(
         }
     }
     r = await in_process_client.put(
-        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/configs/collection:drivers",
+        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/configs/RoutingPluginConfig",
         json=routing_config,
     )
     assert r.status_code in (200, 201), f"Routing config failed: {r.text}"

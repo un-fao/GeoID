@@ -34,7 +34,6 @@ class AccessRecord(BaseModel):
     id: Optional[int] = None
     timestamp: datetime
     catalog_id: Optional[str] = None
-    api_key_hash: Optional[str] = None
     principal_id: Optional[str] = None
     source_ip: Union[str, IPv4Address, IPv6Address]
     method: str
@@ -100,7 +99,6 @@ class AbstractStatsDriver(ProtocolPlugin[object]):
         schema: Optional[str] = None,
         catalog_id: Optional[str] = None,
         principal_id: Optional[str] = None,
-        api_key_hash: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         **kwargs: Any,
@@ -112,7 +110,6 @@ class AbstractStatsDriver(ProtocolPlugin[object]):
         schema: Optional[str] = None,
         catalog_id: Optional[str] = None,
         principal_id: Optional[str] = None,
-        api_key_hash: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         limit: int = 100,
@@ -137,7 +134,6 @@ async def get_access_logs(
     engine=None,
     *,
     principal_id: Optional[str] = None,
-    api_key_hash: Optional[str] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     cursor: Optional[str] = None,
@@ -151,7 +147,6 @@ async def get_access_logs(
     return await driver.get_logs(
         schema=schema,
         principal_id=principal_id,
-        api_key_hash=api_key_hash,
         start_date=start_date,
         end_date=end_date,
         limit=page_size,
@@ -165,7 +160,6 @@ async def get_stats_summary(
     schema: Optional[str] = None,
     catalog_id: Optional[str] = None,
     principal_id: Optional[str] = None,
-    api_key_hash: Optional[str] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
 ) -> StatsSummary:
@@ -182,7 +176,6 @@ async def get_stats_summary(
         schema=schema,
         catalog_id=catalog_id,
         principal_id=principal_id,
-        api_key_hash=api_key_hash,
         start_date=start_date,
         end_date=end_date,
     )

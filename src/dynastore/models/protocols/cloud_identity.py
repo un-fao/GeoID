@@ -47,3 +47,7 @@ class CloudIdentityProtocol(Protocol):
     def get_identity_info(self) -> Optional[Dict[str, Any]]:
         """Returns a dictionary with full identity details."""
         ...
+
+    async def get_fresh_token(self) -> str:
+        """Returns a fresh access token for the active cloud identity."""
+        ...

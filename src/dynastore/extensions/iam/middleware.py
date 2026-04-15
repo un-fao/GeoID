@@ -215,13 +215,14 @@ class IamMiddleware(BaseHTTPMiddleware):
             else ([principal_role] if principal_role else [])
         )
 
-        allowed_by_global, reason = await self._policy_service.evaluate_access(
+        result = await self._policy_service.evaluate_access(
             principals=principals_to_check,
             path=path,
             method=method,
             request_context=ctx,
             catalog_id=catalog_id,
         )
+        allowed_by_global, reason = result if result is not None else (True, "")
         if not allowed_by_global:
             logger.debug(f"Access denied by Global Security policy: {reason}")
             self._emit_audit(
@@ -255,7 +256,6 @@ class IamMiddleware(BaseHTTPMiddleware):
             details = {
                 "auth_user": effective_principal_id,
                 "auth_source": source,
-                "api_key": api_key_hash,
             }
             # 6. Log completion metrics
             stats_service = get_protocol(StatsProtocol)

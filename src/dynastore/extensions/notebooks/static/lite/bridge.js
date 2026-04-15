@@ -9,6 +9,76 @@
 (function() {
     console.log("[Bridge] Initializing DynaStore Bridge...");
 
+    // --- In-memory Contents API shim ---
+    // JupyterLite's ServiceWorker is not active in this sub-path deployment
+    // (scope /web/lite/ cannot intercept the absolute /api/contents/* calls
+    // JupyterLab emits). Intercept fetch early, before JupyterLab loads, so
+    // autosave/read succeed against an in-memory store. The host-side Save
+    // button (`saveNotebookToDynaStore`) still persists to DynaStore.
+    const CONTENTS_STORE = Object.create(null);
+    const CONTENTS_RE = /\/api\/contents(\/|$)([^?#]*)/;
+    const origFetch = window.fetch.bind(window);
+    window.fetch = function(input, init) {
+        try {
+            const url = typeof input === 'string' ? input : input.url;
+            const method = ((init && init.method) || (typeof input !== 'string' && input.method) || 'GET').toUpperCase();
+            const m = url && url.match(CONTENTS_RE);
+            if (m) {
+                const path = decodeURIComponent(m[2] || '').replace(/^\/+/, '');
+                const now = new Date().toISOString();
+                if (method === 'PUT' || method === 'POST' || method === 'PATCH') {
+                    let body = init && init.body;
+                    if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) {} }
+                    body = body || {};
+                    const entry = {
+                        name: path.split('/').pop() || 'untitled',
+                        path: path,
+                        type: body.type || (path.endsWith('.ipynb') ? 'notebook' : 'file'),
+                        format: body.format || 'json',
+                        content: body.content !== undefined ? body.content : null,
+                        writable: true,
+                        created: CONTENTS_STORE[path]?.created || now,
+                        last_modified: now,
+                        mimetype: body.mimetype || null,
+                        size: null,
+                    };
+                    CONTENTS_STORE[path] = entry;
+                    return Promise.resolve(new Response(JSON.stringify(entry), {
+                        status: 201, headers: { 'Content-Type': 'application/json' }
+                    }));
+                }
+                if (method === 'GET') {
+                    const entry = CONTENTS_STORE[path];
+                    if (entry) {
+                        return Promise.resolve(new Response(JSON.stringify(entry), {
+                            status: 200, headers: { 'Content-Type': 'application/json' }
+                        }));
+                    }
+                    if (path === '' || path === '/') {
+                        const items = Object.values(CONTENTS_STORE).map(function(e) {
+                            return Object.assign({}, e, { content: null });
+                        });
+                        return Promise.resolve(new Response(JSON.stringify({
+                            name: '', path: '', type: 'directory', format: 'json',
+                            content: items, writable: true, created: now, last_modified: now
+                        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+                    }
+                    return Promise.resolve(new Response(JSON.stringify({ message: 'Not found' }), {
+                        status: 404, headers: { 'Content-Type': 'application/json' }
+                    }));
+                }
+                if (method === 'DELETE') {
+                    delete CONTENTS_STORE[path];
+                    return Promise.resolve(new Response('', { status: 204 }));
+                }
+            }
+        } catch (e) {
+            console.warn('[Bridge] contents shim error', e);
+        }
+        return origFetch(input, init);
+    };
+    window.DYNASTORE_CONTENTS_STORE = CONTENTS_STORE;
+
     // Poll for JupyterLab app global. Returns the app or null after timeout.
     function waitForJupyterApp(timeoutMs) {
         return new Promise(function(resolve) {

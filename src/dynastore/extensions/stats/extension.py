@@ -128,7 +128,6 @@ class StatsExtension(ExtensionProtocol, StatsProtocol):
         self,
         catalog_id: str,
         principal_id: Optional[str] = None,
-        api_key_hash: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
     ):
@@ -148,7 +147,6 @@ class StatsExtension(ExtensionProtocol, StatsProtocol):
             schema=schema,
             catalog_id=catalog_id if catalog_id != "_system_" else None,
             principal_id=principal_id,
-            api_key_hash=api_key_hash,
             start_date=start_date,
             end_date=end_date,
         )
@@ -157,7 +155,6 @@ class StatsExtension(ExtensionProtocol, StatsProtocol):
     async def get_system_stats(
         self,
         principal_id: Optional[str] = Query(None),
-        api_key_hash: Optional[str] = Query(None),
         start_date: Optional[datetime] = Query(None),
         end_date: Optional[datetime] = Query(None),
     ):
@@ -165,7 +162,6 @@ class StatsExtension(ExtensionProtocol, StatsProtocol):
         return await self._get_stats_summary(
             catalog_id="_system_",
             principal_id=principal_id,
-            api_key_hash=api_key_hash,
             start_date=start_date,
             end_date=end_date,
         )
@@ -174,7 +170,6 @@ class StatsExtension(ExtensionProtocol, StatsProtocol):
         self,
         catalog_id: str,
         principal_id: Optional[str] = Query(None),
-        api_key_hash: Optional[str] = Query(None),
         start_date: Optional[datetime] = Query(None),
         end_date: Optional[datetime] = Query(None),
     ):
@@ -182,7 +177,6 @@ class StatsExtension(ExtensionProtocol, StatsProtocol):
         return await self._get_stats_summary(
             catalog_id=catalog_id,
             principal_id=principal_id,
-            api_key_hash=api_key_hash,
             start_date=start_date,
             end_date=end_date,
         )
@@ -192,7 +186,6 @@ class StatsExtension(ExtensionProtocol, StatsProtocol):
         catalog_id: str,
         collection_id: str,
         principal_id: Optional[str] = Query(None),
-        api_key_hash: Optional[str] = Query(None),
         start_date: Optional[datetime] = Query(None),
         end_date: Optional[datetime] = Query(None),
     ):
@@ -200,7 +193,6 @@ class StatsExtension(ExtensionProtocol, StatsProtocol):
         return await self._get_stats_summary(
             catalog_id=catalog_id,
             principal_id=principal_id,
-            api_key_hash=api_key_hash,
             start_date=start_date,
             end_date=end_date,
         )

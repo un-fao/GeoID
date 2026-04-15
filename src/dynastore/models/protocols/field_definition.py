@@ -46,6 +46,7 @@ class FieldDefinition(BaseModel):
     description: Optional[Union[str, Dict[str, str], LocalizedText]] = None
     capabilities: List[FieldCapability] = []
     data_type: str  # "geometry", "text", "integer", "jsonb", "float", "boolean", "timestamp", etc.
+    sql_expression: str = ""  # Driver-specific SQL expression for the field (e.g. "h.geom", "a.asset_id").
     expose: bool = True  # Whether to expose in public APIs (OGC, STAC)
     aggregations: Optional[List[str]] = None   # None or ["*"] = all, [] = none, ["count","sum"] = specific
     transformations: Optional[List[str]] = None

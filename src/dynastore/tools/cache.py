@@ -1052,6 +1052,20 @@ def cached(
 
 
 # ---------------------------------------------------------------------------
-#  Convenience: alru_cache backward-compatible shim (for incremental migration)
+#  Module-level helpers for cached functions (typed accessors)
 # ---------------------------------------------------------------------------
-# This is intentionally NOT provided. All call sites migrate to @cached.
+
+def cache_clear(fn: Callable[..., Any]) -> None:
+    """Clear all cache entries for a @cached-decorated function."""
+    clearer = getattr(fn, "cache_clear", None)
+    if clearer is None:
+        raise TypeError(f"{fn!r} is not a @cached-decorated function")
+    clearer()
+
+
+def cache_invalidate(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
+    """Invalidate a specific cache entry for a @cached-decorated function."""
+    inv = getattr(fn, "cache_invalidate", None)
+    if inv is None:
+        raise TypeError(f"{fn!r} is not a @cached-decorated function")
+    inv(*args, **kwargs)

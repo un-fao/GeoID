@@ -632,8 +632,9 @@ let liteActive = false;
 let liteReady = false;
 
 function getLiteBaseUrl() {
-  // JupyterLite assets served at /web/extension-static/lite/
-  return API_BASE + '/web/extension-static/lite/lab/index.html';
+  // JupyterLite assets served by the notebooks extension's @expose_static("lite")
+  // provider, mounted under the web extension at /web/lite/.
+  return '/web/lite/lab/index.html';
 }
 
 async function toggleLiteMode() {
@@ -657,7 +658,8 @@ async function toggleLiteMode() {
   // a 404 into the iframe.
   var liteUrl = getLiteBaseUrl();
   try {
-    var probe = await fetch(liteUrl, { method: 'HEAD' });
+    // GET (not HEAD — the static route only registers GET).
+    var probe = await fetch(liteUrl, { method: 'GET' });
     if (!probe.ok) {
       toast('Run unavailable: JupyterLite assets not built (rebuild with BUILD_JUPYTERLITE=true).', true);
       return;

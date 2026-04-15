@@ -76,7 +76,7 @@ async def setup_collection(
 
     # Configure
     r = await in_process_client.put(
-        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/configs/collection",
+        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/configs/CollectionPluginConfig",
         json=config_data,
     )
     assert r.status_code in [200, 204]

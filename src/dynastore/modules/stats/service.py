@@ -182,7 +182,6 @@ class StatsService(ProtocolPlugin[object]):
     ) -> AccessRecord:
         """Internal helper to construct the AccessRecord from request state."""
         from dynastore.extensions.tools.request_state import (
-            get_api_key_hash,
             get_catalog_id,
             get_principal_id,
         )
@@ -190,7 +189,6 @@ class StatsService(ProtocolPlugin[object]):
         return AccessRecord(
             timestamp=datetime.now(timezone.utc),
             catalog_id=catalog_id or get_catalog_id(request),
-            api_key_hash=get_api_key_hash(request),
             principal_id=get_principal_id(request),
             source_ip=request.client.host if request.client else "unknown",
             method=request.method,

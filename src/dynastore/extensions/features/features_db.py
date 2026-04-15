@@ -145,7 +145,7 @@ async def get_items_filtered(
             
             for name, defn in field_defs.items():
                 # Map to SQL expression defined by sidecar (e.g. "a.asset_id", "h.geoid")
-                field_mapping[name] = text(getattr(defn, "sql_expression", name))
+                field_mapping[name] = text(defn.sql_expression or name)
 
             cql_where, cql_params = parse_cql_filter(
                 cql_filter, 

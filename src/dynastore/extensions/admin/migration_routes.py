@@ -29,12 +29,20 @@ Endpoints:
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from dynastore.models.protocols.policies import Principal
+
+
+@runtime_checkable
+class PhysicalTableResolver(Protocol):
+    """Capability: driver can resolve a collection's physical table name."""
+    async def resolve_physical_table(
+        self, catalog_id: str, collection_id: str
+    ) -> Optional[str]: ...
 
 logger = logging.getLogger(__name__)
 
@@ -392,8 +400,11 @@ async def list_collection_backups(
 
     # Get physical_table from driver config
     driver = await get_driver(Operation.READ, catalog_id, collection_id)
-    resolve = getattr(driver, "resolve_physical_table", None)
-    physical_table = await resolve(catalog_id, collection_id) if resolve else None
+    physical_table = (
+        await driver.resolve_physical_table(catalog_id, collection_id)
+        if isinstance(driver, PhysicalTableResolver)
+        else None
+    )
     if not physical_table:
         raise HTTPException(status_code=404, detail="Collection has no physical table.")
 
@@ -446,8 +457,11 @@ async def drop_collection_backup(
         raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
 
     driver = await get_driver(Operation.READ, catalog_id, collection_id)
-    resolve = getattr(driver, "resolve_physical_table", None)
-    physical_table = await resolve(catalog_id, collection_id) if resolve else None
+    physical_table = (
+        await driver.resolve_physical_table(catalog_id, collection_id)
+        if isinstance(driver, PhysicalTableResolver)
+        else None
+    )
     if not physical_table:
         raise HTTPException(status_code=404, detail="Collection has no physical table.")
 

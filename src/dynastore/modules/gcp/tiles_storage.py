@@ -14,7 +14,7 @@
 
 import logging
 from typing import Optional, Any, Dict
-from dynastore.tools.cache import cached
+from dynastore.tools.cache import cached, cache_clear
 from datetime import timedelta
 from dynastore.modules.tiles.tiles_module import TileStorageSPI, register_named_tile_storage
 from dynastore.modules.concurrency import run_in_thread
@@ -154,8 +154,7 @@ class TileBucketPreseedStorage(TileStorageSPI):
         if exists:
             # Asynchronously ensure credentials are valid and get a fresh token.
             # This offloads the refresh to a background thread.
-            get_token = getattr(identity_provider, "get_fresh_token", None)
-            access_token = await get_token() if get_token else None
+            access_token = await identity_provider.get_fresh_token()
             
             # Use the IAM API to sign the URL remotely.
             # Use the injected concurrency backend for the blocking signed URL generation.
@@ -197,7 +196,7 @@ class TileBucketPreseedStorage(TileStorageSPI):
         result = await run_in_thread(_delete_all)
         # Clear existence cache for this collection
         if result > 0:
-            getattr(self.check_tile_exists, "cache_clear", lambda: None)()
+            cache_clear(self.check_tile_exists)
         return result
 
     async def delete_storage_for_catalog(self, catalog_id: str):
@@ -219,4 +218,4 @@ class TileBucketPreseedStorage(TileStorageSPI):
 
         await run_in_thread(_delete_all)
         # Clear existence cache
-        getattr(self.check_tile_exists, "cache_clear", lambda: None)()
+        cache_clear(self.check_tile_exists)

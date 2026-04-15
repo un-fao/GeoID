@@ -56,7 +56,7 @@ async def test_operation_sequential_execution(task_app_state, test_data_loader, 
     await catalogs.create_collection(catalog_id, col_def)
     
     # Explicitly disable partitioning via ConfigManager so ingestion respects it
-    pg_plugin_id = DriverRecordsPostgresqlConfig._plugin_id
+    pg_plugin_id = DriverRecordsPostgresqlConfig
     config = await configs.get_config(pg_plugin_id, catalog_id=catalog_id, collection_id=collection_id)
     if config.partitioning:
          config.partitioning.enabled = False

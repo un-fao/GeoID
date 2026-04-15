@@ -35,7 +35,6 @@ _ACCESS_LOG_MAPPING = {
         "properties": {
             "timestamp": {"type": "date"},
             "catalog_id": {"type": "keyword"},
-            "api_key_hash": {"type": "keyword"},
             "principal_id": {"type": "keyword"},
             "source_ip": {"type": "ip"},
             "method": {"type": "keyword"},
@@ -104,7 +103,6 @@ class ElasticsearchStatsDriver(AbstractStatsDriver):
         schema: Optional[str] = None,
         catalog_id: Optional[str] = None,
         principal_id: Optional[str] = None,
-        api_key_hash: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         **kwargs: Any,
@@ -124,8 +122,6 @@ class ElasticsearchStatsDriver(AbstractStatsDriver):
             must.append({"term": {"catalog_id": catalog_id}})
         if principal_id:
             must.append({"term": {"principal_id": principal_id}})
-        if api_key_hash:
-            must.append({"term": {"api_key_hash": api_key_hash}})
         if start_date or end_date:
             range_q: dict = {}
             if start_date:
@@ -179,7 +175,6 @@ class ElasticsearchStatsDriver(AbstractStatsDriver):
         schema: Optional[str] = None,
         catalog_id: Optional[str] = None,
         principal_id: Optional[str] = None,
-        api_key_hash: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         limit: int = 100,
@@ -196,8 +191,6 @@ class ElasticsearchStatsDriver(AbstractStatsDriver):
             must.append({"term": {"catalog_id": catalog_id}})
         if principal_id:
             must.append({"term": {"principal_id": principal_id}})
-        if api_key_hash:
-            must.append({"term": {"api_key_hash": api_key_hash}})
         if start_date or end_date:
             range_q: dict = {}
             if start_date:
@@ -303,7 +296,6 @@ class ElasticsearchStatsDriver(AbstractStatsDriver):
                     {
                         "timestamp": rec.timestamp.isoformat(),
                         "catalog_id": rec.catalog_id,
-                        "api_key_hash": rec.api_key_hash,
                         "principal_id": rec.principal_id,
                         "source_ip": str(rec.source_ip),
                         "method": rec.method,

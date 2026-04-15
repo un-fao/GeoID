@@ -1320,9 +1320,6 @@ async function demoAction(action) {
             principal_id: Optional[str] = Query(
                 None, description="Filter by Principal ID."
             ),
-            api_key_hash: Optional[str] = Query(
-                None, description="Filter by API Key Hash."
-            ),
             start_date: Optional[datetime] = Query(
                 None, description="Start date for stats aggregation."
             ),
@@ -1358,7 +1355,6 @@ async function demoAction(action) {
                     catalog_id=catalog_id if catalog_id != "_system_" else None,
                     collection_id=collection_id,
                     principal_id=principal_id,
-                    api_key_hash=api_key_hash,
                     start_date=start_date,
                     end_date=end_date,
                 )
