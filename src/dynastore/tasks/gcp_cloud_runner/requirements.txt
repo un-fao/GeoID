@@ -1,7 +1,0 @@
--r ../modules/gcp/requirements.txt
-# gcloud-aio-storage==9.6.0
-# google-cloud-bigquery==3.24.0
-# google-api-core>=2.25.1
-google-cloud-run
-# google-cloud-storage>=3.1.0
-# gcsfs==2024.5.0

@@ -1,2 +1,0 @@
-#required for /docs endpoint rendering
-markdown>=3.3.7

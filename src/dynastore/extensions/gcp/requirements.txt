@@ -1,2 +1,0 @@
-google-auth[httpx]>=2.0.0
-httpx
