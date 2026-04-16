@@ -1054,6 +1054,12 @@ dimensions = [
     { name = "fastapi" },
     { name = "ogc-dimensions" },
 ]
+drivers-grp = [
+    { name = "duckdb" },
+    { name = "opensearch-py", extra = ["async"] },
+    { name = "pyarrow" },
+    { name = "pyiceberg", extra = ["sql-postgres"] },
+]
 dwh = [
     { name = "db-dtypes" },
     { name = "google-cloud-bigquery" },
@@ -1422,8 +1428,20 @@ module-iam = [
     { name = "pydantic", extra = ["email"] },
     { name = "pyjwt" },
 ]
+module-metadata-elasticsearch = [
+    { name = "opensearch-py", extra = ["async"] },
+]
 module-storage-duckdb = [
     { name = "duckdb" },
+]
+module-storage-elasticsearch = [
+    { name = "opensearch-py", extra = ["async"] },
+]
+module-storage-elasticsearch-assets = [
+    { name = "opensearch-py", extra = ["async"] },
+]
+module-storage-elasticsearch-obfuscated = [
+    { name = "opensearch-py", extra = ["async"] },
 ]
 module-storage-iceberg = [
     { name = "pyarrow" },
@@ -1453,6 +1471,7 @@ scope-catalog = [
     { name = "asyncpg" },
     { name = "charset-normalizer" },
     { name = "db-dtypes" },
+    { name = "duckdb" },
     { name = "fastapi" },
     { name = "gcloud-aio-storage" },
     { name = "gcsfs" },
@@ -1471,7 +1490,9 @@ scope-catalog = [
     { name = "pandas" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "psycopg2-binary" },
+    { name = "pyarrow" },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
+    { name = "pyiceberg", extra = ["sql-postgres"] },
     { name = "pystac", extra = ["validation"] },
     { name = "python-dateutil" },
     { name = "s2sphere" },
@@ -1484,6 +1505,7 @@ scope-geoid = [
     { name = "asyncpg" },
     { name = "charset-normalizer" },
     { name = "db-dtypes" },
+    { name = "duckdb" },
     { name = "fastapi" },
     { name = "gcloud-aio-storage" },
     { name = "gcsfs" },
@@ -1502,8 +1524,10 @@ scope-geoid = [
     { name = "pandas" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "psycopg2-binary" },
+    { name = "pyarrow" },
     { name = "pydantic", extra = ["email"] },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
+    { name = "pyiceberg", extra = ["sql-postgres"] },
     { name = "pyjwt" },
     { name = "pystac", extra = ["validation"] },
     { name = "python-dateutil" },
@@ -1519,6 +1543,7 @@ scope-maps = [
     { name = "asyncpg" },
     { name = "charset-normalizer" },
     { name = "db-dtypes" },
+    { name = "duckdb" },
     { name = "fastapi" },
     { name = "gcloud-aio-storage" },
     { name = "gcsfs" },
@@ -1533,10 +1558,13 @@ scope-maps = [
     { name = "httpx" },
     { name = "markdown" },
     { name = "msgpack" },
+    { name = "opensearch-py", extra = ["async"] },
     { name = "pandas" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "psycopg2-binary" },
+    { name = "pyarrow" },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
+    { name = "pyiceberg", extra = ["sql-postgres"] },
     { name = "pyproj" },
     { name = "pystac", extra = ["validation"] },
     { name = "python-dateutil" },
@@ -1896,10 +1924,10 @@ requires-dist = [
     { name = "dynastore", extras = ["auth-grp", "extension-geoid", "scope-catalog"], marker = "extra == 'scope-geoid'" },
     { name = "dynastore", extras = ["cache", "core", "notebooks", "template"], marker = "extra == 'scope-tools'" },
     { name = "dynastore", extras = ["catalog-grp", "core"], marker = "extra == 'api-features'" },
+    { name = "dynastore", extras = ["catalog-grp", "core", "drivers-grp", "google-grp", "index-grp", "maps-grp", "module-cache", "monitor-grp", "notebooks"], marker = "extra == 'scope-maps'" },
+    { name = "dynastore", extras = ["catalog-grp", "core", "drivers-grp", "google-grp", "index-grp", "module-cache", "monitor-grp", "notebooks", "processes", "task-gcp-provision", "tasks"], marker = "extra == 'scope-catalog'" },
     { name = "dynastore", extras = ["catalog-grp", "core", "google-grp", "index-grp", "ingestion", "processes", "task-dwh-join-job", "task-export-features-job", "task-gcp-provision", "task-gdal-job", "task-tiles-preseed", "task-tiles-preseed-job", "tasks"], marker = "extra == 'worker-service'" },
-    { name = "dynastore", extras = ["catalog-grp", "core", "google-grp", "index-grp", "module-cache", "monitor-grp", "notebooks", "processes", "task-gcp-provision", "tasks"], marker = "extra == 'scope-catalog'" },
     { name = "dynastore", extras = ["catalog-grp", "core", "google-grp", "index-grp", "monitor-grp", "processes", "task-gcp-provision", "tasks"], marker = "extra == 'api-open'" },
-    { name = "dynastore", extras = ["catalog-grp", "core", "google-grp", "maps-grp", "module-cache", "monitor-grp", "notebooks"], marker = "extra == 'scope-maps'" },
     { name = "dynastore", extras = ["catalog-grp", "core", "google-grp", "maps-grp", "monitor-grp", "tools-grp"], marker = "extra == 'api-maps-open'" },
     { name = "dynastore", extras = ["catalog-grp", "core", "index-grp", "monitor-grp", "processes"], marker = "extra == 'catalog-local'" },
     { name = "dynastore", extras = ["catalog-grp", "gdal", "google-grp", "ingestion"], marker = "extra == 'task-ingestion-job'" },
@@ -1989,12 +2017,17 @@ requires-dist = [
     { name = "dynastore", extras = ["module-datastore"], marker = "extra == 'datastore'" },
     { name = "dynastore", extras = ["module-db"], marker = "extra == 'db'" },
     { name = "dynastore", extras = ["module-db-config"], marker = "extra == 'db-config'" },
+    { name = "dynastore", extras = ["module-elasticsearch"], marker = "extra == 'module-metadata-elasticsearch'" },
+    { name = "dynastore", extras = ["module-elasticsearch"], marker = "extra == 'module-storage-elasticsearch'" },
+    { name = "dynastore", extras = ["module-elasticsearch"], marker = "extra == 'module-storage-elasticsearch-assets'" },
+    { name = "dynastore", extras = ["module-elasticsearch"], marker = "extra == 'module-storage-elasticsearch-obfuscated'" },
     { name = "dynastore", extras = ["module-elasticsearch"], marker = "extra == 'task-elasticsearch'" },
     { name = "dynastore", extras = ["module-elasticsearch"], marker = "extra == 'task-elasticsearch-indexer'" },
     { name = "dynastore", extras = ["module-elasticsearch", "task-elasticsearch"], marker = "extra == 'elasticsearch'" },
     { name = "dynastore", extras = ["module-gcp"], marker = "extra == 'task-gcp-provision'" },
     { name = "dynastore", extras = ["module-gcp", "task-base", "task-ingestion"], marker = "extra == 'ingestion'" },
     { name = "dynastore", extras = ["module-gdal"], marker = "extra == 'task-gdal'" },
+    { name = "dynastore", extras = ["module-metadata-elasticsearch", "module-metadata-postgresql", "module-storage-duckdb", "module-storage-elasticsearch", "module-storage-elasticsearch-assets", "module-storage-elasticsearch-obfuscated", "module-storage-iceberg", "module-storage-postgresql"], marker = "extra == 'drivers-grp'" },
     { name = "dynastore", extras = ["module-storage"], marker = "extra == 'storage'" },
     { name = "dynastore", extras = ["monitor-grp", "worker-service"], marker = "extra == 'worker-local'" },
     { name = "dynastore", extras = ["test"], marker = "extra == 'dev'" },
@@ -2052,7 +2085,7 @@ requires-dist = [
     { name = "python-dateutil" },
     { name = "python-dateutil", marker = "extra == 'module-db-config'" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "python-multipart", marker = "extra == 'extension-auth'", specifier = ">=0.0.9" },
+    { name = "python-multipart", marker = "extra == 'extension-auth'", specifier = ">=0.0.26" },
     { name = "requests", marker = "extra == 'test'", specifier = ">=2.31.0" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "s2sphere", marker = "extra == 'module-db-config'", specifier = ">=0.2.5" },
@@ -2065,7 +2098,7 @@ requires-dist = [
     { name = "valkey", marker = "extra == 'module-cache'", specifier = ">=6.0" },
     { name = "xmltodict", marker = "extra == 'extension-template'", specifier = ">=0.13.0" },
 ]
-provides-extras = ["module-storage", "module-storage-duckdb", "module-storage-iceberg", "module-catalog", "module-gcp", "module-datastore", "module-db-config", "module-iam", "module-db", "module-crs", "module-events", "module-elasticsearch", "module-gdal", "module-tiles", "module-cache", "module-tasks", "module-proxy", "module-styles", "module-stats", "module-notebooks", "extension-base", "extension-web", "extension-httpx", "extension-catalog", "extension-stac", "extension-auth", "extension-template", "extension-processes", "extension-features", "extension-tiles", "extension-tasks", "extension-proxy", "extension-gdal", "extension-styles", "extension-iam", "extension-logs", "extension-configs", "extension-stats", "extension-crs", "extension-events", "extension-wfs", "extension-admin", "extension-assets", "extension-notebooks", "extension-records", "extension-search", "extension-gcp-bucket", "extension-geoid", "extension-maps", "extension-coverages", "extension-dwh", "extension-dimensions", "task-gdal", "task-gcp-provision", "task-elasticsearch", "task-elasticsearch-indexer", "task-ingestion", "task-dwh-join", "task-export-features", "task-tiles-preseed", "catalog", "gcp", "datastore", "db-config", "iam", "db", "crs", "cache", "events", "elasticsearch", "gdal", "maps", "stac", "stats", "web", "geoid", "processes", "features", "styles", "tiles", "tasks", "proxy", "logs", "assets", "configs", "search", "storage", "auth", "template", "dimensions", "notebooks", "geospatial-core", "geospatial-io", "geospatial", "db-async", "db-sync", "core", "catalog-grp", "maps-grp", "google-grp", "auth-grp", "tools-grp", "monitor-grp", "index-grp", "task-base", "ingestion", "task-dwh-join-job", "task-ingestion-job", "task-export-features-job", "task-tiles-preseed-job", "task-gdal-job", "api-open", "api-catalog", "api-maps", "api-maps-open", "api-features", "api-full", "geoid-service", "worker-service", "catalog-local", "worker-local", "scope-catalog", "scope-geoid", "scope-worker", "scope-tools", "scope-maps", "all", "test", "dev", "mvt", "dwh", "psycopg-pool"]
+provides-extras = ["module-storage", "module-storage-postgresql", "module-storage-duckdb", "module-storage-iceberg", "module-storage-elasticsearch", "module-storage-elasticsearch-obfuscated", "module-storage-elasticsearch-assets", "module-metadata-postgresql", "module-metadata-elasticsearch", "module-catalog", "module-gcp", "module-datastore", "module-db-config", "module-iam", "module-db", "module-crs", "module-events", "module-elasticsearch", "module-gdal", "module-tiles", "module-cache", "module-tasks", "module-proxy", "module-styles", "module-stats", "module-notebooks", "extension-base", "extension-web", "extension-httpx", "extension-catalog", "extension-stac", "extension-auth", "extension-template", "extension-processes", "extension-features", "extension-tiles", "extension-tasks", "extension-proxy", "extension-gdal", "extension-styles", "extension-iam", "extension-logs", "extension-configs", "extension-stats", "extension-crs", "extension-events", "extension-wfs", "extension-admin", "extension-assets", "extension-notebooks", "extension-records", "extension-search", "extension-gcp-bucket", "extension-geoid", "extension-maps", "extension-coverages", "extension-dwh", "extension-dimensions", "task-gdal", "task-gcp-provision", "task-elasticsearch", "task-elasticsearch-indexer", "task-ingestion", "task-dwh-join", "task-export-features", "task-tiles-preseed", "catalog", "gcp", "datastore", "db-config", "iam", "db", "crs", "cache", "events", "elasticsearch", "gdal", "maps", "stac", "stats", "web", "geoid", "processes", "features", "styles", "tiles", "tasks", "proxy", "logs", "assets", "configs", "search", "storage", "auth", "template", "dimensions", "notebooks", "geospatial-core", "geospatial-io", "geospatial", "db-async", "db-sync", "core", "catalog-grp", "maps-grp", "google-grp", "auth-grp", "tools-grp", "monitor-grp", "index-grp", "drivers-grp", "task-base", "ingestion", "task-dwh-join-job", "task-ingestion-job", "task-export-features-job", "task-tiles-preseed-job", "task-gdal-job", "api-open", "api-catalog", "api-maps", "api-maps-open", "api-features", "api-full", "geoid-service", "worker-service", "catalog-local", "worker-local", "scope-catalog", "scope-geoid", "scope-worker", "scope-tools", "scope-maps", "all", "test", "dev", "mvt", "dwh", "psycopg-pool"]
 
 [[package]]
 name = "email-validator"
@@ -4374,11 +4407,11 @@ wheels = [
 
 [[package]]
 name = "python-multipart"
-version = "0.0.22"
+version = "0.0.26"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/94/01/979e98d542a70714b0cb2b6728ed0b7c46792b695e3eaec3e20711271ca3/python_multipart-0.0.22.tar.gz", hash = "sha256:7340bef99a7e0032613f56dc36027b959fd3b30a787ed62d310e951f7c3a3a58", size = 37612, upload-time = "2026-01-25T10:15:56.219Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/88/71/b145a380824a960ebd60e1014256dbb7d2253f2316ff2d73dfd8928ec2c3/python_multipart-0.0.26.tar.gz", hash = "sha256:08fadc45918cd615e26846437f50c5d6d23304da32c341f289a617127b081f17", size = 43501, upload-time = "2026-04-10T14:09:59.473Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1b/d0/397f9626e711ff749a95d96b7af99b9c566a9bb5129b8e4c10fc4d100304/python_multipart-0.0.22-py3-none-any.whl", hash = "sha256:2b2cd894c83d21bf49d702499531c7bafd057d730c201782048f7945d82de155", size = 24579, upload-time = "2026-01-25T10:15:54.811Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/22/f1925cdda983ab66fc8ec6ec8014b959262747e58bdca26a4e3d1da29d56/python_multipart-0.0.26-py3-none-any.whl", hash = "sha256:c0b169f8c4484c13b0dcf2ef0ec3a4adb255c4b7d18d8e420477d2b1dd03f185", size = 28847, upload-time = "2026-04-10T14:09:58.131Z" },
 ]
 
 [[package]]
