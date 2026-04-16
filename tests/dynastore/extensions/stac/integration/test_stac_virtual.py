@@ -7,10 +7,10 @@ from tests.dynastore.test_utils import generate_test_id
     "stac", "assets", "features", "configs", "processes", "web"
 )
 @pytest.mark.enable_modules(
-    "db_config", "db", "catalog", "stac", "processes", "tasks", "proxy", "gcp"
+    "db_config", "db", "catalog", "stac", "processes", "tasks", "proxy", "gcp", "iam", "metadata_postgresql"
 )
 @pytest.mark.enable_tasks("ingestion")
-async def test_virtual_stac_endpoints(in_process_client, test_data_loader, base_url):
+async def test_virtual_stac_endpoints(sysadmin_in_process_client, in_process_client, test_data_loader, base_url):
     """
     Integration test for STAC Virtual View and Source Tracking using STAC API inputs.
     """
@@ -30,7 +30,7 @@ async def test_virtual_stac_endpoints(in_process_client, test_data_loader, base_
     # 1. Create Catalog (STAC API)
     cat_data = test_data_loader("catalog.json")
     cat_data["id"] = catalog_id
-    resp = await in_process_client.post("/stac/catalogs", json=cat_data)
+    resp = await sysadmin_in_process_client.post("/stac/catalogs", json=cat_data)
     assert resp.status_code in [201, 200]
 
     # 2. Create Main Collection (STAC API)

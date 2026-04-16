@@ -13,7 +13,7 @@ from dynastore.modules.db_config.platform_config_service import (
 from dynastore.modules.tiles.tiles_config import TilesConfig
 from dynastore.models.driver_context import DriverContext
 
-@pytest.mark.enable_modules("db_config", "db", "catalog", "tiles")
+@pytest.mark.enable_modules("db_config", "db", "catalog", "tiles", "metadata_postgresql")
 @pytest.mark.enable_extensions("tiles")
 @pytest.mark.asyncio
 async def test_hierarchical_config_cache_invalidation(app_lifespan, data_id):

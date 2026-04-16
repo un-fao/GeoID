@@ -1,4 +1,5 @@
 import importlib.metadata
+import inspect
 import re
 from typing import (
     Dict,
@@ -176,7 +177,7 @@ def _get_protocols_cached(protocol: type) -> List[Any]:
             return False
         if not isinstance(obj, protocol):
             return False
-        if hasattr(obj, "is_available") and not obj.is_available():
+        if hasattr(obj, "is_available") and not inspect.iscoroutinefunction(obj.is_available) and not obj.is_available():
             return False
         seen.add(obj_id)
         return True

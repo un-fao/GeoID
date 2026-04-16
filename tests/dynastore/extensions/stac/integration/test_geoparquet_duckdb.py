@@ -36,7 +36,7 @@ _EXPECTED_ISO = {"FJI", "TZA", "ESH", "CAN", "USA"}
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.enable_modules(
-        "db_config", "db", "catalog", "stats", "storage_duckdb"
+        "db_config", "db", "catalog", "stats", "storage_duckdb", "iam", "metadata_postgresql"
     ),
     pytest.mark.enable_extensions("stac", "features", "assets", "configs"),
 ]
@@ -123,7 +123,7 @@ def _build_stac_item(iso_a3: str, name: str, continent: str, pop_est, gdp_md_est
 
 
 async def test_geoparquet_duckdb_pipeline(
-    in_process_client, catalog_id, collection_id, catalog_data, collection_data
+    sysadmin_in_process_client, in_process_client, catalog_id, collection_id, catalog_data, collection_data
 ):
     """Full end-to-end pipeline: configure → import → query (OGC + DuckDB)."""
     if not _PARQUET_PATH.exists():
@@ -139,7 +139,7 @@ async def test_geoparquet_duckdb_pipeline(
     # ------------------------------------------------------------------
     # 1. Create catalog
     # ------------------------------------------------------------------
-    r = await in_process_client.post("/stac/catalogs", json=catalog_data)
+    r = await sysadmin_in_process_client.post("/stac/catalogs", json=catalog_data)
     assert r.status_code in (200, 201), f"Catalog create failed: {r.text}"
 
     # ------------------------------------------------------------------

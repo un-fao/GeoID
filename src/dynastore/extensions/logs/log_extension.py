@@ -45,8 +45,8 @@ logger = logging.getLogger(__name__)
 
 def _kibana_url() -> Optional[str]:
     """Build Kibana dashboard URL if KIBANA_URL is set and ES client is active."""
-    from dynastore.modules.elasticsearch.client import get_client
-    from dynastore.modules.elasticsearch.mappings import get_log_index_name, get_index_prefix  # type: ignore[attr-defined]
+    from dynastore.modules.elasticsearch.client import get_client, get_index_prefix
+    from dynastore.modules.elasticsearch.mappings import get_log_index_name
 
     base = os.environ.get("KIBANA_URL", "").rstrip("/")
     if not base or get_client() is None:

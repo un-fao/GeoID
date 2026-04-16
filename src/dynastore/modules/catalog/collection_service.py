@@ -494,8 +494,9 @@ class CollectionService:
                 write_policy_input = collection_definition.get("write_policy")
                 schema_input = collection_definition.get("schema")
             else:
-                write_policy_input = getattr(collection_definition, "write_policy", None)
-                schema_input = getattr(collection_definition, "schema", None)
+                _fields = type(collection_definition).model_fields if hasattr(type(collection_definition), "model_fields") else {}
+                write_policy_input = getattr(collection_definition, "write_policy", None) if "write_policy" in _fields else None
+                schema_input = getattr(collection_definition, "schema", None) if "schema" in _fields else None
 
             if write_policy_input:
                 from dynastore.modules.storage.driver_config import (

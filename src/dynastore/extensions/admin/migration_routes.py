@@ -244,9 +244,8 @@ async def schema_health(
             rows = []
         else:
             sql = f"""
-                SELECT collection_id, plugin_id, schema_hash, updated_at
+                SELECT DISTINCT collection_id, updated_at
                 FROM "{schema}".collection_configs
-                WHERE plugin_id = 'collection'
                 ORDER BY collection_id;
             """
             rows = (
@@ -259,8 +258,8 @@ async def schema_health(
         collections.append(
             {
                 "collection_id": r["collection_id"],
-                "schema_hash": r.get("schema_hash"),
-                "has_snapshot": r.get("schema_hash") is not None,
+                "schema_hash": None,
+                "has_snapshot": False,
                 "updated_at": str(r["updated_at"]) if r.get("updated_at") else None,
             }
         )

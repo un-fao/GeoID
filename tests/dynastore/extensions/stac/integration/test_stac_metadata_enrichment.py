@@ -5,7 +5,7 @@ from tests.dynastore.test_utils import generate_test_id
 
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("stac", "assets", "features", "configs")
-async def test_stac_metadata_enrichment_vector(in_process_client, test_data_loader):
+async def test_stac_metadata_enrichment_vector(sysadmin_in_process_client, in_process_client, test_data_loader):
     """
     Test that a virtual asset collection is enriched with Vector GDAL/OGR metadata.
     """
@@ -17,7 +17,7 @@ async def test_stac_metadata_enrichment_vector(in_process_client, test_data_load
     # 1. Create Catalog
     cat_data = test_data_loader("catalog.json")
     cat_data["id"] = catalog_id
-    await in_process_client.post("/stac/catalogs", json=cat_data)
+    await sysadmin_in_process_client.post("/stac/catalogs", json=cat_data)
 
     # 2. Create Collection
     col_data = test_data_loader("collection.json")
@@ -95,7 +95,7 @@ async def test_stac_metadata_enrichment_vector(in_process_client, test_data_load
 
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("stac", "assets", "features", "configs")
-async def test_stac_metadata_enrichment_raster(in_process_client, test_data_loader):
+async def test_stac_metadata_enrichment_raster(sysadmin_in_process_client, in_process_client, test_data_loader):
     """
     Test that a virtual asset collection is enriched with Raster GDAL metadata.
     """
@@ -107,7 +107,7 @@ async def test_stac_metadata_enrichment_raster(in_process_client, test_data_load
     # 1. Create Catalog
     cat_data = test_data_loader("catalog.json")
     cat_data["id"] = catalog_id
-    await in_process_client.post("/stac/catalogs", json=cat_data)
+    await sysadmin_in_process_client.post("/stac/catalogs", json=cat_data)
 
     # 2. Create Collection
     col_data = test_data_loader("collection.json")

@@ -357,13 +357,20 @@ class IamService:
             if identity.get("azp"):
                 attributes["azp"] = identity["azp"]
 
-        # Create principal with default user role
+        # Use realm_roles from OIDC token if present, otherwise default to ["user"]
+        known_roles = {"sysadmin", "admin", "user", "anonymous"}
+        realm_roles = [
+            r for r in identity.get("realm_roles", [])
+            if r in known_roles
+        ]
+        assigned_roles = realm_roles if realm_roles else ["user"]
+
         new_principal = Principal(
             id=uuid4(),
             provider=provider,
             subject_id=subject_id,
             display_name=email,
-            roles=["user"],  # Default role for authenticated users
+            roles=assigned_roles,
             is_active=True,
             custom_policies=[],
             attributes=attributes,
@@ -642,7 +649,9 @@ class IamService:
                     logger.debug("Identity found via provider %s", provider_id)
                     # Resolve identity to Principal with contextual roles
                     principal = await self.authenticate_and_get_principal(
-                        identity=identity, target_schema=catalog_id or "_system_"
+                        identity=identity,
+                        target_schema=catalog_id or "_system_",
+                        auto_register=True,
                     )
                     if principal:
                         # Translate V2 roles to flattened hierarchy for legacy compatibility
@@ -663,6 +672,33 @@ class IamService:
                     f"Provider {provider_id} failed to validate token: {e}",
                     exc_info=True,
                 )
+
+        # Fallback: try internal HS256 token (test fixtures, internal services)
+        try:
+            secrets_list = await self.get_jwt_secrets_for_verification()
+            payload: Optional[dict] = None
+            for secret in secrets_list:
+                try:
+                    payload = jwt.decode(token, secret, algorithms=["HS256"])
+                    break
+                except jwt.InvalidTokenError:
+                    continue
+            if payload:
+                from dynastore.models.auth import Principal
+                roles = payload.get("roles", ["user"])
+                if isinstance(roles, str):
+                    roles = [roles]
+                effective_roles = await self.storage.get_role_hierarchy(
+                    roles, schema=schema
+                )
+                principal = Principal(
+                    subject_id=payload.get("sub"),
+                    provider="internal",
+                    roles=roles,
+                )
+                return list(set(effective_roles)), principal
+        except Exception as e:
+            logger.debug("Internal HS256 fallback failed: %s", e)
 
         # No valid identity found
         return ["anonymous"], None

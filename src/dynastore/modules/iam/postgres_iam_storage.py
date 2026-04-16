@@ -638,7 +638,7 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
             )
 
     async def delete_role(
-        self, role_id: str, conn: Optional[DbResource] = None, schema: str = "iam"
+        self, role_id: str, cascade: bool = False, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> bool:
         """Deletes a role."""
         async with managed_transaction(conn or self.engine) as db:

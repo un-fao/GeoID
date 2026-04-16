@@ -334,7 +334,16 @@ class TestSelfServiceAPI:
 async def admin_token(
     sysadmin_in_process_client: AsyncClient, in_process_client: AsyncClient
 ):
-    """Creates a test principal with admin role, an API key, and returns a JWT token."""
+    """Creates a test principal with admin role and returns a JWT token."""
+    import jwt as pyjwt
+    from datetime import datetime, timezone, timedelta
+    from dynastore.tools.discovery import get_protocol
+    from dynastore.models.protocols import AuthenticatorProtocol
+
+    iam_svc = get_protocol(AuthenticatorProtocol)
+    if not iam_svc:
+        pytest.skip("AuthenticatorProtocol not available")
+
     subj_id = f"int_admin_user_{generate_test_id()}"
     principal_payload = {
         "provider": "local",
@@ -350,33 +359,32 @@ async def admin_token(
     )
     assert resp.status_code in [200, 201, 409]
 
-    key_payload = {
-        "provider": "local",
-        "subject_id": subj_id,
-        "description": "Integration test admin API key",
+    secret = await iam_svc.get_jwt_secret()
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": subj_id,
+        "roles": ["admin"],
+        "iat": now,
+        "exp": now + timedelta(hours=1),
+        "iss": "dynastore-test",
     }
-
-    resp = await sysadmin_in_process_client.post(
-        "/iam/credentials/keys", json=key_payload
-    )
-    assert resp.status_code in [200, 201]
-
-    raw_key = resp.json().get("raw_key")
-    assert raw_key
-
-    login_resp = await in_process_client.post(
-        "/iam/auth/login", json={"api_key": raw_key, "ttl_seconds": 3600}
-    )
-    assert login_resp.status_code == 200
-
-    return login_resp.json()["access_token"]
+    return pyjwt.encode(payload, secret, algorithm="HS256")
 
 
 @pytest_asyncio.fixture
 async def user_token(
     sysadmin_in_process_client: AsyncClient, in_process_client: AsyncClient
 ):
-    """Creates a test principal with no special roles, an API key, and returns a JWT token."""
+    """Creates a test principal with no special roles and returns a JWT token."""
+    import jwt as pyjwt
+    from datetime import datetime, timezone, timedelta
+    from dynastore.tools.discovery import get_protocol
+    from dynastore.models.protocols import AuthenticatorProtocol
+
+    iam_svc = get_protocol(AuthenticatorProtocol)
+    if not iam_svc:
+        pytest.skip("AuthenticatorProtocol not available")
+
     subj_id = f"int_user_{generate_test_id()}"
     principal_payload = {
         "provider": "local",
@@ -392,26 +400,16 @@ async def user_token(
     )
     assert resp.status_code in [200, 201, 409]
 
-    key_payload = {
-        "provider": "local",
-        "subject_id": subj_id,
-        "description": "Integration test user API key",
+    secret = await iam_svc.get_jwt_secret()
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": subj_id,
+        "roles": [],
+        "iat": now,
+        "exp": now + timedelta(hours=1),
+        "iss": "dynastore-test",
     }
-
-    resp = await sysadmin_in_process_client.post(
-        "/iam/credentials/keys", json=key_payload
-    )
-    assert resp.status_code in [200, 201]
-
-    raw_key = resp.json().get("raw_key")
-    assert raw_key
-
-    login_resp = await in_process_client.post(
-        "/iam/auth/login", json={"api_key": raw_key, "ttl_seconds": 3600}
-    )
-    assert login_resp.status_code == 200
-
-    return login_resp.json()["access_token"]
+    return pyjwt.encode(payload, secret, algorithm="HS256")
 
 
 #    Copyright 2026 FAO

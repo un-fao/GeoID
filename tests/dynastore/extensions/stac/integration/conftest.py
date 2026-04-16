@@ -13,13 +13,13 @@ from dynastore.extensions.stac.stac_models import STACItem
 
 
 @pytest.fixture
-async def setup_catalog(in_process_client, catalog_data, catalog_id):
+async def setup_catalog(sysadmin_in_process_client, catalog_data, catalog_id):
     """Fixture to ensure a catalog exists and is cleaned up using the STAC API."""
     # Cleanup any existing catalog (redundant with random IDs)
-    # await in_process_client.delete(f"/stac/catalogs/{catalog_id}")
+    # await sysadmin_in_process_client.delete(f"/stac/catalogs/{catalog_id}")
 
     # Create catalog via STAC
-    r = await in_process_client.post("/stac/catalogs", json=catalog_data)
+    r = await sysadmin_in_process_client.post("/stac/catalogs", json=catalog_data)
     # If it already exists (409), that's "fine" for setup, but we prefer a clean slate.
     # If we got 409, it means the delete failed or didn't happen.
     if r.status_code == 409:

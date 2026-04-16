@@ -3,13 +3,13 @@ import pytest
 
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("stac", "assets", "features", "config")
-async def test_stac_catalog_lifecycle(in_process_client, catalog_data, catalog_id):
+async def test_stac_catalog_lifecycle(sysadmin_in_process_client, in_process_client, catalog_data, catalog_id):
 
     # Ensure cleanup first
     # await in_process_client.delete(f"/stac/catalogs/{catalog_id}")
 
     # Create via STAC
-    r = await in_process_client.post("/stac/catalogs", json=catalog_data)
+    r = await sysadmin_in_process_client.post("/stac/catalogs", json=catalog_data)
     assert r.status_code == 201
     assert r.json()["id"] == catalog_id
 
@@ -141,17 +141,17 @@ async def test_stac_item_lifecycle(
 
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("stac", "assets", "features", "config")
-async def test_stac_catalog_conflict_409(in_process_client, catalog_data, catalog_id):
+async def test_stac_catalog_conflict_409(sysadmin_in_process_client, in_process_client, catalog_data, catalog_id):
     """Test that creating a duplicate catalog returns 409 Conflict."""
     # Pre-clean
     # await in_process_client.delete(f"/stac/catalogs/{catalog_id}")
 
     # Create catalog
-    r = await in_process_client.post("/stac/catalogs", json=catalog_data)
+    r = await sysadmin_in_process_client.post("/stac/catalogs", json=catalog_data)
     assert r.status_code == 201
 
     # Try to create the same catalog again
-    r = await in_process_client.post("/stac/catalogs", json=catalog_data)
+    r = await sysadmin_in_process_client.post("/stac/catalogs", json=catalog_data)
     assert r.status_code == 409
     assert "already exists" in r.json()["detail"].lower()
 

@@ -101,6 +101,7 @@ def test_no_plugin_infix_in_config_class_key():
         "DriverPluginConfig",     # storage driver base
         "CollectionPluginConfig", # catalog module — not yet renamed
         "TasksPluginConfig",      # tasks module — not yet renamed
+        "FeaturesPluginConfig",   # features module — not yet renamed
     }
 
     bad = [

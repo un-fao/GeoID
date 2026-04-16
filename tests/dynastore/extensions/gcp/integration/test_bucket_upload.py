@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 
 @pytest.mark.gcp
 @pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "gcp", "tasks")
+@pytest.mark.enable_modules("db_config", "db", "catalog", "gcp", "tasks", "iam", "metadata_postgresql")
 @pytest.mark.enable_extensions("gcp_bucket", "stac")
-async def test_init_upload_acl_enum(app_lifespan, catalog_id, catalog_cleaner, test_data_loader, caplog, base_url):
+async def test_init_upload_acl_enum(sysadmin_in_process_client, app_lifespan, catalog_id, catalog_cleaner, test_data_loader, caplog, base_url):
     """
     Verifies that initiating an upload with a predefined ACL
     correctly passes the string value of the Enum to the GCS client.
@@ -104,7 +104,7 @@ async def test_init_upload_acl_enum(app_lifespan, catalog_id, catalog_cleaner, t
                     await catalogs_proto.delete_catalog(catalog_id, force=True)
                 except Exception:
                     pass
-            create_resp = await client.post("/stac/catalogs", json=catalog_payload)
+            create_resp = await sysadmin_in_process_client.post("/stac/catalogs", json=catalog_payload)
             assert create_resp.status_code in [201, 200], (
                 f"Failed to create catalog: {create_resp.text}"
             )
@@ -174,10 +174,10 @@ async def test_init_upload_acl_enum(app_lifespan, catalog_id, catalog_cleaner, t
 
 @pytest.mark.gcp
 @pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "gcp", "tasks")
+@pytest.mark.enable_modules("db_config", "db", "catalog", "gcp", "tasks", "iam", "metadata_postgresql")
 @pytest.mark.enable_extensions("gcp_bucket", "stac")
 async def test_init_upload_precondition_failed(
-    app_lifespan, catalog_id, catalog_cleaner, test_data_loader, caplog, base_url
+    sysadmin_in_process_client, app_lifespan, catalog_id, catalog_cleaner, test_data_loader, caplog, base_url
 ):
     """
     Verifies that GCS PreconditionFailed is caught and returned as a clear 400 error.
@@ -262,7 +262,7 @@ async def test_init_upload_precondition_failed(
                     await catalogs_proto.delete_catalog(catalog_id, force=True)
                 except Exception:
                     pass
-            create_resp = await client.post("/stac/catalogs", json=catalog_payload)
+            create_resp = await sysadmin_in_process_client.post("/stac/catalogs", json=catalog_payload)
             assert create_resp.status_code in [201, 200]
             catalog_cleaner(catalog_id)
 
