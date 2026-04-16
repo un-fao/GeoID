@@ -198,7 +198,7 @@ _consume_query = DQLQuery(
     WHERE (shard, event_id) IN (
         SELECT shard, event_id FROM {_EVENTS_SCHEMA}.events
         WHERE status = 'PENDING'
-          AND (:shard IS NULL OR shard = :shard)
+          AND (shard = :shard OR :shard IS NULL)
           AND (:scope = 'ALL' OR scope = :scope)
         ORDER BY created_at ASC
         LIMIT :batch_size
