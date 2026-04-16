@@ -1,14 +1,14 @@
-"""Business logic for the deep paginated configuration view."""
+"""Business logic for the centralised Config API composed views."""
 
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from dynastore.extensions.configs.deep_dto import (
-    CatalogConfigView,
-    CollectionConfigView,
+from dynastore.extensions.configs.config_api_dto import (
+    CatalogConfigResponse,
+    CollectionConfigResponse,
+    ConfigEntry,
     ConfigPage,
-    ConfigViewEntry,
-    PlatformConfigView,
+    PlatformConfigResponse,
     ResolvedDriverEntry,
 )
 from dynastore.models.protocols import ConfigsProtocol
@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 _ROUTING_CONFIG_KEYS = frozenset({"CollectionRoutingConfig", "AssetRoutingConfig"})
 
 
-class DeepConfigService:
-    """Composes deep, paginated configuration views for platform / catalog / collection scope."""
+class ConfigApiService:
+    """Composes paginated configuration responses for platform / catalog / collection scope."""
 
     def __init__(
         self,
@@ -40,7 +40,7 @@ class DeepConfigService:
         self,
         catalog_id: Optional[str],
         collection_id: Optional[str],
-    ) -> Dict[str, ConfigViewEntry]:
+    ) -> Dict[str, ConfigEntry]:
         configs_svc = self._config_service
         all_classes = list_registered_configs()
 
@@ -63,7 +63,7 @@ class DeepConfigService:
         result = await configs_svc.list_configs(limit=1000, offset=0)
         platform_keys = {e["plugin_id"] for e in result.get("items", [])}
 
-        out: Dict[str, ConfigViewEntry] = {}
+        out: Dict[str, ConfigEntry] = {}
         for class_key, cls in all_classes.items():
             if class_key in collection_keys:
                 source = "collection"
@@ -87,7 +87,7 @@ class DeepConfigService:
                 except Exception:
                     value = {}
 
-            out[class_key] = ConfigViewEntry(  # type: ignore[call-arg]
+            out[class_key] = ConfigEntry(  # type: ignore[call-arg]
                 class_key=class_key,
                 value=value,
                 source=source,
@@ -155,7 +155,7 @@ class DeepConfigService:
 
     async def _enrich_routing_configs(
         self,
-        configs: Dict[str, ConfigViewEntry],
+        configs: Dict[str, ConfigEntry],
         catalog_id: Optional[str],
         collection_id: Optional[str],
     ) -> None:
@@ -201,7 +201,7 @@ class DeepConfigService:
             links=links,
         )
 
-    async def get_collection_view(
+    async def compose_collection_config(
         self,
         base_url: str,
         catalog_id: str,
@@ -209,7 +209,7 @@ class DeepConfigService:
         depth: int = 0,
         assets_page: int = 1,
         page_size: int = 15,
-    ) -> CollectionConfigView:
+    ) -> CollectionConfigResponse:
         configs = await self._get_effective_configs(
             catalog_id=catalog_id, collection_id=collection_id
         )
@@ -232,14 +232,14 @@ class DeepConfigService:
             pg.items = assets_items
             categories["assets"] = pg
 
-        return CollectionConfigView(
+        return CollectionConfigResponse(
             collection_id=collection_id,
             catalog_id=catalog_id,
             configs=configs,
             categories=categories,
         )
 
-    async def get_catalog_view(
+    async def compose_catalog_config(
         self,
         base_url: str,
         catalog_id: str,
@@ -247,7 +247,7 @@ class DeepConfigService:
         collections_page: int = 1,
         assets_page: int = 1,
         page_size: int = 15,
-    ) -> CatalogConfigView:
+    ) -> CatalogConfigResponse:
         configs = await self._get_effective_configs(
             catalog_id=catalog_id, collection_id=None
         )
@@ -284,17 +284,17 @@ class DeepConfigService:
             assets_pg.items = assets_items
             categories["assets"] = assets_pg
 
-        return CatalogConfigView(
+        return CatalogConfigResponse(
             catalog_id=catalog_id, configs=configs, categories=categories
         )
 
-    async def get_platform_view(
+    async def compose_platform_config(
         self,
         base_url: str,
         depth: int = 0,
         catalogs_page: int = 1,
         page_size: int = 15,
-    ) -> PlatformConfigView:
+    ) -> PlatformConfigResponse:
         configs = await self._get_effective_configs(
             catalog_id=None, collection_id=None
         )
@@ -317,13 +317,13 @@ class DeepConfigService:
             for cat in cats:
                 cat_id = cat.id if hasattr(cat, "id") else cat.get("id", "")
                 if depth >= 2:
-                    cat_view = await self.get_catalog_view(
-                        base_url=f"{base_url.rstrip('/')}/catalogs/{cat_id}/view",
+                    cat_response = await self.compose_catalog_config(
+                        base_url=f"{base_url.rstrip('/')}/catalogs/{cat_id}/config",
                         catalog_id=cat_id,
                         depth=depth - 1,
                         page_size=page_size,
                     )
-                    items.append(cat_view.model_dump())
+                    items.append(cat_response.model_dump())
                 else:
                     items.append({"catalog_id": cat_id})
 
@@ -338,7 +338,7 @@ class DeepConfigService:
             pg.items = items
             categories["catalogs"] = pg
 
-        return PlatformConfigView(configs=configs, categories=categories)  # type: ignore[call-arg]
+        return PlatformConfigResponse(configs=configs, categories=categories)  # type: ignore[call-arg]
 
     async def _list_assets(
         self,
@@ -399,14 +399,14 @@ class DeepConfigService:
         items: List[Any] = []
         for col in collections:
             col_id = col.id if hasattr(col, "id") else col.get("id", "")
-            col_base = f"{base_url.rstrip('/')}/collections/{col_id}/view"
+            col_base = f"{base_url.rstrip('/')}/collections/{col_id}/config"
             next_depth = parent_depth - 1 if parent_depth >= 2 else 0
-            col_view = await self.get_collection_view(
+            col_response = await self.compose_collection_config(
                 base_url=col_base,
                 catalog_id=catalog_id,
                 collection_id=col_id,
                 depth=next_depth,
                 page_size=page_size,
             )
-            items.append(col_view.model_dump())
+            items.append(col_response.model_dump())
         return total, items

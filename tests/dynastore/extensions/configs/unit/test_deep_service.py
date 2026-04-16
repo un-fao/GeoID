@@ -2,8 +2,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from dynastore.extensions.configs.deep_dto import ConfigViewEntry
-from dynastore.extensions.configs.deep_service import DeepConfigService
+from dynastore.extensions.configs.config_api_dto import ConfigEntry
+from dynastore.extensions.configs.config_api_service import ConfigApiService
 
 
 def _default_config_side_effect(config_cls, catalog_id=None, collection_id=None, **_):
@@ -26,12 +26,12 @@ def mock_config_service():
 
 @pytest.mark.asyncio
 async def test_get_effective_configs_source_default(mock_config_service):
-    svc = DeepConfigService(config_service=mock_config_service)
+    svc = ConfigApiService(config_service=mock_config_service)
     configs = await svc._get_effective_configs(catalog_id=None, collection_id=None)
     assert isinstance(configs, dict)
     assert len(configs) > 0
     for entry in configs.values():
-        assert isinstance(entry, ConfigViewEntry)
+        assert isinstance(entry, ConfigEntry)
         assert entry.source == "default"
 
 
@@ -63,7 +63,7 @@ async def test_get_effective_configs_catalog_source(mock_config_service):
     mock_config_service.get_config.side_effect = catalog_side_effect
     mock_config_service.list_configs.side_effect = list_side_effect
 
-    svc = DeepConfigService(config_service=mock_config_service)
+    svc = ConfigApiService(config_service=mock_config_service)
     configs = await svc._get_effective_configs(catalog_id="my-catalog", collection_id=None)
 
     routing_entry = configs.get("CollectionRoutingConfig")
@@ -85,7 +85,7 @@ async def test_get_effective_configs_collection_source(mock_config_service):
 
     mock_config_service.list_configs.side_effect = list_side_effect
 
-    svc = DeepConfigService(config_service=mock_config_service)
+    svc = ConfigApiService(config_service=mock_config_service)
     configs = await svc._get_effective_configs(
         catalog_id="my-catalog", collection_id="landuse"
     )
@@ -135,9 +135,9 @@ async def test_resolve_driver_configs_embeds_driver_config(mock_config_service):
             return {"enabled": True}
 
     with patch(
-        "dynastore.extensions.configs.deep_service.DriverRegistry"
+        "dynastore.extensions.configs.config_api_service.DriverRegistry"
     ) as mock_registry, patch(
-        "dynastore.extensions.configs.deep_service.resolve_config_class",
+        "dynastore.extensions.configs.config_api_service.resolve_config_class",
         return_value=_FakeCfg,
     ):
         mock_registry.collection_index.return_value = {
@@ -145,7 +145,7 @@ async def test_resolve_driver_configs_embeds_driver_config(mock_config_service):
         }
         mock_config_service.get_config = AsyncMock(return_value=_FakeCfg())
 
-        svc = DeepConfigService(config_service=mock_config_service)
+        svc = ConfigApiService(config_service=mock_config_service)
         result = await svc._resolve_driver_configs(
             routing_value=routing_value,
             catalog_id="my-catalog",
@@ -177,11 +177,11 @@ async def test_resolve_driver_configs_unknown_driver(mock_config_service):
     }
 
     with patch(
-        "dynastore.extensions.configs.deep_service.DriverRegistry"
+        "dynastore.extensions.configs.config_api_service.DriverRegistry"
     ) as mock_registry:
         mock_registry.collection_index.return_value = {}
 
-        svc = DeepConfigService(config_service=mock_config_service)
+        svc = ConfigApiService(config_service=mock_config_service)
         result = await svc._resolve_driver_configs(
             routing_value=routing_value,
             catalog_id="my-catalog",
@@ -194,9 +194,9 @@ async def test_resolve_driver_configs_unknown_driver(mock_config_service):
 
 
 def test_next_link_on_first_page():
-    svc = DeepConfigService(config_service=MagicMock())
+    svc = ConfigApiService(config_service=MagicMock())
     page = svc._build_config_page(
-        "http://test/view", "collections", 30, 1, 15, {"depth": 1}
+        "http://test/config", "collections", 30, 1, 15, {"depth": 1}
     )
     assert any(link["rel"] == "next" for link in page.links)
     assert not any(link["rel"] == "prev" for link in page.links)
@@ -206,88 +206,88 @@ def test_next_link_on_first_page():
 
 
 def test_prev_link_on_page_3():
-    svc = DeepConfigService(config_service=MagicMock())
-    page = svc._build_config_page("http://test/view", "collections", 100, 3, 15, {})
+    svc = ConfigApiService(config_service=MagicMock())
+    page = svc._build_config_page("http://test/config", "collections", 100, 3, 15, {})
     assert any(link["rel"] == "prev" for link in page.links)
     prev_href = next(link["href"] for link in page.links if link["rel"] == "prev")
     assert "collections_page=2" in prev_href
 
 
 def test_no_next_on_last_page():
-    svc = DeepConfigService(config_service=MagicMock())
-    page = svc._build_config_page("http://test/view", "collections", 10, 1, 15, {})
+    svc = ConfigApiService(config_service=MagicMock())
+    page = svc._build_config_page("http://test/config", "collections", 10, 1, 15, {})
     assert not any(link["rel"] == "next" for link in page.links)
 
 
 @pytest.mark.asyncio
-async def test_collection_view_depth0_no_categories(mock_config_service):
-    svc = DeepConfigService(config_service=mock_config_service)
+async def test_collection_config_depth0_no_categories(mock_config_service):
+    svc = ConfigApiService(config_service=mock_config_service)
     with patch.object(svc, "_get_effective_configs", new=AsyncMock(return_value={})), \
          patch.object(svc, "_enrich_routing_configs", new=AsyncMock()):
-        view = await svc.get_collection_view(
+        response = await svc.compose_collection_config(
             base_url="http://test", catalog_id="c", collection_id="col", depth=0
         )
-    assert view.categories is None
+    assert response.categories is None
 
 
 @pytest.mark.asyncio
-async def test_collection_view_depth1_has_assets_category(mock_config_service):
+async def test_collection_config_depth1_has_assets_category(mock_config_service):
     mock_assets = MagicMock()
     mock_assets.list_assets = AsyncMock(return_value=[])
     mock_assets.count_assets = AsyncMock(return_value=0)
-    svc = DeepConfigService(
+    svc = ConfigApiService(
         config_service=mock_config_service, assets_service=mock_assets
     )
     with patch.object(svc, "_get_effective_configs", new=AsyncMock(return_value={})), \
          patch.object(svc, "_enrich_routing_configs", new=AsyncMock()):
-        view = await svc.get_collection_view(
+        response = await svc.compose_collection_config(
             base_url="http://test", catalog_id="c", collection_id="col", depth=1
         )
-    assert view.categories is not None
-    assert "assets" in view.categories
-    assert view.categories["assets"].total == 0
-    assert view.categories["assets"].items == []
+    assert response.categories is not None
+    assert "assets" in response.categories
+    assert response.categories["assets"].total == 0
+    assert response.categories["assets"].items == []
 
 
 @pytest.mark.asyncio
-async def test_catalog_view_depth0_no_categories(mock_config_service):
-    svc = DeepConfigService(config_service=mock_config_service)
+async def test_catalog_config_depth0_no_categories(mock_config_service):
+    svc = ConfigApiService(config_service=mock_config_service)
     with patch.object(svc, "_get_effective_configs", new=AsyncMock(return_value={})), \
          patch.object(svc, "_enrich_routing_configs", new=AsyncMock()):
-        view = await svc.get_catalog_view(
+        response = await svc.compose_catalog_config(
             base_url="http://test", catalog_id="c", depth=0
         )
-    assert view.categories is None
+    assert response.categories is None
 
 
 @pytest.mark.asyncio
-async def test_catalog_view_depth1_has_collections(mock_config_service):
+async def test_catalog_config_depth1_has_collections(mock_config_service):
     mock_cats = MagicMock()
     mock_cats.list_collections = AsyncMock(return_value=[])
     mock_cats.count_collections = AsyncMock(return_value=0)
     mock_assets = MagicMock()
     mock_assets.list_assets = AsyncMock(return_value=[])
     mock_assets.count_assets = AsyncMock(return_value=0)
-    svc = DeepConfigService(
+    svc = ConfigApiService(
         config_service=mock_config_service,
         catalogs_service=mock_cats,
         assets_service=mock_assets,
     )
     with patch.object(svc, "_get_effective_configs", new=AsyncMock(return_value={})), \
          patch.object(svc, "_enrich_routing_configs", new=AsyncMock()):
-        view = await svc.get_catalog_view(
+        response = await svc.compose_catalog_config(
             base_url="http://test", catalog_id="c", depth=1
         )
-    assert view.categories is not None
-    assert "collections" in view.categories
-    assert "assets" in view.categories
+    assert response.categories is not None
+    assert "collections" in response.categories
+    assert "assets" in response.categories
 
 
 @pytest.mark.asyncio
-async def test_platform_view_depth0_no_categories(mock_config_service):
-    svc = DeepConfigService(config_service=mock_config_service)
+async def test_platform_config_depth0_no_categories(mock_config_service):
+    svc = ConfigApiService(config_service=mock_config_service)
     with patch.object(svc, "_get_effective_configs", new=AsyncMock(return_value={})), \
          patch.object(svc, "_enrich_routing_configs", new=AsyncMock()):
-        view = await svc.get_platform_view(base_url="http://test", depth=0)
-    assert view.categories is None
-    assert view.scope == "platform"
+        response = await svc.compose_platform_config(base_url="http://test", depth=0)
+    assert response.categories is None
+    assert response.scope == "platform"

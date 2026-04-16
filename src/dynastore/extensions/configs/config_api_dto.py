@@ -1,4 +1,4 @@
-"""DTOs for the paginated deep configuration view endpoints."""
+"""DTOs for the centralised Config API endpoints (/configs/.../config)."""
 
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
@@ -22,7 +22,7 @@ class ResolvedDriverEntry(BaseModel):
     )
 
 
-class ConfigViewEntry(BaseModel):
+class ConfigEntry(BaseModel):
     """A single config class with its waterfall-resolved value and source tier."""
 
     class_key: str = Field(..., description="PluginConfig class_key.")
@@ -68,12 +68,12 @@ class ConfigPage(BaseModel):
     )
 
 
-class CollectionConfigView(BaseModel):
-    """Deep config view for a single collection scope."""
+class CollectionConfigResponse(BaseModel):
+    """Composed view of all effective configs at a single collection scope."""
 
     collection_id: str
     catalog_id: str
-    configs: Dict[str, ConfigViewEntry] = Field(
+    configs: Dict[str, ConfigEntry] = Field(
         default_factory=dict,
         description="Effective configs at this collection scope, keyed by class_key.",
     )
@@ -85,11 +85,11 @@ class CollectionConfigView(BaseModel):
     )
 
 
-class CatalogConfigView(BaseModel):
-    """Deep config view for a single catalog scope."""
+class CatalogConfigResponse(BaseModel):
+    """Composed view of all effective configs at a single catalog scope."""
 
     catalog_id: str
-    configs: Dict[str, ConfigViewEntry] = Field(
+    configs: Dict[str, ConfigEntry] = Field(
         default_factory=dict,
         description="Effective configs at this catalog scope, keyed by class_key.",
     )
@@ -101,11 +101,11 @@ class CatalogConfigView(BaseModel):
     )
 
 
-class PlatformConfigView(BaseModel):
-    """Deep config view for the platform scope."""
+class PlatformConfigResponse(BaseModel):
+    """Composed view of all effective configs at the platform scope."""
 
     scope: str = Field("platform", frozen=True)
-    configs: Dict[str, ConfigViewEntry] = Field(
+    configs: Dict[str, ConfigEntry] = Field(
         default_factory=dict,
         description="Effective platform-level configs, keyed by class_key.",
     )
@@ -115,10 +115,3 @@ class PlatformConfigView(BaseModel):
             "Paginated child categories: 'catalogs'. Null if depth=0."
         ),
     )
-
-
-class PatchConfigBody(BaseModel):
-    """Request body for PATCH /configs/.../view — write one config at a scope level."""
-
-    class_key: str = Field(..., description="PluginConfig class_key to set.")
-    value: Dict[str, Any] = Field(..., description="New configuration payload.")

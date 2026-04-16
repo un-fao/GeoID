@@ -55,8 +55,7 @@ from .dto import (
     get_plugin_examples,
     PLUGIN_EXAMPLES,
 )
-from .deep_dto import ConfigViewEntry
-from .deep_service import DeepConfigService
+from .config_api_service import ConfigApiService
 from .policies import register_configs_policies
 
 logger = logging.getLogger(__name__)
@@ -262,86 +261,27 @@ class ConfigsService(ExtensionProtocol):
             methods=["GET"],
             summary="Search configurations for a collection",
         )
-        # ---- Config Proxy (Deep View) — full CRUD at all scopes ----
+        # ---- Config API — composed views at all scopes ----
         self.router.add_api_route(
-            "/view",
-            self.get_platform_config_view,
+            "/config",
+            self.get_platform_config_composed,
             methods=["GET"],
-            summary="Platform config proxy — composed view of all effective platform configs",
-            tags=["Config Proxy"],
+            summary="Platform config — all effective platform configs composed",
+            tags=["Config API"],
         )
         self.router.add_api_route(
-            "/view/{class_key}",
-            self.get_platform_config_entry,
+            "/catalogs/{catalog_id}/config",
+            self.get_catalog_config_composed,
             methods=["GET"],
-            summary="Get a single config at platform scope (effective value + source)",
-            tags=["Config Proxy"],
+            summary="Catalog config — all effective catalog configs composed",
+            tags=["Config API"],
         )
         self.router.add_api_route(
-            "/view/{class_key}",
-            self.put_platform_config_entry,
-            methods=["PUT"],
-            summary="Write a single config at platform scope",
-            tags=["Config Proxy"],
-        )
-        self.router.add_api_route(
-            "/view/{class_key}",
-            self.delete_platform_config_entry,
-            methods=["DELETE"],
-            summary="Remove platform-scope override (reverts to code default)",
-            status_code=status.HTTP_204_NO_CONTENT,
-            tags=["Config Proxy"],
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/view",
-            self.get_catalog_config_view,
+            "/catalogs/{catalog_id}/collections/{collection_id}/config",
+            self.get_collection_config_composed,
             methods=["GET"],
-            summary="Catalog config proxy — composed view of all effective catalog configs",
-            tags=["Config Proxy"],
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/view/{class_key}",
-            self.get_catalog_config_entry,
-            methods=["GET"],
-            summary="Get a single config at catalog scope (effective value + source)",
-            tags=["Config Proxy"],
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/view/{class_key}",
-            self.put_catalog_config_entry,
-            methods=["PUT"],
-            summary="Write a single config at catalog scope",
-            tags=["Config Proxy"],
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/view/{class_key}",
-            self.delete_catalog_config_entry,
-            methods=["DELETE"],
-            summary="Remove catalog-scope override (reverts to platform/default)",
-            status_code=status.HTTP_204_NO_CONTENT,
-            tags=["Config Proxy"],
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/view",
-            self.get_collection_config_view,
-            methods=["GET"],
-            summary="Collection config proxy — composed view of all effective collection configs",
-            tags=["Config Proxy"],
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/view/{class_key}",
-            self.put_collection_config_entry,
-            methods=["PUT"],
-            summary="Write a single config at collection scope (collection must exist)",
-            tags=["Config Proxy"],
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/view/{class_key}",
-            self.delete_collection_config_entry,
-            methods=["DELETE"],
-            summary="Remove collection-scope override (reverts to catalog/platform/default)",
-            status_code=status.HTTP_204_NO_CONTENT,
-            tags=["Config Proxy"],
+            summary="Collection config — all effective collection configs composed",
+            tags=["Config API"],
         )
 
     @property
@@ -349,10 +289,10 @@ class ConfigsService(ExtensionProtocol):
         return self.get_protocol(ConfigsProtocol)  # type: ignore[return-value]
 
     @property
-    def _deep(self) -> DeepConfigService:
+    def _config_api(self) -> ConfigApiService:
         from dynastore.models.protocols import AssetsProtocol, CatalogsProtocol
 
-        return DeepConfigService(
+        return ConfigApiService(
             config_service=self.configs,
             catalogs_service=self.get_protocol(CatalogsProtocol),
             assets_service=self.get_protocol(AssetsProtocol),
@@ -526,10 +466,10 @@ class ConfigsService(ExtensionProtocol):
         return {"class_key": plugin_id, "resolved": annotated}
 
     # =========================================================================
-    # Config Proxy Endpoints — Generic CRUD at Platform / Catalog / Collection
+    # Config API — Composed views at Platform / Catalog / Collection
     # =========================================================================
 
-    async def get_platform_config_view(
+    async def get_platform_config_composed(
         self,
         request: Request,
         depth: int = Query(0, ge=0, le=3, description="Child levels to expand (0 = configs only)."),
@@ -537,70 +477,15 @@ class ConfigsService(ExtensionProtocol):
         page_size: int = Query(15, ge=1, le=100),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
-        view = await self._deep.get_platform_view(
+        response = await self._config_api.compose_platform_config(
             base_url=base_url,
             depth=depth,
             catalogs_page=catalogs_page,
             page_size=page_size,
         )
-        return JSONResponse(content=view.model_dump())
+        return JSONResponse(content=response.model_dump())
 
-    async def get_platform_config_entry(self, class_key: str) -> Any:
-        cls = resolve_config_class(class_key)
-        if cls is None:
-            raise HTTPException(
-                status_code=404, detail=f"Config class '{class_key}' not registered."
-            )
-        effective = await self.configs.get_config(cls)
-        platform_list = await self.configs.list_configs(limit=2000, offset=0)
-        stored_keys = {e["plugin_id"] for e in platform_list.get("items", [])}
-        source = "platform" if class_key in stored_keys else "default"
-        entry = ConfigViewEntry(  # type: ignore[call-arg]
-            class_key=class_key, value=effective.model_dump(), source=source
-        )
-        return JSONResponse(content=entry.model_dump())
-
-    async def put_platform_config_entry(
-        self,
-        class_key: str,
-        payload: Dict[str, Any] = Body(...),
-    ) -> Any:
-        cls = resolve_config_class(class_key)
-        if cls is None:
-            raise HTTPException(
-                status_code=404, detail=f"Config class '{class_key}' not registered."
-            )
-        try:
-            config_obj = cls.model_validate(payload)
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        try:
-            existing = await self.configs.get_config(cls)
-            if existing is not None:
-                enforce_config_immutability(existing, config_obj)
-            await self.configs.set_config(cls, config_obj, check_immutability=False)
-        except ImmutableConfigError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except Exception as exc:
-            raise handle_exception(exc)
-        entry = ConfigViewEntry(  # type: ignore[call-arg]
-            class_key=class_key, value=config_obj.model_dump(), source="platform"
-        )
-        return JSONResponse(content=entry.model_dump())
-
-    async def delete_platform_config_entry(self, class_key: str) -> Response:
-        cls = resolve_config_class(class_key)
-        if cls is None:
-            raise HTTPException(
-                status_code=404, detail=f"Config class '{class_key}' not registered."
-            )
-        try:
-            await self.configs.delete_config(cls)
-        except Exception as exc:
-            raise handle_exception(exc)
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-    async def get_catalog_config_view(
+    async def get_catalog_config_composed(
         self,
         catalog_id: str,
         request: Request,
@@ -610,7 +495,7 @@ class ConfigsService(ExtensionProtocol):
         page_size: int = Query(15, ge=1, le=100),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
-        view = await self._deep.get_catalog_view(
+        response = await self._config_api.compose_catalog_config(
             base_url=base_url,
             catalog_id=catalog_id,
             depth=depth,
@@ -618,80 +503,9 @@ class ConfigsService(ExtensionProtocol):
             assets_page=assets_page,
             page_size=page_size,
         )
-        return JSONResponse(content=view.model_dump())
+        return JSONResponse(content=response.model_dump())
 
-    async def get_catalog_config_entry(
-        self, catalog_id: str, class_key: str
-    ) -> Any:
-        cls = resolve_config_class(class_key)
-        if cls is None:
-            raise HTTPException(
-                status_code=404, detail=f"Config class '{class_key}' not registered."
-            )
-        effective = await self.configs.get_config(cls, catalog_id=catalog_id)
-        catalog_list = await self.configs.list_configs(
-            catalog_id=catalog_id, limit=2000, offset=0
-        )
-        catalog_keys = {e["plugin_id"] for e in catalog_list.get("items", [])}
-        platform_list = await self.configs.list_configs(limit=2000, offset=0)
-        platform_keys = {e["plugin_id"] for e in platform_list.get("items", [])}
-        if class_key in catalog_keys:
-            source = "catalog"
-        elif class_key in platform_keys:
-            source = "platform"
-        else:
-            source = "default"
-        entry = ConfigViewEntry(  # type: ignore[call-arg]
-            class_key=class_key, value=effective.model_dump(), source=source
-        )
-        return JSONResponse(content=entry.model_dump())
-
-    async def put_catalog_config_entry(
-        self,
-        catalog_id: str,
-        class_key: str,
-        payload: Dict[str, Any] = Body(...),
-    ) -> Any:
-        cls = resolve_config_class(class_key)
-        if cls is None:
-            raise HTTPException(
-                status_code=404, detail=f"Config class '{class_key}' not registered."
-            )
-        try:
-            config_obj = cls.model_validate(payload)
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        try:
-            existing = await self.configs.get_config(cls, catalog_id=catalog_id)
-            if existing is not None:
-                enforce_config_immutability(existing, config_obj)
-            await self.configs.set_config(
-                cls, config_obj, catalog_id=catalog_id, check_immutability=False
-            )
-        except ImmutableConfigError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except Exception as exc:
-            raise handle_exception(exc)
-        entry = ConfigViewEntry(  # type: ignore[call-arg]
-            class_key=class_key, value=config_obj.model_dump(), source="catalog"
-        )
-        return JSONResponse(content=entry.model_dump())
-
-    async def delete_catalog_config_entry(
-        self, catalog_id: str, class_key: str
-    ) -> Response:
-        cls = resolve_config_class(class_key)
-        if cls is None:
-            raise HTTPException(
-                status_code=404, detail=f"Config class '{class_key}' not registered."
-            )
-        try:
-            await self.configs.delete_config(cls, catalog_id=catalog_id)
-        except Exception as exc:
-            raise handle_exception(exc)
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-    async def get_collection_config_view(
+    async def get_collection_config_composed(
         self,
         catalog_id: str,
         collection_id: str,
@@ -701,7 +515,7 @@ class ConfigsService(ExtensionProtocol):
         page_size: int = Query(15, ge=1, le=100),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
-        view = await self._deep.get_collection_view(
+        response = await self._config_api.compose_collection_config(
             base_url=base_url,
             catalog_id=catalog_id,
             collection_id=collection_id,
@@ -709,82 +523,7 @@ class ConfigsService(ExtensionProtocol):
             assets_page=assets_page,
             page_size=page_size,
         )
-        return JSONResponse(content=view.model_dump())
-
-    async def put_collection_config_entry(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        class_key: str,
-        payload: Dict[str, Any] = Body(...),
-    ) -> Any:
-        from dynastore.models.protocols import CatalogsProtocol
-
-        cats = self.get_protocol(CatalogsProtocol)
-        if cats is not None:
-            try:
-                col = await cats.get_collection(
-                    catalog_id=catalog_id, collection_id=collection_id
-                )
-                if col is None:
-                    raise HTTPException(
-                        status_code=404,
-                        detail=(
-                            f"Collection '{collection_id}' not found in catalog "
-                            f"'{catalog_id}'."
-                        ),
-                    )
-            except HTTPException:
-                raise
-            except Exception:
-                pass
-
-        cls = resolve_config_class(class_key)
-        if cls is None:
-            raise HTTPException(
-                status_code=404, detail=f"Config class '{class_key}' not registered."
-            )
-        try:
-            config_obj = cls.model_validate(payload)
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        try:
-            existing = await self.configs.get_config(
-                cls, catalog_id=catalog_id, collection_id=collection_id
-            )
-            if existing is not None:
-                enforce_config_immutability(existing, config_obj)
-            await self.configs.set_config(
-                cls,
-                config_obj,
-                catalog_id=catalog_id,
-                collection_id=collection_id,
-                check_immutability=False,
-            )
-        except ImmutableConfigError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except Exception as exc:
-            raise handle_exception(exc)
-        entry = ConfigViewEntry(  # type: ignore[call-arg]
-            class_key=class_key, value=config_obj.model_dump(), source="collection"
-        )
-        return JSONResponse(content=entry.model_dump())
-
-    async def delete_collection_config_entry(
-        self, catalog_id: str, collection_id: str, class_key: str
-    ) -> Response:
-        cls = resolve_config_class(class_key)
-        if cls is None:
-            raise HTTPException(
-                status_code=404, detail=f"Config class '{class_key}' not registered."
-            )
-        try:
-            await self.configs.delete_config(
-                cls, catalog_id=catalog_id, collection_id=collection_id
-            )
-        except Exception as exc:
-            raise handle_exception(exc)
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+        return JSONResponse(content=response.model_dump())
 
     # --- Discovery Endpoint ---
 
