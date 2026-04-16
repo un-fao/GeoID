@@ -14,35 +14,22 @@ services:
 
   # One-shot: wipes every non-system schema before dynastore services start.
   # TEST ONLY — mirrors the db_init in docker-compose.dev.yml.
+  # Logic lives in scripts/db_reset.sh — edit there to customize the wipe.
   db_init:
-    image: postgres:17-alpine
+    image: postgres:17
     container_name: geoid_db_init_test
     restart: "no"
     env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-testuser}:${POSTGRES_PASSWORD:-testpassword}@db:5432/${POSTGRES_DB:-gis_dev}
     depends_on:
       db:
         condition: service_healthy
     networks:
       - dynastore_net
-    entrypoint:
-      - sh
-      - -c
-      - |
-        PGPASSWORD="$${POSTGRES_PASSWORD:-testpassword}" psql \
-          -h db -U "$${POSTGRES_USER:-testuser}" -d "$${POSTGRES_DB:-gis_dev}" \
-          -v ON_ERROR_STOP=1 <<'SQL'
-        DO $$$$
-        DECLARE s record;
-        BEGIN
-          FOR s IN SELECT nspname FROM pg_namespace
-                   WHERE nspname NOT IN ('pg_catalog','information_schema','pg_toast','cron','public')
-                     AND nspname NOT LIKE 'pg_temp_%'
-                     AND nspname NOT LIKE 'pg_toast_temp_%'
-          LOOP
-            EXECUTE format('DROP SCHEMA IF EXISTS %I CASCADE', s.nspname);
-          END LOOP;
-        END $$$$;
-        SQL
+    volumes:
+      - ../scripts:/scripts:ro
+    entrypoint: ["bash", "/scripts/db_reset.sh", "reset", "--yes"]
 
   keycloak:
     extends:
