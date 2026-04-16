@@ -199,3 +199,8 @@ src/dynastore/extensions/notebooks/static/lite/workspaces/
 src/dynastore/extensions/notebooks/static/lite/repl/
 src/dynastore/extensions/notebooks/static/lite/doc/
 src/dynastore/extensions/notebooks/static/lite/jupyter-lite.ipynb
+
+# Notebook_showcase runtime artifacts
+notebook_showcase/notebooks/**/export.json
+notebook_showcase/notebooks/**/__pycache__/
+notebook_showcase/__pycache__/
