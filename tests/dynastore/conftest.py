@@ -38,7 +38,7 @@ async def db_reset_session():
 
     if cleanup:
         print("\n[DB RESET] Dropping existing schemas...")
-        await cleanup()
+        await cleanup(skip_if_clean=True)
 
     print("[DB RESET] Complete.\n")
 

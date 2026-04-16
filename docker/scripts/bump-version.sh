@@ -2,8 +2,10 @@
 # Bump the semantic version in the VERSION file.
 #
 # Usage:
-#   ./scripts/bump-version.sh          # patch +1 (auto-rolls minor at 99)
-#   ./scripts/bump-version.sh major    # x+1.0.0
+#   ./docker/scripts/bump-version.sh          # patch +1 (auto-rolls minor at 99)
+#   ./docker/scripts/bump-version.sh major    # x+1.0.0
+#
+# Invoked by .github/workflows/version-bump.yml and scripts/hooks/pre-commit.
 set -euo pipefail
 
 VERSION_FILE="$(git rev-parse --show-toplevel 2>/dev/null || dirname "$(cd "$(dirname "$0")/.." && pwd)")/VERSION"

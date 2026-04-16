@@ -13,9 +13,11 @@
 # directly bypasses this script — volumes are preserved, no wipe happens.
 #
 # Usage:
-#   ./scripts/rebuild.sh dev         # wipe + rebuild + up dev stack
-#   ./scripts/rebuild.sh test        # wipe + rebuild + up test stack
-#   ./scripts/rebuild.sh dev --no-wipe   # rebuild images only, keep volumes
+#   ./docker/scripts/rebuild.sh dev            # wipe + rebuild + up dev stack
+#   ./docker/scripts/rebuild.sh test           # wipe + rebuild + up test stack
+#   ./docker/scripts/rebuild.sh dev --no-wipe  # rebuild images only, keep volumes
+#
+#   (or via the unified CLI:  ./docker/scripts/db.sh rebuild dev)
 #
 # What it does (for dev/test only):
 #   1. docker compose -f docker/docker-compose.<env>.yml down -v --remove-orphans
@@ -53,7 +55,7 @@ if [[ -n "${COMPOSE_FILE:-}" ]]; then
     exit 2
 fi
 
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." >/dev/null 2>&1 && pwd )"
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/../.." >/dev/null 2>&1 && pwd )"
 compose_file="${DIR}/docker/docker-compose.${env}.yml"
 project="geoid_${env}"
 

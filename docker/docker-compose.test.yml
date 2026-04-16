@@ -5,31 +5,22 @@ services:
       service: db
     ports:
       - "54320:5432"
+    environment:
+      RESET_MODE: keycloak # test tier: truncate keycloak tables so each stack gets a fresh realm/users import
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts:/scripts:ro # docker/scripts mount (relative to compose file dir)
+    entrypoint: ["bash", "/scripts/db_entrypoint_dev.sh"]
+    command: >-
+      postgres -c max_connections=200 -c max_locks_per_transaction=256
+      -c shared_preload_libraries=pg_cron
+      -c cron.database_name=${POSTGRES_DB:-gis_dev}
     healthcheck:
-      test: [ "CMD-SHELL", "psql -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-gis_dev} -c 'SELECT 1' -q --no-align --tuples-only" ]
+      test: [ "CMD-SHELL", "test -f /tmp/reset_done && psql -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-gis_dev} -c 'SELECT 1' -q --no-align --tuples-only" ]
       interval: 5s
       timeout: 5s
-      retries: 15
-      start_period: 10s
-
-  # One-shot: wipes every non-system schema before dynastore services start.
-  # TEST ONLY — mirrors the db_init in docker-compose.dev.yml.
-  # Logic lives in scripts/db_reset.sh — edit there to customize the wipe.
-  db_init:
-    image: postgres:17
-    container_name: geoid_db_init_test
-    restart: "no"
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-testuser}:${POSTGRES_PASSWORD:-testpassword}@db:5432/${POSTGRES_DB:-gis_dev}
-    depends_on:
-      db:
-        condition: service_healthy
-    networks:
-      - dynastore_net
-    volumes:
-      - ../scripts:/scripts:ro
-    entrypoint: ["bash", "/scripts/db_reset.sh", "reset", "--yes"]
+      retries: 30
+      start_period: 15s
 
   keycloak:
     extends:
@@ -52,8 +43,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      db_init:
-        condition: service_completed_successfully
       keycloak:
         condition: service_healthy
     environment:
@@ -87,8 +76,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      db_init:
-        condition: service_completed_successfully
     environment:
       - LOG_LEVEL=DEBUG
       - GUNICORN_WORKERS=1

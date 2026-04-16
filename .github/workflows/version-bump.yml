@@ -30,11 +30,11 @@ jobs:
         env:
           BUMP_LEVEL: ${{ github.event.inputs.level }}
         run: |
-          chmod +x scripts/bump-version.sh
+          chmod +x docker/scripts/bump-version.sh
           if [ -n "$BUMP_LEVEL" ]; then
-            scripts/bump-version.sh "$BUMP_LEVEL"
+            docker/scripts/bump-version.sh "$BUMP_LEVEL"
           else
-            scripts/bump-version.sh
+            docker/scripts/bump-version.sh
           fi
 
       - name: Commit and push

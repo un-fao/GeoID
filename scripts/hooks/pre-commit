@@ -18,5 +18,5 @@ if [ "$BRANCH" != "main" ]; then
     exit 0
 fi
 
-"$REPO_ROOT/scripts/bump-version.sh"
+"$REPO_ROOT/docker/scripts/bump-version.sh"
 git add "$REPO_ROOT/VERSION"

@@ -4,14 +4,14 @@ The web UI and JupyterLite kernel must run without outbound internet (on-prem
 docker compose, air-gapped Cloud Run). Two build steps vendor every remote
 asset into the repository so the runtime image is self-contained.
 
-## 1. Web Fonts — `scripts/vendor-web-fonts.sh`
+## 1. Web Fonts — `docker/scripts/vendor-web-fonts.sh`
 
 Downloads FontAwesome 6.5.0 + Google Fonts (Inter, Fira Code, Montserrat) into
 `src/dynastore/extensions/web/static/vendor/` and emits a single `vendor.css`
 aggregator that HTML pages include in place of the old CDN `<link>` tags.
 
 ```bash
-./scripts/vendor-web-fonts.sh
+./docker/scripts/vendor-web-fonts.sh
 ```
 
 Output layout:
@@ -34,7 +34,7 @@ All HTML pages reference `<link rel="stylesheet" href="/web/static/vendor/vendor
 The script uses a modern-browser User-Agent so Google Fonts serves `woff2`
 instead of `ttf`; URLs inside each CSS are rewritten to `./fonts/<name>.woff2`.
 
-## 2. JupyterLite — `scripts/build-jupyterlite.sh` + Dockerfile STAGE 0
+## 2. JupyterLite — `docker/scripts/build-jupyterlite.sh` + Dockerfile STAGE 0
 
 Pyodide kernel + piplite wheels are pre-built into
 `src/dynastore/extensions/notebooks/static/lite/`. Requirements come from
@@ -43,7 +43,7 @@ Pyodide kernel + piplite wheels are pre-built into
 ### Local build (dev)
 
 ```bash
-./scripts/build-jupyterlite.sh
+./docker/scripts/build-jupyterlite.sh
 ```
 
 Preserves `bridge.js` across rebuilds and injects the `<script>` tag into
@@ -69,7 +69,7 @@ site never contacts PyPI.
 
 ## Adding a new font or JS library
 
-1. Extend `scripts/vendor-web-fonts.sh` (another `fetch_google_font` call, or
+1. Extend `docker/scripts/vendor-web-fonts.sh` (another `fetch_google_font` call, or
    add a new CDN download alongside FontAwesome).
 2. Append the CSS to the `vendor.css` aggregator.
 3. Re-run the script and commit the regenerated `vendor/` directory.
