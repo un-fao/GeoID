@@ -144,6 +144,28 @@ class ConfigsService(ExtensionProtocol):
             methods=["GET"],
             summary="List all platform-level configurations",
         )
+        # ---- Config API — composed views at all scopes (must be before /{plugin_id}) ----
+        self.router.add_api_route(
+            "/config",
+            self.get_platform_config_composed,
+            methods=["GET"],
+            summary="Platform config — all effective platform configs composed",
+            tags=["Config API"],
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/config",
+            self.get_catalog_config_composed,
+            methods=["GET"],
+            summary="Catalog config — all effective catalog configs composed",
+            tags=["Config API"],
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/config",
+            self.get_collection_config_composed,
+            methods=["GET"],
+            summary="Collection config — all effective collection configs composed",
+            tags=["Config API"],
+        )
         self.router.add_api_route(
             "/{plugin_id}",
             self.get_platform_config,
@@ -260,28 +282,6 @@ class ConfigsService(ExtensionProtocol):
             self.search_collection_configs,
             methods=["GET"],
             summary="Search configurations for a collection",
-        )
-        # ---- Config API — composed views at all scopes ----
-        self.router.add_api_route(
-            "/config",
-            self.get_platform_config_composed,
-            methods=["GET"],
-            summary="Platform config — all effective platform configs composed",
-            tags=["Config API"],
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/config",
-            self.get_catalog_config_composed,
-            methods=["GET"],
-            summary="Catalog config — all effective catalog configs composed",
-            tags=["Config API"],
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/config",
-            self.get_collection_config_composed,
-            methods=["GET"],
-            summary="Collection config — all effective collection configs composed",
-            tags=["Config API"],
         )
 
     @property
