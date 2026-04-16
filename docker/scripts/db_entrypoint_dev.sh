@@ -31,6 +31,11 @@ until pg_isready -h localhost -U "${POSTGRES_USER:-testuser}" -d "${POSTGRES_DB:
     sleep 1
 done
 
+# db_reset.sh connection resolution: DATABASE_URL > docker exec > localhost:54320 fallback.
+# The fallback uses the host-mapped port (54320) which is unreachable inside the container.
+# Set DATABASE_URL here so db_reset.sh uses the internal port instead.
+export DATABASE_URL="postgresql://${POSTGRES_USER:-testuser}:${POSTGRES_PASSWORD:-testpassword}@localhost:5432/${POSTGRES_DB:-gis_dev}"
+
 case "${RESET_MODE:-default}" in
     default)  bash /scripts/db_reset.sh reset --yes ;;
     keycloak) bash /scripts/db_reset.sh reset --yes --keycloak ;;
