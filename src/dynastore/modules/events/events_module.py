@@ -184,7 +184,7 @@ _publish_query = DQLQuery(
     VALUES
         (:event_type, :scope, :schema_name, :catalog_id, :collection_id,
          :identity_id, :payload,
-         (abs(hashtext(coalesce(:catalog_id, 'PLATFORM'))) % 16)::smallint)
+         (abs(hashtext(coalesce(:catalog_id, 'PLATFORM'::varchar))) % 16)::smallint)
     RETURNING event_id::text;
     """,
     result_handler=ResultHandler.SCALAR_ONE,
