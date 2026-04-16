@@ -899,7 +899,20 @@ async def claim_batch(
     # single high-volume tenant from monopolising all claim slots.
     # DISTINCT ON (schema_name) ORDER BY schema_name, timestamp ASC
     # returns exactly one row per tenant — the oldest eligible task.
+    # DISTINCT ON and FOR UPDATE SKIP LOCKED cannot be combined in the same
+    # SELECT (PostgreSQL forbids FOR UPDATE with DISTINCT). Use a two-step
+    # approach: a CTE picks one candidate per tenant (oldest PENDING task via
+    # DISTINCT ON), then the outer SELECT locks those specific rows.
     sql = f"""
+        WITH candidates AS (
+            SELECT DISTINCT ON (schema_name) timestamp, task_id
+            FROM {task_schema}.tasks
+            WHERE status = 'PENDING'
+              AND timestamp >= :lookback
+              AND (locked_until IS NULL OR locked_until <= :now)
+              AND ({mode_filter})
+            ORDER BY schema_name, timestamp ASC
+        )
         UPDATE {task_schema}.tasks
         SET status = 'ACTIVE',
             locked_until = :locked_until,
@@ -908,17 +921,11 @@ async def claim_batch(
             last_heartbeat_at = NOW()
         WHERE (timestamp, task_id) IN (
             SELECT timestamp, task_id
-            FROM (
-                SELECT DISTINCT ON (schema_name) timestamp, task_id
-                FROM {task_schema}.tasks
-                WHERE status = 'PENDING'
-                  AND timestamp >= :lookback
-                  AND (locked_until IS NULL OR locked_until <= :now)
-                  AND ({mode_filter})
-                ORDER BY schema_name, timestamp ASC
-                FOR UPDATE SKIP LOCKED
-            ) fair
+            FROM {task_schema}.tasks
+            WHERE (timestamp, task_id) IN (SELECT timestamp, task_id FROM candidates)
+              AND status = 'PENDING'
             LIMIT :batch_size
+            FOR UPDATE SKIP LOCKED
         )
         RETURNING task_id, schema_name, scope, task_type, execution_mode,
                   caller_id, inputs, collection_id, retry_count, max_retries,

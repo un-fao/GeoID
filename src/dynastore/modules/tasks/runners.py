@@ -358,7 +358,7 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
         
         from dynastore.modules.processes.models import StatusInfo
         return StatusInfo(
-            jobID=str(job.task_id),
+            jobID=job.task_id,
             status="accepted",
             message="Task accepted for asynchronous execution.",
             progress=0,

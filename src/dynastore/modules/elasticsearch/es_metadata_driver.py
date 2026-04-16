@@ -17,7 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-Elasticsearch metadata driver — implements CollectionMetadataDriverProtocol.
+Elasticsearch metadata driver — implements CollectionMetadataStore.
 
 Stores collection metadata in an ES index per catalog.  Provides fulltext
 search (multi_match on title/description/keywords), CQL2-JSON filter support,
@@ -35,9 +35,10 @@ from typing import Any, ClassVar, Dict, FrozenSet, List, Optional, Tuple
 
 from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols.metadata_driver import (
-    CollectionMetadataDriverProtocol,
+    CollectionMetadataStore,
     MetadataCapability,
 )
+from dynastore.modules.storage.storage_location import StorageLocation
 from dynastore.modules.db_config.platform_config_service import (
     Immutable,
     PluginConfig,
@@ -46,10 +47,7 @@ from pydantic import Field
 
 logger = logging.getLogger(__name__)
 
-METADATA_ES_DRIVER_CONFIG_ID = "driver:collection:metadata:elasticsearch"
-
-
-class DriverMetadataElasticsearchConfig(PluginConfig):
+class MetadataElasticsearchDriverConfig(PluginConfig):
     """Configuration for the Elasticsearch collection metadata driver.
 
     ``index_prefix`` is ``Immutable`` — once set it cannot change, because
@@ -68,7 +66,7 @@ class DriverMetadataElasticsearchConfig(PluginConfig):
     )
 
 
-# DriverMetadataElasticsearchConfig auto-registers via PluginConfig.__init_subclass__.
+# MetadataElasticsearchDriverConfig auto-registers via PluginConfig.__init_subclass__.
 
 
 async def _on_apply_es_metadata_driver_config(
@@ -78,7 +76,7 @@ async def _on_apply_es_metadata_driver_config(
     db_resource: Optional[Any],
 ) -> None:
     """Create the ES metadata index for the catalog when the driver config is applied."""
-    if not isinstance(config, DriverMetadataElasticsearchConfig):
+    if not isinstance(config, MetadataElasticsearchDriverConfig):
         return
     if not catalog_id:
         return  # platform-level config — no catalog to create index for
@@ -86,7 +84,7 @@ async def _on_apply_es_metadata_driver_config(
     from dynastore.tools.discovery import get_protocols
 
     drivers = [
-        d for d in get_protocols(CollectionMetadataDriverProtocol)
+        d for d in get_protocols(CollectionMetadataStore)
         if getattr(d, "driver_id", None) == "elasticsearch_metadata"
     ]
     for driver in drivers:
@@ -102,7 +100,7 @@ async def _on_apply_es_metadata_driver_config(
             )
 
 
-DriverMetadataElasticsearchConfig.register_apply_handler(_on_apply_es_metadata_driver_config)
+MetadataElasticsearchDriverConfig.register_apply_handler(_on_apply_es_metadata_driver_config)
 
 # ---------------------------------------------------------------------------
 # Mapping — explicit typing only for fields ES cannot auto-detect
@@ -181,8 +179,8 @@ def _bbox_to_envelope(bbox: List[float]) -> Optional[Dict[str, Any]]:
     }
 
 
-class DriverMetadataElasticsearch:
-    """Elasticsearch implementation of CollectionMetadataDriverProtocol.
+class MetadataElasticsearchDriver:
+    """Elasticsearch implementation of CollectionMetadataStore.
 
     Uses opensearch-py client (wire-compatible with ES and OpenSearch).
     """
@@ -194,7 +192,18 @@ class DriverMetadataElasticsearch:
         MetadataCapability.CQL_FILTER,
         MetadataCapability.SPATIAL_FILTER,
         MetadataCapability.AGGREGATION,
+        MetadataCapability.PHYSICAL_ADDRESSING,
     })
+
+    def location(self, catalog_id: str, collection_id: Optional[str] = None) -> StorageLocation:
+        prefix = self._get_prefix()
+        index = _metadata_index_name(prefix, catalog_id)
+        return StorageLocation(
+            backend="elasticsearch",
+            canonical_uri=f"es://{index}",
+            identifiers={"index": index, "prefix": prefix, "catalog_id": catalog_id},
+            display_label=f"ES metadata index: {index}",
+        )
 
     def _get_client(self):
         from dynastore.modules.elasticsearch.client import get_client
@@ -209,7 +218,7 @@ class DriverMetadataElasticsearch:
     async def ensure_storage(self, catalog_id: str) -> None:
         """Ensure the ES metadata index exists for the given catalog (idempotent).
 
-        Called by the ``driver:collection:metadata:elasticsearch`` apply handler
+        Called by ``MetadataElasticsearchDriverConfig`` apply handler
         when the driver config is applied at catalog scope.
         """
         await self._ensure_index(catalog_id)
@@ -431,7 +440,7 @@ class DriverMetadataElasticsearch:
             return {}
         try:
             return await configs.get_config(
-                DriverMetadataElasticsearchConfig,
+                MetadataElasticsearchDriverConfig,
                 catalog_id=catalog_id,
                 ctx=DriverContext(db_resource=db_resource),
             )

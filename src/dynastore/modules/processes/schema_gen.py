@@ -57,7 +57,7 @@ def _field_to_process_input(field_name: str, field_info: FieldInfo) -> Dict[str,
     # Build base input definition
     input_def = {
         "title": field_info.title or field_name.replace("_", " ").title(),
-        "schema": _type_to_json_schema(field_type, field_info)
+        "schema": _type_to_json_schema(field_type, field_info)  # type: ignore[arg-type]
     }
     
     # Add description if available
@@ -124,7 +124,7 @@ def _type_to_json_schema(field_type: Type, field_info: FieldInfo) -> Dict[str, A
     elif field_info.default_factory is not None:
         # Call factory to get default value
         try:
-            default_value = field_info.default_factory()
+            default_value = field_info.default_factory()  # type: ignore[call-arg]
             schema["default"] = default_value
         except Exception:
             pass  # Skip if factory fails
