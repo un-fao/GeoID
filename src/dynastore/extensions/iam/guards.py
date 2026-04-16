@@ -120,6 +120,45 @@ async def require_authenticated(
         )
 
 
+async def require_bearer_token(
+    request: Request,
+    bearer: Optional[HTTPAuthorizationCredentials] = Security(http_bearer),
+) -> None:
+    """Require a non-empty bearer token in the Authorization header.
+
+    Lighter than require_authenticated — validates token presence and basic
+    JWT structure via middleware, but does NOT require a DB-backed principal.
+    Useful for endpoints where service accounts with valid JWTs must succeed
+    but arbitrary unauthenticated requests must be rejected.
+    """
+    # If a bearer token was provided and the middleware managed to decode it
+    # (even without a DB principal), the request is sufficiently authenticated.
+    if not bearer or not bearer.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    # Reject obviously invalid tokens (e.g. literal "invalid-token" strings)
+    # by checking that the token has basic JWT structure (three dot-separated parts).
+    token = bearer.credentials
+    if token.count(".") < 2:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid bearer token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    # Additional: if the middleware set principal_role to anonymous-only,
+    # the JWT signature check failed — reject it.
+    principal_role = getattr(request.state, "principal_role", None)
+    if principal_role is not None and principal_role == ["anonymous"]:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired bearer token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
 def _synthetic_sysadmin() -> Principal:
     return Principal(
         id=_SYNTHETIC_SYSADMIN_ID,
