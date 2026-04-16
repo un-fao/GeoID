@@ -1097,27 +1097,31 @@ async def cleanup_orphan_tasks(
     task_schema = get_task_schema()
     cutoff = datetime.now(timezone.utc) - grace_period
 
-    # Find orphaned tasks: schema_name not in any active catalog schema
-    # and task is not already in a terminal state
-    sql = f"""
-        WITH active_schemas AS (
-            SELECT DISTINCT physical_schema
-            FROM catalog.catalogs
-            WHERE deleted_at IS NULL
-        )
-        UPDATE {task_schema}.tasks t
-        SET status = 'DEAD_LETTER',
-            error_message = 'Orphaned: catalog schema no longer exists',
-            finished_at = NOW(),
-            locked_until = NULL
-        WHERE t.status IN ('PENDING', 'ACTIVE')
-          AND t.scope = 'CATALOG'
-          AND t.timestamp < :cutoff
-          AND t.schema_name NOT IN (SELECT physical_schema FROM active_schemas)
-          AND t.schema_name != 'system';
-    """
-
     async with managed_transaction(engine) as conn:
+        # catalog.catalogs may not exist on new DBs or partial inits — skip if absent
+        if not await check_table_exists(conn, "catalogs", "catalog"):
+            return 0
+
+        # Find orphaned tasks: schema_name not in any active catalog schema
+        # and task is not already in a terminal state
+        sql = f"""
+            WITH active_schemas AS (
+                SELECT DISTINCT physical_schema
+                FROM catalog.catalogs
+                WHERE deleted_at IS NULL
+            )
+            UPDATE {task_schema}.tasks t
+            SET status = 'DEAD_LETTER',
+                error_message = 'Orphaned: catalog schema no longer exists',
+                finished_at = NOW(),
+                locked_until = NULL
+            WHERE t.status IN ('PENDING', 'ACTIVE')
+              AND t.scope = 'CATALOG'
+              AND t.timestamp < :cutoff
+              AND t.schema_name NOT IN (SELECT physical_schema FROM active_schemas)
+              AND t.schema_name != 'system';
+        """
+
         result = await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
             conn, cutoff=cutoff
         )
