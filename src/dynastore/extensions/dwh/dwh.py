@@ -504,7 +504,7 @@ class DwhService(ExtensionProtocol):
                     transform_args={"srid": int(target_srid)},
                 )
             ],
-            raw_where="h.geoid = ANY(:ids_filter)",
+            raw_where="h.geoid = ANY(CAST(:ids_filter AS UUID[]))",
             raw_params={"ids_filter": ids},
         )
         geom_sql, geom_params = optimizer.build_optimized_query(

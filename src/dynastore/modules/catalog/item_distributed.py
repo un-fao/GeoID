@@ -431,7 +431,7 @@ class ItemDistributedMixin(_Host):
         optimizer = QueryOptimizer(col_config)
         fetch_req = QueryRequest(
             raw_where="h.geoid = :lookup_geoid",
-            raw_params={"lookup_geoid": str(geoid)},
+            raw_params={"lookup_geoid": geoid},
             limit=1,
         )
         sql, params = optimizer.build_optimized_query(fetch_req, schema, hub_table)

@@ -705,7 +705,7 @@ async def search_items(
         fragment = (
             "".join(select_parts)
             + " " + " ".join(joins)
-            + f" WHERE h.geoid = ANY(:{geoid_param})"
+            + f" WHERE h.geoid = ANY(CAST(:{geoid_param} AS UUID[]))"
         )
         hydration_fragments.append(fragment)
 
