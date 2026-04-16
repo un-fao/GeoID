@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -93,3 +93,101 @@ async def test_get_effective_configs_collection_source(mock_config_service):
     routing_entry = configs.get("CollectionRoutingConfig")
     assert routing_entry is not None
     assert routing_entry.source == "collection"
+
+
+@pytest.mark.asyncio
+async def test_resolve_driver_configs_embeds_driver_config(mock_config_service):
+    routing_value = {
+        "enabled": True,
+        "operations": {
+            "WRITE": [
+                {
+                    "driver_id": "CollectionPostgresqlDriver",
+                    "on_failure": "fatal",
+                    "write_mode": "sync",
+                    "hints": [],
+                }
+            ],
+            "READ": [
+                {
+                    "driver_id": "CollectionPostgresqlDriver",
+                    "on_failure": "fatal",
+                    "write_mode": "sync",
+                    "hints": [],
+                }
+            ],
+        },
+        "metadata": {"operations": {}},
+    }
+
+    class _FakeDriver:
+        pass
+
+    _FakeDriver.__name__ = "CollectionPostgresqlDriver"
+    fake_instance = _FakeDriver()
+
+    class _FakeCfg:
+        @classmethod
+        def class_key(cls):
+            return "CollectionPostgresqlDriverConfig"
+
+        def model_dump(self):
+            return {"enabled": True}
+
+    with patch(
+        "dynastore.extensions.configs.deep_service.DriverRegistry"
+    ) as mock_registry, patch(
+        "dynastore.extensions.configs.deep_service.resolve_config_class",
+        return_value=_FakeCfg,
+    ):
+        mock_registry.collection_index.return_value = {
+            "CollectionPostgresqlDriver": fake_instance
+        }
+        mock_config_service.get_config = AsyncMock(return_value=_FakeCfg())
+
+        svc = DeepConfigService(config_service=mock_config_service)
+        result = await svc._resolve_driver_configs(
+            routing_value=routing_value,
+            catalog_id="my-catalog",
+            collection_id="landuse",
+        )
+
+    assert "WRITE" in result
+    assert result["WRITE"][0].driver_id == "CollectionPostgresqlDriver"
+    assert result["WRITE"][0].on_failure == "fatal"
+    assert result["WRITE"][0].config == {"enabled": True}
+    assert result["WRITE"][0].config_class_key == "CollectionPostgresqlDriverConfig"
+
+
+@pytest.mark.asyncio
+async def test_resolve_driver_configs_unknown_driver(mock_config_service):
+    routing_value = {
+        "enabled": True,
+        "operations": {
+            "WRITE": [
+                {
+                    "driver_id": "UnknownDriver",
+                    "on_failure": "warn",
+                    "write_mode": "sync",
+                    "hints": [],
+                }
+            ],
+        },
+        "metadata": {"operations": {}},
+    }
+
+    with patch(
+        "dynastore.extensions.configs.deep_service.DriverRegistry"
+    ) as mock_registry:
+        mock_registry.collection_index.return_value = {}
+
+        svc = DeepConfigService(config_service=mock_config_service)
+        result = await svc._resolve_driver_configs(
+            routing_value=routing_value,
+            catalog_id="my-catalog",
+            collection_id=None,
+        )
+
+    assert result["WRITE"][0].driver_id == "UnknownDriver"
+    assert result["WRITE"][0].config is None
+    assert result["WRITE"][0].config_class_key is None
