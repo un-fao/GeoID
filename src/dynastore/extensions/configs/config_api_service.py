@@ -40,9 +40,47 @@ class ConfigApiService:
         self,
         catalog_id: Optional[str],
         collection_id: Optional[str],
+        resolved: bool = True,
     ) -> Dict[str, ConfigEntry]:
         configs_svc = self._config_service
         all_classes = list_registered_configs()
+
+        if not resolved:
+            # Return only configs explicitly stored at the innermost scope.
+            # Values are validated through the Pydantic class (class defaults fill
+            # in unset fields; parent-tier values are NOT inherited).
+            if catalog_id and collection_id:
+                result = await configs_svc.list_configs(
+                    catalog_id=catalog_id, collection_id=collection_id, limit=1000, offset=0
+                )
+                scope_name = "collection"
+            elif catalog_id:
+                result = await configs_svc.list_configs(
+                    catalog_id=catalog_id, limit=1000, offset=0
+                )
+                scope_name = "catalog"
+            else:
+                result = await configs_svc.list_configs(limit=1000, offset=0)
+                scope_name = "platform"
+
+            out: Dict[str, ConfigEntry] = {}
+            for item in result.get("items", []):
+                class_key: str = item["plugin_id"]
+                cls = all_classes.get(class_key)
+                raw: Dict[str, Any] = item.get("config_data") or {}
+                if cls is not None:
+                    try:
+                        value: Dict[str, Any] = cls.model_validate(raw).model_dump()
+                    except Exception:
+                        value = raw
+                else:
+                    value = raw
+                out[class_key] = ConfigEntry(  # type: ignore[call-arg]
+                    class_key=class_key,
+                    value=value,
+                    source=scope_name,
+                )
+            return out
 
         collection_keys: set = set()
         catalog_keys: set = set()
@@ -209,9 +247,10 @@ class ConfigApiService:
         depth: int = 0,
         assets_page: int = 1,
         page_size: int = 15,
+        resolved: bool = True,
     ) -> CollectionConfigResponse:
         configs = await self._get_effective_configs(
-            catalog_id=catalog_id, collection_id=collection_id
+            catalog_id=catalog_id, collection_id=collection_id, resolved=resolved
         )
         await self._enrich_routing_configs(configs, catalog_id, collection_id)
 
@@ -247,9 +286,10 @@ class ConfigApiService:
         collections_page: int = 1,
         assets_page: int = 1,
         page_size: int = 15,
+        resolved: bool = True,
     ) -> CatalogConfigResponse:
         configs = await self._get_effective_configs(
-            catalog_id=catalog_id, collection_id=None
+            catalog_id=catalog_id, collection_id=None, resolved=resolved
         )
         await self._enrich_routing_configs(configs, catalog_id, None)
 
@@ -257,7 +297,7 @@ class ConfigApiService:
         if depth > 0:
             categories = {}
             coll_total, coll_items = await self._list_collections(
-                base_url, catalog_id, collections_page, page_size, depth
+                base_url, catalog_id, collections_page, page_size, depth, resolved=resolved
             )
             coll_pg = self._build_config_page(
                 base_url=base_url,
@@ -294,9 +334,10 @@ class ConfigApiService:
         depth: int = 0,
         catalogs_page: int = 1,
         page_size: int = 15,
+        resolved: bool = True,
     ) -> PlatformConfigResponse:
         configs = await self._get_effective_configs(
-            catalog_id=None, collection_id=None
+            catalog_id=None, collection_id=None, resolved=resolved
         )
         await self._enrich_routing_configs(configs, None, None)
 
@@ -322,6 +363,7 @@ class ConfigApiService:
                         catalog_id=cat_id,
                         depth=depth - 1,
                         page_size=page_size,
+                        resolved=resolved,
                     )
                     items.append(cat_response.model_dump())
                 else:
@@ -379,6 +421,7 @@ class ConfigApiService:
         page: int,
         page_size: int,
         parent_depth: int,
+        resolved: bool = True,
     ) -> Tuple[int, List[Any]]:
         if self._catalogs_service is None:
             return 0, []
@@ -407,6 +450,7 @@ class ConfigApiService:
                 collection_id=col_id,
                 depth=next_depth,
                 page_size=page_size,
+                resolved=resolved,
             )
             items.append(col_response.model_dump())
         return total, items

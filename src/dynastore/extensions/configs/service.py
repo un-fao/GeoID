@@ -475,6 +475,13 @@ class ConfigsService(ExtensionProtocol):
         depth: int = Query(0, ge=0, le=3, description="Child levels to expand (0 = configs only)."),
         catalogs_page: int = Query(1, ge=1),
         page_size: int = Query(15, ge=1, le=100),
+        resolved: bool = Query(
+            True,
+            description=(
+                "When true (default): all registered configs with waterfall-resolved values. "
+                "When false: only configs explicitly stored at platform scope."
+            ),
+        ),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_platform_config(
@@ -482,6 +489,7 @@ class ConfigsService(ExtensionProtocol):
             depth=depth,
             catalogs_page=catalogs_page,
             page_size=page_size,
+            resolved=resolved,
         )
         return JSONResponse(content=response.model_dump())
 
@@ -493,6 +501,13 @@ class ConfigsService(ExtensionProtocol):
         collections_page: int = Query(1, ge=1),
         assets_page: int = Query(1, ge=1),
         page_size: int = Query(15, ge=1, le=100),
+        resolved: bool = Query(
+            True,
+            description=(
+                "When true (default): all registered configs with waterfall-resolved values. "
+                "When false: only configs explicitly stored at this catalog scope."
+            ),
+        ),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_catalog_config(
@@ -502,6 +517,7 @@ class ConfigsService(ExtensionProtocol):
             collections_page=collections_page,
             assets_page=assets_page,
             page_size=page_size,
+            resolved=resolved,
         )
         return JSONResponse(content=response.model_dump())
 
@@ -513,6 +529,13 @@ class ConfigsService(ExtensionProtocol):
         depth: int = Query(0, ge=0, le=3),
         assets_page: int = Query(1, ge=1),
         page_size: int = Query(15, ge=1, le=100),
+        resolved: bool = Query(
+            True,
+            description=(
+                "When true (default): all registered configs with waterfall-resolved values. "
+                "When false: only configs explicitly stored at this collection scope."
+            ),
+        ),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_collection_config(
@@ -522,6 +545,7 @@ class ConfigsService(ExtensionProtocol):
             depth=depth,
             assets_page=assets_page,
             page_size=page_size,
+            resolved=resolved,
         )
         return JSONResponse(content=response.model_dump())
 
