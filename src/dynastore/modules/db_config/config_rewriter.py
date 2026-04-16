@@ -73,7 +73,7 @@ async def _rewrite_table(conn, qualified_table: str, total: int) -> int:
     updated = 0
     for old_key, new_key in _CLASS_KEY_RENAMES:
         result = await conn.execute(
-            f"UPDATE {qualified_table} SET class_key = :new_key WHERE class_key = :old_key",
+            text(f"UPDATE {qualified_table} SET class_key = :new_key WHERE class_key = :old_key"),
             {"new_key": new_key, "old_key": old_key},
         )
         rows_affected = result.rowcount if hasattr(result, "rowcount") else 0
