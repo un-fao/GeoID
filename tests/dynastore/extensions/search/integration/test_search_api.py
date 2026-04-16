@@ -17,6 +17,7 @@ from httpx import AsyncClient
 
 
 MARKER = pytest.mark.enable_extensions("stac", "assets", "features", "config", "search")
+ES_MARKER = pytest.mark.elasticsearch
 
 
 # ---------------------------------------------------------------------------
@@ -25,6 +26,7 @@ MARKER = pytest.mark.enable_extensions("stac", "assets", "features", "config", "
 
 
 @MARKER
+@ES_MARKER
 @pytest.mark.asyncio
 async def test_search_get_empty_returns_feature_collection(
     sysadmin_in_process_client: AsyncClient,
@@ -38,6 +40,7 @@ async def test_search_get_empty_returns_feature_collection(
 
 
 @MARKER
+@ES_MARKER
 @pytest.mark.asyncio
 async def test_search_get_with_q(
     sysadmin_in_process_client: AsyncClient, setup_catalog, setup_collection
@@ -51,6 +54,7 @@ async def test_search_get_with_q(
 
 
 @MARKER
+@ES_MARKER
 @pytest.mark.asyncio
 async def test_search_get_with_bbox(
     sysadmin_in_process_client: AsyncClient,
@@ -65,6 +69,7 @@ async def test_search_get_with_bbox(
 
 
 @MARKER
+@ES_MARKER
 @pytest.mark.asyncio
 async def test_search_get_with_limit(
     sysadmin_in_process_client: AsyncClient,
@@ -75,6 +80,7 @@ async def test_search_get_with_limit(
 
 
 @MARKER
+@ES_MARKER
 @pytest.mark.asyncio
 async def test_search_get_with_collections_filter(
     sysadmin_in_process_client: AsyncClient, setup_catalog, setup_collection
@@ -95,6 +101,7 @@ async def test_search_get_with_collections_filter(
 
 
 @MARKER
+@ES_MARKER
 @pytest.mark.asyncio
 async def test_search_post_empty_body(
     sysadmin_in_process_client: AsyncClient,
@@ -107,6 +114,7 @@ async def test_search_post_empty_body(
 
 
 @MARKER
+@ES_MARKER
 @pytest.mark.asyncio
 async def test_search_post_with_collections(
     sysadmin_in_process_client: AsyncClient, setup_catalog, setup_collection
@@ -122,6 +130,7 @@ async def test_search_post_with_collections(
 
 
 @MARKER
+@ES_MARKER
 @pytest.mark.asyncio
 async def test_search_post_with_bbox(
     sysadmin_in_process_client: AsyncClient,
@@ -134,6 +143,7 @@ async def test_search_post_with_bbox(
 
 
 @MARKER
+@ES_MARKER
 @pytest.mark.asyncio
 async def test_search_post_with_ids(
     sysadmin_in_process_client: AsyncClient,
@@ -153,6 +163,7 @@ async def test_search_post_with_ids(
 
 
 @MARKER
+@ES_MARKER
 @pytest.mark.asyncio
 async def test_search_catalogs_get(
     sysadmin_in_process_client: AsyncClient, setup_catalog
@@ -164,6 +175,7 @@ async def test_search_catalogs_get(
 
 
 @MARKER
+@ES_MARKER
 @pytest.mark.asyncio
 async def test_search_catalogs_get_with_q(
     sysadmin_in_process_client: AsyncClient, setup_catalog
@@ -182,6 +194,7 @@ async def test_search_catalogs_get_with_q(
 
 
 @MARKER
+@ES_MARKER
 @pytest.mark.asyncio
 async def test_search_collections_get(
     sysadmin_in_process_client: AsyncClient, setup_catalog, setup_collection
@@ -192,6 +205,7 @@ async def test_search_collections_get(
 
 
 @MARKER
+@ES_MARKER
 @pytest.mark.asyncio
 async def test_search_collections_get_with_q(
     sysadmin_in_process_client: AsyncClient, setup_catalog, setup_collection
