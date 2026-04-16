@@ -183,8 +183,7 @@ _publish_query = DQLQuery(
          payload, shard)
     VALUES
         (:event_type, :scope, :schema_name, :catalog_id, :collection_id,
-         :identity_id, :payload,
-         (abs(hashtext(coalesce(:catalog_id, 'PLATFORM'::varchar))) % 16)::smallint)
+         :identity_id, :payload, :shard)
     RETURNING event_id::text;
     """,
     result_handler=ResultHandler.SCALAR_ONE,
@@ -699,6 +698,9 @@ class EventsModule(ModuleProtocol):
 
         async def _run(conn: Any) -> str:
             payload_str = orjson.dumps(payload).decode()
+            # Compute shard value in Python to avoid asyncpg type inference conflicts
+            shard_key = catalog_id or "PLATFORM"
+            shard = abs(hash(shard_key)) % 16
             return await _publish_query.execute(
                 conn,
                 event_type=event_type,
@@ -708,6 +710,7 @@ class EventsModule(ModuleProtocol):
                 collection_id=collection_id,
                 identity_id=identity_id,
                 payload=payload_str,
+                shard=shard,
             )
 
         if db_resource is not None:

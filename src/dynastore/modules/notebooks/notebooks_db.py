@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS {schema}.notebooks (
     description JSONB,
     tags JSONB DEFAULT '[]'::jsonb,
     content JSONB NOT NULL,
-    metadata JSONB DEFAULT '{{}}'::jsonb,
+    metadata JSONB DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     deleted_at TIMESTAMPTZ DEFAULT NULL,

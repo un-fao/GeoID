@@ -171,7 +171,8 @@ class PostgresPolicyStorage(AbstractPolicyStorage):
         validate_sql_identifier(partition_key)
         partition_table = f"policies_{partition_key}"
         safe_key = partition_key.replace("'", "''")
-        ddl = f"CREATE TABLE IF NOT EXISTS {{schema}}.{partition_table} PARTITION OF {{schema}}.policies FOR VALUES IN ('{safe_key}');"
+        # Quote partition table name to handle dashes in partition keys (e.g., catalog IDs with dashes)
+        ddl = f'CREATE TABLE IF NOT EXISTS {{schema}}."{partition_table}" PARTITION OF {{schema}}.policies FOR VALUES IN (\'{safe_key}\');'
         await DDLQuery(ddl).execute(conn, schema=schema)
 
     async def create_policy(self, policy: Policy, conn: Optional[DbResource] = None, schema: str = "iam") -> Policy:
