@@ -374,6 +374,16 @@ def list_registered_configs() -> Dict[str, Type[PluginConfig]]:
     return {cls.class_key(): cls for cls in TypedModelRegistry.subclasses_of(PluginConfig)}
 
 
+def _collect_required_fields(cls: Type[PluginConfig]) -> List[str]:
+    """Return the names of fields declared without a default on ``cls``.
+
+    Used by ``ConfigResolutionError`` to produce an actionable ops hint when
+    a config cannot be instantiated with zero args at the end of the waterfall.
+    """
+    fields = getattr(cls, "model_fields", {}) or {}
+    return [name for name, info in fields.items() if info.is_required()]
+
+
 # --- Manager ---
 
 
@@ -392,7 +402,7 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
         return True
 
     @property
-    def engine(self) -> DbResource:
+    def engine(self) -> Optional[DbResource]:
         if self._engine:
             return self._engine
         from dynastore.tools.protocol_helpers import get_engine
@@ -418,6 +428,14 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
             await ensure_schema_exists(conn, "configs")
             await DDLQuery(PLATFORM_CONFIGS_SCHEMA).execute(conn)
             logger.info("Platform Config Storage initialized successfully.")
+            from dynastore.modules.db_config.config_rewriter import (
+                rewrite_config_class_keys,
+                rewrite_iceberg_catalog_fields,
+                rewrite_metadata_routing_fields,
+            )
+            await rewrite_config_class_keys(conn)
+            await rewrite_iceberg_catalog_fields(conn)
+            await rewrite_metadata_routing_fields(conn)
         except Exception as e:
             logger.error(
                 f"FATAL: PlatformConfigService initialization failed: {e}",
@@ -435,7 +453,18 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
         config = await self._get_platform_config_internal(cls, db_resource=db_resource)
         if config:
             return config
-        return cls()
+        try:
+            return cls()
+        except Exception as exc:
+            from dynastore.modules.db_config.exceptions import ConfigResolutionError
+            required = _collect_required_fields(cls)
+            raise ConfigResolutionError(
+                f"Config '{cls.class_key()}' has no usable default at any scope "
+                f"(platform/code) and cannot be constructed with zero args: {exc}",
+                missing_key=cls.class_key(),
+                required_fields=required,
+                scope_tried=["platform", "code_default"],
+            ) from exc
 
     async def _get_platform_config_internal_db(
         self, class_key: str

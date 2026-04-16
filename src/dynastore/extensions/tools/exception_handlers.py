@@ -230,6 +230,48 @@ class ConfigValidationExceptionHandler(ExceptionHandler):
         )
 
 
+class ConfigResolutionExceptionHandler(ExceptionHandler):
+    """Handles ``ConfigResolutionError`` — waterfall produced no usable default.
+
+    This is a system/ops misconfiguration (500, not 4xx): a deploy/bootstrap
+    step is missing — either register a platform default or supply mandatory
+    fields at a higher scope. The structured body tells ops exactly which key
+    and which fields.
+    """
+
+    def can_handle(self, exception: Exception) -> bool:
+        from dynastore.modules.db_config.exceptions import ConfigResolutionError
+
+        return isinstance(exception, ConfigResolutionError)
+
+    def handle(
+        self, exception: Exception, context: Optional[Dict[str, Any]] = None
+    ) -> Optional[HTTPException]:
+        from dynastore.modules.db_config.exceptions import ConfigResolutionError
+
+        assert isinstance(exception, ConfigResolutionError)
+        logger.error(
+            "Config waterfall exhausted for '%s' (required=%s, tried=%s): %s",
+            exception.missing_key,
+            exception.required_fields,
+            exception.scope_tried,
+            exception,
+        )
+        return HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "type": "about:blank#config-resolution",
+                "title": "Configuration waterfall produced no usable default",
+                "status": 500,
+                "detail": str(exception),
+                "missing_key": exception.missing_key,
+                "required_fields": exception.required_fields,
+                "scope_tried": exception.scope_tried,
+                "hint": exception.hint,
+            },
+        )
+
+
 class ExceptionHandlerRegistry:
     """Central registry for managing pluggable exception handlers."""
 
@@ -244,6 +286,7 @@ class ExceptionHandlerRegistry:
         self.register(ConflictExceptionHandler())
         self.register(ImmutableConfigExceptionHandler())
         self.register(PluginNotFoundExceptionHandler())
+        self.register(ConfigResolutionExceptionHandler())  # 500 — ops misconfig
         self.register(ConfigValidationExceptionHandler())
         self.register(
             ProgrammingErrorHandler()
@@ -593,7 +636,7 @@ async def generic_exception_handler(request: Request, exc: Exception) -> Respons
         if log_id and status_code >= 500:
             _root = request.scope.get("root_path", "").rstrip("/")
             log_url = f"{_root}/web/#/logs?catalog={context['log_catalog']}&log_id={log_id}"
-            response_content["log_reference"] = {
+            response_content["log_reference"] = {  # type: ignore[assignment]
                 "log_id": log_id,
                 "catalog_id": context["log_catalog"],
                 "collection_id": context.get("log_collection"),

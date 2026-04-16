@@ -61,6 +61,33 @@ class RequiredFieldMissingError(Exception):
         self.field = field
 
 
+class SidecarRejectedError(Exception):
+    """A sidecar refused a feature at ingestion time.
+
+    Raised instead of silently returning ``None`` so the batch caller can
+    aggregate a structured ``IngestionReport`` and surface the rejection to
+    the client (HTTP 200/207), instead of producing a mismatch between
+    submitted count and accepted count.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        geoid: str | None = None,
+        external_id: str | None = None,
+        sidecar_id: str | None = None,
+        matcher: str | None = None,
+        reason: str = "sidecar_rejected",
+    ) -> None:
+        super().__init__(message)
+        self.geoid = geoid
+        self.external_id = external_id
+        self.sidecar_id = sidecar_id
+        self.matcher = matcher
+        self.reason = reason
+
+
 class UniqueConstraintViolationError(Exception):
     """A ``FieldDefinition.unique=True`` field collided with an existing value.
 

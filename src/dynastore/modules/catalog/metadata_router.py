@@ -17,115 +17,181 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-Metadata driver routing — resolves the active CollectionMetadataDriverProtocol.
+Metadata driver routing — resolves CollectionMetadataStore drivers.
 
-Resolution strategy:
+Two entry points, both read from ``CollectionRoutingConfig.metadata.operations``
+via the waterfall and fall back to class-level code defaults:
 
-1. Check ``RoutingPluginConfig.metadata.override`` (plugin_id ``"collection:drivers"``).
-   If override entries are configured, use the first available driver.
+1. ``resolve_metadata_drivers(catalog_id, operation)`` — returns the ordered
+   list of available ``CollectionMetadataStore`` instances for ``operation``
+   (READ or WRITE). This is the protocol-driven entry point used by every
+   catalog/collection service when persisting or fetching metadata.
 
-2. If ``metadata.override`` is empty, fall back to protocol discovery:
-   discover all ``CollectionMetadataDriverProtocol`` implementations, prefer
-   ES if available, otherwise PG.
+2. ``get_metadata_driver(catalog_id)`` — legacy single-driver READ resolver,
+   preserved for call-sites that only need "the" reader. Equivalent to
+   ``resolve_metadata_drivers(catalog_id, Operation.READ)[0]``.
 
-3. **First resolution only**: if the preferred driver is unavailable
-   (``is_available()`` returns False) and a fallback driver exists, use the
-   fallback.  After the first successful resolution, the choice is cached.
-   If the config declares a specific driver and it's not available → error.
+Default behaviour when ``metadata.operations[op]`` is empty (fresh deploy, no
+platform override):
 
-The resolved metadata driver is cached per catalog (300 s TTL).
+- READ  → discover registered drivers, prefer ES then PG (first available).
+- WRITE → PG-only (authoritative writer); ES is purely a read-path store.
+
+If the configured operation declares a driver that is not registered or not
+available, we raise ``ConfigResolutionError`` — the deploy is missing the
+driver or its dependency. Empty resolution on WRITE is also a ``ConfigResolutionError``
+(no way to persist metadata at all).
+
+The resolved driver list is cached per ``(catalog_id, operation)`` with a
+300 s TTL. Cache is invalidated via ``invalidate_metadata_router_cache``.
 """
 
 import logging
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
-from dynastore.models.protocols.metadata_driver import CollectionMetadataDriverProtocol
+from dynastore.models.protocols.metadata_driver import CollectionMetadataStore
+from dynastore.modules.db_config.exceptions import ConfigResolutionError
+from dynastore.modules.storage.routing_config import Operation
 from dynastore.tools.cache import cached
 
 logger = logging.getLogger(__name__)
 
 # Preferred driver ordering for auto-discovery (first available wins)
-_PREFERRED_DRIVER_ORDER = ["DriverMetadataElasticsearch", "DriverMetadataPostgresql"]
+_PREFERRED_DRIVER_ORDER = ["MetadataElasticsearchDriver", "MetadataPostgresqlDriver"]
+
+# Default WRITE target when no config: PG is the authoritative writer;
+# ES is a read-path accelerator that should be populated via TRANSFORM,
+# not as a primary writer.
+_DEFAULT_WRITE_DRIVERS = ["MetadataPostgresqlDriver"]
 
 
-def _build_metadata_driver_index() -> Dict[str, CollectionMetadataDriverProtocol]:
+def _build_metadata_driver_index() -> Dict[str, CollectionMetadataStore]:
     """Build driver_id → driver instance lookup for metadata drivers."""
     from dynastore.tools.discovery import get_protocols
 
-    return {type(d).__name__: d for d in get_protocols(CollectionMetadataDriverProtocol)}
+    return {type(d).__name__: d for d in get_protocols(CollectionMetadataStore)}
+
+
+async def _resolve_metadata_driver_ids(
+    catalog_id: str,
+    operation: Operation,
+) -> List[str]:
+    """Return the ordered driver_ids to use for ``operation``.
+
+    Priority:
+      1. ``CollectionRoutingConfig.metadata.operations[operation]`` if non-empty.
+      2. Code-level defaults:
+         - READ  → ``_PREFERRED_DRIVER_ORDER`` (ES then PG)
+         - WRITE → ``_DEFAULT_WRITE_DRIVERS`` (PG-primary)
+
+    The caller is responsible for filtering by ``is_available()`` and for
+    raising ``ConfigResolutionError`` if the filtered list is empty for WRITE.
+    """
+    try:
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.modules.storage.routing_config import CollectionRoutingConfig
+        from dynastore.tools.discovery import get_protocol
+
+        configs = get_protocol(ConfigsProtocol)
+        if configs:
+            routing_config = await configs.get_config(
+                CollectionRoutingConfig, catalog_id=catalog_id
+            )
+            entries = routing_config.metadata.operations.get(operation, [])
+            if entries:
+                return [e.driver_id for e in entries]
+    except ConfigResolutionError:
+        raise
+    except Exception as exc:
+        logger.debug(
+            "Metadata routing config lookup failed for '%s'/%s: %s",
+            catalog_id, operation, exc,
+        )
+
+    if operation == Operation.READ:
+        return list(_PREFERRED_DRIVER_ORDER)
+    if operation == Operation.WRITE:
+        return list(_DEFAULT_WRITE_DRIVERS)
+    return []
+
+
+async def resolve_metadata_drivers(
+    catalog_id: str,
+    operation: Operation = Operation.READ,
+) -> List[CollectionMetadataStore]:
+    """Resolve the ordered list of available metadata drivers for ``operation``.
+
+    For READ: ordered by priority; callers should read from position 0 first,
+    falling back to subsequent entries only if the primary lacks the data.
+
+    For WRITE: every returned driver must receive the write (fan-out). An
+    empty list here is a deploy misconfiguration and raises
+    ``ConfigResolutionError``.
+    """
+    driver_ids = await _resolve_metadata_driver_ids(catalog_id, operation)
+    driver_index = _build_metadata_driver_index()
+
+    resolved: List[CollectionMetadataStore] = []
+    missing: List[str] = []
+    for driver_id in driver_ids:
+        driver = driver_index.get(driver_id)
+        if driver is None:
+            missing.append(driver_id)
+            continue
+        if await driver.is_available():
+            resolved.append(driver)
+        else:
+            missing.append(f"{driver_id}(unavailable)")
+
+    if resolved:
+        return resolved
+
+    # No driver from the configured/default list is available. For WRITE this
+    # is an ops error — we have no way to persist. For READ we allow an empty
+    # result (readers will emit 404 on the actual resource, not on routing).
+    if operation == Operation.WRITE:
+        raise ConfigResolutionError(
+            (
+                f"No available CollectionMetadataStore for WRITE on catalog "
+                f"'{catalog_id}'. Configured/default drivers: {driver_ids}. "
+                f"Missing/unavailable: {missing}."
+            ),
+            missing_key="CollectionRoutingConfig.metadata.operations[WRITE]",
+            required_fields=[],
+            scope_tried=["collection", "catalog", "platform", "code_default"],
+            hint=(
+                "Register a CollectionMetadataStore driver (e.g. "
+                "MetadataPostgresqlDriver) and ensure its is_available() "
+                "returns True, or configure "
+                "CollectionRoutingConfig.metadata.operations[WRITE] explicitly."
+            ),
+        )
+    logger.warning(
+        "No available CollectionMetadataStore for READ on catalog '%s'; "
+        "tried %s (missing/unavailable: %s)",
+        catalog_id, driver_ids, missing,
+    )
+    return []
 
 
 @cached(maxsize=256, ttl=300, namespace="metadata_router", distributed=False)
 async def _resolve_metadata_driver_cached(
     catalog_id: str,
 ) -> Optional[str]:
-    """Cached resolution: returns the driver_id of the active metadata driver.
-
-    Returns None if no metadata driver is available.
-    """
-    # 1. Try routing config (RoutingPluginConfig.metadata.override)
-    try:
-        from dynastore.models.protocols.configs import ConfigsProtocol
-        from dynastore.modules.storage.routing_config import RoutingPluginConfig
-        from dynastore.tools.discovery import get_protocol
-
-        configs = get_protocol(ConfigsProtocol)
-        if configs:
-            routing_config = await configs.get_config(
-                RoutingPluginConfig, catalog_id=catalog_id
-            )
-            entries = routing_config.metadata.override
-            if entries:
-                # Config explicitly declares override metadata drivers — use first available.
-                driver_index = _build_metadata_driver_index()
-                for entry in entries:
-                    driver = driver_index.get(entry.driver_id)
-                    if driver:
-                        if await driver.is_available():
-                            return type(driver).__name__
-                        # Config declares this driver but it's unavailable → error
-                        raise RuntimeError(
-                            f"Metadata driver '{entry.driver_id}' is configured "
-                            f"for catalog '{catalog_id}' but is not available"
-                        )
-                    logger.warning(
-                        "Metadata driver '%s' from routing config is not registered",
-                        entry.driver_id,
-                    )
-    except RuntimeError:
-        raise  # re-raise explicit unavailability errors
-    except Exception as e:
-        logger.debug("Metadata routing config lookup failed for '%s': %s", catalog_id, e)
-
-    # 2. Auto-discover: try preferred order, first available wins
-    driver_index = _build_metadata_driver_index()
-    for driver_id in _PREFERRED_DRIVER_ORDER:
-        driver = driver_index.get(driver_id)
-        if driver and await driver.is_available():
-            logger.info(
-                "Auto-discovered metadata driver '%s' for catalog '%s'",
-                driver_id, catalog_id,
-            )
-            return driver_id
-
-    # 3. Try any registered metadata driver
-    for driver_id, driver in driver_index.items():
-        if await driver.is_available():
-            logger.info(
-                "Using metadata driver '%s' (fallback) for catalog '%s'",
-                driver_id, catalog_id,
-            )
-            return driver_id
-
-    return None
+    """Cached single-driver READ resolution: returns a driver_id."""
+    drivers = await resolve_metadata_drivers(catalog_id, operation=Operation.READ)
+    if not drivers:
+        return None
+    return type(drivers[0]).__name__
 
 
 async def get_metadata_driver(
     catalog_id: str,
-) -> Optional[CollectionMetadataDriverProtocol]:
-    """Resolve the active metadata driver for the given catalog.
+) -> Optional[CollectionMetadataStore]:
+    """Resolve the active metadata driver for the given catalog (READ).
 
-    Returns the driver instance or None if no metadata driver is available.
+    Legacy single-driver helper. Prefer ``resolve_metadata_drivers`` at new
+    call-sites so both READ and WRITE funnel through the same resolver.
     """
     driver_id = await _resolve_metadata_driver_cached(catalog_id)
     if not driver_id:

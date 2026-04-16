@@ -55,6 +55,41 @@ class ConfigValidationError(ValueError):
     """Raised when a configuration body fails Pydantic validation."""
     pass
 
+class ConfigResolutionError(DatabaseError):
+    """Raised when the config waterfall cannot produce a usable default.
+
+    This is a system/ops misconfiguration, not a user 4xx. Two triggers:
+
+    1. No default is registered for the ``PluginConfig`` at any scope
+       (code default, platform, catalog, or collection). A genuine bootstrap
+       omission — register a platform default or ship a code default.
+    2. A default exists but requires mandatory fields no scope has supplied
+       (e.g. ``CollectionIcebergDriverConfig`` needs ``warehouse``). Set the
+       fields at platform / catalog / collection scope.
+
+    The instance carries structured fields so API handlers can emit
+    RFC-7807-shaped HTTP 500 bodies with an actionable ops hint.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        missing_key: str,
+        required_fields: list[str] | None = None,
+        scope_tried: list[str] | None = None,
+        hint: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.missing_key = missing_key
+        self.required_fields = list(required_fields or [])
+        self.scope_tried = list(scope_tried or [])
+        self.hint = hint or (
+            f"No usable default for config '{missing_key}'. "
+            f"Register a platform default or supply mandatory fields "
+            f"({', '.join(self.required_fields) or 'none declared'}) at a higher scope."
+        )
+
 class InternalValidationError(ValueError):
     """Raised when an internal validation fails (e.g. unknown properties)."""
     pass

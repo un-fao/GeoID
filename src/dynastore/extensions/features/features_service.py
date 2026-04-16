@@ -1057,7 +1057,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
 
         # Use ItemsProtocol to get the unified feature
         feature = await items_protocol.get_item(
-            catalog_id, collection_id, item_id, db_resource=conn
+            catalog_id, collection_id, item_id, ctx=DriverContext(db_resource=conn)
         )
 
         if not feature:
@@ -1085,15 +1085,14 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
     ):
         catalogs_svc = await self._get_catalogs_service()
         configs_svc = await self._get_configs_service()
-        # 1. Get CatalogPluginConfig to correctly process the incoming feature payload.
+        # Resolve the driver config for this collection via the waterfall.
+        # In a correctly bootstrapped deploy this always returns a usable
+        # config — if the waterfall cannot satisfy it (e.g. Iceberg without
+        # ``warehouse`` at any scope) it surfaces as ``ConfigResolutionError``
+        # (HTTP 500 ops alert), never as a user-visible 404.
         layer_config = await catalogs_svc.get_collection_config(
             catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
         )
-        if not layer_config:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Collection '{catalog_id}:{collection_id}' not found or has no configuration.",
-            )
         root_url = get_root_url(request)
 
         catalogs_svc = await self._get_catalogs_service()
@@ -1101,19 +1100,51 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
         # 2. Upsert (Discrimination happens inside ItemService or via payload type)
         # Note: valid payload types here are FeatureDefinition or FeatureCollectionDefinition
 
+        from dynastore.modules.storage.errors import SidecarRejectedError
+
+        batch_size = (
+            len(payload.features)
+            if getattr(payload, "type", None) == "FeatureCollection"
+            else 1
+        )
+        policy_source = (
+            f"/configs/catalogs/{catalog_id}/collections/{collection_id}"
+            f"/configs/CollectionWritePolicy/effective"
+        )
+
+        rejections: list[ogc_models.SidecarRejection] = []
         try:
             created = await catalogs_svc.upsert(
                 catalog_id, collection_id, items=payload, ctx=DriverContext(db_resource=conn)
             )
+        except SidecarRejectedError as rej:
+            rejections.append(
+                ogc_models.SidecarRejection(
+                    geoid=rej.geoid,
+                    external_id=rej.external_id,
+                    sidecar_id=rej.sidecar_id,
+                    matcher=rej.matcher,
+                    reason=rej.reason,
+                    message=str(rej),
+                    policy_source=policy_source,
+                )
+            )
+            created = []
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(e),
             )
 
-        created_rows = created if isinstance(created, list) else [created]
+        created_rows = (
+            created if isinstance(created, list) else ([created] if created else [])
+        )
 
-        if not created_rows:
+        # If nothing was accepted AND there are no structured rejections,
+        # this is a server-side failure (the driver returned empty without a
+        # reason). Surface as 500. A fully-rejected batch with rejections is
+        # 207, handled below.
+        if not created_rows and not rejections:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to create items.",
@@ -1145,13 +1176,28 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
                 )
             return fid
 
+        accepted_ids = [
+            _resolve_feature_id(cast(_OGCFeature, row)) for row in created_rows
+        ]
+
+        # Partial or fully-rejected batch → 207 Multi-Status with IngestionReport
+        if rejections:
+            report = ogc_models.IngestionReport(
+                accepted_ids=accepted_ids,
+                rejections=rejections,
+                total=batch_size,
+            )
+            return JSONResponse(
+                content=report.model_dump(by_alias=True, exclude_none=True),
+                status_code=status.HTTP_207_MULTI_STATUS,
+            )
+
         if (
             isinstance(payload, ogc_models.FeatureDefinition)
             or getattr(payload, "type", None) == "Feature"
         ):
-            # Single Feature response
             new_row = cast(_OGCFeature, created_rows[0])
-            feature_id = _resolve_feature_id(new_row)
+            feature_id = accepted_ids[0]
 
             location_url = f"{root_url}/features/catalogs/{catalog_id}/collections/{collection_id}/items/{feature_id}"
             feature = ogc_generator._db_row_to_ogc_feature(
@@ -1163,13 +1209,8 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
                 headers={"Location": location_url},
             )
         else:
-            # Bulk response
-            created_ids = [
-                _resolve_feature_id(cast(_OGCFeature, row))
-                for row in created_rows
-            ]
             return JSONResponse(
-                content=ogc_models.BulkCreationResponse(ids=created_ids).model_dump(),
+                content=ogc_models.BulkCreationResponse(ids=accepted_ids).model_dump(),
                 status_code=status.HTTP_201_CREATED,
             )
 

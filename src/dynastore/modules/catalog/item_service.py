@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, List, Optional, Any, Dict, Union, Tuple, cast,
 
 if TYPE_CHECKING:
     from dynastore.modules.storage.router import ResolvedDriver
-    from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
+    from dynastore.models.protocols.storage_driver import CollectionItemsStore
 from sqlalchemy import text
 
 import inspect as _inspect
@@ -41,7 +41,7 @@ from dynastore.modules.db_config.query_executor import (
 from dynastore.modules.catalog.models import ItemDataForDB, Collection, Catalog
 from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
 from dynastore.modules.storage.driver_config import (
-    DriverRecordsPostgresqlConfig,
+    CollectionPostgresqlDriverConfig,
 )
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
@@ -145,7 +145,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
         Uses the READ driver first; falls back to the primary WRITE driver
         when READ is a non-PG driver (e.g. DuckDB) so that the PG path
-        receives a DriverRecordsPostgresqlConfig with valid sidecars.
+        receives a CollectionPostgresqlDriverConfig with valid sidecars.
         """
         from dynastore.modules.storage.router import get_driver, get_write_drivers
         from dynastore.modules.storage.routing_config import Operation
@@ -315,15 +315,17 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         # write to that driver.  PG-specific logic (sidecars, hub table, sidecar
         # payloads, QueryOptimizer) is skipped — the driver owns its own write path.
         # Post-commit fan-out and event emission still run after this branch.
-        try:
-            from dynastore.modules.storage.router import get_write_drivers
-            resolved_drivers = await get_write_drivers(catalog_id, collection_id)
-            primary = resolved_drivers[0] if resolved_drivers else None
-        except Exception:
-            primary = None
+        #
+        # Trust the waterfall: CollectionRoutingConfig.operations[WRITE] has a
+        # code-level default of [CollectionPostgresqlDriver], so this list is
+        # never empty in a correctly bootstrapped deploy. If it is empty, the
+        # resolver surfaces ConfigResolutionError → HTTP 500 ops alert.
+        from dynastore.modules.storage.router import get_write_drivers
+        resolved_drivers = await get_write_drivers(catalog_id, collection_id)
+        primary = resolved_drivers[0]
 
-        from dynastore.modules.storage.drivers.postgresql import DriverRecordsPostgresql
-        if primary is not None and not isinstance(primary.driver, DriverRecordsPostgresql):
+        from dynastore.models.protocols.storage_driver import Capability
+        if primary is not None and Capability.QUERY_FALLBACK_SOURCE not in primary.driver.capabilities:
             results = await primary.driver.write_entities(
                 catalog_id,
                 collection_id,
@@ -731,7 +733,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
             # Fetch the item to identify localized fields in attributes
             item = await self.get_item(
-                catalog_id, collection_id, item_id, db_resource=conn
+                catalog_id, collection_id, item_id, ctx=DriverContext(db_resource=conn)
             )
             if not item:
                 return 0
@@ -775,7 +777,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         self,
         catalog_id: str,
         collection_id: str,
-        col_config: DriverRecordsPostgresqlConfig,
+        col_config: CollectionPostgresqlDriverConfig,
         db_resource: Optional[DbResource] = None,
     ):
         async with managed_transaction(db_resource or self.engine) as conn:
@@ -822,7 +824,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         self,
         catalog_id: str,
         collection_id: str,
-        col_config: DriverRecordsPostgresqlConfig,
+        col_config: CollectionPostgresqlDriverConfig,
         partition_value: Any,
         ctx: Optional[DriverContext] = None,
     ):

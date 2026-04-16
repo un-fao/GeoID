@@ -71,13 +71,15 @@ class CollectionService:
         )
 
     async def _get_pg_driver(self):
-        """Get the PostgreSQL storage driver instance."""
-        from dynastore.modules.storage.drivers.postgresql import DriverRecordsPostgresql
+        """Get the query-fallback (PostgreSQL) storage driver instance."""
         from dynastore.tools.discovery import get_protocols
-        from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
+        from dynastore.models.protocols.storage_driver import (
+            Capability,
+            CollectionItemsStore,
+        )
 
-        for driver in get_protocols(CollectionStorageDriverProtocol):
-            if isinstance(driver, DriverRecordsPostgresql):
+        for driver in get_protocols(CollectionItemsStore):
+            if Capability.QUERY_FALLBACK_SOURCE in driver.capabilities:
                 return driver
         return None
 
@@ -91,7 +93,7 @@ class CollectionService:
         pg_driver = await self._get_pg_driver()
         if not pg_driver:
             return None
-        return await pg_driver.resolve_physical_table(
+        return await pg_driver.resolve_physical_table(  # type: ignore[attr-defined]
             catalog_id, collection_id, db_resource=db_resource
         )
 
@@ -105,8 +107,8 @@ class CollectionService:
         """Store physical table in PG driver config."""
         pg_driver = await self._get_pg_driver()
         if not pg_driver:
-            raise RuntimeError("DriverRecordsPostgresql not available")
-        await pg_driver.set_physical_table(
+            raise RuntimeError("CollectionPostgresqlDriver not available")
+        await pg_driver.set_physical_table(  # type: ignore[attr-defined]
             catalog_id, collection_id, physical_table, db_resource=db_resource
         )
 
@@ -377,10 +379,10 @@ class CollectionService:
             # Layer config override from input
             if layer_config_override and isinstance(layer_config_override, dict):
                 from dynastore.modules.storage.driver_config import (
-                    DriverRecordsPostgresqlConfig,
+                    CollectionPostgresqlDriverConfig,
                 )
 
-                layer_config_override = DriverRecordsPostgresqlConfig.model_validate(
+                layer_config_override = CollectionPostgresqlDriverConfig.model_validate(
                     layer_config_override
                 )
 
@@ -406,15 +408,15 @@ class CollectionService:
             if injected_configs:
                 from typing import cast as _cast
                 from dynastore.modules.storage.driver_config import (
-                    DriverRecordsPostgresqlConfig,
+                    CollectionPostgresqlDriverConfig,
                 )
                 if layer_config_override is None:
-                    if isinstance(collection_config, DriverRecordsPostgresqlConfig):
+                    if hasattr(collection_config, "sidecars"):
                         layer_config_override = collection_config.model_copy()
                     else:
-                        layer_config_override = DriverRecordsPostgresqlConfig()
+                        layer_config_override = CollectionPostgresqlDriverConfig()
 
-                pg_override = _cast(DriverRecordsPostgresqlConfig, layer_config_override)
+                pg_override = _cast(CollectionPostgresqlDriverConfig, layer_config_override)
                 current_sidecars: List[Any] = list(pg_override.sidecars or [])
                 current_types = {s.sidecar_type for s in current_sidecars}
 
@@ -482,18 +484,18 @@ class CollectionService:
                         ctx=DriverContext(db_resource=conn),
                     )
 
-            # 5b. Persist write_policy + feature_type (if provided) BEFORE
+            # 5b. Persist write_policy + schema (CollectionSchema, if provided) BEFORE
             #     ensure_storage so the driver can materialise required/unique
-            #     constraints at DDL time (FeatureTypePluginConfig.fields →
+            #     constraints at DDL time (CollectionSchema.fields →
             #     NOT NULL / UNIQUE in the attributes sidecar).
             write_policy_input = None
-            feature_type_input = None
+            schema_input = None
             if isinstance(collection_definition, dict):
                 write_policy_input = collection_definition.get("write_policy")
-                feature_type_input = collection_definition.get("feature_type")
+                schema_input = collection_definition.get("schema")
             else:
                 write_policy_input = getattr(collection_definition, "write_policy", None)
-                feature_type_input = getattr(collection_definition, "feature_type", None)
+                schema_input = getattr(collection_definition, "schema", None)
 
             if write_policy_input:
                 from dynastore.modules.storage.driver_config import (
@@ -513,20 +515,20 @@ class CollectionService:
                     collection_id=collection_model.id,
                     ctx=DriverContext(db_resource=conn),
                 )
-            if feature_type_input:
+            if schema_input:
                 from dynastore.modules.storage.driver_config import (
-                    FeatureTypePluginConfig,
+                    CollectionSchema,
                 )
-                ft_def = (
-                    FeatureTypePluginConfig.model_validate(feature_type_input)
-                    if isinstance(feature_type_input, dict)
-                    else feature_type_input
+                schema_def = (
+                    CollectionSchema.model_validate(schema_input)
+                    if isinstance(schema_input, dict)
+                    else schema_input
                 )
                 configs = get_protocol(ConfigsProtocol)
                 assert configs is not None, "ConfigsProtocol not registered"
                 await configs.set_config(
-                    FeatureTypePluginConfig,
-                    ft_def,
+                    CollectionSchema,
+                    schema_def,
                     catalog_id=catalog_id,
                     collection_id=collection_model.id,
                     ctx=DriverContext(db_resource=conn),
@@ -553,19 +555,19 @@ class CollectionService:
             # 6b. Pin the resolved routing config at collection level so future
             #     platform default changes don't silently re-route existing collections.
             try:
-                from dynastore.modules.storage.routing_config import RoutingPluginConfig
+                from dynastore.modules.storage.routing_config import CollectionRoutingConfig
                 configs = get_protocol(ConfigsProtocol)
                 if configs is None:
                     raise ValueError("ConfigsProtocol not registered")
                 resolved_routing = await configs.get_config(
-                    RoutingPluginConfig,
+                    CollectionRoutingConfig,
                     catalog_id=catalog_id,
                     collection_id=collection_model.id,
                     ctx=DriverContext(db_resource=conn),
                 )
                 if resolved_routing:
                     await configs.set_config(
-                        RoutingPluginConfig,
+                        CollectionRoutingConfig,
                         resolved_routing,
                         catalog_id=catalog_id,
                         collection_id=collection_model.id,
@@ -577,32 +579,25 @@ class CollectionService:
                     catalog_id, collection_model.id, _routing_e,
                 )
 
-            # 7. Store collection metadata — always write to PG metadata driver
-            #    (authoritative), then sync to non-PG metadata driver if configured.
+            # 7. Store collection metadata — fan out to every driver resolved
+            #    by MetadataRoutingConfig.operations[WRITE]. Default waterfall:
+            #    [MetadataPostgresqlDriver]. No hardcoded driver classes here —
+            #    swap by setting MetadataRoutingConfig at platform/catalog scope.
             metadata_payload = collection_model.model_dump(
                 by_alias=True, exclude_none=True
             )
-            from dynastore.modules.storage.drivers.metadata_postgresql import DriverMetadataPostgresql
-            from dynastore.modules.catalog.metadata_router import get_metadata_driver
+            from dynastore.modules.catalog.metadata_router import resolve_metadata_drivers
+            from dynastore.modules.storage.routing_config import Operation
 
-            pg_meta = DriverMetadataPostgresql()
-            await pg_meta.upsert_metadata(
-                catalog_id, collection_model.id, metadata_payload, db_resource=conn,
+            write_drivers = await resolve_metadata_drivers(
+                catalog_id, operation=Operation.WRITE,
             )
-            # Sync to non-PG metadata driver (e.g. ES) if configured
-            try:
-                meta_driver = await get_metadata_driver(catalog_id)
-                if meta_driver is not None and not isinstance(meta_driver, DriverMetadataPostgresql):
-                    await meta_driver.upsert_metadata(
-                        catalog_id, collection_model.id, metadata_payload,
-                    )
-            except Exception as _meta_e:
-                logger.warning(
-                    "create_collection: metadata driver sync failed for %s/%s: %s",
-                    catalog_id, collection_model.id, _meta_e,
+            for driver in write_drivers:
+                await driver.upsert_metadata(
+                    catalog_id, collection_model.id, metadata_payload, db_resource=conn,
                 )
 
-            # Steps 8 & 9 (write_policy + feature_type persistence) moved to
+            # Steps 8 & 9 (write_policy + schema persistence) moved to
             # step 5b above so ensure_storage can honour constraints.
 
         # Resolve physical_table for async lifecycle context (PG driver only; None for others).
@@ -794,34 +789,25 @@ class CollectionService:
             if not exists:
                 return None
 
-            # Upsert metadata via PG metadata driver (authoritative)
-            from dynastore.modules.storage.drivers.metadata_postgresql import DriverMetadataPostgresql
-            from dynastore.modules.catalog.metadata_router import get_metadata_driver
+            # Fan-out metadata writes to every driver resolved by
+            # MetadataRoutingConfig.operations[WRITE].
+            from dynastore.modules.catalog.metadata_router import resolve_metadata_drivers
+            from dynastore.modules.storage.routing_config import Operation
 
             metadata_payload = merged_model.model_dump(
                 by_alias=True, exclude_none=True
             )
-            pg_meta = DriverMetadataPostgresql()
-            await pg_meta.upsert_metadata(
-                catalog_id, collection_id, metadata_payload, db_resource=conn,
+            write_drivers = await resolve_metadata_drivers(
+                catalog_id, operation=Operation.WRITE,
             )
+            for driver in write_drivers:
+                await driver.upsert_metadata(
+                    catalog_id, collection_id, metadata_payload, db_resource=conn,
+                )
 
             self._get_collection_model_cached.cache_invalidate(
                 catalog_id, collection_id
             )
-
-            # Sync to non-PG metadata driver (e.g. ES) if configured
-            try:
-                meta_driver = await get_metadata_driver(catalog_id)
-                if meta_driver is not None and not isinstance(meta_driver, DriverMetadataPostgresql):
-                    await meta_driver.upsert_metadata(
-                        catalog_id, collection_id, metadata_payload,
-                    )
-            except Exception as _meta_e:
-                logger.warning(
-                    "update_collection: metadata driver sync failed for %s/%s: %s",
-                    catalog_id, collection_id, _meta_e,
-                )
 
             return await self._get_collection_model_logic(
                 catalog_id, collection_id, conn
@@ -848,6 +834,14 @@ class CollectionService:
             soft_delete_sql = f'UPDATE "{phys_schema}".collections SET deleted_at = NOW() WHERE id = :id AND deleted_at IS NULL;'
             await DQLQuery(
                 soft_delete_sql, result_handler=ResultHandler.ROWCOUNT
+            ).execute(conn, id=collection_id)
+
+            # Soft delete cascades to collection_configs — configs are bound to
+            # the logical collection identity, not the physical table. Keeping
+            # them behind a tombstoned collection would leak stale state if the
+            # id is later reused.
+            await DDLQuery(
+                f'DELETE FROM "{phys_schema}".collection_configs WHERE collection_id = :id;'
             ).execute(conn, id=collection_id)
 
             logger.info(
@@ -899,27 +893,22 @@ class CollectionService:
                     f'DELETE FROM "{phys_schema}".collections WHERE id = :id;'
                 )
                 await DDLQuery(hard_delete_sql).execute(conn, id=collection_id)
-                # Clean up metadata via PG metadata driver + driver config
-                from dynastore.modules.storage.drivers.metadata_postgresql import DriverMetadataPostgresql
-                from dynastore.modules.catalog.metadata_router import get_metadata_driver
+                # Fan-out metadata deletion via MetadataRoutingConfig.operations[WRITE].
+                # Failure here is fatal: if a configured writer can't delete, the
+                # waterfall resolver raises ConfigResolutionError.
+                from dynastore.modules.catalog.metadata_router import resolve_metadata_drivers
+                from dynastore.modules.storage.routing_config import Operation
 
-                pg_meta = DriverMetadataPostgresql()
-                await pg_meta.delete_metadata(
-                    catalog_id, collection_id, db_resource=conn,
+                write_drivers = await resolve_metadata_drivers(
+                    catalog_id, operation=Operation.WRITE,
                 )
-                # Also delete from non-PG metadata driver if configured
-                try:
-                    meta_driver = await get_metadata_driver(catalog_id)
-                    if meta_driver is not None and not isinstance(meta_driver, DriverMetadataPostgresql):
-                        await meta_driver.delete_metadata(catalog_id, collection_id)
-                except Exception as _meta_e:
-                    logger.warning(
-                        "delete_collection: metadata driver cleanup failed for %s/%s: %s",
-                        catalog_id, collection_id, _meta_e,
+                for driver in write_drivers:
+                    await driver.delete_metadata(
+                        catalog_id, collection_id, db_resource=conn,
                     )
-                await DDLQuery(
-                    f'DELETE FROM "{phys_schema}".collection_configs WHERE collection_id = :id;'
-                ).execute(conn, id=collection_id)
+                # Soft-delete already cleared collection_configs; hard-delete
+                # runs after soft-delete in the same txn, so no second DELETE
+                # is needed here.
 
                 logger.info(
                     f"[LIFECYCLE] Hard deleted collection '{catalog_id}:{collection_id}' successfully"

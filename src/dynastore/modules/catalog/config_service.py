@@ -21,6 +21,7 @@ import json
 import inspect
 from typing import Optional, Dict, Any, Type, Union, TYPE_CHECKING
 from dynastore.tools.cache import cached
+from dynastore.modules.storage.config_cache import publish_router_invalidation
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     ResultHandler,
@@ -440,6 +441,7 @@ class ConfigService(ConfigsProtocol):
         _catalog_config_cache.cache_invalidate(
             self.engine, self._get_catalog_manager(), catalog_id, class_key
         )
+        publish_router_invalidation(catalog_id, None)
 
     async def _set_collection_config(
         self,
@@ -474,6 +476,15 @@ class ConfigService(ConfigsProtocol):
                 raise ValueError(
                     f"Could not resolve physical schema for catalog '{catalog_id}'."
                 )
+
+            # JIT-create the thin collection registry row if it doesn't yet
+            # exist. Upfront config workflow: `PUT .../collections/{col}/configs/{key}`
+            # always succeeds — every sub-config resolves from the waterfall,
+            # so a minimal Collection can be materialised without the caller
+            # first hitting `POST /collections`.
+            await self._get_catalog_manager().ensure_collection_exists(
+                catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
+            )
 
             if check_immutability:
                 sql = f'SELECT config_data FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE collection_id = :collection_id AND class_key = :class_key FOR UPDATE;'
@@ -523,6 +534,7 @@ class ConfigService(ConfigsProtocol):
         _collection_config_cache.cache_invalidate(
             self.engine, self._get_catalog_manager(), catalog_id, collection_id, class_key
         )
+        publish_router_invalidation(catalog_id, collection_id)
 
     async def list_configs(
         self,
@@ -799,6 +811,7 @@ class ConfigService(ConfigsProtocol):
                 _catalog_config_cache.cache_invalidate(
                     self.engine, self.catalog_manager, catalog_id, class_key
                 )
+                publish_router_invalidation(catalog_id, None)
                 return True
         return False
 
@@ -838,5 +851,6 @@ class ConfigService(ConfigsProtocol):
                     collection_id,
                     class_key,
                 )
+                publish_router_invalidation(catalog_id, collection_id)
                 return True
         return False

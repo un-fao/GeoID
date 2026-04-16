@@ -20,12 +20,12 @@ from dynastore.modules.db_config.query_executor import (
     ResultHandler,
 )
 from dynastore.modules.storage.driver_config import (
-    DriverRecordsPostgresqlConfig,
+    CollectionPostgresqlDriverConfig,
     CollectionWritePolicy,
     WriteConflictPolicy,
     IdentityMatcher,
 )
-from dynastore.modules.storage.errors import ConflictError
+from dynastore.modules.storage.errors import ConflictError, SidecarRejectedError
 from dynastore.models.protocols import ConfigsProtocol
 from dynastore.modules.catalog.sidecars.base import SidecarProtocol
 from dynastore.tools.discovery import get_protocol
@@ -59,7 +59,7 @@ class ItemDistributedMixin(_Host):
         collection_id: str,
         hub_payload: Dict[str, Any],
         sidecar_payloads: Dict[str, Dict[str, Any]],
-        col_config: DriverRecordsPostgresqlConfig,
+        col_config: CollectionPostgresqlDriverConfig,
         sidecars: List[SidecarProtocol],
         processing_context: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
@@ -88,11 +88,28 @@ class ItemDistributedMixin(_Host):
             write_policy.on_conflict if write_policy else WriteConflictPolicy.UPDATE
         )
 
-        # 1.5 Acceptance Check
+        # 1.5 Acceptance Check — rejections are surfaced to callers as
+        # structured SidecarRejectedError, never a silent None. Upper layers
+        # aggregate these into an IngestionReport and return 200/207 with
+        # the rejection list instead of dropping features without notice.
         for sidecar in sidecars:
             if not sidecar.is_acceptable(hub_payload, processing_context):
-                logger.warning(f"Feature rejected by sidecar {sidecar.sidecar_id}")
-                return None
+                external_id = (
+                    processing_context.get("external_id")
+                    if isinstance(processing_context, dict)
+                    else None
+                )
+                logger.warning(
+                    "Feature rejected by sidecar %s (external_id=%s)",
+                    sidecar.sidecar_id, external_id,
+                )
+                raise SidecarRejectedError(
+                    f"Sidecar '{sidecar.sidecar_id}' refused the feature "
+                    f"for collection '{catalog_id}/{collection_id}'",
+                    external_id=external_id,
+                    sidecar_id=sidecar.sidecar_id,
+                    reason="sidecar_not_acceptable",
+                )
 
         # Standardized Identity Resolution via Sidecar Protocol
         # Iterate over the configured matcher chain in order; first match wins.
