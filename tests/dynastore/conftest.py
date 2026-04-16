@@ -86,9 +86,9 @@ def task_id() -> uuid.UUID:
 @pytest.fixture
 def config_catalog_data():
     """Generates PG driver config data (sidecars, partitioning, etc.)."""
-    from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
+    from dynastore.modules.storage.driver_config import CollectionPostgresqlDriverConfig
 
-    return DriverRecordsPostgresqlConfig().model_dump()
+    return CollectionPostgresqlDriverConfig().model_dump()
 
 
 @pytest.fixture

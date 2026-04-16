@@ -372,9 +372,9 @@ class BucketService(ExtensionProtocol):
     )
     async def init_upload_endpoint(
         req: Request,
-        request: InitiateUploadRequest = Body(
+        request: InitiateUploadRequest = Body(  # type: ignore[arg-type]
             ...,
-            examples={
+            examples={  # type: ignore[arg-type]
                 "basic_raster_upload": {
                     "summary": "Basic Raster Upload",
                     "description": "A minimal request to upload a GeoTIFF file to a specific collection.",
@@ -437,7 +437,7 @@ class BucketService(ExtensionProtocol):
         - /buckets/catalogs/{catalog_id}/init-upload
         - /buckets/catalogs/{catalog_id}/collections/{collection_id}/init-upload
         """
-        return await BucketService._init_upload_v1_internal(
+        return await BucketService._init_upload_v1_internal(  # type: ignore[attr-defined]
             request,
             storage_provider,
             storage_client_provider,
@@ -468,7 +468,7 @@ class BucketService(ExtensionProtocol):
         The `catalog_id` from the path takes precedence over any `catalog_id` in the body.
         """
         request.catalog_id = catalog_id
-        return await BucketService._init_upload_v1_internal(
+        return await BucketService._init_upload_v1_internal(  # type: ignore[attr-defined]
             request,
             storage_provider,
             storage_client_provider,
@@ -501,7 +501,7 @@ class BucketService(ExtensionProtocol):
         """
         request.catalog_id = catalog_id
         request.collection_id = collection_id
-        return await BucketService._init_upload_v1_internal(
+        return await BucketService._init_upload_v1_internal(  # type: ignore[attr-defined]
             request,
             storage_provider,
             storage_client_provider,

@@ -70,6 +70,8 @@ def get_credentials() -> tuple:
     try:
         resolve_gcp_credentials()
         logger.debug(f"GCP GOOGLE_APPLICATION_CREDENTIALS: {os.getenv('GOOGLE_APPLICATION_CREDENTIALS','Not Set')}")
+        if default is None:
+            raise ImportError("google-auth is not installed; cannot resolve GCP credentials.")
         credentials, project_id = default()
         
         # Initialize defaults to avoid UnboundLocalError

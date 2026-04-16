@@ -123,7 +123,7 @@ class ElasticsearchProxyAnalytics:
                 })
 
             try:
-                resp = await client.bulk(body=bulk_body, refresh="false")
+                resp = await client.bulk(body=bulk_body, refresh="false")  # type: ignore[call-arg]
                 if resp.get("errors"):
                     failed = sum(1 for item in resp["items"] if "error" in item.get("index", {}))
                     logger.warning(f"Proxy analytics bulk: {failed}/{len(recs)} errors in {idx}")
@@ -162,7 +162,7 @@ class ElasticsearchProxyAnalytics:
                 range_filter["gte"] = start_date.isoformat()
             if end_date:
                 range_filter["lte"] = end_date.isoformat()
-            must.append({"range": {"timestamp": range_filter}})
+            must.append({"range": {"timestamp": range_filter}})  # type: ignore[arg-type]
 
         body: Dict[str, Any] = {
             "query": {"bool": {"must": must}},

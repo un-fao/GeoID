@@ -19,7 +19,7 @@
 """
 Iceberg Storage Driver — Open Table Format with ACID, time-travel, and schema evolution.
 
-Implements ``CollectionStorageDriverProtocol`` using PyIceberg for full OTF
+Implements ``CollectionItemsStore`` using PyIceberg for full OTF
 operations: snapshots, time-travel reads, schema evolution, and versioning.
 
 Capabilities:
@@ -32,7 +32,7 @@ DynaStore hierarchy mapping:
   - DynaStore item/feature → Iceberg row
 
 The driver delegates to a PyIceberg catalog configured via
-``DriverRecordsIcebergConfig``.  Uses ``pyiceberg.catalog.CatalogType`` enum
+``CollectionIcebergDriverConfig``.  Uses ``pyiceberg.catalog.CatalogType`` enum
 and PyIceberg constants (``TYPE``, ``URI``, ``WAREHOUSE_LOCATION``) for
 configuration — no string literals.
 
@@ -44,7 +44,7 @@ Catalog types (via ``pyiceberg.catalog.CatalogType``):
   - ``DYNAMODB``: DynamoDB-backed catalog
 
 Warehouse resolution order:
-  1. Explicit ``warehouse_uri`` in ``DriverRecordsIcebergConfig``
+  1. ``IcebergConfig.warehouse_uri`` (``ICEBERG_WAREHOUSE_URI`` env var)
   2. Auto-detected from platform ``StorageProtocol`` (GCS bucket, future S3)
   3. Local temp dir fallback (``file://``)
 
@@ -63,7 +63,10 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Dict, FrozenSet, List, Optional, Union
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, FrozenSet, List, Optional, Union
+
+if TYPE_CHECKING:
+    from dynastore.modules.storage.storage_location import StorageLocation
 
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.driver_context import DriverContext
@@ -72,7 +75,11 @@ from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.concurrency import run_in_thread
 from dynastore.modules.protocols import ModuleProtocol
 from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
-from dynastore.modules.storage.driver_config import DriverRecordsIcebergConfig, CollectionWritePolicy
+from dynastore.modules.storage.driver_config import (
+    CollectionIcebergDriverConfig,
+    CollectionWritePolicy,
+    IcebergConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,13 +126,13 @@ def _resolve_iceberg_type(type_str: str):
     }.get(type_str, StringType())
 
 
-class DriverRecordsIceberg(ModuleProtocol):
+class CollectionIcebergDriver(ModuleProtocol):
     """Iceberg storage driver — Open Table Format with full OTF capabilities.
 
     Uses PyIceberg for ACID transactions, snapshot management, time-travel,
     and schema evolution.  Reads and writes via PyArrow integration.
 
-    Satisfies ``CollectionStorageDriverProtocol`` and ``StorageLocationResolver``.
+    Satisfies ``CollectionItemsStore`` and ``StorageLocationResolver``.
     """
 
     priority: int = 20
@@ -149,11 +156,13 @@ class DriverRecordsIceberg(ModuleProtocol):
         Capability.SOURCE_REFERENCE,
         Capability.EXTERNAL_ID_TRACKING,
         Capability.TEMPORAL_VALIDITY,
+        Capability.PHYSICAL_ADDRESSING,
+        Capability.SOFT_DELETE_ATOMIC,
         # REQUIRED_ENFORCEMENT / UNIQUE_ENFORCEMENT: not advertised.
         # Iceberg schema here stores feature properties as a single StringType
         # blob, so field-level required/unique cannot be enforced natively.
         # (Iceberg also has no UNIQUE primitive at all.)
-        # Opt into app-level fallback via FeatureTypePluginConfig.allow_app_level_enforcement.
+        # Opt into app-level fallback via IntrospectedSchema.allow_app_level_enforcement.
     })
     preferred_for: FrozenSet[str] = frozenset({"analytics", "features", "write"})
     supported_hints: FrozenSet[str] = frozenset({"analytics", "features", "write"})
@@ -171,45 +180,43 @@ class DriverRecordsIceberg(ModuleProtocol):
         collection_id: Optional[str] = None,
         *,
         db_resource: Optional[Any] = None,
-    ) -> "DriverRecordsIcebergConfig":
+    ) -> "CollectionIcebergDriverConfig":
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.tools.discovery import get_protocol
 
         configs = get_protocol(ConfigsProtocol)
         if configs is None:
-            return DriverRecordsIcebergConfig()
+            return CollectionIcebergDriverConfig()
         config = await configs.get_config(
-            DriverRecordsIcebergConfig,
+            CollectionIcebergDriverConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
             ctx=DriverContext(db_resource=db_resource),
         )
-        if not isinstance(config, DriverRecordsIcebergConfig):
-            return DriverRecordsIcebergConfig()
+        if not isinstance(config, CollectionIcebergDriverConfig):
+            return CollectionIcebergDriverConfig()
         return config
 
     @asynccontextmanager
     async def lifespan(self, app_state: object):
-        logger.info("DriverRecordsIceberg: started")
+        logger.info("CollectionIcebergDriver: started")
         yield
         self._catalog_cache.clear()
-        logger.info("DriverRecordsIceberg: stopped")
+        logger.info("CollectionIcebergDriver: stopped")
 
     # ------------------------------------------------------------------
     # Catalog & warehouse resolution
     # ------------------------------------------------------------------
 
-    async def _resolve_warehouse(
-        self, loc: DriverRecordsIcebergConfig, catalog_id: str
-    ) -> str:
-        """Resolve warehouse URI: explicit config > StorageProtocol auto-detect > local fallback.
+    async def _resolve_warehouse(self, catalog_id: str) -> str:
+        """Resolve warehouse URI: IcebergConfig env var > StorageProtocol > local fallback.
 
         When a collection already has a GCS bucket (via StorageProtocol),
         the warehouse is automatically derived from that bucket with an
         ``iceberg/`` subfolder for isolation.
         """
-        if loc.warehouse_uri:
-            return loc.warehouse_uri
+        if IcebergConfig.warehouse_uri:
+            return IcebergConfig.warehouse_uri
 
         # Auto-detect from platform StorageProtocol (GCS today, S3 in future)
         try:
@@ -232,13 +239,10 @@ class DriverRecordsIceberg(ModuleProtocol):
         import tempfile
         return f"file://{tempfile.gettempdir()}/iceberg_warehouse"
 
-    def _load_catalog_sync(
-        self,
-        loc: DriverRecordsIcebergConfig,
-        warehouse: Optional[str] = None,
-    ):
+    def _load_catalog_sync(self, warehouse: Optional[str] = None):
         """Build a PyIceberg catalog (sync, blocking — called via run_in_thread).
 
+        Reads catalog connection config from ``IcebergConfig`` env vars.
         Uses ``pyiceberg.catalog.CatalogType`` enum and PyIceberg constants
         (``TYPE``, ``URI``, ``WAREHOUSE_LOCATION``) instead of string literals.
         """
@@ -251,21 +255,21 @@ class DriverRecordsIceberg(ModuleProtocol):
         )
 
         # Resolve catalog type via enum (default: SQL)
-        raw_type = (loc.catalog_type or "sql").lower()
+        raw_type = IcebergConfig.catalog_type.lower()
         try:
             cat_type = CatalogType(raw_type)
         except ValueError:
             cat_type = CatalogType.SQL
             logger.warning(
-                "Unknown catalog_type %r, falling back to %s",
+                "Unknown ICEBERG_CATALOG_TYPE %r, falling back to %s",
                 raw_type, cat_type.value,
             )
 
         catalog_props: Dict[str, Any] = {_TYPE: cat_type.value}
 
         # URI resolution
-        if loc.catalog_uri:
-            catalog_props[_URI] = loc.catalog_uri
+        if IcebergConfig.catalog_uri:
+            catalog_props[_URI] = IcebergConfig.catalog_uri
         elif cat_type == CatalogType.SQL:
             from dynastore.modules.db_config.db_config import DBConfig
             from dynastore.modules.db_config.tools import normalize_db_url
@@ -277,8 +281,8 @@ class DriverRecordsIceberg(ModuleProtocol):
             catalog_props[_URI] = sync_url
 
         # Extra catalog-specific properties
-        if loc.catalog_properties:
-            catalog_props.update(loc.catalog_properties)
+        if IcebergConfig.catalog_properties:
+            catalog_props.update(IcebergConfig.catalog_properties)
 
         # Warehouse resolution
         if _WAREHOUSE not in catalog_props:
@@ -302,27 +306,29 @@ class DriverRecordsIceberg(ModuleProtocol):
         # Future: elif resolved_wh.startswith("s3://"):
         #     from pyiceberg.io import S3_REGION, S3_ACCESS_KEY_ID, ...
 
-        catalog = load_catalog(
-            loc.catalog_name or "default", **catalog_props
-        )
+        catalog = load_catalog(IcebergConfig.catalog_name, **catalog_props)
         logger.debug(
-            "DriverRecordsIceberg: loaded %s catalog '%s' (warehouse=%s)",
+            "CollectionIcebergDriver: loaded %s catalog '%s' (warehouse=%s)",
             cat_type.value,
-            loc.catalog_name or "default",
+            IcebergConfig.catalog_name,
             resolved_wh or "none",
         )
         return catalog
 
     async def _ensure_catalog(
-        self, loc: DriverRecordsIcebergConfig, catalog_id: str
+        self, loc: CollectionIcebergDriverConfig, catalog_id: str
     ):
         """Thread-safe catalog resolution with async lock.
 
-        Uses double-checked locking: fast path (no lock) for cache hit,
-        lock-protected path for cache miss with ``run_in_thread`` to
-        offload the blocking ``load_catalog()`` call.
+        Catalog connection config comes from ``IcebergConfig`` env vars — it is
+        fixed for the process lifetime.  Uses double-checked locking: fast path
+        (no lock) for cache hit, lock-protected path for cache miss with
+        ``run_in_thread`` to offload the blocking ``load_catalog()`` call.
         """
-        loc_key = f"{loc.catalog_name}:{loc.catalog_uri}:{loc.catalog_type}"
+        loc_key = (
+            f"{IcebergConfig.catalog_name}:{IcebergConfig.catalog_uri}"
+            f":{IcebergConfig.catalog_type}"
+        )
 
         # Fast path: cache hit (no lock)
         if loc_key in self._catalog_cache:
@@ -333,15 +339,13 @@ class DriverRecordsIceberg(ModuleProtocol):
             if loc_key in self._catalog_cache:
                 return self._catalog_cache[loc_key]
 
-            warehouse = await self._resolve_warehouse(loc, catalog_id)
-            catalog = await run_in_thread(
-                self._load_catalog_sync, loc, warehouse
-            )
+            warehouse = await self._resolve_warehouse(catalog_id)
+            catalog = await run_in_thread(self._load_catalog_sync, warehouse)
             self._catalog_cache[loc_key] = catalog
             return catalog
 
     def _table_identifier(
-        self, loc: DriverRecordsIcebergConfig, catalog_id: str, collection_id: str
+        self, loc: CollectionIcebergDriverConfig, catalog_id: str, collection_id: str
     ) -> tuple:
         """Build Iceberg table identifier: (namespace, table_name)."""
         namespace = loc.namespace or catalog_id
@@ -350,8 +354,8 @@ class DriverRecordsIceberg(ModuleProtocol):
 
     async def _get_location_async(
         self, catalog_id: str, collection_id: Optional[str] = None
-    ) -> Optional[DriverRecordsIcebergConfig]:
-        """Resolve DriverRecordsIcebergConfig from the config waterfall."""
+    ) -> Optional[CollectionIcebergDriverConfig]:
+        """Resolve CollectionIcebergDriverConfig from the config waterfall."""
         try:
             from dynastore.tools.discovery import get_protocol
             from dynastore.models.protocols.configs import ConfigsProtocol
@@ -360,18 +364,18 @@ class DriverRecordsIceberg(ModuleProtocol):
             if not configs:
                 return None
             config = await configs.get_config(
-                DriverRecordsIcebergConfig,
+                CollectionIcebergDriverConfig,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )
-            if isinstance(config, DriverRecordsIcebergConfig):
+            if isinstance(config, CollectionIcebergDriverConfig):
                 return config
             return None
         except Exception:
             return None
 
     # ------------------------------------------------------------------
-    # CollectionStorageDriverProtocol
+    # CollectionItemsStore
     # ------------------------------------------------------------------
 
     async def write_entities(
@@ -402,7 +406,7 @@ class DriverRecordsIceberg(ModuleProtocol):
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
             raise RuntimeError(
-                "DriverRecordsIceberg: no OTF location config found"
+                "CollectionIcebergDriver: no OTF location config found"
             )
 
         import pyarrow as pa
@@ -589,12 +593,14 @@ class DriverRecordsIceberg(ModuleProtocol):
             result = {}
             for field in table.schema().fields:
                 type_str = str(field.field_type).lower()
+                field_required = bool(getattr(field, "required", False))
                 for key, (data_type, caps) in iceberg_type_map.items():
                     if key in type_str:
                         result[field.name] = ProtocolFieldDefinition(
                             name=field.name,
                             data_type=data_type,
                             capabilities=caps,
+                            required=field_required,
                         )
                         break
                 else:
@@ -602,7 +608,26 @@ class DriverRecordsIceberg(ModuleProtocol):
                         name=field.name,
                         data_type="string",
                         capabilities=[FieldCapability.FILTERABLE],
+                        required=field_required,
                     )
+
+            # Overlay CollectionSchema-declared flags (required / unique).
+            try:
+                from dynastore.models.protocols.configs import ConfigsProtocol
+                from dynastore.modules.storage.driver_config import CollectionSchema
+                from dynastore.modules.storage.field_constraints import overlay_schema_flags
+                from dynastore.tools.discovery import get_protocol
+
+                configs = get_protocol(ConfigsProtocol)
+                if configs is not None:
+                    schema_cfg = await configs.get_config(
+                        CollectionSchema,
+                        catalog_id=catalog_id,
+                        collection_id=collection_id,
+                    )
+                    result = overlay_schema_flags(schema_cfg, result)
+            except Exception:
+                pass
             return result
         except Exception:
             return {}
@@ -738,7 +763,7 @@ class DriverRecordsIceberg(ModuleProtocol):
     ) -> int:
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
-            raise RuntimeError("DriverRecordsIceberg: no location config")
+            raise RuntimeError("CollectionIcebergDriver: no location config")
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
@@ -767,7 +792,7 @@ class DriverRecordsIceberg(ModuleProtocol):
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
             logger.warning(
-                "DriverRecordsIceberg.ensure_storage: no location config for "
+                "CollectionIcebergDriver.ensure_storage: no location config for "
                 "catalog=%s collection=%s", catalog_id, collection_id,
             )
             return
@@ -794,6 +819,34 @@ class DriverRecordsIceberg(ModuleProtocol):
                 )
                 await run_in_thread(catalog.create_table, table_id, schema=iceberg_schema)
 
+            # Warn on unique=True fields — Iceberg has no native UNIQUE enforcement.
+            try:
+                from dynastore.models.protocols.configs import ConfigsProtocol
+                from dynastore.modules.storage.driver_config import CollectionSchema
+                from dynastore.tools.discovery import get_protocol
+
+                configs = get_protocol(ConfigsProtocol)
+                if configs is not None:
+                    schema_cfg = await configs.get_config(
+                        CollectionSchema,
+                        catalog_id=catalog_id,
+                        collection_id=collection_id,
+                    )
+                    if schema_cfg is not None:
+                        unique_fields = [
+                            name for name, fd in getattr(schema_cfg, "fields", {}).items()
+                            if getattr(fd, "unique", False)
+                        ]
+                        if unique_fields:
+                            logger.warning(
+                                "CollectionIcebergDriver: unique=True on fields %s for "
+                                "catalog=%s collection=%s — Iceberg has no native UNIQUE "
+                                "enforcement; uniqueness is advisory only.",
+                                unique_fields, catalog_id, collection_id,
+                            )
+            except Exception:
+                pass
+
     async def drop_storage(
         self,
         catalog_id: str,
@@ -809,7 +862,7 @@ class DriverRecordsIceberg(ModuleProtocol):
 
         if soft:
             logger.info(
-                "DriverRecordsIceberg.drop_storage(soft=True): "
+                "CollectionIcebergDriver.drop_storage(soft=True): "
                 "catalog=%s collection=%s — table retained, tagged as deprecated",
                 catalog_id, collection_id,
             )
@@ -856,7 +909,7 @@ class DriverRecordsIceberg(ModuleProtocol):
     ) -> str:
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
-            raise ValueError("DriverRecordsIceberg: no location config for export")
+            raise ValueError("CollectionIcebergDriver: no location config for export")
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
@@ -891,11 +944,34 @@ class DriverRecordsIceberg(ModuleProtocol):
         collection_id: Optional[str] = None,
         *,
         db_resource: Optional[Any] = None,
-    ) -> DriverRecordsIcebergConfig:
+    ) -> CollectionIcebergDriverConfig:
         loc = await self._get_location_async(catalog_id, collection_id)
         if loc:
             return loc
-        return DriverRecordsIcebergConfig()
+        return CollectionIcebergDriverConfig()
+
+    async def location(
+        self,
+        catalog_id: str,
+        collection_id: str,
+    ) -> "StorageLocation":
+        """Return typed physical storage coordinates for this Iceberg collection."""
+        from dynastore.modules.storage.storage_location import StorageLocation
+
+        loc = await self._get_location_async(catalog_id, collection_id)
+        catalog_name = IcebergConfig.catalog_name
+        namespace = (loc.namespace if loc else None) or catalog_id
+        table_name = (loc.table_name if loc else None) or collection_id
+        return StorageLocation(
+            backend="iceberg",
+            canonical_uri=f"iceberg://{catalog_name}/{namespace}/{table_name}",
+            identifiers={
+                "catalog": catalog_name,
+                "namespace": namespace,
+                "table": table_name,
+            },
+            display_label=f"{namespace}.{table_name}",
+        )
 
     # ------------------------------------------------------------------
     # OTF Operations — called by CatalogService when capabilities match
@@ -946,7 +1022,7 @@ class DriverRecordsIceberg(ModuleProtocol):
 
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
-            raise RuntimeError("DriverRecordsIceberg: no location config")
+            raise RuntimeError("CollectionIcebergDriver: no location config")
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
@@ -981,7 +1057,7 @@ class DriverRecordsIceberg(ModuleProtocol):
         """Rollback collection to a previous snapshot."""
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
-            raise RuntimeError("DriverRecordsIceberg: no location config")
+            raise RuntimeError("CollectionIcebergDriver: no location config")
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
@@ -1134,7 +1210,7 @@ class DriverRecordsIceberg(ModuleProtocol):
 
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
-            raise RuntimeError("DriverRecordsIceberg: no location config")
+            raise RuntimeError("CollectionIcebergDriver: no location config")
 
         catalog = await self._ensure_catalog(loc, catalog_id)
         table_id = self._table_identifier(loc, catalog_id, collection_id)
@@ -1234,7 +1310,7 @@ class DriverRecordsIceberg(ModuleProtocol):
             table = await run_in_thread(catalog.load_table, table_id)
         except Exception:
             logger.warning(
-                "DriverRecordsIceberg.set_collection_metadata: table not found "
+                "CollectionIcebergDriver.set_collection_metadata: table not found "
                 "for catalog=%s collection=%s", catalog_id, collection_id,
             )
             return

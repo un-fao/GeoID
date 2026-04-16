@@ -63,7 +63,7 @@ class PluginSchemaInfo(BaseModel):
 class ConfigEntry(BaseModel):
     """A single configuration entry as returned by list/search endpoints."""
 
-    plugin_id: str = Field(..., description="Unique plugin identifier.", examples=["driver:records:postgresql"])
+    plugin_id: str = Field(..., description="Unique plugin identifier.", examples=["CollectionPostgresqlDriverConfig"])
     config_data: Dict[str, Any] = Field(..., description="The stored configuration payload.")
     updated_at: Optional[datetime] = Field(None, description="Last modification timestamp (UTC).")
 
@@ -85,7 +85,7 @@ class EffectiveConfigResponse(BaseModel):
     or a fallback default.
     """
 
-    plugin_id: str = Field(..., examples=["driver:records:postgresql"])
+    plugin_id: str = Field(..., examples=["CollectionPostgresqlDriverConfig"])
     config: Dict[str, Any] = Field(..., description="Effective configuration payload.")
     resolved_from: Optional[ConfigLevel] = Field(
         None,
@@ -128,8 +128,8 @@ class DriverListResponse(BaseModel):
 
     Outer key is the domain (``"collections"``, ``"assets"``,
     ``"collection_metadata"``) — matches the slot in routing config.
-    Inner key is the implementation class name (e.g. ``"DriverRecordsPostgresql"``),
-    used as the ``driver_id`` in ``collection:drivers`` / ``assets:drivers``.
+    Inner key is the implementation class name (e.g. ``"CollectionPostgresqlDriver"``),
+    used as the ``driver_id`` in ``CollectionRoutingConfig`` / ``AssetRoutingConfig``.
     """
 
     drivers: Dict[str, Dict[str, DriverInfo]] = Field(
@@ -147,9 +147,9 @@ class PluginListResponse(BaseModel):
             [
                 "collection",
                 "stac",
-                "collection:drivers",
-                "assets:drivers",
-                "driver:records:postgresql",
+                "CollectionRoutingConfig",
+                "AssetRoutingConfig",
+                "CollectionPostgresqlDriverConfig",
                 "driver:asset:postgresql",
                 "driver:collection:metadata:elasticsearch",
                 "tiles",
@@ -732,7 +732,7 @@ _TASKS_EXAMPLE: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 PLUGIN_EXAMPLES: Dict[str, List[Dict[str, Any]]] = {
-    "RoutingPluginConfig": [
+    "CollectionRoutingConfig": [
         _ROUTING_PG_EXAMPLE,
         _ROUTING_PG_ES_EXAMPLE,
         _ROUTING_ES_ONLY_EXAMPLE,
@@ -741,30 +741,30 @@ PLUGIN_EXAMPLES: Dict[str, List[Dict[str, Any]]] = {
         _ROUTING_GEOPARQUET_EXAMPLE,
         _ROUTING_PG_ES_WITH_METADATA_EXAMPLE,
     ],
-    "AssetRoutingPluginConfig": [
+    "AssetRoutingConfig": [
         _ROUTING_ASSETS_PG_EXAMPLE,
         _ROUTING_ASSETS_ES_EXAMPLE,
     ],
-    "DriverRecordsPostgresqlConfig": [
+    "CollectionPostgresqlDriverConfig": [
         _DRIVER_PG_MINIMAL_EXAMPLE,
         _DRIVER_PG_PARTITIONED_EXAMPLE,
     ],
-    "DriverRecordsElasticsearchConfig": [
+    "CollectionElasticsearchDriverConfig": [
         _DRIVER_ES_EXAMPLE,
         _DRIVER_ES_RASTER_EXAMPLE,
         _DRIVER_ES_CUSTOM_MAPPING_EXAMPLE,
     ],
-    "DriverAssetElasticsearchConfig": [
+    "AssetElasticsearchDriverConfig": [
         _DRIVER_ES_ASSETS_EXAMPLE,
     ],
-    "DriverRecordsDuckdbConfig": [
+    "CollectionDuckdbDriverConfig": [
         _DRIVER_DUCKDB_PARQUET_EXAMPLE,
         _DRIVER_DUCKDB_CSV_EXAMPLE,
         _DRIVER_DUCKDB_GEOPARQUET_EXAMPLE,
     ],
     "StacPluginConfig": [_STAC_MINIMAL_EXAMPLE, _STAC_DATACUBE_EXAMPLE],
     "CollectionPluginConfig": [_COLLECTION_EXAMPLE],
-    "TilesPluginConfig": [_TILES_EXAMPLE],
+    "TilesConfig": [_TILES_EXAMPLE],
     "FeaturesPluginConfig": [_FEATURES_EXAMPLE],
     "TasksPluginConfig": [_TASKS_EXAMPLE],
 }
@@ -795,9 +795,9 @@ class QuickStartConfigSet(BaseModel):
         json_schema_extra={
             "examples": [
                 {
-                    "collection:drivers": _ROUTING_PG_EXAMPLE["value"],
-                    "assets:drivers": _ROUTING_ASSETS_PG_EXAMPLE["value"],
-                    "driver:records:postgresql": _DRIVER_PG_MINIMAL_EXAMPLE["value"],
+                    "CollectionRoutingConfig": _ROUTING_PG_EXAMPLE["value"],
+                    "AssetRoutingConfig": _ROUTING_ASSETS_PG_EXAMPLE["value"],
+                    "CollectionPostgresqlDriverConfig": _DRIVER_PG_MINIMAL_EXAMPLE["value"],
                     "driver:asset:postgresql": {"enabled": True},
                     "stac": _STAC_MINIMAL_EXAMPLE["value"],
                     "collection": _COLLECTION_EXAMPLE["value"],

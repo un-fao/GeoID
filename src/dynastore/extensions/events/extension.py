@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 
 # Try to import EventsProtocol, create dummy if it doesn't exist yet for registry check
 try:
-    from dynastore.models.protocols.events import EventsProtocol
+    from dynastore.models.protocols.events import EventsProtocol  # type: ignore[assignment]
 except ImportError:
-    class EventsProtocol:
+    class EventsProtocol:  # type: ignore[no-redef]
         pass
 
 

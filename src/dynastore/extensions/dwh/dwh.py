@@ -430,6 +430,9 @@ class DwhService(ExtensionProtocol):
             )
 
         source_srid = meta["source_srid"]
+        col_config = meta.get("col_config")
+        phys_schema = meta.get("phys_schema")
+        phys_table = meta.get("phys_table")
 
         # 7. Stream Features (No Geometry)
         items_svc = get_protocol(ItemsProtocol)
@@ -492,7 +495,7 @@ class DwhService(ExtensionProtocol):
         # Use QueryOptimizer to handle geometry resolution (sidecars, transforms)
         from dynastore.modules.catalog.query_optimizer import QueryOptimizer
 
-        optimizer = QueryOptimizer(col_config)
+        optimizer = QueryOptimizer(col_config)  # type: ignore[arg-type]
         geom_req = QueryRequest(
             select=[
                 FieldSelection(
@@ -505,7 +508,7 @@ class DwhService(ExtensionProtocol):
             raw_params={"ids_filter": ids},
         )
         geom_sql, geom_params = optimizer.build_optimized_query(
-            geom_req, schema=phys_schema, table=phys_table
+            geom_req, schema=phys_schema, table=phys_table  # type: ignore[arg-type]
         )
 
         # Merge params

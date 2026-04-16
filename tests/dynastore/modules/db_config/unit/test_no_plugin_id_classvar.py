@@ -1,7 +1,7 @@
-"""Architectural invariant: no PluginConfig subclass may declare `_plugin_id`.
+"""Architectural invariants for PluginConfig subclasses.
 
-Identity is the Pydantic class itself (via `class_key()` == `__qualname__`).
-Legacy string IDs are gone. This test prevents regression.
+Identity is the Pydantic class itself (via ``class_key()`` == ``__qualname__``).
+Legacy string IDs, Records-domain names, and Plugin-infix names are all banned.
 """
 from importlib.metadata import entry_points
 
@@ -15,6 +15,7 @@ def _load_all_modules() -> None:
 
 
 def test_no_plugin_id_classvar():
+    """No PluginConfig subclass may declare _plugin_id."""
     _load_all_modules()
     from dynastore.tools.typed_store.registry import TypedModelRegistry
     from dynastore.modules.db_config.platform_config_service import PluginConfig
@@ -25,12 +26,13 @@ def test_no_plugin_id_classvar():
         if "_plugin_id" in cls.__dict__
     ]
     assert not offenders, (
-        f"PluginConfig subclasses must not declare `_plugin_id`; identity is the class itself. "
+        "PluginConfig subclasses must not declare `_plugin_id`; identity is the class itself. "
         f"Offenders: {offenders}"
     )
 
 
 def test_no_legacy_class_keys():
+    """class_key must be PascalCase __qualname__ — no colon-separated IDs, no all-lowercase."""
     _load_all_modules()
     from dynastore.tools.typed_store.registry import TypedModelRegistry
     from dynastore.modules.db_config.platform_config_service import PluginConfig
@@ -41,3 +43,118 @@ def test_no_legacy_class_keys():
         if ":" in cls.class_key() or cls.class_key().islower()
     ]
     assert not bad, f"class_key must be PascalCase __qualname__; legacy keys found: {bad}"
+
+
+def test_no_class_key_classvar_override():
+    """No PluginConfig subclass may override _class_key — the class IS the identity."""
+    _load_all_modules()
+    from dynastore.tools.typed_store.registry import TypedModelRegistry
+    from dynastore.modules.db_config.platform_config_service import PluginConfig
+
+    offenders = [
+        cls.__qualname__
+        for cls in TypedModelRegistry.subclasses_of(PluginConfig)
+        if "_class_key" in cls.__dict__
+    ]
+    assert not offenders, (
+        "PluginConfig subclasses must not declare `_class_key`; "
+        "class_key() defaults to __qualname__. "
+        f"Offenders: {offenders}"
+    )
+
+
+def test_no_records_in_class_key():
+    """No class_key may contain 'Records' — drivers serve features/items, not OGC Records specifically."""
+    _load_all_modules()
+    from dynastore.tools.typed_store.registry import TypedModelRegistry
+    from dynastore.modules.db_config.platform_config_service import PluginConfig
+
+    bad = [
+        cls.class_key()
+        for cls in TypedModelRegistry.subclasses_of(PluginConfig)
+        if "Records" in cls.class_key()
+    ]
+    assert not bad, (
+        "class_key must not contain 'Records'; use Collection/Asset/Metadata role prefix. "
+        f"Offenders: {bad}"
+    )
+
+
+def test_no_plugin_infix_in_config_class_key():
+    """Storage/tiles config classes must not have 'Plugin' infix.
+
+    The classes renamed in M1 (RoutingPluginConfig → CollectionRoutingConfig,
+    FeatureTypePluginConfig → CollectionSchema, TilesPluginConfig → TilesConfig,
+    AssetRoutingPluginConfig → AssetRoutingConfig) must not regress.
+
+    Other modules (catalog, tasks) may have PluginConfig subclasses with "Plugin"
+    in their name that have not been renamed yet — they are in the explicit
+    allow-list below until their own rename milestone lands.
+    """
+    _load_all_modules()
+    from dynastore.tools.typed_store.registry import TypedModelRegistry
+    from dynastore.modules.db_config.platform_config_service import PluginConfig
+
+    # Base classes and modules not yet renamed — excluded from this guard.
+    _ALLOWED = {
+        "PluginConfig",           # the base class itself
+        "DriverPluginConfig",     # storage driver base
+        "CollectionPluginConfig", # catalog module — not yet renamed
+        "TasksPluginConfig",      # tasks module — not yet renamed
+    }
+
+    bad = [
+        cls.class_key()
+        for cls in TypedModelRegistry.subclasses_of(PluginConfig)
+        if "Plugin" in cls.class_key()
+        and cls.__name__ not in _ALLOWED
+    ]
+    assert not bad, (
+        "Config classes outside the allow-list must not contain 'Plugin' infix. "
+        "Update the allow-list or rename the class. "
+        f"Offenders: {bad}"
+    )
+
+
+def test_driver_config_naming_convention():
+    """Concrete driver config classes must follow '<Role><Backend>DriverConfig' pattern.
+
+    Rules:
+    - Must end in 'DriverConfig'
+    - Must start with a known role prefix: Collection, Asset, or Metadata
+    - Base classes (DriverPluginConfig, CollectionDriverConfig, AssetDriverConfig) are excluded
+    """
+    _load_all_modules()
+    from dynastore.tools.typed_store.registry import TypedModelRegistry
+    from dynastore.modules.db_config.platform_config_service import PluginConfig
+    from dynastore.modules.storage.driver_config import (
+        DriverPluginConfig,
+        CollectionDriverConfig,
+        AssetDriverConfig,
+    )
+
+    _BASE_CLASSES = {DriverPluginConfig, CollectionDriverConfig, AssetDriverConfig}
+    _ROLE_PREFIXES = ("Collection", "Asset", "Metadata")
+
+    concrete_driver_configs = [
+        cls for cls in TypedModelRegistry.subclasses_of(PluginConfig)
+        if issubclass(cls, DriverPluginConfig) and cls not in _BASE_CLASSES
+    ]
+
+    bad_suffix = [
+        cls.__name__ for cls in concrete_driver_configs
+        if not cls.__name__.endswith("DriverConfig")
+    ]
+    assert not bad_suffix, (
+        "Driver config classes must end in 'DriverConfig'. "
+        f"Offenders: {bad_suffix}"
+    )
+
+    bad_prefix = [
+        cls.__name__ for cls in concrete_driver_configs
+        if not any(cls.__name__.startswith(p) for p in _ROLE_PREFIXES)
+    ]
+    assert not bad_prefix, (
+        f"Driver config classes must start with one of {_ROLE_PREFIXES}. "
+        f"Offenders: {bad_prefix}"
+    )

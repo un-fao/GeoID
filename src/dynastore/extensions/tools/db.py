@@ -38,7 +38,7 @@ def get_async_engine(request: Request) -> AsyncEngine:
     # Fallback to Protocol
     db_service = get_protocol(DatabaseProtocol)
     if db_service and db_service.engine:
-        return db_service.engine
+        return db_service.engine  # type: ignore[return-value]
 
     raise RuntimeError(
         "Database service not available. The async engine is not initialized."

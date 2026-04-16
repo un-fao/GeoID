@@ -7,10 +7,10 @@ from dynastore.modules.catalog.config_service import (
     CollectionConfig,
 )
 from dynastore.modules.storage.driver_config import (
-    DriverRecordsPostgresqlConfig,
+    CollectionPostgresqlDriverConfig,
 )
 
-PG_DRIVER_PLUGIN_ID = DriverRecordsPostgresqlConfig
+PG_DRIVER_PLUGIN_ID = CollectionPostgresqlDriverConfig
 from dynastore.modules.db_config.exceptions import ImmutableConfigError
 
 
@@ -31,7 +31,7 @@ async def test_collection_config_immutability(
     config_manager = get_protocol(ConfigsProtocol)
 
     # 2. Set initial config
-    initial_config = DriverRecordsPostgresqlConfig()
+    initial_config = CollectionPostgresqlDriverConfig()
 
     # Configure geometry sidecar
     for sidecar in initial_config.sidecars:
@@ -107,7 +107,7 @@ async def test_platform_config_immutability(app_lifespan):
 
     try:
         # 1. Set initial platform config
-        initial_config = DriverRecordsPostgresqlConfig()
+        initial_config = CollectionPostgresqlDriverConfig()
         for sidecar in initial_config.sidecars:
             if sidecar.sidecar_type == "geometries":
                 sidecar.h3_resolutions = [10]
@@ -162,7 +162,7 @@ async def test_config_deletion(
         PG_DRIVER_PLUGIN_ID, catalog_id=catalog_id, collection_id=collection_id
     )
 
-    col_config = DriverRecordsPostgresqlConfig()
+    col_config = CollectionPostgresqlDriverConfig()
     for sidecar in col_config.sidecars:
         if sidecar.sidecar_type == "geometries":
             sidecar.h3_resolutions = [15]

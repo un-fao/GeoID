@@ -42,7 +42,7 @@ class AttributeMappingItem(BaseModel):
 
 class ColumnMappingConfig(BaseModel):
     """Defines how source file columns map to database fields."""
-    external_id: str = Field(None, description="The source column that serves as a unique identifier for each feature.")
+    external_id: Optional[str] = Field(None, description="The source column that serves as a unique identifier for each feature.")
     geometry_wkb: Optional[str] = Field(None, description="For Parquet files, the column containing geometry in WKB format.")
     csv_wkt_column: Optional[str] = Field(None, description="For CSV files, the column containing geometry in WKT format.")
     csv_lat_column: Optional[str] = Field(None, description="For CSV files, the column containing latitude.")

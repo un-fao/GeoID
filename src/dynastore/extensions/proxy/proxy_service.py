@@ -261,7 +261,7 @@ class ProxyService(ExtensionProtocol):
         if stats_service:
             stats_service.log_access(
                 request=request,
-                background_tasks=background_tasks,
+                background_tasks=background_tasks,  # type: ignore[call-arg]
                 status_code=307,
                 processing_time_ms=0,
                 details={"short_key": short_key},
@@ -313,7 +313,7 @@ class ProxyService(ExtensionProtocol):
         The collection_id in the path serves as semantic context.
         """
         # We reuse the same logic
-        return await ProxyService.redirect_endpoint(
+        return await ProxyService.redirect_endpoint(  # type: ignore[attr-defined]
             catalog_id=catalog_id,
             short_key=short_key,
             request=request,
@@ -325,7 +325,7 @@ class ProxyService(ExtensionProtocol):
     # --- PROXY ENDPOINTS ---
 
     def _register_proxy_endpoint(self):
-        existing_function_names = {r.endpoint.__name__ for r in self.router.routes}
+        existing_function_names = {r.endpoint.__name__ for r in self.router.routes}  # type: ignore[attr-defined]
 
         if "proxy_root_endpoint" in existing_function_names:
             logger.debug(
@@ -366,10 +366,10 @@ class ProxyService(ExtensionProtocol):
                 }
 
                 headers = forwarded_headers.copy()
-                headers["host"] = base_url.host.encode("ascii")
-                headers["x-forwarded-for"] = request.client.host
+                headers["host"] = base_url.host.encode("ascii")  # type: ignore[assignment]
+                headers["x-forwarded-for"] = request.client.host  # type: ignore[union-attr]
                 headers["x-forwarded-proto"] = request.url.scheme
-                headers["x-real-ip"] = request.client.host
+                headers["x-real-ip"] = request.client.host  # type: ignore[union-attr]
 
                 proxy_req = proxy_client.build_request(
                     request.method,
@@ -385,7 +385,7 @@ class ProxyService(ExtensionProtocol):
                 if stats_service:
                     stats_service.log_access(
                         request=request,
-                        background_tasks=background_tasks,
+                        background_tasks=background_tasks,  # type: ignore[call-arg]
                         status_code=proxy_resp.status_code,
                         processing_time_ms=0,
                         details={"short_key": short_key, "proxy_target": long_url},
@@ -536,7 +536,7 @@ class ProxyService(ExtensionProtocol):
             catalogs = get_protocol(CatalogsProtocol)
             from dynastore.modules.db_config.query_executor import DDLQuery
 
-            phys_schema = await catalogs.resolve_physical_schema(catalog_id)
+            phys_schema = await catalogs.resolve_physical_schema(catalog_id)  # type: ignore[union-attr]
             if phys_schema:
                 # We don't have collection_id here, but we can delete by short_key
                 del_query = DDLQuery(

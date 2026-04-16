@@ -18,7 +18,7 @@
 Schema Evolution Engine for DynaStore collections.
 
 Compares a collection's physical database schema against the DDL that would be
-generated from its current ``DriverRecordsPostgresqlConfig``, and produces a
+generated from its current ``CollectionPostgresqlDriverConfig``, and produces a
 structured ``EvolutionPlan`` classifying every difference as **safe** or
 **unsafe**.
 
@@ -134,7 +134,7 @@ class TableSchema:
 
 
 @dataclass
-class CollectionSchema:
+class IntrospectedSchema:
     """Full physical schema snapshot: hub + all sidecar tables."""
 
     hub: TableSchema
@@ -310,7 +310,7 @@ class SchemaEvolutionEngine:
 
     async def introspect_collection(
         self, engine: DbResource, schema: str, physical_table: str
-    ) -> CollectionSchema:
+    ) -> IntrospectedSchema:
         """Introspect the full collection: hub table + all sidecar tables."""
         hub = await self.introspect_table(engine, schema, physical_table)
         if hub is None:
@@ -318,7 +318,7 @@ class SchemaEvolutionEngine:
                 f"Hub table '{schema}.{physical_table}' does not exist."
             )
 
-        cs = CollectionSchema(hub=hub)
+        cs = IntrospectedSchema(hub=hub)
 
         # Discover sidecar tables by naming convention: {physical_table}_{sidecar_id}
         discover_sql = """
@@ -355,8 +355,8 @@ class SchemaEvolutionEngine:
 
     def diff(
         self,
-        current: CollectionSchema,
-        target_config: Any,  # DriverRecordsPostgresqlConfig
+        current: IntrospectedSchema,
+        target_config: Any,  # CollectionPostgresqlDriverConfig
         physical_table: str,
         partition_keys: List[str],
         partition_key_types: Dict[str, str],
@@ -365,8 +365,8 @@ class SchemaEvolutionEngine:
         Compare current physical schema against target config.
 
         Args:
-            current: Introspected CollectionSchema.
-            target_config: DriverRecordsPostgresqlConfig with desired state.
+            current: Introspected IntrospectedSchema.
+            target_config: CollectionPostgresqlDriverConfig with desired state.
             physical_table: Physical table base name.
             partition_keys: Resolved partition keys.
             partition_key_types: Map of partition key → SQL type.

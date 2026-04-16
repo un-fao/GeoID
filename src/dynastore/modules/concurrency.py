@@ -18,7 +18,7 @@
 
 import asyncio
 import logging
-from typing import Callable, Awaitable, Any
+from typing import Callable, Awaitable, Coroutine, Any
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ async def run_in_thread(func: Callable[..., Any], *args: Any, **kwargs: Any) -> 
 # Global set to track active background tasks (prevent GC and allow waiting in tests)
 _background_tasks: set[asyncio.Task] = set()
 
-def run_in_background(coro: Awaitable[Any], name: str = "background_task") -> asyncio.Task:
+def run_in_background(coro: Coroutine[Any, Any, Any], name: str = "background_task") -> asyncio.Task:
     """
     Schedules a coroutine to run in the background.
     Keeps a strong reference to the task to prevent garbage collection 

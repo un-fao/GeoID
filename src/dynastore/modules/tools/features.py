@@ -184,12 +184,13 @@ async def stream_features(
 
     # 4. Stream
     try:
-        async for item in items_svc.stream_items(
+        response = await items_svc.stream_items(
             catalog_id=config.catalog,
             collection_id=config.collection,
             request=req,
             ctx=DriverContext(db_resource=db_resource) if db_resource else None,
-        ):
+        )
+        async for item in response.items:
             yield item
     except Exception as e:
         logger.error(f"Streaming failed: {e}")

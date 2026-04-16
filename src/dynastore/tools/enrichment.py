@@ -73,7 +73,7 @@ async def get_enrichment_data(
     for caching the result when appropriate.
 
     Args:
-        driver: A ``CollectionStorageDriverProtocol`` with ENRICHMENT capability.
+        driver: A ``CollectionItemsStore`` with ENRICHMENT capability.
         catalog_id: The catalog that owns the collection.
         collection_id: The collection to read enrichment data from.
         join_column: Feature property key used as join key.

@@ -35,6 +35,9 @@ async def execute_sql_script(conn: DbResource, script_path: str, lock_key: str =
         return
 
     async with acquire_startup_lock(conn, lock_key) as active_conn:
+        if active_conn is None:
+            logger.warning("Could not acquire startup lock. Skipping SQL script execution.")
+            return
         logger.info(f"Acquired startup lock '{lock_key}'. Executing SQL script: {script_path}")
         try:
             with open(script_path, "r") as f:

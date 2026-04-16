@@ -142,7 +142,10 @@ Hard-deletion of an ``owned_by`` asset with blocking references raises
 import json
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any, Union, Callable, Annotated
+from typing import TYPE_CHECKING, List, Optional, Dict, Any, Union, Callable, Annotated
+
+if TYPE_CHECKING:
+    from dynastore.modules.storage.router import ResolvedDriver
 from sqlalchemy import text
 from dynastore.tools.cache import cached
 from pydantic import BaseModel, Field, ConfigDict
@@ -159,7 +162,7 @@ from dynastore.tools.json import CustomJSONEncoder
 from dynastore.tools.db import validate_sql_identifier
 from dynastore.modules.catalog.models import AssetReferenceType, CoreAssetReferenceType, EventType
 from dynastore.models.protocols.assets import AssetsProtocol
-from dynastore.models.protocols.asset_driver import AssetDriverProtocol
+from dynastore.models.protocols.asset_driver import AssetStore
 from dynastore.models.driver_context import DriverContext
 from dynastore.models.query_builder import FilterOperator
 from enum import Enum
@@ -491,6 +494,8 @@ class AssetService(AssetsProtocol):
         from dynastore.models.protocols.catalogs import CatalogsProtocol
 
         catalogs = get_protocol(CatalogsProtocol)
+        if catalogs is None:
+            return None
         return await catalogs.resolve_physical_schema(
             catalog_id, ctx=DriverContext(db_resource=db_resource)
         )
@@ -548,7 +553,7 @@ class AssetService(AssetsProtocol):
     ) -> List["ResolvedDriver"]:
         """Return non-primary WRITE asset drivers for fan-out.
 
-        Uses ``AssetRoutingPluginConfig`` via the router — the primary
+        Uses ``AssetRoutingConfig`` via the router — the primary
         (first) WRITE driver is excluded since the caller handles it
         separately.
 
@@ -935,9 +940,9 @@ class AssetService(AssetsProtocol):
         and secondary drivers.
         """
         from dynastore.modules.storage.router import get_asset_driver
-        from dynastore.modules.catalog.drivers.pg_asset_driver import DriverAssetPostgresql
+        from dynastore.modules.catalog.drivers.pg_asset_driver import AssetPostgresqlDriver
 
-        pg_driver = DriverAssetPostgresql(engine=db_resource or self.engine)
+        pg_driver = AssetPostgresqlDriver(engine=db_resource or self.engine)
         rowcount, rows_or_blocking = await pg_driver.delete_assets_bulk(
             catalog_id,
             asset_id=asset_id,
@@ -973,10 +978,8 @@ class AssetService(AssetsProtocol):
 
             # Build drivers to notify: non-PG primary + all secondaries
             drivers_to_delete = []
-            from dynastore.modules.catalog.drivers.pg_asset_driver import (
-                DriverAssetPostgresql,
-            )
-            if not isinstance(write_driver, DriverAssetPostgresql):
+            from dynastore.models.protocols.storage_driver import Capability
+            if Capability.QUERY_FALLBACK_SOURCE not in write_driver.capabilities:
                 from dynastore.modules.storage.router import ResolvedDriver
                 drivers_to_delete.append(
                     ResolvedDriver(driver=write_driver, on_failure=FailurePolicy.WARN)
@@ -1158,10 +1161,10 @@ class AssetService(AssetsProtocol):
         cascade_delete: bool = True,
         ctx: Optional[DriverContext] = None,
     ) -> AssetReference:
-        """Registers a dependency on an asset. Delegates to DriverAssetPostgresql."""
-        from dynastore.modules.catalog.drivers.pg_asset_driver import DriverAssetPostgresql
+        """Registers a dependency on an asset. Delegates to AssetPostgresqlDriver."""
+        from dynastore.modules.catalog.drivers.pg_asset_driver import AssetPostgresqlDriver
         db_resource = ctx.db_resource if ctx else None
-        pg = DriverAssetPostgresql(engine=db_resource or self.engine)
+        pg = AssetPostgresqlDriver(engine=db_resource or self.engine)
         row = await pg.add_asset_reference(
             asset_id=asset_id,
             catalog_id=catalog_id,
@@ -1181,8 +1184,8 @@ class AssetService(AssetsProtocol):
         db_resource: Optional[DbResource] = None,
     ) -> None:
         """Removes a previously registered asset reference."""
-        from dynastore.modules.catalog.drivers.pg_asset_driver import DriverAssetPostgresql
-        pg = DriverAssetPostgresql(engine=db_resource or self.engine)
+        from dynastore.modules.catalog.drivers.pg_asset_driver import AssetPostgresqlDriver
+        pg = AssetPostgresqlDriver(engine=db_resource or self.engine)
         await pg.remove_asset_reference(
             asset_id=asset_id,
             catalog_id=catalog_id,
@@ -1198,8 +1201,8 @@ class AssetService(AssetsProtocol):
         db_resource: Optional[DbResource] = None,
     ) -> List[AssetReference]:
         """Returns all active references for the given asset."""
-        from dynastore.modules.catalog.drivers.pg_asset_driver import DriverAssetPostgresql
-        pg = DriverAssetPostgresql(engine=db_resource or self.engine)
+        from dynastore.modules.catalog.drivers.pg_asset_driver import AssetPostgresqlDriver
+        pg = AssetPostgresqlDriver(engine=db_resource or self.engine)
         rows = await pg.list_asset_references(
             asset_id=asset_id,
             catalog_id=catalog_id,
@@ -1215,8 +1218,8 @@ class AssetService(AssetsProtocol):
         phys_schema: str,
     ) -> List[AssetReference]:
         """Returns cascade_delete=False references for all given asset IDs in one round trip."""
-        from dynastore.modules.catalog.drivers.pg_asset_driver import DriverAssetPostgresql
-        pg = DriverAssetPostgresql(engine=conn)
+        from dynastore.modules.catalog.drivers.pg_asset_driver import AssetPostgresqlDriver
+        pg = AssetPostgresqlDriver(engine=conn)
         rows = await pg.check_blocking_references(
             asset_ids=asset_ids,
             catalog_id=catalog_id,
@@ -1226,5 +1229,5 @@ class AssetService(AssetsProtocol):
 
 
 # assets and asset_references tables are now created by
-# DriverAssetPostgresql._pg_asset_driver_init_tenant (priority 5) in
+# AssetPostgresqlDriver._pg_asset_driver_init_tenant (priority 5) in
 # modules/catalog/drivers/pg_asset_driver.py

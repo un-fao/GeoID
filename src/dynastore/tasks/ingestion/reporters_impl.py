@@ -50,7 +50,9 @@ class DatabaseStatusReporter(ReportingInterface):
         if not self.task_id:
             return
         async with managed_transaction(self.engine) as conn:
-            await tasks_module.update_task(conn, self.task_id, update_data, schema=self.schema)
+            import uuid as _uuid
+            task_uuid = _uuid.UUID(self.task_id) if isinstance(self.task_id, str) else self.task_id
+            await tasks_module.update_task(conn, task_uuid, update_data, schema=self.schema)
 
     async def task_started(self, task_id: str, collection_id: str, catalog_id: str, source_file: str):
         """Asynchronous entrypoint for task_started."""

@@ -33,7 +33,10 @@ logger = logging.getLogger(__name__)
 class PostgresProxyStorage(AbstractProxyStorage):
     """URL shortening in PG, analytics in Elasticsearch."""
 
-    name = "postgres"
+    @property
+    def name(self) -> str:
+        return "postgres"
+
     priority = 10
 
     def __init__(self):

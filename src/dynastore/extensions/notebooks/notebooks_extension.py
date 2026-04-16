@@ -138,7 +138,7 @@ class NotebooksExtension(ExtensionProtocol):
         description="Interactive notebooks for learning and documenting platform workflows.",
         priority=40,
     )
-    async def provide_notebooks_page(self, request: Request = None, language: str = "en"):
+    async def provide_notebooks_page(self, request: Optional[Request] = None, language: str = "en"):
         """Serve the notebooks browser HTML page."""
         html_path = os.path.join(self._static_dir, "notebooks.html")
         if not os.path.exists(html_path):
@@ -209,7 +209,7 @@ class NotebooksExtension(ExtensionProtocol):
         """Copy a platform notebook into a tenant catalog."""
         owner_id = str(current_user.id) if hasattr(current_user, "id") else None
         return await notebook_service.copy_from_platform(
-            catalog_id, platform_notebook_id, owner_id
+            catalog_id, platform_notebook_id, owner_id  # type: ignore[arg-type]
         )
 
     # ------------------------------------------------------------------

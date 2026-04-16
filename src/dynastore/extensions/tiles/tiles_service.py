@@ -59,7 +59,7 @@ import os
 from dynastore.modules.tiles import tiles_db
 from dynastore.tools.cache import cached
 from dynastore.modules.tiles.tiles_config import (
-    TilesPluginConfig,
+    TilesConfig,
     TilesPreseedConfig,
 )
 from dynastore.modules.tiles.tiles_models import (
@@ -564,7 +564,7 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
                     # If refresh_cache is True, invalidate the tile first
                     if refresh_cache:
                         try:
-                            await provider.delete_tile(
+                            await provider.delete_tile(  # type: ignore[attr-defined]
                                 dataset,
                                 effective_cache_id,
                                 tileMatrixSetId,
@@ -728,7 +728,7 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
             y=y,
             datetime_str=datetime_str,
             cql_filter=cql_filter,
-            subset_params=subset_params,
+            subset_params=subset_params,  # type: ignore[arg-type]
             simplification=simplification,
             simplification_algorithm=simplification_algorithm,
         )
@@ -736,9 +736,9 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
     @staticmethod
     async def _resolve_request_config(
         config_manager, dataset: str
-    ) -> TilesPluginConfig:
-        config = await config_manager.get_config(TilesPluginConfig, dataset)
-        if isinstance(config, TilesPluginConfig) and not config.enabled:
+    ) -> TilesConfig:
+        config = await config_manager.get_config(TilesConfig, dataset)
+        if isinstance(config, TilesConfig) and not config.enabled:
             raise HTTPException(
                 status_code=404, detail="Tiles are disabled for this catalog."
             )
@@ -749,14 +749,14 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
         config_manager,
         dataset: str,
         collections: List[str],
-        catalog_config: TilesPluginConfig,
+        catalog_config: TilesConfig,
     ) -> bool:
         catalog_cache = getattr(catalog_config, "cache_on_demand", True)
         if not catalog_cache:
             return False
         if len(collections) == 1:
             coll_config = await config_manager.get_config(
-                TilesPluginConfig, dataset, collections[0]
+                TilesConfig, dataset, collections[0]
             )
             return getattr(coll_config, "cache_on_demand", catalog_cache)
         return catalog_cache

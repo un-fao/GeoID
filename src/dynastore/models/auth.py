@@ -178,4 +178,4 @@ class Principal(BaseModel):
     @property
     def identity(self) -> Dict[str, str]:
         """Return identity dict."""
-        return {"provider": self.provider, "sub": self.subject_id}
+        return {"provider": self.provider, "sub": self.subject_id}  # type: ignore[return-value]

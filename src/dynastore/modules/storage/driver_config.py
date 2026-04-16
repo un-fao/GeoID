@@ -19,10 +19,10 @@
 """
 Per-driver plugin configurations.
 
-Each driver instance registers its own ``PluginConfig`` subclass with
-``_class_key = "driver:{domain}:{driver_id}"``.  The config is stored/retrieved via
-the existing config API and 4-tier waterfall
-(collection > catalog > platform > code defaults).
+Each driver config subclass is identified by its class name (``class_key()``
+defaults to ``__qualname__``).  The config is stored/retrieved via the existing
+config API and 4-tier waterfall (collection > catalog > platform > code defaults).
+Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
 
 Domain separation uses **class inheritance**:
 
@@ -31,9 +31,10 @@ Domain separation uses **class inheritance**:
 
 Capabilities describe *how* the driver operates (SYNC, ASYNC, TRANSACTIONAL,
 etc.), not *what operation* it performs.  Operations are defined in
-``RoutingPluginConfig`` (see ``routing_config.py``).
+``CollectionRoutingConfig`` (see ``routing_config.py``).
 """
 
+import json
 import os
 from enum import StrEnum
 from typing import Any, ClassVar, Dict, FrozenSet, List, Optional
@@ -58,6 +59,9 @@ class DuckDBConfig:
     Controls connection pooling, resource limits, and extension loading for
     the DuckDB storage driver.  Follows the same pattern as
     ``DBConfig`` (``DB_POOL_*``) and Elasticsearch (``ES_*``).
+
+    Per-collection configs (``CollectionDuckdbDriverConfig``) hold only file
+    paths and format overrides; they should be relative to ``data_root``.
     """
 
     pool_size: int = int(os.getenv("DUCKDB_POOL_SIZE", "4"))
@@ -67,16 +71,34 @@ class DuckDBConfig:
     read_timeout: int = int(os.getenv("DUCKDB_READ_TIMEOUT", "30"))
     write_timeout: int = int(os.getenv("DUCKDB_WRITE_TIMEOUT", "60"))
     fetch_chunk_size: int = int(os.getenv("DUCKDB_FETCH_CHUNK_SIZE", "500"))
+    data_root: str = os.getenv("DUCKDB_DATA_ROOT", "")
+
+
+_iceberg_catalog_props_env = os.getenv("ICEBERG_CATALOG_PROPERTIES")
 
 
 class IcebergConfig:
     """Iceberg driver-level configuration (env vars).
 
-    Controls catalog pool sizing and timeouts for the Iceberg storage driver.
+    Controls catalog connection, pool sizing, and timeouts for the Iceberg
+    storage driver.  All connection-level settings live here; per-collection
+    configs (``CollectionIcebergDriverConfig``) hold only table identifiers
+    (``namespace``, ``table_name``, ``partition_spec``, etc.).
     """
 
     catalog_pool_size: int = int(os.getenv("ICEBERG_CATALOG_POOL_SIZE", "4"))
     catalog_timeout: int = int(os.getenv("ICEBERG_CATALOG_TIMEOUT", "30"))
+    catalog_name: str = os.getenv("ICEBERG_CATALOG_NAME", "default")
+    catalog_type: str = os.getenv("ICEBERG_CATALOG_TYPE", "sql")
+    catalog_uri: Optional[str] = os.getenv("ICEBERG_CATALOG_URI")
+    warehouse_uri: Optional[str] = os.getenv("ICEBERG_WAREHOUSE_URI")
+    warehouse_scheme: Optional[str] = os.getenv("ICEBERG_WAREHOUSE_SCHEME")
+    catalog_properties: Optional[Dict[str, Any]] = (
+        json.loads(_iceberg_catalog_props_env) if _iceberg_catalog_props_env else None
+    )
+
+
+del _iceberg_catalog_props_env
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +183,7 @@ class AssetConflictPolicy(StrEnum):
 class CollectionWritePolicy(PluginConfig):
     """Collection-level write behaviour, applied by all capable drivers.
 
-    Registered as ``plugin_id = "collection:write_policy"`` in the config waterfall
+    Registered as ``CollectionWritePolicy`` in the config waterfall (identity: class_key)
     (collection > catalog > platform > code default).
 
     All drivers (PG, ES, Iceberg, DuckDB) read this single config during
@@ -269,6 +291,45 @@ class CollectionWritePolicy(PluginConfig):
 
 
 # ---------------------------------------------------------------------------
+# WritePolicyDefaults — M8: posture-only write policy (no field-name refs)
+# ---------------------------------------------------------------------------
+
+
+class WritePolicyDefaults(PluginConfig):
+    """Posture-only write policy for the platform / catalog waterfall.
+
+    Carries only posture flags — no references to specific field names.
+    Field-level constraints (identity key, validity, geohash precision)
+    live in ``CollectionSchema.constraints`` as ``IdentityKeyConstraint`` /
+    ``ValidityConstraint`` / ``ContentHashConstraint`` instances.
+
+    Note: ``CollectionWritePolicy`` remains the collection-intrinsic config
+    that carries field-name bindings for backward compatibility with existing
+    write infrastructure.  ``WritePolicyDefaults`` is the new waterfall-level
+    posture config.
+    """
+
+    on_conflict: WriteConflictPolicy = Field(
+        default=WriteConflictPolicy.UPDATE,
+        description=(
+            "Item-level default action when identity matches. "
+            "Overridden by per-collection CollectionWritePolicy.on_conflict."
+        ),
+    )
+    on_asset_conflict: Optional[AssetConflictPolicy] = Field(
+        default=None,
+        description="Asset-level (batch-level) conflict policy default. None = no check.",
+    )
+    require_identity_key: bool = Field(
+        default=False,
+        description=(
+            "If True, every collection at this scope must declare exactly one "
+            "IdentityKeyConstraint in CollectionSchema.constraints."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Base hierarchy
 # ---------------------------------------------------------------------------
 
@@ -276,8 +337,8 @@ class CollectionWritePolicy(PluginConfig):
 class DriverPluginConfig(PluginConfig):
     """Base for all per-driver configs.
 
-    Subclasses **must** set ``_class_key = "driver:{domain}:{driver_id}"`` to
-    auto-register with the typed-store class registry.
+    Subclasses are identified by their class name (``class_key()`` defaults to
+    ``__qualname__``).  No ``_class_key`` override is needed or allowed.
 
     Fields shared across all drivers:
 
@@ -308,7 +369,7 @@ class AssetDriverConfig(DriverPluginConfig):
 # ---------------------------------------------------------------------------
 
 
-class DriverRecordsPostgresqlConfig(CollectionDriverConfig):
+class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
     """PostgreSQL collection driver config.
 
     Absorbs fields previously in ``PostgresStorageLocationConfig`` and
@@ -403,7 +464,7 @@ class DriverRecordsPostgresqlConfig(CollectionDriverConfig):
         return data
 
     @model_validator(mode="after")
-    def validate_composite_partitioning(self) -> "DriverRecordsPostgresqlConfig":
+    def validate_composite_partitioning(self) -> "CollectionPostgresqlDriverConfig":
         """Validate partition keys are provided by configured sidecars."""
         if not self.partitioning.enabled:
             return self
@@ -423,7 +484,7 @@ class DriverRecordsPostgresqlConfig(CollectionDriverConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_sidecar_partition_mirroring(self) -> "DriverRecordsPostgresqlConfig":
+    def validate_sidecar_partition_mirroring(self) -> "CollectionPostgresqlDriverConfig":
         """Ensure all sidecars mirror the Hub's partition strategy."""
         if self.sidecars and self.partitioning.enabled:
             pass  # Enforced at sidecar DDL generation level
@@ -472,7 +533,7 @@ def _default_partitioning() -> Any:
     return CompositePartitionConfig()
 
 
-class DriverRecordsElasticsearchConfig(CollectionDriverConfig):
+class CollectionElasticsearchDriverConfig(CollectionDriverConfig):
     """Elasticsearch collection driver config.
 
     Uses the stac-fastapi-elasticsearch-opensearch (SFEOS) library by
@@ -501,7 +562,7 @@ class DriverRecordsElasticsearchConfig(CollectionDriverConfig):
     )
 
 
-class DuckDbCollectionDriverConfig(CollectionDriverConfig):
+class CollectionDuckdbDriverConfig(CollectionDriverConfig):
     """DuckDB collection driver config.
 
     Absorbs fields previously in ``FileStorageLocationConfig``.
@@ -518,10 +579,22 @@ class DuckDbCollectionDriverConfig(CollectionDriverConfig):
     )
 
 
-class DriverRecordsIcebergConfig(CollectionDriverConfig):
-    """Iceberg collection driver config.
+# Connection-level fields that belong in IcebergConfig (env), not per-collection rows.
+# The model_validator below rejects these on construction; the startup rewriter strips
+# them from any DB rows written before this constraint was enforced.
+_ICEBERG_CONNECTION_FIELDS: frozenset = frozenset({
+    "catalog_name", "catalog_uri", "catalog_type",
+    "catalog_properties", "warehouse_uri", "warehouse_scheme",
+})
 
-    Absorbs fields previously in ``OTFStorageLocationConfig``.
+
+class CollectionIcebergDriverConfig(CollectionDriverConfig):
+    """Iceberg per-collection config — table identifiers only.
+
+    Connection-level fields (``catalog_name``, ``catalog_uri``, ``catalog_type``,
+    ``catalog_properties``, ``warehouse_uri``, ``warehouse_scheme``) have moved to
+    ``IcebergConfig`` env vars (``ICEBERG_CATALOG_*``, ``ICEBERG_WAREHOUSE_*``).
+    Attempting to set them here raises ``ValueError``.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -530,33 +603,46 @@ class DriverRecordsIcebergConfig(CollectionDriverConfig):
         default=frozenset({DriverCapability.ASYNC, DriverCapability.BATCH}),
     )
 
-    # Catalog
-    catalog_name: Optional[str] = Field(
-        default=None, description="OTF catalog name (e.g., Glue, Hive, REST)"
-    )
-    catalog_uri: Optional[str] = Field(default=None, description="OTF catalog URI")
-    catalog_type: Optional[str] = Field(
-        default=None,
-        description="Catalog type: sql (default), rest, glue, hive, dynamodb",
-    )
-    catalog_properties: Optional[Dict[str, Any]] = Field(
-        default=None, description="Extra catalog-specific properties"
-    )
-
-    # Warehouse
-    warehouse_uri: Optional[str] = Field(
-        default=None, description="Manual override for warehouse URI."
-    )
-    warehouse_scheme: Optional[str] = Field(
-        default=None, description="Manual override for warehouse scheme (gs, s3, file)."
-    )
-
-    # Table location
+    # Table location (per-collection identifiers)
     namespace: Optional[str] = Field(default=None, description="OTF namespace/database")
     table_name: Optional[str] = Field(default=None, description="OTF table name")
     uri: Optional[str] = Field(
         default=None, description="Primary URI (s3://, gs://, file://, etc.)"
     )
+
+    # Table-level DDL hints (per-collection)
+    partition_spec: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="Iceberg partition spec as a list of field transforms, e.g. "
+                    "[{'name': 'year', 'transform': 'year', 'source': 'event_date'}].",
+    )
+    sort_order: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="Iceberg sort order as a list of sort fields, e.g. "
+                    "[{'name': 'id', 'direction': 'asc', 'null_order': 'nulls-last'}].",
+    )
+    table_properties: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Iceberg table properties set on create/update "
+                    "(e.g. {'write.format.default': 'parquet'}).",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_connection_fields(cls, data: Any) -> Any:
+        """Reject connection-level fields that must live in IcebergConfig env vars."""
+        if not isinstance(data, dict):
+            return data
+        found = _ICEBERG_CONNECTION_FIELDS & data.keys()
+        if found:
+            raise ValueError(
+                f"Connection-level fields {sorted(found)!r} must be configured via "
+                f"IcebergConfig env vars (ICEBERG_CATALOG_NAME, ICEBERG_CATALOG_URI, "
+                f"ICEBERG_CATALOG_TYPE, ICEBERG_CATALOG_PROPERTIES, "
+                f"ICEBERG_WAREHOUSE_URI, ICEBERG_WAREHOUSE_SCHEME), "
+                f"not stored in per-collection config."
+            )
+        return data
 
 
 # ---------------------------------------------------------------------------
@@ -564,7 +650,7 @@ class DriverRecordsIcebergConfig(CollectionDriverConfig):
 # ---------------------------------------------------------------------------
 
 
-class DriverAssetPostgresqlConfig(AssetDriverConfig):
+class AssetPostgresqlDriverConfig(AssetDriverConfig):
     """PostgreSQL asset driver config."""
 
     capabilities: FrozenSet[str] = Field(
@@ -572,7 +658,7 @@ class DriverAssetPostgresqlConfig(AssetDriverConfig):
     )
 
 
-class DriverAssetElasticsearchConfig(AssetDriverConfig):
+class AssetElasticsearchDriverConfig(AssetDriverConfig):
     """Elasticsearch asset driver config."""
 
     model_config = ConfigDict(extra="allow")
@@ -587,7 +673,7 @@ class DriverAssetElasticsearchConfig(AssetDriverConfig):
 # Convenience helpers
 # ---------------------------------------------------------------------------
 
-# CollectionWritePolicy / FeatureTypePluginConfig auto-register via
+# CollectionWritePolicy / CollectionSchema auto-register via
 # PluginConfig.__init_subclass__ — no explicit registration needed.
 
 from dynastore.models.protocols.field_definition import (  # noqa: E402
@@ -597,11 +683,25 @@ from dynastore.models.protocols.field_definition import (  # noqa: E402
 )
 
 
-class FeatureTypePluginConfig(PluginConfig):
-    """PluginConfig wrapper for FeatureTypeDefinition — registerable in the waterfall.
+class CollectionSchema(PluginConfig):
+    """Schema definition for a collection — registerable in the config waterfall.
 
-    Inherits all fields from the protocol-level ``FeatureTypeDefinition``
-    and adds ``PluginConfig`` compliance (``enabled``, ``_class_key``).
+    Defines the field structure and declarative constraints for collection items.
+    Replaces the former ``FeatureTypeConfig`` (M8).
+
+    Fields declared here drive DDL generation (PostgreSQL columns, Iceberg schema,
+    DuckDB CREATE TABLE) and optional service-layer enforcement.
+
+    ``constraints`` is an open list of :class:`~dynastore.modules.storage.schema_types.FieldConstraint`
+    instances, e.g.::
+
+        CollectionSchema(
+            fields={"feature_id": FieldDefinition(data_type="text")},
+            constraints=[
+                IdentityKeyConstraint(geohash_precision=7),
+                ValidityConstraint(field="valid_time"),
+            ],
+        )
     """
 
     level: _EntityLevel = _EntityLevel.ITEM
@@ -617,10 +717,17 @@ class FeatureTypePluginConfig(PluginConfig):
             "config admission is rejected for unsupported constraints."
         ),
     )
+    constraints: List[Any] = Field(
+        default_factory=list,
+        description=(
+            "Declarative field constraints (FieldConstraint subclass instances). "
+            "Examples: IdentityKeyConstraint, ValidityConstraint, ContentHashConstraint."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
-# Apply handler — write_policy ↔ feature_type cross-validation (Task E)
+# Apply handler — write_policy ↔ CollectionSchema cross-validation (Task E)
 # ---------------------------------------------------------------------------
 
 import logging as _logging  # noqa: E402
@@ -636,13 +743,13 @@ async def _on_apply_write_policy(
     collection_id: "Optional[str]",
     db_resource: "Optional[Any]",
 ) -> None:
-    """Cross-validate write_policy.external_id_field against feature_type.fields.
+    """Cross-validate write_policy.external_id_field against CollectionSchema.fields.
 
-    If ``external_id_field`` is set and a ``feature_type`` config exists at the
-    same scope, the referenced field must appear in ``feature_type.fields``.
+    If ``external_id_field`` is set and a ``CollectionSchema`` exists at the
+    same scope, the referenced field must appear in ``CollectionSchema.fields``.
 
     ``external_id_field = "geoid"`` or ``"id"`` are always accepted (system fields).
-    If ``feature_type`` is not yet configured, validation is skipped.
+    If ``CollectionSchema`` is not yet configured, validation is skipped.
     """
     if not isinstance(config, CollectionWritePolicy):
         return
@@ -664,21 +771,21 @@ async def _on_apply_write_policy(
         if not configs:
             return
 
-        feature_type = await configs.get_config(
-            FeatureTypePluginConfig,
+        schema = await configs.get_config(
+            CollectionSchema,
             catalog_id=catalog_id,
             collection_id=collection_id,
         )
-        defined_fields = getattr(feature_type, "fields", {})
+        defined_fields = getattr(schema, "fields", {})
         if not defined_fields:
             return  # no fields defined yet — skip validation
 
         if field_key not in defined_fields:
             raise ValueError(
                 f"write_policy.external_id_field '{ext_id}' (field key: '{field_key}') "
-                f"is not defined in feature_type.fields for {catalog_id}/{collection_id}. "
+                f"is not defined in CollectionSchema.fields for {catalog_id}/{collection_id}. "
                 f"Defined fields: {sorted(defined_fields)}. "
-                f"Set 'geoid' or 'id' to use system identity fields without feature_type restriction."
+                f"Set 'geoid' or 'id' to use system identity fields without schema restriction."
             )
     except ValueError:
         raise
@@ -693,11 +800,11 @@ CollectionWritePolicy.register_apply_handler(_on_apply_write_policy)
 
 
 # ---------------------------------------------------------------------------
-# Apply handler — feature_type required/unique vs primary-driver capabilities
+# Apply handler — CollectionSchema required/unique vs primary-driver capabilities
 # ---------------------------------------------------------------------------
 
 
-async def _on_apply_feature_type(
+async def _on_apply_collection_schema(
     config: PluginConfig,
     catalog_id: "Optional[str]",
     collection_id: "Optional[str]",
@@ -711,7 +818,7 @@ async def _on_apply_feature_type(
     ``allow_app_level_enforcement=True`` is set, which opts into service-layer
     fallback enforcement.
     """
-    if not isinstance(config, FeatureTypePluginConfig):
+    if not isinstance(config, CollectionSchema):
         return
     if not (catalog_id and collection_id):
         return
@@ -727,11 +834,11 @@ async def _on_apply_feature_type(
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.models.protocols.storage_driver import (
             Capability,
-            CollectionStorageDriverProtocol,
+            CollectionItemsStore,
         )
         from dynastore.modules.storage.routing_config import (
             Operation,
-            RoutingPluginConfig,
+            CollectionRoutingConfig,
         )
         from dynastore.tools.discovery import get_protocol, get_protocols
 
@@ -740,7 +847,7 @@ async def _on_apply_feature_type(
             return
 
         routing = await configs.get_config(
-            RoutingPluginConfig,
+            CollectionRoutingConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
         )
@@ -749,7 +856,7 @@ async def _on_apply_feature_type(
             return
         primary_id = write_entries[0].driver_id
 
-        drivers = get_protocols(CollectionStorageDriverProtocol) or []
+        drivers = get_protocols(CollectionItemsStore) or []
         primary = next(
             (d for d in drivers if getattr(d, "__class__", type(d)).__name__ == primary_id),
             None,
@@ -760,14 +867,14 @@ async def _on_apply_feature_type(
 
         if constrained_required and Capability.REQUIRED_ENFORCEMENT not in caps:
             raise ValueError(
-                f"feature_type declares required=True fields {constrained_required} "
+                f"CollectionSchema declares required=True fields {constrained_required} "
                 f"but primary write driver '{primary_id}' lacks REQUIRED_ENFORCEMENT. "
                 f"Switch primary driver, drop the constraints, or set "
                 f"allow_app_level_enforcement=True to opt into service-layer fallback."
             )
         if constrained_unique and Capability.UNIQUE_ENFORCEMENT not in caps:
             raise ValueError(
-                f"feature_type declares unique=True fields {constrained_unique} "
+                f"CollectionSchema declares unique=True fields {constrained_unique} "
                 f"but primary write driver '{primary_id}' lacks UNIQUE_ENFORCEMENT. "
                 f"Switch primary driver, drop the constraints, or set "
                 f"allow_app_level_enforcement=True to opt into service-layer fallback."
@@ -776,9 +883,9 @@ async def _on_apply_feature_type(
         raise
     except Exception as exc:
         _logger.debug(
-            "feature_type constraint validation skipped for %s/%s: %s",
+            "schema constraint validation skipped for %s/%s: %s",
             catalog_id, collection_id, exc,
         )
 
 
-FeatureTypePluginConfig.register_apply_handler(_on_apply_feature_type)
+CollectionSchema.register_apply_handler(_on_apply_collection_schema)

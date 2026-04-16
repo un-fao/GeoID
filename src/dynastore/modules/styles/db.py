@@ -71,7 +71,7 @@ _delete_style_query = DQLQuery(
 
 # --- Helper Functions ---
 
-def _enrich_style_from_row(row: dict, root_url: str = "") -> Style:
+def _enrich_style_from_row(row: dict, root_url: str = "") -> Optional[Style]:
     """
     Constructs a Style object from a database row, enriching it with dynamic links.
     This is necessary because links are not stored in the database.
@@ -93,7 +93,7 @@ def _enrich_style_from_row(row: dict, root_url: str = "") -> Style:
 
 # --- Public Functions ---
 
-async def create_style(conn: DbResource, catalog_id: str, collection_id: str, style_data: StyleCreate) -> Style:
+async def create_style(conn: DbResource, catalog_id: str, collection_id: str, style_data: StyleCreate) -> Optional[Style]:
     """Creates a new style record. Assumes partition management is handled by DB triggers."""
     style_dict = style_data.model_dump(exclude={"links"}) # links are not stored
     # The stylesheets field needs to be explicitly serialized to a JSON string.
@@ -118,7 +118,7 @@ async def get_style_by_id_and_collection(conn: DbResource, catalog_id: str, coll
     raw_row = await _get_style_by_id_and_collection_query.execute(conn, catalog_id=catalog_id, collection_id=collection_id, style_id=style_id)
     return _enrich_style_from_row(raw_row) if raw_row else None
 
-async def list_styles_for_collection(conn: DbResource, catalog_id: str, collection_id: str, limit: int = 100, offset: int = 0) -> List[Style]:
+async def list_styles_for_collection(conn: DbResource, catalog_id: str, collection_id: str, limit: int = 100, offset: int = 0) -> List[Optional[Style]]:
     """Lists all styles associated with a specific collection."""
     raw_rows = await _list_styles_query.execute(conn, catalog_id=catalog_id, collection_id=collection_id, limit=limit, offset=offset)
     return [_enrich_style_from_row(row) for row in raw_rows]

@@ -142,7 +142,7 @@ class GcpCatalogBucketConfig(PluginConfig):
     """
     _on_apply: ClassVar[Optional[Callable]] = on_apply_gcp_bucket_config
     # Immutable fields: Once the bucket is created, these cannot be changed.
-    location: Immutable[Optional[GcpLocation]] = Field(default=os.getenv("REGION", GcpLocation.EUROPE_WEST1), description="The GCP region where the bucket will be created (e.g., 'europe-west1'). If not set, defaults to the application's region.")
+    location: Immutable[Optional[GcpLocation]] = Field(default=os.getenv("REGION", GcpLocation.EUROPE_WEST1), description="The GCP region where the bucket will be created (e.g., 'europe-west1'). If not set, defaults to the application's region.")  # type: ignore[assignment]
     storage_class: Immutable[GcsStorageClass] = Field(default=GcsStorageClass.STANDARD, description="The default storage class for objects in the bucket.")
     
     # Mutable fields
@@ -150,7 +150,7 @@ class GcpCatalogBucketConfig(PluginConfig):
     lifecycle_rules: List[LifecycleRule] = Field(default_factory=list, description="Lifecycle rules for the bucket.")
     listen_catalog_events: bool = Field(default=True, description="If true, the bucket and pub/sub resources are synchronized with catalog/collection deletions.")
     cors: List[GcpCorsRule] = Field(
-        default_factory=lambda: [GcpCorsRule(origin=["*"], method=["GET", "OPTIONS", "HEAD", "POST", "PUT", "DELETE"], response_header=["*"], max_age_seconds=3600)],
+        default_factory=lambda: [GcpCorsRule(origin=["*"], method=["GET", "OPTIONS", "HEAD", "POST", "PUT", "DELETE"], response_header=["*"], max_age_seconds=3600)],  # type: ignore[call-arg]
         description="CORS rules for the bucket."
     )
 

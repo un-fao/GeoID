@@ -45,7 +45,7 @@ from dynastore.modules.tiles.tiles_models import (
     TileMatrixSet,
 )
 from dynastore.modules.tiles.tiles_config import (
-    TilesPluginConfig,
+    TilesConfig,
 )
 from dynastore.models.protocols import CatalogsProtocol, DatabaseProtocol
 from dynastore.modules.catalog.catalog_module import (
@@ -863,13 +863,13 @@ async def get_collection_source_srid(
     engine = _get_engine()
     async with managed_transaction(engine) as conn:
         # Check logical configuration first for CRS hints
-        # We can look for 'source_crs' in TilesPluginConfig at collection level
+        # We can look for 'source_crs' in TilesConfig at collection level
         catalogs = get_protocol(CatalogsProtocol)
         if not catalogs:
             return 4326
         config_service = catalogs.configs
         tiles_config = await config_service.get_config(
-            TilesPluginConfig, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
+            TilesConfig, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
         ))
 
         source_crs_uri = getattr(tiles_config, "source_crs", None)
@@ -959,18 +959,18 @@ async def get_tile_resolution_params(
         # 3. Resolve Simplification Configuration (Waterfall handled by ConfigManager)
         config_service = catalogs.configs
         tiles_config = await config_service.get_config(
-            TilesPluginConfig, catalog_id, ctx=DriverContext(db_resource=conn
+            TilesConfig, catalog_id, ctx=DriverContext(db_resource=conn
         ))
         if not tiles_config:
             # If not present, we can initialize it with defaults
-            tiles_config = TilesPluginConfig()
+            tiles_config = TilesConfig()
             await config_service.set_config(
-                TilesPluginConfig, tiles_config, catalog_id=catalog_id, ctx=DriverContext(db_resource=conn
+                TilesConfig, tiles_config, catalog_id=catalog_id, ctx=DriverContext(db_resource=conn
             ))
 
         # Extract relevant fields
         simplification_by_zoom = {}
-        if isinstance(tiles_config, TilesPluginConfig):
+        if isinstance(tiles_config, TilesConfig):
             simplification_by_zoom = tiles_config.simplification_by_zoom or {}
 
         # 4. Resolve Collection Config (for sidecar-aware queries)

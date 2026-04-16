@@ -18,7 +18,7 @@ from __future__ import annotations
 
 def demo_dekadal() -> None:
     """Dekadal: 10-day periods, 36/year, D3 absorbs remainder of month."""
-    from ogc_dimensions.generators import DailyPeriodGenerator
+    from ogc_dimensions.generators import DailyPeriodGenerator  # type: ignore[import]
 
     gen = DailyPeriodGenerator(period_days=10, scheme="monthly")
     print(f"  generator_type = {gen.generator_type}")
@@ -37,7 +37,7 @@ def demo_dekadal() -> None:
 
 def demo_pentadal() -> None:
     """Pentadal monthly: 5-day periods, 72/year, P6 absorbs 26-EOM."""
-    from ogc_dimensions.generators import DailyPeriodGenerator
+    from ogc_dimensions.generators import DailyPeriodGenerator  # type: ignore[import]
 
     gen = DailyPeriodGenerator(period_days=5, scheme="monthly")
     print(f"  generator_type = {gen.generator_type}")
@@ -53,7 +53,7 @@ def demo_pentadal() -> None:
 
 def demo_admin_hierarchy() -> None:
     """Admin boundaries: leveled tree with multilingual labels."""
-    from ogc_dimensions.generators import LeveledTreeGenerator
+    from ogc_dimensions.generators import LeveledTreeGenerator  # type: ignore[import]
 
     from .use_cases import ADMIN_NODES
 

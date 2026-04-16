@@ -52,6 +52,7 @@ from typing import Optional, Dict, Any, List
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from dynastore.modules.tasks.queue import NEW_TASK_QUEUED
+from dynastore.modules.db_config.query_executor import DbResource
 from dynastore.tools.async_utils import signal_bus
 
 logger = logging.getLogger(__name__)
@@ -108,7 +109,7 @@ class BatchedHeartbeat:
 
     def __init__(
         self,
-        engine: AsyncEngine,
+        engine: DbResource,
         interval: timedelta = timedelta(seconds=30),
         visibility_timeout: timedelta = timedelta(minutes=5),
     ):
@@ -173,7 +174,7 @@ class BatchedHeartbeat:
 # ---------------------------------------------------------------------------
 
 async def _run_janitor(
-    engine: AsyncEngine,
+    engine: DbResource,
     visibility_timeout: timedelta,
     orphan_grace_period: timedelta = timedelta(hours=1),
 ) -> None:
@@ -241,7 +242,7 @@ async def _run_janitor(
 # ---------------------------------------------------------------------------
 
 async def run_dispatcher(
-    engine: AsyncEngine,
+    engine: DbResource,
     schema: Optional[str],
     shutdown_event: asyncio.Event,
     visibility_timeout: timedelta = timedelta(minutes=5),

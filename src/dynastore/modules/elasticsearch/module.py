@@ -38,17 +38,17 @@ async def _is_es_active(catalog_id: str, collection_id: str) -> bool:
         configs = get_protocol(ConfigsProtocol)
         if not configs:
             return False
-        from dynastore.modules.storage.routing_config import RoutingPluginConfig
+        from dynastore.modules.storage.routing_config import CollectionRoutingConfig
         routing = await configs.get_config(
-            RoutingPluginConfig,
+            CollectionRoutingConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
         )
-        if not isinstance(routing, RoutingPluginConfig):
+        if not isinstance(routing, CollectionRoutingConfig):
             return False
         for entries in routing.operations.values():
             for entry in entries:
-                if entry.driver_id == "DriverRecordsElasticsearch":
+                if entry.driver_id == "CollectionElasticsearchDriver":
                     return True
         return False
     except Exception as e:
@@ -196,7 +196,8 @@ class ElasticsearchModule(ModuleProtocol):
         from dynastore.modules.elasticsearch.mappings import LOG_MAPPING, get_log_index_name
 
         log_backend = ElasticsearchLogBackend()
-        self.register_plugin(log_backend)
+        from dynastore.tools.discovery import register_plugin
+        register_plugin(log_backend)
 
         # Ensure log index exists
         es = es_client.get_client()
@@ -412,7 +413,7 @@ class ElasticsearchModule(ModuleProtocol):
                             "ElasticsearchModule: legacy obfuscated mapping detected on '%s', recreating.",
                             index_name,
                         )
-                        await es.indices.delete(index=index_name, ignore_unavailable=True)
+                        await es.indices.delete(index=index_name, ignore_unavailable=True)  # type: ignore[call-arg]
                     else:
                         return
                 except Exception as exc:

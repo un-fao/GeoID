@@ -27,7 +27,7 @@ from dynastore.modules.tasks import tasks_module
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.protocols import ConfigsProtocol, CatalogsProtocol
 from dynastore.modules.tiles.tiles_config import (
-    TilesPluginConfig,
+    TilesConfig,
     TilesPreseedConfig,
 )
 from dynastore.modules.tiles import tiles_module
@@ -105,10 +105,10 @@ class TilePreseedTask(
                 return None  # skipped: pre-seeding disabled
 
             runtime_config = await config_manager.get_config(
-                TilesPluginConfig, catalog_id, request.collection_id
+                TilesConfig, catalog_id, request.collection_id
             )
-            if not isinstance(runtime_config, TilesPluginConfig):
-                runtime_config = TilesPluginConfig()
+            if not isinstance(runtime_config, TilesConfig):
+                runtime_config = TilesConfig()
 
             # Resolve Collections
             target_collections = []

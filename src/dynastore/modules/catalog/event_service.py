@@ -282,9 +282,10 @@ class EventService(EventBusProtocol):
             payload = {"args": args, "kwargs": kwargs}
             schema_name = None
 
+            from dynastore.tools.discovery import get_protocol
+
             if not is_global_event and catalog_id:
                 from dynastore.models.protocols import CatalogsProtocol
-                from dynastore.tools.discovery import get_protocol
 
                 catalogs = get_protocol(CatalogsProtocol)
                 if catalogs:

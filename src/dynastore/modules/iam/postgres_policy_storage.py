@@ -18,7 +18,7 @@
 
 # File: dynastore/modules/iam/postgres_policy_storage.py
 
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 from uuid import UUID
 import json
 
@@ -118,8 +118,8 @@ LIST_POLICIES_BY_PARTITION = DQLQuery(
 
 def build_search_policies_query(resource_pattern: Optional[str], action_pattern: Optional[str], limit: int, offset: int, schema: str = "iam"):
     clauses = []
-    params = {"limit": limit, "offset": offset}
-    
+    params: Dict[str, Any] = {"limit": limit, "offset": offset}
+
     if resource_pattern:
         clauses.append("resources::text LIKE :res_search")
         params["res_search"] = f"%{resource_pattern}%"

@@ -138,19 +138,19 @@ class IamMiddleware(BaseHTTPMiddleware):
                     pass
 
         # Resolve physical schema
-        schema = await self._iam_manager.resolve_schema(catalog_id)
+        schema = await self._iam_manager.resolve_schema(catalog_id)  # type: ignore[union-attr,attr-defined]
 
         # 1. Authenticate and get Principal
         (
             principal_role,
             principal_obj,
-        ) = await self._iam_manager.authenticate_and_get_role(request)
+        ) = await self._iam_manager.authenticate_and_get_role(request)  # type: ignore[union-attr]
 
         request.state.principal_role = principal_role
         request.state.principal = principal_obj
 
         # 2. Extract Identity Metadata from JWT
-        token_str = self._iam_manager.extract_token_from_request(request)
+        token_str = self._iam_manager.extract_token_from_request(request)  # type: ignore[union-attr]
 
         token_identifier = None
         source = "unauthenticated"
@@ -178,7 +178,7 @@ class IamMiddleware(BaseHTTPMiddleware):
         # 3. Build Evaluation Context
         ctx = EvaluationContext(
             request=request,
-            storage=self._iam_manager.storage,
+            storage=self._iam_manager.storage,  # type: ignore[union-attr,attr-defined]
             manager=self._iam_manager,
             token_identifier=token_identifier,
             principal_id=effective_principal_id,
@@ -196,9 +196,7 @@ class IamMiddleware(BaseHTTPMiddleware):
         # A. Token/Principal Policy (The "User")
         if principal_obj and principal_obj.custom_policies:
             p_policy = PolicyBundle(statements=principal_obj.custom_policies)
-            if not self._policy_service.evaluate_policy_statements(
-                p_policy, method, path
-            ):
+            if not self._policy_service.evaluate_policy_statements(p_policy, method, path):  # type: ignore[union-attr,arg-type]
                 return JSONResponse(
                     {"detail": "Access denied by Principal policy."}, status_code=403
                 )
@@ -215,7 +213,7 @@ class IamMiddleware(BaseHTTPMiddleware):
             else ([principal_role] if principal_role else [])
         )
 
-        result = await self._policy_service.evaluate_access(
+        result = await self._policy_service.evaluate_access(  # type: ignore[union-attr]
             principals=principals_to_check,
             path=path,
             method=method,

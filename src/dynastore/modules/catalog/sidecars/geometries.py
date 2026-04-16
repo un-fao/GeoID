@@ -1071,7 +1071,7 @@ class GeometriesSidecar(SidecarProtocol):
             # Standard processing path
             if isinstance(feature, Feature):
                 geometry = feature.geometry.model_dump() if feature.geometry else None
-                source_srid = feature.properties.get("srid", 4326)
+                source_srid = feature.properties.get("srid", 4326) if feature.properties else 4326
             else:
                 geometry = feature.get("geometry") or feature.get("geom")
                 source_srid = feature.get("srid", 4326)

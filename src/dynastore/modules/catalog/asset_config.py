@@ -21,7 +21,7 @@ Asset plugin configuration.
 
 ``AssetPluginConfig`` is a structural config for per-collection asset
 behaviour (e.g. ``enabled``).  Routing (which drivers handle which
-operations) is handled by ``AssetRoutingPluginConfig`` in
+operations) is handled by ``AssetRoutingConfig`` in
 ``dynastore.modules.storage.routing_config``.
 """
 
@@ -32,8 +32,8 @@ from dynastore.modules.db_config.platform_config_service import PluginConfig
 class AssetPluginConfig(PluginConfig):
     """Per-collection asset config (structural only).
 
-    Routing is now managed by ``AssetRoutingPluginConfig``
-    (``plugin_id="assets:drivers"``).
+    Routing is now managed by ``AssetRoutingConfig``
+    (identity: ``AssetRoutingConfig.class_key()``).
     """
 
     model_config = {"extra": "allow"}

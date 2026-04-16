@@ -6,21 +6,20 @@ from dynastore.modules.storage.router import (
     get_asset_driver,
     get_driver,
     resolve_drivers,
-    _build_asset_driver_index,
-    _build_collection_driver_index,
 )
+from dynastore.modules.storage.driver_registry import DriverRegistry
 from dynastore.modules.storage.routing_config import (
-    AssetRoutingPluginConfig,
+    AssetRoutingConfig,
     FailurePolicy,
     Operation,
     OperationDriverEntry,
-    RoutingPluginConfig,
+    CollectionRoutingConfig,
     WriteMode,
 )
 
 
-def _make_routing(operations: dict) -> RoutingPluginConfig:
-    """Build a RoutingPluginConfig from {operation: [(driver_id, hints, policy), ...]}."""
+def _make_routing(operations: dict) -> CollectionRoutingConfig:
+    """Build a CollectionRoutingConfig from {operation: [(driver_id, hints, policy), ...]}."""
     ops = {}
     for op, entries in operations.items():
         ops[op] = [
@@ -31,7 +30,7 @@ def _make_routing(operations: dict) -> RoutingPluginConfig:
             )
             for e in entries
         ]
-    return RoutingPluginConfig(operations=ops)
+    return CollectionRoutingConfig(operations=ops)
 
 
 def _mock_configs_protocol(routing_config):
@@ -53,39 +52,77 @@ def _mock_driver(driver_id: str):
 
 
 # ---------------------------------------------------------------------------
-# _build_collection_driver_index / _build_asset_driver_index
+# DriverRegistry — L0 singleton
 # ---------------------------------------------------------------------------
 
 
-class TestBuildDriverIndex:
-    def test_collection_driver_index(self):
+class TestDriverRegistry:
+    def test_collection_index_built_from_get_protocols(self):
         d1 = _mock_driver("postgresql")
         d2 = _mock_driver("elasticsearch")
-        with patch(
-            "dynastore.modules.storage.router._build_collection_driver_index",
-            wraps=_build_collection_driver_index,
-        ):
-            with patch("dynastore.tools.discovery.get_protocols", return_value=[d1, d2]):
-                index = _build_collection_driver_index()
-                assert index == {"postgresql": d1, "elasticsearch": d2}
+        DriverRegistry.clear()
+        with patch("dynastore.tools.discovery.get_protocols", return_value=[d1, d2]):
+            index = DriverRegistry.collection_index()
+            assert index == {"postgresql": d1, "elasticsearch": d2}
+        DriverRegistry.clear()
 
-    def test_asset_driver_index(self):
+    def test_asset_index_built_from_get_protocols(self):
         d1 = _mock_driver("postgresql")
+        DriverRegistry.clear()
         with patch("dynastore.tools.discovery.get_protocols", return_value=[d1]):
-            index = _build_asset_driver_index()
+            index = DriverRegistry.asset_index()
             assert index == {"postgresql": d1}
+        DriverRegistry.clear()
 
     def test_empty_registry(self):
+        DriverRegistry.clear()
         with patch("dynastore.tools.discovery.get_protocols", return_value=[]):
-            assert _build_collection_driver_index() == {}
-            assert _build_asset_driver_index() == {}
+            assert DriverRegistry.collection_index() == {}
+            assert DriverRegistry.asset_index() == {}
+        DriverRegistry.clear()
 
     def test_duplicate_driver_id_last_wins(self):
         d1 = _mock_driver("postgresql")
         d2 = _mock_driver("postgresql")
+        DriverRegistry.clear()
         with patch("dynastore.tools.discovery.get_protocols", return_value=[d1, d2]):
-            index = _build_collection_driver_index()
+            index = DriverRegistry.collection_index()
             assert index["postgresql"] is d2
+        DriverRegistry.clear()
+
+    def test_clear_forces_rebuild(self):
+        d1 = _mock_driver("postgresql")
+        d2 = _mock_driver("elasticsearch")
+        DriverRegistry.clear()
+        with patch("dynastore.tools.discovery.get_protocols", return_value=[d1]):
+            first = DriverRegistry.collection_index()
+            assert "postgresql" in first
+
+        DriverRegistry.clear()
+        with patch("dynastore.tools.discovery.get_protocols", return_value=[d2]):
+            second = DriverRegistry.collection_index()
+            assert "elasticsearch" in second
+        DriverRegistry.clear()
+
+    def test_register_plugin_clears_registry(self):
+        """register_plugin must invalidate DriverRegistry so stale index is not served."""
+        from dynastore.tools.discovery import register_plugin, unregister_plugin
+
+        d1 = _mock_driver("postgresql")
+        DriverRegistry.clear()
+        with patch("dynastore.tools.discovery.get_protocols", return_value=[d1]):
+            first = DriverRegistry.collection_index()
+            assert "postgresql" in first
+
+        # Registering a new plugin should clear the registry
+        sentinel = _mock_driver("newdriver")
+        with patch("dynastore.tools.discovery.get_protocols", return_value=[d1, sentinel]):
+            register_plugin(sentinel)
+            second = DriverRegistry.collection_index()
+            assert "newdriver" in second
+
+        unregister_plugin(sentinel)
+        DriverRegistry.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -104,10 +141,8 @@ class TestResolveDrivers:
         es = _mock_driver("elasticsearch")
 
         with (
-            patch("dynastore.modules.storage.router._resolve_driver_ids_cached.__wrapped__",
-                  new=AsyncMock(return_value=[("postgresql", FailurePolicy.FATAL, WriteMode.SYNC), ("elasticsearch", FailurePolicy.FATAL, WriteMode.SYNC)])) if False else
             patch("dynastore.tools.discovery.get_protocol", return_value=mock_configs),
-            patch("dynastore.modules.storage.router._build_collection_driver_index", return_value={"postgresql": pg, "elasticsearch": es}),
+            patch.object(DriverRegistry, "collection_index", return_value={"postgresql": pg, "elasticsearch": es}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
                 return_value=[("postgresql", FailurePolicy.FATAL, WriteMode.SYNC), ("elasticsearch", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):
@@ -122,7 +157,7 @@ class TestResolveDrivers:
         pg = _mock_driver("postgresql")
 
         with (
-            patch("dynastore.modules.storage.router._build_collection_driver_index", return_value={"postgresql": pg}),
+            patch.object(DriverRegistry, "collection_index", return_value={"postgresql": pg}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
                 return_value=[("postgresql", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):
@@ -135,7 +170,7 @@ class TestResolveDrivers:
         pg = _mock_driver("postgresql")
 
         with (
-            patch("dynastore.modules.storage.router._build_collection_driver_index", return_value={"postgresql": pg}),
+            patch.object(DriverRegistry, "collection_index", return_value={"postgresql": pg}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
                 return_value=[("nonexistent", FailurePolicy.FATAL, WriteMode.SYNC), ("postgresql", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):
@@ -146,7 +181,7 @@ class TestResolveDrivers:
     @pytest.mark.asyncio
     async def test_empty_resolution(self):
         with (
-            patch("dynastore.modules.storage.router._build_collection_driver_index", return_value={}),
+            patch.object(DriverRegistry, "collection_index", return_value={}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(return_value=[])),
         ):
             result = await resolve_drivers("READ", "cat1")
@@ -157,12 +192,12 @@ class TestResolveDrivers:
         pg = _mock_driver("postgresql")
 
         with (
-            patch("dynastore.modules.storage.router._build_asset_driver_index", return_value={"postgresql": pg}),
+            patch.object(DriverRegistry, "asset_index", return_value={"postgresql": pg}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
                 return_value=[("postgresql", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):
             result = await resolve_drivers(
-                "READ", "cat1", routing_plugin_cls=AssetRoutingPluginConfig,
+                "READ", "cat1", routing_plugin_cls=AssetRoutingConfig,
             )
             assert len(result) == 1
             assert result[0].driver is pg
@@ -172,7 +207,7 @@ class TestResolveDrivers:
         pg = _mock_driver("postgresql")
 
         with (
-            patch("dynastore.modules.storage.router._build_collection_driver_index", return_value={"postgresql": pg}),
+            patch.object(DriverRegistry, "collection_index", return_value={"postgresql": pg}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
                 return_value=[("postgresql", FailurePolicy.WARN, WriteMode.SYNC)])),
         ):
@@ -191,7 +226,7 @@ class TestGetDriver:
         pg = _mock_driver("postgresql")
 
         with (
-            patch("dynastore.modules.storage.router._build_collection_driver_index", return_value={"postgresql": pg}),
+            patch.object(DriverRegistry, "collection_index", return_value={"postgresql": pg}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
                 return_value=[("postgresql", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):
@@ -201,7 +236,7 @@ class TestGetDriver:
     @pytest.mark.asyncio
     async def test_raises_on_empty_resolution(self):
         with (
-            patch("dynastore.modules.storage.router._build_collection_driver_index", return_value={}),
+            patch.object(DriverRegistry, "collection_index", return_value={}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(return_value=[])),
         ):
             with pytest.raises(ValueError, match="No collection driver found"):
@@ -212,7 +247,7 @@ class TestGetDriver:
         pg = _mock_driver("postgresql")
 
         with (
-            patch("dynastore.modules.storage.router._build_collection_driver_index", return_value={"postgresql": pg}),
+            patch.object(DriverRegistry, "collection_index", return_value={"postgresql": pg}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
                 return_value=[("postgresql", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):
@@ -226,7 +261,7 @@ class TestGetAssetDriver:
         pg = _mock_driver("postgresql")
 
         with (
-            patch("dynastore.modules.storage.router._build_asset_driver_index", return_value={"postgresql": pg}),
+            patch.object(DriverRegistry, "asset_index", return_value={"postgresql": pg}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
                 return_value=[("postgresql", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):
@@ -236,7 +271,7 @@ class TestGetAssetDriver:
     @pytest.mark.asyncio
     async def test_raises_on_empty_resolution(self):
         with (
-            patch("dynastore.modules.storage.router._build_asset_driver_index", return_value={}),
+            patch.object(DriverRegistry, "asset_index", return_value={}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(return_value=[])),
         ):
             with pytest.raises(ValueError, match="No asset driver found"):
@@ -247,7 +282,7 @@ class TestGetAssetDriver:
         pg = _mock_driver("postgresql")
 
         with (
-            patch("dynastore.modules.storage.router._build_asset_driver_index", return_value={"postgresql": pg}),
+            patch.object(DriverRegistry, "asset_index", return_value={"postgresql": pg}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
                 return_value=[("postgresql", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):
@@ -259,7 +294,7 @@ class TestGetAssetDriver:
         es = _mock_driver("elasticsearch")
 
         with (
-            patch("dynastore.modules.storage.router._build_asset_driver_index", return_value={"elasticsearch": es}),
+            patch.object(DriverRegistry, "asset_index", return_value={"elasticsearch": es}),
             patch("dynastore.modules.storage.router._resolve_driver_ids_cached", new=AsyncMock(
                 return_value=[("elasticsearch", FailurePolicy.FATAL, WriteMode.SYNC)])),
         ):

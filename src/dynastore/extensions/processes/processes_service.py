@@ -84,7 +84,7 @@ async def list_processes(request: Request):
             href=process_url,
             rel="self",
             type="application/json",
-            title="Detailed process description",
+            title="Detailed process description",  # type: ignore[arg-type]
             hreflang=None,
         )
 
@@ -957,9 +957,9 @@ def _get_job_links(task: Task, request: Request) -> List[models.Link]:
         results_url = str(request.url_for("get_job_results", job_id=str(job_id)))
 
     links = [
-        models.Link(href=status_url, rel="self", type="application/json", title="This document"),
+        models.Link(href=status_url, rel="self", type="application/json", title="This document"),  # type: ignore[arg-type]
     ]
     if task.status == TaskStatusEnum.COMPLETED and task.outputs is not None:
-        links.append(models.Link(href=results_url, rel="http://www.opengis.net/def/rel/ogc/1.0/results", type="application/json", title="Job results"))
+        links.append(models.Link(href=results_url, rel="http://www.opengis.net/def/rel/ogc/1.0/results", type="application/json", title="Job results"))  # type: ignore[arg-type]
     
     return links

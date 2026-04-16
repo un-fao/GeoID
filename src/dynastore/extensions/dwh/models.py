@@ -120,5 +120,5 @@ class DWHTiledJoinRequest(BaseModel):
     collection: str = Field(..., description="DynaStore collection to query")
     dwh_join_column: str = Field(..., description="Join column in DWH results")
     join_column: str = Field(..., description="Join column in DynaStore table")
-    tiles: TilesConfig = Field(default_factory=TilesConfig, description="Tiles configuration")
+    tiles: TilesConfig = Field(default_factory=TilesConfig, description="Tiles configuration")  # type: ignore[arg-type]
     format: str = Field(default="mvt", description="Output format (mvt or pbf)")

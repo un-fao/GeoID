@@ -99,7 +99,7 @@ class QueryTransformProtocol(Protocol):
             context: Query context containing:
                 - catalog_id: str
                 - collection_id: str
-                - col_config: DriverRecordsPostgresqlConfig
+                - col_config: CollectionPostgresqlDriverConfig
                 - params: Dict[str, Any] (all request parameters)
                 - geom_format: Optional[str] (e.g., "MVT", "WKB", "GeoJSON")
                 - output_format: Optional[str] (e.g., "geojson", "csv")

@@ -138,7 +138,7 @@ def _msgpack_ext_hook(code: int, data: bytes) -> Any:
 
 def _serialize(value: Any) -> bytes:
     """Serialize a value to msgpack bytes."""
-    return msgpack.packb(value, default=_msgpack_default, use_bin_type=True)
+    return msgpack.packb(value, default=_msgpack_default, use_bin_type=True)  # type: ignore[return-value]
 
 
 def _deserialize(data: bytes) -> Any:

@@ -17,7 +17,7 @@ class SchemaMigrationInputs(BaseModel):
     Attributes:
         catalog_id:      Target catalog.
         collection_id:   Target collection (must be a physical collection).
-        target_config:   New ``DriverRecordsPostgresqlConfig`` as a plain dict.
+        target_config:   New ``CollectionPostgresqlDriverConfig`` as a plain dict.
                          When provided, the new physical tables are created from
                          this config instead of re-reading the stored config.
                          This is the primary mechanism for evolving a collection's
@@ -29,7 +29,7 @@ class SchemaMigrationInputs(BaseModel):
     collection_id: str
     target_config: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="New DriverRecordsPostgresqlConfig as a dict (optional; defaults to current stored config).",
+        description="New CollectionPostgresqlDriverConfig as a dict (optional; defaults to current stored config).",
     )
     dry_run: bool = False
 

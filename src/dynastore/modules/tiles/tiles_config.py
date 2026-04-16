@@ -12,17 +12,16 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-from typing import ClassVar, List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple
 from pydantic import Field, BaseModel
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 from dynastore.tools.geospatial import SimplificationAlgorithm
 
-class TilesPluginConfig(PluginConfig):
+class TilesConfig(PluginConfig):
     """
     Runtime configuration for the Tiles extension.
     Controls visibility, bounds, and on-the-fly generation settings.
     """
-    _class_key: ClassVar[str] = "tiles"
 
     # Enabled by default if this config exists/is loaded.
     enabled: bool = Field(True, description="If False, tile requests will be rejected.")
@@ -70,7 +69,7 @@ class TilesPreseedConfig(PluginConfig):
     # What to seed
     target_tms_ids: List[str] = Field(
         default=["WebMercatorQuad"], 
-        description="List of TMS IDs to pre-seed. Must be a subset of TilesPluginConfig.supported_tms_ids."
+        description="List of TMS IDs to pre-seed. Must be a subset of TilesConfig.supported_tms_ids."
     )
     formats: List[str] = Field(
         default=["mvt"], 
@@ -79,7 +78,7 @@ class TilesPreseedConfig(PluginConfig):
     
     # Where to seed (Spatial subset)
     bboxes: Optional[List[Tuple[float, float, float, float]]] = Field(default=None, 
-        description="Specific areas to pre-seed. Intersected with TilesPluginConfig.bbox."
+        description="Specific areas to pre-seed. Intersected with TilesConfig.bbox."
     )
     
     # Storage Configuration

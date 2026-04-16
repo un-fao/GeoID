@@ -20,7 +20,7 @@
 Asset storage driver protocol.
 
 Drivers that manage asset-level storage (index, search, delete asset documents)
-implement this protocol.  They differ from ``CollectionStorageDriverProtocol``
+implement this protocol.  They differ from ``CollectionItemsStore``
 which deals with geographic features — asset drivers deal with metadata about
 files, services, or datasets attached to a collection.
 
@@ -29,6 +29,7 @@ A driver may implement both protocols if it handles both features and assets
 """
 
 from typing import (
+    TYPE_CHECKING,
     Any,
     Dict,
     FrozenSet,
@@ -38,13 +39,16 @@ from typing import (
     runtime_checkable,
 )
 
+if TYPE_CHECKING:
+    from dynastore.modules.storage.storage_location import StorageLocation
+
 
 @runtime_checkable
-class AssetDriverProtocol(Protocol):
+class AssetStore(Protocol):
     """Protocol for drivers that store and search asset metadata.
 
     Implementations:
-    - ``DriverAssetElasticsearch`` — asset metadata in per-catalog ES index
+    - ``AssetElasticsearchDriver`` — asset metadata in per-catalog ES index
     """
 
     capabilities: FrozenSet[str]
@@ -150,7 +154,7 @@ class AssetDriverProtocol(Protocol):
     # These methods store collection-level descriptors (title, extent,
     # keywords, etc.) independently of the asset documents.  The
     # CollectionMetadataEnricherProtocol pipeline can therefore use
-    # AssetDriverProtocol.get_collection_metadata() to enrich base
+    # AssetStore.get_collection_metadata() to enrich base
     # collection metadata with asset-derived information (e.g. asset
     # counts, ingestion timestamps, coverage).
     # ------------------------------------------------------------------
@@ -177,4 +181,16 @@ class AssetDriverProtocol(Protocol):
         db_resource: Optional[Any] = None,
     ) -> None:
         """Store collection metadata in this driver's backing store."""
+        ...
+
+    async def location(
+        self,
+        catalog_id: str,
+        collection_id: str,
+    ) -> "StorageLocation":
+        """Return the typed physical storage coordinates for this asset collection.
+
+        Parallel to ``CollectionItemsStore.location()``.
+        Drivers advertising ``Capability.PHYSICAL_ADDRESSING`` MUST implement this.
+        """
         ...

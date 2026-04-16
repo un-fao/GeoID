@@ -10,7 +10,7 @@
 
 Used only when the primary write driver lacks
 ``Capability.REQUIRED_ENFORCEMENT`` / ``UNIQUE_ENFORCEMENT`` AND
-``FeatureTypePluginConfig.allow_app_level_enforcement=True``.
+``CollectionSchema.allow_app_level_enforcement=True``.
 Drivers that advertise native enforcement rely on their own DDL and must
 not call these helpers.
 """
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from dynastore.modules.catalog.sidecars.attributes_config import (
         FeatureAttributeSidecarConfig,
     )
-    from dynastore.modules.storage.driver_config import FeatureTypePluginConfig
+    from dynastore.modules.storage.driver_config import CollectionSchema
 
 
 _DATA_TYPE_TO_PG_NAME: Dict[str, str] = {
@@ -54,13 +54,13 @@ _DATA_TYPE_TO_PG_NAME: Dict[str, str] = {
 }
 
 
-def bridge_feature_type_to_attribute_schema(
-    feature_type: "Optional[FeatureTypePluginConfig]",
+def bridge_schema_to_attribute_sidecar(
+    schema: "Optional[CollectionSchema]",
     sidecar: "FeatureAttributeSidecarConfig",
 ) -> "FeatureAttributeSidecarConfig":
-    """Merge ``FeatureTypePluginConfig.fields`` into the attributes sidecar.
+    """Merge ``CollectionSchema.fields`` into the attributes sidecar.
 
-    For every ``FieldDefinition`` in ``feature_type.fields``:
+    For every ``FieldDefinition`` in ``schema.fields``:
 
     - If an ``AttributeSchemaEntry`` with the same ``name`` already exists,
       overlay ``nullable = not fd.required`` and ``unique = fd.unique``.
@@ -70,10 +70,10 @@ def bridge_feature_type_to_attribute_schema(
       the existing JSONB / attribute_schema paths.
 
     Returns a new ``FeatureAttributeSidecarConfig`` so callers can replace it
-    in ``col_config.sidecars``. If ``feature_type`` is None or has no fields,
+    in ``col_config.sidecars``. If ``schema`` is None or has no fields,
     the input sidecar is returned unchanged.
     """
-    if feature_type is None or not getattr(feature_type, "fields", None):
+    if schema is None or not getattr(schema, "fields", None):
         return sidecar
 
     from dynastore.modules.catalog.sidecars.attributes_config import (
@@ -88,7 +88,7 @@ def bridge_feature_type_to_attribute_schema(
         order.append(entry.name)
 
     changed = False
-    for name, fd in feature_type.fields.items():
+    for name, fd in schema.fields.items():
         has_constraint = bool(fd.required or fd.unique)
         entry = existing.get(name)
         if entry is not None:
@@ -126,20 +126,20 @@ def bridge_feature_type_to_attribute_schema(
     return sidecar.model_copy(update={"attribute_schema": merged})
 
 
-def overlay_feature_type_flags(
-    feature_type: "Optional[FeatureTypePluginConfig]",
+def overlay_schema_flags(
+    schema: "Optional[CollectionSchema]",
     fields: Dict[str, FieldDefinition],
 ) -> Dict[str, FieldDefinition]:
-    """Overlay ``required``/``unique`` from ``feature_type`` onto live fields.
+    """Overlay ``required``/``unique`` from ``schema`` onto live fields.
 
     Used by ``get_entity_fields()`` round-trip so callers see the stored
     constraints without needing a second config lookup.
     """
-    if feature_type is None or not getattr(feature_type, "fields", None):
+    if schema is None or not getattr(schema, "fields", None):
         return fields
     out: Dict[str, FieldDefinition] = {}
     for name, fd in fields.items():
-        ft_field = feature_type.fields.get(name)
+        ft_field = schema.fields.get(name)
         if ft_field is None or not (ft_field.required or ft_field.unique):
             out[name] = fd
             continue

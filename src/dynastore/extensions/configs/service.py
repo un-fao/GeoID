@@ -555,7 +555,7 @@ class ConfigsService(ExtensionProtocol):
         platform_list = await self.configs.list_configs(limit=2000, offset=0)
         stored_keys = {e["plugin_id"] for e in platform_list.get("items", [])}
         source = "platform" if class_key in stored_keys else "default"
-        entry = ConfigViewEntry(
+        entry = ConfigViewEntry(  # type: ignore[call-arg]
             class_key=class_key, value=effective.model_dump(), source=source
         )
         return JSONResponse(content=entry.model_dump())
@@ -583,7 +583,7 @@ class ConfigsService(ExtensionProtocol):
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise handle_exception(exc)
-        entry = ConfigViewEntry(
+        entry = ConfigViewEntry(  # type: ignore[call-arg]
             class_key=class_key, value=config_obj.model_dump(), source="platform"
         )
         return JSONResponse(content=entry.model_dump())
@@ -641,7 +641,7 @@ class ConfigsService(ExtensionProtocol):
             source = "platform"
         else:
             source = "default"
-        entry = ConfigViewEntry(
+        entry = ConfigViewEntry(  # type: ignore[call-arg]
             class_key=class_key, value=effective.model_dump(), source=source
         )
         return JSONResponse(content=entry.model_dump())
@@ -672,7 +672,7 @@ class ConfigsService(ExtensionProtocol):
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise handle_exception(exc)
-        entry = ConfigViewEntry(
+        entry = ConfigViewEntry(  # type: ignore[call-arg]
             class_key=class_key, value=config_obj.model_dump(), source="catalog"
         )
         return JSONResponse(content=entry.model_dump())
@@ -765,7 +765,7 @@ class ConfigsService(ExtensionProtocol):
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise handle_exception(exc)
-        entry = ConfigViewEntry(
+        entry = ConfigViewEntry(  # type: ignore[call-arg]
             class_key=class_key, value=config_obj.model_dump(), source="collection"
         )
         return JSONResponse(content=entry.model_dump())

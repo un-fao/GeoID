@@ -93,7 +93,7 @@ class ContentTypeInspectorOperation(IngestionOperationInterface):
             results = from_bytes(content_to_analyze)
             best_guess = results.best()
             
-            if best_guess and best_guess.confidence > 0.7:
+            if best_guess and best_guess.confidence > 0.7:  # type: ignore[attr-defined]
                 detected_encoding = best_guess.encoding
                 logger.info(f"Task '{self.task_id}': Detected encoding '{detected_encoding}' for {uri}.")
                 self.task_request.encoding = detected_encoding
@@ -143,7 +143,7 @@ class AssetDownloaderOperation(IngestionOperationInterface[AssetDownloaderConfig
                 return asset
             
             # Ensure bucket exists
-            bucket_name = await storage_manager.get_or_create_bucket_for_catalog(catalog.id)
+            bucket_name = await storage_manager.get_or_create_bucket_for_catalog(catalog.id)  # type: ignore[attr-defined]
             if not bucket_name:
                 raise RuntimeError(f"Failed to ensure storage bucket for catalog '{catalog.id}'.")
 

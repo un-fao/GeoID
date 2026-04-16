@@ -69,7 +69,7 @@ def get_url(request: Request, remove_qp=True) -> str:
     url = request.url
     if remove_qp:
         # FIX: Pass the keys of the current query parameters to be removed.
-        url = url.remove_query_params(keys=request.query_params.keys())
+        url = url.remove_query_params(keys=list(request.query_params.keys()))
 
     scheme = url.scheme
     if FORCE_HTTPS:

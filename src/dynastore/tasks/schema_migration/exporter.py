@@ -116,7 +116,7 @@ async def export_table(
     from dynastore.modules.concurrency import run_in_thread
 
     def _write_parquet(rows_: list, path_: str, cols_: list) -> int:
-        df_ = pd.DataFrame(rows_, columns=cols_)
+        df_ = pd.DataFrame(rows_, columns=cols_)  # type: ignore[arg-type]
         os.makedirs(os.path.dirname(path_), exist_ok=True)
         df_.to_parquet(path_, index=False, engine="pyarrow")
         return len(df_)

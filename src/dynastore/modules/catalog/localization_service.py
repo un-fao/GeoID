@@ -23,9 +23,10 @@ LocalizationService: Implementation of LocalizationProtocol.
 from typing import List, Dict, Any
 from dynastore.models.protocols.localization import LocalizationProtocol
 from dynastore.models.localization import (
-    _LANGUAGE_METADATA, 
-    is_multilanguage_input, 
-    validate_language_consistency
+    _LANGUAGE_METADATA,
+    is_multilanguage_input,
+    localize_dict,
+    validate_language_consistency,
 )
 
 class LocalizationService(LocalizationProtocol):
@@ -44,3 +45,13 @@ class LocalizationService(LocalizationProtocol):
         
     def validate_language_consistency(self, data: Dict[str, Any], lang: str) -> None:
         return validate_language_consistency(data, lang)
+
+    def localize_model(self, model: Any, lang: str) -> Any:
+        if hasattr(model, "model_dump"):
+            data = model.model_dump()
+            localized, _ = localize_dict(data, lang)
+            return model.model_validate(localized)
+        if isinstance(model, dict):
+            localized, _ = localize_dict(model, lang)
+            return localized
+        return model

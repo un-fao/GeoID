@@ -21,13 +21,16 @@ PostgreSQL Storage Driver — wraps existing ``ItemsProtocol`` services.
 
 Zero SQL rewrite.  All complex PG logic (sidecars, query optimizer,
 ON CONFLICT, RETURNING, PostGIS) stays exactly where it is.  This driver
-is a thin adapter that maps ``CollectionStorageDriverProtocol``
+is a thin adapter that maps ``CollectionItemsStore``
 to the existing PG-based service layer.
 """
 
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Dict, FrozenSet, List, Optional, Union
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, FrozenSet, List, Optional, Union
+
+if TYPE_CHECKING:
+    from dynastore.modules.storage.storage_location import StorageLocation
 
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.driver_context import DriverContext
@@ -35,15 +38,15 @@ from dynastore.models.protocols.storage_driver import Capability
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.protocols import ModuleProtocol
 from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
-from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
+from dynastore.modules.storage.driver_config import CollectionPostgresqlDriverConfig
 
 logger = logging.getLogger(__name__)
 
 
-class DriverRecordsPostgresql(ModuleProtocol):
+class CollectionPostgresqlDriver(ModuleProtocol):
     """PostgreSQL storage driver — delegates to existing ItemsProtocol.
 
-    Satisfies ``CollectionStorageDriverProtocol`` by wrapping the existing
+    Satisfies ``CollectionItemsStore`` by wrapping the existing
     PG-based item services, preserving all sidecar logic, query
     optimization, and streaming.
     """
@@ -68,6 +71,10 @@ class DriverRecordsPostgresql(ModuleProtocol):
         Capability.AGGREGATION,
         Capability.REQUIRED_ENFORCEMENT,
         Capability.UNIQUE_ENFORCEMENT,
+        Capability.PHYSICAL_ADDRESSING,
+        Capability.SOFT_DELETE_ATOMIC,
+        Capability.QUERY_FALLBACK_SOURCE,
+        Capability.BULK_COPY,
     })
     preferred_for: FrozenSet[str] = frozenset({"features", "write"})
     supported_hints: FrozenSet[str] = frozenset({"features", "write", "metadata"})
@@ -84,29 +91,29 @@ class DriverRecordsPostgresql(ModuleProtocol):
         collection_id: Optional[str] = None,
         *,
         db_resource: Optional[Any] = None,
-    ) -> "DriverRecordsPostgresqlConfig":
+    ) -> "CollectionPostgresqlDriverConfig":
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.tools.discovery import get_protocol
-        from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
+        from dynastore.modules.storage.driver_config import CollectionPostgresqlDriverConfig
 
         configs = get_protocol(ConfigsProtocol)
         if configs is None:
-            return DriverRecordsPostgresqlConfig()
+            return CollectionPostgresqlDriverConfig()
         config = await configs.get_config(
-            DriverRecordsPostgresqlConfig,
+            CollectionPostgresqlDriverConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
             ctx=DriverContext(db_resource=db_resource),
         )
-        if not isinstance(config, DriverRecordsPostgresqlConfig):
-            return DriverRecordsPostgresqlConfig()
+        if not isinstance(config, CollectionPostgresqlDriverConfig):
+            return CollectionPostgresqlDriverConfig()
         return config
 
     @asynccontextmanager
     async def lifespan(self, app_state: object):
-        logger.info("DriverRecordsPostgresql: started (wraps existing ItemsProtocol)")
+        logger.info("CollectionPostgresqlDriver: started (wraps existing ItemsProtocol)")
         yield
-        logger.info("DriverRecordsPostgresql: stopped")
+        logger.info("CollectionPostgresqlDriver: stopped")
 
     async def write_entities(
         self,
@@ -147,7 +154,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
 
         query_svc = self._get_query_protocol()
         response = await query_svc.stream_items(
-            catalog_id, collection_id, request, db_resource=db_resource
+            catalog_id, collection_id, request, ctx=DriverContext(db_resource=db_resource) if db_resource else None
         )
 
         async for feature in response.items:
@@ -164,7 +171,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
     ) -> int:
         if soft:
             raise SoftDeleteNotSupportedError(
-                "DriverRecordsPostgresql: soft delete for individual entities "
+                "CollectionPostgresqlDriver: soft delete for individual entities "
                 "is not yet implemented. Use drop_storage(soft=True) for "
                 "collection-level soft deletion."
             )
@@ -172,7 +179,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
         total = 0
         for eid in entity_ids:
             total += await items_svc.delete_item(
-                catalog_id, collection_id, eid, db_resource=db_resource
+                catalog_id, collection_id, eid, ctx=DriverContext(db_resource=db_resource) if db_resource else None
             )
         return total
 
@@ -185,7 +192,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> int:
         raise SoftDeleteNotSupportedError(
-            "DriverRecordsPostgresql: restore_entities not yet implemented."
+            "CollectionPostgresqlDriver: restore_entities not yet implemented."
         )
 
     async def rename_storage(
@@ -251,7 +258,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.tools.discovery import get_protocol
 
-        from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
+        from dynastore.modules.storage.driver_config import CollectionPostgresqlDriverConfig
 
         config = await self.get_driver_config(
             catalog_id, collection_id, db_resource=db_resource
@@ -261,7 +268,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
         if configs is None:
             return
         await configs.set_config(
-            DriverRecordsPostgresqlConfig,
+            CollectionPostgresqlDriverConfig,
             updated_config,
             catalog_id=catalog_id,
             collection_id=collection_id,
@@ -286,7 +293,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
             physical_table: Optional explicit table name. If not provided,
                 one is generated automatically.
             layer_config: Optional config overlay merged on top of the
-                resolved ``DriverRecordsPostgresqlConfig`` before creating storage.
+                resolved ``CollectionPostgresqlDriverConfig`` before creating storage.
         """
         if not collection_id:
             return
@@ -304,7 +311,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
         from dynastore.tools.discovery import get_protocol
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.modules.storage.driver_config import (
-            DriverRecordsPostgresqlConfig,
+            CollectionPostgresqlDriverConfig,
         )
         from dynastore.modules.catalog.catalog_service import generate_physical_name
         from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
@@ -337,7 +344,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
 
             merged = deep_update(base_dump, layer_config_dict)
             try:
-                col_config = DriverRecordsPostgresqlConfig.model_validate(merged)
+                col_config = CollectionPostgresqlDriverConfig.model_validate(merged)
             except Exception as e:
                 logger.error(
                     "Failed to merge layer_config for %s:%s: %s",
@@ -361,35 +368,35 @@ class DriverRecordsPostgresql(ModuleProtocol):
             "asset_id": "VARCHAR(255)",
         }
 
-        # Bridge FeatureTypePluginConfig.fields → attributes sidecar so that
+        # Bridge CollectionSchema.fields → attributes sidecar so that
         # required=True / unique=True materialize as NOT NULL / UNIQUE in the
         # generated DDL (COLUMNAR mode).
         try:
             from dynastore.modules.storage.driver_config import (
-                FeatureTypePluginConfig,
+                CollectionSchema,
             )
             from dynastore.modules.catalog.sidecars.attributes_config import (
                 FeatureAttributeSidecarConfig,
             )
             from dynastore.modules.storage.field_constraints import (
-                bridge_feature_type_to_attribute_schema,
+                bridge_schema_to_attribute_sidecar,
             )
 
             configs = get_protocol(ConfigsProtocol)
-            ft_cfg = None
+            schema_cfg = None
             if configs is not None:
-                ft_cfg = await configs.get_config(
-                    FeatureTypePluginConfig,
+                schema_cfg = await configs.get_config(
+                    CollectionSchema,
                     catalog_id=catalog_id,
                     collection_id=collection_id,
                     ctx=DriverContext(db_resource=db_resource),
                 )
-            if ft_cfg is not None and getattr(ft_cfg, "fields", None):
+            if schema_cfg is not None and getattr(schema_cfg, "fields", None):
                 new_sidecars = []
                 for sc in col_config.sidecars:
                     if isinstance(sc, FeatureAttributeSidecarConfig):
                         new_sidecars.append(
-                            bridge_feature_type_to_attribute_schema(ft_cfg, sc)
+                            bridge_schema_to_attribute_sidecar(schema_cfg, sc)
                         )
                     else:
                         new_sidecars.append(sc)
@@ -398,7 +405,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
                 )
         except Exception as exc:
             logger.debug(
-                "feature_type → attribute_schema bridge skipped for %s/%s: %s",
+                "schema → attribute_schema bridge skipped for %s/%s: %s",
                 catalog_id, collection_id, exc,
             )
 
@@ -460,13 +467,13 @@ class DriverRecordsPostgresql(ModuleProtocol):
                 logger.warning("Skipping sidecar table creation: %s", e)
 
         # --- Store physical_table in driver config ---
-        from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
+        from dynastore.modules.storage.driver_config import CollectionPostgresqlDriverConfig
 
         configs = get_protocol(ConfigsProtocol)
         updated_config = col_config.model_copy(update={"physical_table": physical_table})
         if configs is not None:
             await configs.set_config(
-                DriverRecordsPostgresqlConfig,
+                CollectionPostgresqlDriverConfig,
                 updated_config,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
@@ -480,7 +487,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
             await am.ensure_asset_cleanup_trigger(schema, physical_table, ctx=DriverContext(db_resource=db_resource) if db_resource is not None else None)
 
         logger.info(
-            "DriverRecordsPostgresql.ensure_storage: created hub '%s' + sidecars for %s/%s",
+            "CollectionPostgresqlDriver.ensure_storage: created hub '%s' + sidecars for %s/%s",
             physical_table, catalog_id, collection_id,
         )
 
@@ -615,7 +622,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
 
         if soft:
             logger.info(
-                "DriverRecordsPostgresql.drop_storage(soft=True): "
+                "CollectionPostgresqlDriver.drop_storage(soft=True): "
                 "catalog=%s collection=%s — marking as deleted via deleted_at",
                 catalog_id, collection_id,
             )
@@ -635,7 +642,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> str:
         raise NotImplementedError(
-            "DriverRecordsPostgresql.export_entities: use ExportFeaturesTask "
+            "CollectionPostgresqlDriver.export_entities: use ExportFeaturesTask "
             "for async export via the task runner system."
         )
 
@@ -859,26 +866,26 @@ class DriverRecordsPostgresql(ModuleProtocol):
                             transformations=fd.transformations,
                         )
 
-                    # Overlay FeatureTypePluginConfig-declared flags (authoritative).
+                    # Overlay CollectionSchema-declared flags (authoritative).
                     try:
                         from dynastore.models.protocols.configs import ConfigsProtocol
                         from dynastore.modules.storage.driver_config import (
-                            FeatureTypePluginConfig,
+                            CollectionSchema,
                         )
                         from dynastore.modules.storage.field_constraints import (
-                            overlay_feature_type_flags,
+                            overlay_schema_flags,
                         )
                         from dynastore.tools.discovery import get_protocol
 
                         configs = get_protocol(ConfigsProtocol)
                         if configs is not None:
-                            ft_cfg = await configs.get_config(
-                                FeatureTypePluginConfig,
+                            schema_cfg = await configs.get_config(
+                                CollectionSchema,
                                 catalog_id=catalog_id,
                                 collection_id=collection_id,
                                 ctx=DriverContext(db_resource=conn),
                             )
-                            result = overlay_feature_type_flags(ft_cfg, result)
+                            result = overlay_schema_flags(schema_cfg, result)
                     except Exception:
                         pass
                     return result
@@ -1192,7 +1199,7 @@ class DriverRecordsPostgresql(ModuleProtocol):
         collection_id: Optional[str] = None,
         *,
         db_resource: Optional[Any] = None,
-    ) -> DriverRecordsPostgresqlConfig:
+    ) -> CollectionPostgresqlDriverConfig:
         """Resolve PG storage coordinates using internal methods."""
         schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
         table = None
@@ -1201,9 +1208,27 @@ class DriverRecordsPostgresql(ModuleProtocol):
                 catalog_id, collection_id, db_resource=db_resource,
             )
 
-        return DriverRecordsPostgresqlConfig(
+        return CollectionPostgresqlDriverConfig(
             physical_schema=schema,
             physical_table=table,
+        )
+
+    async def location(
+        self,
+        catalog_id: str,
+        collection_id: str,
+    ) -> "StorageLocation":
+        """Return typed physical storage coordinates for this collection."""
+        from dynastore.modules.storage.storage_location import StorageLocation
+
+        schema = await self._resolve_schema(catalog_id)
+        table = await self.resolve_physical_table(catalog_id, collection_id)
+        table_ref = table or collection_id
+        return StorageLocation(
+            backend="postgresql",
+            canonical_uri=f"postgresql://{schema}.{table_ref}",
+            identifiers={"schema": schema, "table": table_ref},
+            display_label=f"{schema}.{table_ref}",
         )
 
     # --- Internal helpers ---

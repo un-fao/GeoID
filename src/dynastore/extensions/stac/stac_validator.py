@@ -46,8 +46,8 @@ except ImportError:
     PYSTAC_VALIDATION_AVAILABLE = False
 
 try:
-    from stac_pydantic import Item as StacPydanticItem
-    from stac_pydantic import Collection as StacPydanticCollection
+    from stac_pydantic import Item as StacPydanticItem  # type: ignore[attr-defined]
+    from stac_pydantic import Collection as StacPydanticCollection  # type: ignore[attr-defined]
     from stac_pydantic.extensions import validate_extensions as _sp_validate_extensions
 
     STAC_PYDANTIC_AVAILABLE = True

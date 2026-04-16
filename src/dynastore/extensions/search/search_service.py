@@ -428,7 +428,7 @@ class SearchService(ExtensionProtocol):
         es_body: Dict[str, Any] = {"query": query, "size": limit}
 
         es = self._get_es()
-        resp = await es.search(index=index, body=es_body, ignore_unavailable=True)
+        resp = await es.search(index=index, body=es_body, ignore_unavailable=True)  # type: ignore[call-arg]
 
         raw_hits = resp.get("hits", {}).get("hits", [])
         results: List[GeoidResult] = []

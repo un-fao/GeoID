@@ -178,6 +178,8 @@ class AssetManager(AssetsProtocol):
         from dynastore.models.protocols.catalogs import CatalogsProtocol
 
         catalogs = get_protocol(CatalogsProtocol)
+        if catalogs is None:
+            return None
         return await catalogs.resolve_physical_schema(
             catalog_id, ctx=DriverContext(db_resource=db_resource)
         )

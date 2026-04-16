@@ -15,7 +15,7 @@ from dynastore.modules.processes.models import ExecuteRequest
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.db_config.query_executor import managed_transaction
-from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
+from dynastore.modules.storage.driver_config import CollectionPostgresqlDriverConfig
 from dynastore.tasks.ingestion.operations import ingestion_operation, IngestionOperationInterface
 from dynastore.models.driver_context import DriverContext
 
@@ -56,7 +56,7 @@ async def test_operation_sequential_execution(task_app_state, test_data_loader, 
     await catalogs.create_collection(catalog_id, col_def)
     
     # Explicitly disable partitioning via ConfigManager so ingestion respects it
-    pg_plugin_id = DriverRecordsPostgresqlConfig
+    pg_plugin_id = CollectionPostgresqlDriverConfig
     config = await configs.get_config(pg_plugin_id, catalog_id=catalog_id, collection_id=collection_id)
     if config.partitioning:
          config.partitioning.enabled = False

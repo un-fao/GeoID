@@ -106,7 +106,7 @@ class CatalogLoggingExceptionHandler(ExceptionHandler):
                 if engine and logs_service:
                     async with managed_transaction(engine) as conn:
                         log_id = await logs_service.log_event(
-                            catalog_id=target_catalog,
+                            catalog_id=target_catalog,  # type: ignore[arg-type]
                             event_type="exception",
                             level="ERROR",
                             message=message,
@@ -120,7 +120,7 @@ class CatalogLoggingExceptionHandler(ExceptionHandler):
                         context['log_collection'] = collection_id
                 elif logs_service:
                     await logs_service.log_event(
-                        catalog_id=target_catalog,
+                        catalog_id=target_catalog,  # type: ignore[arg-type]
                         event_type="exception",
                         level="ERROR",
                         message=message,

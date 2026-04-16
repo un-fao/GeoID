@@ -44,6 +44,8 @@ async def get_valid_properties(conn: DbResource, catalog_id: str, collection_id:
                 try:
                     # Instantiate sidecar to access dynamic field definitions
                     sidecar = SidecarRegistry.get_sidecar(sc_config)
+                    if sidecar is None:
+                        continue
                     field_defs = sidecar.get_field_definitions()
                     schema_properties.update(field_defs.keys())
                 except Exception as e:

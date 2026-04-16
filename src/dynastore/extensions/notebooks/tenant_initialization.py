@@ -8,7 +8,7 @@ from dynastore.modules.notebooks.notebooks_db import init_notebooks_storage
 logger = logging.getLogger(__name__)
 
 
-@lifecycle_registry.sync_catalog_initializer
+@lifecycle_registry.sync_catalog_initializer  # type: ignore[arg-type]
 async def _initialize_notebooks_tenant_slice(conn: DbResource, schema: str, catalog_id: str):
     """Create/migrate the notebooks table when a catalog is provisioned."""
     logger.info(f"Initializing notebooks tenant slice for {schema} (Catalog: {catalog_id})")

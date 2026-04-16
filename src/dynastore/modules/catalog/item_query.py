@@ -21,7 +21,7 @@ from dynastore.modules.db_config.query_executor import (
 )
 from dynastore.modules.catalog.models import Collection
 from dynastore.modules.storage.driver_config import (
-    DriverRecordsPostgresqlConfig,
+    CollectionPostgresqlDriverConfig,
 )
 from dynastore.models.driver_context import DriverContext
 from dynastore.models.ogc import Feature, FeatureCollection
@@ -99,8 +99,8 @@ async def _try_driver_dispatch(
     except Exception:
         return None
 
-    from dynastore.modules.storage.drivers.postgresql import DriverRecordsPostgresql
-    if resolved is None or isinstance(resolved, DriverRecordsPostgresql):
+    from dynastore.models.protocols.storage_driver import Capability
+    if resolved is None or Capability.QUERY_FALLBACK_SOURCE in resolved.capabilities:
         return None
 
     effective_limit = (request.limit if request and request.limit else limit) or limit
@@ -211,7 +211,7 @@ class ItemQueryMixin:
         conn: DbResource,
         catalog_id: str,
         collection_id: str,
-        col_config: Optional[DriverRecordsPostgresqlConfig] = None,
+        col_config: Optional[CollectionPostgresqlDriverConfig] = None,
         item_ids: Optional[List[str]] = None,
         request: Optional[QueryRequest] = None,
         **kwargs,
@@ -249,7 +249,7 @@ class ItemQueryMixin:
         conn: DbResource,
         catalog_id: str,
         collection_id: str,
-        col_config: DriverRecordsPostgresqlConfig,
+        col_config: CollectionPostgresqlDriverConfig,
         params: Dict[str, Any],
         param_suffix: str = "",
     ) -> Tuple[str, Dict[str, Any]]:
@@ -278,7 +278,7 @@ class ItemQueryMixin:
         return sql, bind_params
 
     def _build_base_query_request(
-        self, params: Dict[str, Any], col_config: DriverRecordsPostgresqlConfig
+        self, params: Dict[str, Any], col_config: CollectionPostgresqlDriverConfig
     ) -> QueryRequest:
         """Build base QueryRequest from params before transformations"""
         from dynastore.models.query_builder import QueryRequest, FieldSelection
@@ -325,7 +325,7 @@ class ItemQueryMixin:
         context: Dict[str, Any],
         catalog_id: str,
         collection_id: str,
-        col_config: DriverRecordsPostgresqlConfig,
+        col_config: CollectionPostgresqlDriverConfig,
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Applies registered query transformations and generates optimized SQL.

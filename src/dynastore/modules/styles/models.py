@@ -23,7 +23,7 @@ from enum import Enum
 from typing import Any, Dict, Optional, List, Union, Literal, Annotated
 
 import html
-from lxml import etree
+from lxml import etree  # type: ignore[import]
 
 from pydantic import BaseModel, Field, model_validator, ConfigDict, AliasChoices
 from dynastore.models.shared_models import Link

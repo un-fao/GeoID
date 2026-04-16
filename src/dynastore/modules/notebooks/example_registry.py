@@ -61,9 +61,11 @@ def register_platform_notebook(
         with open(notebook_path, "r", encoding="utf-8") as f:
             notebook_content = json.load(f)
 
+    assert notebook_content is not None  # guaranteed by the check above
     nb_meta = notebook_content.get("metadata", {})
 
     resolved_title = _coerce_localized(title or nb_meta.get("title") or notebook_id)
+    assert resolved_title is not None  # fallback to notebook_id guarantees non-None
     resolved_description = _coerce_localized(description or nb_meta.get("description"))
 
     entry = PlatformNotebookCreate(
@@ -71,7 +73,7 @@ def register_platform_notebook(
         title=resolved_title,
         description=resolved_description,
         tags=tags or [],
-        content=notebook_content,
+        content=notebook_content,  # type: ignore[arg-type]
         metadata=nb_meta,
         registered_by=registered_by,
         owner_type=owner_type,

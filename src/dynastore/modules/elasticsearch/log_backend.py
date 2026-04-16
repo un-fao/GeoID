@@ -22,7 +22,8 @@ Elasticsearch/OpenSearch log backend for batch log persistence.
 
 import logging
 import re
-from typing import Any, Dict, List
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from dynastore.extensions.logs.models import LogEntryCreate
 from dynastore.models.protocols.logs import LogBackendProtocol
@@ -32,8 +33,10 @@ from .mappings import LOG_MAPPING, get_log_index_name
 logger = logging.getLogger(__name__)
 
 
-def _scrub_pii(text: str) -> str:
+def _scrub_pii(text: Optional[str]) -> str:
     """Remove email and card-like patterns from text."""
+    if not text:
+        return ""
     text = re.sub(r"\b[\w.+-]+@[\w-]+\.[a-z]{2,}\b", "[redacted]", text)
     text = re.sub(r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b", "[redacted]", text)
     return text
@@ -69,17 +72,19 @@ class ElasticsearchLogBackend(LogBackendProtocol):
 
             # Build bulk request: _index, _id, then document
             bulk_lines = []
+            now = datetime.now(timezone.utc)
             for i, entry in enumerate(entries):
-                doc_id = f"{entry.catalog_id}:{entry.event_type}:{entry.timestamp.isoformat()}:{i}"
+                entry_ts: datetime = getattr(entry, "timestamp", None) or now
+                doc_id = f"{entry.catalog_id}:{entry.event_type}:{entry_ts.isoformat()}:{i}"
                 doc = {
-                    "id": entry.id,
+                    "id": getattr(entry, "id", None),
                     "catalog_id": entry.catalog_id,
                     "collection_id": entry.collection_id,
                     "event_type": entry.event_type,
                     "level": entry.level,
                     "is_system": entry.is_system,
                     "message": _scrub_pii(entry.message),
-                    "timestamp": entry.timestamp,
+                    "timestamp": entry_ts,
                 }
                 bulk_lines.append({"index": {"_index": index_name, "_id": doc_id}})
                 bulk_lines.append(doc)

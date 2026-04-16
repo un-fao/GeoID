@@ -20,7 +20,7 @@ from typing import List, Optional, Dict, Any, Union
 from pydantic import ConfigDict
 
 try:
-    from geojson_pydantic import Feature as _Feature, FeatureCollection as _FeatureCollection
+    from geojson_pydantic import Feature as _Feature, FeatureCollection as _FeatureCollection  # type: ignore[assignment]
     from geojson_pydantic.geometries import Geometry as GeoJSONGeometry
 except ImportError:
     # Minimal fallbacks for core isolation

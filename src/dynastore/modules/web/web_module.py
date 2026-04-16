@@ -327,7 +327,8 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
                 if isinstance(content, Response):
                     # We might need to handle response objects by extracting content
                     if hasattr(content, "body"):
-                         content_parts.append(content.body.decode())
+                         body = content.body
+                         content_parts.append(body.tobytes().decode() if isinstance(body, memoryview) else body.decode())
                     else:
                          content_parts.append(str(content))
                 else:

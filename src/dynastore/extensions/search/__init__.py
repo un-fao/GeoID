@@ -30,7 +30,7 @@ class SearchExtension:
     _registered_name = "search"
 
     def __init__(self, app_state: Any = None):
-        self.service = SearchService()
+        self.service = SearchService()  # type: ignore[abstract]
         self.router = router
 
     @asynccontextmanager

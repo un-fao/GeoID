@@ -59,7 +59,7 @@ def _to_resource_ref(target: StacTarget, context: AssetContext) -> ResourceRef:
         catalog_id=context.catalog_id,
         collection_id=context.collection_id,
         item_id=target.id if is_item else None,
-        bbox=bbox,
+        bbox=bbox,  # type: ignore[arg-type]
         geometry=getattr(target, "geometry", None) if is_item else None,
         base_url=context.base_url,
         style=context.request.query_params.get("style"),
@@ -85,7 +85,7 @@ def _add_source_file_asset(item: StacTarget, context: AssetContext) -> None:
     This is not a cross-protocol contribution — it's STAC-specific and stays
     here rather than being exposed as an `AssetContributor`.
     """
-    asset_id = context.asset_id or item.properties.get("asset_id")
+    asset_id = context.asset_id or item.properties.get("asset_id")  # type: ignore[attr-defined]
     if not asset_id:
         return
     href = (

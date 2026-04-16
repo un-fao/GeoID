@@ -122,19 +122,19 @@ class OGCServiceMixin:
                     href=f"{root_url}{self.prefix}/",
                     rel="self",
                     type="application/json",
-                    title="This document",
+                    title="This document",  # type: ignore[arg-type]
                 ),
                 Link(
                     href=f"{root_url}{self.prefix}/conformance",
                     rel="conformance",
                     type="application/json",
-                    title="Conformance classes",
+                    title="Conformance classes",  # type: ignore[arg-type]
                 ),
                 Link(
                     href=f"{root_url}/api",
                     rel="service-doc",
                     type="application/json",
-                    title="API documentation",
+                    title="API documentation",  # type: ignore[arg-type]
                 ),
             ],
         )

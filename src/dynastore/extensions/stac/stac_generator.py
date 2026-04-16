@@ -47,7 +47,7 @@ from dynastore.tools.geospatial import (
     process_geometry,
 )
 from dynastore.modules.storage.driver_config import (
-    DriverRecordsPostgresqlConfig,
+    CollectionPostgresqlDriverConfig,
 )
 from dynastore.modules.catalog.sidecars.geometries_config import GeometriesSidecarConfig
 from dynastore.modules.stac.stac_config import (
@@ -1156,7 +1156,7 @@ async def create_search_results_collection(
 
 
 async def _process_stac_item_for_db(
-    item: pystac.Item, layer_config: DriverRecordsPostgresqlConfig
+    item: pystac.Item, layer_config: CollectionPostgresqlDriverConfig
 ) -> Dict[str, Any]:
     """Validates and prepares a STAC Item for database insertion."""
     if not item.geometry:

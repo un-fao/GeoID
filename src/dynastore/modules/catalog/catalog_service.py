@@ -378,7 +378,7 @@ class CatalogService(CatalogsProtocol):
         """Resolve the best storage driver for a collection.
 
         Delegates to the storage router which resolves via
-        ``RoutingPluginConfig`` operation → ordered driver list.
+        ``CollectionRoutingConfig`` operation → ordered driver list.
         """
         from dynastore.modules.storage.router import get_driver
         return await get_driver(operation, catalog_id, collection_id, hint=hint)
@@ -1366,7 +1366,7 @@ class CatalogService(CatalogsProtocol):
         )
 
         items = await self.search_items(
-            catalog_id, collection_id, request, db_resource=db_resource
+            catalog_id, collection_id, request
         )
 
         return {"type": "FeatureCollection", "features": items}
@@ -1393,7 +1393,7 @@ class CatalogService(CatalogsProtocol):
         ctx: Optional[DriverContext] = None,
     ) -> List[Dict[str, Any]]:
         """Search and retrieve items using optimized query generation."""
-        return await self._item_svc.search_items(
+        return await self._item_svc.search_items(  # type: ignore[return-value]
             catalog_id, collection_id, request, config=config, ctx=ctx
         )
 

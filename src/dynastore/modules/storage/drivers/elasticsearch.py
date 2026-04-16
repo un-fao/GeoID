@@ -25,15 +25,15 @@ can read data written by these drivers transparently.
 
 Three drivers:
 
-* ``DriverRecordsElasticsearch``  (driver_id ``"elasticsearch"``)
+* ``CollectionElasticsearchDriver``  (driver_id ``"elasticsearch"``)
   Full STAC indexing via SFEOS ``DatabaseLogic`` for items, collections, and
   catalogs.  Supports ``stac-fastapi-core[catalogs]``.
 
-* ``DriverRecordsElasticsearchObfuscated``  (driver_id ``"elasticsearch_obfuscated"``)
+* ``CollectionElasticsearchObfuscatedDriver``  (driver_id ``"elasticsearch_obfuscated"``)
   Stores full entity data but only allows search by geoid (``dynamic: false``).
   Manages DENY access policies in its own lifecycle.
 
-* ``DriverAssetElasticsearch``  (driver_id ``"elasticsearch_assets"``)
+* ``AssetElasticsearchDriver``  (driver_id ``"elasticsearch_assets"``)
   Indexes asset metadata into per-catalog ``{prefix}-assets-{catalog_id}`` indices.
   Listens for ``CatalogEventType.ASSET_*`` events (when wired) and supports
   direct programmatic indexing via ``index_asset()`` / ``delete_asset()``.
@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, FrozenSet, List, Opt
 
 if TYPE_CHECKING:
     from dynastore.modules.storage.driver_config import CollectionWritePolicy
+    from dynastore.modules.storage.storage_location import StorageLocation
 
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.driver_context import DriverContext
@@ -104,19 +105,19 @@ class _ElasticsearchBase:
     ) -> Any:
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.tools.discovery import get_protocol
-        from dynastore.modules.storage.driver_config import DriverRecordsElasticsearchConfig
+        from dynastore.modules.storage.driver_config import CollectionElasticsearchDriverConfig
 
         configs = get_protocol(ConfigsProtocol)
         if configs is None:
-            return DriverRecordsElasticsearchConfig()
+            return CollectionElasticsearchDriverConfig()
         config = await configs.get_config(
-            DriverRecordsElasticsearchConfig,
+            CollectionElasticsearchDriverConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
             ctx=DriverContext(db_resource=db_resource),
         )
         if config is None:
-            return DriverRecordsElasticsearchConfig()
+            return CollectionElasticsearchDriverConfig()
         return config
 
     @staticmethod
@@ -129,16 +130,16 @@ class _ElasticsearchBase:
             from dynastore.models.protocols.configs import ConfigsProtocol
             from dynastore.tools.discovery import get_protocol
             from dynastore.modules.storage.routing_config import (
-                RoutingPluginConfig,
+                CollectionRoutingConfig,
             )
 
             configs = get_protocol(ConfigsProtocol)
             if not configs:
                 return False
             routing = _cast(
-                Optional[RoutingPluginConfig],
+                Optional[CollectionRoutingConfig],
                 await configs.get_config(
-                    RoutingPluginConfig,
+                    CollectionRoutingConfig,
                     catalog_id=catalog_id,
                     collection_id=collection_id,
                 ),
@@ -171,16 +172,16 @@ class _ElasticsearchBase:
             from dynastore.tools.discovery import get_protocol
             from dynastore.modules.storage.routing_config import (
                 Operation,
-                RoutingPluginConfig,
+                CollectionRoutingConfig,
             )
 
             configs = get_protocol(ConfigsProtocol)
             if not configs:
                 return False
             routing = _cast(
-                Optional[RoutingPluginConfig],
+                Optional[CollectionRoutingConfig],
                 await configs.get_config(
-                    RoutingPluginConfig,
+                    CollectionRoutingConfig,
                     catalog_id=catalog_id,
                     collection_id=collection_id,
                 ),
@@ -229,10 +230,10 @@ class _ElasticsearchBase:
 
 
 # ---------------------------------------------------------------------------
-# DriverRecordsElasticsearch — SFEOS-backed full STAC
+# CollectionElasticsearchDriver — SFEOS-backed full STAC
 # ---------------------------------------------------------------------------
 
-class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
+class CollectionElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
     """SFEOS-compatible Elasticsearch storage driver.
 
     Delegates all ES operations to ``stac-fastapi-elasticsearch``'s
@@ -254,6 +255,7 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
         Capability.ATTRIBUTE_FILTER,
         Capability.EXTERNAL_ID_TRACKING,
         Capability.TEMPORAL_VALIDITY,
+        Capability.PHYSICAL_ADDRESSING,
     })
     preferred_for: FrozenSet[str] = frozenset({"search"})
     supported_hints: FrozenSet[str] = frozenset({"search", "fulltext"})
@@ -287,7 +289,7 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
                 decorator = events.async_event_listener(etype)
                 if decorator:
                     decorator(handler)
-            logger.info("DriverRecordsElasticsearch: event listeners registered.")
+            logger.info("CollectionElasticsearchDriver: event listeners registered.")
         yield
 
     # ------------------------------------------------------------------
@@ -327,7 +329,7 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
         # Service-layer enforcement of FieldDefinition.required / .unique for
         # drivers (like ES) that don't advertise native REQUIRED_ENFORCEMENT /
         # UNIQUE_ENFORCEMENT. Only runs when the collection's
-        # FeatureTypePluginConfig has allow_app_level_enforcement=True; otherwise
+        # CollectionSchema has allow_app_level_enforcement=True; otherwise
         # config admission would have already rejected the constraints.
         await self._enforce_field_constraints(catalog_id, collection_id, items)
 
@@ -442,14 +444,14 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
     ) -> None:
         """App-level fallback enforcement of FieldDefinition.required / .unique.
 
-        Only runs when the collection's FeatureTypePluginConfig has
+        Only runs when the collection's CollectionSchema has
         ``allow_app_level_enforcement=True`` (otherwise admission would have
         rejected any constrained fields). Raises
         ``RequiredFieldMissingError`` (HTTP 400) or
         ``UniqueConstraintViolationError`` (HTTP 409).
         """
         from dynastore.models.protocols.configs import ConfigsProtocol
-        from dynastore.modules.storage.driver_config import FeatureTypePluginConfig
+        from dynastore.modules.storage.driver_config import CollectionSchema
         from dynastore.modules.storage.field_constraints import (
             check_required, check_unique,
         )
@@ -460,13 +462,13 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
             return
         try:
             ft = await configs.get_config(
-                FeatureTypePluginConfig,
+                CollectionSchema,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )
         except Exception:
             return
-        if not isinstance(ft, FeatureTypePluginConfig) or not ft.allow_app_level_enforcement:
+        if not isinstance(ft, CollectionSchema) or not ft.allow_app_level_enforcement:
             return
 
         feature_dicts = [
@@ -641,7 +643,7 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
                         pass
             except Exception as e:
                 logger.warning(
-                    "DriverRecordsElasticsearch: search failed for %s/%s: %s",
+                    "CollectionElasticsearchDriver: search failed for %s/%s: %s",
                     catalog_id, collection_id, e,
                 )
 
@@ -690,7 +692,7 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
         if not _templates_created:
             await create_index_templates()
             _templates_created = True
-            logger.debug("DriverRecordsElasticsearch: global index templates created.")
+            logger.debug("CollectionElasticsearchDriver: global index templates created.")
 
         # Always ensure the collections meta-index.
         await create_collection_index()
@@ -707,12 +709,12 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
                         ignore=400,  # 400 = index already exists — safe to ignore
                     )
                     logger.info(
-                        "DriverRecordsElasticsearch: created items index '%s'.",
+                        "CollectionElasticsearchDriver: created items index '%s'.",
                         index_name,
                     )
             except Exception as e:
                 logger.warning(
-                    "DriverRecordsElasticsearch: ensure_storage collection index "
+                    "CollectionElasticsearchDriver: ensure_storage collection index "
                     "creation failed for '%s': %s",
                     collection_id, e,
                 )
@@ -746,7 +748,7 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> str:
         raise NotImplementedError(
-            "DriverRecordsElasticsearch.export_entities: not supported. "
+            "CollectionElasticsearchDriver.export_entities: not supported. "
             "Export from the primary driver instead."
         )
 
@@ -1075,12 +1077,30 @@ class DriverRecordsElasticsearch(_ElasticsearchBase, ModuleProtocol):
             return {"query": {"match_all": {}}}
         return {"query": {"bool": {"must": must}}}
 
+    async def location(
+        self,
+        catalog_id: str,
+        collection_id: str,
+    ) -> "StorageLocation":
+        """Return typed physical storage coordinates for this collection."""
+        from dynastore.modules.storage.storage_location import StorageLocation
+
+        config = await self.get_driver_config(catalog_id, collection_id)
+        prefix = config.index_prefix if config else "items_"
+        index_name = f"{prefix}{collection_id}"
+        return StorageLocation(
+            backend="elasticsearch",
+            canonical_uri=f"es://{index_name}",
+            identifiers={"index": index_name, "prefix": prefix},
+            display_label=index_name,
+        )
+
 
 # ---------------------------------------------------------------------------
-# DriverRecordsElasticsearchObfuscated — geoid-only, DENY-protected
+# CollectionElasticsearchObfuscatedDriver — geoid-only, DENY-protected
 # ---------------------------------------------------------------------------
 
-class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
+class CollectionElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
     """Tenant-scoped Elasticsearch storage driver (a.k.a. "obfuscated").
 
     Writes the full feature (geometry + properties + external_id) into a
@@ -1111,6 +1131,7 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
         Capability.READ,
         Capability.WRITE,
         Capability.STREAMING,
+        Capability.PHYSICAL_ADDRESSING,
     })
     preferred_for: FrozenSet[str] = frozenset()
     supported_hints: FrozenSet[str] = frozenset()
@@ -1142,7 +1163,7 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
                 decorator = events.async_event_listener(etype)
                 if decorator:
                     decorator(handler)
-            logger.info("DriverRecordsElasticsearchObfuscated: event listeners registered.")
+            logger.info("CollectionElasticsearchObfuscatedDriver: event listeners registered.")
         yield
 
     # ------------------------------------------------------------------
@@ -1238,7 +1259,7 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
                     id=source.get("geoid", geoid),
                     geometry=source.get("geometry"),
                     properties=props,
-                    bbox=source.get("bbox"),
+                    bbox=source.get("bbox"),  # type: ignore[call-arg]
                 )
             except Exception:
                 pass
@@ -1254,7 +1275,7 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
     ) -> int:
         if soft:
             raise SoftDeleteNotSupportedError(
-                "DriverRecordsElasticsearchObfuscated does not support soft delete."
+                "CollectionElasticsearchObfuscatedDriver does not support soft delete."
             )
         from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
@@ -1304,7 +1325,7 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
     ) -> None:
         if soft:
             raise SoftDeleteNotSupportedError(
-                "DriverRecordsElasticsearchObfuscated does not support soft drop."
+                "CollectionElasticsearchObfuscatedDriver does not support soft drop."
             )
         from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
@@ -1324,7 +1345,7 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> str:
         raise NotImplementedError(
-            "DriverRecordsElasticsearchObfuscated.export_entities: not supported."
+            "CollectionElasticsearchObfuscatedDriver.export_entities: not supported."
         )
 
     # Obfuscated driver stores geoid tokens only — not a metadata driver.
@@ -1570,12 +1591,31 @@ class DriverRecordsElasticsearchObfuscated(_ElasticsearchBase, ModuleProtocol):
                 "ObfuscatedDriver: could not restore DENY policies: %s", e,
             )
 
+    async def location(
+        self,
+        catalog_id: str,
+        collection_id: str,
+    ) -> "StorageLocation":
+        """Return typed physical storage coordinates for this obfuscated index."""
+        from dynastore.modules.storage.storage_location import StorageLocation
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
+        from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
+
+        prefix = _get_index_prefix()
+        index_name = get_obfuscated_index_name(prefix, catalog_id)
+        return StorageLocation(
+            backend="elasticsearch_obfuscated",
+            canonical_uri=f"es://{index_name}",
+            identifiers={"index": index_name, "prefix": prefix, "catalog_id": catalog_id},
+            display_label=index_name,
+        )
+
 
 # ---------------------------------------------------------------------------
-# DriverAssetElasticsearch — per-catalog asset index
+# AssetElasticsearchDriver — per-catalog asset index
 # ---------------------------------------------------------------------------
 
-class DriverAssetElasticsearch(_ElasticsearchBase, ModuleProtocol):
+class AssetElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
     """Elasticsearch storage driver for asset metadata.
 
     Indexes asset documents into per-catalog ``{prefix}-assets-{catalog_id}``
@@ -1594,6 +1634,7 @@ class DriverAssetElasticsearch(_ElasticsearchBase, ModuleProtocol):
         Capability.WRITE,
         Capability.STREAMING,
         Capability.FULLTEXT,
+        Capability.PHYSICAL_ADDRESSING,
     })
     preferred_for: FrozenSet[str] = frozenset({"search", "assets"})
     supported_hints: FrozenSet[str] = frozenset({"search", "assets"})
@@ -1622,7 +1663,7 @@ class DriverAssetElasticsearch(_ElasticsearchBase, ModuleProtocol):
                 decorator = events.async_event_listener(etype)
                 if decorator:
                     decorator(handler)
-            logger.info("DriverAssetElasticsearch: event listeners registered.")
+            logger.info("AssetElasticsearchDriver: event listeners registered.")
         yield
 
     # ------------------------------------------------------------------
@@ -1763,7 +1804,7 @@ class DriverAssetElasticsearch(_ElasticsearchBase, ModuleProtocol):
     ) -> int:
         if soft:
             raise SoftDeleteNotSupportedError(
-                "DriverAssetElasticsearch does not support soft delete."
+                "AssetElasticsearchDriver does not support soft delete."
             )
         from dynastore.modules.elasticsearch.mappings import get_assets_index_name
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
@@ -1808,7 +1849,7 @@ class DriverAssetElasticsearch(_ElasticsearchBase, ModuleProtocol):
     ) -> None:
         if soft:
             raise SoftDeleteNotSupportedError(
-                "DriverAssetElasticsearch does not support soft drop."
+                "AssetElasticsearchDriver does not support soft drop."
             )
         from dynastore.modules.elasticsearch.mappings import get_assets_index_name
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
@@ -1827,7 +1868,7 @@ class DriverAssetElasticsearch(_ElasticsearchBase, ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> str:
         raise NotImplementedError(
-            "DriverAssetElasticsearch.export_entities: not supported."
+            "AssetElasticsearchDriver.export_entities: not supported."
         )
 
     # ------------------------------------------------------------------
@@ -1918,7 +1959,7 @@ class DriverAssetElasticsearch(_ElasticsearchBase, ModuleProtocol):
             await update_catalog_in_index_shared(db.client, collection_id, doc)
 
     # ------------------------------------------------------------------
-    # AssetDriverProtocol read methods
+    # AssetStore read methods
     # ------------------------------------------------------------------
 
     async def get_asset(
@@ -2018,5 +2059,24 @@ class DriverAssetElasticsearch(_ElasticsearchBase, ModuleProtocol):
             )
             return [hit["_source"] for hit in resp["hits"]["hits"]]
         except Exception as e:
-            logger.error("DriverAssetElasticsearch.search_assets failed: %s", e)
+            logger.error("AssetElasticsearchDriver.search_assets failed: %s", e)
             return []
+
+    async def location(
+        self,
+        catalog_id: str,
+        collection_id: str,
+    ) -> "StorageLocation":
+        """Return typed physical storage coordinates for this asset index."""
+        from dynastore.modules.storage.storage_location import StorageLocation
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
+        from dynastore.modules.elasticsearch.mappings import get_assets_index_name
+
+        prefix = _get_index_prefix()
+        index_name = get_assets_index_name(prefix, catalog_id)
+        return StorageLocation(
+            backend="elasticsearch_assets",
+            canonical_uri=f"es://{index_name}",
+            identifiers={"index": index_name, "prefix": prefix, "catalog_id": catalog_id},
+            display_label=index_name,
+        )

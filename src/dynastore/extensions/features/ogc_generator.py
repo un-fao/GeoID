@@ -35,7 +35,7 @@ from shapely.geometry import shape, mapping
 
 from . import ogc_models
 from dynastore.tools.geospatial import calculate_spatial_indices
-from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
+from dynastore.modules.storage.driver_config import CollectionPostgresqlDriverConfig
 from dynastore.modules.catalog.models import (
     Collection as CoreCollection,
 )  # Import CoreCollection for type hinting
@@ -125,7 +125,7 @@ def _db_row_to_ogc_feature(
     catalog_id: str,
     collection_id: str,
     root_url: str,
-    layer_config: Optional[DriverRecordsPostgresqlConfig] = None,
+    layer_config: Optional[CollectionPostgresqlDriverConfig] = None,
 ) -> ogc_models.Feature:
     """
     Converts a database row or an already-mapped Feature into an OGC Feature.
@@ -238,6 +238,8 @@ async def create_queryables_response(
         }
     }
 
+    required_list: List[str] = []
+
     if driver_fields:
         # Non-PG driver supplied rich FieldDefinition objects via get_entity_fields().
         # Use them directly — bypass ItemsProtocol which is PG-specific.
@@ -254,6 +256,8 @@ async def create_queryables_response(
                 "description": str(description) if description else None,
                 "type": map_pg_to_json_type(field_def.data_type),
             }
+            if getattr(field_def, "required", False):
+                required_list.append(final_name)
     else:
         # PG path: fetch field definitions via ItemsProtocol (ItemService).
         items_svc = get_protocol(ItemsProtocol)
@@ -269,6 +273,8 @@ async def create_queryables_response(
                     "description": str(field_def.description) if field_def.description else None,
                     "type": map_pg_to_json_type(field_def.data_type),
                 }
+                if getattr(field_def, "required", False):
+                    required_list.append(final_name)
         else:
             # Final fallback: column name list only (no type info)
             for col_name in columns:
@@ -277,15 +283,18 @@ async def create_queryables_response(
                 properties[col_name] = {"title": col_name, "type": "string"}
 
     localized, _ = collection.localize(language)
-    return ogc_models.Queryables.model_validate({
+    payload: Dict[str, Any] = {
         "$id": queryables_url,
         "title": localized.get("title") or collection_id,
         "properties": properties,
-    })
+    }
+    if required_list:
+        payload["required"] = required_list
+    return ogc_models.Queryables.model_validate(payload)
 
 
 def _process_feature_for_db(
-    feature: ogc_models.FeatureDefinition, layer_config: DriverRecordsPostgresqlConfig
+    feature: ogc_models.FeatureDefinition, layer_config: CollectionPostgresqlDriverConfig
 ) -> Dict[str, Any]:
     """
     Validates and prepares a feature for database insertion, raising

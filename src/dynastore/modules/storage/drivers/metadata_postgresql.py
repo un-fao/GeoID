@@ -17,7 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-PostgreSQL metadata driver — implements CollectionMetadataDriverProtocol.
+PostgreSQL metadata driver — implements CollectionMetadataStore.
 
 Reads/writes collection metadata from the PG ``metadata`` table (always
 available — PG is the authoritative store for the thin registry).
@@ -27,11 +27,14 @@ Capabilities: READ, WRITE, SEARCH, SOFT_DELETE.
 
 import json
 import logging
-from typing import Any, Dict, FrozenSet, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, FrozenSet, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from dynastore.modules.storage.storage_location import StorageLocation
 
 from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols.metadata_driver import (
-    CollectionMetadataDriverProtocol,
+    CollectionMetadataStore,
     MetadataCapability,
 )
 from dynastore.modules.db_config.query_executor import (
@@ -55,8 +58,8 @@ _META_COLUMNS = (
 METADATA_DRIVER_CONFIG_ID = "driver:collection:metadata:postgresql"
 
 
-class DriverMetadataPostgresql:
-    """PostgreSQL implementation of CollectionMetadataDriverProtocol.
+class MetadataPostgresqlDriver:
+    """PostgreSQL implementation of CollectionMetadataStore.
 
     Uses the existing ``{schema}.metadata`` table for CRUD + search.
     """
@@ -66,6 +69,8 @@ class DriverMetadataPostgresql:
         MetadataCapability.WRITE,
         MetadataCapability.SEARCH,
         MetadataCapability.SOFT_DELETE,
+        MetadataCapability.PHYSICAL_ADDRESSING,
+        MetadataCapability.QUERY_FALLBACK_SOURCE,
     })
 
     def _get_engine(self) -> Any:
@@ -296,7 +301,7 @@ class DriverMetadataPostgresql:
             return {}
         try:
             return await configs.get_config(
-                METADATA_DRIVER_CONFIG_ID,
+                METADATA_DRIVER_CONFIG_ID,  # type: ignore[arg-type]
                 catalog_id=catalog_id,
                 ctx=DriverContext(db_resource=db_resource),
             )
@@ -305,6 +310,23 @@ class DriverMetadataPostgresql:
 
     async def is_available(self) -> bool:
         return self._get_engine() is not None
+
+    async def location(
+        self,
+        catalog_id: str,
+        collection_id: str,
+    ) -> "StorageLocation":
+        """Return typed physical storage coordinates for this metadata collection."""
+        from dynastore.modules.storage.storage_location import StorageLocation
+
+        schema = await self._resolve_physical_schema(catalog_id)
+        schema_name = schema or catalog_id
+        return StorageLocation(
+            backend="postgresql",
+            canonical_uri=f"postgresql://{schema_name}.metadata",
+            identifiers={"schema": schema_name, "table": "metadata"},
+            display_label=f"{schema_name}.metadata",
+        )
 
     @staticmethod
     def _to_json(value: Any) -> Optional[str]:

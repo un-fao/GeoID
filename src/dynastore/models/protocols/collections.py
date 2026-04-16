@@ -135,7 +135,7 @@ class CollectionsProtocol(Protocol):
     ) -> Any:
         """Resolve the best storage driver for a collection.
 
-        Uses ``RoutingPluginConfig`` to resolve the operation → driver mapping.
+        Uses ``CollectionRoutingConfig`` to resolve the operation → driver mapping.
         For READ/SEARCH: returns the first matching driver.
         For WRITE: returns the primary write driver.
         3. Auto-select: driver whose preferred_for includes this hint
@@ -146,7 +146,7 @@ class CollectionsProtocol(Protocol):
             write: If True, always returns the write driver.
 
         Returns:
-            A ``CollectionStorageDriverProtocol`` instance.
+            A ``CollectionItemsStore`` instance.
         """
         ...
 

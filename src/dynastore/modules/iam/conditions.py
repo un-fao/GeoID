@@ -41,7 +41,7 @@ class EvaluationContext:
     principal_id: Optional[str] = None # The User ID
     path: str = ""
     method: str = ""
-    query_params: Dict[str, str] = None
+    query_params: Optional[Dict[str, str]] = None
     requested_ttl: int = 0 
     schema: str = "catalog" # Default to global/catalog schema
     catalog_id: Optional[str] = None

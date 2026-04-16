@@ -1104,7 +1104,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
 
         batch_size = (
             len(payload.features)
-            if getattr(payload, "type", None) == "FeatureCollection"
+            if isinstance(payload, ogc_models.FeatureCollectionDefinition)
             else 1
         )
         policy_source = (

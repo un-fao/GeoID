@@ -580,7 +580,7 @@ class StacVirtualMixin(_Host):
             title=title,
             extent=pystac.Extent(
                 spatial=pystac.SpatialExtent([bbox]),
-                temporal=pystac.TemporalExtent(temporal),
+                temporal=pystac.TemporalExtent(temporal),  # type: ignore[arg-type]
             ),
             license="proprietary",
         )

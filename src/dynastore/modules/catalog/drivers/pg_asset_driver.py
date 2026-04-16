@@ -25,7 +25,7 @@ Owns the DDL and all SQL operations for:
 
 Also implements ``get_collection_metadata()`` / ``set_collection_metadata()``
 by reading/upserting ``{schema}.metadata`` — the same table used
-by ``DriverRecordsPostgresql`` — enabling ``CollectionMetadataEnricherProtocol``
+by ``CollectionPostgresqlDriver`` — enabling ``CollectionMetadataEnricherProtocol``
 to enrich collection descriptors with asset-derived statistics (counts, last
 ingestion timestamp, coverage bounds).
 
@@ -50,7 +50,8 @@ from typing import Any, Dict, FrozenSet, List, Optional
 
 from sqlalchemy import text
 
-from dynastore.models.protocols.asset_driver import AssetDriverProtocol
+from dynastore.models.protocols.asset_driver import AssetStore
+from dynastore.models.protocols.storage_driver import Capability
 from dynastore.modules.db_config.query_executor import (
     DDLQuery,
     DQLQuery,
@@ -65,15 +66,21 @@ logger = logging.getLogger(__name__)
 _CATALOG_LEVEL_COLLECTION_ID = "_catalog_"
 
 
-class DriverAssetPostgresql:
-    """PostgreSQL implementation of ``AssetDriverProtocol``.
+class AssetPostgresqlDriver:
+    """PostgreSQL implementation of ``AssetStore``.
 
     Owns all DDL and SQL for asset storage in the tenant schema.
-    Registered via ``register_plugin(DriverAssetPostgresql(engine=...))`` in
+    Registered via ``register_plugin(AssetPostgresqlDriver(engine=...))`` in
     ``CatalogModule.lifespan()``.
     """
 
-    capabilities: FrozenSet[str] = frozenset({"read", "write", "streaming"})
+    capabilities: FrozenSet[str] = frozenset({
+        Capability.READ,
+        Capability.WRITE,
+        Capability.STREAMING,
+        Capability.QUERY_FALLBACK_SOURCE,
+        Capability.BULK_COPY,
+    })
     preferred_for: FrozenSet[str] = frozenset({"default", "metadata"})
     supported_hints: FrozenSet[str] = frozenset({"metadata"})
 
@@ -82,6 +89,22 @@ class DriverAssetPostgresql:
 
     def is_available(self) -> bool:
         return self.engine is not None
+
+    def location(self, catalog_id: str, collection_id: Optional[str] = None):
+        """Return physical addressing for this driver's asset table."""
+        from dynastore.modules.storage.storage_location import StorageLocation
+        table = "assets"
+        schema_hint = f"<schema({catalog_id})>"
+        uri = f"postgresql://{schema_hint}.{table}"
+        identifiers = {"catalog_id": catalog_id, "table": table}
+        if collection_id:
+            identifiers["collection_id"] = collection_id
+        return StorageLocation(
+            backend="postgresql",
+            canonical_uri=uri,
+            identifiers=identifiers,
+            display_label=f"PG assets: {schema_hint}.{table}",
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -123,7 +146,7 @@ class DriverAssetPostgresql:
         )
         if not schema:
             logger.warning(
-                "DriverAssetPostgresql.ensure_storage: cannot resolve schema for catalog=%s",
+                "AssetPostgresqlDriver.ensure_storage: cannot resolve schema for catalog=%s",
                 catalog_id,
             )
             return
@@ -220,7 +243,7 @@ class DriverAssetPostgresql:
         schema = await self._resolve_schema(catalog_id, db_resource)
         if not schema:
             raise ValueError(
-                f"DriverAssetPostgresql.index_asset: catalog '{catalog_id}' not found."
+                f"AssetPostgresqlDriver.index_asset: catalog '{catalog_id}' not found."
             )
 
         async with managed_transaction(db_resource or self.engine) as conn:
@@ -530,7 +553,7 @@ class DriverAssetPostgresql:
         schema = await self._resolve_schema(catalog_id, db_resource)
         if not schema:
             raise ValueError(
-                f"DriverAssetPostgresql.add_asset_reference: catalog '{catalog_id}' not found."
+                f"AssetPostgresqlDriver.add_asset_reference: catalog '{catalog_id}' not found."
             )
 
         now = datetime.now(timezone.utc)
@@ -621,7 +644,7 @@ class DriverAssetPostgresql:
     ) -> Optional[Dict[str, Any]]:
         """Read collection metadata from ``metadata``.
 
-        The same table is used by ``DriverRecordsPostgresql`` for feature
+        The same table is used by ``CollectionPostgresqlDriver`` for feature
         collection metadata — scoped to ``collection_id``.
         """
         schema = await self._resolve_schema(catalog_id, db_resource)
@@ -702,6 +725,6 @@ async def _pg_asset_driver_init_tenant(
     This is the sole DDL path for asset tables — ``TENANT_ASSETS_DDL`` has been
     removed from ``catalog_service.py`` and ``tenant_schema.py``.
     """
-    driver = DriverAssetPostgresql()
+    driver = AssetPostgresqlDriver()
     driver.engine = conn  # use the in-transaction connection directly
     await driver.ensure_storage(catalog_id, db_resource=conn, schema=schema)

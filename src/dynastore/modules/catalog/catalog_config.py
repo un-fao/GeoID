@@ -73,11 +73,11 @@ class CollectionPluginConfig(PluginConfig):
     """Collection configuration — structural only.
 
     PG-specific fields (``sidecars``, ``partitioning``, ``collection_type``)
-    have moved to ``DriverRecordsPostgresqlConfig``
-    (``plugin_id = "driver:records:postgresql"``).
+    have moved to ``CollectionPostgresqlDriverConfig``
+    (``plugin_id = "CollectionPostgresqlDriverConfig"``).
 
-    Storage routing is handled by ``RoutingPluginConfig``
-    (``plugin_id = "collection:drivers"``).
+    Storage routing is handled by ``CollectionRoutingConfig``
+    (``plugin_id = "CollectionRoutingConfig"``).
     """
 
     model_config = {"extra": "allow"}

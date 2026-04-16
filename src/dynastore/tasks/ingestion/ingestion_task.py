@@ -132,7 +132,7 @@ class IngestionTask(ProcessTaskProtocol[Process, TaskPayload[ExecuteRequest], Op
                 caller_id=caller_id
             )
             logger.info(f"Ingestion task '{task_id}' complete.")
-            return StatusInfo(jobID=task_id, status="successful", message="Ingestion task completed successfully.", progress=100, links=[])
+            return StatusInfo(jobID=payload.task_id, status="successful", message="Ingestion task completed successfully.", progress=100, links=[])
         except Exception as e:
             logger.error(f"Ingestion task '{task_id}' failed catastrophically: {e}", exc_info=True)
             # The DatabaseStatusReporter will catch this exception and mark the task as FAILED.

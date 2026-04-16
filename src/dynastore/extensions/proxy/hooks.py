@@ -26,7 +26,7 @@ async def cleanup_collection_proxy_urls(event_payload: Optional[dict] = None, ca
     try:
         # 1. Resolve physical schema
         catalogs = get_protocol(CatalogsProtocol)
-        phys_schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=active_db))
+        phys_schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=active_db))  # type: ignore[union-attr]
         if not phys_schema:
             return
 

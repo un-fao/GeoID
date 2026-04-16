@@ -301,7 +301,7 @@ class StacPluginConfig(PluginConfig):
     hierarchy: Optional[HierarchyConfig] = None
 
     # --- Asset Tracking (Runtime only) ---
-    asset_tracking: AssetTrackingConfig = Field(default_factory=AssetTrackingConfig)
+    asset_tracking: AssetTrackingConfig = Field(default_factory=AssetTrackingConfig)  # type: ignore[arg-type]
 
     # --- Aggregations (OGC STAC Extension) ---
     aggregations: Optional[AggregationConfig] = None

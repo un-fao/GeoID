@@ -101,7 +101,7 @@ async def _create_partition_if_not_exists(conn: DbResource, for_date: datetime):
         if "concurrently" in str(e) or "duplicate" in str(e):
              logger.warning(f"Race condition while creating {qualified_name}, ignoring: {e}")
         else:
-            logger.error(f"Failed to create partition {partition_name}: {e}", exc_info=True)
+            logger.error(f"Failed to create partition {qualified_name}: {e}", exc_info=True)
 
 
 async def _drop_old_partitions(conn: DbResource):

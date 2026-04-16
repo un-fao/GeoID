@@ -76,7 +76,7 @@ class BigQueryCollectionEnricher:
 
         try:
             stats_config = await configs.get_config(
-                BQ_STATS_CONFIG_ID,
+                BQ_STATS_CONFIG_ID,  # type: ignore[arg-type]
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )

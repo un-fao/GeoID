@@ -23,7 +23,7 @@ from typing import Any, Optional, Tuple, List
 from pydantic import BaseModel
 
 from .query_executor import (
-    DDLQuery, DQLQuery, DbConnection, ResultHandler, managed_transaction
+    DDLQuery, DQLQuery, DbConnection, DbResource, ResultHandler, managed_transaction
 )
 from .locking_tools import acquire_startup_lock
 
@@ -76,7 +76,7 @@ async def ensure_hierarchical_partitions_exist(
 
 
 async def ensure_partition_exists(
-    conn: DbConnection, table_name: str, strategy: str, partition_value: Any,
+    conn: DbResource, table_name: str, strategy: str, partition_value: Any,
     schema: str = "platform", interval: Optional[str] = None, parent_table_name: Optional[str] = None, parent_table_schema: Optional[str] = None,
     sub_partition_def: Optional[Tuple[str, str]] = None
 ) -> Tuple[Optional[str], Optional[str]]:
@@ -109,7 +109,8 @@ async def ensure_partition_exists(
     except Exception as e:
         # PostgreSQL error code 42P07 ("duplicate_table") is harmless here due to IF NOT EXISTS,
         # but the lock largely prevents us from even hitting it.
-        if partition_name and ("already exists" in str(e) or (hasattr(e, 'orig') and getattr(e.orig, 'pgcode', None) == '42P07')):
+        orig = getattr(e, 'orig', None)
+        if partition_name and ("already exists" in str(e) or (orig is not None and getattr(orig, 'pgcode', None) == '42P07')):
             logger.debug(f"Partition '{partition_name}' existed (concurrently created).")
         else:
             logger.error(f"Failed to ensure partition '{partition_name or 'unknown'}' exists: {e}", exc_info=True)

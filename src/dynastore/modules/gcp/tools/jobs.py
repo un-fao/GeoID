@@ -16,6 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
+from typing import Optional
 from google.api_core.operation import Operation
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import JobExecutionProtocol
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 async def run_cloud_run_job_async(
-    job_name: str, args: list = None, env_vars: dict = None
+    job_name: str, args: Optional[list] = None, env_vars: Optional[dict] = None
 ) -> Operation:
     """
     Triggers a serverless job asynchronously using the JobExecutionProtocol.

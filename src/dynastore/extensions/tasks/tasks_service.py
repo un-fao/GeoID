@@ -31,7 +31,7 @@ from dynastore.extensions.iam.guards import get_principal_optional as get_princi
 from dynastore.modules.tasks import tasks_module
 from dynastore.modules.tasks.models import Task
 from dynastore.extensions.protocols import ExtensionProtocol
-from dynastore.models.protocols.principal_admin import Principal
+from dynastore.models.protocols.principal_admin import Principal  # type: ignore[attr-defined]
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ class TasksService(ExtensionProtocol):
         Provides an HTML page to monitor the status of asynchronous tasks for a catalog.
         """
         try:
-            with importlib.resources.open_text(__package__, "monitor.html") as f:
+            with importlib.resources.open_text(__package__, "monitor.html") as f:  # type: ignore[arg-type]
                 html_content = f.read()
             return HTMLResponse(content=html_content)
         except Exception as e:

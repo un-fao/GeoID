@@ -14,9 +14,9 @@ from unittest.mock import AsyncMock, patch
 from datetime import datetime, timezone
 
 from dynastore.models.protocols.storage_driver import Capability
-from dynastore.modules.storage.driver_config import DriverRecordsIcebergConfig
+from dynastore.modules.storage.driver_config import CollectionIcebergDriverConfig, IcebergConfig
 from dynastore.modules.storage.drivers.iceberg import (
-    DriverRecordsIceberg,
+    CollectionIcebergDriver,
     _resolve_iceberg_type,
 )
 
@@ -33,13 +33,11 @@ from pyiceberg.types import (
 
 
 def _make_loc(table_name="test_tbl", namespace="test_ns", **overrides):
-    defaults = dict(
-        catalog_name="test_iceberg",
-        namespace=namespace,
-        table_name=table_name,
-    )
+    # catalog_name / catalog_uri / catalog_type / warehouse_uri are now env-level
+    # (IcebergConfig), not per-collection.  Only table-location fields belong here.
+    defaults = dict(namespace=namespace, table_name=table_name)
     defaults.update(overrides)
-    return DriverRecordsIcebergConfig(**defaults)
+    return CollectionIcebergDriverConfig(**defaults)
 
 
 @pytest.fixture
@@ -58,7 +56,11 @@ def ns_name(request):
 
 @pytest.fixture
 def iceberg_catalog(db_url, iceberg_warehouse, ns_name):
-    """Real PyIceberg SqlCatalog backed by the test PostgreSQL."""
+    """Real PyIceberg SqlCatalog backed by the test PostgreSQL.
+
+    Uses ``IcebergConfig.catalog_name`` so the catalog name matches what the
+    driver will use (both read from the same env-level singleton).
+    """
     from pyiceberg.catalog.sql import SqlCatalog
     from dynastore.modules.db_config.tools import normalize_db_url
 
@@ -67,7 +69,7 @@ def iceberg_catalog(db_url, iceberg_warehouse, ns_name):
         sync_url = sync_url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
     catalog = SqlCatalog(
-        "test_iceberg",
+        IcebergConfig.catalog_name,
         uri=sync_url,
         warehouse=f"file://{iceberg_warehouse}",
     )
@@ -122,17 +124,26 @@ def iceberg_table(iceberg_catalog, ns_name, request):
 
 @pytest.fixture
 def test_loc(iceberg_table, ns_name):
-    """DriverRecordsIcebergConfig pointing to the test's unique table."""
+    """CollectionIcebergDriverConfig pointing to the test's unique table."""
     return _make_loc(table_name=iceberg_table.name()[-1], namespace=ns_name)
 
 
 @pytest.fixture
 def driver_with_catalog(iceberg_catalog, iceberg_table):
-    """DriverRecordsIceberg wired to the real test catalog."""
-    driver = DriverRecordsIceberg()
-    driver._catalog = iceberg_catalog
-    driver._catalog_loc_key = "test_iceberg:None:None"
-    return driver
+    """CollectionIcebergDriver pre-loaded with the real test catalog.
+
+    Pre-populates ``_catalog_cache`` with the key the driver computes from
+    ``IcebergConfig``, bypassing the ``_load_catalog_sync`` call so tests do
+    not need a live PG connection in ``_load_catalog_sync``.
+    """
+    driver = CollectionIcebergDriver()
+    loc_key = (
+        f"{IcebergConfig.catalog_name}:{IcebergConfig.catalog_uri}"
+        f":{IcebergConfig.catalog_type}"
+    )
+    driver._catalog_cache[loc_key] = iceberg_catalog
+    yield driver
+    driver._catalog_cache.pop(loc_key, None)
 
 
 def _write_rows(table, rows):
@@ -163,13 +174,13 @@ def _write_rows(table, rows):
 
 class TestIcebergDriverMeta:
     def test_driver_class_name(self):
-        assert type(DriverRecordsIceberg()).__name__ == "DriverRecordsIceberg"
+        assert type(CollectionIcebergDriver()).__name__ == "CollectionIcebergDriver"
 
     def test_priority(self):
-        assert DriverRecordsIceberg().priority == 20
+        assert CollectionIcebergDriver().priority == 20
 
     def test_capabilities(self):
-        caps = DriverRecordsIceberg().capabilities
+        caps = CollectionIcebergDriver().capabilities
         assert Capability.STREAMING in caps
         assert Capability.SPATIAL_FILTER in caps
         assert Capability.EXPORT in caps
@@ -181,14 +192,14 @@ class TestIcebergDriverMeta:
         assert Capability.READ_ONLY not in caps
 
     def test_is_available_true(self):
-        assert DriverRecordsIceberg().is_available() is True
+        assert CollectionIcebergDriver().is_available() is True
 
     def test_is_available_without_pyiceberg(self):
         with patch(
             "dynastore.modules.storage.drivers.iceberg._pyiceberg_available",
             return_value=False,
         ):
-            assert DriverRecordsIceberg().is_available() is False
+            assert CollectionIcebergDriver().is_available() is False
 
 
 # ---------------------------------------------------------------------------
@@ -198,12 +209,12 @@ class TestIcebergDriverMeta:
 
 class TestIcebergTableIdentifier:
     def test_default_mapping(self):
-        driver = DriverRecordsIceberg()
-        loc = DriverRecordsIcebergConfig()
+        driver = CollectionIcebergDriver()
+        loc = CollectionIcebergDriverConfig()
         assert driver._table_identifier(loc, "cat", "col") == ("cat", "col")
 
     def test_explicit_namespace_and_table(self):
-        driver = DriverRecordsIceberg()
+        driver = CollectionIcebergDriver()
         loc = _make_loc(namespace="ns", table_name="tbl")
         assert driver._table_identifier(loc, "cat", "col") == ("ns", "tbl")
 
@@ -214,18 +225,25 @@ class TestIcebergTableIdentifier:
 
 
 class TestIcebergCatalogConfig:
-    def test_catalog_type_defaults_to_none(self):
-        assert _make_loc().catalog_type is None
+    """Connection-level fields now live in IcebergConfig (env-level), not per-collection."""
 
-    def test_catalog_type_glue(self):
-        assert _make_loc(catalog_type="glue").catalog_type == "glue"
+    def test_iceberg_config_catalog_type_default(self):
+        from dynastore.modules.storage.driver_config import IcebergConfig
+        assert IcebergConfig.catalog_type == "sql"
 
-    def test_catalog_properties(self):
-        loc = _make_loc(
-            catalog_type="glue",
-            catalog_properties={"warehouse": "s3://bucket/wh"},
-        )
-        assert loc.catalog_properties["warehouse"] == "s3://bucket/wh"
+    def test_iceberg_config_catalog_name_default(self):
+        from dynastore.modules.storage.driver_config import IcebergConfig
+        assert IcebergConfig.catalog_name == "default"
+
+    def test_per_collection_config_rejects_catalog_name(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="catalog_name"):
+            _make_loc(catalog_name="glue")
+
+    def test_per_collection_config_rejects_catalog_type(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="catalog_type"):
+            _make_loc(catalog_type="rest")
 
     def test_real_catalog_connection(self, iceberg_catalog, ns_name):
         """Verify the real catalog can list namespaces."""
@@ -241,7 +259,7 @@ class TestIcebergCatalogConfig:
 class TestIcebergWriteEntities:
     @pytest.mark.asyncio
     async def test_write_raises_without_location(self):
-        driver = DriverRecordsIceberg()
+        driver = CollectionIcebergDriver()
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=None):
             with pytest.raises(RuntimeError, match="no OTF location config"):
                 await driver.write_entities("cat1", "col1", {"id": "1"})
@@ -403,8 +421,12 @@ class TestIcebergDropStorage:
         with patch.object(driver_with_catalog, "_get_location_async", new_callable=AsyncMock, return_value=test_loc):
             await driver_with_catalog.drop_storage("cat1", "col1", soft=True)
 
-        # Reload table to see updated properties
-        refreshed = driver_with_catalog._catalog.load_table(iceberg_table.name())
+        # Reload table to see updated properties — get catalog from cache
+        loc_key = (
+            f"{IcebergConfig.catalog_name}:{IcebergConfig.catalog_uri}"
+            f":{IcebergConfig.catalog_type}"
+        )
+        refreshed = driver_with_catalog._catalog_cache[loc_key].load_table(iceberg_table.name())
         props = refreshed.properties
         assert props.get("dynastore.deleted") == "true"
         assert "dynastore.deleted_at" in props
@@ -429,14 +451,15 @@ class TestIcebergDropStorage:
         )
         iceberg_catalog.create_table((ns_name, tbl_name), schema=schema)
 
-        driver = DriverRecordsIceberg()
-        driver._catalog = iceberg_catalog
-        driver._catalog_loc_key = "test_iceberg:None:None"
+        driver = CollectionIcebergDriver()
+        loc_key = f"{IcebergConfig.catalog_name}:{IcebergConfig.catalog_uri}:{IcebergConfig.catalog_type}"
+        driver._catalog_cache[loc_key] = iceberg_catalog
 
         loc = _make_loc(table_name=tbl_name, namespace=ns_name)
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=loc):
             await driver.drop_storage("cat1", "col1", soft=False)
 
+        driver._catalog_cache.pop(loc_key, None)
         tables = iceberg_catalog.list_tables(ns_name)
         table_names = [t[1] for t in tables]
         assert tbl_name not in table_names
@@ -459,14 +482,15 @@ class TestIcebergEnsureStorage:
         except Exception:
             pass
 
-        driver = DriverRecordsIceberg()
-        driver._catalog = iceberg_catalog
-        driver._catalog_loc_key = "test_iceberg:None:None"
+        driver = CollectionIcebergDriver()
+        loc_key = f"{IcebergConfig.catalog_name}:{IcebergConfig.catalog_uri}:{IcebergConfig.catalog_type}"
+        driver._catalog_cache[loc_key] = iceberg_catalog
 
         loc = _make_loc(table_name=tbl_name, namespace=ns_name)
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=loc):
             await driver.ensure_storage("cat1", tbl_name)
 
+        driver._catalog_cache.pop(loc_key, None)
         tables = iceberg_catalog.list_tables(ns_name)
         table_names = [t[1] for t in tables]
         assert tbl_name in table_names
@@ -524,10 +548,10 @@ class TestIcebergExportEntities:
 class TestIcebergResolveLocation:
     @pytest.mark.asyncio
     async def test_returns_default_when_no_config(self):
-        driver = DriverRecordsIceberg()
+        driver = CollectionIcebergDriver()
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=None):
             loc = await driver.resolve_storage_location("cat1")
-            assert isinstance(loc, DriverRecordsIcebergConfig)
+            assert isinstance(loc, CollectionIcebergDriverConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -676,38 +700,38 @@ class TestIcebergSchemaEvolution:
 class TestIcebergBboxFilter:
     def test_point_inside_bbox(self):
         geom = {"type": "Point", "coordinates": [10, 20]}
-        assert DriverRecordsIceberg._bbox_matches(geom, [0, 0, 50, 50]) is True
+        assert CollectionIcebergDriver._bbox_matches(geom, [0, 0, 50, 50]) is True
 
     def test_point_outside_bbox(self):
         geom = {"type": "Point", "coordinates": [100, 100]}
-        assert DriverRecordsIceberg._bbox_matches(geom, [0, 0, 50, 50]) is False
+        assert CollectionIcebergDriver._bbox_matches(geom, [0, 0, 50, 50]) is False
 
     def test_polygon_partially_inside(self):
         geom = {"type": "Polygon", "coordinates": [[[10, 10], [60, 10], [60, 60], [10, 60], [10, 10]]]}
-        assert DriverRecordsIceberg._bbox_matches(geom, [0, 0, 50, 50]) is True
+        assert CollectionIcebergDriver._bbox_matches(geom, [0, 0, 50, 50]) is True
 
     def test_none_geometry(self):
-        assert DriverRecordsIceberg._bbox_matches(None, [0, 0, 50, 50]) is False
+        assert CollectionIcebergDriver._bbox_matches(None, [0, 0, 50, 50]) is False
 
     def test_empty_bbox(self):
         geom = {"type": "Point", "coordinates": [10, 20]}
-        assert DriverRecordsIceberg._bbox_matches(geom, []) is False
+        assert CollectionIcebergDriver._bbox_matches(geom, []) is False
 
     def test_json_string_geometry(self):
         geom = json.dumps({"type": "Point", "coordinates": [10, 20]})
-        assert DriverRecordsIceberg._bbox_matches(geom, [0, 0, 50, 50]) is True
+        assert CollectionIcebergDriver._bbox_matches(geom, [0, 0, 50, 50]) is True
 
     def test_linestring(self):
         geom = {"type": "LineString", "coordinates": [[5, 5], [15, 15]]}
-        assert DriverRecordsIceberg._bbox_matches(geom, [0, 0, 10, 10]) is True
+        assert CollectionIcebergDriver._bbox_matches(geom, [0, 0, 10, 10]) is True
 
     def test_multipoint_none_inside(self):
         geom = {"type": "MultiPoint", "coordinates": [[100, 100], [200, 200]]}
-        assert DriverRecordsIceberg._bbox_matches(geom, [0, 0, 50, 50]) is False
+        assert CollectionIcebergDriver._bbox_matches(geom, [0, 0, 50, 50]) is False
 
     def test_point_on_bbox_edge(self):
         geom = {"type": "Point", "coordinates": [50, 50]}
-        assert DriverRecordsIceberg._bbox_matches(geom, [0, 0, 50, 50]) is True
+        assert CollectionIcebergDriver._bbox_matches(geom, [0, 0, 50, 50]) is True
 
 
 # ---------------------------------------------------------------------------
@@ -749,7 +773,7 @@ class TestIcebergTypeResolution:
 class TestIcebergLifespan:
     @pytest.mark.asyncio
     async def test_lifespan_clears_catalog(self):
-        driver = DriverRecordsIceberg()
+        driver = CollectionIcebergDriver()
         driver._catalog_cache["test_key"] = "something"
         async with driver.lifespan(object()):
             pass

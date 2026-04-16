@@ -142,12 +142,23 @@ def register_plugin(instance: Any) -> None:
         _DYNASTORE_PLUGINS.append(instance)
         _get_protocol_cached.cache_clear()
         _get_protocols_cached.cache_clear()
+        # Keep DriverRegistry in sync so it rebuilds on next access.
+        try:
+            from dynastore.modules.storage.driver_registry import DriverRegistry
+            DriverRegistry.clear()
+        except ImportError:
+            pass
 
 def unregister_plugin(instance: Any) -> None:
     if instance in _DYNASTORE_PLUGINS:
         _DYNASTORE_PLUGINS.remove(instance)
         _get_protocol_cached.cache_clear()
         _get_protocols_cached.cache_clear()
+        try:
+            from dynastore.modules.storage.driver_registry import DriverRegistry
+            DriverRegistry.clear()
+        except ImportError:
+            pass
 
 @lru_cache(maxsize=128)
 def _get_protocol_cached(protocol: type) -> Optional[Any]:

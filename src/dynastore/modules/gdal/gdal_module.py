@@ -23,7 +23,7 @@ from dynastore.modules import ModuleProtocol
 from .service import GDAL_AVAILABLE, STATIC_RASTER_MIME_TYPES, STATIC_VECTOR_MIME_TYPES, FileType
 
 try:
-    from osgeo import gdal
+    from osgeo import gdal  # type: ignore[import]
 except ImportError:
     gdal = None
 

@@ -50,7 +50,7 @@ def collect_web_pages(instance: object) -> List[WebPageSpec]:
         meta = getattr(method, "_web_page_spec", None)
         if meta is None:
             continue
-        specs.append(WebPageSpec(handler=method, **meta))
+        specs.append(WebPageSpec(handler=method, **meta))  # type: ignore[arg-type]
     return specs
 
 
@@ -64,7 +64,7 @@ def collect_static_assets(instance: object) -> List[StaticAsset]:
         if prefix is None:
             continue
         assets.append(
-            StaticAsset(prefix=prefix.strip("/"), files_provider=method)
+            StaticAsset(prefix=prefix.strip("/"), files_provider=method)  # type: ignore[arg-type]
         )
     return assets
 

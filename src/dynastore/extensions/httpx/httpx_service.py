@@ -45,10 +45,10 @@ class HttpxExtension(ExtensionProtocol, HttpxProtocol):
     """
     # Explicitly declare the public 'client' attribute and the optional 'router'.
     # This makes the class fully compliant with the ExtensionProtocol and clarifies its public API.
-    client: httpx.AsyncClient = None
-    proxy_client: httpx.AsyncClient = None
+    client: httpx.AsyncClient = None  # type: ignore[assignment]
+    proxy_client: httpx.AsyncClient = None  # type: ignore[assignment]
     router = None
-    app: FastAPI = None
+    app: FastAPI = None  # type: ignore[assignment]
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI): # type: ignore

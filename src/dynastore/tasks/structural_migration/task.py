@@ -64,8 +64,8 @@ class StructuralMigrationTask(TaskProtocol):
         from dynastore.tools.protocol_helpers import get_engine
 
         inputs = payload.inputs
-        scope = inputs.scope if hasattr(inputs, "scope") else inputs.get("scope", "all")
-        dry_run = inputs.dry_run if hasattr(inputs, "dry_run") else inputs.get("dry_run", False)
+        scope = inputs.scope
+        dry_run = inputs.dry_run
 
         engine = get_engine()
         if not engine:
@@ -79,7 +79,7 @@ class StructuralMigrationTask(TaskProtocol):
         )
 
         result = await run_migrations(
-            engine, dry_run=dry_run, scope=scope  # type: ignore[arg-type]
+            engine, dry_run=dry_run, scope=scope
         )
 
         action = "previewed" if dry_run else "applied"

@@ -103,7 +103,7 @@ async def _reindex_collection(
 
     if mode == "catalog":
         from dynastore.models.protocols.configs import ConfigsProtocol
-        from dynastore.modules.storage.routing_config import RoutingPluginConfig
+        from dynastore.modules.storage.routing_config import CollectionRoutingConfig
         from dynastore.tools.discovery import get_protocol as _get_protocol
 
         configs = _get_protocol(ConfigsProtocol)
@@ -111,12 +111,12 @@ async def _reindex_collection(
         if configs:
             try:
                 routing = await configs.get_config(
-                    RoutingPluginConfig,
+                    CollectionRoutingConfig,
                     catalog_id=catalog_id,
                     collection_id=collection_id,
                 )
                 es_active = any(
-                    entry.driver_id == "DriverRecordsElasticsearch"
+                    entry.driver_id == "CollectionElasticsearchDriver"
                     for entries in routing.operations.values()
                     for entry in entries
                 )

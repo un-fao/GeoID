@@ -446,7 +446,7 @@ class STACItem(Feature):
     model_config = ConfigDict(
         extra="allow",
         arbitrary_types_allowed=True,
-        json_schema_extra={"examples": _STAC_ITEM_EXAMPLES},
+        json_schema_extra={"examples": _STAC_ITEM_EXAMPLES},  # type: ignore[arg-type]
     )
 
     # Overrides/Extensions

@@ -101,7 +101,7 @@ async def lifespan(app: FastAPI):
                 enrich_extension_metadata(app, config, router)
                 
                 # 2. Mount Router
-                extension_name = config.cls._registered_name
+                extension_name = config.cls._registered_name  # type: ignore[attr-defined]
                 if not router.tags:
                     app.include_router(router, tags=[extension_name])
                 else:

@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 def _kibana_url() -> Optional[str]:
     """Build Kibana dashboard URL if KIBANA_URL is set and ES client is active."""
     from dynastore.modules.elasticsearch.client import get_client
-    from dynastore.modules.elasticsearch.mappings import get_log_index_name, get_index_prefix
+    from dynastore.modules.elasticsearch.mappings import get_log_index_name, get_index_prefix  # type: ignore[attr-defined]
 
     base = os.environ.get("KIBANA_URL", "").rstrip("/")
     if not base or get_client() is None:
@@ -93,11 +93,11 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
 
     @property
     def catalogs(self) -> CatalogsProtocol:
-        return self.get_protocol(CatalogsProtocol)
+        return self.get_protocol(CatalogsProtocol)  # type: ignore[return-value]
 
     @property
     def database(self) -> DatabaseProtocol:
-        return self.get_protocol(DatabaseProtocol)
+        return self.get_protocol(DatabaseProtocol)  # type: ignore[return-value]
 
     @asynccontextmanager
     async def lifespan(self, app: Any):

@@ -22,7 +22,7 @@ from typing import Dict, Any, List, Optional, Tuple, Set
 from sqlalchemy import text # type: ignore
 from pydantic import BaseModel
 
-from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
+from dynastore.modules.storage.driver_config import CollectionPostgresqlDriverConfig
 from dynastore.modules.catalog.sidecars.base import SidecarProtocol
 from dynastore.modules.db_config.query_executor import DbResource, GeoDQLQuery, ResultHandler
 
@@ -38,7 +38,7 @@ class CatalogQueryOrchestrator:
     3. execute queries transparently.
     """
     
-    def __init__(self, collection_config: DriverRecordsPostgresqlConfig):
+    def __init__(self, collection_config: CollectionPostgresqlDriverConfig):
         self.config = collection_config
         self.sidecars: List[SidecarProtocol] = []
         self._init_sidecars()
@@ -51,11 +51,13 @@ class CatalogQueryOrchestrator:
             from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
             for sc_config in self.config.sidecars:
                 try:
-                    self.sidecars.append(SidecarRegistry.get_sidecar(sc_config))
+                    sidecar = SidecarRegistry.get_sidecar(sc_config)
+                    if sidecar is not None:
+                        self.sidecars.append(sidecar)
                 except ValueError as e:
                     logger.warning(f"Skipping sidecar orchestration: {e}")
 
-    def _get_required_joins(self, attributes: Set[str]) -> Tuple[Set[str], Dict[str, str]]:
+    def _get_required_joins(self, attributes: Set[str]) -> Tuple[Set[SidecarProtocol], Dict[str, str]]:
         """
         Determines which sidecars need to be joined based on requested attributes.
         Returns:
@@ -116,7 +118,7 @@ class CatalogQueryOrchestrator:
 
         joins = []
         for sidecar in needed_sidecars:
-            joins.append(sidecar.get_join_clause(hub_alias="h"))
+            joins.append(sidecar.get_join_clause(schema=schema, hub_table=table, hub_alias="h"))
 
         join_clause = " ".join(joins)
 

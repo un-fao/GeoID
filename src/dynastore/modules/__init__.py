@@ -62,7 +62,7 @@ def _register_module(cls: Type[T_Module], registration_name: Optional[str] = Non
         logger.warning(f"Module '{registration_name}' is already registered with a different class. Overwriting.")
     
     _DYNASTORE_MODULES[registration_name] = ModuleConfig(cls=cls)
-    cls._registered_name = registration_name
+    cls._registered_name = registration_name  # type: ignore[attr-defined]
     logger.info(f"Registered module: {cls.__name__} (as '{registration_name}')")
     return cls
 
@@ -169,7 +169,7 @@ def instantiate_modules(app_state: object, include_only: Optional[List[str]] = N
         load_component_dotenv(cls)
         try:
             sig = inspect.signature(cls)
-            instance = cls(app_state=app_state) if 'app_state' in sig.parameters else cls()
+            instance = cls(app_state=app_state) if 'app_state' in sig.parameters else cls()  # type: ignore[call-arg]
             config.instance = instance
 
             # Register in the central protocol discovery registry

@@ -272,7 +272,7 @@ class GCPModule(
             self._bucket_service = BucketService(
                 engine=self._engine, # Explicitly pass current engine check
                 config_service=self._config_service,
-                storage_client=self._storage_client,
+                storage_client=self._storage_client,  # type: ignore[arg-type]
                 project_id=self.get_project_id() or "",
                 region=self.get_region() or "",
             )

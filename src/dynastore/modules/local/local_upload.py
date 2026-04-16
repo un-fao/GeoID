@@ -364,8 +364,8 @@ class LocalUploadModule:
         )
 
         asset = await assets.create_asset(
-            asset_base,
             catalog_id=catalog_id,
+            asset=asset_base,
             collection_id=collection_id,
         )
 

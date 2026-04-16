@@ -10,7 +10,7 @@ from dynastore.modules.db_config.platform_config_service import (
     PlatformConfigService,
     PluginConfig,
 )
-from dynastore.modules.tiles.tiles_config import TilesPluginConfig
+from dynastore.modules.tiles.tiles_config import TilesConfig
 from dynastore.models.driver_context import DriverContext
 
 @pytest.mark.enable_modules("db_config", "db", "catalog", "tiles")
@@ -23,7 +23,7 @@ async def test_hierarchical_config_cache_invalidation(app_lifespan, data_id):
     """
     catalog_id = f"cat_cache_{data_id}"
     collection_id = f"coll_cache_{generate_test_id()}"
-    plugin_id = "tiles"
+    plugin_id = TilesConfig
     
     from dynastore.tools.discovery import get_protocol
     from dynastore.models.protocols import ConfigsProtocol, CatalogsProtocol
@@ -39,7 +39,7 @@ async def test_hierarchical_config_cache_invalidation(app_lifespan, data_id):
             await catalogs.create_collection(catalog_id, {"id": collection_id}, lang="*", ctx=DriverContext(db_resource=conn))
     
     # 1. Set a catalog-level config
-    config_v1 = TilesPluginConfig(enabled=True, max_zoom=10)
+    config_v1 = TilesConfig(enabled=True, max_zoom=10)
     await config_service.set_config(plugin_id, config_v1, catalog_id=catalog_id)
     
     # 2. Get config at collection level (should fallback to catalog)
@@ -47,7 +47,7 @@ async def test_hierarchical_config_cache_invalidation(app_lifespan, data_id):
     assert effective_v1.max_zoom == 10
     
     # 3. Update catalog-level config
-    config_v2 = TilesPluginConfig(enabled=True, max_zoom=11)
+    config_v2 = TilesConfig(enabled=True, max_zoom=11)
     await config_service.set_config(plugin_id, config_v2, catalog_id=catalog_id)
     
     # 4. Get config at collection level again
@@ -55,7 +55,7 @@ async def test_hierarchical_config_cache_invalidation(app_lifespan, data_id):
     assert effective_v2.max_zoom == 11, "Stale config served! Cache invalidation failed."
     
     # 5. Set a collection-level override
-    config_override = TilesPluginConfig(enabled=True, max_zoom=12)
+    config_override = TilesConfig(enabled=True, max_zoom=12)
     await config_service.set_config(plugin_id, config_override, catalog_id=catalog_id, collection_id=collection_id)
     
     # 6. Verify collection override

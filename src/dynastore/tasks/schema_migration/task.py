@@ -121,6 +121,8 @@ async def run_schema_migration(
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     catalogs = get_protocol(CatalogsProtocol)
+    if catalogs is None:
+        raise ValueError("SchemaMigrationTask: CatalogsProtocol not available.")
 
     # ── Resolve physical schema and hub table ────────────────────────────────
     schema = await catalogs.resolve_physical_schema(catalog_id)
@@ -266,8 +268,9 @@ async def _get_physical_table(engine: Any, schema: str, collection_id: str, cata
 
     try:
         driver = await get_driver(Operation.READ, catalog_id, collection_id)
-        if hasattr(driver, "resolve_physical_table"):
-            return await driver.resolve_physical_table(catalog_id, collection_id)
+        resolve_physical_table = getattr(driver, "resolve_physical_table", None)
+        if resolve_physical_table is not None:
+            return await resolve_physical_table(catalog_id, collection_id)
     except Exception:
         pass
     return None
@@ -280,7 +283,7 @@ async def _resolve_config_and_sidecars(
     collection_id: str,
     target_config_dict: Optional[Dict[str, Any]],
 ):
-    """Load DriverRecordsPostgresqlConfig and extract sidecar IDs."""
+    """Load CollectionPostgresqlDriverConfig and extract sidecar IDs."""
     from dynastore.modules.storage.router import get_driver
     from dynastore.modules.storage.routing_config import Operation
 
@@ -288,8 +291,8 @@ async def _resolve_config_and_sidecars(
     col_config = await _driver.get_driver_config(catalog_id, collection_id)
 
     if target_config_dict:
-        from dynastore.modules.storage.driver_config import DriverRecordsPostgresqlConfig
-        col_config = DriverRecordsPostgresqlConfig.model_validate(target_config_dict)
+        from dynastore.modules.storage.driver_config import CollectionPostgresqlDriverConfig
+        col_config = CollectionPostgresqlDriverConfig.model_validate(target_config_dict)
 
     sidecar_ids = [sc.sidecar_id for sc in col_config.sidecars]
     return col_config, sidecar_ids

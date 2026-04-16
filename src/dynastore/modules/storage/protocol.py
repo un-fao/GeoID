@@ -17,7 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-Re-export of ``CollectionStorageDriverProtocol`` for convenience.
+Re-export of ``CollectionItemsStore`` for convenience.
 
 The canonical definition lives in ``dynastore.models.protocols.storage_driver``
 so that it is available without importing module-level code.
@@ -25,14 +25,16 @@ so that it is available without importing module-level code.
 
 from dynastore.models.protocols.storage_driver import (
     Capability,
-    CollectionStorageDriverProtocol,
+    CollectionItemsStore,
     ReadOnlyDriverMixin,
     StorageLocationResolver,
 )
+from dynastore.modules.storage.storage_location import StorageLocation
 
 __all__ = [
     "Capability",
-    "CollectionStorageDriverProtocol",
+    "CollectionItemsStore",
     "ReadOnlyDriverMixin",
     "StorageLocationResolver",
+    "StorageLocation",
 ]

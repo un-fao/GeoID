@@ -199,10 +199,10 @@ class GcpCatalogCleanupTask(TaskProtocol):
                     f"prefix '{folder_prefix}' from bucket '{bucket_name}'."
                 )
                 try:
-                    from dynastore.modules.gcp.bucket_service import GcpBucketService
-                    bucket_service = get_protocol(GcpBucketService)
+                    from dynastore.modules.gcp.bucket_service import BucketService
+                    bucket_service = get_protocol(BucketService)
                     if bucket_service:
-                        storage_client = bucket_service.get_storage_client()
+                        storage_client = bucket_service.storage_client
                     else:
                         import google.cloud.storage as gcs
                         storage_client = gcs.Client()
@@ -244,9 +244,9 @@ class GcpCatalogCleanupTask(TaskProtocol):
                                 f"managed eventing channel for prefix '{folder_prefix}'."
                             )
                             from dynastore.modules.gcp import gcp_module
-                            await gcp_module.teardown_managed_eventing_channel(
-                                catalog_id, managed
-                            )
+                            teardown = getattr(gcp_module, "teardown_managed_eventing_channel", None)
+                            if teardown is not None:
+                                await teardown(catalog_id, managed)
             except Exception as e:
                 logger.warning(
                     f"GcpCatalogCleanupTask[COLLECTION]: Eventing teardown for "

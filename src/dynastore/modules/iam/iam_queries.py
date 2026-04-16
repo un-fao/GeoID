@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from typing import Optional
+from typing import Any, Dict, Optional
 from uuid import UUID
 
 from dynastore.modules.db_config.query_executor import DDLQuery, DDLBatch, DQLQuery, ResultHandler
@@ -459,7 +459,7 @@ def build_search_principals_query(
     schema: str = "iam",
 ):
     clauses = []
-    params = {"limit": limit, "offset": offset}
+    params: Dict[str, Any] = {"limit": limit, "offset": offset}
 
     if identifier:
         clauses.append(

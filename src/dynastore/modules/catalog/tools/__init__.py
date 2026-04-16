@@ -17,6 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
+from typing import Optional
 
 from dynastore.modules.catalog.models import SpatialExtent, TemporalExtent
 from dynastore.modules.db_config.query_executor import (
@@ -102,7 +103,7 @@ async def recalculate_and_update_extents(
             )
 
 
-def get_engine() -> DbResource:
+def get_engine() -> Optional[DbResource]:
     from dynastore.tools.protocol_helpers import get_engine as get_platform_engine
 
     return get_platform_engine()

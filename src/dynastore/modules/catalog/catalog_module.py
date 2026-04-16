@@ -197,14 +197,14 @@ class CatalogModule(ModuleProtocol):
         self.localization_service = LocalizationService()
         self.event_service = EventService()
 
-        from dynastore.modules.catalog.drivers.pg_asset_driver import DriverAssetPostgresql
-        self.pg_asset_driver = DriverAssetPostgresql(engine=engine)
+        from dynastore.modules.catalog.drivers.pg_asset_driver import AssetPostgresqlDriver
+        self.pg_asset_driver = AssetPostgresqlDriver(engine=engine)
 
-        from dynastore.modules.storage.drivers.postgresql import DriverRecordsPostgresql
-        self.pg_storage_driver = DriverRecordsPostgresql()  # type: ignore[abstract]
+        from dynastore.modules.storage.drivers.postgresql import CollectionPostgresqlDriver
+        self.pg_storage_driver = CollectionPostgresqlDriver()  # type: ignore[abstract]
 
-        from dynastore.modules.storage.driver_enricher import DriverMetadataEnricher
-        self.driver_metadata_enricher = DriverMetadataEnricher()
+        from dynastore.modules.storage.entity_transform_pipeline import EntityTransformPipeline
+        self.driver_metadata_enricher = EntityTransformPipeline()
 
         from contextlib import AsyncExitStack
         async with AsyncExitStack() as stack:
@@ -232,7 +232,7 @@ class CatalogModule(ModuleProtocol):
             logger.info("Initialized CatalogModule services.")
 
             # 4. Initialize Storage & Schemas
-            # Hub/sidecar creation is handled by DriverRecordsPostgresql.ensure_storage()
+            # Hub/sidecar creation is handled by CollectionPostgresqlDriver.ensure_storage()
             # which is called from _create_collection_internal(). No lifecycle hook needed.
             from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
 
@@ -292,11 +292,16 @@ class CatalogModule(ModuleProtocol):
                     "event consumer not started."
                 )
 
+            # 7. Start router-cache invalidation subscriber (L2 cross-worker coherence)
+            from dynastore.modules.storage.config_cache import RouterCacheInvalidator
+            await RouterCacheInvalidator.start()
+
             try:
                 yield
             finally:
                 _consumer_shutdown.set()
                 await self.event_service.stop_consumer()
+                await RouterCacheInvalidator.stop()
                 # Services cleanup handled by AsyncExitStack (stack.close() via __aexit__)
 
     # === Private service accessors (assert-narrowed for pyright) ===
@@ -538,7 +543,7 @@ class CatalogModule(ModuleProtocol):
         config: Optional[ConfigsProtocol] = None,
         ctx: Optional[DriverContext] = None,
     ) -> "List[Feature]":
-        return await self._item_svc.search_items(
+        return await self._item_svc.search_items(  # type: ignore[return-value]
             catalog_id, collection_id, request, config=config, ctx=ctx
         )
 
@@ -636,7 +641,7 @@ class CatalogModule(ModuleProtocol):
     ) -> None:
         db_resource = ctx.db_resource if ctx else None
         return await self._item_svc.ensure_partition_exists(
-            catalog_id, collection_id, config, partition_value, ctx=ctx
+            catalog_id, collection_id, config, partition_value, ctx=ctx  # type: ignore[arg-type]
         )
 
     @property

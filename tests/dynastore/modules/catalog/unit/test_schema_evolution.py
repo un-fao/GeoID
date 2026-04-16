@@ -11,7 +11,7 @@ Tests cover:
 
 import pytest
 from dynastore.modules.catalog.schema_evolution import (
-    CollectionSchema,
+    IntrospectedSchema,
     ColumnInfo,
     ConstraintInfo,
     EvolutionPlan,
@@ -237,7 +237,7 @@ class TestPartitionDiff:
             columns={"geoid": ColumnInfo("geoid", "uuid", "uuid", False)},
             is_partitioned=False,
         )
-        current = CollectionSchema(hub=hub)
+        current = IntrospectedSchema(hub=hub)
 
         class FakeConfig:
             sidecars = []
@@ -256,7 +256,7 @@ class TestPartitionDiff:
             is_partitioned=True,
             partition_key_expr="LIST (h3)",
         )
-        current = CollectionSchema(hub=hub)
+        current = IntrospectedSchema(hub=hub)
 
         class FakeConfig:
             sidecars = []

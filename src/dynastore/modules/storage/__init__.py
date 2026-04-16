@@ -29,29 +29,45 @@ Public API::
     async for entity in driver.read_entities(catalog_id, collection_id):
         ...
 
-Storage routing is controlled by ``RoutingPluginConfig``
-(``plugin_id = "collection:drivers"``) via the existing config API.
-Per-driver settings are in ``DriverPluginConfig`` subclasses
-(``plugin_id = "driver:records:<driver_id>"``).
+Storage routing is controlled by ``CollectionRoutingConfig`` via the existing
+config API (identity is the class itself; see ``class_key()`` in
+``platform_config_service.py``).
+Per-driver settings are in ``DriverPluginConfig`` subclasses.
 """
 
 from dynastore.models.protocols.storage_driver import (
     Capability,
-    CollectionStorageDriverProtocol,
+    CollectionItemsStore,
     ReadOnlyDriverMixin,
     StorageLocationResolver,
 )
+from dynastore.modules.storage.storage_location import StorageLocation
 from dynastore.modules.storage.driver_config import (
     AssetConflictPolicy,
     AssetDriverConfig,
     CollectionDriverConfig,
     CollectionWritePolicy,
+    CollectionSchema,
+    WritePolicyDefaults,
     DriverCapability,
     DriverPluginConfig,
-    DriverRecordsPostgresqlConfig,
+    CollectionPostgresqlDriverConfig,
     WriteConflictPolicy,
 )
-from dynastore.modules.storage.driver_enricher import DriverMetadataEnricher
+from dynastore.modules.storage.schema_types import (
+    FieldConstraint,
+    RequiredConstraint,
+    UniqueConstraint,
+    IdentityKeyConstraint,
+    ValidityConstraint,
+    ContentHashConstraint,
+    SchemaViolation,
+    SchemaExtension,
+    StacSchemaExtension,
+    OgcFeaturesSchemaExtension,
+    ConfigScopeMixin,
+)
+from dynastore.modules.storage.entity_transform_pipeline import EntityTransformPipeline
 from dynastore.modules.storage.errors import ReadOnlyDriverError, SoftDeleteNotSupportedError
 from dynastore.modules.storage.router import (
     ResolvedDriver,
@@ -61,19 +77,28 @@ from dynastore.modules.storage.router import (
     get_write_drivers,
     resolve_drivers,
 )
+from dynastore.modules.storage.config_cache import (
+    RouterCacheInvalidator,
+    publish_router_invalidation,
+    init_request_driver_cache,
+    clear_request_driver_cache,
+    get_request_driver_cache,
+)
 from dynastore.modules.storage.routing_config import (
-    AssetRoutingPluginConfig,
+    AssetRoutingConfig,
     FailurePolicy,
-    MetadataOperationConfig,
+    MetadataRoutingConfig,
     Operation,
     OperationDriverEntry,
-    RoutingPluginConfig,
+    CollectionRoutingConfig,
+    WriteMode,
 )
 
 __all__ = [
     # Protocol
-    "CollectionStorageDriverProtocol",
+    "CollectionItemsStore",
     "StorageLocationResolver",
+    "StorageLocation",
     "Capability",
     "ReadOnlyDriverMixin",
     # Driver configs
@@ -81,18 +106,33 @@ __all__ = [
     "CollectionDriverConfig",
     "AssetDriverConfig",
     "DriverCapability",
+    # Schema (M8)
+    "CollectionSchema",
+    "WritePolicyDefaults",
+    "FieldConstraint",
+    "RequiredConstraint",
+    "UniqueConstraint",
+    "IdentityKeyConstraint",
+    "ValidityConstraint",
+    "ContentHashConstraint",
+    "SchemaViolation",
+    "SchemaExtension",
+    "StacSchemaExtension",
+    "OgcFeaturesSchemaExtension",
+    "ConfigScopeMixin",
     # Write policy
     "CollectionWritePolicy",
     "WriteConflictPolicy",
-    # Enricher
-    "DriverMetadataEnricher",
+    # Enricher / transform pipeline
+    "EntityTransformPipeline",
     # Routing configs
-    "RoutingPluginConfig",
-    "AssetRoutingPluginConfig",
-    "MetadataOperationConfig",
+    "CollectionRoutingConfig",
+    "AssetRoutingConfig",
+    "MetadataRoutingConfig",
     "OperationDriverEntry",
     "FailurePolicy",
     "Operation",
+    "WriteMode",
     # Router
     "resolve_drivers",
     "ResolvedDriver",
@@ -100,6 +140,12 @@ __all__ = [
     "get_write_drivers",
     "get_asset_driver",
     "get_asset_write_drivers",
+    # Cache (M6)
+    "RouterCacheInvalidator",
+    "publish_router_invalidation",
+    "init_request_driver_cache",
+    "clear_request_driver_cache",
+    "get_request_driver_cache",
     # Errors
     "ReadOnlyDriverError",
     "SoftDeleteNotSupportedError",

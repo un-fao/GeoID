@@ -5,7 +5,7 @@ import os
 import sys
 from contextlib import AsyncExitStack
 from dynastore import modules
-from dynastore.modules.procrastinate.module import get_procrastinate_app
+from dynastore.modules.procrastinate.module import get_procrastinate_app  # type: ignore[import]
 
 # --- Basic Configuration ---
 log_level_name = os.getenv('LOG_LEVEL', 'INFO').upper()

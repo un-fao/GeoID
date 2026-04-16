@@ -265,9 +265,9 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             if "admin" in roles and "sysadmin" not in roles:
                 try:
                     iam = get_protocol(AuthenticatorProtocol)
-                    if iam and iam.storage:
+                    if iam and iam.storage:  # type: ignore[attr-defined]
                         accessible_ids = set(
-                            await iam.storage.get_catalogs_for_identity(
+                            await iam.storage.get_catalogs_for_identity(  # type: ignore[attr-defined]
                                 principal.provider, principal.subject_id
                             )
                         )

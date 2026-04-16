@@ -60,33 +60,48 @@ class FailurePolicy(StrEnum):
 
 
 class Operation(StrEnum):
-    """Standard operations configured in ``RoutingPluginConfig.operations``.
+    """Standard operations configured in routing configs.
 
+    Collection routing (``CollectionRoutingConfig.operations``):
     - WRITE  : fan-out to all configured drivers (position 0 = primary)
     - READ   : single-driver for browsing/pagination (streaming)
     - SEARCH : single-driver for filtered queries (bbox, attributes, fulltext)
 
-    Metadata routing is separate: see ``MetadataOperationConfig`` on
-    ``RoutingPluginConfig`` (``metadata.override`` and ``metadata.storage``).
+    Metadata routing (``CollectionRoutingConfig.metadata.operations``):
+    - READ      : first-match metadata driver (CollectionMetadataStore)
+    - TRANSFORM : ordered transform chain — storage drivers that enrich metadata
+                  at READ time (replaces ``MetadataOperationConfig.storage``)
     """
 
     WRITE = "WRITE"
     READ = "READ"
     SEARCH = "SEARCH"
+    TRANSFORM = "TRANSFORM"
 
 
 class WriteMode(StrEnum):
-    """Execution mode for WRITE operations.
+    """Execution / composition mode for an operation entry.
 
-    Controls how secondary drivers execute during fan-out:
+    Collection write semantics:
+    - ``sync``   : await result; participates in coordinated rollback
+                   (all sync writes run in parallel via ``asyncio.gather``)
+    - ``async``  : fire-and-forget after sync phase succeeds
 
-    - ``sync``: await result; participates in coordinated rollback
-      (all sync writes run in parallel via ``asyncio.gather``)
-    - ``async``: fire-and-forget after all sync writes succeed
+    Metadata routing composition semantics:
+    - ``first``    : return result from the first driver that succeeds
+                     (used with ``Operation.READ`` on metadata routing)
+    - ``fan_out``  : call all drivers independently; merge results
+                     (used with ``Operation.WRITE`` on metadata routing)
+    - ``chain``    : pipe output through drivers in declared order;
+                     each driver receives the previous output
+                     (used with ``Operation.TRANSFORM`` on metadata routing)
     """
 
     SYNC = "sync"
     ASYNC = "async"
+    FIRST = "first"
+    FAN_OUT = "fan_out"
+    CHAIN = "chain"
 
 
 # ---------------------------------------------------------------------------
@@ -152,57 +167,54 @@ class OperationDriverEntry(BaseModel):
     )
 
 
-class MetadataOperationConfig(BaseModel):
-    """Metadata sub-configuration within ``RoutingPluginConfig``.
+class MetadataRoutingConfig(BaseModel):
+    """Metadata routing sub-configuration within ``CollectionRoutingConfig``.
 
-    override:
-        ``CollectionMetadataDriverProtocol`` backends used for collection
-        metadata persistence and search (e.g. ``elasticsearch_metadata``).
-        Drives ``metadata_router.py`` — first available wins.
+    Uses the same ``operations`` dict shape as collection routing, with two
+    standard operations:
+
+    ``READ`` (``write_mode=first``):
+        ``CollectionMetadataStore`` backends for metadata persistence
+        and search.  First available driver wins.
         Empty → auto-discovery fallback (ES if registered, otherwise PG).
+        Replaces the former ``override`` list.
 
-    storage:
-        ``CollectionStorageDriverProtocol`` backends that supply collection
+    ``TRANSFORM`` (``write_mode=chain``):
+        ``CollectionItemsStore`` backends that enrich collection
         metadata at READ time (e.g. Iceberg table properties, DuckDB sidecar
-        JSON).  Drives ``DriverMetadataEnricher`` — fan-out: all entries are
-        queried and results are merged (non-fatal failures are logged).
+        JSON).  Drivers are called in declared order; non-fatal failures are
+        logged and skipped.
+        Replaces the former ``storage`` list.
     """
 
-    override: List[OperationDriverEntry] = Field(
-        default_factory=list,
+    operations: Dict[str, List[OperationDriverEntry]] = Field(
+        default_factory=dict,
         description=(
-            "Ordered metadata driver list (CollectionMetadataDriverProtocol). "
-            "First available wins. Empty → auto-discovery fallback."
-        ),
-    )
-    storage: List[OperationDriverEntry] = Field(
-        default_factory=list,
-        description=(
-            "Storage drivers that supply collection metadata at READ time "
-            "(e.g. Iceberg table properties, DuckDB sidecar JSON). "
-            "Fan-out: all entries are queried and results merged."
+            "Operation → ordered driver list for metadata routing.  "
+            "READ  = first-match metadata drivers (CollectionMetadataStore).  "
+            "TRANSFORM = ordered storage drivers that enrich metadata at READ time."
         ),
     )
 
 
-class RoutingPluginConfig(PluginConfig):
+class CollectionRoutingConfig(PluginConfig):
     """Operation-based routing for collection storage drivers.
 
     Each operation maps to an ordered list of :class:`OperationDriverEntry`.
     Position in the list determines priority (first = primary).
 
     ``metadata`` is a separate sub-object for collection metadata routing —
-    see :class:`MetadataOperationConfig`.
+    see :class:`MetadataRoutingConfig`.
 
-    Registered as ``plugin_id = "collection:drivers"`` in the config waterfall.
+    Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
     """
 
     enabled: bool = Field(default=True, description="Enable this routing configuration.")
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
-            Operation.WRITE: [OperationDriverEntry(driver_id="DriverRecordsPostgresql")],
-            Operation.READ: [OperationDriverEntry(driver_id="DriverRecordsPostgresql")],
+            Operation.WRITE: [OperationDriverEntry(driver_id="CollectionPostgresqlDriver")],
+            Operation.READ: [OperationDriverEntry(driver_id="CollectionPostgresqlDriver")],
         },
         description=(
             "Operation → ordered driver list.  "
@@ -211,32 +223,33 @@ class RoutingPluginConfig(PluginConfig):
         ),
     )
 
-    metadata: MetadataOperationConfig = Field(
-        default_factory=MetadataOperationConfig,
+    metadata: MetadataRoutingConfig = Field(
+        default_factory=MetadataRoutingConfig,
         description=(
             "Metadata routing sub-configuration. "
-            "``override`` selects the CollectionMetadataDriverProtocol backend; "
-            "``storage`` selects CollectionStorageDriverProtocol backends that "
-            "contribute metadata at READ time."
+            "``operations[READ]`` selects the CollectionMetadataStore backend "
+            "(first available wins); "
+            "``operations[TRANSFORM]`` selects CollectionItemsStore backends "
+            "that contribute metadata at READ time."
         ),
     )
 
 
-class AssetRoutingPluginConfig(PluginConfig):
+class AssetRoutingConfig(PluginConfig):
     """Operation-based routing for asset storage drivers.
 
-    Same structure as :class:`RoutingPluginConfig` but scoped to
+    Same structure as :class:`CollectionRoutingConfig` but scoped to
     asset-domain drivers.
 
-    Registered as ``plugin_id = "assets:drivers"`` in the config waterfall.
+    Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
     """
 
     enabled: bool = Field(default=True, description="Enable this routing configuration.")
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
-            Operation.WRITE: [OperationDriverEntry(driver_id="DriverAssetPostgresql")],
-            Operation.READ: [OperationDriverEntry(driver_id="DriverAssetPostgresql")],
+            Operation.WRITE: [OperationDriverEntry(driver_id="AssetPostgresqlDriver")],
+            Operation.READ: [OperationDriverEntry(driver_id="AssetPostgresqlDriver")],
         },
         description="Operation → ordered driver list for asset drivers.",
     )
@@ -248,7 +261,7 @@ class AssetRoutingPluginConfig(PluginConfig):
 
 
 def _validate_routing_entries(
-    config: "RoutingPluginConfig | AssetRoutingPluginConfig",
+    config: "CollectionRoutingConfig | AssetRoutingConfig",
     driver_index: Dict[str, Any],
     label: str,
 ) -> None:
@@ -296,24 +309,23 @@ def _validate_routing_entries(
 
             # 4. write_mode compatibility — check DriverCapability.ASYNC
             if entry.write_mode == WriteMode.ASYNC:
-                # Resolve driver config by the driver instance's own _class_key.
+                # Resolve driver config via naming convention: ClassName + "Config"
                 try:
                     from dynastore.modules.db_config.platform_config_service import (
                         resolve_config_class,
                     )
 
-                    driver_class_key = getattr(driver, "_class_key", None)
-                    if driver_class_key:
-                        driver_cls = resolve_config_class(driver_class_key)
-                        if driver_cls is not None:
-                            driver_config = driver_cls()
-                            config_caps = getattr(driver_config, "capabilities", frozenset())
-                            if DriverCapability.ASYNC not in config_caps:
-                                raise ValueError(
-                                    f"{label}: write_mode='async' requires "
-                                    f"DriverCapability.ASYNC on driver '{entry.driver_id}'. "
-                                    f"Driver capabilities: {sorted(config_caps)}"
-                                )
+                    driver_config_key = type(driver).__name__ + "Config"
+                    driver_cls = resolve_config_class(driver_config_key)
+                    if driver_cls is not None:
+                        driver_config = driver_cls()
+                        config_caps = getattr(driver_config, "capabilities", frozenset())
+                        if DriverCapability.ASYNC not in config_caps:
+                            raise ValueError(
+                                f"{label}: write_mode='async' requires "
+                                f"DriverCapability.ASYNC on driver '{entry.driver_id}'. "
+                                f"Driver capabilities: {sorted(config_caps)}"
+                            )
                 except ValueError:
                     raise  # re-raise validation errors
                 except Exception:
@@ -349,7 +361,7 @@ def _validate_routing_entries(
 
 
 async def _on_apply_routing_config(
-    config: RoutingPluginConfig,
+    config: CollectionRoutingConfig,
     catalog_id: Optional[str],
     collection_id: Optional[str],
     db_resource: Optional[Any],
@@ -359,28 +371,30 @@ async def _on_apply_routing_config(
     Validates driver_id, hints, operations, write_mode, and metadata entries,
     then invalidates the router and metadata-router caches.
     """
-    from dynastore.models.protocols.metadata_driver import CollectionMetadataDriverProtocol
-    from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
+    from dynastore.models.protocols.metadata_driver import CollectionMetadataStore
+    from dynastore.models.protocols.storage_driver import CollectionItemsStore
     from dynastore.tools.discovery import get_protocols
 
-    driver_index = {type(d).__name__: d for d in get_protocols(CollectionStorageDriverProtocol)}
+    driver_index = {type(d).__name__: d for d in get_protocols(CollectionItemsStore)}
     _validate_routing_entries(config, driver_index, "Collection routing config")
 
-    # Validate metadata.override entries (CollectionMetadataDriverProtocol drivers)
-    metadata_driver_index = {type(d).__name__: d for d in get_protocols(CollectionMetadataDriverProtocol)}
-    for entry in config.metadata.override:
+    # Validate metadata.operations[READ] entries (CollectionMetadataStore drivers)
+    metadata_driver_index = {type(d).__name__: d for d in get_protocols(CollectionMetadataStore)}
+    for entry in config.metadata.operations.get(Operation.READ, []):
         if entry.driver_id not in metadata_driver_index:
             raise ValueError(
-                f"Collection routing config: metadata.override driver '{entry.driver_id}' "
-                f"is not registered. Available: {sorted(metadata_driver_index)}"
+                f"Collection routing config: metadata.operations[READ] driver "
+                f"'{entry.driver_id}' is not registered. "
+                f"Available: {sorted(metadata_driver_index)}"
             )
 
-    # Validate metadata.storage entries (CollectionStorageDriverProtocol drivers)
-    for entry in config.metadata.storage:
+    # Validate metadata.operations[TRANSFORM] entries (CollectionItemsStore drivers)
+    for entry in config.metadata.operations.get(Operation.TRANSFORM, []):
         if entry.driver_id not in driver_index:
             raise ValueError(
-                f"Collection routing config: metadata.storage driver '{entry.driver_id}' "
-                f"is not registered. Available: {sorted(driver_index)}"
+                f"Collection routing config: metadata.operations[TRANSFORM] driver "
+                f"'{entry.driver_id}' is not registered. "
+                f"Available: {sorted(driver_index)}"
             )
 
     # Invalidate router cache
@@ -399,9 +413,9 @@ async def _on_apply_routing_config(
     except Exception:
         pass
 
-    # Call ensure_storage() on metadata override drivers (idempotent, catalog-scoped).
+    # Call ensure_storage() on metadata READ drivers (idempotent, catalog-scoped).
     if catalog_id:
-        for entry in config.metadata.override:
+        for entry in config.metadata.operations.get(Operation.READ, []):
             driver = metadata_driver_index.get(entry.driver_id)
             ensure_fn = getattr(driver, "ensure_storage", None) if driver else None
             if ensure_fn is not None:
@@ -416,7 +430,7 @@ async def _on_apply_routing_config(
     # NOTE: ensure_storage() for collection WRITE/READ drivers is intentionally
     # NOT called here. It is invoked by the collection-creation flow
     # (CollectionService._create_collection_internal step 6) on the write driver,
-    # which is the only correct point because the DriverRecordsPostgresqlConfig
+    # which is the only correct point because the CollectionPostgresqlDriverConfig
     # (physical_table, sidecars) must be fully resolved before storage is
     # provisioned.  Calling ensure_storage() here — potentially before the
     # collection row exists — causes ImmutableConfigError for WriteOnce /
@@ -425,16 +439,16 @@ async def _on_apply_routing_config(
 
 
 async def _on_apply_asset_routing_config(
-    config: AssetRoutingPluginConfig,
+    config: AssetRoutingConfig,
     catalog_id: Optional[str],
     collection_id: Optional[str],
     db_resource: Optional[Any],
 ) -> None:
     """Called after asset routing config is written."""
-    from dynastore.models.protocols.asset_driver import AssetDriverProtocol
+    from dynastore.models.protocols.asset_driver import AssetStore
     from dynastore.tools.discovery import get_protocols
 
-    driver_index = {type(d).__name__: d for d in get_protocols(AssetDriverProtocol)}
+    driver_index = {type(d).__name__: d for d in get_protocols(AssetStore)}
     _validate_routing_entries(config, driver_index, "Asset routing config")
 
     # Invalidate router cache
@@ -466,5 +480,5 @@ async def _on_apply_asset_routing_config(
 
 # Register handlers on the config classes themselves.
 _HandlerSig = Callable[[PluginConfig, Optional[str], Optional[str], Optional[Any]], Any]
-RoutingPluginConfig.register_apply_handler(cast(_HandlerSig, _on_apply_routing_config))
-AssetRoutingPluginConfig.register_apply_handler(cast(_HandlerSig, _on_apply_asset_routing_config))
+CollectionRoutingConfig.register_apply_handler(cast(_HandlerSig, _on_apply_routing_config))
+AssetRoutingConfig.register_apply_handler(cast(_HandlerSig, _on_apply_asset_routing_config))

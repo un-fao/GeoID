@@ -21,7 +21,7 @@ DuckDB Storage Driver — file-based analytical reads via DuckDB.
 
 Reads from configurable formats (parquet, csv, json, etc.) using DuckDB's
 built-in readers.  Optionally writes to SQLite via DuckDB's ``sqlite``
-extension when ``DuckDbCollectionDriverConfig.write_path`` is set.
+extension when ``CollectionDuckdbDriverConfig.write_path`` is set.
 
 Capabilities vary based on configuration:
   - Read-only (default):  ``{READ_ONLY, STREAMING, SPATIAL_FILTER, EXPORT}``
@@ -45,7 +45,10 @@ import queue
 import threading
 import uuid
 from contextlib import asynccontextmanager, contextmanager
-from typing import Any, AsyncIterator, Dict, FrozenSet, List, Optional, Set, Union
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, FrozenSet, List, Optional, Set, Union
+
+if TYPE_CHECKING:
+    from dynastore.modules.storage.storage_location import StorageLocation
 
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols.storage_driver import Capability
@@ -53,7 +56,7 @@ from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.concurrency import run_in_thread
 from dynastore.modules.protocols import ModuleProtocol
 from dynastore.modules.storage.errors import ReadOnlyDriverError, SoftDeleteNotSupportedError
-from dynastore.modules.storage.driver_config import DuckDbCollectionDriverConfig, DuckDBConfig
+from dynastore.modules.storage.driver_config import CollectionDuckdbDriverConfig, DuckDBConfig
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +198,7 @@ def _close_pool():
             logger.info("DuckDB: connection pool closed (%d connections)", closed)
 
 
-class DriverRecordsDuckdb(ModuleProtocol):
+class CollectionDuckdbDriver(ModuleProtocol):
     """DuckDB storage driver — file-based analytical reads.
 
     Reads from parquet, CSV, JSON, etc. via DuckDB's built-in readers.
@@ -205,7 +208,7 @@ class DriverRecordsDuckdb(ModuleProtocol):
     ``queue.Queue``).  All blocking DuckDB operations are offloaded to
     the thread pool via ``run_in_thread()``.
 
-    Satisfies ``CollectionStorageDriverProtocol`` and ``StorageLocationResolver``.
+    Satisfies ``CollectionItemsStore`` and ``StorageLocationResolver``.
     """
 
     priority: int = 30
@@ -223,10 +226,11 @@ class DriverRecordsDuckdb(ModuleProtocol):
         Capability.ATTRIBUTE_FILTER,
         Capability.EXTERNAL_ID_TRACKING,
         Capability.TEMPORAL_VALIDITY,
+        Capability.PHYSICAL_ADDRESSING,
         # REQUIRED_ENFORCEMENT / UNIQUE_ENFORCEMENT: not advertised.
         # DuckDB stores feature properties in a single JSON VARCHAR column,
         # so field-level NOT NULL / UNIQUE cannot be enforced natively.
-        # Opt into app-level fallback via FeatureTypePluginConfig.allow_app_level_enforcement.
+        # Opt into app-level fallback via CollectionSchema.allow_app_level_enforcement.
     })
     preferred_for: FrozenSet[str] = frozenset({"analytics"})
     supported_hints: FrozenSet[str] = frozenset({"analytics"})
@@ -240,24 +244,24 @@ class DriverRecordsDuckdb(ModuleProtocol):
         collection_id: Optional[str] = None,
         *,
         db_resource: Optional[Any] = None,
-    ) -> "DuckDbCollectionDriverConfig":
+    ) -> "CollectionDuckdbDriverConfig":
         config = await self._get_location_async(catalog_id, collection_id)
         if config is None:
-            return DuckDbCollectionDriverConfig()
+            return CollectionDuckdbDriverConfig()
         return config
 
     @asynccontextmanager
     async def lifespan(self, app_state: object):
         _init_pool()
-        logger.info("DriverRecordsDuckdb: started (pool_size=%d)", DuckDBConfig.pool_size)
+        logger.info("CollectionDuckdbDriver: started (pool_size=%d)", DuckDBConfig.pool_size)
         yield
         _close_pool()
-        logger.info("DriverRecordsDuckdb: stopped")
+        logger.info("CollectionDuckdbDriver: stopped")
 
     async def _get_location_async(
         self, catalog_id: str, collection_id: Optional[str] = None
-    ) -> Optional[DuckDbCollectionDriverConfig]:
-        """Resolve DuckDbCollectionDriverConfig from the config waterfall."""
+    ) -> Optional[CollectionDuckdbDriverConfig]:
+        """Resolve CollectionDuckdbDriverConfig from the config waterfall."""
         try:
             from dynastore.tools.discovery import get_protocol
             from dynastore.models.protocols.configs import ConfigsProtocol
@@ -266,7 +270,7 @@ class DriverRecordsDuckdb(ModuleProtocol):
             if not configs:
                 return None
             config = await configs.get_config(
-                DuckDbCollectionDriverConfig,
+                CollectionDuckdbDriverConfig,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )
@@ -275,7 +279,7 @@ class DriverRecordsDuckdb(ModuleProtocol):
             return None
 
     @staticmethod
-    def _is_writable(loc: DuckDbCollectionDriverConfig) -> bool:
+    def _is_writable(loc: CollectionDuckdbDriverConfig) -> bool:
         return loc.write_path is not None
 
     @staticmethod
@@ -318,7 +322,7 @@ class DriverRecordsDuckdb(ModuleProtocol):
 
     def _read_entities_sync(
         self,
-        loc: DuckDbCollectionDriverConfig,
+        loc: CollectionDuckdbDriverConfig,
         entity_ids: Optional[List[str]],
         request: Optional[QueryRequest],
         limit: int,
@@ -408,7 +412,7 @@ class DriverRecordsDuckdb(ModuleProtocol):
 
     def _write_entities_sync(
         self,
-        loc: DuckDbCollectionDriverConfig,
+        loc: CollectionDuckdbDriverConfig,
         rows: List[Dict[str, Any]],
         collection_id: str,
         catalog_id: str,
@@ -512,7 +516,7 @@ class DriverRecordsDuckdb(ModuleProtocol):
 
     def _delete_entities_sync(
         self,
-        loc: DuckDbCollectionDriverConfig,
+        loc: CollectionDuckdbDriverConfig,
         collection_id: str,
         entity_ids: List[str],
     ) -> int:
@@ -536,7 +540,7 @@ class DriverRecordsDuckdb(ModuleProtocol):
 
     def _ensure_storage_sync(
         self,
-        loc: DuckDbCollectionDriverConfig,
+        loc: CollectionDuckdbDriverConfig,
         catalog_id: str,
         collection_id: Optional[str],
     ) -> None:
@@ -580,7 +584,7 @@ class DriverRecordsDuckdb(ModuleProtocol):
 
     def _export_entities_sync(
         self,
-        loc: DuckDbCollectionDriverConfig,
+        loc: CollectionDuckdbDriverConfig,
         format: str,
         target_path: str,
     ) -> str:
@@ -593,7 +597,7 @@ class DriverRecordsDuckdb(ModuleProtocol):
 
     def _get_entity_fields_sync(
         self,
-        loc: DuckDbCollectionDriverConfig,
+        loc: CollectionDuckdbDriverConfig,
     ) -> Dict[str, Any]:
         """Synchronous field introspection — runs inside thread pool."""
         from dynastore.models.protocols.field_definition import (
@@ -659,7 +663,7 @@ class DriverRecordsDuckdb(ModuleProtocol):
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc or not self._is_writable(loc):
             raise ReadOnlyDriverError(
-                "DriverRecordsDuckdb: no write_path configured — driver is read-only"
+                "CollectionDuckdbDriver: no write_path configured — driver is read-only"
             )
 
         from dynastore.modules.storage.drivers._duckdb_helpers import normalize_to_dicts
@@ -725,17 +729,17 @@ class DriverRecordsDuckdb(ModuleProtocol):
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc or not self._is_writable(loc):
             raise ReadOnlyDriverError(
-                "DriverRecordsDuckdb: no write_path — cannot delete"
+                "CollectionDuckdbDriver: no write_path — cannot delete"
             )
         if soft:
             raise SoftDeleteNotSupportedError(
-                "DriverRecordsDuckdb does not support soft delete."
+                "CollectionDuckdbDriver does not support soft delete."
             )
 
         write_fmt = loc.write_format or "sqlite"
         if write_fmt != "sqlite":
             raise ReadOnlyDriverError(
-                "DriverRecordsDuckdb: delete only supported with SQLite write backend"
+                "CollectionDuckdbDriver: delete only supported with SQLite write backend"
             )
 
         return await run_in_thread(
@@ -751,7 +755,7 @@ class DriverRecordsDuckdb(ModuleProtocol):
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
             logger.info(
-                "DriverRecordsDuckdb.ensure_storage: no location config for "
+                "CollectionDuckdbDriver.ensure_storage: no location config for "
                 "catalog=%s collection=%s — nothing to provision",
                 catalog_id, collection_id,
             )
@@ -768,7 +772,7 @@ class DriverRecordsDuckdb(ModuleProtocol):
     ) -> None:
         if soft:
             raise SoftDeleteNotSupportedError(
-                "DriverRecordsDuckdb does not support soft drop."
+                "CollectionDuckdbDriver does not support soft drop."
             )
         loc = await self._get_location_async(catalog_id, collection_id)
         if loc and loc.write_path:
@@ -800,11 +804,35 @@ class DriverRecordsDuckdb(ModuleProtocol):
         collection_id: Optional[str] = None,
         *,
         db_resource: Optional[Any] = None,
-    ) -> DuckDbCollectionDriverConfig:
+    ) -> CollectionDuckdbDriverConfig:
         loc = await self._get_location_async(catalog_id, collection_id)
         if loc:
             return loc
-        return DuckDbCollectionDriverConfig()
+        return CollectionDuckdbDriverConfig()
+
+    async def location(
+        self,
+        catalog_id: str,
+        collection_id: str,
+    ) -> "StorageLocation":
+        """Return typed physical storage coordinates for this DuckDB collection."""
+        from dynastore.modules.storage.storage_location import StorageLocation
+
+        loc = await self._get_location_async(catalog_id, collection_id)
+        path = (loc.path or "") if loc else ""
+        fmt = (loc.format if loc else None) or "parquet"
+        uri = f"duckdb:///{path}?format={fmt}" if path else f"duckdb:///?format={fmt}"
+        identifiers: Dict[str, str] = {"format": fmt}
+        if path:
+            identifiers["path"] = path
+        if loc and loc.write_path:
+            identifiers["write_path"] = loc.write_path
+        return StorageLocation(
+            backend="duckdb",
+            canonical_uri=uri,
+            identifiers=identifiers,
+            display_label=path or collection_id,
+        )
 
     # ------------------------------------------------------------------
     # Collection metadata (sidecar JSON file alongside the parquet)
@@ -873,7 +901,26 @@ class DriverRecordsDuckdb(ModuleProtocol):
             if not loc or not loc.path:
                 return {}
 
-            return await run_in_thread(self._get_entity_fields_sync, loc)
+            result = await run_in_thread(self._get_entity_fields_sync, loc)
+
+            # Overlay CollectionSchema-declared flags (required / unique).
+            try:
+                from dynastore.models.protocols.configs import ConfigsProtocol
+                from dynastore.modules.storage.driver_config import CollectionSchema
+                from dynastore.modules.storage.field_constraints import overlay_schema_flags
+                from dynastore.tools.discovery import get_protocol
+
+                configs = get_protocol(ConfigsProtocol)
+                if configs is not None:
+                    schema_cfg = await configs.get_config(
+                        CollectionSchema,
+                        catalog_id=catalog_id,
+                        collection_id=collection_id,
+                    )
+                    result = overlay_schema_flags(schema_cfg, result)
+            except Exception:
+                pass
+            return result
         except Exception:
             return {}
 
@@ -997,7 +1044,7 @@ class DriverRecordsDuckdb(ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> Any:
         raise NotImplementedError(
-            f"DriverRecordsDuckdb: aggregate('{aggregation_type}') is not implemented"
+            f"CollectionDuckdbDriver: aggregate('{aggregation_type}') is not implemented"
         )
 
     async def restore_entities(
@@ -1009,7 +1056,7 @@ class DriverRecordsDuckdb(ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> int:
         raise SoftDeleteNotSupportedError(
-            "DriverRecordsDuckdb does not support soft delete / restore."
+            "CollectionDuckdbDriver does not support soft delete / restore."
         )
 
     async def rename_storage(
@@ -1021,5 +1068,5 @@ class DriverRecordsDuckdb(ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> None:
         raise NotImplementedError(
-            "DriverRecordsDuckdb does not support rename_storage"
+            "CollectionDuckdbDriver does not support rename_storage"
         )

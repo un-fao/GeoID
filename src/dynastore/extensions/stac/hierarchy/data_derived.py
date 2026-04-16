@@ -84,7 +84,7 @@ class DataDerivedProvider:
         temporal = ext.get("temporal") or [[None, None]]
         return HierarchyExtent(
             spatial_bbox=ext.get("bbox"),
-            temporal_interval=temporal[0] if temporal else [None, None],
+            temporal_interval=temporal[0] if temporal else [None, None],  # type: ignore[arg-type]
         )
 
     async def has_children(self, ctx: Any, member_code: str) -> bool:

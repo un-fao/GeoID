@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS {schema}.collection_proxy_urls (
 CREATE INDEX IF NOT EXISTS idx_collection_proxy_urls_code ON {schema}.collection_proxy_urls (collection_id);
 """
 
-@lifecycle_registry.sync_catalog_initializer
+@lifecycle_registry.sync_catalog_initializer  # type: ignore[arg-type]
 async def _initialize_proxy_tenant_slice(conn: DbResource, schema: str, catalog_id: str):
     """Initializes the proxy extension's slice of the tenant schema."""
     logger.info(f"Initializing proxy tenant slice for {schema} (Catalog: {catalog_id})")

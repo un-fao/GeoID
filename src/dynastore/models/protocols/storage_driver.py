@@ -54,11 +54,13 @@ from typing import (
     runtime_checkable,
 )
 
+
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.query_builder import QueryRequest, QueryResponse
 
 if TYPE_CHECKING:
     from dynastore.models.protocols.field_definition import FieldDefinition
+    from dynastore.modules.storage.storage_location import StorageLocation
 
 
 class Capability:
@@ -122,9 +124,37 @@ class Capability:
     COUNT = "count"                  # efficient entity counting
     AGGREGATION = "aggregation"      # aggregation queries (terms, stats, histogram)
 
+    # --- Storage location & addressing ---
+    PHYSICAL_ADDRESSING = "physical_addressing"
+    # Driver exposes stable physical coordinates via location().
+    # Replaces isinstance(driver, PostgresDriver) patterns that read
+    # physical_schema / physical_table directly.
+
+    # --- Soft-delete guarantees ---
+    SOFT_DELETE_ATOMIC = "soft_delete_atomic"
+    # Driver guarantees a single-statement atomic soft-delete (no read-modify-write).
+    # A subset of SOFT_DELETE — callers that need atomicity check this constant.
+
+    # --- Entity transform pipeline ---
+    ENTITY_TRANSFORM = "entity_transform"
+    # Driver participates in the per-entity transform chain after READ.
+    # Implements EntityTransformer sub-Protocol: transform(entity, ctx) -> entity.
+    # Covers enrichment, filtering, field reshaping, gap interpolation.
+
+    # --- Query fallback ---
+    QUERY_FALLBACK_SOURCE = "query_fallback_source"
+    # Driver can serve any query as a fallback when the primary driver
+    # lacks the required capability.  Router uses this to pick an
+    # alternative without hardcoding a specific driver class.
+
+    # --- Bulk ingest ---
+    BULK_COPY = "bulk_copy"
+    # Driver supports a fast-path bulk ingest channel (e.g. COPY for PG,
+    # append for Iceberg).  Callers check this before invoking bulk_copy().
+
 
 @runtime_checkable
-class CollectionStorageDriverProtocol(Protocol):
+class CollectionItemsStore(Protocol):
     """Entity-level storage abstraction for collection data.
 
     Each driver provides CRUD + lifecycle operations for a specific backend.
@@ -181,7 +211,7 @@ class CollectionStorageDriverProtocol(Protocol):
 
                 Drivers that declare ``Capability.EXTERNAL_ID_TRACKING`` or
                 ``Capability.TEMPORAL_VALIDITY`` MUST honour these keys and apply
-                the ``CollectionWritePolicy`` (plugin_id ``"collection:write_policy"``) retrieved
+                the ``CollectionWritePolicy`` (class_key ``"CollectionWritePolicy"``) retrieved
                 from ``ConfigsProtocol``.
 
             db_resource: Optional connection/transaction to reuse (PG only).
@@ -471,8 +501,8 @@ class CollectionStorageDriverProtocol(Protocol):
     ) -> Any:
         """Fetch this driver's typed config from the config waterfall.
 
-        Each driver resolves its own ``_class_key`` (e.g. ``"driver:records:postgresql"``,
-        ``"driver:records:elasticsearch"``) and returns the matching
+        Each driver resolves its own class_key (e.g. ``CollectionPostgresqlDriverConfig``,
+        ``CollectionElasticsearchDriverConfig``) and returns the matching
         ``CollectionDriverConfig`` subclass.  Returns code defaults when no
         config has been stored.
 
@@ -482,13 +512,36 @@ class CollectionStorageDriverProtocol(Protocol):
         """
         ...
 
+    async def location(
+        self,
+        catalog_id: str,
+        collection_id: str,
+    ) -> "StorageLocation":
+        """Return the typed physical storage coordinates for this collection.
 
+        Replaces the old ``StorageLocationResolver.resolve_storage_location()``
+        (which returned ``Any``) and all ``isinstance(driver, CollectionPostgresqlDriver)``
+        patterns that read ``physical_schema``/``physical_table`` directly.
+
+        Drivers that advertise ``Capability.PHYSICAL_ADDRESSING`` MUST implement
+        this method.  Drivers without physical addressing return a placeholder.
+
+        Returns:
+            ``StorageLocation`` with ``backend``, ``canonical_uri``, ``identifiers``,
+            and ``display_label`` populated from this driver's config for the
+            given catalog/collection.
+        """
+        ...
+
+
+# StorageLocationResolver is kept for backward compatibility with existing drivers
+# that implement resolve_storage_location().  New code uses CollectionItemsStore.location().
 @runtime_checkable
 class StorageLocationResolver(Protocol):
-    """Resolves physical storage coordinates for a catalog/collection.
+    """Deprecated: use CollectionItemsStore.location() instead.
 
-    Every driver implements this. The resolver translates logical
-    (catalog_id, collection_id) into driver-specific physical coordinates.
+    Kept so existing isinstance checks and driver docstrings don't break until
+    the full class-name harmonization milestone removes it.
     """
 
     async def resolve_storage_location(

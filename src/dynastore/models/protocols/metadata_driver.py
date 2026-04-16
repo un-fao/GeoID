@@ -17,9 +17,9 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-CollectionMetadataDriverProtocol — pluggable storage for collection metadata.
+CollectionMetadataStore — pluggable storage for collection metadata.
 
-Mirrors the ``CollectionStorageDriverProtocol`` architecture:
+Mirrors the ``CollectionItemsStore`` architecture:
   - Capability-gated operations (CQL filter, spatial filter, fulltext, etc.)
   - Extensible schema (metadata fields are not fixed — enrichers and users
     can add arbitrary fields)
@@ -32,6 +32,7 @@ and routed through ``MetadataRoutingConfig``.
 """
 
 from typing import (
+    TYPE_CHECKING,
     Any,
     Dict,
     FrozenSet,
@@ -41,6 +42,9 @@ from typing import (
     Tuple,
     runtime_checkable,
 )
+
+if TYPE_CHECKING:
+    from dynastore.modules.storage.storage_location import StorageLocation
 
 
 class MetadataCapability:
@@ -56,15 +60,22 @@ class MetadataCapability:
 
     READ = "read"
     WRITE = "write"
-    SEARCH = "search"                # keyword/fulltext search (q parameter)
-    CQL_FILTER = "cql_filter"        # CQL2-JSON/Text filter support
-    SOFT_DELETE = "soft_delete"       # mark deleted but retain
-    SPATIAL_FILTER = "spatial_filter" # filter by extent bbox / geo_shape
-    AGGREGATION = "aggregation"      # faceted counts, stats on metadata fields
+    SEARCH = "search"                    # keyword/fulltext search (q parameter)
+    CQL_FILTER = "cql_filter"            # CQL2-JSON/Text filter support
+    SOFT_DELETE = "soft_delete"          # mark deleted but retain
+    SPATIAL_FILTER = "spatial_filter"    # filter by extent bbox / geo_shape
+    AGGREGATION = "aggregation"          # faceted counts, stats on metadata fields
+    PHYSICAL_ADDRESSING = "physical_addressing"  # driver exposes location()
+
+    # --- Query fallback ---
+    QUERY_FALLBACK_SOURCE = "query_fallback_source"
+    # Driver serves as the authoritative fallback for metadata storage.
+    # Callers that write to PG directly then sync to other drivers skip any
+    # driver that declares this capability (it was already written).
 
 
 @runtime_checkable
-class CollectionMetadataDriverProtocol(Protocol):
+class CollectionMetadataStore(Protocol):
     """Pluggable storage abstraction for collection metadata.
 
     Each driver provides CRUD + search operations for metadata using
@@ -165,4 +176,16 @@ class CollectionMetadataDriverProtocol(Protocol):
 
     async def is_available(self) -> bool:
         """Health check — used for fallback logic on first resolution."""
+        ...
+
+    async def location(
+        self,
+        catalog_id: str,
+        collection_id: str,
+    ) -> "StorageLocation":
+        """Return typed physical storage coordinates for this metadata collection.
+
+        Drivers advertising ``MetadataCapability.PHYSICAL_ADDRESSING`` MUST
+        implement this.  Parallel to ``CollectionItemsStore.location()``.
+        """
         ...

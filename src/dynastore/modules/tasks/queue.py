@@ -35,6 +35,7 @@ from typing import Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from dynastore.tools.async_utils import signal_bus, PgListenBridge
+from dynastore.modules.db_config.query_executor import DbResource
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ def _notification_transform(
 # ---------------------------------------------------------------------------
 
 async def start_queue_listener(
-    engine: AsyncEngine,
+    engine: DbResource,
     shutdown_event: asyncio.Event,
     channel: str = NEW_TASK_QUEUED,
     poll_timeout: float = 30.0,
