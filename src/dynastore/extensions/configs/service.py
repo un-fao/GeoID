@@ -55,6 +55,8 @@ from .dto import (
     get_plugin_examples,
     PLUGIN_EXAMPLES,
 )
+from .deep_dto import ConfigViewEntry
+from .deep_service import DeepConfigService
 from .policies import register_configs_policies
 
 logger = logging.getLogger(__name__)
@@ -111,7 +113,19 @@ class ConfigsService(ExtensionProtocol):
             "/schemas",
             self.get_config_schemas,
             methods=["GET"],
-            summary="Get JSON schemas for all registered configurations",
+            summary="List all registered config schemas grouped by scope and protocol",
+        )
+        self.router.add_api_route(
+            "/schemas/{class_key}",
+            self.get_config_schema,
+            methods=["GET"],
+            summary="Get JSON Schema + description for a specific config class",
+        )
+        self.router.add_api_route(
+            "/graph",
+            self.get_config_graph,
+            methods=["GET"],
+            summary="Config dependency graph — nodes = config classes, edges = apply-handler cross-references",
         )
         self.router.add_api_route(
             "/plugins",
@@ -123,7 +137,7 @@ class ConfigsService(ExtensionProtocol):
             "/storage/drivers",
             self.list_storage_drivers,
             methods=["GET"],
-            summary="List all registered storage drivers with capabilities and hints",
+            summary="List all registered storage drivers grouped by Protocol qualname",
         )
         self.router.add_api_route(
             "/",
@@ -179,6 +193,12 @@ class ConfigsService(ExtensionProtocol):
             self.list_collection_configs,
             methods=["GET"],
             summary="List all collection-level configurations",
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/configs/{plugin_id}/effective",
+            self.get_effective_collection_config,
+            methods=["GET"],
+            summary="Waterfall-resolved config with per-field source annotation",
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/collections/{collection_id}/configs/{plugin_id}",
@@ -242,18 +262,529 @@ class ConfigsService(ExtensionProtocol):
             methods=["GET"],
             summary="Search configurations for a collection",
         )
+        # ---- Config Proxy (Deep View) — full CRUD at all scopes ----
+        self.router.add_api_route(
+            "/view",
+            self.get_platform_config_view,
+            methods=["GET"],
+            summary="Platform config proxy — composed view of all effective platform configs",
+            tags=["Config Proxy"],
+        )
+        self.router.add_api_route(
+            "/view/{class_key}",
+            self.get_platform_config_entry,
+            methods=["GET"],
+            summary="Get a single config at platform scope (effective value + source)",
+            tags=["Config Proxy"],
+        )
+        self.router.add_api_route(
+            "/view/{class_key}",
+            self.put_platform_config_entry,
+            methods=["PUT"],
+            summary="Write a single config at platform scope",
+            tags=["Config Proxy"],
+        )
+        self.router.add_api_route(
+            "/view/{class_key}",
+            self.delete_platform_config_entry,
+            methods=["DELETE"],
+            summary="Remove platform-scope override (reverts to code default)",
+            status_code=status.HTTP_204_NO_CONTENT,
+            tags=["Config Proxy"],
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/view",
+            self.get_catalog_config_view,
+            methods=["GET"],
+            summary="Catalog config proxy — composed view of all effective catalog configs",
+            tags=["Config Proxy"],
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/view/{class_key}",
+            self.get_catalog_config_entry,
+            methods=["GET"],
+            summary="Get a single config at catalog scope (effective value + source)",
+            tags=["Config Proxy"],
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/view/{class_key}",
+            self.put_catalog_config_entry,
+            methods=["PUT"],
+            summary="Write a single config at catalog scope",
+            tags=["Config Proxy"],
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/view/{class_key}",
+            self.delete_catalog_config_entry,
+            methods=["DELETE"],
+            summary="Remove catalog-scope override (reverts to platform/default)",
+            status_code=status.HTTP_204_NO_CONTENT,
+            tags=["Config Proxy"],
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/view",
+            self.get_collection_config_view,
+            methods=["GET"],
+            summary="Collection config proxy — composed view of all effective collection configs",
+            tags=["Config Proxy"],
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/view/{class_key}",
+            self.put_collection_config_entry,
+            methods=["PUT"],
+            summary="Write a single config at collection scope (collection must exist)",
+            tags=["Config Proxy"],
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/view/{class_key}",
+            self.delete_collection_config_entry,
+            methods=["DELETE"],
+            summary="Remove collection-scope override (reverts to catalog/platform/default)",
+            status_code=status.HTTP_204_NO_CONTENT,
+            tags=["Config Proxy"],
+        )
 
     @property
     def configs(self) -> ConfigsProtocol:
-        return self.get_protocol(ConfigsProtocol)
+        return self.get_protocol(ConfigsProtocol)  # type: ignore[return-value]
+
+    @property
+    def _deep(self) -> DeepConfigService:
+        from dynastore.models.protocols import AssetsProtocol, CatalogsProtocol
+
+        return DeepConfigService(
+            config_service=self.configs,
+            catalogs_service=self.get_protocol(CatalogsProtocol),
+            assets_service=self.get_protocol(AssetsProtocol),
+        )
 
 
     async def get_config_schemas(self) -> Dict[str, Any]:
-        """Retrieves JSON schemas for all registered configuration models."""
+        """List all registered config schemas grouped by scope and protocol (M9).
+
+        Response shape::
+
+            {
+                class_key: {
+                    "json_schema": {...},
+                    "description": "...",
+                    "scope": "platform_waterfall | collection_intrinsic | deployment_env",
+                }
+            }
+
+        ``scope`` is read from ``ConfigScopeMixin.config_scope`` when present,
+        or defaults to ``"platform_waterfall"``.
+        """
+        from dynastore.modules.storage.schema_types import ConfigScopeMixin
+
         schemas: Dict[str, Any] = {}
         for class_key, config_class in list_registered_configs().items():
-            schemas[class_key] = config_class.model_json_schema()
+            scope = getattr(config_class, "config_scope", "platform_waterfall")
+            schemas[class_key] = {
+                "json_schema": config_class.model_json_schema(),
+                "description": (config_class.__doc__ or "").strip().split("\n")[0],
+                "scope": scope,
+            }
         return schemas
+
+    async def get_config_schema(self, class_key: str) -> Dict[str, Any]:
+        """Return full JSON Schema, description, and example for a single config class (M9).
+
+        Response shape::
+
+            {
+                "class_key": "CollectionRoutingConfig",
+                "json_schema": {...},
+                "description": "...",
+                "scope": "platform_waterfall",
+            }
+        """
+        from dynastore.modules.storage.schema_types import ConfigScopeMixin
+
+        config_class = resolve_config_class(class_key)
+        if config_class is None:
+            raise HTTPException(status_code=404, detail=f"Config class '{class_key}' not registered.")
+
+        scope = getattr(config_class, "config_scope", "platform_waterfall")
+        return {
+            "class_key": class_key,
+            "json_schema": config_class.model_json_schema(),
+            "description": (config_class.__doc__ or "").strip(),
+            "scope": scope,
+        }
+
+    async def get_config_graph(self) -> Dict[str, Any]:
+        """Return a simple config dependency graph (M9).
+
+        Each node is a registered config class; edges represent ``register_apply_handler``
+        cross-references (i.e., handler A reads config B to validate against).
+
+        Response shape::
+
+            {
+                "nodes": ["CollectionRoutingConfig", "CollectionSchema", ...],
+                "edges": [
+                    {"from": "CollectionWritePolicy", "to": "CollectionSchema",
+                     "label": "cross-validates external_id_field against fields"},
+                    ...
+                ]
+            }
+        """
+        nodes = list(list_registered_configs().keys())
+
+        # Known cross-validator edges (hard-coded from apply-handler docs)
+        edges = [
+            {
+                "from": "CollectionWritePolicy",
+                "to": "CollectionSchema",
+                "label": "cross-validates external_id_field against schema.fields",
+            },
+            {
+                "from": "CollectionSchema",
+                "to": "CollectionRoutingConfig",
+                "label": "validates required/unique constraints against primary write driver capabilities",
+            },
+        ]
+
+        return {"nodes": nodes, "edges": edges}
+
+    async def get_effective_collection_config(
+        self, catalog_id: str, collection_id: str, plugin_id: str
+    ) -> Dict[str, Any]:
+        """Waterfall-resolved config with per-field source annotation (M9).
+
+        Loads the config at every scope tier and annotates each field with the
+        tier that last overrode it:
+
+        ``"default"`` — code-level class default
+        ``"platform"`` — explicitly set at platform level
+        ``"catalog"``  — overridden at catalog level
+        ``"collection"`` — overridden at collection level
+
+        Response shape::
+
+            {
+                "class_key": "CollectionRoutingConfig",
+                "resolved": {
+                    "on_conflict": {
+                        "value": "REFUSE_RETURN",
+                        "source": "catalog",
+                        "overrides": ["platform: null", "default: null"]
+                    }
+                }
+            }
+        """
+        cls = resolve_config_class(plugin_id)
+        if cls is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Config class '{plugin_id}' not registered.",
+            )
+
+        configs = self.configs
+
+        default_config = cls()
+        platform_config = await configs.get_config(cls)
+        catalog_config = await configs.get_config(cls, catalog_id=catalog_id)
+        effective_config = await configs.get_config(
+            cls, catalog_id=catalog_id, collection_id=collection_id
+        )
+
+        default_data = default_config.model_dump()
+        platform_data = platform_config.model_dump()
+        catalog_data = catalog_config.model_dump()
+        effective_data = effective_config.model_dump()
+
+        annotated: Dict[str, Any] = {}
+        for field_name, value in effective_data.items():
+            catalog_val = catalog_data.get(field_name)
+            platform_val = platform_data.get(field_name)
+            default_val = default_data.get(field_name)
+
+            if value != catalog_val:
+                source = "collection"
+            elif catalog_val != platform_val:
+                source = "catalog"
+            elif platform_val != default_val:
+                source = "platform"
+            else:
+                source = "default"
+
+            overrides: list = []
+            if source == "collection" and catalog_val != default_val:
+                overrides.append(f"catalog: {catalog_val!r}")
+            if source in ("collection", "catalog") and platform_val != default_val:
+                overrides.append(f"platform: {platform_val!r}")
+            if source != "default":
+                overrides.append(f"default: {default_val!r}")
+
+            entry: Dict[str, Any] = {"value": value, "source": source}
+            if overrides:
+                entry["overrides"] = overrides
+            annotated[field_name] = entry
+
+        return {"class_key": plugin_id, "resolved": annotated}
+
+    # =========================================================================
+    # Config Proxy Endpoints — Generic CRUD at Platform / Catalog / Collection
+    # =========================================================================
+
+    async def get_platform_config_view(
+        self,
+        request: Request,
+        depth: int = Query(0, ge=0, le=3, description="Child levels to expand (0 = configs only)."),
+        catalogs_page: int = Query(1, ge=1),
+        page_size: int = Query(15, ge=1, le=100),
+    ) -> Any:
+        base_url = str(request.url).split("?")[0]
+        view = await self._deep.get_platform_view(
+            base_url=base_url,
+            depth=depth,
+            catalogs_page=catalogs_page,
+            page_size=page_size,
+        )
+        return JSONResponse(content=view.model_dump())
+
+    async def get_platform_config_entry(self, class_key: str) -> Any:
+        cls = resolve_config_class(class_key)
+        if cls is None:
+            raise HTTPException(
+                status_code=404, detail=f"Config class '{class_key}' not registered."
+            )
+        effective = await self.configs.get_config(cls)
+        platform_list = await self.configs.list_configs(limit=2000, offset=0)
+        stored_keys = {e["plugin_id"] for e in platform_list.get("items", [])}
+        source = "platform" if class_key in stored_keys else "default"
+        entry = ConfigViewEntry(
+            class_key=class_key, value=effective.model_dump(), source=source
+        )
+        return JSONResponse(content=entry.model_dump())
+
+    async def put_platform_config_entry(
+        self,
+        class_key: str,
+        payload: Dict[str, Any] = Body(...),
+    ) -> Any:
+        cls = resolve_config_class(class_key)
+        if cls is None:
+            raise HTTPException(
+                status_code=404, detail=f"Config class '{class_key}' not registered."
+            )
+        try:
+            config_obj = cls.model_validate(payload)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            existing = await self.configs.get_config(cls)
+            if existing is not None:
+                enforce_config_immutability(existing, config_obj)
+            await self.configs.set_config(cls, config_obj, check_immutability=False)
+        except ImmutableConfigError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise handle_exception(exc)
+        entry = ConfigViewEntry(
+            class_key=class_key, value=config_obj.model_dump(), source="platform"
+        )
+        return JSONResponse(content=entry.model_dump())
+
+    async def delete_platform_config_entry(self, class_key: str) -> Response:
+        cls = resolve_config_class(class_key)
+        if cls is None:
+            raise HTTPException(
+                status_code=404, detail=f"Config class '{class_key}' not registered."
+            )
+        try:
+            await self.configs.delete_config(cls)
+        except Exception as exc:
+            raise handle_exception(exc)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    async def get_catalog_config_view(
+        self,
+        catalog_id: str,
+        request: Request,
+        depth: int = Query(0, ge=0, le=3),
+        collections_page: int = Query(1, ge=1),
+        assets_page: int = Query(1, ge=1),
+        page_size: int = Query(15, ge=1, le=100),
+    ) -> Any:
+        base_url = str(request.url).split("?")[0]
+        view = await self._deep.get_catalog_view(
+            base_url=base_url,
+            catalog_id=catalog_id,
+            depth=depth,
+            collections_page=collections_page,
+            assets_page=assets_page,
+            page_size=page_size,
+        )
+        return JSONResponse(content=view.model_dump())
+
+    async def get_catalog_config_entry(
+        self, catalog_id: str, class_key: str
+    ) -> Any:
+        cls = resolve_config_class(class_key)
+        if cls is None:
+            raise HTTPException(
+                status_code=404, detail=f"Config class '{class_key}' not registered."
+            )
+        effective = await self.configs.get_config(cls, catalog_id=catalog_id)
+        catalog_list = await self.configs.list_configs(
+            catalog_id=catalog_id, limit=2000, offset=0
+        )
+        catalog_keys = {e["plugin_id"] for e in catalog_list.get("items", [])}
+        platform_list = await self.configs.list_configs(limit=2000, offset=0)
+        platform_keys = {e["plugin_id"] for e in platform_list.get("items", [])}
+        if class_key in catalog_keys:
+            source = "catalog"
+        elif class_key in platform_keys:
+            source = "platform"
+        else:
+            source = "default"
+        entry = ConfigViewEntry(
+            class_key=class_key, value=effective.model_dump(), source=source
+        )
+        return JSONResponse(content=entry.model_dump())
+
+    async def put_catalog_config_entry(
+        self,
+        catalog_id: str,
+        class_key: str,
+        payload: Dict[str, Any] = Body(...),
+    ) -> Any:
+        cls = resolve_config_class(class_key)
+        if cls is None:
+            raise HTTPException(
+                status_code=404, detail=f"Config class '{class_key}' not registered."
+            )
+        try:
+            config_obj = cls.model_validate(payload)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            existing = await self.configs.get_config(cls, catalog_id=catalog_id)
+            if existing is not None:
+                enforce_config_immutability(existing, config_obj)
+            await self.configs.set_config(
+                cls, config_obj, catalog_id=catalog_id, check_immutability=False
+            )
+        except ImmutableConfigError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise handle_exception(exc)
+        entry = ConfigViewEntry(
+            class_key=class_key, value=config_obj.model_dump(), source="catalog"
+        )
+        return JSONResponse(content=entry.model_dump())
+
+    async def delete_catalog_config_entry(
+        self, catalog_id: str, class_key: str
+    ) -> Response:
+        cls = resolve_config_class(class_key)
+        if cls is None:
+            raise HTTPException(
+                status_code=404, detail=f"Config class '{class_key}' not registered."
+            )
+        try:
+            await self.configs.delete_config(cls, catalog_id=catalog_id)
+        except Exception as exc:
+            raise handle_exception(exc)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    async def get_collection_config_view(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        request: Request,
+        depth: int = Query(0, ge=0, le=3),
+        assets_page: int = Query(1, ge=1),
+        page_size: int = Query(15, ge=1, le=100),
+    ) -> Any:
+        base_url = str(request.url).split("?")[0]
+        view = await self._deep.get_collection_view(
+            base_url=base_url,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            depth=depth,
+            assets_page=assets_page,
+            page_size=page_size,
+        )
+        return JSONResponse(content=view.model_dump())
+
+    async def put_collection_config_entry(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        class_key: str,
+        payload: Dict[str, Any] = Body(...),
+    ) -> Any:
+        from dynastore.models.protocols import CatalogsProtocol
+
+        cats = self.get_protocol(CatalogsProtocol)
+        if cats is not None:
+            try:
+                col = await cats.get_collection(
+                    catalog_id=catalog_id, collection_id=collection_id
+                )
+                if col is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=(
+                            f"Collection '{collection_id}' not found in catalog "
+                            f"'{catalog_id}'."
+                        ),
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                pass
+
+        cls = resolve_config_class(class_key)
+        if cls is None:
+            raise HTTPException(
+                status_code=404, detail=f"Config class '{class_key}' not registered."
+            )
+        try:
+            config_obj = cls.model_validate(payload)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            existing = await self.configs.get_config(
+                cls, catalog_id=catalog_id, collection_id=collection_id
+            )
+            if existing is not None:
+                enforce_config_immutability(existing, config_obj)
+            await self.configs.set_config(
+                cls,
+                config_obj,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                check_immutability=False,
+            )
+        except ImmutableConfigError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise handle_exception(exc)
+        entry = ConfigViewEntry(
+            class_key=class_key, value=config_obj.model_dump(), source="collection"
+        )
+        return JSONResponse(content=entry.model_dump())
+
+    async def delete_collection_config_entry(
+        self, catalog_id: str, collection_id: str, class_key: str
+    ) -> Response:
+        cls = resolve_config_class(class_key)
+        if cls is None:
+            raise HTTPException(
+                status_code=404, detail=f"Config class '{class_key}' not registered."
+            )
+        try:
+            await self.configs.delete_config(
+                cls, catalog_id=catalog_id, collection_id=collection_id
+            )
+        except Exception as exc:
+            raise handle_exception(exc)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # --- Discovery Endpoint ---
 
@@ -286,17 +817,17 @@ class ConfigsService(ExtensionProtocol):
         return list(plugins.keys())
 
     async def list_storage_drivers(self) -> Any:
-        """List all registered drivers grouped by the protocol/domain they serve.
+        """List all registered drivers grouped by the Protocol they implement (M9 §7).
 
-        Response shape: ``{domain: {class_name: DriverInfo}}``. Domains are
-        ``"collections"``, ``"assets"``, ``"collection_metadata"`` — matching
-        the slots in the routing config. Use the inner class names as
-        ``driver_id`` values in ``collection:drivers`` / ``assets:drivers``.
+        Response shape: ``{ProtocolQualname: {class_name: DriverInfo}}``.
+        Keys are the ``__qualname__`` of ``CollectionItemsStore``, ``AssetStore``,
+        and ``CollectionMetadataStore``.  Use the inner class names as driver_id
+        values in the routing config's operations list.
         """
         from dynastore.extensions.configs.dto import DriverInfo, DriverListResponse
-        from dynastore.models.protocols.asset_driver import AssetDriverProtocol
-        from dynastore.models.protocols.metadata_driver import CollectionMetadataDriverProtocol
-        from dynastore.models.protocols.storage_driver import CollectionStorageDriverProtocol
+        from dynastore.models.protocols.asset_driver import AssetStore
+        from dynastore.models.protocols.metadata_driver import CollectionMetadataStore
+        from dynastore.models.protocols.storage_driver import CollectionItemsStore
         from dynastore.modules.storage.routing_config import derive_supported_operations
         from dynastore.tools.discovery import get_all_protocols
 
@@ -338,18 +869,19 @@ class ConfigsService(ExtensionProtocol):
                 available=available,
             )
 
+        # Group by Protocol qualname (M9 — §7 protocol-based driver grouping)
         drivers: Dict[str, Dict[str, DriverInfo]] = {
-            "collections": {
-                type(d).__name__: _routable_info(d, f"driver:records:{type(d).__name__}", d.is_available())
-                for d in get_all_protocols(CollectionStorageDriverProtocol)
+            CollectionItemsStore.__qualname__: {
+                type(d).__name__: _routable_info(d, f"{type(d).__name__}Config", d.is_available())
+                for d in get_all_protocols(CollectionItemsStore)
             },
-            "assets": {
-                type(d).__name__: _routable_info(d, f"driver:asset:{type(d).__name__}", d.is_available())
-                for d in get_all_protocols(AssetDriverProtocol)
+            AssetStore.__qualname__: {
+                type(d).__name__: _routable_info(d, f"{type(d).__name__}Config", d.is_available())
+                for d in get_all_protocols(AssetStore)
             },
-            "collection_metadata": {
+            CollectionMetadataStore.__qualname__: {
                 type(d).__name__: _metadata_info(d, await d.is_available())
-                for d in get_all_protocols(CollectionMetadataDriverProtocol)
+                for d in get_all_protocols(CollectionMetadataStore)
             },
         }
 
@@ -602,8 +1134,8 @@ class ConfigsService(ExtensionProtocol):
         self,
         plugin_id: str = Path(
             ...,
-            description="Plugin identifier (e.g. ``driver:records:postgresql``, ``collection:drivers``, ``stac``).",
-            examples=["driver:records:postgresql", "collection:drivers", "stac"],
+            description="Plugin identifier (e.g. ``CollectionPostgresqlDriverConfig``, ``CollectionRoutingConfig``, ``stac``).",
+            examples=["CollectionPostgresqlDriverConfig", "CollectionRoutingConfig", "stac"],
         ),
     ) -> List[Dict[str, Any]]:
         """Returns configuration examples for a specific plugin.
@@ -638,14 +1170,14 @@ class ConfigsService(ExtensionProtocol):
                     ),
                     "value": {
                         "configs": {
-                            "collection:drivers": {
+                            "CollectionRoutingConfig": {
                                 "enabled": True,
                                 "operations": {
                                     "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
                                     "READ": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
                                 },
                             },
-                            "assets:drivers": {
+                            "AssetRoutingConfig": {
                                 "enabled": True,
                                 "operations": {
                                     "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
@@ -690,7 +1222,7 @@ class ConfigsService(ExtensionProtocol):
                     ),
                     "value": {
                         "configs": {
-                            "driver:records:postgresql": {
+                            "CollectionPostgresqlDriverConfig": {
                                 "enabled": True,
                                 "collection_type": "VECTOR",
                                 "sidecars": [
@@ -714,7 +1246,7 @@ class ConfigsService(ExtensionProtocol):
                                 ],
                                 "partitioning": {"enabled": False, "partition_keys": []},
                             },
-                            "collection:drivers": {
+                            "CollectionRoutingConfig": {
                                 "enabled": True,
                                 "operations": {
                                     "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
@@ -757,7 +1289,7 @@ class ConfigsService(ExtensionProtocol):
                 await self.configs.set_config(
                     cls, config_model, catalog_id, collection_id
                 )
-                results.append(BulkApplyResultEntry(plugin_id=plugin_id, status="ok"))
+                results.append(BulkApplyResultEntry(plugin_id=plugin_id, status="ok"))  # type: ignore[call-arg]
                 applied += 1
             except Exception as exc:
                 logger.error("Bulk apply failed for %s: %s", plugin_id, exc, exc_info=True)

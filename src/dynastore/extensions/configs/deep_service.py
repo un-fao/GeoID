@@ -87,7 +87,7 @@ class DeepConfigService:
                 except Exception:
                     value = {}
 
-            out[class_key] = ConfigViewEntry(
+            out[class_key] = ConfigViewEntry(  # type: ignore[call-arg]
                 class_key=class_key,
                 value=value,
                 source=source,
@@ -193,7 +193,7 @@ class DeepConfigService:
         if page * page_size < total:
             links.append({"rel": "next", "href": _url(page + 1)})
 
-        return ConfigPage(
+        return ConfigPage(  # type: ignore[call-arg]
             category=category,
             total=total,
             page=page,
@@ -338,7 +338,7 @@ class DeepConfigService:
             pg.items = items
             categories["catalogs"] = pg
 
-        return PlatformConfigView(configs=configs, categories=categories)
+        return PlatformConfigView(configs=configs, categories=categories)  # type: ignore[call-arg]
 
     async def _list_assets(
         self,
