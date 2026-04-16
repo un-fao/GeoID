@@ -191,3 +191,103 @@ async def test_resolve_driver_configs_unknown_driver(mock_config_service):
     assert result["WRITE"][0].driver_id == "UnknownDriver"
     assert result["WRITE"][0].config is None
     assert result["WRITE"][0].config_class_key is None
+
+
+def test_next_link_on_first_page():
+    svc = DeepConfigService(config_service=MagicMock())
+    page = svc._build_config_page(
+        "http://test/view", "collections", 30, 1, 15, {"depth": 1}
+    )
+    assert any(link["rel"] == "next" for link in page.links)
+    assert not any(link["rel"] == "prev" for link in page.links)
+    next_href = next(link["href"] for link in page.links if link["rel"] == "next")
+    assert "collections_page=2" in next_href
+    assert "depth=1" in next_href
+
+
+def test_prev_link_on_page_3():
+    svc = DeepConfigService(config_service=MagicMock())
+    page = svc._build_config_page("http://test/view", "collections", 100, 3, 15, {})
+    assert any(link["rel"] == "prev" for link in page.links)
+    prev_href = next(link["href"] for link in page.links if link["rel"] == "prev")
+    assert "collections_page=2" in prev_href
+
+
+def test_no_next_on_last_page():
+    svc = DeepConfigService(config_service=MagicMock())
+    page = svc._build_config_page("http://test/view", "collections", 10, 1, 15, {})
+    assert not any(link["rel"] == "next" for link in page.links)
+
+
+@pytest.mark.asyncio
+async def test_collection_view_depth0_no_categories(mock_config_service):
+    svc = DeepConfigService(config_service=mock_config_service)
+    with patch.object(svc, "_get_effective_configs", new=AsyncMock(return_value={})), \
+         patch.object(svc, "_enrich_routing_configs", new=AsyncMock()):
+        view = await svc.get_collection_view(
+            base_url="http://test", catalog_id="c", collection_id="col", depth=0
+        )
+    assert view.categories is None
+
+
+@pytest.mark.asyncio
+async def test_collection_view_depth1_has_assets_category(mock_config_service):
+    mock_assets = MagicMock()
+    mock_assets.list_assets = AsyncMock(return_value=[])
+    mock_assets.count_assets = AsyncMock(return_value=0)
+    svc = DeepConfigService(
+        config_service=mock_config_service, assets_service=mock_assets
+    )
+    with patch.object(svc, "_get_effective_configs", new=AsyncMock(return_value={})), \
+         patch.object(svc, "_enrich_routing_configs", new=AsyncMock()):
+        view = await svc.get_collection_view(
+            base_url="http://test", catalog_id="c", collection_id="col", depth=1
+        )
+    assert view.categories is not None
+    assert "assets" in view.categories
+    assert view.categories["assets"].total == 0
+    assert view.categories["assets"].items == []
+
+
+@pytest.mark.asyncio
+async def test_catalog_view_depth0_no_categories(mock_config_service):
+    svc = DeepConfigService(config_service=mock_config_service)
+    with patch.object(svc, "_get_effective_configs", new=AsyncMock(return_value={})), \
+         patch.object(svc, "_enrich_routing_configs", new=AsyncMock()):
+        view = await svc.get_catalog_view(
+            base_url="http://test", catalog_id="c", depth=0
+        )
+    assert view.categories is None
+
+
+@pytest.mark.asyncio
+async def test_catalog_view_depth1_has_collections(mock_config_service):
+    mock_cats = MagicMock()
+    mock_cats.list_collections = AsyncMock(return_value=[])
+    mock_cats.count_collections = AsyncMock(return_value=0)
+    mock_assets = MagicMock()
+    mock_assets.list_assets = AsyncMock(return_value=[])
+    mock_assets.count_assets = AsyncMock(return_value=0)
+    svc = DeepConfigService(
+        config_service=mock_config_service,
+        catalogs_service=mock_cats,
+        assets_service=mock_assets,
+    )
+    with patch.object(svc, "_get_effective_configs", new=AsyncMock(return_value={})), \
+         patch.object(svc, "_enrich_routing_configs", new=AsyncMock()):
+        view = await svc.get_catalog_view(
+            base_url="http://test", catalog_id="c", depth=1
+        )
+    assert view.categories is not None
+    assert "collections" in view.categories
+    assert "assets" in view.categories
+
+
+@pytest.mark.asyncio
+async def test_platform_view_depth0_no_categories(mock_config_service):
+    svc = DeepConfigService(config_service=mock_config_service)
+    with patch.object(svc, "_get_effective_configs", new=AsyncMock(return_value={})), \
+         patch.object(svc, "_enrich_routing_configs", new=AsyncMock()):
+        view = await svc.get_platform_view(base_url="http://test", depth=0)
+    assert view.categories is None
+    assert view.scope == "platform"

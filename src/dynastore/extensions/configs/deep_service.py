@@ -1,9 +1,16 @@
 """Business logic for the deep paginated configuration view."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from dynastore.extensions.configs.deep_dto import ConfigViewEntry, ResolvedDriverEntry
+from dynastore.extensions.configs.deep_dto import (
+    CatalogConfigView,
+    CollectionConfigView,
+    ConfigPage,
+    ConfigViewEntry,
+    PlatformConfigView,
+    ResolvedDriverEntry,
+)
 from dynastore.models.protocols import ConfigsProtocol
 from dynastore.modules.db_config.platform_config_service import (
     list_registered_configs,
@@ -19,8 +26,15 @@ _ROUTING_CONFIG_KEYS = frozenset({"CollectionRoutingConfig", "AssetRoutingConfig
 class DeepConfigService:
     """Composes deep, paginated configuration views for platform / catalog / collection scope."""
 
-    def __init__(self, config_service: ConfigsProtocol):
+    def __init__(
+        self,
+        config_service: ConfigsProtocol,
+        assets_service: Optional[Any] = None,
+        catalogs_service: Optional[Any] = None,
+    ):
         self._config_service = config_service
+        self._assets_service = assets_service
+        self._catalogs_service = catalogs_service
 
     async def _get_effective_configs(
         self,
@@ -155,3 +169,244 @@ class DeepConfigService:
                     )
                 except Exception:
                     logger.debug("Could not resolve drivers for %s", class_key)
+
+    def _build_config_page(
+        self,
+        base_url: str,
+        category: str,
+        total: int,
+        page: int,
+        page_size: int,
+        extra_params: Dict[str, Any],
+    ) -> ConfigPage:
+        links: List[Dict[str, str]] = []
+        page_param = f"{category}_page"
+
+        def _url(p: int) -> str:
+            params = {**extra_params, page_param: p, "page_size": page_size}
+            qs = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+            sep = "&" if "?" in base_url else "?"
+            return f"{base_url}{sep}{qs}"
+
+        if page > 1:
+            links.append({"rel": "prev", "href": _url(page - 1)})
+        if page * page_size < total:
+            links.append({"rel": "next", "href": _url(page + 1)})
+
+        return ConfigPage(
+            category=category,
+            total=total,
+            page=page,
+            page_size=page_size,
+            links=links,
+        )
+
+    async def get_collection_view(
+        self,
+        base_url: str,
+        catalog_id: str,
+        collection_id: str,
+        depth: int = 0,
+        assets_page: int = 1,
+        page_size: int = 15,
+    ) -> CollectionConfigView:
+        configs = await self._get_effective_configs(
+            catalog_id=catalog_id, collection_id=collection_id
+        )
+        await self._enrich_routing_configs(configs, catalog_id, collection_id)
+
+        categories: Optional[Dict[str, ConfigPage]] = None
+        if depth > 0:
+            categories = {}
+            assets_total, assets_items = await self._list_assets(
+                catalog_id, collection_id, assets_page, page_size
+            )
+            pg = self._build_config_page(
+                base_url=base_url,
+                category="assets",
+                total=assets_total,
+                page=assets_page,
+                page_size=page_size,
+                extra_params={"depth": depth},
+            )
+            pg.items = assets_items
+            categories["assets"] = pg
+
+        return CollectionConfigView(
+            collection_id=collection_id,
+            catalog_id=catalog_id,
+            configs=configs,
+            categories=categories,
+        )
+
+    async def get_catalog_view(
+        self,
+        base_url: str,
+        catalog_id: str,
+        depth: int = 0,
+        collections_page: int = 1,
+        assets_page: int = 1,
+        page_size: int = 15,
+    ) -> CatalogConfigView:
+        configs = await self._get_effective_configs(
+            catalog_id=catalog_id, collection_id=None
+        )
+        await self._enrich_routing_configs(configs, catalog_id, None)
+
+        categories: Optional[Dict[str, ConfigPage]] = None
+        if depth > 0:
+            categories = {}
+            coll_total, coll_items = await self._list_collections(
+                base_url, catalog_id, collections_page, page_size, depth
+            )
+            coll_pg = self._build_config_page(
+                base_url=base_url,
+                category="collections",
+                total=coll_total,
+                page=collections_page,
+                page_size=page_size,
+                extra_params={"depth": depth, "assets_page": assets_page},
+            )
+            coll_pg.items = coll_items
+            categories["collections"] = coll_pg
+
+            assets_total, assets_items = await self._list_assets(
+                catalog_id, "", assets_page, page_size
+            )
+            assets_pg = self._build_config_page(
+                base_url=base_url,
+                category="assets",
+                total=assets_total,
+                page=assets_page,
+                page_size=page_size,
+                extra_params={"depth": depth, "collections_page": collections_page},
+            )
+            assets_pg.items = assets_items
+            categories["assets"] = assets_pg
+
+        return CatalogConfigView(
+            catalog_id=catalog_id, configs=configs, categories=categories
+        )
+
+    async def get_platform_view(
+        self,
+        base_url: str,
+        depth: int = 0,
+        catalogs_page: int = 1,
+        page_size: int = 15,
+    ) -> PlatformConfigView:
+        configs = await self._get_effective_configs(
+            catalog_id=None, collection_id=None
+        )
+        await self._enrich_routing_configs(configs, None, None)
+
+        categories: Optional[Dict[str, ConfigPage]] = None
+        if depth > 0 and self._catalogs_service is not None:
+            categories = {}
+            offset = (catalogs_page - 1) * page_size
+            try:
+                cats = await self._catalogs_service.list_catalogs(
+                    limit=page_size, offset=offset
+                )
+                count_fn = getattr(self._catalogs_service, "count_catalogs", None)
+                total = await count_fn() if count_fn is not None else len(cats)
+            except Exception:
+                cats, total = [], 0
+
+            items: List[Any] = []
+            for cat in cats:
+                cat_id = cat.id if hasattr(cat, "id") else cat.get("id", "")
+                if depth >= 2:
+                    cat_view = await self.get_catalog_view(
+                        base_url=f"{base_url.rstrip('/')}/catalogs/{cat_id}/view",
+                        catalog_id=cat_id,
+                        depth=depth - 1,
+                        page_size=page_size,
+                    )
+                    items.append(cat_view.model_dump())
+                else:
+                    items.append({"catalog_id": cat_id})
+
+            pg = self._build_config_page(
+                base_url=base_url,
+                category="catalogs",
+                total=total,
+                page=catalogs_page,
+                page_size=page_size,
+                extra_params={"depth": depth},
+            )
+            pg.items = items
+            categories["catalogs"] = pg
+
+        return PlatformConfigView(configs=configs, categories=categories)
+
+    async def _list_assets(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        page: int,
+        page_size: int,
+    ) -> Tuple[int, List[Any]]:
+        if self._assets_service is None:
+            return 0, []
+        offset = (page - 1) * page_size
+        try:
+            col_id = collection_id or None
+            items = await self._assets_service.list_assets(
+                catalog_id=catalog_id,
+                collection_id=col_id,
+                limit=page_size,
+                offset=offset,
+            )
+            count_fn = getattr(self._assets_service, "count_assets", None)
+            if count_fn is not None:
+                total = await count_fn(catalog_id=catalog_id, collection_id=col_id)
+            else:
+                total = len(items)
+            return total, [
+                a.model_dump() if hasattr(a, "model_dump") else dict(a) for a in items
+            ]
+        except Exception:
+            logger.debug(
+                "Could not list assets for %s/%s", catalog_id, collection_id
+            )
+            return 0, []
+
+    async def _list_collections(
+        self,
+        base_url: str,
+        catalog_id: str,
+        page: int,
+        page_size: int,
+        parent_depth: int,
+    ) -> Tuple[int, List[Any]]:
+        if self._catalogs_service is None:
+            return 0, []
+        offset = (page - 1) * page_size
+        try:
+            collections = await self._catalogs_service.list_collections(
+                catalog_id=catalog_id, limit=page_size, offset=offset
+            )
+            count_fn = getattr(self._catalogs_service, "count_collections", None)
+            if count_fn is not None:
+                total = await count_fn(catalog_id=catalog_id)
+            else:
+                total = len(collections)
+        except Exception:
+            logger.debug("Could not list collections for %s", catalog_id)
+            return 0, []
+
+        items: List[Any] = []
+        for col in collections:
+            col_id = col.id if hasattr(col, "id") else col.get("id", "")
+            col_base = f"{base_url.rstrip('/')}/collections/{col_id}/view"
+            next_depth = parent_depth - 1 if parent_depth >= 2 else 0
+            col_view = await self.get_collection_view(
+                base_url=col_base,
+                catalog_id=catalog_id,
+                collection_id=col_id,
+                depth=next_depth,
+                page_size=page_size,
+            )
+            items.append(col_view.model_dump())
+        return total, items
