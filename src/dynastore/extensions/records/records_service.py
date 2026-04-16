@@ -32,7 +32,7 @@ from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from dynastore.extensions.protocols import ExtensionProtocol
-from dynastore.extensions.ogc_base import OGCServiceMixin
+from dynastore.extensions.ogc_base import OGCServiceMixin, OGCTransactionMixin
 from dynastore.extensions.tools.db import get_async_connection
 from dynastore.extensions.tools.language_utils import get_language
 from dynastore.extensions.tools.url import get_root_url
@@ -66,7 +66,7 @@ OGC_API_RECORDS_URIS = [
 # ---------------------------------------------------------------------------
 
 
-class RecordsService(ExtensionProtocol, OGCServiceMixin):
+class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
     """OGC API - Records Part 1 extension.
 
     Priority 150 — after STAC (100) and Features (100), before
@@ -343,16 +343,17 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin):
         conn: AsyncConnection = Depends(get_async_connection),
     ) -> Response:
         """Create/upsert records into a RECORDS-type collection."""
-        catalogs_svc = await self._get_catalogs_service()
-
         body = await request.json()
 
-        # Accept single record or array
+        # Normalise to list and determine whether caller sent a single item.
         if isinstance(body, list):
-            items = body
+            was_single = False
+            items: list = body
         elif isinstance(body, dict) and body.get("type") == "FeatureCollection":
+            was_single = False
             items = body.get("features", [])
         elif isinstance(body, dict):
+            was_single = True
             items = [body]
         else:
             raise HTTPException(status_code=400, detail="Invalid request body.")
@@ -362,30 +363,44 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin):
             if isinstance(item, dict):
                 item["geometry"] = None
 
-        result = await catalogs_svc.upsert(
-            catalog_id=catalog_id,
-            collection_id=collection_id,
-            items=items,
-            ctx=DriverContext(db_resource=conn),
+        policy_source = (
+            f"/configs/catalogs/{catalog_id}/collections/{collection_id}"
+            f"/configs/CollectionWritePolicy/effective"
+        )
+        # Pass the normalised list so the mixin works with the same payload
+        # shape regardless of original body format.
+        accepted_rows, rejections, _was_single_mixin, batch_size = (
+            await self._ingest_items(
+                catalog_id,
+                collection_id,
+                items,
+                DriverContext(db_resource=conn),
+                policy_source,
+            )
         )
 
+        if rejections:
+            return self._build_rejection_response(accepted_rows, rejections, batch_size)
+
+        catalogs_svc = await self._get_catalogs_service()
         root_url = get_root_url(request)
         layer_config = await catalogs_svc.get_collection_config(
             catalog_id, collection_id, ctx=DriverContext(db_resource=conn),
         )
 
-        if isinstance(result, list) and len(result) == 1:
-            record = gen.db_row_to_record(result[0], catalog_id, collection_id, root_url, layer_config)
+        if was_single:
+            record = gen.db_row_to_record(
+                accepted_rows[0], catalog_id, collection_id, root_url, layer_config
+            )
             return JSONResponse(
                 content=record.model_dump(exclude_none=True),
                 status_code=status.HTTP_201_CREATED,
             )
 
-        records = []
-        if isinstance(result, list):
-            for feat in result:
-                records.append(gen.db_row_to_record(feat, catalog_id, collection_id, root_url, layer_config))
-
+        records = [
+            gen.db_row_to_record(feat, catalog_id, collection_id, root_url, layer_config)
+            for feat in accepted_rows
+        ]
         collection = rm.RecordCollection(
             type="FeatureCollection",
             features=records,

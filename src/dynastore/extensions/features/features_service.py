@@ -67,7 +67,7 @@ from dynastore.extensions.tools.url import get_root_url, get_url
 from dynastore.extensions.tools.language_utils import get_language
 from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 from dynastore.extensions.protocols import ExtensionProtocol
-from dynastore.extensions.ogc_base import OGCServiceMixin
+from dynastore.extensions.ogc_base import OGCServiceMixin, OGCTransactionMixin
 from dynastore.extensions.tools.db import get_async_connection, get_async_engine
 from dynastore.modules.db_config.tools import managed_transaction
 from dynastore.modules.db_config.query_executor import DbResource
@@ -200,7 +200,7 @@ async def _resolve_crs_uri_to_srid(
     raise HTTPException(
         status_code=400, detail=f"Unsupported or unknown CRS URI: {crs_uri}"
     )
-class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
+class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
     priority: int = 100
     router: APIRouter
 
@@ -1083,123 +1083,29 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
         response: Response,
         conn: AsyncConnection = Depends(get_async_connection),
     ):
-        catalogs_svc = await self._get_catalogs_service()
-        configs_svc = await self._get_configs_service()
-        # Resolve the driver config for this collection via the waterfall.
-        # In a correctly bootstrapped deploy this always returns a usable
-        # config — if the waterfall cannot satisfy it (e.g. Iceberg without
-        # ``warehouse`` at any scope) it surfaces as ``ConfigResolutionError``
-        # (HTTP 500 ops alert), never as a user-visible 404.
-        layer_config = await catalogs_svc.get_collection_config(
-            catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
-        )
-        root_url = get_root_url(request)
-
-        catalogs_svc = await self._get_catalogs_service()
-
-        # 2. Upsert (Discrimination happens inside ItemService or via payload type)
-        # Note: valid payload types here are FeatureDefinition or FeatureCollectionDefinition
-
-        from dynastore.modules.storage.errors import SidecarRejectedError
-
-        batch_size = (
-            len(payload.features)
-            if isinstance(payload, ogc_models.FeatureCollectionDefinition)
-            else 1
-        )
         policy_source = (
             f"/configs/catalogs/{catalog_id}/collections/{collection_id}"
             f"/configs/CollectionWritePolicy/effective"
         )
-
-        rejections: list[ogc_models.SidecarRejection] = []
-        try:
-            created = await catalogs_svc.upsert(
-                catalog_id, collection_id, items=payload, ctx=DriverContext(db_resource=conn)
-            )
-        except SidecarRejectedError as rej:
-            rejections.append(
-                ogc_models.SidecarRejection(
-                    geoid=rej.geoid,
-                    external_id=rej.external_id,
-                    sidecar_id=rej.sidecar_id,
-                    matcher=rej.matcher,
-                    reason=rej.reason,
-                    message=str(rej),
-                    policy_source=policy_source,
-                )
-            )
-            created = []
-        except ValueError as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=str(e),
-            )
-
-        created_rows = (
-            created if isinstance(created, list) else ([created] if created else [])
+        accepted_rows, rejections, was_single, batch_size = await self._ingest_items(
+            catalog_id,
+            collection_id,
+            payload,
+            DriverContext(db_resource=conn),
+            policy_source,
         )
 
-        # If nothing was accepted AND there are no structured rejections,
-        # this is a server-side failure (the driver returned empty without a
-        # reason). Surface as 500. A fully-rejected batch with rejections is
-        # 207, handled below.
-        if not created_rows and not rejections:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to create items.",
-            )
-
-        # 4. Return appropriate response
-        def _resolve_feature_id(row: _OGCFeature) -> str:
-            """Resolve the logical ID from an upsert result row."""
-            props = row.properties or {}
-            fid = (
-                row.id
-                or props.get("external_id")
-                or props.get("geoid")
-            )
-            if (
-                not fid
-                and isinstance(props.get("attributes"), dict)
-            ):
-                fid = props["attributes"].get(
-                    "id"
-                ) or props["attributes"].get("external_id")
-            if not fid and props.get("geoid"):
-                fid = props["geoid"]
-            if fid and not isinstance(fid, str):
-                fid = str(fid)
-            if not fid:
-                raise RuntimeError(
-                    f"Could not determine feature ID from upsert result: {row.properties} - Values: {row.id}"
-                )
-            return fid
-
-        accepted_ids = [
-            _resolve_feature_id(cast(_OGCFeature, row)) for row in created_rows
-        ]
-
-        # Partial or fully-rejected batch → 207 Multi-Status with IngestionReport
         if rejections:
-            report = ogc_models.IngestionReport(
-                accepted_ids=accepted_ids,
-                rejections=rejections,
-                total=batch_size,
-            )
-            return JSONResponse(
-                content=report.model_dump(by_alias=True, exclude_none=True),
-                status_code=status.HTTP_207_MULTI_STATUS,
-            )
+            return self._build_rejection_response(accepted_rows, rejections, batch_size)
 
-        if (
-            isinstance(payload, ogc_models.FeatureDefinition)
-            or getattr(payload, "type", None) == "Feature"
-        ):
-            new_row = cast(_OGCFeature, created_rows[0])
-            feature_id = accepted_ids[0]
-
-            location_url = f"{root_url}/features/catalogs/{catalog_id}/collections/{collection_id}/items/{feature_id}"
+        if was_single:
+            root_url = get_root_url(request)
+            new_row = cast(_OGCFeature, accepted_rows[0])
+            feature_id = self._resolve_accepted_ids([new_row])[0]
+            location_url = (
+                f"{root_url}/features/catalogs/{catalog_id}"
+                f"/collections/{collection_id}/items/{feature_id}"
+            )
             feature = ogc_generator._db_row_to_ogc_feature(
                 new_row, catalog_id, collection_id, root_url
             )
@@ -1208,11 +1114,8 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin):
                 status_code=status.HTTP_201_CREATED,
                 headers={"Location": location_url},
             )
-        else:
-            return JSONResponse(
-                content=ogc_models.BulkCreationResponse(ids=accepted_ids).model_dump(),
-                status_code=status.HTTP_201_CREATED,
-            )
+
+        return self._build_bulk_creation_response(accepted_rows)
 
     async def replace_item(
         self,

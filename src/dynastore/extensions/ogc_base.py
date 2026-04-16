@@ -34,12 +34,19 @@ Usage::
 """
 
 import logging
-from typing import Optional, List, cast
+from typing import Any, List, Optional, cast
 
 from fastapi import HTTPException, Request, Response, status
 
+from dynastore.extensions.ogc_models_shared import (
+    BulkCreationResponse,
+    IngestionReport,
+    SidecarRejection,
+)
+from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 from dynastore.extensions.tools.ogc_common_models import Conformance, LandingPage
 from dynastore.extensions.tools.url import get_root_url
+from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
 from dynastore.models.shared_models import Link
 from dynastore.tools.discovery import get_protocol
@@ -167,3 +174,178 @@ class OGCServiceMixin:
                 detail=f"Item '{item_id}' not found.",
             )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+class OGCTransactionMixin:
+    """Shared multi-item ingestion helpers for OGC Features, Records, and STAC.
+
+    Provides two methods that the three OGC write-capable services share:
+
+    * :meth:`_ingest_items` — normalises payload → list, calls
+      ``CatalogsProtocol.upsert``, catches ``SidecarRejectedError``,
+      returns ``(accepted_rows, rejections, was_single, batch_size)``.
+
+    * :meth:`_build_rejection_response` — constructs the HTTP 207
+      ``IngestionReport`` JSONResponse used when any item is rejected.
+
+    * :meth:`_build_bulk_creation_response` — constructs the HTTP 201
+      ``BulkCreationResponse`` JSONResponse for a fully-accepted
+      multi-item batch.
+
+    The single-item 201 response is intentionally left to the calling
+    handler because its shape is protocol-specific (plain GeoJSON Feature
+    for OGC Features, a full STAC Item for STAC, a Record for Records).
+
+    Subclasses must also inherit :class:`OGCServiceMixin` (which provides
+    ``_get_catalogs_service``).  MRO: put mixins before Protocols::
+
+        class STACService(ExtensionProtocol, ..., OGCServiceMixin, OGCTransactionMixin):
+    """
+
+    # ------------------------------------------------------------------
+    # Core ingestion helper
+    # ------------------------------------------------------------------
+
+    async def _ingest_items(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        payload: Any,
+        ctx: DriverContext,
+        policy_source: str,
+    ) -> "tuple[list[Any], list[SidecarRejection], bool, int]":
+        """Normalise *payload*, upsert, and collect rejections.
+
+        *payload* may be any of:
+
+        * A Pydantic model with ``type == 'Feature'`` → single item
+        * A Pydantic model with ``type == 'FeatureCollection'`` and a
+          ``.features`` list → collection
+        * A plain ``list`` → multi-item (each element is a dict or model)
+        * A plain ``dict`` → single item
+
+        Returns a 4-tuple:
+        ``(accepted_rows, rejections, was_single, batch_size)``
+        where *was_single* is ``True`` when the caller sent a lone item
+        (not wrapped in a collection/array).
+        """
+        from dynastore.modules.storage.errors import SidecarRejectedError
+
+        # Determine was_single and normalise to list
+        payload_type = getattr(payload, "type", None)
+        if payload_type == "FeatureCollection":
+            was_single = False
+            items_list = list(getattr(payload, "features", []) or [])
+        elif isinstance(payload, list):
+            was_single = False
+            items_list = payload
+        elif isinstance(payload, dict) and payload.get("type") == "FeatureCollection":
+            was_single = False
+            items_list = list(payload.get("features", []) or [])
+        elif isinstance(payload, dict):
+            was_single = True
+            items_list = [payload]
+        else:
+            # Single Pydantic model (Feature, STACItem, …)
+            was_single = True
+            items_list = [payload]
+
+        batch_size = len(items_list)
+
+        # CatalogsProtocol.upsert accepts the original payload directly so
+        # the driver can use any type-specific fast-paths it provides.
+        catalogs_svc = await self._get_catalogs_service()  # type: ignore[attr-defined]
+
+        rejections: list[SidecarRejection] = []
+        try:
+            created = await catalogs_svc.upsert(
+                catalog_id, collection_id, items=payload, ctx=ctx
+            )
+        except SidecarRejectedError as rej:
+            rejections.append(
+                SidecarRejection(
+                    geoid=rej.geoid,
+                    external_id=rej.external_id,
+                    sidecar_id=rej.sidecar_id,
+                    matcher=rej.matcher,
+                    reason=rej.reason,
+                    message=str(rej),
+                    policy_source=policy_source,
+                )
+            )
+            created = []
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            )
+
+        accepted_rows: list[Any] = (
+            created if isinstance(created, list) else ([created] if created else [])
+        )
+
+        if not accepted_rows and not rejections:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create items.",
+            )
+
+        return accepted_rows, rejections, was_single, batch_size
+
+    # ------------------------------------------------------------------
+    # Response builders (shared between Features, Records, STAC)
+    # ------------------------------------------------------------------
+
+    def _resolve_accepted_ids(self, accepted_rows: "list[Any]") -> list[str]:
+        """Extract the logical string ID from each upserted row."""
+        ids: list[str] = []
+        for row in accepted_rows:
+            props = getattr(row, "properties", None) or {}
+            fid = (
+                getattr(row, "id", None)
+                or props.get("external_id")
+                or props.get("geoid")
+            )
+            if not fid and isinstance(props.get("attributes"), dict):
+                fid = props["attributes"].get("id") or props["attributes"].get(
+                    "external_id"
+                )
+            if not fid and props.get("geoid"):
+                fid = props["geoid"]
+            if fid is not None and not isinstance(fid, str):
+                fid = str(fid)
+            if not fid:
+                raise RuntimeError(
+                    f"Could not determine feature ID from upsert result: "
+                    f"properties={getattr(row, 'properties', None)} id={getattr(row, 'id', None)}"
+                )
+            ids.append(fid)
+        return ids
+
+    def _build_rejection_response(
+        self,
+        accepted_rows: "list[Any]",
+        rejections: "list[SidecarRejection]",
+        batch_size: int,
+    ) -> Response:
+        """Return HTTP 207 Multi-Status with an :class:`IngestionReport` body."""
+        accepted_ids = self._resolve_accepted_ids(accepted_rows)
+        report = IngestionReport(
+            accepted_ids=accepted_ids,
+            rejections=rejections,
+            total=batch_size,
+        )
+        return JSONResponse(
+            content=report.model_dump(by_alias=True, exclude_none=True),
+            status_code=status.HTTP_207_MULTI_STATUS,
+        )
+
+    def _build_bulk_creation_response(
+        self,
+        accepted_rows: "list[Any]",
+    ) -> Response:
+        """Return HTTP 201 Created with a :class:`BulkCreationResponse` body."""
+        accepted_ids = self._resolve_accepted_ids(accepted_rows)
+        return JSONResponse(
+            content=BulkCreationResponse(ids=accepted_ids).model_dump(),
+            status_code=status.HTTP_201_CREATED,
+        )

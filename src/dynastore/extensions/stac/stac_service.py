@@ -64,13 +64,15 @@ from . import stac_generator, stac_db, asset_factory, metadata_mapper
 from .stac_models import (
     STACCollectionUpdate,
     STACItem,
+    STACItemCollection,
+    STACItemOrItemCollection,
     STACCollectionRequest,
     STACCatalogUpdate,
     STACItemResponse,
     STACItemCollectionResponse,
 )
 from .stac_aggregation_models import AggregationRequest
-from dynastore.extensions.ogc_base import OGCServiceMixin
+from dynastore.extensions.ogc_base import OGCServiceMixin, OGCTransactionMixin
 from datetime import datetime, timezone
 from dynastore.extensions.tools.url import get_url, get_parent_url, get_root_url
 from dynastore.tools.discovery import get_protocol, get_protocols
@@ -100,7 +102,7 @@ STAC_API_URIS = [
     "http://www.opengis.net/spec/ogcapi-features-3/1.0/conf/filter",
     "https://api.stacspec.org/v1.0.0/children",
 ]
-class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCServiceMixin):
+class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCServiceMixin, OGCTransactionMixin):
     priority: int = 100
     router: APIRouter = APIRouter(
         prefix="/stac", tags=["OGC API - STAC - Spatio Temporal Asset Catalog"]
@@ -722,111 +724,90 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         self,
         catalog_id: str,
         collection_id: str,
-        item_payload: STACItem,
+        item_payload: STACItemOrItemCollection,
         request: Request,
         engine=Depends(get_async_engine),
         language: str = Depends(get_language),
     ):
-        # Write-time STAC validation (lenient — warnings only)
-        validate_stac_item(item_payload.model_dump(by_alias=True, exclude_unset=True))
+        # Write-time STAC validation per item (lenient — warnings only)
+        items_to_validate: list[STACItem] = (
+            list(item_payload.features)
+            if isinstance(item_payload, STACItemCollection)
+            else [item_payload]
+        )
+        for item in items_to_validate:
+            validate_stac_item(item.model_dump(by_alias=True, exclude_unset=True))
 
-        stac_item = item_payload.to_pystac()
-        if not stac_item.collection_id:
-            stac_item.collection_id = collection_id
-
-        from dynastore.models.protocols import ItemsProtocol
-
-        items_svc = get_protocol(ItemsProtocol)
-        if not items_svc:
-            raise HTTPException(status_code=500, detail="Items protocol not available.")
+        policy_source = (
+            f"/configs/catalogs/{catalog_id}/collections/{collection_id}"
+            f"/configs/CollectionWritePolicy/effective"
+        )
 
         try:
-            from .metadata_helpers import prune_managed_content
-            from .stac_extension_protocol import StacExtensionProtocol
-
-            # Prune managed content (assets/extensions) from the payload before storage
-            # This is handled by sidecar prepare_upsert_payload (in-place pruning)
-            providers = get_protocols(StacExtensionProtocol)
-
-            # Update item_payload properties/assets with pruned versions
-            # Note: We keep the main properties but remove what's now in StacItemsSidecar
-            # Actually, StacItemsSidecar will extract its data from the pruned item too
-
             async with managed_transaction(engine) as conn:
-                # We pass the STACItem directly to upsert, which handles validation/conversion internally
-                new_row_or_list = await items_svc.upsert(
-                    catalog_id,
-                    collection_id,
-                    items=item_payload,  # Pass STACItem model directly
-                    ctx=DriverContext(db_resource=conn),
+                accepted_rows, rejections, was_single, batch_size = (
+                    await self._ingest_items(
+                        catalog_id,
+                        collection_id,
+                        item_payload,
+                        DriverContext(db_resource=conn),
+                        policy_source,
+                    )
                 )
-                new_row = (
-                    new_row_or_list
-                    if not isinstance(new_row_or_list, list)
-                    else new_row_or_list[0]
-                )
+                if was_single and not rejections:
+                    # Fetch config inside transaction for single-item STAC rendering
+                    stac_config = await self._get_stac_config(
+                        catalog_id, collection_id, db_resource=conn
+                    )
 
-                # Fetch config inside transaction
-                stac_config = await self._get_stac_config(
-                    catalog_id, collection_id, db_resource=conn
-                )
-
-            # Response generation OUTSIDE the transaction
-            # Response generation OUTSIDE the transaction
-            response_item = await stac_generator.create_item_from_feature(
-                request=request,
-                catalog_id=catalog_id,
-                collection_id=collection_id,
-                stac_config=stac_config,
-                lang=language,
-                feature=new_row,
-            )
-
-            if not response_item:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Failed to generate STAC Item from created row.",
-                )
-
-            # Determine the logical ID to return in the response
-            # Note: new_row is a Feature object, id is already the logical ID (ext_id or geoid)
-            logical_id = new_row.id
-            if not logical_id:
-                # Should practically never happen if upsert succeeds
-                logical_id = stac_item.id  # Fallback to request ID
-
-            # Ensure response ID matches persistent logical ID
-            response_item.id = str(logical_id)
-
-            return JSONResponse(
-                content=response_item.to_dict(),
-                status_code=status.HTTP_201_CREATED,
-                headers={"Location": f"{get_url(request)}/{logical_id}"},
-            )
         except HTTPException:
             raise
         except ValueError as e:
-            # Enhanced logging for validation errors
             logger.error(f"Validation error in add_stac_item: {e}", exc_info=True)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
         except Exception as e:
-            # Log full exception details for debugging
             logger.exception(
                 f"Unexpected error in add_stac_item for {catalog_id}/{collection_id}: {e}"
             )
-
-            # Check if it's a Pydantic validation error
             if hasattr(e, "__class__") and "ValidationError" in e.__class__.__name__:
                 logger.error(f"Pydantic validation details: {e}")
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=f"STAC Item validation failed: {str(e)}",
                 )
-
             raise HTTPException(
                 status_code=500,
-                detail="An unexpected error occurred during STAC item update.",
+                detail="An unexpected error occurred during STAC item creation.",
             )
+
+        if rejections:
+            return self._build_rejection_response(accepted_rows, rejections, batch_size)
+
+        if not was_single:
+            return self._build_bulk_creation_response(accepted_rows)
+
+        # Single-item path: render a full STAC Item response
+        new_row = accepted_rows[0]
+        response_item = await stac_generator.create_item_from_feature(
+            request=request,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            stac_config=stac_config,
+            lang=language,
+            feature=new_row,
+        )
+        if not response_item:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate STAC Item from created row.",
+            )
+        logical_id = new_row.id or items_to_validate[0].id
+        response_item.id = str(logical_id)
+        return JSONResponse(
+            content=response_item.to_dict(),
+            status_code=status.HTTP_201_CREATED,
+            headers={"Location": f"{get_url(request)}/{logical_id}"},
+        )
 
     async def update_stac_item(
         self,

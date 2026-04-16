@@ -565,6 +565,42 @@ class STACItem(Feature):
         return pystac.Item.from_dict(self.model_dump(by_alias=True, exclude_unset=True))
 
 
+from pydantic import Discriminator, Tag  # noqa: E402
+
+
+def _discriminate_stac_type(v: Any) -> str:
+    if isinstance(v, dict):
+        return v.get("type", "Feature")
+    return getattr(v, "type", "Feature")
+
+
+class STACItemCollection(BaseModel):
+    """Input model for bulk creation of STAC Items (ItemCollection / FeatureCollection).
+
+    Mirrors the STAC ItemCollection spec:
+    https://github.com/radiantearth/stac-api-spec/blob/main/fragments/itemcollection/README.md
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    type: Annotated[str, Field(...)] = "FeatureCollection"
+    features: List[STACItem] = Field(default_factory=list)
+    links: Optional[List[Link]] = Field(default=None)
+    stac_version: Optional[str] = Field(default=None)
+    stac_extensions: Optional[List[str]] = Field(default=None)
+    numberReturned: Optional[int] = Field(default=None)
+    numberMatched: Optional[int] = Field(default=None)
+
+
+STACItemOrItemCollection = Annotated[
+    Union[
+        Annotated[STACItem, Tag("Feature")],
+        Annotated[STACItemCollection, Tag("FeatureCollection")],
+    ],
+    Discriminator(_discriminate_stac_type),
+]
+
+
 class STACItemResponse(BaseModel):
     """Response model for STAC Item (open dict)."""
 
