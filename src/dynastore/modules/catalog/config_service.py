@@ -42,9 +42,12 @@ from dynastore.modules.db_config.platform_config_service import (
     _register_schema,
 )
 from dynastore.modules.db_config.maintenance_tools import ensure_schema_exists
-from dynastore.modules.db_config.locking_tools import (
-    check_table_exists,
+from dynastore.modules.db_config.locking_tools import check_table_exists
+from dynastore.modules.db_config.typed_store.ddl import (
+    CATALOG_CONFIGS_TABLE,
+    COLLECTION_CONFIGS_TABLE,
 )
+from dynastore.modules.db_config.typed_store import config_queries as _cq
 from dynastore.models.protocols import ConfigsProtocol, CatalogsProtocol
 from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
 from .catalog_config import CollectionPluginConfig
@@ -65,8 +68,7 @@ CollectionConfig = PluginConfig
 #  STORAGE & SCHEMAS
 # ==============================================================================
 
-COLLECTION_CONFIGS_TABLE = "collection_configs"
-CATALOG_CONFIGS_TABLE = "catalog_configs"
+# Table name constants live in typed_store/ddl.py — imported above.
 
 
 # Identity normaliser: accept either a class or a class_key string and return
@@ -101,10 +103,7 @@ async def _catalog_config_cache(
         if not await check_table_exists(conn, CATALOG_CONFIGS_TABLE, phys_schema):
             return None
 
-        sql = f'SELECT config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE class_key = :class_key;'
-        return await DQLQuery(
-            sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
-        ).execute(conn, class_key=class_key)
+        return await _cq.select_catalog_config(phys_schema).execute(conn, class_key=class_key)
 
 
 @cached(maxsize=16384, ttl=300, namespace="collection_config", ignore=["engine", "catalog_manager"])
@@ -128,10 +127,7 @@ async def _collection_config_cache(
         if not await check_table_exists(conn, COLLECTION_CONFIGS_TABLE, phys_schema):
             return None
 
-        sql = f'SELECT config_data FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE collection_id = :collection_id AND class_key = :class_key;'
-        return await DQLQuery(
-            sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
-        ).execute(
+        return await _cq.select_collection_config(phys_schema).execute(
             conn,
             collection_id=collection_id,
             class_key=class_key,
@@ -294,10 +290,7 @@ class ConfigService(ConfigsProtocol):
             if not await check_table_exists(conn, CATALOG_CONFIGS_TABLE, phys_schema):
                 return None
 
-            sql = f'SELECT config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE class_key = :class_key;'
-            data = await DQLQuery(
-                sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
-            ).execute(conn, class_key=class_key)
+            data = await _cq.select_catalog_config(phys_schema).execute(conn, class_key=class_key)
 
         return cls.model_validate(data) if data else None
 
@@ -325,10 +318,7 @@ class ConfigService(ConfigsProtocol):
             if not await check_table_exists(conn, COLLECTION_CONFIGS_TABLE, phys_schema):
                 return None
 
-            sql = f'SELECT config_data FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE collection_id = :collection_id AND class_key = :class_key;'
-            data = await DQLQuery(
-                sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
-            ).execute(
+            data = await _cq.select_collection_config(phys_schema).execute(
                 conn,
                 collection_id=collection_id,
                 class_key=class_key,
@@ -399,28 +389,19 @@ class ConfigService(ConfigsProtocol):
                 )
 
             if check_immutability:
-                sql = f'SELECT config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE class_key = :class_key FOR UPDATE;'
-                current_data = await DQLQuery(
-                    sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
-                ).execute(conn, class_key=class_key)
+                current_data = await _cq.select_catalog_config_for_update(phys_schema).execute(
+                    conn, class_key=class_key
+                )
                 if current_data:
                     current_config = cls.model_validate(current_data)
                     enforce_config_immutability(current_config, config)
 
             await _register_schema(conn, config)
 
-            upsert_sql = f"""
-            INSERT INTO "{phys_schema}".{CATALOG_CONFIGS_TABLE} (class_key, schema_id, config_data, updated_at)
-            VALUES (:class_key, :schema_id, CAST(:config_data AS jsonb), NOW())
-            ON CONFLICT (class_key) DO UPDATE SET
-                schema_id   = EXCLUDED.schema_id,
-                config_data = EXCLUDED.config_data,
-                updated_at  = NOW()
-            """
             config_data = (
                 config.model_dump(mode="json") if hasattr(config, "model_dump") else config
             )
-            await DQLQuery(upsert_sql, result_handler=ResultHandler.ROWCOUNT).execute(
+            await _cq.upsert_catalog_config(phys_schema).execute(
                 conn,
                 class_key=class_key,
                 schema_id=type(config).schema_id(),
@@ -487,10 +468,7 @@ class ConfigService(ConfigsProtocol):
             )
 
             if check_immutability:
-                sql = f'SELECT config_data FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE collection_id = :collection_id AND class_key = :class_key FOR UPDATE;'
-                current_data = await DQLQuery(
-                    sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
-                ).execute(
+                current_data = await _cq.select_collection_config_for_update(phys_schema).execute(
                     conn,
                     collection_id=collection_id,
                     class_key=class_key,
@@ -501,18 +479,10 @@ class ConfigService(ConfigsProtocol):
 
             await _register_schema(conn, config)
 
-            upsert_sql = f"""
-            INSERT INTO "{phys_schema}".{COLLECTION_CONFIGS_TABLE} (collection_id, class_key, schema_id, config_data, updated_at)
-            VALUES (:collection_id, :class_key, :schema_id, CAST(:config_data AS jsonb), NOW())
-            ON CONFLICT (collection_id, class_key) DO UPDATE SET
-                schema_id   = EXCLUDED.schema_id,
-                config_data = EXCLUDED.config_data,
-                updated_at  = NOW()
-            """
             config_data = (
                 config.model_dump(mode="json") if hasattr(config, "model_dump") else config
             )
-            await DQLQuery(upsert_sql, result_handler=ResultHandler.ROWCOUNT).execute(
+            await _cq.upsert_collection_config(phys_schema).execute(
                 conn,
                 collection_id=collection_id,
                 class_key=class_key,
@@ -561,16 +531,7 @@ class ConfigService(ConfigsProtocol):
                 if not await check_table_exists(conn, COLLECTION_CONFIGS_TABLE, phys_schema):
                     return {"total": 0, "results": []}
 
-                sql = f"""
-                SELECT COUNT(*) OVER() as total_count, class_key, config_data
-                FROM \"{phys_schema}\".{COLLECTION_CONFIGS_TABLE}
-                WHERE collection_id = :collection_id
-                ORDER BY class_key
-                LIMIT :limit OFFSET :offset;
-                """
-                rows = await DQLQuery(
-                    sql, result_handler=ResultHandler.ALL_DICTS
-                ).execute(
+                rows = await _cq.list_collection_configs_paginated(phys_schema).execute(
                     conn,
                     collection_id=collection_id,
                     limit=limit,
@@ -603,15 +564,9 @@ class ConfigService(ConfigsProtocol):
                 if not await check_table_exists(conn, CATALOG_CONFIGS_TABLE, phys_schema):
                     return {"total": 0, "results": []}
 
-                sql = f"""
-                SELECT COUNT(*) OVER() as total_count, class_key, config_data
-                FROM \"{phys_schema}\".{CATALOG_CONFIGS_TABLE}
-                ORDER BY class_key
-                LIMIT :limit OFFSET :offset;
-                """
-                rows = await DQLQuery(
-                    sql, result_handler=ResultHandler.ALL_DICTS
-                ).execute(conn, limit=limit, offset=offset)
+                rows = await _cq.list_catalog_configs_paginated(phys_schema).execute(
+                    conn, limit=limit, offset=offset
+                )
 
             total = rows[0]["total_count"] if rows else 0
             results = []
@@ -651,8 +606,7 @@ class ConfigService(ConfigsProtocol):
             if not await check_table_exists(conn, CATALOG_CONFIGS_TABLE, phys_schema):
                 return {}
 
-            sql = f'SELECT class_key, config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE};'
-            rows = await DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS).execute(conn)
+            rows = await _cq.list_catalog_configs(phys_schema).execute(conn)
 
         configs: Dict[str, PluginConfig] = {}
         for row in rows:
@@ -802,10 +756,9 @@ class ConfigService(ConfigsProtocol):
             if not await check_table_exists(conn, CATALOG_CONFIGS_TABLE, phys_schema):
                 return False
 
-            sql = f'DELETE FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE class_key = :class_key;'
-            rows_affected = await DQLQuery(
-                sql, result_handler=ResultHandler.ROWCOUNT
-            ).execute(conn, class_key=class_key)
+            rows_affected = await _cq.delete_catalog_config(phys_schema).execute(
+                conn, class_key=class_key
+            )
 
             if rows_affected > 0:
                 _catalog_config_cache.cache_invalidate(
@@ -834,10 +787,7 @@ class ConfigService(ConfigsProtocol):
             if not await check_table_exists(conn, COLLECTION_CONFIGS_TABLE, phys_schema):
                 return False
 
-            sql = f'DELETE FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE collection_id = :collection_id AND class_key = :class_key;'
-            rows_affected = await DQLQuery(
-                sql, result_handler=ResultHandler.ROWCOUNT
-            ).execute(
+            rows_affected = await _cq.delete_collection_config(phys_schema).execute(
                 conn,
                 collection_id=collection_id,
                 class_key=class_key,

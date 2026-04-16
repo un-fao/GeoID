@@ -239,54 +239,20 @@ async def _platform_table_exists(conn: DbResource) -> bool:
 
 # --- Schema (Platform Level Only) ---
 
-from dynastore.modules.db_config.typed_store.ddl import (
-    PLATFORM_SCHEMAS_DDL as PLATFORM_CONFIGS_SCHEMA,
-)
+from dynastore.modules.db_config.typed_store.ddl import PLATFORM_SCHEMAS_DDL
+from dynastore.modules.db_config.typed_store import config_queries as _cq
 
-# --- Queries (class_key-keyed) ---
-
-get_platform_config_query = DQLQuery(
-    "SELECT config_data FROM configs.platform_configs WHERE class_key = :class_key;",
-    result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
-)
-
-upsert_platform_config_query = DQLQuery(
-    """
-    INSERT INTO configs.platform_configs (class_key, schema_id, config_data, updated_at)
-    VALUES (:class_key, :schema_id, CAST(:config_data AS jsonb), NOW())
-    ON CONFLICT (class_key) DO UPDATE SET
-        schema_id   = EXCLUDED.schema_id,
-        config_data = EXCLUDED.config_data,
-        updated_at  = NOW();
-    """,
-    result_handler=ResultHandler.ROWCOUNT,
-)
-
-list_platform_configs_query = DQLQuery(
-    "SELECT class_key, config_data FROM configs.platform_configs;",
-    result_handler=ResultHandler.ALL_DICTS,
-)
-
-delete_platform_config_query = DQLQuery(
-    "DELETE FROM configs.platform_configs WHERE class_key = :class_key;",
-    result_handler=ResultHandler.ROWCOUNT,
-)
-
-
-_register_schema_query = DQLQuery(
-    """
-    INSERT INTO configs.schemas (schema_id, class_key, schema_json)
-    VALUES (:schema_id, :class_key, CAST(:schema_json AS jsonb))
-    ON CONFLICT (schema_id) DO NOTHING;
-    """,
-    result_handler=ResultHandler.ROWCOUNT,
-)
+# Aliases kept for call-site readability within this module.
+get_platform_config_query = _cq.get_platform_config
+upsert_platform_config_query = _cq.upsert_platform_config
+list_platform_configs_query = _cq.list_platform_configs
+delete_platform_config_query = _cq.delete_platform_config
 
 
 async def _register_schema(conn: DbResource, config: "PluginConfig") -> None:
     """Upsert the config's current JSON schema into ``configs.schemas``."""
     cls = type(config)
-    await _register_schema_query.execute(
+    await _cq.register_schema.execute(
         conn,
         schema_id=cls.schema_id(),
         class_key=cls.class_key(),
@@ -426,7 +392,7 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
         try:
             logger.info("Initializing Platform Config Storage (configs schema)...")
             await ensure_schema_exists(conn, "configs")
-            await DDLQuery(PLATFORM_CONFIGS_SCHEMA).execute(conn)
+            await DDLQuery(PLATFORM_SCHEMAS_DDL).execute(conn)
             logger.info("Platform Config Storage initialized successfully.")
         except Exception as e:
             logger.error(

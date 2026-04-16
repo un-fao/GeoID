@@ -1,0 +1,250 @@
+#    Copyright 2025 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
+"""DQL query factories for the typed-config store tables.
+
+All SQL that touches the four config tables is defined here:
+
+* ``configs.schemas``          — schema registry (platform-level)
+* ``configs.platform_configs`` — platform-level config store
+* ``<tenant>.catalog_configs`` — per-tenant catalog config store
+* ``<tenant>.collection_configs`` — per-tenant collection config store
+
+**Platform queries** are module-level :class:`~dynastore.modules.db_config.query_executor.DQLQuery`
+instances because the table path is static (always ``configs.*``).
+
+**Tenant queries** are factory functions that accept ``phys_schema`` and return
+a :class:`~dynastore.modules.db_config.query_executor.DQLQuery`.  The schema name is
+validated via :func:`~dynastore.tools.db.validate_sql_identifier` before interpolation,
+matching the same injection-prevention strategy used in :func:`~.ddl.tenant_configs_ddl`.
+
+Usage example::
+
+    from dynastore.modules.db_config.typed_store import config_queries as q
+
+    # Platform
+    cfg = await q.get_platform_config.execute(conn, class_key=cls.class_key())
+
+    # Tenant
+    data = await q.select_catalog_config(phys_schema).execute(conn, class_key=key)
+    await q.upsert_catalog_config(phys_schema).execute(conn, **params)
+"""
+
+from __future__ import annotations
+
+from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
+from dynastore.tools.db import validate_sql_identifier
+from dynastore.modules.db_config.typed_store.ddl import (
+    CONFIGS_SCHEMA,
+    CATALOG_CONFIGS_TABLE,
+    COLLECTION_CONFIGS_TABLE,
+)
+
+# ===========================================================================
+#  Platform-level queries  (static table path → module-level DQLQuery)
+# ===========================================================================
+
+get_platform_config = DQLQuery(
+    f"SELECT config_data FROM {CONFIGS_SCHEMA}.platform_configs WHERE class_key = :class_key;",
+    result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
+)
+
+upsert_platform_config = DQLQuery(
+    f"""
+    INSERT INTO {CONFIGS_SCHEMA}.platform_configs (class_key, schema_id, config_data, updated_at)
+    VALUES (:class_key, :schema_id, CAST(:config_data AS jsonb), NOW())
+    ON CONFLICT (class_key) DO UPDATE SET
+        schema_id   = EXCLUDED.schema_id,
+        config_data = EXCLUDED.config_data,
+        updated_at  = NOW();
+    """,
+    result_handler=ResultHandler.ROWCOUNT,
+)
+
+list_platform_configs = DQLQuery(
+    f"SELECT class_key, config_data FROM {CONFIGS_SCHEMA}.platform_configs;",
+    result_handler=ResultHandler.ALL_DICTS,
+)
+
+delete_platform_config = DQLQuery(
+    f"DELETE FROM {CONFIGS_SCHEMA}.platform_configs WHERE class_key = :class_key;",
+    result_handler=ResultHandler.ROWCOUNT,
+)
+
+register_schema = DQLQuery(
+    f"""
+    INSERT INTO {CONFIGS_SCHEMA}.schemas (schema_id, class_key, schema_json)
+    VALUES (:schema_id, :class_key, CAST(:schema_json AS jsonb))
+    ON CONFLICT (schema_id) DO NOTHING;
+    """,
+    result_handler=ResultHandler.ROWCOUNT,
+)
+
+list_schemas = DQLQuery(
+    f"SELECT class_key, schema_id, created_at FROM {CONFIGS_SCHEMA}.schemas ORDER BY class_key, created_at",
+    result_handler=ResultHandler.ALL,
+)
+
+list_schemas_keys = DQLQuery(
+    f"SELECT class_key, schema_id FROM {CONFIGS_SCHEMA}.schemas",
+    result_handler=ResultHandler.ALL,
+)
+
+get_schemas_by_ids = DQLQuery(
+    f"SELECT schema_id, schema_json FROM {CONFIGS_SCHEMA}.schemas WHERE schema_id = ANY(:ids)",
+    result_handler=ResultHandler.ALL,
+)
+
+
+# ===========================================================================
+#  Tenant-level queries  (dynamic schema → factory functions)
+# ===========================================================================
+#
+# Every factory validates ``phys_schema`` before interpolation — identical to
+# the strategy used in ``tenant_configs_ddl()``.  Never call these with
+# untrusted user input that has not first been resolved to a physical schema
+# from ``catalog.catalogs``.
+# ===========================================================================
+
+
+# --- catalog_configs ---------------------------------------------------------
+
+def select_catalog_config(phys_schema: str) -> DQLQuery:
+    """SELECT config_data for a single class_key (read path, no lock)."""
+    validate_sql_identifier(phys_schema)
+    return DQLQuery(
+        f'SELECT config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE class_key = :class_key;',
+        result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
+    )
+
+
+def select_catalog_config_for_update(phys_schema: str) -> DQLQuery:
+    """SELECT config_data FOR UPDATE — used during immutability check before write."""
+    validate_sql_identifier(phys_schema)
+    return DQLQuery(
+        f'SELECT config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE class_key = :class_key FOR UPDATE;',
+        result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
+    )
+
+
+def upsert_catalog_config(phys_schema: str) -> DQLQuery:
+    """INSERT … ON CONFLICT DO UPDATE for catalog-level config."""
+    validate_sql_identifier(phys_schema)
+    return DQLQuery(
+        f"""
+        INSERT INTO "{phys_schema}".{CATALOG_CONFIGS_TABLE} (class_key, schema_id, config_data, updated_at)
+        VALUES (:class_key, :schema_id, CAST(:config_data AS jsonb), NOW())
+        ON CONFLICT (class_key) DO UPDATE SET
+            schema_id   = EXCLUDED.schema_id,
+            config_data = EXCLUDED.config_data,
+            updated_at  = NOW();
+        """,
+        result_handler=ResultHandler.ROWCOUNT,
+    )
+
+
+def delete_catalog_config(phys_schema: str) -> DQLQuery:
+    """DELETE a single catalog-level config row."""
+    validate_sql_identifier(phys_schema)
+    return DQLQuery(
+        f'DELETE FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE class_key = :class_key;',
+        result_handler=ResultHandler.ROWCOUNT,
+    )
+
+
+def list_catalog_configs(phys_schema: str) -> DQLQuery:
+    """SELECT all class_key / config_data rows (used for snapshots)."""
+    validate_sql_identifier(phys_schema)
+    return DQLQuery(
+        f'SELECT class_key, config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE};',
+        result_handler=ResultHandler.ALL_DICTS,
+    )
+
+
+def list_catalog_configs_paginated(phys_schema: str) -> DQLQuery:
+    """SELECT with window COUNT + ORDER BY class_key, LIMIT/OFFSET pagination."""
+    validate_sql_identifier(phys_schema)
+    return DQLQuery(
+        f"""
+        SELECT COUNT(*) OVER() AS total_count, class_key, config_data
+        FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE}
+        ORDER BY class_key
+        LIMIT :limit OFFSET :offset;
+        """,
+        result_handler=ResultHandler.ALL_DICTS,
+    )
+
+
+# --- collection_configs -------------------------------------------------------
+
+def select_collection_config(phys_schema: str) -> DQLQuery:
+    """SELECT config_data for a single (collection_id, class_key) pair (no lock)."""
+    validate_sql_identifier(phys_schema)
+    return DQLQuery(
+        f'SELECT config_data FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE collection_id = :collection_id AND class_key = :class_key;',
+        result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
+    )
+
+
+def select_collection_config_for_update(phys_schema: str) -> DQLQuery:
+    """SELECT config_data FOR UPDATE — used during immutability check before write."""
+    validate_sql_identifier(phys_schema)
+    return DQLQuery(
+        f'SELECT config_data FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE collection_id = :collection_id AND class_key = :class_key FOR UPDATE;',
+        result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
+    )
+
+
+def upsert_collection_config(phys_schema: str) -> DQLQuery:
+    """INSERT … ON CONFLICT DO UPDATE for collection-level config."""
+    validate_sql_identifier(phys_schema)
+    return DQLQuery(
+        f"""
+        INSERT INTO "{phys_schema}".{COLLECTION_CONFIGS_TABLE} (collection_id, class_key, schema_id, config_data, updated_at)
+        VALUES (:collection_id, :class_key, :schema_id, CAST(:config_data AS jsonb), NOW())
+        ON CONFLICT (collection_id, class_key) DO UPDATE SET
+            schema_id   = EXCLUDED.schema_id,
+            config_data = EXCLUDED.config_data,
+            updated_at  = NOW();
+        """,
+        result_handler=ResultHandler.ROWCOUNT,
+    )
+
+
+def delete_collection_config(phys_schema: str) -> DQLQuery:
+    """DELETE a single collection-level config row."""
+    validate_sql_identifier(phys_schema)
+    return DQLQuery(
+        f'DELETE FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE collection_id = :collection_id AND class_key = :class_key;',
+        result_handler=ResultHandler.ROWCOUNT,
+    )
+
+
+def list_collection_configs_paginated(phys_schema: str) -> DQLQuery:
+    """SELECT with window COUNT + ORDER BY class_key for a given collection_id."""
+    validate_sql_identifier(phys_schema)
+    return DQLQuery(
+        f"""
+        SELECT COUNT(*) OVER() AS total_count, class_key, config_data
+        FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE}
+        WHERE collection_id = :collection_id
+        ORDER BY class_key
+        LIMIT :limit OFFSET :offset;
+        """,
+        result_handler=ResultHandler.ALL_DICTS,
+    )

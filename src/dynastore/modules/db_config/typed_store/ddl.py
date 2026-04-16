@@ -41,6 +41,12 @@ from dynastore.tools.db import validate_sql_identifier
 
 CONFIGS_SCHEMA = "configs"
 
+# Physical table names for the two per-tenant config stores.
+# Referenced by both DDL (tenant_configs_ddl) and DML query factories
+# (config_queries.py) so that renaming the tables requires a single edit here.
+CATALOG_CONFIGS_TABLE = "catalog_configs"
+COLLECTION_CONFIGS_TABLE = "collection_configs"
+
 PLATFORM_SCHEMAS_DDL = f"""
 CREATE SCHEMA IF NOT EXISTS {CONFIGS_SCHEMA};
 

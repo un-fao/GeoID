@@ -35,7 +35,7 @@ from typing import Any, Dict, List
 
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
+from dynastore.modules.db_config.typed_store import config_queries as _cq
 from dynastore.tools.typed_store import TypedModelRegistry
 from dynastore.tools.typed_store.migrations import find_path
 
@@ -62,11 +62,7 @@ async def _discover() -> None:
 async def cmd_list(args: argparse.Namespace) -> int:
     engine = _engine(args.database_url)
     async with engine.connect() as conn:
-        rows = await DQLQuery(
-            "SELECT class_key, schema_id, created_at "
-            "FROM configs.schemas ORDER BY class_key, created_at",
-            result_handler=ResultHandler.ALL,
-        ).execute(conn)
+        rows = await _cq.list_schemas.execute(conn)
     for class_key, schema_id, created_at in rows or []:
         print(f"{class_key}\t{schema_id}\t{created_at.isoformat()}")
     await engine.dispose()
@@ -77,10 +73,7 @@ async def cmd_audit(args: argparse.Namespace) -> int:
     await _discover()
     engine = _engine(args.database_url)
     async with engine.connect() as conn:
-        stored = await DQLQuery(
-            "SELECT class_key, schema_id FROM configs.schemas",
-            result_handler=ResultHandler.ALL,
-        ).execute(conn)
+        stored = await _cq.list_schemas_keys.execute(conn)
     await engine.dispose()
     stored = stored or []
 
@@ -123,11 +116,7 @@ async def cmd_audit(args: argparse.Namespace) -> int:
 async def cmd_diff(args: argparse.Namespace) -> int:
     engine = _engine(args.database_url)
     async with engine.connect() as conn:
-        rows = await DQLQuery(
-            "SELECT schema_id, schema_json FROM configs.schemas "
-            "WHERE schema_id = ANY(:ids)",
-            result_handler=ResultHandler.ALL,
-        ).execute(conn, ids=[args.id_a, args.id_b])
+        rows = await _cq.get_schemas_by_ids.execute(conn, ids=[args.id_a, args.id_b])
     await engine.dispose()
     by_id: Dict[str, Any] = {sid: js for sid, js in rows or []}
     if args.id_a not in by_id or args.id_b not in by_id:
