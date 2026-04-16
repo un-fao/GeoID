@@ -997,9 +997,13 @@ class LifecycleRegistry:
             engine = db_proto.get_any_engine()
             if engine:
                 from dynastore.modules.tasks.tasks_module import get_task_schema
-                from dynastore.modules.db_config.query_executor import managed_transaction
+                from dynastore.modules.db_config.query_executor import (
+                    managed_transaction,
+                    DDLQuery,
+                    DQLQuery,
+                    ResultHandler,
+                )
                 from dynastore.tasks import get_loaded_task_types
-                from sqlalchemy import text
 
                 schema = get_task_schema()
                 loaded_types = list(get_loaded_task_types())
@@ -1009,7 +1013,7 @@ class LifecycleRegistry:
                     # Single COUNT on the global tasks table — no per-schema discovery needed.
                     placeholders = ", ".join(f":t_{i}" for i in range(len(loaded_types)))
                     type_params = {f"t_{i}": t for i, t in enumerate(loaded_types)}
-                    count_sql = text(
+                    count_sql = (
                         f"SELECT COUNT(*) FROM {schema}.tasks "
                         f"WHERE status IN ('PENDING', 'ACTIVE', 'RUNNING') "
                         f"AND task_type IN ({placeholders})"
@@ -1023,9 +1027,10 @@ class LifecycleRegistry:
 
                         try:
                             async with managed_transaction(engine) as conn:
-                                await conn.execute(text("SET LOCAL lock_timeout = '50ms'"))  # type: ignore[misc]
-                                res = await conn.execute(count_sql, type_params)  # type: ignore[misc]
-                                total_pending = res.scalar_one() or 0
+                                await DDLQuery("SET LOCAL lock_timeout = '50ms'").execute(conn)
+                                total_pending = await DQLQuery(
+                                    count_sql, result_handler=ResultHandler.SCALAR_ONE
+                                ).execute(conn, **type_params) or 0
                         except Exception as e:
                             logger.debug(f"wait_for_all_tasks: poll error: {e}")
                             if not self._active_tasks:

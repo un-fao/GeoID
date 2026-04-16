@@ -629,17 +629,17 @@ class EventsModule(ModuleProtocol):
         lock_id = _get_stable_lock_id(key)
         async with self._engine.connect() as conn:  # type: ignore[union-attr]
             conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
-            await conn.execute(
-                _sql_text("SELECT pg_advisory_lock(:id)"), {"id": lock_id}
-            )
+            await DQLQuery(
+                "SELECT pg_advisory_lock(:id)", result_handler=ResultHandler.NONE
+            ).execute(conn, id=lock_id)
             logger.info("EventsModule: consumer lock acquired (key=%s).", key)
             try:
                 yield True
             finally:
                 try:
-                    await conn.execute(
-                        _sql_text("SELECT pg_advisory_unlock(:id)"), {"id": lock_id}
-                    )
+                    await DQLQuery(
+                        "SELECT pg_advisory_unlock(:id)", result_handler=ResultHandler.NONE
+                    ).execute(conn, id=lock_id)
                 except Exception:
                     pass  # connection drop releases lock automatically
 

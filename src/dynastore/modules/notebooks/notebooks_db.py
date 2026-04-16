@@ -117,13 +117,11 @@ async def list_notebooks(
 
 async def soft_delete_notebook(conn, schema: str, notebook_id: str) -> None:
     """Soft-delete a notebook."""
-    query = text(f"""
-        UPDATE {schema}.notebooks
-        SET deleted_at = NOW()
-        WHERE notebook_id = :notebook_id AND deleted_at IS NULL
-    """)
-    result = await conn.execute(query, {"notebook_id": notebook_id})
-    if result.rowcount == 0:
+    rowcount = await DQLQuery(
+        f"UPDATE {schema}.notebooks SET deleted_at = NOW() WHERE notebook_id = :notebook_id AND deleted_at IS NULL",
+        result_handler=ResultHandler.ROWCOUNT,
+    ).execute(conn, notebook_id=notebook_id)
+    if not rowcount:
         raise ResourceNotFoundError(f"Notebook '{notebook_id}' not found")
 
 

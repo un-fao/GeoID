@@ -58,7 +58,7 @@ from dynastore.modules.catalog.sidecars.geometries_config import (
     StatisticStorageMode,
     MorphologicalIndex,
 )
-from dynastore.modules.db_config.query_executor import DbResource
+from dynastore.modules.db_config.query_executor import DbResource, DQLQuery, ResultHandler
 from dynastore.tools.geospatial_exceptions import (
     GeometryProcessingError,
 )
@@ -1405,15 +1405,10 @@ class GeometriesSidecar(SidecarProtocol):
             ORDER BY h.transaction_time DESC
             LIMIT 1;
         """
-        from sqlalchemy import text
-        result = await conn.execute(  # type: ignore[union-attr, misc]
-            text(sql),
-            {"wkb": wkb_hex, "prec": self.config.geohash_precision},
+        row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
+            conn, wkb=wkb_hex, prec=self.config.geohash_precision
         )
-        row = result.fetchone()
-        if row:
-            return dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
-        return None
+        return row or None
 
     def get_internal_columns(self) -> set:
         """

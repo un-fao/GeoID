@@ -32,7 +32,7 @@ from pydantic import Field, BaseModel
 from geojson_pydantic import Feature
 from dynastore.models.query_builder import QueryRequest
 from sqlalchemy import text
-from dynastore.modules.db_config.query_executor import DbResource, DDLQuery
+from dynastore.modules.db_config.query_executor import DbResource, DDLQuery, DQLQuery, ResultHandler
 from dynastore.models.protocols import ConfigsProtocol, AssetsProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.db_config.tools import map_pg_to_json_type
@@ -1446,7 +1446,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         # Check standard identity fields
         if field_name in ["external_id", "asset_id"]:
             sql = f'SELECT 1 FROM "{physical_schema}"."{sc_table}" WHERE {field_name} = :val'
-            params = {"val": str(value)}
+            params: Dict[str, Any] = {"val": str(value)}
             if exclude_geoid:
                 sql += " AND geoid <> :exclude"
                 params["exclude"] = exclude_geoid
@@ -1454,8 +1454,8 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
             # Limit 1 for speed
             sql += " LIMIT 1"
 
-            res = await conn.execute(text(sql), params)  # type: ignore[union-attr, misc]
-            return res.scalar() is not None
+            scalar = await DQLQuery(sql, result_handler=ResultHandler.SCALAR).execute(conn, **params)
+            return scalar is not None
 
         # Check columnar attributes
         if (
@@ -1471,8 +1471,8 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                     params["exclude"] = exclude_geoid
 
                 sql += " LIMIT 1"
-                res = await conn.execute(text(sql), params)  # type: ignore[union-attr, misc]
-                return res.scalar() is not None
+                scalar = await DQLQuery(sql, result_handler=ResultHandler.SCALAR).execute(conn, **params)
+                return scalar is not None
 
         return False
 
@@ -1538,15 +1538,10 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
             LIMIT 1;
         """
 
-        from sqlalchemy import text
-
-        result = await conn.execute(text(sql), {"ext_id": str(external_id)})  # type: ignore[union-attr, misc]
-        row = result.fetchone()
-
-        if row:
-            return dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
-
-        return None
+        row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
+            conn, ext_id=str(external_id)
+        )
+        return row or None
 
     async def _resolve_by_content_hash(
         self,
@@ -1566,7 +1561,6 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         if not content_hash:
             return None
 
-        from sqlalchemy import text
         sql = f"""
             SELECT h.geoid, h.content_hash
             FROM "{physical_schema}"."{physical_table}" h
@@ -1575,11 +1569,10 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
             ORDER BY h.transaction_time DESC
             LIMIT 1;
         """
-        result = await conn.execute(text(sql), {"ch": content_hash})  # type: ignore[union-attr, misc]
-        row = result.fetchone()
-        if row:
-            return dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
-        return None
+        row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
+            conn, ch=content_hash
+        )
+        return row or None
 
     def _extract_value(self, data: Dict[str, Any], path: str) -> Any:
         """Helper to extract value from dict using dot notation and properties fallback."""

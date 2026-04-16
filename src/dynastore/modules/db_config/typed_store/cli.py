@@ -33,9 +33,9 @@ import os
 import sys
 from typing import Any, Dict, List
 
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
 from dynastore.tools.typed_store import TypedModelRegistry
 from dynastore.tools.typed_store.migrations import find_path
 
@@ -62,15 +62,12 @@ async def _discover() -> None:
 async def cmd_list(args: argparse.Namespace) -> int:
     engine = _engine(args.database_url)
     async with engine.connect() as conn:
-        rows = (
-            await conn.execute(
-                text(
-                    "SELECT class_key, schema_id, created_at "
-                    "FROM configs.schemas ORDER BY class_key, created_at"
-                )
-            )
-        ).all()
-    for class_key, schema_id, created_at in rows:
+        rows = await DQLQuery(
+            "SELECT class_key, schema_id, created_at "
+            "FROM configs.schemas ORDER BY class_key, created_at",
+            result_handler=ResultHandler.ALL,
+        ).execute(conn)
+    for class_key, schema_id, created_at in rows or []:
         print(f"{class_key}\t{schema_id}\t{created_at.isoformat()}")
     await engine.dispose()
     return 0
@@ -80,12 +77,12 @@ async def cmd_audit(args: argparse.Namespace) -> int:
     await _discover()
     engine = _engine(args.database_url)
     async with engine.connect() as conn:
-        stored = (
-            await conn.execute(
-                text("SELECT class_key, schema_id FROM configs.schemas")
-            )
-        ).all()
+        stored = await DQLQuery(
+            "SELECT class_key, schema_id FROM configs.schemas",
+            result_handler=ResultHandler.ALL,
+        ).execute(conn)
     await engine.dispose()
+    stored = stored or []
 
     by_key: Dict[str, List[str]] = {}
     for class_key, schema_id in stored:
@@ -126,17 +123,13 @@ async def cmd_audit(args: argparse.Namespace) -> int:
 async def cmd_diff(args: argparse.Namespace) -> int:
     engine = _engine(args.database_url)
     async with engine.connect() as conn:
-        rows = (
-            await conn.execute(
-                text(
-                    "SELECT schema_id, schema_json FROM configs.schemas "
-                    "WHERE schema_id = ANY(:ids)"
-                ),
-                {"ids": [args.id_a, args.id_b]},
-            )
-        ).all()
+        rows = await DQLQuery(
+            "SELECT schema_id, schema_json FROM configs.schemas "
+            "WHERE schema_id = ANY(:ids)",
+            result_handler=ResultHandler.ALL,
+        ).execute(conn, ids=[args.id_a, args.id_b])
     await engine.dispose()
-    by_id: Dict[str, Any] = {sid: js for sid, js in rows}
+    by_id: Dict[str, Any] = {sid: js for sid, js in rows or []}
     if args.id_a not in by_id or args.id_b not in by_id:
         print("one or both schema_ids not found", file=sys.stderr)
         return 2

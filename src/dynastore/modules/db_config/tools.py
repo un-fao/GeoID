@@ -123,7 +123,7 @@ async def isolated_transaction(
     Usage:
         try:
             async with isolated_transaction(conn):
-                await conn.execute(text("CREATE TYPE ..."))
+                await DDLQuery("CREATE TYPE ...").execute(conn)
         except DuplicateObjectError:
             logger.debug("Type already exists, continuing.")
 
