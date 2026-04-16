@@ -428,14 +428,6 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
             await ensure_schema_exists(conn, "configs")
             await DDLQuery(PLATFORM_CONFIGS_SCHEMA).execute(conn)
             logger.info("Platform Config Storage initialized successfully.")
-            from dynastore.modules.db_config.config_rewriter import (
-                rewrite_config_class_keys,
-                rewrite_iceberg_catalog_fields,
-                rewrite_metadata_routing_fields,
-            )
-            await rewrite_config_class_keys(conn)
-            await rewrite_iceberg_catalog_fields(conn)
-            await rewrite_metadata_routing_fields(conn)
         except Exception as e:
             logger.error(
                 f"FATAL: PlatformConfigService initialization failed: {e}",
