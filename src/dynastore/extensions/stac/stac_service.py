@@ -34,6 +34,7 @@ from dynastore.models.protocols import (
     StorageProtocol,
 )
 from dynastore.models.protocols.authentication import AuthenticatorProtocol
+from dynastore.extensions.iam.guards import require_sysadmin
 
 
 import dynastore.modules.db_config.shared_queries as shared_queries
@@ -374,7 +375,10 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
     # --- Write Endpoints ---
 
     async def create_stac_catalog(
-        self, definition: STACCatalogRequest, language: str = Depends(get_language)
+        self,
+        definition: STACCatalogRequest,
+        language: str = Depends(get_language),
+        principal = Depends(require_sysadmin),
     ):
         try:
             # We use STACCatalog (DTO) for validation but the catalogs_svc expects the structure to be merged

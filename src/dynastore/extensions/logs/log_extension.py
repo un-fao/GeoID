@@ -75,6 +75,14 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
             dependencies=[Depends(require_sysadmin)],
         )
         self.router.add_api_route(
+            "/catalogs/{catalog_id}",
+            self.get_catalog_logs,
+            methods=["GET"],
+            response_model=LogsListResponse,
+            summary="Retrieve logs for a specific catalog",
+            dependencies=[Depends(require_admin)],
+        )
+        self.router.add_api_route(
             "/catalogs/{catalog_id}/logs",
             self.get_catalog_logs,
             methods=["GET"],

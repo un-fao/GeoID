@@ -302,6 +302,47 @@ class AdminService(ExtensionProtocol):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+    @router.get("/catalogs/{catalog_id}/users", summary="List users assigned to a catalog")
+    async def list_catalog_users(
+        catalog_id: str,
+        principal: Principal = Depends(_require_admin),
+        mgr=Depends(_get_iam_manager),
+    ):
+        """Return all principals that have any roles assigned to the given catalog."""
+        try:
+            schema = await mgr.resolve_schema(catalog_id)
+        except Exception:
+            raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
+
+        # List all principals and filter to those with roles in this catalog's schema
+        all_principals = await mgr.list_principals(limit=10000, offset=0)
+        catalog_users = []
+
+        for p in all_principals:
+            if p.provider and p.subject_id:
+                try:
+                    roles = await mgr.storage.get_roles(
+                        provider=p.provider,
+                        subject_id=p.subject_id,
+                        schema=schema,
+                    )
+                    if roles:  # Only include principals with at least one role
+                        catalog_users.append(
+                            PrincipalResponse(
+                                id=str(p.id),
+                                provider=p.provider,
+                                subject_id=p.subject_id,
+                                display_name=p.display_name,
+                                roles=roles,
+                                is_active=p.is_active,
+                            )
+                        )
+                except Exception:
+                    # Skip principals we can't retrieve roles for
+                    pass
+
+        return catalog_users
+
     # -------------------------------------------------------------------------
     # Role Management (/admin/roles)
     # -------------------------------------------------------------------------
