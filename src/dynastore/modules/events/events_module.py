@@ -618,19 +618,23 @@ class EventsModule(ModuleProtocol):
     @asynccontextmanager
     async def acquire_consumer_lock(self, key: str) -> AsyncIterator[bool]:
         """
-        Acquire a PostgreSQL session-scoped advisory lock on a dedicated
-        AUTOCOMMIT connection.
+        Try to acquire a PostgreSQL session-scoped advisory lock on a dedicated
+        AUTOCOMMIT connection. Non-blocking: yields True if this worker became
+        the leader, False otherwise. Callers must poll to retry leadership.
 
-        Yields True if this worker became the leader; the lock is held for
-        the lifetime of the context.  On connection drop (pod/worker death)
-        the lock is released automatically — no heartbeat needed.
+        The lock is held for the lifetime of the context. On connection drop
+        (pod/worker death) it is released automatically — no heartbeat needed.
         """
         lock_id = _get_stable_lock_id(key)
         async with self._engine.connect() as conn:  # type: ignore[union-attr]
             conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
-            await DQLQuery(
-                "SELECT pg_advisory_lock(:id)", result_handler=ResultHandler.NONE
+            acquired = await DQLQuery(
+                "SELECT pg_try_advisory_lock(:id)",
+                result_handler=ResultHandler.SCALAR,
             ).execute(conn, id=lock_id)
+            if not acquired:
+                yield False
+                return
             logger.info("EventsModule: consumer lock acquired (key=%s).", key)
             try:
                 yield True
@@ -651,29 +655,36 @@ class EventsModule(ModuleProtocol):
     ) -> None:
         """Log per-shard backlog warnings when PENDING count exceeds threshold.
 
-        Runs on the leader only (advisory lock); other instances sleep waiting
-        for the lock. On cancellation or connection drop the lock releases.
+        Runs on the leader only (non-blocking advisory lock); non-leaders poll
+        for leadership on the same cadence. On cancellation or connection drop
+        the lock releases and another instance can take over.
         """
         try:
-            async with self.acquire_consumer_lock("events_backlog_monitor"):
-                from dynastore.tools.protocol_helpers import get_engine
-                engine = self._engine or get_engine()
-                while True:
-                    try:
-                        async with managed_transaction(engine) as conn:
-                            rows = await _backlog_query.execute(
-                                conn, warn_threshold=warn_threshold
-                            )
-                        for row in rows or []:
-                            logger.warning(
-                                "events.backlog shard=%s pending=%s oldest_age_sec=%s",
-                                row["shard"],
-                                row["pending"],
-                                row["oldest_age_sec"],
-                            )
-                    except Exception:
-                        logger.exception("events.backlog monitor query failed")
-                    await asyncio.sleep(cadence_seconds)
+            while True:
+                async with self.acquire_consumer_lock(
+                    "events_backlog_monitor"
+                ) as is_leader:
+                    if not is_leader:
+                        await asyncio.sleep(cadence_seconds)
+                        continue
+                    from dynastore.tools.protocol_helpers import get_engine
+                    engine = self._engine or get_engine()
+                    while True:
+                        try:
+                            async with managed_transaction(engine) as conn:
+                                rows = await _backlog_query.execute(
+                                    conn, warn_threshold=warn_threshold
+                                )
+                            for row in rows or []:
+                                logger.warning(
+                                    "events.backlog shard=%s pending=%s oldest_age_sec=%s",
+                                    row["shard"],
+                                    row["pending"],
+                                    row["oldest_age_sec"],
+                                )
+                        except Exception:
+                            logger.exception("events.backlog monitor query failed")
+                        await asyncio.sleep(cadence_seconds)
         except asyncio.CancelledError:
             raise
         except Exception:
