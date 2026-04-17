@@ -134,8 +134,10 @@ class TaskIngestionRequest(BaseModel):
 class IngestionProcessRequest(BaseModel):
     """
     Represents the input structure for the OGC Process 'ingestion'.
-    It wraps the target identifiers and the task-specific configuration.
+
+    The target ``catalog_id`` and ``collection_id`` are taken from the URL
+    path (``/catalogs/{catalog_id}/collections/{collection_id}/processes/ingestion/execution``)
+    — not from the inputs body. The endpoint rejects requests that try to
+    target the process via a non-matching URL scope (see ``ProcessScope``).
     """
-    catalog_id: str = Field(..., description="The identifier of the target catalog.")
-    collection_id: str = Field(..., description="The identifier of the target collection within the catalog.")
     ingestion_request: TaskIngestionRequest = Field(..., description="The detailed configuration for the ingestion task.")

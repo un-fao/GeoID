@@ -9,6 +9,7 @@ from dynastore.tools.protocol_helpers import get_engine
 from dynastore.modules.processes.models import (
     Process,
     ProcessOutput,
+    ProcessScope,
     ExecuteRequest,
     StatusInfo,
     JobControlOptions,
@@ -49,6 +50,7 @@ EXPORT_FEATURES_PROCESS_DEFINITION = Process(
     version="1.0.0",
     title="Export Features",
     description="Exports features from a collection to a file in Cloud Storage with optional CQL filtering and property projection.",
+    scopes=[ProcessScope.COLLECTION],
     inputs=pydantic_to_process_inputs(ExportFeaturesRequest),
     outputs={
         "result": ProcessOutput.model_validate({"title": "Result", "schema": {"type": "object"}})

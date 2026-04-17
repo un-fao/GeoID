@@ -18,13 +18,20 @@
 
 from typing import Type, Dict, Any, List, Optional
 from pydantic import BaseModel
-from dynastore.modules.processes.models import Process, ProcessInput, JobControlOptions, TransmissionMode
+from dynastore.modules.processes.models import (
+    Process,
+    ProcessInput,
+    ProcessScope,
+    JobControlOptions,
+    TransmissionMode,
+)
 
 def create_process_definition(
     id: str,
     title: str,
     description: str,
     input_model: Type[BaseModel],
+    scopes: List[ProcessScope],
     version: str = "1.0.0",
     job_control_options: Optional[List[JobControlOptions]] = None,
     output_transmission: Optional[List[TransmissionMode]] = None,
@@ -76,11 +83,16 @@ def create_process_definition(
     if additional_inputs:
         inputs.update(additional_inputs)
 
+    if not scopes:
+        raise ValueError(
+            f"Process '{id}' must declare at least one ProcessScope (got empty list)."
+        )
     return Process(
         id=id,
         title=title,
         description=description,
         version=version,
+        scopes=list(scopes),
         jobControlOptions=job_control_options or [JobControlOptions.ASYNC_EXECUTE],
         outputTransmission=output_transmission or [TransmissionMode.REFERENCE],
         inputs=inputs,
