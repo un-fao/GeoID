@@ -504,7 +504,9 @@ class EventService(EventBusProtocol):
                 await asyncio.sleep(60.0)
             except Exception as e:
                 logger.error(
-                    f"EventService shard {shard_id} consumer error: {e}", exc_info=True
+                    "EventService shard %d consumer error: %s: %s",
+                    shard_id, type(e).__name__, e or "<no message>",
+                    exc_info=True,
                 )
                 await asyncio.sleep(5.0)
 

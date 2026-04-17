@@ -128,6 +128,8 @@ class DBService(ModuleProtocol, DatabaseProtocol):
                     max_overflow=db_config.pool_max_size - db_config.pool_min_size,
                     pool_timeout=db_config.pool_command_timeout,
                     pool_pre_ping=True,
+                    pool_recycle=1800,
+                    connect_args={"timeout": 10},
                 )
                 engine_created_by_service = True
                 logger.info(
