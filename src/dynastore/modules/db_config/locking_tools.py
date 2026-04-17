@@ -396,17 +396,39 @@ async def check_extension_exists(conn: DbResource, extension_name: str) -> bool:
 
 
 async def check_trigger_exists(
-    conn: DbResource, trigger_name: str, schema: str = "platform"
+    conn: DbResource,
+    trigger_name: str,
+    schema: str = "platform",
+    table: Optional[str] = None,
 ) -> bool:
-    """Checks if a trigger exists."""
+    """Checks if a trigger exists.
+
+    When *table* is provided, the match is scoped to that specific relation —
+    required when the same trigger name is applied per-table across a schema
+    (e.g. ``trg_asset_cleanup`` on every tenant asset/sidecar table).
+    """
     from dynastore.modules.db_config.maintenance_tools import DQLQuery, ResultHandler
 
-    query = DQLQuery(
-        "SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = :schema AND t.tgname = :name",
-        result_handler=ResultHandler.SCALAR,
-    )
+    if table is None:
+        sql = (
+            "SELECT 1 FROM pg_trigger t "
+            "JOIN pg_class c ON c.oid = t.tgrelid "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = :schema AND t.tgname = :name"
+        )
+        params = {"schema": schema, "name": trigger_name}
+    else:
+        sql = (
+            "SELECT 1 FROM pg_trigger t "
+            "JOIN pg_class c ON c.oid = t.tgrelid "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = :schema AND c.relname = :table AND t.tgname = :name"
+        )
+        params = {"schema": schema, "table": table, "name": trigger_name}
+
+    query = DQLQuery(sql, result_handler=ResultHandler.SCALAR)
     try:
-        return await query.execute(conn, schema=schema, name=trigger_name) is not None
+        return await query.execute(conn, **params) is not None
     except Exception:
         return False
 

@@ -65,12 +65,6 @@ def _infer_existence_check(sql_template: str):
 
     trimmed = sql_template.strip()
 
-    # Only auto-infer for templates with identifier placeholders ({schema}, etc.).
-    # Bare DDL without placeholders is typically test code or one-off DDL where
-    # the added existence-check round-trip can change timing on StaticPool.
-    if not re.search(r'\{\w+\}', trimmed):
-        return None
-
     upper = trimmed.upper()
 
     # Skip non-CREATE DDL (INSERT, DROP, ALTER, GRANT, etc.)
@@ -188,25 +182,31 @@ def _infer_existence_check(sql_template: str):
         return _check_function
 
     # --- Pattern: CREATE TRIGGER ... ON {schema}.table ---
+    # Trigger names in PG are per-relation, so the existence check must be
+    # scoped to the specific table — otherwise triggers that share a name
+    # across tenant tables (e.g. ``trg_asset_cleanup`` on every asset table)
+    # would match incorrectly and skip re-creation.
     m = re.search(
         r'CREATE\s+TRIGGER\s+"?(\w+)"?',
         trimmed, re.IGNORECASE | re.DOTALL,
     )
     if m:
         trigger_name = m.group(1)
-        # Extract schema from ON clause
+        # Extract schema + table from ON clause: ON "schema"."table" or ON schema.table
         m_on = re.search(
-            r'\bON\s+(?:"?(\{?\w+\}?)"?\.)',
+            r'\bON\s+(?:"?(\{?\w+\}?)"?\.)?"?(\{?\w+\}?)"?',
             trimmed, re.IGNORECASE | re.DOTALL,
         )
         raw_schema = m_on.group(1) if m_on else None
+        raw_table = m_on.group(2) if m_on else None
 
         async def _check_trigger(conn, params, raw_params):
             from .locking_tools import check_trigger_exists
             schema = _resolve_schema(raw_schema, raw_params)
+            table = _resolve_schema(raw_table, raw_params) if raw_table else None
             return await _cached_check_async(
-                "trigger", schema, trigger_name,
-                check_trigger_exists, conn, trigger_name, schema,
+                "trigger", schema, f"{table}.{trigger_name}" if table else trigger_name,
+                check_trigger_exists, conn, trigger_name, schema, table,
             )
 
         return _check_trigger

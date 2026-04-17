@@ -30,11 +30,13 @@ from dynastore.modules.db_config.query_executor import (
     DbEngine,
     managed_transaction,
     DDLQuery,
+    DDLBatch,
     DQLQuery,
     ResultHandler,
 )
 from dynastore.modules.db_config.locking_tools import (
     acquire_startup_lock,
+    check_trigger_exists,
     _get_stable_lock_id,
 )
 from dynastore.models.protocols import (
@@ -112,26 +114,39 @@ BEGIN
     RETURN NEW;
 END;
 $$;
-
--- Guard trigger creation behind pg_trigger existence check.
--- DROP+CREATE TRIGGER takes AccessExclusiveLock on events.events and deadlocks
--- against a concurrently-live consumer in another pod (RowExclusiveLock from
--- _consume_query). Changes to trigger body are a migration concern.
-DO $do$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_trigger
-        WHERE tgname = 'on_event_insert'
-          AND tgrelid = '{_EVENTS_SCHEMA}.events'::regclass
-    ) THEN
-        CREATE TRIGGER on_event_insert
-            AFTER INSERT ON {_EVENTS_SCHEMA}.events
-            FOR EACH ROW
-            WHEN (NEW.status = 'PENDING')
-            EXECUTE FUNCTION {_EVENTS_SCHEMA}.notify_event_ready();
-    END IF;
-END $do$;
 """
+
+# Trigger is kept separate so we can guard creation with a pg_trigger
+# existence check. DROP+CREATE TRIGGER takes AccessExclusiveLock on
+# events.events and would deadlock against a concurrently-live consumer
+# in another pod (RowExclusiveLock from _consume_query). Trigger body
+# changes are a migration concern — never re-create in place on a hot table.
+GLOBAL_EVENTS_TRIGGER_DDL = f"""
+CREATE TRIGGER on_event_insert
+    AFTER INSERT ON {_EVENTS_SCHEMA}.events
+    FOR EACH ROW
+    WHEN (NEW.status = 'PENDING')
+    EXECUTE FUNCTION {_EVENTS_SCHEMA}.notify_event_ready();
+"""
+
+
+def _events_trigger_check(conn):
+    return check_trigger_exists(
+        conn, "on_event_insert", _EVENTS_SCHEMA, table="events"
+    )
+
+
+# Module-level batch: on warm starts, the sentinel (trigger) existence check
+# is the only round-trip — table and indexes are skipped entirely.
+# Advisory lock keys are auto-derived from statement hash by DDLExecutor.
+GLOBAL_EVENTS_DDL_BATCH = DDLBatch(
+    sentinel=DDLQuery(GLOBAL_EVENTS_TRIGGER_DDL, check_query=_events_trigger_check),
+    steps=[
+        DDLQuery(GLOBAL_EVENTS_TABLE_DDL),
+        DDLQuery(GLOBAL_EVENTS_INDEXES_DDL),
+        DDLQuery(GLOBAL_EVENTS_TRIGGER_DDL, check_query=_events_trigger_check),
+    ],
+)
 
 # ---------------------------------------------------------------------------
 # Subscription table DDL
@@ -503,12 +518,7 @@ class EventsModule(ModuleProtocol):
         )
         try:
             async with managed_transaction(self._engine) as conn:
-                await DDLQuery(GLOBAL_EVENTS_TABLE_DDL).execute(
-                    conn, lock_key=f"events_storage_init_table.{_EVENTS_SCHEMA}"
-                )
-                await DDLQuery(GLOBAL_EVENTS_INDEXES_DDL).execute(
-                    conn, lock_key=f"events_storage_init_idx.{_EVENTS_SCHEMA}"
-                )
+                await GLOBAL_EVENTS_DDL_BATCH.execute(conn)
             logger.info("EventsModule: %s.events ready.", _EVENTS_SCHEMA)
 
             # Create 16 shard leaf partitions (single-level LIST partitioning)
@@ -605,8 +615,7 @@ class EventsModule(ModuleProtocol):
 
     async def initialize(self, conn: Any) -> None:
         """Create global events table (idempotent). Called by lifespan; exposed for tests."""
-        await DDLQuery(GLOBAL_EVENTS_TABLE_DDL).execute(conn)
-        await DDLQuery(GLOBAL_EVENTS_INDEXES_DDL).execute(conn)
+        await GLOBAL_EVENTS_DDL_BATCH.execute(conn)
 
     async def init_catalog_scope(self, conn: Any, catalog_schema: str) -> None:
         """No-op. The global shard-partitioned outbox serves all catalogs."""

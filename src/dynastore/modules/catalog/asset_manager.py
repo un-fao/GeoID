@@ -37,7 +37,10 @@ from dynastore.modules.db_config.query_executor import (
 )
 from dynastore.tools.json import CustomJSONEncoder
 from dynastore.tools.db import validate_sql_identifier
-from dynastore.modules.db_config.locking_tools import acquire_startup_lock
+from dynastore.modules.db_config.locking_tools import (
+    acquire_startup_lock,
+    check_trigger_exists,
+)
 from dynastore.modules.db_config.partition_tools import (
     ensure_partition_exists as ensure_partition_tool,
     ensure_hierarchical_partitions_exist,
@@ -651,28 +654,19 @@ class AssetManager(AssetsProtocol):
                     hub_table = table[: -len(suffix)]
                     break
 
-            # 4. Create the trigger (idempotent, lock-free on warm path).
-            # DROP+CREATE TRIGGER takes AccessExclusiveLock on the target table
-            # and deadlocks against concurrent ingest DML. Guard behind a
-            # pg_trigger existence check so warm paths skip DDL entirely.
-            # Trigger body changes are a migration concern.
+            # 4. Create the trigger. Guarded by check_trigger_exists so warm
+            # paths skip DDL entirely and avoid the AccessExclusiveLock that
+            # DROP+CREATE TRIGGER would take against concurrent ingest DML.
             trigger_ddl = f"""
-            DO $do$
-            BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM pg_trigger t
-                    JOIN pg_class c ON t.tgrelid = c.oid
-                    JOIN pg_namespace n ON c.relnamespace = n.oid
-                    WHERE t.tgname = 'trg_asset_cleanup'
-                      AND c.relname = '{table}'
-                      AND n.nspname = '{schema}'
-                ) THEN
-                    CREATE TRIGGER trg_asset_cleanup
-                    AFTER DELETE OR UPDATE OF asset_id ON "{schema}"."{table}"
-                    FOR EACH ROW
-                    EXECUTE FUNCTION platform.asset_cleanup('{hub_table}');
-                END IF;
-            END $do$;
+            CREATE TRIGGER trg_asset_cleanup
+            AFTER DELETE OR UPDATE OF asset_id ON "{schema}"."{table}"
+            FOR EACH ROW
+            EXECUTE FUNCTION platform.asset_cleanup('{hub_table}');
             """.strip()
 
-            await DDLQuery(trigger_ddl).execute(conn, schema=schema)
+            await DDLQuery(
+                trigger_ddl,
+                check_query=lambda: check_trigger_exists(
+                    conn, "trg_asset_cleanup", schema, table=table
+                ),
+            ).execute(conn)

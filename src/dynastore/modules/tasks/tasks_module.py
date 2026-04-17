@@ -31,6 +31,7 @@ from dynastore.models.driver_context import DriverContext
 from dynastore.modules import ModuleProtocol
 from dynastore.modules.db_config.query_executor import (
     DDLQuery,
+    DDLBatch,
     DQLQuery,
     managed_transaction,
     ResultHandler,
@@ -50,6 +51,7 @@ from dynastore.modules.db_config.maintenance_tools import (
 from dynastore.modules.db_config.locking_tools import (
     acquire_lock_if_needed,
     check_table_exists,
+    check_trigger_exists,
 )
 
 from .models import Task, TaskCreate, TaskUpdate
@@ -136,25 +138,6 @@ BEGIN
 END;
 $$;
 
--- Guard trigger creation behind pg_trigger existence check.
--- DROP+CREATE TRIGGER takes AccessExclusiveLock on tasks and deadlocks against
--- a concurrently-live dispatcher in another pod (RowExclusiveLock from
--- claim_batch DML). Changes to trigger body are a migration concern.
-DO $do$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_trigger
-        WHERE tgname = 'on_task_insert'
-          AND tgrelid = '{schema}.tasks'::regclass
-    ) THEN
-        CREATE TRIGGER on_task_insert
-            AFTER INSERT ON {schema}.tasks
-            FOR EACH ROW
-            WHEN (NEW.status = 'PENDING')
-            EXECUTE FUNCTION {schema}.notify_task_ready();
-    END IF;
-END $do$;
-
 CREATE OR REPLACE FUNCTION {schema}.notify_task_status_changed()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
@@ -162,22 +145,61 @@ BEGIN
     RETURN NEW;
 END;
 $$;
-
-DO $do$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_trigger
-        WHERE tgname = 'on_task_status_update'
-          AND tgrelid = '{schema}.tasks'::regclass
-    ) THEN
-        CREATE TRIGGER on_task_status_update
-            AFTER UPDATE ON {schema}.tasks
-            FOR EACH ROW
-            WHEN (OLD.status IS DISTINCT FROM NEW.status)
-            EXECUTE FUNCTION {schema}.notify_task_status_changed();
-    END IF;
-END $do$;
 """
+
+# Triggers are kept separate so creation is guarded with pg_trigger existence
+# checks. DROP+CREATE TRIGGER takes AccessExclusiveLock on tasks.tasks and
+# would deadlock against a concurrently-live dispatcher in another pod
+# (RowExclusiveLock from claim_batch DML). Trigger body changes are a
+# migration concern — never re-create in place on a hot table.
+GLOBAL_TASKS_INSERT_TRIGGER_DDL = """
+CREATE TRIGGER on_task_insert
+    AFTER INSERT ON {schema}.tasks
+    FOR EACH ROW
+    WHEN (NEW.status = 'PENDING')
+    EXECUTE FUNCTION {schema}.notify_task_ready();
+"""
+
+GLOBAL_TASKS_STATUS_TRIGGER_DDL = """
+CREATE TRIGGER on_task_status_update
+    AFTER UPDATE ON {schema}.tasks
+    FOR EACH ROW
+    WHEN (OLD.status IS DISTINCT FROM NEW.status)
+    EXECUTE FUNCTION {schema}.notify_task_status_changed();
+"""
+
+
+def _build_tasks_ddl_batch(schema: str) -> DDLBatch:
+    """Build a module-level DDL batch scoped to *schema*.
+
+    On warm starts, the sentinel (status-update trigger — the last object
+    created) short-circuits the batch in one round-trip. Cold starts execute
+    the full sequence (table, indexes + functions, both triggers) under a
+    single shared connection with nested savepoints.
+    """
+
+    def _check_insert(conn):
+        return check_trigger_exists(conn, "on_task_insert", schema, table="tasks")
+
+    def _check_status(conn):
+        return check_trigger_exists(
+            conn, "on_task_status_update", schema, table="tasks"
+        )
+
+    def _check_tasks_table(conn):
+        return check_table_exists(conn, "tasks", schema)
+
+    return DDLBatch(
+        sentinel=DDLQuery(
+            GLOBAL_TASKS_STATUS_TRIGGER_DDL, check_query=_check_status
+        ),
+        steps=[
+            DDLQuery(GLOBAL_TASKS_TABLE_DDL, check_query=_check_tasks_table),
+            DDLQuery(GLOBAL_TASKS_INDEXES_DDL),
+            DDLQuery(GLOBAL_TASKS_INSERT_TRIGGER_DDL, check_query=_check_insert),
+            DDLQuery(GLOBAL_TASKS_STATUS_TRIGGER_DDL, check_query=_check_status),
+        ],
+    )
 
 
 
@@ -447,21 +469,12 @@ async def ensure_task_storage_exists(conn: DbResource, schema: str):
     # Ensure schema exists first
     await ensure_schema_exists(conn, schema)
 
-    async def tasks_table_exists():
-        return await check_table_exists(conn, "tasks", schema)
-
-    # Step 1: Create tasks table under advisory lock + existence guard to
-    # serialize concurrent startups. Without this, two workers racing on
-    # `CREATE TABLE tasks` both fall through IF NOT EXISTS's toctou window
-    # and collide on the implicit composite type row in pg_type.
-    await DDLQuery(
-        GLOBAL_TASKS_TABLE_DDL,
-        check_query=tasks_table_exists,
-        lock_key=f"{schema}_tasks",
-    ).execute(conn, schema=schema)
-
-    # Step 2: Create indexes and triggers (idempotent: IF NOT EXISTS / OR REPLACE)
-    await DDLQuery(GLOBAL_TASKS_INDEXES_DDL).execute(conn, schema=schema)
+    # Single module-level batch: on warm starts the sentinel
+    # (status-update trigger) short-circuits everything in one round-trip.
+    # Cold starts create the table, indexes, notify functions, and both
+    # triggers in order under nested savepoints. Advisory locks are
+    # auto-derived from each statement's hash.
+    await _build_tasks_ddl_batch(schema).execute(conn, schema=schema)
 
     # Step 3: Ensure current + future partitions exist.
     # Critical path — must succeed for the dispatcher to start.
