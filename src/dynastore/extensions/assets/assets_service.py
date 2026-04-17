@@ -36,8 +36,6 @@ from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.models.protocols import AssetsProtocol, AssetUploadProtocol, UploadTicket, UploadStatusResponse
 from dynastore.tools.protocol_helpers import get_engine
 from dynastore.extensions.tools.exception_handlers import handle_exception
-from dynastore.extensions.iam.guards import get_principal_optional as get_principal
-from dynastore.models.auth import Principal
 from fastapi import Depends
 from dynastore.modules.catalog.catalog_module import CatalogModule
 from dynastore.modules.catalog.asset_service import (
@@ -1125,7 +1123,6 @@ class AssetService(ExtensionProtocol):
         task_id: str = Path(
             ..., description="The task (process) ID", examples=["gdal"]
         ),
-        principal: Optional[Principal] = Depends(get_principal),
         mode: Optional[JobControlOptions] = Query(
             None, description="Execution mode preference."
         ),
@@ -1147,6 +1144,7 @@ class AssetService(ExtensionProtocol):
         if not asset:
             raise HTTPException(status_code=404, detail="Asset not found")
 
+        principal = getattr(request.state, "principal", None)
         caller_id_val = principal.id if principal else "nouser"
         return await AssetService._execute_asset_task(
             request,
@@ -1169,7 +1167,6 @@ class AssetService(ExtensionProtocol):
         task_id: str = Path(
             ..., description="The task (process) ID", examples=["ingestion"]
         ),
-        principal: Optional[Principal] = Depends(get_principal),
         mode: Optional[JobControlOptions] = Query(
             None, description="Execution mode preference."
         ),

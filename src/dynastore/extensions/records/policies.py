@@ -16,6 +16,7 @@
 
 import logging
 
+from dynastore.models.protocols.authorization import DefaultRole
 from dynastore.tools.discovery import get_protocol
 
 logger = logging.getLogger(__name__)
@@ -47,7 +48,7 @@ def register_records_policies() -> None:
     pm.register_policy(records_policy)
     pm.register_role(
         Role(
-            name="anonymous",
+            name=DefaultRole.ANONYMOUS.value,
             description="Anonymous user with limited access.",
             policies=["records_public_access"],
         )

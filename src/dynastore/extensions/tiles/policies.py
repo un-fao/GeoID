@@ -17,6 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
+from dynastore.models.protocols.authorization import DefaultRole
 from dynastore.models.protocols.policies import Policy, Role
 from dynastore.tools.discovery import get_protocol
 
@@ -44,7 +45,7 @@ def register_tiles_policies():
     )
     pm.register_policy(tiles_policy)
     pm.register_role(Role(
-        name="anonymous",
+        name=DefaultRole.ANONYMOUS.value,
         description="Anonymous user with limited access.",
         policies=["tiles_public_access"],
     ))

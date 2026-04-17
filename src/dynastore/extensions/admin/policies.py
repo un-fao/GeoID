@@ -2,12 +2,13 @@
 #    Licensed under the Apache License, Version 2.0 (the "License").
 
 import logging
+from dynastore.models.protocols.authorization import DefaultRole
 from dynastore.models.protocols.policies import Policy, Role
 from dynastore.tools.discovery import get_protocol
 
 logger = logging.getLogger(__name__)
 
-_ADMIN_ROLES = ["sysadmin", "admin"]
+_ADMIN_ROLES = (DefaultRole.SYSADMIN.value, DefaultRole.ADMIN.value)
 
 
 def register_admin_policies():
@@ -28,7 +29,6 @@ def register_admin_policies():
             "/admin/",
             "/admin/.*",
             "/web/pages/admin_panel",  # expose_web_page route
-            "/web/pages/migrations_panel",  # migrations dashboard
         ],
         effect="ALLOW",
     )

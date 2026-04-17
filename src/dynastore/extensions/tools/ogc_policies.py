@@ -17,6 +17,7 @@
 import logging
 from typing import List, Optional
 
+from dynastore.models.protocols.authorization import DefaultRole
 from dynastore.tools.discovery import get_protocol
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,6 @@ def register_ogc_public_access_policy(
         effect="ALLOW",
     )
     pm.register_policy(policy)
-    pm.register_role(Role(name="anonymous", policies=[f"{protocol_prefix}_public_access"]))
+    pm.register_role(Role(name=DefaultRole.ANONYMOUS.value, policies=[f"{protocol_prefix}_public_access"]))
 
     logger.debug("OGC %s policies registered via PermissionProtocol.", protocol_prefix)

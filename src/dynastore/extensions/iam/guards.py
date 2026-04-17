@@ -10,39 +10,32 @@
 #    distributed under the License is distributed on an "AS IS" BASIS,
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-"""
-FastAPI dependency wrappers for the IAM authorization façade.
+"""Request → `SecurityContext` adapter for FastAPI routes.
 
-These dependencies are always importable — their only non-stdlib imports
-are `fastapi` (a base dep) and the framework-free
-`dynastore.modules.iam.authorization` submodule. They therefore work in
-scopes where `module_iam` extras (``pydantic[email]``, ``PyJWT``) are not
-installed; in that case `DefaultAuthorizer` fail-closes privileged routes.
-
-Tasks (no `Request`) should call
-`dynastore.modules.iam.authorization.require_permission` directly instead.
+Endpoint-level authorization is enforced dynamically by `IamMiddleware` against
+the policy registry. Route handlers that still need a permission check against
+a specific principal read the context through `security_context_from_request`
+and call `require_permission(ctx, Permission.X)` from
+`dynastore.modules.iam.authorization`.
 """
 
 from typing import Optional
-from uuid import UUID
 
-from fastapi import HTTPException, Request, Security, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import HTTPException, Request, status
 
 from dynastore.models.auth import Principal
-from dynastore.models.protocols.authorization import Permission
+from dynastore.models.protocols.authorization import DefaultRole, Permission
 from dynastore.models.protocols.authorization_context import SecurityContext
 from dynastore.modules.iam.authorization import require_permission
 
 
-http_bearer = HTTPBearer(auto_error=False, scheme_name="HTTPBearer")
+_PRIVILEGED_DEFAULT_ROLES: frozenset[str] = frozenset(
+    {DefaultRole.ADMIN.value, DefaultRole.SYSADMIN.value}
+)
 
 
-_SYNTHETIC_SYSADMIN_ID = UUID("00000000-0000-0000-0000-000000000000")
-
-
-def _build_context(request: Request) -> SecurityContext:
-    """Assemble a `SecurityContext` from middleware-populated request state."""
+def security_context_from_request(request: Request) -> SecurityContext:
+    """Assemble a framework-free `SecurityContext` from middleware state."""
     principal = getattr(request.state, "principal", None)
     principal_role = getattr(request.state, "principal_role", None)
 
@@ -73,157 +66,29 @@ def _build_context(request: Request) -> SecurityContext:
     )
 
 
-async def _enforce(request: Request, permission: Permission, detail: str) -> None:
-    ctx = _build_context(request)
-    try:
-        await require_permission(ctx, permission)
-    except PermissionError:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+def principal_from_request(request: Request) -> Optional[Principal]:
+    """Return the middleware-attached `Principal`, or `None` when anonymous."""
+    return getattr(request.state, "principal", None)
 
 
-async def require_sysadmin(
+async def ensure_privileged_role_assignment(
     request: Request,
-    _bearer: Optional[HTTPAuthorizationCredentials] = Security(http_bearer),
+    target_role: str,
+    *,
+    protected_roles: frozenset[str] = _PRIVILEGED_DEFAULT_ROLES,
 ) -> None:
-    """Require a sysadmin principal. Raises 403 otherwise."""
-    await _enforce(
-        request,
-        Permission.SYSADMIN,
-        "System Administrator privileges required.",
-    )
-
-
-async def require_admin(
-    request: Request,
-    _bearer: Optional[HTTPAuthorizationCredentials] = Security(http_bearer),
-) -> None:
-    """Require an admin (or sysadmin) principal. Raises 403 otherwise."""
-    await _enforce(
-        request,
-        Permission.ADMIN,
-        "Administrative privileges required (Admin Role).",
-    )
-
-
-async def require_authenticated(
-    request: Request,
-    _bearer: Optional[HTTPAuthorizationCredentials] = Security(http_bearer),
-) -> None:
-    """Require any authenticated principal. Raises 401 otherwise."""
-    ctx = _build_context(request)
-    try:
-        await require_permission(ctx, Permission.AUTHENTICATED)
-    except PermissionError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required.",
-        )
-
-
-async def require_bearer_token(
-    request: Request,
-    bearer: Optional[HTTPAuthorizationCredentials] = Security(http_bearer),
-) -> None:
-    """Require a non-empty bearer token in the Authorization header.
-
-    Lighter than require_authenticated — validates token presence and basic
-    JWT structure via middleware, but does NOT require a DB-backed principal.
-    Useful for endpoints where service accounts with valid JWTs must succeed
-    but arbitrary unauthenticated requests must be rejected.
+    """Business rule: only sysadmins may assign/manage principals with a
+    privileged role. Defaults to protecting the built-in `admin`/`sysadmin`
+    role names, which exist as seed data; callers can override `protected_roles`
+    when a deployment has added further privileged roles.
     """
-    # If a bearer token was provided and the middleware managed to decode it
-    # (even without a DB principal), the request is sufficiently authenticated.
-    if not bearer or not bearer.credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    # Reject obviously invalid tokens (e.g. literal "invalid-token" strings)
-    # by checking that the token has basic JWT structure (three dot-separated parts).
-    token = bearer.credentials
-    if token.count(".") < 2:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid bearer token.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    # Additional: if the middleware set principal_role to anonymous-only,
-    # the JWT signature check failed — reject it.
-    principal_role = getattr(request.state, "principal_role", None)
-    if principal_role is not None and principal_role == ["anonymous"]:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired bearer token.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-
-def _synthetic_sysadmin() -> Principal:
-    return Principal(
-        id=_SYNTHETIC_SYSADMIN_ID,
-        display_name="sysadmin",
-        subject_id="sysadmin",
-        attributes={
-            "role": "sysadmin",
-            "description": "System Administrator (Synthetic)",
-        },
-    )
-
-
-async def get_principal(
-    request: Request,
-    _bearer: Optional[HTTPAuthorizationCredentials] = Security(http_bearer),
-) -> Principal:
-    """Return the authenticated `Principal`, or raise 401."""
-    principal = getattr(request.state, "principal", None)
-    if principal is not None:
-        return principal
-
-    principal_role = getattr(request.state, "principal_role", None)
-    if principal_role == "sysadmin" or (
-        isinstance(principal_role, (list, tuple, set, frozenset))
-        and "sysadmin" in principal_role
-    ):
-        return _synthetic_sysadmin()
-
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing credentials."
-    )
-
-
-async def get_principal_optional(
-    request: Request,
-    _bearer: Optional[HTTPAuthorizationCredentials] = Security(http_bearer),
-) -> Optional[Principal]:
-    """Return the authenticated `Principal`, or None when anonymous."""
-    principal = getattr(request.state, "principal", None)
-    if principal is not None:
-        return principal
-
-    principal_role = getattr(request.state, "principal_role", None)
-    if principal_role == "sysadmin" or (
-        isinstance(principal_role, (list, tuple, set, frozenset))
-        and "sysadmin" in principal_role
-    ):
-        return _synthetic_sysadmin()
-
-    return None
-
-
-def ensure_sysadmin_if_targeting_admin(request: Request, target_role: str) -> None:
-    """Business rule: only sysadmins may manage admin/sysadmin principals."""
-    if target_role not in ("sysadmin", "admin"):
+    if target_role not in protected_roles:
         return
-
-    caller_role = getattr(request.state, "principal_role", None) or []
-    if isinstance(caller_role, str):
-        caller_role = [caller_role]
-
-    if "sysadmin" in caller_role:
-        return
-
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="Insufficient privileges: Only System Administrators can manage Admin accounts.",
-    )
+    ctx = security_context_from_request(request)
+    try:
+        await require_permission(ctx, Permission.SYSADMIN)
+    except PermissionError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only System Administrators can manage privileged-role principals.",
+        )

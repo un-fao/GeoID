@@ -183,11 +183,12 @@ No application table may reside in the `public` schema. All objects are organize
 | `configs` | `configs` | Platform-level configuration overrides. |
 | `tiles` | `tiles` | Tile cache metadata and statistics. |
 | `proxy` | `proxy` | URL proxy analytics (RANGE-partitioned). |
-| `s_{base62}` | `catalog` (tenant) | Per-tenant schema auto-generated on catalog creation. Contains `collections`, `assets`, physical feature tables, `catalog_configs`, `collection_configs`, sidecars, tenant `access_logs`, `stats_aggregates`, tenant `url_analytics`, tenant `policies`, `roles`, and a per-tenant `schema_migrations` tracking table. |
+| `s_{base62}` | `catalog` (tenant) | Per-tenant schema auto-generated on catalog creation. Contains `collections`, `assets`, physical feature tables, `catalog_configs`, `collection_configs`, sidecars, tenant `access_logs`, `stats_aggregates`, tenant `url_analytics`, tenant `policies`, and `roles`. |
 
-### Bootstrap Migration
+### Schema Bootstrap
 
-On startup, `_ensure_tracking_tables()` in `migration_runner.py`:
-1. Creates the `platform` schema (`CREATE SCHEMA IF NOT EXISTS`).
-2. Runs a one-time idempotent migration that moves any legacy objects from `public` to `platform` (`ALTER TABLE ... SET SCHEMA`, `ALTER FUNCTION ... SET SCHEMA`).
-3. Creates or verifies the `platform.schema_migrations` and `platform.app_state` tables.
+Tenant tables are created idempotently on first access by
+`tenant_schema.initialize_tenant_shell` and the
+`@lifecycle_registry.sync_catalog_initializer` hooks. DDL is authored with
+`CREATE TABLE IF NOT EXISTS`/`ALTER TABLE ... IF NOT EXISTS` so concurrent
+workers converge on the same target state without a versioned migration runner.

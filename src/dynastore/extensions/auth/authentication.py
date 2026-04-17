@@ -17,6 +17,7 @@ from dynastore.models.protocols import (
     ConfigsProtocol,
     PropertiesProtocol,
 )
+from dynastore.models.protocols.authorization import DefaultRole
 from contextlib import asynccontextmanager
 from starlette.middleware.sessions import SessionMiddleware
 import logging
@@ -319,7 +320,7 @@ class Authentication(ExtensionProtocol):
                     effect="ALLOW",
                 )
                 pm.register_policy(auth_policy)
-                pm.register_role(Role(name="anonymous", policies=["auth_extension_public"]))
+                pm.register_role(Role(name=DefaultRole.ANONYMOUS.value, policies=["auth_extension_public"]))
                 logger.info("Authentication policies registered via PermissionProtocol.")
             else:
                 logger.warning("PermissionProtocol not available; auth policies not registered.")

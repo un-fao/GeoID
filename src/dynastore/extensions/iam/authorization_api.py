@@ -22,7 +22,7 @@ Simplified IAG REST API Endpoints (v2.1)
 Email-based authorization management with self-service and admin endpoints.
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, EmailStr
 from typing import List, Optional, Dict, Any, cast
 from datetime import datetime
@@ -30,27 +30,11 @@ from datetime import datetime
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.models.protocols.authentication import AuthenticatorProtocol
-from dynastore.models.auth import Principal
 from dynastore.extensions.tools.exception_handlers import http_errors
 from dynastore.models.driver_context import DriverContext
 
 
-def _require_admin_role(request: Request) -> Principal:
-    """Defense-in-depth: verify admin/sysadmin role even though middleware enforces policies."""
-    principal: Principal | None = getattr(request.state, "principal", None)
-    if not principal:
-        raise HTTPException(status_code=401, detail="Authentication required.")
-    admin_roles = {"sysadmin", "admin"}
-    if not admin_roles.intersection(set(principal.roles or [])):
-        raise HTTPException(status_code=403, detail="Admin role required.")
-    return principal
-
-
-router = APIRouter(
-    prefix="/admin",
-    tags=["Authorization Management"],
-    dependencies=[Depends(_require_admin_role)],
-)
+router = APIRouter(prefix="/admin", tags=["Authorization Management"])
 me_router = APIRouter(prefix="/me", tags=["Self-Service Authorization"])
 
 # --- DTOs ---

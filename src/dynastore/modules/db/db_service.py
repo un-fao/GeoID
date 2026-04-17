@@ -136,35 +136,6 @@ class DBService(ModuleProtocol, DatabaseProtocol):
                     "DBService: ASYNC Database connection pool established successfully."
                 )
 
-            # Status-check only: migrations are admin-triggered, never auto-applied.
-            from dynastore.modules.db_config.migration_runner import (
-                check_migration_status,
-                MigrationStatus,
-            )
-
-            if app_state.engine:
-                status = await check_migration_status(app_state.engine)
-                if status == MigrationStatus.UP_TO_DATE:
-                    logger.info(
-                        "DBService: Database is up to date."
-                    )
-                elif status == MigrationStatus.PENDING_MIGRATIONS:
-                    logger.warning(
-                        "DBService: PENDING MIGRATIONS detected. "
-                        "Apply via admin API before full functionality is available."
-                    )
-                elif status == MigrationStatus.DRIFT_DETECTED:
-                    logger.warning(
-                        "DBService: DRIFT DETECTED — module configuration "
-                        "does not match database state. Check admin API."
-                    )
-                elif status == MigrationStatus.UNCHECKED:
-                    logger.warning(
-                        "DBService: Database not yet initialized. "
-                        "Run initial migration via admin API."
-                    )
-
-
             yield
 
         except Exception as e:

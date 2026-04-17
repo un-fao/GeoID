@@ -194,13 +194,29 @@ _DELETED_SYMBOLS = {
     "IamProtocol": "split into Authenticator/Authorizer/RoleAdmin/PrincipalAdmin",
     "register_conformance_uris": "replaced by ConformanceContributor",
     "scan_and_register_providers": "replaced by WebPageContributor",
-    "require_sysadmin_privileges": "replaced by extensions.iam.guards.require_sysadmin",
-    "require_admin_privileges": "replaced by extensions.iam.guards.require_admin",
+    "require_sysadmin_privileges": "replaced by Permission.SYSADMIN via require_permission",
+    "require_admin_privileges": "replaced by Permission.ADMIN via require_permission",
+    "require_sysadmin": "route-level guards replaced by IamMiddleware policy evaluation",
+    "require_admin": "route-level guards replaced by IamMiddleware policy evaluation",
+    "require_authenticated": "route-level guards replaced by IamMiddleware policy evaluation",
+    "require_bearer_token": "route-level guards replaced by IamMiddleware policy evaluation",
+    "ensure_sysadmin_if_targeting_admin": "replaced by ensure_privileged_role_assignment",
+    "migration_runner": "versioned SQL migration framework removed; use CREATE TABLE IF NOT EXISTS",
+    "register_module_migrations": "versioned SQL migration framework removed",
+    "register_tenant_migrations": "versioned SQL migration framework removed",
+    "SchemaEvolutionEngine": "online schema evolution framework removed",
+    "StructuralMigrationTask": "migration framework removed",
+    "SchemaMigrationTask": "migration framework removed",
 }
 
 _DELETED_MODULES = {
     "dynastore.extensions.tools.security": "replaced by dynastore.extensions.iam.guards",
     "dynastore.models.protocols.iam": "replaced by authentication/authorization/role_admin/principal_admin",
+    "dynastore.modules.db_config.migration_runner": "versioned SQL migration framework removed",
+    "dynastore.modules.catalog.schema_evolution": "online schema evolution framework removed",
+    "dynastore.tasks.schema_migration": "migration framework removed",
+    "dynastore.tasks.structural_migration": "migration framework removed",
+    "dynastore.extensions.admin.migration_routes": "migration admin routes removed",
 }
 
 # Allow references inside this test file (naming the deleted symbols) and

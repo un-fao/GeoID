@@ -1,6 +1,6 @@
 # Admin Extension
 
-The admin extension provides system administration endpoints and dashboard pages for managing users, API keys, roles, policies, and database migrations.
+The admin extension provides system administration endpoints and dashboard pages for managing users, API keys, roles, and policies.
 
 ## Endpoints
 
@@ -31,35 +31,27 @@ The admin extension provides system administration endpoints and dashboard pages
 | PUT | `/admin/policies/{id}` | Update a policy |
 | DELETE | `/admin/policies/{id}` | Delete a policy |
 
-### Database Migrations
+### System Defaults
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/admin/migrations/status` | Current migration status and manifest |
-| GET | `/admin/migrations/pending` | Preview pending migrations (dry-run) |
-| POST | `/admin/migrations/apply` | Apply pending migrations |
-| GET | `/admin/migrations/history` | Full migration history |
-| POST | `/admin/migrations/rollback` | Rollback a specific migration |
-
-See [migrations.md](../architecture/migrations.md) for details on the migration system.
+| POST | `/admin/reset-defaults` | Reprovision default policies/roles (sysadmin only) |
+| POST | `/admin/rotate-jwt-secret` | Rotate the JWT signing secret (sysadmin only) |
 
 ## Authorization
 
-All admin endpoints require the `sysadmin` or `admin` role. The `admin_access` policy grants access to `/admin/.*` routes. The admin extension registers this policy during its `lifespan()`.
+All admin endpoints require the `sysadmin` or `admin` role. The `admin_access` policy grants access to `/admin/.*` routes. Endpoint-level enforcement is performed dynamically by `IamMiddleware` against the policy registry — there are no route-level `Depends` guards in `admin_service.py`.
 
 ## Dashboard Pages
 
-The admin extension contributes two web pages via `@expose_web_page`:
+The admin extension contributes one web page via `@expose_web_page`:
 
 - **Admin Panel** (`admin_panel`) — user/key/role/policy management UI
-- **Migrations Panel** (`migrations_panel`) — migration status, pending review, apply/rollback
 
 ## Files
 
 | Path | Purpose |
 |------|---------|
 | `src/dynastore/extensions/admin/admin_service.py` | Main service — routes, CRUD endpoints |
-| `src/dynastore/extensions/admin/migration_routes.py` | Migration API endpoints |
 | `src/dynastore/extensions/admin/policies.py` | Policy registration for admin routes |
 | `src/dynastore/extensions/admin/static/admin_panel.html` | Admin dashboard page |
-| `src/dynastore/extensions/admin/static/migrations_panel.html` | Migrations dashboard page |

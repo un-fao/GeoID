@@ -27,6 +27,8 @@ from typing import List, Optional, Tuple, Any, Dict, Union, AsyncGenerator
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
+from dynastore.models.protocols.authorization import DefaultRole
+
 from .models import (
     Principal,
     TokenResponse,
@@ -357,13 +359,13 @@ class IamService:
             if identity.get("azp"):
                 attributes["azp"] = identity["azp"]
 
-        # Use realm_roles from OIDC token if present, otherwise default to ["user"]
-        known_roles = {"sysadmin", "admin", "user", "anonymous"}
+        # Use realm_roles from OIDC token if present, otherwise default to DefaultRole.USER
+        known_roles = {r.value for r in DefaultRole}
         realm_roles = [
             r for r in identity.get("realm_roles", [])
             if r in known_roles
         ]
-        assigned_roles = realm_roles if realm_roles else ["user"]
+        assigned_roles = realm_roles if realm_roles else [DefaultRole.USER.value]
 
         new_principal = Principal(
             id=uuid4(),
@@ -632,7 +634,7 @@ class IamService:
         """
         token = self.extract_token_from_request(request)
         if not token:
-            return ["anonymous"], None
+            return [DefaultRole.ANONYMOUS.value], None
 
         catalog_id = getattr(getattr(request, "state", {}), "catalog_id", None)
         schema = await self._resolve_schema(catalog_id)
@@ -701,4 +703,4 @@ class IamService:
             logger.debug("Internal HS256 fallback failed: %s", e)
 
         # No valid identity found
-        return ["anonymous"], None
+        return [DefaultRole.ANONYMOUS.value], None

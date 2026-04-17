@@ -32,6 +32,7 @@ import dynastore.modules.catalog.catalog_module as catalog_manager
 from dynastore.modules import get_protocol
 from dynastore.extensions.web.decorators import expose_web_page
 from dynastore.models.protocols import WebModuleProtocol, ConfigsProtocol
+from dynastore.models.protocols.authorization import DefaultRole
 from dynastore.modules.db_config.platform_config_service import (
     enforce_config_immutability,
     require_config_class,
@@ -94,7 +95,7 @@ class ConfigsService(ExtensionProtocol):
         title="Configurations",
         icon="fa-sliders",
         description="Dynamic platform configuration management.",
-        required_roles=["sysadmin"],
+        required_roles=[DefaultRole.SYSADMIN.value],
         section="admin",
         priority=30,
     )

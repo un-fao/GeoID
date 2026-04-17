@@ -121,26 +121,6 @@ class DatastoreModule(ModuleProtocol, DatabaseProtocol):
                 # Actually, managed_transaction is an @asynccontextmanager that yields a sync conn if engine is sync.
                 await ensure_init_db(app_state.sync_engine)
 
-                # Status-check only: migrations are admin-triggered, never auto-applied.
-                from dynastore.modules.db_config.migration_runner import (
-                    check_migration_status,
-                    MigrationStatus,
-                )
-                status = await check_migration_status(app_state.sync_engine)
-                if status == MigrationStatus.PENDING_MIGRATIONS:
-                    logger.warning(
-                        "DatastoreModule: PENDING MIGRATIONS detected. "
-                        "Apply via admin API before full functionality is available."
-                    )
-                elif status == MigrationStatus.DRIFT_DETECTED:
-                    logger.warning(
-                        "DatastoreModule: DRIFT DETECTED — check admin API."
-                    )
-                elif status == MigrationStatus.UNCHECKED:
-                    logger.warning(
-                        "DatastoreModule: Database not yet initialized. "
-                        "Run initial migration via admin API."
-                    )
 
         except Exception as e:
             logger.error(

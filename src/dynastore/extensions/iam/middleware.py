@@ -31,6 +31,7 @@ from dynastore.modules.iam.conditions import condition_manager, EvaluationContex
 from dynastore.models.protocols.stats import StatsProtocol
 from dynastore.models.protocols.policies import PermissionProtocol
 from dynastore.models.protocols.authentication import AuthenticatorProtocol
+from dynastore.models.protocols.authorization import DefaultRole
 from dynastore.modules.iam.models import PolicyBundle
 
 logger = logging.getLogger(__name__)
@@ -165,13 +166,13 @@ class IamMiddleware(BaseHTTPMiddleware):
             except jwt.InvalidTokenError:
                 pass
 
-        if principal_role and "sysadmin" in principal_role:
-            source = "sysadmin"
+        if principal_role and DefaultRole.SYSADMIN.value in principal_role:
+            source = DefaultRole.SYSADMIN.value
 
         effective_principal_id = (
             (principal_obj.display_name or principal_obj.subject_id)
             if principal_obj
-            else (principal_role[0] if principal_role else "anonymous")
+            else (principal_role[0] if principal_role else DefaultRole.ANONYMOUS.value)
         )
         request.state.principal_id = effective_principal_id
 

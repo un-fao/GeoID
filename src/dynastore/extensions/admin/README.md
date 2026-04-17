@@ -10,13 +10,15 @@ The extension is loaded when `SCOPE` includes `api_catalog`:
 SCOPE: "api_catalog"
 ```
 
-It registers under the `/admin` prefix via `AdminService.configure_app()`.
+It registers under the `/admin` prefix via `AdminService`.
 
 ---
 
 ## Policies
 
-All `/admin/*` routes and the migrations dashboard page require the `admin_access` policy, which is granted to the `sysadmin` and `admin` roles only. Anonymous users and users with the `user` role are denied.
+All `/admin/*` routes and the admin dashboard page require the `admin_access` policy, which is granted to the `sysadmin` and `admin` roles only. Anonymous users and users with the `user` role are denied.
+
+Endpoint authorization is enforced dynamically by `IamMiddleware`, which evaluates `PermissionProtocol.evaluate_access(principals, path, method)` against the policy registry for every request. When the IAM module is not loaded the fail-closed `DefaultAuthorizer` protects privileged paths.
 
 Register admin policies at application startup:
 
@@ -25,62 +27,52 @@ from dynastore.extensions.admin.policies import register_admin_policies
 register_admin_policies()
 ```
 
-This is called automatically by `AdminService.__init__`.
+This is called automatically by `AdminService.lifespan`.
 
 ---
 
 ## API Endpoints
 
-### Migration Management
+### User Management (`/admin/users`)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/admin/migrations/status` | Current manifest state: `UP_TO_DATE`, `PENDING_MIGRATIONS`, or `DRIFT_DETECTED` |
-| `GET` | `/admin/migrations/pending` | Dry-run: SQL that would be applied per pending script |
-| `POST` | `/admin/migrations/apply` | Enqueue `StructuralMigrationTask`; body: `{"scope": "all\|global\|tenant", "dry_run": false}` |
-| `GET` | `/admin/migrations/history` | Full history from `public.schema_migrations` |
-| `POST` | `/admin/migrations/rollback` | Enqueue rollback; body: `{"module": "db_config", "version": "v0003", "schema_name": null}` |
+| `GET` | `/admin/users` | List local users |
+| `POST` | `/admin/users` | Create a local user |
+| `GET` | `/admin/users/{principal_id}` | Get user |
+| `PUT` | `/admin/users/{principal_id}` | Update user |
+| `DELETE` | `/admin/users/{principal_id}` | Delete user |
 
-### Schema Evolution
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/admin/schemas/{catalog_id}/health` | Schema health for all collections: safe/unsafe ops, drift detected |
-| `POST` | `/admin/schemas/{catalog_id}/{collection_id}/evolve` | Preview or apply safe column additions; body: `{"apply_safe": false}` |
-
-### Schema Migration (Safe Data Pipeline)
+### Principal Management (`/admin/principals`)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/admin/schemas/{catalog_id}/{collection_id}/migrate` | Trigger safe export→backup→recreate→import migration; body: `{"dry_run": false}` |
-| `GET` | `/admin/schemas/{catalog_id}/{collection_id}/backups` | List `_bkp_` backup tables left by previous migrations |
-| `DELETE` | `/admin/schemas/{catalog_id}/{collection_id}/backups/{timestamp}` | Drop backup tables for a specific migration timestamp (explicit cleanup) |
+| `GET` | `/admin/principals` | Search principals across all providers |
+| `POST` | `/admin/principals/{principal_id}/roles` | Assign a global role |
+| `DELETE` | `/admin/principals/{principal_id}/roles/{role_name}` | Remove a global role |
+| `POST` | `/admin/principals/{principal_id}/catalogs/{catalog_id}/roles` | Assign a catalog-scoped role |
+| `DELETE` | `/admin/principals/{principal_id}/catalogs/{catalog_id}/roles/{role_name}` | Remove a catalog-scoped role |
+| `GET` | `/admin/catalogs/{catalog_id}/users` | List users with roles in a catalog |
 
-### Config Portability
+### Role and Policy Management
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/admin/configs/{catalog_id}/export` | Export all catalog-level and collection-level config overrides as JSON |
-| `POST` | `/admin/configs/{catalog_id}/import` | Import config overrides; body: `{"catalog_configs": [], "collection_configs": [], "overwrite": true}` |
+| `GET` | `/admin/roles` | List roles (optional `catalog_id`) |
+| `POST` | `/admin/roles` | Create a role |
+| `PUT` | `/admin/roles/{role_name}` | Update a role |
+| `DELETE` | `/admin/roles/{role_name}` | Delete a role |
+| `GET` | `/admin/policies` | List policies |
+| `POST` | `/admin/policies` | Create a policy |
+| `PUT` | `/admin/policies/{policy_id}` | Update a policy |
+| `DELETE` | `/admin/policies/{policy_id}` | Delete a policy |
 
----
+### System Defaults
 
-## Web Dashboard
-
-The migrations dashboard is available at:
-
-```
-/web/pages/migrations_panel
-```
-
-It provides:
-
-- **Overview tab** — module version matrix, manifest hash, current status
-- **Pending tab** — SQL preview per pending script, Apply button
-- **History tab** — full migration history with per-row Rollback button (shown only when `has_rollback` is true)
-- **Schema Health tab** — per-collection drift status, evolve and export actions
-
-The page is registered via the `@expose_web_page` decorator on `AdminService` and appears in the DynaStore web navigation under the admin section.
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/admin/reset-defaults` | Reprovision default policies/roles (sysadmin only) |
+| `POST` | `/admin/rotate-jwt-secret` | Rotate the JWT signing secret (sysadmin only) |
 
 ---
 
@@ -88,21 +80,13 @@ The page is registered via the `@expose_web_page` decorator on `AdminService` an
 
 | Path | Purpose |
 |------|---------|
-| `admin_service.py` | `AdminService` class; mounts sub-routers; registers web page |
-| `migration_routes.py` | FastAPI routers: `router` (migrations), `schema_router` (schema evolution + migration), `configs_router` (config portability) |
+| `admin_service.py` | `AdminService` class; route handlers; registers policies |
 | `policies.py` | `register_admin_policies()` — policy + role registration |
-| `static/migrations_panel.html` | Single-page migrations dashboard |
 | `static/admin_panel.html` | General admin panel (user management, etc.) |
 
 ---
 
 ## Adding a New Admin Endpoint
 
-1. Add a route function to `migration_routes.py` (or a new `*_routes.py` file).
-2. If it is a new router file, include it in `AdminService.configure_app()`:
-
-   ```python
-   self.router.include_router(my_router, prefix="")
-   ```
-
-3. Add the new resource path to the `admin_access` policy in `policies.py` if it needs separate access control.
+1. Add a route handler to `admin_service.py` using the shared `router` on `AdminService`.
+2. Add the new resource path pattern to the `admin_access` policy in `policies.py` if it is not already covered by `/admin/.*`.

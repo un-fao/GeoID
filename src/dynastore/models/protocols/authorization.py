@@ -31,6 +31,21 @@ class Permission(str, Enum):
     AUTHENTICATED = "authenticated"
 
 
+class DefaultRole(str, Enum):
+    """Canonical identifiers for the platform-seeded default roles.
+
+    These are the names used when seeding the `roles` table on first boot.
+    Consumers MUST reference these constants instead of hard-coding the
+    strings, so the seed set can evolve centrally. Operators can still
+    add/rename/remove roles at runtime through the admin API.
+    """
+
+    SYSADMIN = "sysadmin"
+    ADMIN = "admin"
+    USER = "user"
+    ANONYMOUS = "anonymous"
+
+
 @runtime_checkable
 class AuthorizerProtocol(Protocol):
     """Narrow façade used by guards and task-side `require_permission`.
