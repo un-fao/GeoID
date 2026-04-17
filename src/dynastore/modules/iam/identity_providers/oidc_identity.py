@@ -208,9 +208,21 @@ class OidcIdentityProvider(IdentityProviderProtocol):
         client_id_claim = claims.get("client_id")
         is_service_account = client_id_claim is not None and not claims.get("email")
 
+        # Fallback chain for the principal subject id. RFC 9068 / OIDC Core
+        # require `sub`, but Keycloak 26 realms exported without an explicit
+        # oidc-sub-mapper omit it, and the strict lookup returns None — which
+        # cascades to `identity_links.subject_id NOT NULL` violations during
+        # JIT registration. Fall back to preferred_username / email / client_id
+        # so the principal still has a stable, non-null identifier.
+        subject_id = (
+            claims.get("sub")
+            or claims.get("preferred_username")
+            or claims.get("email")
+            or client_id_claim
+        )
         identity: Dict[str, Any] = {
             "provider": "oidc:service_account" if is_service_account else "oidc",
-            "sub": claims.get("sub"),
+            "sub": subject_id,
             "email": claims.get("email"),
             "name": (
                 claims.get("name")
