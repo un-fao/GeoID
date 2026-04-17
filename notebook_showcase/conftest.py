@@ -231,7 +231,22 @@ def _apply_driver_configs(client: httpx.Client):
 
 
 def _delete_catalog(client: httpx.Client):
-    client.delete(f"/stac/catalogs/{CATALOG_ID}", params={"force": "true"})
+    # Hard-delete cascades through schema drop + elasticsearch cleanup + log
+    # flush, which can exceed the default 30s client timeout on a full run.
+    # Use a generous dedicated timeout and swallow errors — teardown should
+    # never fail the suite.
+    try:
+        client.delete(
+            f"/stac/catalogs/{CATALOG_ID}",
+            params={"force": "true"},
+            timeout=120.0,
+        )
+    except Exception as e:
+        print(
+            f"[notebook_showcase.conftest] WARN teardown delete_catalog failed: "
+            f"{type(e).__name__}: {e}",
+            flush=True,
+        )
 
 
 _SESSION_STATE: dict = {}
@@ -252,7 +267,7 @@ def pytest_sessionstart(session):
     client = httpx.Client(
         base_url=BASE_URL,
         headers=_admin_headers(token),
-        timeout=30.0,
+        timeout=60.0,
         follow_redirects=True,
     )
     _SESSION_STATE["client"] = client
