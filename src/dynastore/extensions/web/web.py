@@ -95,6 +95,7 @@ def register_web_policies():
             "/web/admin/",
             "/web/admin/.*",
             "/web/pages/demo_manager",  # expose_web_page route
+            "/web/pages/exposure",      # Service Exposure admin page
         ],
         effect="ALLOW",
     )
@@ -803,6 +804,24 @@ async function demoAction(action) {
 }
 </script>
 """
+
+    @expose_web_page(
+        page_id="exposure",
+        title="Service Exposure",
+        icon="fa-toggle-on",
+        description="Toggle extensions per platform / catalog scope.",
+        required_roles=[DefaultRole.SYSADMIN.value],
+        section="admin",
+        priority=20,
+    )
+    async def exposure_page(self, request: Request):
+        """Serve the service exposure control panel HTML page."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static", "admin")
+        html_path = os.path.join(static_dir, "exposure.html")
+        if not os.path.exists(html_path):
+            raise HTTPException(status_code=404, detail="Service exposure panel template not found.")
+        with open(html_path, "r") as f:
+            return HTMLResponse(f.read())
 
     @expose_web_page(page_id="docs", title="Documentation", icon="fa-book", priority=-100)
     def docs_page(self, language: str = "en"):
