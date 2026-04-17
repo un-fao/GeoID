@@ -668,5 +668,5 @@ class QueryOptimizer:
             {offset_clause}
         """.strip()
 
-        logger.info(f"Generated optimized query: {sql}")
+        logger.debug(f"Generated optimized query: {sql}")
         return sql, params

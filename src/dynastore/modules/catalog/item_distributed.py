@@ -71,7 +71,7 @@ class ItemDistributedMixin(_Host):
         if not phys_table:
             phys_table = collection_id
 
-        logger.info(
+        logger.debug(
             f"DISTRIBUTED UPSERT: collection={catalog_id}.{collection_id}, phys={phys_schema}.{phys_table}, sidecars={[s.sidecar_id for s in sidecars]}"
         )
 
@@ -303,7 +303,6 @@ class ItemDistributedMixin(_Host):
         sidecars = sidecars or []
         processing_context = processing_context or {}
         # A. Insert Hub
-        logger.warning(f"DEBUG: Inserting into Hub {schema}.{hub_table}")
         hub_row = await self._insert_table_raw(conn, schema, hub_table, hub_payload)
         hub_data = getattr(hub_row, "_mapping", hub_row)
         geoid = hub_data["geoid"]
@@ -369,9 +368,7 @@ class ItemDistributedMixin(_Host):
         )
         if row is None:
             return None
-        res = self.map_row_to_feature(dict(row), col_config)
-        logger.debug(f"FINAL RESULT FROM EXECUTOR: {res}")
-        return res
+        return self.map_row_to_feature(dict(row), col_config)
 
     async def _execute_distributed_update(
         self,

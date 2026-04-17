@@ -152,6 +152,28 @@ class AssetFilter(BaseModel):
 # Obsolete global DDL removed.
 # Assets correspond to {schema}.assets in the tenant schema.
 
+# Column list shared by all asset-row selects — keeps the SELECT projection
+# in one place so adding/removing a column touches one string instead of N.
+_ASSET_COLUMNS = (
+    "asset_id, catalog_id, collection_id, asset_type, uri, "
+    "created_at, deleted_at, metadata"
+)
+
+
+def _make_get_asset_query(phys_schema: str) -> DQLQuery:
+    """Single-asset SELECT keyed by (asset_id, catalog_id, collection_id).
+
+    The tenant schema is injected up-front because it's a trusted identifier
+    (not a bind parameter). Returns a parametrised DQLQuery — call sites
+    pass asset_id/catalog_id/collection_id via execute(**kwargs).
+    """
+    return DQLQuery(
+        f'SELECT {_ASSET_COLUMNS} FROM "{phys_schema}".assets '
+        "WHERE asset_id = :asset_id AND catalog_id = :catalog_id "
+        "AND collection_id = :collection_id AND deleted_at IS NULL;",
+        result_handler=PydanticResultHandler.pydantic_one(Asset),
+    )
+
 
 class AssetManager(AssetsProtocol):
     """Manages Asset lifecycle with advanced search and event-driven architecture."""
@@ -201,11 +223,7 @@ class AssetManager(AssetsProtocol):
             phys_schema = await self._resolve_schema(catalog_id, conn)
             if not phys_schema:
                 return None
-            # asset_id in DB is VARCHAR now
-            sql = f'SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata FROM "{phys_schema}".assets WHERE asset_id = :asset_id AND catalog_id = :catalog_id AND collection_id = :collection_id AND deleted_at IS NULL;'
-            return await DQLQuery(
-                sql, result_handler=PydanticResultHandler.pydantic_one(Asset)
-            ).execute(
+            return await _make_get_asset_query(phys_schema).execute(
                 conn,
                 asset_id=asset_id,
                 catalog_id=catalog_id,
@@ -228,10 +246,7 @@ class AssetManager(AssetsProtocol):
                 phys_schema = await self._resolve_schema(catalog_id, conn)
                 if not phys_schema:
                     return None
-                sql = f'SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata FROM "{phys_schema}".assets WHERE asset_id = :asset_id AND catalog_id = :catalog_id AND collection_id = :collection_id AND deleted_at IS NULL;'
-                return await DQLQuery(
-                    sql, result_handler=PydanticResultHandler.pydantic_one(Asset)
-                ).execute(
+                return await _make_get_asset_query(phys_schema).execute(
                     conn,
                     asset_id=asset_id,
                     catalog_id=catalog_id,
@@ -267,13 +282,13 @@ class AssetManager(AssetsProtocol):
             if not phys_schema:
                 return []
 
-            sql = f"""
-            SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata FROM "{phys_schema}".assets 
-            WHERE catalog_id = :catalog_id 
-              AND collection_id = :collection_id
-              AND deleted_at IS NULL
-            ORDER BY created_at DESC LIMIT :limit OFFSET :offset;
-            """
+            sql = (
+                f'SELECT {_ASSET_COLUMNS} FROM "{phys_schema}".assets '
+                "WHERE catalog_id = :catalog_id "
+                "AND collection_id = :collection_id "
+                "AND deleted_at IS NULL "
+                "ORDER BY created_at DESC LIMIT :limit OFFSET :offset;"
+            )
             return await DQLQuery(
                 sql, result_handler=PydanticResultHandler.pydantic_all(Asset)
             ).execute(
@@ -302,7 +317,10 @@ class AssetManager(AssetsProtocol):
             if not phys_schema:
                 return []
 
-            sql_base = f'SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata FROM "{phys_schema}".assets WHERE catalog_id = :catalog_id AND deleted_at IS NULL'
+            sql_base = (
+                f'SELECT {_ASSET_COLUMNS} FROM "{phys_schema}".assets '
+                "WHERE catalog_id = :catalog_id AND deleted_at IS NULL"
+            )
             params = {"catalog_id": catalog_id, "limit": limit, "offset": offset}
 
             target_col_id = (
