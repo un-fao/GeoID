@@ -166,6 +166,24 @@ class ConfigsService(ExtensionProtocol):
             summary="Collection config — all effective collection configs composed",
             tags=["Config API"],
         )
+        # Examples & Quick-start routes — MUST be registered BEFORE the generic
+        # ``/{plugin_id}`` catch-all, otherwise FastAPI routes ``GET /configs/examples``
+        # through the catch-all with plugin_id="examples" and returns
+        # "plugin 'examples' is not registered".
+        self.router.add_api_route(
+            "/examples",
+            self.list_all_examples,
+            methods=["GET"],
+            summary="Get configuration examples for all known plugins",
+            tags=["Configurations", "Examples"],
+        )
+        self.router.add_api_route(
+            "/examples/{plugin_id:path}",
+            self.get_plugin_examples,
+            methods=["GET"],
+            summary="Get configuration examples for a specific plugin",
+            tags=["Configurations", "Examples"],
+        )
         self.router.add_api_route(
             "/{plugin_id}",
             self.get_platform_config,
@@ -239,21 +257,6 @@ class ConfigsService(ExtensionProtocol):
             methods=["DELETE"],
             summary="Delete a collection-level configuration",
             status_code=status.HTTP_204_NO_CONTENT,
-        )
-        # Examples & Quick-start
-        self.router.add_api_route(
-            "/examples",
-            self.list_all_examples,
-            methods=["GET"],
-            summary="Get configuration examples for all known plugins",
-            tags=["Configurations", "Examples"],
-        )
-        self.router.add_api_route(
-            "/examples/{plugin_id:path}",
-            self.get_plugin_examples,
-            methods=["GET"],
-            summary="Get configuration examples for a specific plugin",
-            tags=["Configurations", "Examples"],
         )
         # Bulk-apply
         self.router.add_api_route(
