@@ -1,4 +1,11 @@
 """Unit tests for PATCH /configs/config — ConfigApiService.patch_config."""
+# Registering TilesConfig / FeaturesPluginConfig in the PluginConfig registry
+# requires importing their extension packages (which transitively import
+# config.py). The test identifies configs by class_key, so the registry must
+# be populated before patch_config resolves them.
+import dynastore.extensions.features  # noqa: F401
+import dynastore.modules.tiles  # noqa: F401
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from typing import Any, Dict
