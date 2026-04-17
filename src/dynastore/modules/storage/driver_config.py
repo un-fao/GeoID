@@ -579,22 +579,14 @@ class CollectionDuckdbDriverConfig(CollectionDriverConfig):
     )
 
 
-# Connection-level fields that belong in IcebergConfig (env), not per-collection rows.
-# The model_validator below rejects these on construction; the startup rewriter strips
-# them from any DB rows written before this constraint was enforced.
-_ICEBERG_CONNECTION_FIELDS: frozenset = frozenset({
-    "catalog_name", "catalog_uri", "catalog_type",
-    "catalog_properties", "warehouse_uri", "warehouse_scheme",
-})
-
-
 class CollectionIcebergDriverConfig(CollectionDriverConfig):
-    """Iceberg per-collection config — table identifiers only.
+    """Iceberg per-collection config — table identifiers + connection overrides.
 
-    Connection-level fields (``catalog_name``, ``catalog_uri``, ``catalog_type``,
-    ``catalog_properties``, ``warehouse_uri``, ``warehouse_scheme``) have moved to
-    ``IcebergConfig`` env vars (``ICEBERG_CATALOG_*``, ``ICEBERG_WAREHOUSE_*``).
-    Attempting to set them here raises ``ValueError``.
+    In a multi-tenant platform each collection may point at a different Iceberg
+    catalog / warehouse (e.g. one collection reads from a Nessie catalog in
+    GCS, another from a SQL catalog on an on-prem NFS). The fields below let
+    each collection override the process-wide ``IcebergConfig`` env-var
+    defaults. Any field left as ``None`` falls back to the env default.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -608,6 +600,37 @@ class CollectionIcebergDriverConfig(CollectionDriverConfig):
     table_name: Optional[str] = Field(default=None, description="OTF table name")
     uri: Optional[str] = Field(
         default=None, description="Primary URI (s3://, gs://, file://, etc.)"
+    )
+
+    # Connection-level overrides. Defaults to IcebergConfig env vars at resolve time.
+    catalog_name: Optional[str] = Field(
+        default=None,
+        description="PyIceberg catalog identifier (overrides ICEBERG_CATALOG_NAME).",
+    )
+    catalog_type: Optional[str] = Field(
+        default=None,
+        description="Catalog type: sql | rest | hive | glue | dynamodb | nessie "
+                    "(overrides ICEBERG_CATALOG_TYPE).",
+    )
+    catalog_uri: Optional[str] = Field(
+        default=None,
+        description="Catalog URI — JDBC URL for sql, HTTP endpoint for rest/nessie, "
+                    "etc. (overrides ICEBERG_CATALOG_URI).",
+    )
+    catalog_properties: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Extra catalog-specific properties merged into PyIceberg's "
+                    "load_catalog kwargs (overrides ICEBERG_CATALOG_PROPERTIES).",
+    )
+    warehouse_uri: Optional[str] = Field(
+        default=None,
+        description="Warehouse location for tables managed by this catalog "
+                    "(gs://, s3://, file://, etc.; overrides ICEBERG_WAREHOUSE_URI).",
+    )
+    warehouse_scheme: Optional[str] = Field(
+        default=None,
+        description="Scheme hint used when auto-deriving the warehouse from the "
+                    "catalog's StorageProtocol (overrides ICEBERG_WAREHOUSE_SCHEME).",
     )
 
     # Table-level DDL hints (per-collection)
@@ -627,22 +650,34 @@ class CollectionIcebergDriverConfig(CollectionDriverConfig):
                     "(e.g. {'write.format.default': 'parquet'}).",
     )
 
-    @model_validator(mode="before")
-    @classmethod
-    def _reject_connection_fields(cls, data: Any) -> Any:
-        """Reject connection-level fields that must live in IcebergConfig env vars."""
-        if not isinstance(data, dict):
-            return data
-        found = _ICEBERG_CONNECTION_FIELDS & data.keys()
-        if found:
-            raise ValueError(
-                f"Connection-level fields {sorted(found)!r} must be configured via "
-                f"IcebergConfig env vars (ICEBERG_CATALOG_NAME, ICEBERG_CATALOG_URI, "
-                f"ICEBERG_CATALOG_TYPE, ICEBERG_CATALOG_PROPERTIES, "
-                f"ICEBERG_WAREHOUSE_URI, ICEBERG_WAREHOUSE_SCHEME), "
-                f"not stored in per-collection config."
-            )
-        return data
+    def resolve_catalog_name(self) -> str:
+        return self.catalog_name or IcebergConfig.catalog_name
+
+    def resolve_catalog_type(self) -> str:
+        return (self.catalog_type or IcebergConfig.catalog_type).lower()
+
+    def resolve_catalog_uri(self) -> Optional[str]:
+        return self.catalog_uri or IcebergConfig.catalog_uri
+
+    def resolve_catalog_properties(self) -> Optional[Dict[str, Any]]:
+        """Merge env-level and per-collection catalog_properties.
+
+        Per-collection keys take precedence on collision so a tenant can
+        override a platform default while inheriting the rest.
+        """
+        env_props = IcebergConfig.catalog_properties or {}
+        col_props = self.catalog_properties or {}
+        if not env_props and not col_props:
+            return None
+        merged: Dict[str, Any] = dict(env_props)
+        merged.update(col_props)
+        return merged
+
+    def resolve_warehouse_uri(self) -> Optional[str]:
+        return self.warehouse_uri or IcebergConfig.warehouse_uri
+
+    def resolve_warehouse_scheme(self) -> Optional[str]:
+        return self.warehouse_scheme or IcebergConfig.warehouse_scheme
 
 
 # ---------------------------------------------------------------------------

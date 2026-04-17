@@ -208,13 +208,21 @@ class CollectionIcebergDriver(ModuleProtocol):
     # Catalog & warehouse resolution
     # ------------------------------------------------------------------
 
-    async def _resolve_warehouse(self, catalog_id: str) -> str:
-        """Resolve warehouse URI: IcebergConfig env var > StorageProtocol > local fallback.
+    async def _resolve_warehouse(
+        self,
+        catalog_id: str,
+        loc: Optional[CollectionIcebergDriverConfig] = None,
+    ) -> str:
+        """Resolve warehouse URI: per-collection > env var > StorageProtocol > local.
 
-        When a collection already has a GCS bucket (via StorageProtocol),
-        the warehouse is automatically derived from that bucket with an
-        ``iceberg/`` subfolder for isolation.
+        Per-collection ``warehouse_uri`` wins so different collections can point
+        at different buckets. When absent, the env-var default is used, else the
+        platform ``StorageProtocol`` is consulted (usually resolves to the
+        catalog's GCS bucket with an ``iceberg/`` subfolder), else a local
+        temp-dir fallback.
         """
+        if loc is not None and loc.warehouse_uri:
+            return loc.warehouse_uri
         if IcebergConfig.warehouse_uri:
             return IcebergConfig.warehouse_uri
 
@@ -239,12 +247,16 @@ class CollectionIcebergDriver(ModuleProtocol):
         import tempfile
         return f"file://{tempfile.gettempdir()}/iceberg_warehouse"
 
-    def _load_catalog_sync(self, warehouse: Optional[str] = None):
+    def _load_catalog_sync(
+        self,
+        loc: Optional[CollectionIcebergDriverConfig],
+        warehouse: Optional[str] = None,
+    ):
         """Build a PyIceberg catalog (sync, blocking — called via run_in_thread).
 
-        Reads catalog connection config from ``IcebergConfig`` env vars.
-        Uses ``pyiceberg.catalog.CatalogType`` enum and PyIceberg constants
-        (``TYPE``, ``URI``, ``WAREHOUSE_LOCATION``) instead of string literals.
+        Connection config is taken from the per-collection
+        ``CollectionIcebergDriverConfig`` first, falling back to
+        ``IcebergConfig`` env-var defaults for any unset field.
         """
         from pyiceberg.catalog import (
             load_catalog,
@@ -254,22 +266,23 @@ class CollectionIcebergDriver(ModuleProtocol):
             WAREHOUSE_LOCATION as _WAREHOUSE,
         )
 
-        # Resolve catalog type via enum (default: SQL)
-        raw_type = IcebergConfig.catalog_type.lower()
+        # Resolve catalog type via enum (default: SQL).
+        raw_type = (loc.resolve_catalog_type() if loc else IcebergConfig.catalog_type.lower())
         try:
             cat_type = CatalogType(raw_type)
         except ValueError:
             cat_type = CatalogType.SQL
             logger.warning(
-                "Unknown ICEBERG_CATALOG_TYPE %r, falling back to %s",
+                "Unknown catalog type %r, falling back to %s",
                 raw_type, cat_type.value,
             )
 
         catalog_props: Dict[str, Any] = {_TYPE: cat_type.value}
 
-        # URI resolution
-        if IcebergConfig.catalog_uri:
-            catalog_props[_URI] = IcebergConfig.catalog_uri
+        # URI resolution: per-collection > env > (SQL: DBConfig)
+        resolved_uri = loc.resolve_catalog_uri() if loc else IcebergConfig.catalog_uri
+        if resolved_uri:
+            catalog_props[_URI] = resolved_uri
         elif cat_type == CatalogType.SQL:
             from dynastore.modules.db_config.db_config import DBConfig
             from dynastore.modules.db_config.tools import normalize_db_url
@@ -280,9 +293,12 @@ class CollectionIcebergDriver(ModuleProtocol):
                 )
             catalog_props[_URI] = sync_url
 
-        # Extra catalog-specific properties
-        if IcebergConfig.catalog_properties:
-            catalog_props.update(IcebergConfig.catalog_properties)
+        # Extra catalog-specific properties: per-collection merged over env
+        extra_props = (
+            loc.resolve_catalog_properties() if loc else IcebergConfig.catalog_properties
+        )
+        if extra_props:
+            catalog_props.update(extra_props)
 
         # Warehouse resolution
         if _WAREHOUSE not in catalog_props:
@@ -306,29 +322,51 @@ class CollectionIcebergDriver(ModuleProtocol):
         # Future: elif resolved_wh.startswith("s3://"):
         #     from pyiceberg.io import S3_REGION, S3_ACCESS_KEY_ID, ...
 
-        catalog = load_catalog(IcebergConfig.catalog_name, **catalog_props)
+        resolved_name = loc.resolve_catalog_name() if loc else IcebergConfig.catalog_name
+        catalog = load_catalog(resolved_name, **catalog_props)
         logger.debug(
             "CollectionIcebergDriver: loaded %s catalog '%s' (warehouse=%s)",
             cat_type.value,
-            IcebergConfig.catalog_name,
+            resolved_name,
             resolved_wh or "none",
         )
         return catalog
+
+    @staticmethod
+    def _catalog_cache_key(
+        loc: Optional[CollectionIcebergDriverConfig],
+    ) -> str:
+        """Stable cache key for a resolved (name, type, uri, warehouse) tuple.
+
+        Including the per-collection values here is load-bearing: two
+        collections with different warehouse_uris must get distinct catalog
+        instances, otherwise writes leak across tenants.
+        """
+        if loc is not None:
+            name = loc.resolve_catalog_name()
+            ctype = loc.resolve_catalog_type()
+            uri = loc.resolve_catalog_uri() or ""
+            wh = loc.resolve_warehouse_uri() or ""
+        else:
+            name = IcebergConfig.catalog_name
+            ctype = IcebergConfig.catalog_type
+            uri = IcebergConfig.catalog_uri or ""
+            wh = IcebergConfig.warehouse_uri or ""
+        return f"{name}:{ctype}:{uri}:{wh}"
 
     async def _ensure_catalog(
         self, loc: CollectionIcebergDriverConfig, catalog_id: str
     ):
         """Thread-safe catalog resolution with async lock.
 
-        Catalog connection config comes from ``IcebergConfig`` env vars — it is
-        fixed for the process lifetime.  Uses double-checked locking: fast path
-        (no lock) for cache hit, lock-protected path for cache miss with
-        ``run_in_thread`` to offload the blocking ``load_catalog()`` call.
+        Catalog connection config is per-collection first, ``IcebergConfig``
+        env-var defaults second. The cache keys on the resolved tuple so
+        distinct collection configs map to distinct PyIceberg catalog handles.
+        Double-checked locking: fast path (no lock) for cache hit,
+        lock-protected path for cache miss with ``run_in_thread`` to offload
+        the blocking ``load_catalog()`` call.
         """
-        loc_key = (
-            f"{IcebergConfig.catalog_name}:{IcebergConfig.catalog_uri}"
-            f":{IcebergConfig.catalog_type}"
-        )
+        loc_key = self._catalog_cache_key(loc)
 
         # Fast path: cache hit (no lock)
         if loc_key in self._catalog_cache:
@@ -339,8 +377,8 @@ class CollectionIcebergDriver(ModuleProtocol):
             if loc_key in self._catalog_cache:
                 return self._catalog_cache[loc_key]
 
-            warehouse = await self._resolve_warehouse(catalog_id)
-            catalog = await run_in_thread(self._load_catalog_sync, warehouse)
+            warehouse = await self._resolve_warehouse(catalog_id, loc)
+            catalog = await run_in_thread(self._load_catalog_sync, loc, warehouse)
             self._catalog_cache[loc_key] = catalog
             return catalog
 
@@ -959,7 +997,7 @@ class CollectionIcebergDriver(ModuleProtocol):
         from dynastore.modules.storage.storage_location import StorageLocation
 
         loc = await self._get_location_async(catalog_id, collection_id)
-        catalog_name = IcebergConfig.catalog_name
+        catalog_name = loc.resolve_catalog_name() if loc else IcebergConfig.catalog_name
         namespace = (loc.namespace if loc else None) or catalog_id
         table_name = (loc.table_name if loc else None) or collection_id
         return StorageLocation(
