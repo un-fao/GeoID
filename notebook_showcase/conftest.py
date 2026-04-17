@@ -28,7 +28,12 @@ KEYCLOAK_PASSWORD = os.environ.get("DYNASTORE_OIDC_PASSWORD", "testpassword")
 WEB_CONTAINER = os.environ.get("DYNASTORE_WEB_CONTAINER", "geoid_web")
 
 
-def _fetch_token_via_docker(max_retries: int = 6, retry_delay_s: float = 5.0) -> str:
+def _fetch_token_via_docker(
+    max_retries: int = 6,
+    retry_delay_s: float = 5.0,
+    username: str | None = None,
+    password: str | None = None,
+) -> str:
     """Get a token from keycloak using the internal docker-network issuer URL.
 
     The backend validates the token's `iss` claim against the internal URL
@@ -37,6 +42,10 @@ def _fetch_token_via_docker(max_retries: int = 6, retry_delay_s: float = 5.0) ->
 
     Retries on empty output / connection refused, since keycloak can take
     30–60s to finish realm initialization after a cold container restart.
+
+    Pass ``username`` / ``password`` to fetch a non-admin token (e.g.
+    ``testuser`` for the 401/403 rejection notebooks). Defaults to the
+    configured admin credentials when not supplied.
     """
     import shutil
     import subprocess
@@ -44,6 +53,8 @@ def _fetch_token_via_docker(max_retries: int = 6, retry_delay_s: float = 5.0) ->
 
     if not shutil.which("docker"):
         return ""
+    user = username or KEYCLOAK_USERNAME
+    passwd = password or KEYCLOAK_PASSWORD
     last_err = ""
     for attempt in range(1, max_retries + 1):
         try:
@@ -56,7 +67,7 @@ def _fetch_token_via_docker(max_retries: int = 6, retry_delay_s: float = 5.0) ->
                     (
                         f"grant_type=password&client_id={KEYCLOAK_CLIENT_ID}"
                         f"&client_secret={KEYCLOAK_CLIENT_SECRET}"
-                        f"&username={KEYCLOAK_USERNAME}&password={KEYCLOAK_PASSWORD}"
+                        f"&username={user}&password={passwd}"
                     ),
                 ],
                 check=False,
@@ -99,16 +110,24 @@ def _resolve_token() -> str:
     if not token:
         token = _fetch_token_via_docker()
     if token:
-        # The notebooks use several token-env-var names for different personas;
-        # the testadmin realm user happens to hold realm roles covering all of
-        # them (sysadmin/admin/user), so we reuse the single token everywhere.
+        # Admin-tier tokens: testadmin holds sysadmin/admin/writer roles.
         for var in (
             "DYNASTORE_SYSADMIN_TOKEN",
             "DYNASTORE_ADMIN_TOKEN",
             "DYNASTORE_WRITE_TOKEN",
-            "DYNASTORE_TOKEN",
         ):
             os.environ.setdefault(var, token)
+
+    # Non-admin token — notebooks that test 401/403 rejection of non-admin
+    # requests read DYNASTORE_TOKEN. Fetch testuser separately so those
+    # checks don't pass by accident against a broadcast sysadmin token.
+    if not os.environ.get("DYNASTORE_TOKEN"):
+        user_token = _fetch_token_via_docker(
+            max_retries=2, retry_delay_s=2.0,
+            username="testuser", password="testpassword",
+        )
+        if user_token:
+            os.environ["DYNASTORE_TOKEN"] = user_token
     return token
 
 
