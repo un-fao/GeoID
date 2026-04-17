@@ -339,8 +339,11 @@ class ConfigsService(ExtensionProtocol):
 
     async def _patch_platform_config(self, body: PatchConfigBody) -> Dict[str, Any]:
         """Apply a partial config update at platform scope."""
+        from pydantic import ValidationError
         try:
             result = await self._config_api.patch_config(catalog_id=None, body=body.root)
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=str(e))
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
         self._invalidate_exposure()
@@ -350,10 +353,13 @@ class ConfigsService(ExtensionProtocol):
         self, catalog_id: str, body: PatchConfigBody
     ) -> Dict[str, Any]:
         """Apply a partial config update at catalog scope."""
+        from pydantic import ValidationError
         try:
             result = await self._config_api.patch_config(
                 catalog_id=catalog_id, body=body.root
             )
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=str(e))
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
         self._invalidate_exposure()

@@ -390,9 +390,11 @@ class ConfigApiService:
     ) -> Dict[str, Any]:
         """Apply a partial update to one or more configs at the given scope.
 
-        Validates ALL entries before writing any of them. A 422 on any entry
-        means zero writes occur (validate-first, write-second approach rather
-        than bulk_write(), which does not exist on ConfigsProtocol).
+        Validates ALL entries before writing any of them (validate-first,
+        write-second, since bulk_write() does not exist on ConfigsProtocol).
+        Raises on the first failure; no writes occur when this happens:
+        - ValueError: unknown plugin_id (caller maps to 404)
+        - pydantic.ValidationError: invalid data (caller maps to 422)
         """
         all_classes = list_registered_configs()
         prepared: List[Tuple[str, Type, Optional[Dict[str, Any]]]] = []
