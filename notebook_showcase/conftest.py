@@ -28,43 +28,69 @@ KEYCLOAK_PASSWORD = os.environ.get("DYNASTORE_OIDC_PASSWORD", "testpassword")
 WEB_CONTAINER = os.environ.get("DYNASTORE_WEB_CONTAINER", "geoid_web")
 
 
-def _fetch_token_via_docker() -> str:
+def _fetch_token_via_docker(max_retries: int = 6, retry_delay_s: float = 5.0) -> str:
     """Get a token from keycloak using the internal docker-network issuer URL.
 
     The backend validates the token's `iss` claim against the internal URL
     (http://keycloak:8080/...). When run from the host, we have to route the
     token request through the web container so the issuer matches.
+
+    Retries on empty output / connection refused, since keycloak can take
+    30–60s to finish realm initialization after a cold container restart.
     """
     import shutil
     import subprocess
+    import time
 
     if not shutil.which("docker"):
         return ""
-    try:
-        result = subprocess.run(
-            [
-                "docker", "exec", WEB_CONTAINER,
-                "curl", "-s", "-X", "POST", KEYCLOAK_INTERNAL_TOKEN_URL,
-                "-H", "Content-Type: application/x-www-form-urlencoded",
-                "-d",
-                (
-                    f"grant_type=password&client_id={KEYCLOAK_CLIENT_ID}"
-                    f"&client_secret={KEYCLOAK_CLIENT_SECRET}"
-                    f"&username={KEYCLOAK_USERNAME}&password={KEYCLOAK_PASSWORD}"
-                ),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return ""
-        import json
-        data = json.loads(result.stdout)
-        return data.get("access_token", "") or ""
-    except Exception:
-        return ""
+    last_err = ""
+    for attempt in range(1, max_retries + 1):
+        try:
+            result = subprocess.run(
+                [
+                    "docker", "exec", WEB_CONTAINER,
+                    "curl", "-s", "-X", "POST", KEYCLOAK_INTERNAL_TOKEN_URL,
+                    "-H", "Content-Type: application/x-www-form-urlencoded",
+                    "-d",
+                    (
+                        f"grant_type=password&client_id={KEYCLOAK_CLIENT_ID}"
+                        f"&client_secret={KEYCLOAK_CLIENT_SECRET}"
+                        f"&username={KEYCLOAK_USERNAME}&password={KEYCLOAK_PASSWORD}"
+                    ),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                import json
+                try:
+                    data = json.loads(result.stdout)
+                    tok = data.get("access_token", "") or ""
+                    if tok:
+                        return tok
+                    last_err = f"no access_token in response: {result.stdout[:200]}"
+                except json.JSONDecodeError as e:
+                    last_err = f"JSON decode: {e}; body={result.stdout[:200]}"
+            else:
+                last_err = (
+                    f"rc={result.returncode} "
+                    f"stdout={result.stdout[:200]!r} "
+                    f"stderr={result.stderr[:200]!r}"
+                )
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+        if attempt < max_retries:
+            time.sleep(retry_delay_s)
+    print(
+        f"[notebook_showcase.conftest] WARN token fetch failed after "
+        f"{max_retries} attempts — notebooks will run unauthenticated. "
+        f"Last error: {last_err}",
+        flush=True,
+    )
+    return ""
 
 
 def _resolve_token() -> str:

@@ -145,13 +145,17 @@ INSERT_AUDIT_EVENT = DQLQuery(
 # Legacy Principal Queries
 
 INSERT_PRINCIPAL = DQLQuery(
+    # ON CONFLICT on `identifier` (not `id`) because JIT auto-registration
+    # generates a fresh UUID on every request — the logical key for
+    # "is this user already known?" is the identifier. Keyed-on-id conflicts
+    # would never fire for the repeat-auth case and instead surface the
+    # duplicate-identifier unique-constraint as a 401.
     """
     INSERT INTO {schema}.principals
     (id, identifier, display_name, is_active, valid_until, roles, custom_policies, attributes, metadata, policy)
     VALUES
     (:id, :identifier, :display_name, :is_active, :valid_until, :roles, :custom_policies, :attributes, :metadata, :policy)
-    ON CONFLICT (id) DO UPDATE SET
-        identifier = EXCLUDED.identifier,
+    ON CONFLICT (identifier) DO UPDATE SET
         display_name = EXCLUDED.display_name,
         is_active = EXCLUDED.is_active,
         valid_until = EXCLUDED.valid_until,
