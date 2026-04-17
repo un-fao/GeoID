@@ -61,6 +61,7 @@ from .primitives import (
     SystemEventType,
 )
 from sqlalchemy import text as _sql_text
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 logger = logging.getLogger(__name__)
 
@@ -625,8 +626,19 @@ class EventsModule(ModuleProtocol):
         The lock is held for the lifetime of the context. On connection drop
         (pod/worker death) it is released automatically — no heartbeat needed.
         """
+        engine = self._engine
+        if not isinstance(engine, AsyncEngine):
+            if not getattr(self, "_sync_engine_warned", False):
+                logger.warning(
+                    "EventsModule: acquire_consumer_lock requires AsyncEngine "
+                    "(got %s); event consumer disabled on this instance.",
+                    type(engine).__name__ if engine else "None",
+                )
+                self._sync_engine_warned = True
+            yield False
+            return
         lock_id = _get_stable_lock_id(key)
-        async with self._engine.connect() as conn:  # type: ignore[union-attr]
+        async with engine.connect() as conn:
             conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
             acquired = await DQLQuery(
                 "SELECT pg_try_advisory_lock(:id)",

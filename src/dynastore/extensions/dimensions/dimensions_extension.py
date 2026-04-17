@@ -247,7 +247,7 @@ async def _materialize_dimension(
 
     Returns the number of records materialized.
     """
-    generator = dim_config.generator
+    generator = dim_config.provider
     dim_type = _infer_dim_type(generator)
 
     # Build provider objects: full at collection level, slim inside cube:dimensions
