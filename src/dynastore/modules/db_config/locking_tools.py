@@ -319,34 +319,6 @@ async def acquire_lock_if_needed(
         held.discard(lock_key)
 
 
-async def execute_safe_ddl(
-    conn: DbResource,
-    ddl_statement: str,
-    lock_key: Optional[str] = None,
-    existence_check: Optional[Callable[[], Awaitable[bool]]] = None,
-    **ddl_params,
-):
-    """
-    [DEPRECATED] Safely executes a DDL block with granular locking and deduplication.
-    Use DDLQuery(...) directly instead.
-    """
-    import warnings
-    warnings.warn(
-        "execute_safe_ddl is deprecated and will be removed in a future version. "
-        "Use DDLQuery directly instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    # Simply use DDLQuery which now handles existence checks and locking centrally
-    # We pass existence_check as a wrapped function if it exists
-    query = DDLQuery(
-        ddl_statement, 
-        check_query=existence_check, 
-        lock_key=lock_key
-    )
-    return await query.execute(conn, **ddl_params)
-
-
 async def check_table_exists(
     conn: DbResource, table_name: str, schema: str = "platform"
 ) -> bool:

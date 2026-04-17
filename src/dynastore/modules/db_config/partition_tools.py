@@ -102,7 +102,6 @@ async def ensure_partition_exists(
             await DDLQuery(
                 create_sql,
                 check_query=check_partition,
-                lock_key=f"partition_{schema}_{partition_name}"
             ).execute(conn)
             logger.debug(f"Partition '{schema}.{partition_name}' verified/created.")
 
@@ -228,6 +227,5 @@ async def ensure_list_hash_partitions(
     await DDLQuery(
         ";\n".join(statements),
         check_query=check_intermediate,
-        lock_key=f"partition_{partition_schema}_{base_table_name}"
     ).execute(conn)
     logger.info(f"Ensured LIST->HASH partitions for {parent_table_fqn} in schema '{partition_schema}'.")

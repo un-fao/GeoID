@@ -129,7 +129,6 @@ async def ensure_stored_procedures(conn: DbResource) -> None:
     await DDLQuery(
         UPDATE_COLLECTION_EXTENTS_SQL + ASSET_CLEANUP_SQL,
         check_query=check_all,
-        lock_key="ensure_stored_procedures"
     ).execute(conn)
 
     logger.info("Catalog stored procedures ensured.")

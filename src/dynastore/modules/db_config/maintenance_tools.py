@@ -80,7 +80,6 @@ async def ensure_schema_exists(conn: DbResource, schema_name: str):
     await DDLQuery(
         f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"',
         check_query="SELECT 1 FROM pg_namespace WHERE nspname = :schema_name",
-        lock_key=f"schema_{schema_name}",
     ).execute(conn, schema_name=schema_name)
     logger.info(f"Schema '{schema_name}' verified/ready.")
 
@@ -109,7 +108,6 @@ async def ensure_enum_type(conn: DbResource, type_name: str, labels: list[str]):
             "WHERE t.typname = :type_name "
             "AND n.nspname = ANY (current_schemas(true))"
         ),
-        lock_key=f"enum_type_{type_name}",
     ).execute(conn, type_name=type_name)
     logger.info(f"ENUM type '{type_name}' verified/ready.")
 
@@ -243,7 +241,6 @@ async def register_retention_policy(
         await DDLQuery(
             policy_ddl,
             check_query=check_policy_exists,
-            lock_key=f"retention_policy_{job_name}",
         ).execute(conn)
 
         logger.info(f"Registered retention policy for {schema}.{table}")
@@ -370,7 +367,6 @@ async def register_partition_creation_policy(
         await DDLQuery(
             policy_ddl,
             check_query=check_job_exists,
-            lock_key=f"partition_creation_{job_name}",
         ).execute(conn)
 
         logger.info(f"Registered partition creation policy for {schema}.{table} ({interval}, {periods_ahead} ahead, schedule: {schedule_cron})")
@@ -440,10 +436,7 @@ async def ensure_global_cron_cleanup(
     # Always execute: CREATE OR REPLACE FUNCTION must run to update the function
     # body if it changed. The cron.schedule() call inside uses IF EXISTS + unschedule
     # to handle idempotency.
-    await DDLQuery(
-        cleanup_ddl,
-        lock_key=f"global_cleanup_{job_name}",
-    ).execute(conn)
+    await DDLQuery(cleanup_ddl).execute(conn)
     logger.info("Registered global orphaned cron job cleanup task.")
 
 
@@ -478,6 +471,4 @@ async def register_cron_job(
     SELECT cron.schedule('{safe_job_name}', '{safe_schedule}', $CMD${safe_command}$CMD$);
     """
 
-    await DDLQuery(
-        cron_ddl, check_query=check_exists, lock_key=f"cron_job_{job_name}"
-    ).execute(conn)
+    await DDLQuery(cron_ddl, check_query=check_exists).execute(conn)

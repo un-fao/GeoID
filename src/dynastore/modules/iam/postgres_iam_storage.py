@@ -143,7 +143,6 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
             await DDLQuery(
                 _prune_ddl,
                 check_query=_check_prune_job_exists,
-                lock_key=f"prune_expired_rows_{schema}",
             ).execute(conn)
 
         logger.info(f"PostgresIamStorage initialization complete for '{schema}'.")

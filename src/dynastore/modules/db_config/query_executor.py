@@ -1056,7 +1056,7 @@ from .ddl_inference import _infer_existence_check, _ddl_existence_cache
 
 
 class DDLQuery(BaseQuery):
-    def __init__(self, sql_template, check_query=None, lock_key=None):
+    def __init__(self, sql_template, check_query=None):
         # We wrap check_query into a function that DDLExecutor can use
         existence_check: Optional[Any] = None
         if check_query:
@@ -1105,7 +1105,7 @@ class DDLQuery(BaseQuery):
             executor_class=DDLExecutor,
             existence_check=existence_check,
         )
-        self.check_query, self.lock_key = check_query, lock_key
+        self.check_query = check_query
 
     @classmethod
     def from_builder(cls, builder, **kwargs):

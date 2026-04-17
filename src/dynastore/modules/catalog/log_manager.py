@@ -149,7 +149,6 @@ async def _initialize_logs_tenant_slice(conn: DbResource, schema: str, catalog_i
     await DDLQuery(
         combined_ddl,
         check_query=_check_all_logs_tables_exist,
-        lock_key=f"{schema}_logs_tables_init",
     ).execute(conn, schema=schema)
 
     # --- pg_cron maintenance jobs ---
@@ -161,8 +160,6 @@ async def _initialize_logs_tenant_slice(conn: DbResource, schema: str, catalog_i
 
 async def initialize_system_logs(conn: DbResource):
     """Initializes the system-level logs table (flat, no partitions)."""
-    from dynastore.modules.db_config.locking_tools import execute_safe_ddl
-
     # Ensure system schema exists (idempotent)
     await ensure_schema_exists(conn, SYSTEM_SCHEMA)
 
@@ -173,7 +170,6 @@ async def initialize_system_logs(conn: DbResource):
     await DDLQuery(
         SYSTEM_LOGS_DDL,
         check_query=system_logs_exists,
-        lock_key="system_logs_init",
     ).execute(conn)
 
     # System logs have no dead-letter table; old rows are pruned directly via pg_cron.
@@ -221,7 +217,6 @@ async def _create_logs_partition(
     await DDLQuery(
         create_ddl,
         check_query=partition_exists,
-        lock_key=f"{schema}_{partition_table}_logs_init",
     ).execute(conn)
     logger.info("Created logs partition '%s.%s'.", schema, partition_table)
 
