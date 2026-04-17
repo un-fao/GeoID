@@ -1126,7 +1126,6 @@ class ConfigsService(ExtensionProtocol):
                 await self.configs.set_config(
                     cls, config_model, catalog_id, collection_id
                 )
-                await self._invalidate_exposure()
                 results.append(BulkApplyResultEntry(plugin_id=plugin_id, status="ok"))  # type: ignore[call-arg]
                 applied += 1
             except Exception as exc:
@@ -1138,6 +1137,10 @@ class ConfigsService(ExtensionProtocol):
                 )
                 failed += 1
 
+        # Invalidate once after the loop rather than N times per successful
+        # write — every reload would otherwise rebuild the full matrix from DB.
+        if applied:
+            await self._invalidate_exposure()
         return BulkApplyResponse(applied=applied, failed=failed, results=results)
 
     # --- Search ---

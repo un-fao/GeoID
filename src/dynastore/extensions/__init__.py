@@ -126,6 +126,10 @@ async def lifespan(app: FastAPI):
         )
         app.state.exposure_matrix = matrix
         install_filtered_openapi(app, matrix)
+        # Pre-warm the snapshot so the sync OpenAPI filter sees real state on
+        # the very first /openapi.json request (before any config write has
+        # triggered an invalidate).
+        await matrix.get()
 
         for config in configs:
             if config.instance is None: continue
