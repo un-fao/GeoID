@@ -1,7 +1,7 @@
 """Business logic for the centralised Config API composed views."""
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Type
 
 from dynastore.extensions.configs.config_api_dto import (
     CatalogConfigResponse,
@@ -381,6 +381,45 @@ class ConfigApiService:
             categories["catalogs"] = pg
 
         return PlatformConfigResponse(configs=configs, categories=categories)  # type: ignore[call-arg]
+
+    async def patch_config(
+        self,
+        *,
+        catalog_id: Optional[str],
+        body: Dict[str, Optional[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        """Apply a partial update to one or more configs at the given scope.
+
+        Validates ALL entries before writing any of them. A 422 on any entry
+        means zero writes occur (validate-first, write-second approach rather
+        than bulk_write(), which does not exist on ConfigsProtocol).
+        """
+        all_classes = list_registered_configs()
+        prepared: List[Tuple[str, Type, Optional[Dict[str, Any]]]] = []
+
+        for plugin_id, value in body.items():
+            cls = all_classes.get(plugin_id)
+            if cls is None:
+                raise ValueError(f"Unknown plugin_id '{plugin_id}'")
+            if value is None:
+                prepared.append((plugin_id, cls, None))
+                continue
+            # Merge incoming partial dict over the class defaults, then validate.
+            current = await self._config_service.get_config(cls, catalog_id=catalog_id)
+            current_data = current.model_dump() if current is not None else cls().model_dump()
+            merged = {**current_data, **value}
+            cls.model_validate(merged)  # raises ValidationError on bad data
+            prepared.append((plugin_id, cls, merged))
+
+        # All entries validated — now write sequentially.
+        for plugin_id, cls, merged in prepared:
+            if merged is None:
+                await self._config_service.delete_config(cls, catalog_id=catalog_id)
+            else:
+                validated = cls.model_validate(merged)
+                await self._config_service.set_config(cls, validated, catalog_id=catalog_id)
+
+        return {"updated": [p for p, _, _ in prepared]}
 
     async def _list_assets(
         self,

@@ -56,6 +56,7 @@ from .dto import (
     get_plugin_examples,
     PLUGIN_EXAMPLES,
 )
+from .config_api_dto import PatchConfigBody
 from .config_api_service import ConfigApiService
 from .policies import register_configs_policies
 
@@ -165,6 +166,21 @@ class ConfigsService(ExtensionProtocol):
             self.get_collection_config_composed,
             methods=["GET"],
             summary="Collection config — all effective collection configs composed",
+            tags=["Config API"],
+        )
+        # ---- Config API — PATCH (partial write) at platform / catalog scope ----
+        self.router.add_api_route(
+            "/config",
+            self._patch_platform_config,
+            methods=["PATCH"],
+            summary="Partially update platform-level configs; null value deletes the override",
+            tags=["Config API"],
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/config",
+            self._patch_catalog_config,
+            methods=["PATCH"],
+            summary="Partially update catalog-level configs; null value deletes the override",
             tags=["Config API"],
         )
         # Examples & Quick-start routes — MUST be registered BEFORE the generic
@@ -302,6 +318,46 @@ class ConfigsService(ExtensionProtocol):
             assets_service=self.get_protocol(AssetsProtocol),
         )
 
+    # =========================================================================
+    # Invalidate hook — clears the exposure matrix + OpenAPI schema cache
+    # =========================================================================
+
+    def _invalidate_exposure(self) -> None:
+        """Invalidate the exposure matrix and the cached OpenAPI schema.
+
+        Must be called after any config write that may affect route visibility.
+        Safe to call even when no matrix is attached to app.state.
+        """
+        matrix = getattr(self.app.state, "exposure_matrix", None)
+        if matrix is not None:
+            matrix.invalidate()
+        self.app.openapi_schema = None
+
+    # =========================================================================
+    # PATCH handlers — partial write at platform / catalog scope
+    # =========================================================================
+
+    async def _patch_platform_config(self, body: PatchConfigBody) -> Dict[str, Any]:
+        """Apply a partial config update at platform scope."""
+        try:
+            result = await self._config_api.patch_config(catalog_id=None, body=body.root)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        self._invalidate_exposure()
+        return result
+
+    async def _patch_catalog_config(
+        self, catalog_id: str, body: PatchConfigBody
+    ) -> Dict[str, Any]:
+        """Apply a partial config update at catalog scope."""
+        try:
+            result = await self._config_api.patch_config(
+                catalog_id=catalog_id, body=body.root
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        self._invalidate_exposure()
+        return result
 
     async def get_config_schemas(self) -> Dict[str, Any]:
         """List all registered config schemas grouped by scope and protocol (M9).
@@ -740,6 +796,7 @@ class ConfigsService(ExtensionProtocol):
             validated_config = await self.configs.set_config(
                 cls, config_model, catalog_id, collection_id
             )
+            self._invalidate_exposure()
             return validated_config
 
         except Exception as e:
@@ -762,6 +819,7 @@ class ConfigsService(ExtensionProtocol):
         await self.configs.delete_config(
             cls, catalog_id=catalog_id, collection_id=collection_id
         )
+        self._invalidate_exposure()
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # Catalog Level
@@ -804,6 +862,7 @@ class ConfigsService(ExtensionProtocol):
             validated_config = await self.configs.set_config(
                 cls, config_model, catalog_id, collection_id=None
             )
+            self._invalidate_exposure()
             return validated_config
         except Exception as e:
             raise handle_exception(
@@ -821,6 +880,7 @@ class ConfigsService(ExtensionProtocol):
         """
         cls = require_config_class(plugin_id)
         await self.configs.delete_config(cls, catalog_id=catalog_id)
+        self._invalidate_exposure()
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # Platform Level
@@ -867,6 +927,7 @@ class ConfigsService(ExtensionProtocol):
             validated_config = await self.configs.set_config(
                 cls, config_model, catalog_id=None, collection_id=None
             )
+            self._invalidate_exposure()
             return validated_config
         except Exception as e:
             raise handle_exception(
@@ -884,6 +945,7 @@ class ConfigsService(ExtensionProtocol):
         """
         cls = require_config_class(plugin_id)
         await self.configs.delete_config(cls)
+        self._invalidate_exposure()
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # --- Examples & Quick-start ---
@@ -1056,6 +1118,7 @@ class ConfigsService(ExtensionProtocol):
                 await self.configs.set_config(
                     cls, config_model, catalog_id, collection_id
                 )
+                self._invalidate_exposure()
                 results.append(BulkApplyResultEntry(plugin_id=plugin_id, status="ok"))  # type: ignore[call-arg]
                 applied += 1
             except Exception as exc:
