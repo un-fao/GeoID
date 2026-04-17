@@ -36,6 +36,8 @@ The extension declares OGC API - Dimensions conformance as a
 - ``dimension-hierarchical`` — children / ancestors navigation
 """
 
+import hashlib
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
@@ -46,6 +48,33 @@ from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.models.driver_context import DriverContext
 
 logger = logging.getLogger(__name__)
+
+
+_FINGERPRINT_PROPERTY_PREFIX = "dimensions_materialized_fingerprint:"
+
+
+def _dimension_fingerprint(dim_config: Any) -> str:
+    """Deterministic 16-hex-char fingerprint of the inputs that materially
+    change a dimension's materialised members.
+
+    Two pods with the same code produce the same fingerprint; a code
+    change to the provider class, its serialisable state, or the extent
+    bounds yields a different fingerprint and forces re-materialisation.
+    """
+    provider = getattr(dim_config, "provider", None)
+    if hasattr(provider, "model_dump"):
+        provider_state = provider.model_dump()
+    else:
+        provider_state = repr(provider)
+
+    payload = {
+        "provider_class": type(provider).__qualname__ if provider is not None else None,
+        "provider_state": provider_state,
+        "extent_min": getattr(dim_config, "extent_min", None),
+        "extent_max": getattr(dim_config, "extent_max", None),
+    }
+    blob = json.dumps(payload, sort_keys=True, default=str).encode()
+    return hashlib.sha256(blob).hexdigest()[:16]
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -239,14 +268,35 @@ async def _enumerate_all_members(
 
 async def _materialize_dimension(
     catalogs: Any,
+    properties: Any,
     dim_name: str,
     dim_config: Any,
     db_resource: Any,
 ) -> int:
     """Create a RECORDS collection and upsert all dimension members.
 
-    Returns the number of records materialized.
+    Returns the number of records materialised. Returns 0 (skips silently)
+    when the persisted fingerprint matches the current ``dim_config`` —
+    i.e. nothing in the dimension definition has changed since the last
+    successful materialisation, so we'd just re-do identical UPSERTs and
+    burn round-trips on every pod startup.
     """
+    expected_fp = _dimension_fingerprint(dim_config)
+    fp_key = f"{_FINGERPRINT_PROPERTY_PREFIX}{dim_name}"
+
+    if properties is not None:
+        try:
+            stored_fp = await properties.get_property(fp_key, db_resource=db_resource)
+        except Exception as exc:  # noqa: BLE001 — degrade to re-materialise
+            logger.debug("Failed to read fingerprint for '%s': %s", dim_name, exc)
+            stored_fp = None
+        if stored_fp == expected_fp:
+            logger.info(
+                "Dimension '%s' already materialised (fingerprint=%s) — skipping.",
+                dim_name, expected_fp,
+            )
+            return 0
+
     generator = dim_config.provider
     dim_type = _infer_dim_type(generator)
 
@@ -314,16 +364,33 @@ async def _materialize_dimension(
             i, i + len(batch), dim_name, total,
         )
 
+    # Persist the fingerprint so subsequent pod startups skip this work.
+    if properties is not None:
+        try:
+            await properties.set_property(
+                fp_key, expected_fp, "dimensions_extension",
+                db_resource=db_resource,
+            )
+        except Exception as exc:  # noqa: BLE001 — non-fatal; next reboot retries
+            logger.warning(
+                "Failed to persist materialisation fingerprint for '%s': %s",
+                dim_name, exc,
+            )
+
     return total
 
 
 async def _materialize_all_dimensions(dimensions: Dict[str, Any]) -> None:
     """Materialize all registered dimensions as Records collections.
 
-    Uses ``managed_transaction`` to get a DB connection outside of
-    request context.
+    Each dimension's materialisation is gated by a fingerprint stored via
+    ``PropertiesProtocol``: warm restarts (no code change) skip the work
+    entirely, so the lifespan no longer storms the cluster on every pod
+    boot. Cold deploys with changed dimension definitions re-materialise
+    only the affected dimensions.
     """
     from dynastore.models.protocols.catalogs import CatalogsProtocol
+    from dynastore.models.protocols import PropertiesProtocol
     from dynastore.modules.db_config.query_executor import managed_transaction
     from dynastore.tools.discovery import get_protocol
     from dynastore.tools.protocol_helpers import get_engine
@@ -332,6 +399,13 @@ async def _materialize_all_dimensions(dimensions: Dict[str, Any]) -> None:
     if not catalogs:
         logger.warning("CatalogsProtocol not available — skipping dimension materialization.")
         return
+
+    properties = get_protocol(PropertiesProtocol)
+    if properties is None:
+        logger.warning(
+            "PropertiesProtocol not available — fingerprint sentinel disabled, "
+            "every reboot will re-materialise all dimensions."
+        )
 
     engine = get_engine()
     if not engine:
@@ -353,7 +427,7 @@ async def _materialize_all_dimensions(dimensions: Dict[str, Any]) -> None:
         try:
             async with managed_transaction(engine) as conn:
                 count = await _materialize_dimension(
-                    catalogs, dim_name, dim_config, db_resource=conn,
+                    catalogs, properties, dim_name, dim_config, db_resource=conn,
                 )
                 grand_total += count
                 logger.info(

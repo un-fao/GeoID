@@ -259,6 +259,12 @@ class ItemDistributedMixin(_Host):
                 # Non-partitioned: keep validity in context for sidecars but not hub
                 validity = active_rec["validity"]
 
+            # Propagate the resolved validity to processing_context so sidecars'
+            # finalize_upsert_payload() reuses it instead of synthesising a fresh
+            # Range(now(), None) — which would miss ON CONFLICT (geoid, validity)
+            # and trip the (geoid, external_id) unique index on re-upsert.
+            processing_context["validity"] = validity
+
             result = await self._execute_distributed_update(
                 conn,
                 phys_schema,
