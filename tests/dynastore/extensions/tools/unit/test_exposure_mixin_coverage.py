@@ -1,27 +1,27 @@
 """Parametrised coverage test: every togglable extension must inherit ExposableConfigMixin."""
 
-# Eagerly import every togglable extension's config module so that their
-# PluginConfig subclasses auto-register via PersistentModel.__init_subclass__
-# before list_registered_configs() is called in the tests below.
-import dynastore.extensions.features.features_config  # noqa: F401
-import dynastore.extensions.wfs.wfs_config  # noqa: F401
-import dynastore.modules.tiles.tiles_config  # noqa: F401
-import dynastore.modules.stac.stac_config  # noqa: F401
-import dynastore.modules.gcp.gcp_config  # noqa: F401
-import dynastore.extensions.maps.config  # noqa: F401
-import dynastore.extensions.coverages.config  # noqa: F401
-import dynastore.extensions.records.config  # noqa: F401
-import dynastore.extensions.processes.config  # noqa: F401
-import dynastore.extensions.dimensions.config  # noqa: F401
-import dynastore.extensions.dwh.config  # noqa: F401
-import dynastore.extensions.search.config  # noqa: F401
-import dynastore.modules.stats.config  # noqa: F401
-import dynastore.extensions.logs.config  # noqa: F401
-import dynastore.extensions.notebooks.config  # noqa: F401
-import dynastore.extensions.crs.config  # noqa: F401
-import dynastore.extensions.gdal.config  # noqa: F401
-import dynastore.extensions.assets.config  # noqa: F401
-import dynastore.extensions.styles.config  # noqa: F401
+# Importing each extension/module package (not the .config submodule directly) is
+# sufficient for registration: each __init__.py now carries `from . import config`
+# which triggers auto-registration via PersistentModel.__init_subclass__.
+import dynastore.extensions.features  # noqa: F401
+import dynastore.extensions.wfs  # noqa: F401
+import dynastore.modules.tiles  # noqa: F401
+import dynastore.modules.stac  # noqa: F401
+import dynastore.modules.gcp  # noqa: F401
+import dynastore.extensions.maps  # noqa: F401
+import dynastore.extensions.coverages  # noqa: F401
+import dynastore.extensions.records  # noqa: F401
+import dynastore.extensions.processes  # noqa: F401
+import dynastore.extensions.dimensions  # noqa: F401
+import dynastore.extensions.dwh  # noqa: F401
+import dynastore.extensions.search  # noqa: F401
+import dynastore.modules.stats  # noqa: F401
+import dynastore.extensions.logs  # noqa: F401
+import dynastore.extensions.notebooks  # noqa: F401
+import dynastore.extensions.crs  # noqa: F401
+import dynastore.extensions.gdal  # noqa: F401
+import dynastore.extensions.assets  # noqa: F401
+import dynastore.extensions.styles  # noqa: F401
 
 import pytest
 from dynastore.extensions.tools.exposure_mixin import (
