@@ -69,24 +69,21 @@ def _stac_data_loader(filename: str):
 
 @pytest.mark.skip(
     reason=(
-        "Scaffolded — blocked on pre-existing issues unrelated to the IAM/"
-        "security fixes landed alongside this test: "
-        "(1) OGC process execution uses PermissionProtocol.check_permission "
-        "for Action.EXECUTE, which requires an ALLOW policy — no seed policy "
-        "exists for sysadmin or for SYSTEM_USER_ID ('system:platform'), so "
-        "POST /processes/.../ingestion/execution always 403s locally; "
-        "test_stac_virtual.py hits the same wall on main. "
-        "(2) gcp_provision task raises ValidationError on "
-        "PushSubscriptionConfig.subscription_id=None when managed eventing "
-        "is disabled (see gcp_catalog_ops.py:~366). "
-        "(3) Entry points in the installed dist-info can go stale (Driver* "
-        "names) after class renames — `pip install -e .` is required to "
-        "refresh before the module loader can register "
-        "MetadataPostgresqlDriver. "
-        "Unblock order: (1) seed policy or sysadmin policy-engine bypass "
-        "in PolicyService.check_permission, (2) guard PushSubscriptionConfig "
-        "construction behind `if subscription_id`, (3) document the "
-        "reinstall step in dev setup / add a conftest sanity check."
+        "Reaches step 7 (ingestion) cleanly but fails at GDAL/fiona data "
+        "read: `/vsigs/{bucket}/{obj}` (OGR virtual filesystem) returns "
+        "`DriverError: Failed to open dataset (flags=68)`. GDAL needs "
+        "explicit GCS auth env config — GOOGLE_APPLICATION_CREDENTIALS "
+        "alone is not enough for the `/vsigs/` VFS; typically either "
+        "`CPL_MACHINE_IS_GCE=YES` (GCE metadata), `GS_ACCESS_KEY_ID` + "
+        "`GS_SECRET_ACCESS_KEY` (HMAC), or `GDAL_HTTP_HEADER_FILE` with "
+        "an OAuth bearer. Unblock: either add a GDAL-GCS auth bootstrap "
+        "step to the gcp module / test conftest, or stage the source "
+        "file on a local path for the ingestion input and keep only the "
+        "collection-asset registration on `gs://`. Steps 1–6 (bucket "
+        "provisioning, asset registration, feature-tracking config) now "
+        "pass thanks to the MRO-stub fix, the sysadmin policy bypass in "
+        "IamPolicyService.check_permission, and the caller_roles plumbing "
+        "from processes_service → processes_module."
     )
 )
 @pytest.mark.gcp
@@ -97,7 +94,7 @@ def _stac_data_loader(filename: str):
 )
 @pytest.mark.enable_extensions(
     "stac", "assets", "features", "configs", "processes", "web",
-    "gcp_bucket", "tiles",
+    "gcp_bucket", "tiles", "iam",
 )
 @pytest.mark.enable_tasks("gcp_provision", "gcp_catalog_cleanup", "ingestion")
 async def test_gcp_end_to_end_lifecycle(

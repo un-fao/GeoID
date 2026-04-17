@@ -17,7 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from typing import Any, Optional
+from typing import Any, List, Optional
 from pydantic import ValidationError
 
 from dynastore.modules.db_config.query_executor import DbEngine
@@ -105,6 +105,7 @@ async def execute_process(
     execution_request: models.ExecuteRequest,
     engine: DbEngine,
     caller_id: str = SYSTEM_USER_ID,
+    caller_roles: Optional[List[str]] = None,
     preferred_mode: Optional[models.JobControlOptions] = None,
     background_tasks: Optional[Any] = None,
     catalog_id: Optional[str] = None,
@@ -137,7 +138,13 @@ async def execute_process(
     # 4. Authorization check.
     auth_protocol = get_protocol(AuthorizationProtocol)
     if auth_protocol:
-        principal = Principal(id=caller_id, subject_id=caller_id)
+        # Preserve roles from the authenticated caller so the policy engine's
+        # sysadmin short-circuit (and any role-based policies) can take effect.
+        # Without this, sysadmin callers would 403 on any process that lacks
+        # an explicit ALLOW policy — see IamPolicyService.check_permission.
+        principal = Principal(
+            id=caller_id, subject_id=caller_id, roles=caller_roles or [],
+        )
         resource_id = f"catalog:{catalog_id}" if catalog_id else "system"
         if collection_id:
             resource_id = f"{resource_id}:collection:{collection_id}"

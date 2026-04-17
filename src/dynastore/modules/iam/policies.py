@@ -102,7 +102,21 @@ class PolicyService:
         """
         Evaluates if the given principal can perform 'action' on 'resource'.
         Delegates to the evaluation engine (evaluate_access).
+
+        Sysadmin short-circuit: a principal carrying the ``sysadmin`` role
+        is granted every action on every resource without consulting the
+        policy engine. This mirrors the guard-layer semantics in
+        ``dynastore.modules.iam.authorization.default.DefaultAuthorizer``
+        (``require_sysadmin`` passes on role alone, no ALLOW policy needed)
+        and is the convention used elsewhere in the codebase — e.g.
+        ``ensure_sysadmin_if_targeting_admin`` in extensions/iam/guards.py.
+        Without this, OGC process execution (which gates on
+        ``Action.EXECUTE`` via ``check_permission``) 403s for any sysadmin
+        caller unless someone remembers to seed a wildcard ALLOW policy.
         """
+        if principal.roles and "sysadmin" in principal.roles:
+            return True
+
         # 1. Collect all roles and identity IDs to check
         identities = []
         if principal.subject_id:
