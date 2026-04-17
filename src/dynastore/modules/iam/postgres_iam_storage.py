@@ -660,6 +660,25 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
                 conn=db, schema="iam", provider=provider, subject_id=subject_id,
             )
 
+    async def resolve_identity(
+        self, email: str, conn: Optional[DbResource] = None,
+    ) -> tuple[str, str]:
+        """Resolve an email to ``(provider, subject_id)``.
+
+        Looks up identity_links.email first; falls back to the linked
+        principal's identifier / display_name so principals created with
+        an email identifier but no email on the link still resolve.
+        Raises ``ValueError`` when no identity matches — the admin API
+        surfaces this as 404 via ``http_errors({ValueError: 404})``.
+        """
+        async with managed_transaction(conn or self.engine) as db:
+            row = await RESOLVE_IDENTITY_BY_EMAIL.execute(
+                conn=db, schema="iam", email=email,
+            )
+        if not row:
+            raise ValueError(f"No identity found for email: {email}")
+        return row["provider"], row["subject_id"]
+
     async def get_identity_roles(
         self,
         provider: str,

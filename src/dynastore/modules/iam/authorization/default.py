@@ -17,6 +17,14 @@ is registered (e.g. running with `scope_catalog`, no IAM module loaded).
 Grants privileged access only if the middleware already attached the
 matching role to the `SecurityContext`. Otherwise raises `PermissionError`.
 Public endpoints never reach an authorizer because guards are opt-in.
+
+`SecurityContext.policy_allowed` is intentionally NOT honoured here: it
+signals only that the global path-level policy filter in
+`IamMiddleware` did not explicitly deny the request. That is necessary
+but not sufficient for role-gated endpoints — otherwise any principal
+carrying a broad ALLOW policy (e.g. a baseline `user` role with
+`resource=".*"`) would bypass `require_sysadmin` / `require_admin`.
+Role enforcement must be independent of path-level policy decisions.
 """
 
 from dynastore.models.protocols.authorization import Permission
@@ -30,8 +38,6 @@ class DefaultAuthorizer:
     """Minimal role-based authorizer. Reads only `SecurityContext.roles`."""
 
     async def check(self, ctx: SecurityContext, permission: Permission) -> None:
-        if ctx.policy_allowed:
-            return
         if permission is Permission.AUTHENTICATED:
             if ctx.principal_id or ctx.roles:
                 return

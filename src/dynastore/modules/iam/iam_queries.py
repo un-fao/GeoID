@@ -229,6 +229,20 @@ INSERT_IDENTITY_LINK = DQLQuery(
     result_handler=ResultHandler.ROWCOUNT,
 )
 
+RESOLVE_IDENTITY_BY_EMAIL = DQLQuery(
+    """
+    SELECT l.provider, l.subject_id
+    FROM {schema}.identity_links l
+    LEFT JOIN {schema}.principals p ON p.id = l.principal_id
+    WHERE l.email = :email
+       OR p.identifier = :email
+       OR p.display_name = :email
+    ORDER BY l.created_at ASC
+    LIMIT 1;
+    """,
+    result_handler=ResultHandler.ONE_DICT,
+)
+
 LIST_PRINCIPALS = DQLQuery(
     """SELECT p.*, l.provider, l.subject_id
     FROM {schema}.principals p
