@@ -96,10 +96,11 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
         from dynastore.models.protocols import CloudStorageClientProtocol
 
         self._storage_client = None
+        self._client_provider = None
         try:
-            client_provider = get_protocol(CloudStorageClientProtocol)
-            if client_provider:
-                self._storage_client = client_provider.get_storage_client()
+            self._client_provider = get_protocol(CloudStorageClientProtocol)
+            if self._client_provider:
+                self._storage_client = self._client_provider.get_storage_client()
             else:
                 logger.warning(
                     "CloudStorageClientProtocol (GCP) not found. GcsDetailedReporter will be disabled."
@@ -419,20 +420,24 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
         summary_report_path = insert_before_extension(self.report_path, f"_summary")
         self._upload_to_gcs(summary_report_path, content=summary_content)
 
-        if self.config.signed_url_enabled and self._storage_client is not None:
+        if (
+            self.config.signed_url_enabled
+            and self._client_provider is not None
+            and final_detailed_report_path
+        ):
+            # Signed URLs are only generated for single-file reports.
             try:
-                # Signed URLs are only generated for single-file reports.
-                if final_detailed_report_path:
-                    bucket_name, blob_name = final_detailed_report_path.replace(
-                        "gs://", ""
-                    ).split("/", 1)
-                    blob = self._storage_client.bucket(bucket_name).blob(blob_name)
-                    signed_url = blob.generate_signed_url(
-                        version="v4", expiration=timedelta(days=7), method="GET"
-                    )
-                    logger.info(
-                        f"Detailed report is accessible for 7 days at: {signed_url}"
-                    )
+                from dynastore.modules.gcp.tools.signed_urls import generate_gcs_signed_url
+
+                signed_url = await generate_gcs_signed_url(
+                    final_detailed_report_path,
+                    method="GET",
+                    expiration=timedelta(days=7),
+                    client_provider=self._client_provider,
+                )
+                logger.info(
+                    f"Detailed report is accessible for 7 days at: {signed_url}"
+                )
             except Exception as e:
                 logger.error(
                     f"Failed to generate signed URL for report: {e}", exc_info=True

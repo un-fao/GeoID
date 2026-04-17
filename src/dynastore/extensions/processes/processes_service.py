@@ -75,10 +75,14 @@ router: APIRouter = APIRouter(prefix="/processes", tags=["OGC API - Processes"])
 # advertised there either.
 _PLATFORM_ALLOWED_SCOPES = frozenset({models.ProcessScope.PLATFORM})
 _CATALOG_ALLOWED_SCOPES = frozenset({models.ProcessScope.CATALOG})
-_COLLECTION_ALLOWED_SCOPES = frozenset({
-    models.ProcessScope.COLLECTION,
-    models.ProcessScope.ASSET,
-})
+_COLLECTION_ALLOWED_SCOPES = frozenset({models.ProcessScope.COLLECTION})
+# ASSET-scoped processes are NOT executable at `/processes` mounts — they
+# route through the asset-service parametric process surface
+# (`/assets/catalogs/.../assets/{asset_id}/{process_id}`, see proposed
+# STAC API Asset Transactions extension in docs/proposals/) because that
+# path resolves the Asset object and dispatches via `AssetProcessProtocol`.
+# Exposing them at the collection mount would advertise a URL that can't
+# resolve the asset context at runtime.
 
 
 def _allowed_scopes_for(
@@ -100,8 +104,8 @@ _SCOPE_URL_HINTS = {
         "POST /catalogs/{catalog_id}/collections/{collection_id}"
         "/processes/{process_id}/execution",
     models.ProcessScope.ASSET:
-        "POST /catalogs/{catalog_id}/collections/{collection_id}"
-        "/processes/{process_id}/execution (with asset_id in inputs)",
+        "POST /assets/catalogs/{catalog_id}/collections/{collection_id}"
+        "/assets/{asset_id}/{process_id}",
 }
 
 # Templated paths advertised via HATEOAS `rel=execute` links on
@@ -116,8 +120,8 @@ _SCOPE_URL_TEMPLATES = {
         "/catalogs/{catalog_id}/collections/{collection_id}"
         "/processes/{process_id}/execution",
     models.ProcessScope.ASSET:
-        "/catalogs/{catalog_id}/collections/{collection_id}"
-        "/processes/{process_id}/execution",
+        "/assets/catalogs/{catalog_id}/collections/{collection_id}"
+        "/assets/{asset_id}/{process_id}",
 }
 
 # OGC link relation for "execute this process"

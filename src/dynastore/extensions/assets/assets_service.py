@@ -19,6 +19,7 @@
 import logging
 from typing import Dict, Any, Optional, List, Annotated, cast
 from dynastore.modules import get_protocol
+from dynastore.tools.discovery import get_protocols
 from fastapi import (
     FastAPI,
     APIRouter,
@@ -34,6 +35,11 @@ from pydantic import UUID4, BaseModel, Field, AliasChoices, ConfigDict
 
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.models.protocols import AssetsProtocol, AssetUploadProtocol, UploadTicket, UploadStatusResponse
+from dynastore.models.protocols.asset_process import (
+    AssetProcessDescriptor,
+    AssetProcessOutput,
+    AssetProcessProtocol,
+)
 from dynastore.tools.protocol_helpers import get_engine
 from dynastore.extensions.tools.exception_handlers import handle_exception
 from fastapi import Depends
@@ -406,6 +412,57 @@ class AssetService(ExtensionProtocol):
             methods=["POST"],
             status_code=status.HTTP_201_CREATED,
             summary="Execute Task on Collection Asset",
+        )
+        # -----------------------------------------------------------------
+        # Parametric asset-process dispatch (see models/protocols/asset_process.py).
+        # Registered AFTER all specific routes so ``{process_id}`` does not shadow
+        # ``references`` / ``tasks`` / ``upload``. FastAPI matches in declaration order.
+        # -----------------------------------------------------------------
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/assets/{asset_id}/processes",
+            self.list_catalog_asset_processes,
+            methods=["GET"],
+            response_model=List[AssetProcessDescriptor],
+            summary="List Asset Processes",
+            description=(
+                "Enumerates processes that can be invoked on this asset "
+                "(e.g. ``download``, ``ingest``, ``validate``). Each entry "
+                "reports ``applicable=false`` with a ``reason`` when the "
+                "process is registered but cannot run on this specific asset."
+            ),
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/assets/{asset_id}/processes",
+            self.list_collection_asset_processes,
+            methods=["GET"],
+            response_model=List[AssetProcessDescriptor],
+            summary="List Collection Asset Processes",
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/assets/{asset_id}/{process_id}",
+            self.invoke_catalog_asset_process,
+            methods=["GET", "POST"],
+            response_model=AssetProcessOutput,
+            summary="Invoke Asset Process",
+            description=(
+                "Executes a registered asset process. ``GET`` for idempotent "
+                "reads (download URL generation, inspect); ``POST`` for "
+                "state-changing operations (ingest, convert). A ``302`` "
+                "redirect is returned when the process yields ``type=redirect``."
+            ),
+            responses={
+                200: {"description": "Process executed; returns ``AssetProcessOutput``."},
+                302: {"description": "Redirect to the asset's external URL."},
+                404: {"description": "Asset or process not found."},
+                409: {"description": "Process not applicable to this asset."},
+            },
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/assets/{asset_id}/{process_id}",
+            self.invoke_collection_asset_process,
+            methods=["GET", "POST"],
+            response_model=AssetProcessOutput,
+            summary="Invoke Collection Asset Process",
         )
 
     @property
@@ -1319,3 +1376,130 @@ class AssetService(ExtensionProtocol):
         except Exception as e:
             logger.exception(f"Asset task execution failed: {e}")
             raise HTTPException(status_code=400, detail=str(e))
+
+    # =============================================================================
+    #  PARAMETRIC ASSET-PROCESS DISPATCH
+    # =============================================================================
+
+    async def _load_asset(
+        self,
+        catalog_id: str,
+        asset_id: str,
+        collection_id: Optional[str],
+    ):
+        asset = await self.assets.get_asset(
+            catalog_id=catalog_id, asset_id=asset_id, collection_id=collection_id
+        )
+        if not asset:
+            raise HTTPException(status_code=404, detail="Asset not found")
+        return asset
+
+    def _find_process(self, process_id: str) -> Optional[AssetProcessProtocol]:
+        for p in get_protocols(AssetProcessProtocol):
+            if getattr(p, "process_id", None) == process_id:
+                return p
+        return None
+
+    async def list_catalog_asset_processes(
+        self,
+        catalog_id: str = Path(..., description="The catalog ID"),
+        asset_id: str = Path(..., description="The asset ID"),
+    ) -> List[AssetProcessDescriptor]:
+        """Enumerates processes applicable to the asset (catalog scope)."""
+        asset = await self._load_asset(catalog_id, asset_id, None)
+        return [await p.describe(asset) for p in get_protocols(AssetProcessProtocol)]
+
+    async def list_collection_asset_processes(
+        self,
+        catalog_id: str = Path(..., description="The catalog ID"),
+        collection_id: str = Path(..., description="The collection ID"),
+        asset_id: str = Path(..., description="The asset ID"),
+    ) -> List[AssetProcessDescriptor]:
+        """Enumerates processes applicable to the asset (collection scope)."""
+        asset = await self._load_asset(catalog_id, asset_id, collection_id)
+        return [await p.describe(asset) for p in get_protocols(AssetProcessProtocol)]
+
+    async def _invoke_process(
+        self,
+        request: Request,
+        catalog_id: str,
+        asset_id: str,
+        process_id: str,
+        collection_id: Optional[str],
+    ):
+        asset = await self._load_asset(catalog_id, asset_id, collection_id)
+
+        # Fallback for external-URL assets with no registered process: redirect to the URI.
+        process = self._find_process(process_id)
+        if process is None:
+            if process_id == "download" and asset.uri.startswith(("http://", "https://")):
+                from fastapi.responses import RedirectResponse
+
+                return RedirectResponse(asset.uri, status_code=status.HTTP_302_FOUND)
+            raise HTTPException(
+                status_code=404,
+                detail=f"Asset process {process_id!r} is not registered.",
+            )
+
+        # GET → params come from the query string; POST → from the JSON body.
+        if request.method == "GET":
+            params = dict(request.query_params)
+        else:
+            try:
+                params = await request.json()
+            except Exception:
+                params = {}
+            if not isinstance(params, dict):
+                raise HTTPException(
+                    status_code=400, detail="Request body must be a JSON object."
+                )
+
+        if getattr(process, "http_method", "GET") != request.method:
+            raise HTTPException(
+                status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
+                detail=(
+                    f"Process {process_id!r} must be invoked with "
+                    f"{process.http_method}."
+                ),
+            )
+
+        result = await process.execute(asset, params)
+
+        if result.type == "redirect" and result.url:
+            from fastapi.responses import RedirectResponse
+
+            return RedirectResponse(result.url, status_code=status.HTTP_302_FOUND)
+        return result
+
+    async def invoke_catalog_asset_process(
+        self,
+        request: Request,
+        catalog_id: str = Path(..., description="The catalog ID"),
+        asset_id: str = Path(..., description="The asset ID"),
+        process_id: str = Path(
+            ...,
+            description="The asset process ID (e.g. ``download``, ``ingest``).",
+            examples=["download"],
+        ),
+    ):
+        """Dispatches to the registered ``AssetProcessProtocol`` implementor."""
+        return await self._invoke_process(
+            request, catalog_id, asset_id, process_id, collection_id=None
+        )
+
+    async def invoke_collection_asset_process(
+        self,
+        request: Request,
+        catalog_id: str = Path(..., description="The catalog ID"),
+        collection_id: str = Path(..., description="The collection ID"),
+        asset_id: str = Path(..., description="The asset ID"),
+        process_id: str = Path(
+            ...,
+            description="The asset process ID (e.g. ``download``, ``ingest``).",
+            examples=["download"],
+        ),
+    ):
+        """Dispatches to the registered ``AssetProcessProtocol`` implementor."""
+        return await self._invoke_process(
+            request, catalog_id, asset_id, process_id, collection_id=collection_id
+        )
