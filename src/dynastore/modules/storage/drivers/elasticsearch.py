@@ -1211,7 +1211,7 @@ class CollectionElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol
             bulk_body.append(doc)
 
         if bulk_body:
-            await es.bulk(body=bulk_body)
+            await es.bulk(body=bulk_body, request_timeout=60)
 
         return items if isinstance(items, list) else list(items)
 
@@ -1461,7 +1461,7 @@ class CollectionElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol
                 bulk_body.append({"index": {"_index": index_name, "_id": geoid}})
                 bulk_body.append(doc)
             if bulk_body:
-                await es.bulk(body=bulk_body)
+                await es.bulk(body=bulk_body, request_timeout=60)
         except Exception as e:
             logger.error(
                 "ObfuscatedDriver: bulk index failed for %s/%s: %s",
@@ -1752,7 +1752,7 @@ class AssetElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
             bulk_body.append(doc)
 
         if bulk_body:
-            await es.bulk(body=bulk_body)
+            await es.bulk(body=bulk_body, request_timeout=60)
 
         return items if isinstance(items, list) else list(items)
 
