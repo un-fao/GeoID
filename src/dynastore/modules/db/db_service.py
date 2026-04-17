@@ -89,6 +89,10 @@ class DBService(ModuleProtocol, DatabaseProtocol):
         # Legacy method for backward compatibility
         return self.engine
 
+    async def apply_connection_adapters(self, connection: Any) -> None:
+        """asyncpg handles JSONB natively — no-op for async connections."""
+        return
+
     @asynccontextmanager
     async def lifespan(self, app_state: DBServiceAppState):
         """

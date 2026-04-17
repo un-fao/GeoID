@@ -78,8 +78,6 @@ from dynastore.modules.storage.router import (
     resolve_drivers,
 )
 from dynastore.modules.storage.config_cache import (
-    RouterCacheInvalidator,
-    publish_router_invalidation,
     init_request_driver_cache,
     clear_request_driver_cache,
     get_request_driver_cache,
@@ -141,8 +139,6 @@ __all__ = [
     "get_asset_driver",
     "get_asset_write_drivers",
     # Cache (M6)
-    "RouterCacheInvalidator",
-    "publish_router_invalidation",
     "init_request_driver_cache",
     "clear_request_driver_cache",
     "get_request_driver_cache",

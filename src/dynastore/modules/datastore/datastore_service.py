@@ -17,6 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
+from psycopg2.extras import register_default_jsonb, register_default_json
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from contextlib import asynccontextmanager
@@ -78,6 +79,11 @@ class DatastoreModule(ModuleProtocol, DatabaseProtocol):
         from dynastore.tools.protocol_helpers import get_engine
 
         return get_engine()
+
+    async def apply_connection_adapters(self, connection: Any) -> None:
+        """Register psycopg2 type adapters (JSONB, JSON)."""
+        register_default_jsonb(connection)
+        register_default_json(connection)
 
     @asynccontextmanager
     async def lifespan(self, app_state: DatastoreAppState):

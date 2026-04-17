@@ -21,7 +21,7 @@ import json
 import inspect
 from typing import Optional, Dict, Any, Type, Union, TYPE_CHECKING
 from dynastore.tools.cache import cached
-from dynastore.modules.storage.config_cache import publish_router_invalidation
+from dynastore.modules.storage.router import invalidate_router_cache
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     ResultHandler,
@@ -426,7 +426,7 @@ class ConfigService(ConfigsProtocol):
         _catalog_config_cache.cache_invalidate(
             self.engine, self._get_catalog_manager(), catalog_id, class_key
         )
-        publish_router_invalidation(catalog_id, None)
+        invalidate_router_cache(catalog_id, None)
 
     async def _set_collection_config(
         self,
@@ -512,7 +512,7 @@ class ConfigService(ConfigsProtocol):
         _collection_config_cache.cache_invalidate(
             self.engine, self._get_catalog_manager(), catalog_id, collection_id, class_key
         )
-        publish_router_invalidation(catalog_id, collection_id)
+        invalidate_router_cache(catalog_id, collection_id)
 
     async def list_configs(
         self,
@@ -772,7 +772,7 @@ class ConfigService(ConfigsProtocol):
                 _catalog_config_cache.cache_invalidate(
                     self.engine, self.catalog_manager, catalog_id, class_key
                 )
-                publish_router_invalidation(catalog_id, None)
+                invalidate_router_cache(catalog_id, None)
                 return True
         return False
 
@@ -809,6 +809,6 @@ class ConfigService(ConfigsProtocol):
                     collection_id,
                     class_key,
                 )
-                publish_router_invalidation(catalog_id, collection_id)
+                invalidate_router_cache(catalog_id, collection_id)
                 return True
         return False

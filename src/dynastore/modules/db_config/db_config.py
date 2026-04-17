@@ -19,12 +19,7 @@
 import os
 import dynastore.tools.class_tools as class_tools
 from typing import List
-from psycopg2.extras import register_default_jsonb, register_default_json
-# Register a global handler to ensure that all JSONB data from PostgreSQL
-    # is automatically parsed into Python dictionaries by the psycopg2 driver.
-    # This is the most robust way to handle JSONB types.
-# register_default_jsonb(globally=True)
-# register_default_json(globally=True)
+
 class DBConfig:
     database_url: str = os.getenv(
         "DATABASE_URL", "postgresql://testuser:testpassword@db:5432/gis_dev"

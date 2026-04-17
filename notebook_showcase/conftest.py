@@ -259,6 +259,14 @@ def pytest_sessionstart(session):
     IPyNbCell collection items don't reliably trigger function-level autouse
     fixtures, but session hooks always fire.
     """
+    # Default DATABASE_URL for notebooks that advertise the PG SqlCatalog URL
+    # (iceberg/duckdb). The platform derives the actual catalog URI server-side
+    # from DBConfig — the value in DATABASE_URL is documentary only, but the
+    # iceberg notebook guards on scheme, so we give it a valid host URL.
+    os.environ.setdefault(
+        "DATABASE_URL",
+        "postgresql+psycopg2://testuser:testpassword@localhost:54320/gis_dev",
+    )
     token = _resolve_token()
     _SESSION_STATE["token"] = token
     if not token:

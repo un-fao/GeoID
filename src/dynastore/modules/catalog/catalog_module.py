@@ -292,16 +292,11 @@ class CatalogModule(ModuleProtocol):
                     "event consumer not started."
                 )
 
-            # 7. Start router-cache invalidation subscriber (L2 cross-worker coherence)
-            from dynastore.modules.storage.config_cache import RouterCacheInvalidator
-            await RouterCacheInvalidator.start()
-
             try:
                 yield
             finally:
                 _consumer_shutdown.set()
                 await self.event_service.stop_consumer()
-                await RouterCacheInvalidator.stop()
                 # Services cleanup handled by AsyncExitStack (stack.close() via __aexit__)
 
     # === Private service accessors (assert-narrowed for pyright) ===

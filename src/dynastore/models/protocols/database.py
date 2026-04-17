@@ -58,6 +58,11 @@ class DatabaseProtocol(Protocol):
     def get_any_engine(self) -> Optional[Union[AsyncEngine, Engine]]:
         ...
 
+    async def apply_connection_adapters(self, connection: Any) -> None:
+        """Called once per newly-acquired connection. Drivers register
+        type adapters (e.g. psycopg2 JSONB) or no-op as appropriate."""
+        ...
+
 
 # --- Generic Database Type Abstractions ---
 

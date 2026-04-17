@@ -42,7 +42,7 @@ module_metadata_elasticsearch = ["dynastore[module_elasticsearch]"]
 module_catalog = ["dynastore[geospatial_core]", "sqlalchemy>=2.0.0"]
 module_gcp = ["gcloud-aio-storage==9.6.0", "google-cloud-bigquery==3.24.0", "google-cloud-run", "google-cloud-storage>=3.1.0", "google-cloud-pubsub", "gcsfs>=2024.5.0", "charset-normalizer", "httpx"]
 module_datastore = ["dynastore[db_sync]", "psycopg2-binary>=2.9.7"]
-module_db_config = ["psycopg2-binary>=2.9.7", "sqlalchemy", "geoalchemy2", "h3>=4.4.2", "s2sphere>=0.2.5", "python-dateutil"]
+module_db_config = ["sqlalchemy", "geoalchemy2", "h3>=4.4.2", "s2sphere>=0.2.5", "python-dateutil"]
 module_iam = ["pydantic[email]", "PyJWT>=2.0.0"]
 module_db = ["dynastore[db_async]", "sqlalchemy[asyncio]", "asyncpg"]
 module_crs = ["dynastore[geospatial_core]", "pyproj>=3.0.0"]
@@ -173,7 +173,7 @@ db_sync = ["dynastore[db_config,datastore]"]
 #   *  processes    — standalone; on catalog (cloud) or worker (on-prem)
 #
 # ==========================================================================
-core = ["dynastore[db_async,web,configs,events,storage]"]
+core = ["dynastore[db_async,web,configs,events,storage,cache]"]
 catalog_grp = ["dynastore[geospatial_core,catalog,features,stac,assets,search,extension_records]"]
 maps_grp = ["dynastore[styles,maps,extension_wfs,tiles,crs,gdal,extension_coverages]"]
 google_grp = ["dynastore[gcp,extension_dwh]"]
