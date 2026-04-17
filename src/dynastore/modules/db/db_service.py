@@ -17,7 +17,6 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import create_async_engine

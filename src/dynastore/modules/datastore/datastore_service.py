@@ -27,8 +27,6 @@ from dynastore.modules.db_config.tools import (
     ensure_init_db,
     normalize_db_url,
 )
-from dynastore.modules.db_config.query_executor import managed_transaction
-import os
 from dynastore.modules import ModuleProtocol
 from typing import Optional, Any, Protocol, runtime_checkable
 

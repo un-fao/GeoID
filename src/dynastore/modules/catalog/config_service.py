@@ -38,10 +38,8 @@ from dynastore.modules.db_config.platform_config_service import (
     enforce_config_immutability,
     require_config_class,
     resolve_config_class,
-    list_registered_configs,
     _register_schema,
 )
-from dynastore.modules.db_config.maintenance_tools import ensure_schema_exists
 from dynastore.modules.db_config.locking_tools import check_table_exists
 from dynastore.modules.db_config.typed_store.ddl import (
     CATALOG_CONFIGS_TABLE,
@@ -50,10 +48,9 @@ from dynastore.modules.db_config.typed_store.ddl import (
 from dynastore.modules.db_config.typed_store import config_queries as _cq
 from dynastore.models.protocols import ConfigsProtocol, CatalogsProtocol
 from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
-from .catalog_config import CollectionPluginConfig
 
 if TYPE_CHECKING:
-    from dynastore.modules.catalog.catalog_module import CatalogModule
+    pass
 
 logger = logging.getLogger(__name__)
 

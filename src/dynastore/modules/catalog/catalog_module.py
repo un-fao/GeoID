@@ -31,9 +31,8 @@ by delegating to its internal services.
 
 import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, List, Optional, Any, Dict, Union, Set, AsyncIterator
+from typing import TYPE_CHECKING, List, Optional, Any, Dict, Union, Set
 
 if TYPE_CHECKING:
     from dynastore.models.shared_models import CatalogUpdate, CollectionUpdate
@@ -41,24 +40,18 @@ if TYPE_CHECKING:
     from geojson_pydantic import Feature
     from dynastore.models.query_builder import QueryResponse
 
-import dynastore.modules as dm
 from dynastore.modules import ModuleProtocol
 from dynastore.modules.db_config.query_executor import (
-    DbResource,
     managed_transaction,
     DDLQuery,
-    DQLQuery,
-    ResultHandler,
 )
 from dynastore.modules.db_config.maintenance_tools import (
     ensure_schema_exists,
-    acquire_startup_lock,
 )
 from dynastore.tools.protocol_helpers import get_engine
 from dynastore.modules.catalog.models import (
     Catalog,
     Collection,
-    LocalizedText,
 )
 from dynastore.models.protocols import (
     CatalogsProtocol,
@@ -66,9 +59,7 @@ from dynastore.models.protocols import (
     CollectionsProtocol,
     AssetsProtocol,
     ConfigsProtocol,
-    LogsProtocol,
     DatabaseProtocol,
-    PropertiesProtocol,
     LocalizationProtocol,
 )
 from dynastore.tools.discovery import register_plugin, get_protocol
@@ -145,7 +136,6 @@ CREATE TABLE IF NOT EXISTS catalog.shared_properties (
 );
 """
 
-from dynastore.modules import ModuleProtocol
 
 _module_instance: Optional[ModuleProtocol] = None
 class CatalogModule(ModuleProtocol):
@@ -234,7 +224,6 @@ class CatalogModule(ModuleProtocol):
             # 4. Initialize Storage & Schemas
             # Hub/sidecar creation is handled by CollectionPostgresqlDriver.ensure_storage()
             # which is called from _create_collection_internal(). No lifecycle hook needed.
-            from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
 
             async with managed_transaction(engine) as conn:
                 await ensure_schema_exists(conn, "catalog")

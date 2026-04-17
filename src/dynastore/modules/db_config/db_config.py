@@ -18,7 +18,6 @@
 
 import os
 import dynastore.tools.class_tools as class_tools
-from typing import List
 
 class DBConfig:
     database_url: str = os.getenv(
