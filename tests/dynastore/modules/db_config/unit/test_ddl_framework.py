@@ -1,0 +1,234 @@
+"""Unit tests for the DDL framework primitives.
+
+Covers the moving parts shipped during the v0.4.10–v0.4.17 series:
+
+- ``split_ddl`` strips ``--`` line comments before splitting on ``;`` so a
+  semicolon inside a comment doesn't produce a spurious statement.
+- ``_infer_existence_check`` extracts ``(schema, table, trigger_name)`` from
+  ``CREATE TRIGGER ... ON schema.table`` so per-relation triggers don't
+  cross-match within a schema.
+- ``check_trigger_exists`` accepts an optional ``table`` discriminator.
+- ``DDLQuery.check_query`` callable accepts both ``()`` and ``(conn,)``.
+- ``DDLBatch.execute`` short-circuits on a sentinel that returns ``True``
+  and runs every step when it returns ``False``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
+from typing import Any, List
+
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# split_ddl
+# ---------------------------------------------------------------------------
+
+
+def test_split_ddl_strips_line_comments_before_splitting():
+    from dynastore.modules.db_config.query_executor import split_ddl
+
+    out = split_ddl("-- comment; with semi\nCREATE TABLE a(id int);\nCREATE TABLE b(id int);")
+    assert out == ["CREATE TABLE a(id int)", "CREATE TABLE b(id int)"]
+
+
+def test_split_ddl_preserves_semicolons_inside_dollar_quoted_blocks():
+    from dynastore.modules.db_config.query_executor import split_ddl
+
+    sql = (
+        "CREATE FUNCTION f() RETURNS void AS $$\n"
+        "BEGIN\n"
+        "  PERFORM 1; PERFORM 2;\n"
+        "END;\n"
+        "$$ LANGUAGE plpgsql;\n"
+        "CREATE TABLE t(id int);"
+    )
+    out = split_ddl(sql)
+    assert len(out) == 2
+    assert "PERFORM 1; PERFORM 2;" in out[0]
+    assert out[1].startswith("CREATE TABLE t")
+
+
+def test_split_ddl_preserves_semicolons_inside_single_quoted_strings():
+    from dynastore.modules.db_config.query_executor import split_ddl
+
+    sql = "INSERT INTO t VALUES ('a;b;c'); CREATE TABLE u(id int);"
+    out = split_ddl(sql)
+    assert out == ["INSERT INTO t VALUES ('a;b;c')", "CREATE TABLE u(id int)"]
+
+
+# ---------------------------------------------------------------------------
+# _infer_existence_check — CREATE TRIGGER
+# ---------------------------------------------------------------------------
+
+
+def test_infer_trigger_check_extracts_schema_and_table_from_on_clause():
+    from dynastore.modules.db_config.ddl_inference import _infer_existence_check
+
+    check = _infer_existence_check(
+        "CREATE TRIGGER my_trg AFTER INSERT ON myschema.mytable "
+        "FOR EACH ROW EXECUTE FUNCTION myschema.notify();"
+    )
+    assert check is not None  # gate no longer requires a {placeholder}
+
+
+def test_infer_trigger_check_supports_quoted_identifiers():
+    from dynastore.modules.db_config.ddl_inference import _infer_existence_check
+
+    check = _infer_existence_check(
+        'CREATE TRIGGER my_trg AFTER INSERT ON "events"."events" '
+        "EXECUTE FUNCTION events.notify();"
+    )
+    assert check is not None
+
+
+def test_infer_create_table_partition_of_returns_none():
+    """PARTITION OF must not get auto-inference (parent's check is enough)."""
+    from dynastore.modules.db_config.ddl_inference import _infer_existence_check
+
+    check = _infer_existence_check(
+        "CREATE TABLE IF NOT EXISTS events.events_s0 "
+        "PARTITION OF events.events FOR VALUES IN (0);"
+    )
+    assert check is None
+
+
+def test_infer_drop_returns_none():
+    from dynastore.modules.db_config.ddl_inference import _infer_existence_check
+
+    assert _infer_existence_check("DROP TABLE foo;") is None
+    assert _infer_existence_check("ALTER TABLE foo ADD COLUMN bar int;") is None
+
+
+# ---------------------------------------------------------------------------
+# check_trigger_exists — table parameter
+# ---------------------------------------------------------------------------
+
+
+def test_check_trigger_exists_signature_has_table_kwarg():
+    from dynastore.modules.db_config.locking_tools import check_trigger_exists
+
+    sig = inspect.signature(check_trigger_exists)
+    assert "table" in sig.parameters
+    assert sig.parameters["table"].default is None  # backward-compatible
+
+
+# ---------------------------------------------------------------------------
+# DDLQuery.check_query callable contract
+# ---------------------------------------------------------------------------
+
+
+class _FakeConn:
+    """Minimal stand-in. DDLQuery's _existence_check_impl only inspects the
+    callable's signature and dispatches; it doesn't introspect the conn.
+    """
+
+
+def _run(coro):
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
+def test_ddlquery_accepts_zero_arg_check_query():
+    from dynastore.modules.db_config.query_executor import DDLQuery
+
+    calls: List[Any] = []
+
+    def zero_arg():
+        calls.append(("zero",))
+        return True
+
+    q = DDLQuery("CREATE TABLE IF NOT EXISTS t(id int);", check_query=zero_arg)
+    fn = q._executor.existence_check  # the wrapped impl
+    assert fn is not None
+    assert _run(fn(_FakeConn(), {})) is True
+    assert calls == [("zero",)]
+
+
+def test_ddlquery_accepts_one_arg_check_query_with_conn():
+    from dynastore.modules.db_config.query_executor import DDLQuery
+
+    received: List[Any] = []
+
+    def one_arg(conn):
+        received.append(conn)
+        return True
+
+    q = DDLQuery("CREATE TABLE IF NOT EXISTS t(id int);", check_query=one_arg)
+    sentinel_conn = _FakeConn()
+    assert _run(q._executor.existence_check(sentinel_conn, {})) is True
+    assert received == [sentinel_conn]
+
+
+# ---------------------------------------------------------------------------
+# DDLBatch — sentinel short-circuits or fans out
+# ---------------------------------------------------------------------------
+
+
+class _RecordingDDLQuery:
+    """Stand-in that records execute() calls without touching a real DB."""
+
+    def __init__(self, name: str, log: List[str], existence_check_returns: bool = False):
+        self.name = name
+        self.log = log
+        self._executor = self
+        self.existence_check = self._check
+        self._raw_params: dict = {}
+
+    def _check(self, *_a, **_kw):
+        async def _ret():
+            return self._existence_check_returns
+        return _ret()
+
+    async def _call_existence_check(self, _conn, _params):
+        return self._existence_check_returns
+
+    async def execute(self, _conn, **_kwargs):
+        self.log.append(self.name)
+
+
+def test_ddlbatch_short_circuits_when_sentinel_exists():
+    from dynastore.modules.db_config.query_executor import DDLBatch
+
+    log: List[str] = []
+    sentinel = _RecordingDDLQuery("sentinel", log)
+    sentinel._existence_check_returns = True
+
+    s1 = _RecordingDDLQuery("s1", log)
+    s2 = _RecordingDDLQuery("s2", log)
+
+    batch = DDLBatch(sentinel=sentinel, steps=[s1, s2])
+    _run(batch.execute(_FakeConn()))
+
+    # Sentinel returned True → no step ran.
+    assert log == []
+
+
+def test_ddlbatch_runs_steps_when_sentinel_missing():
+    from dynastore.modules.db_config.query_executor import DDLBatch
+
+    log: List[str] = []
+    sentinel = _RecordingDDLQuery("sentinel", log)
+    sentinel._existence_check_returns = False
+
+    s1 = _RecordingDDLQuery("s1", log)
+    s2 = _RecordingDDLQuery("s2", log)
+
+    batch = DDLBatch(sentinel=sentinel, steps=[s1, s2])
+    _run(batch.execute(_FakeConn()))
+
+    # Sentinel False → all steps executed in order.
+    assert log == ["s1", "s2"]
+
+
+# ---------------------------------------------------------------------------
+# DDLQuery no longer accepts the dead lock_key kwarg (v0.4.16)
+# ---------------------------------------------------------------------------
+
+
+def test_ddlquery_rejects_lock_key_kwarg():
+    from dynastore.modules.db_config.query_executor import DDLQuery
+
+    with pytest.raises(TypeError):
+        DDLQuery("CREATE TABLE IF NOT EXISTS t(id int);", lock_key="foo")  # type: ignore[call-arg]

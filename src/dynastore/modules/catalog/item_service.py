@@ -373,14 +373,32 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
             return results[0] if is_single else results
 
-        # ── Branch B: PostgreSQL primary (existing path, untouched) ──────
-        async with managed_transaction(db_resource or self.engine) as conn:
-            # Fetch generic collection config (driver-agnostic)
+        # ── Branch B: PostgreSQL primary ─────────────────────────────────
+        # Three-phase ingestion. Each phase opens the narrowest possible
+        # connection so no single thread holds a write transaction across
+        # the whole batch.
+        #
+        #   1. Resolve config + sidecars + physical table (read-only, brief)
+        #   2. Prepare every item in memory (no DB) and dedupe partition keys
+        #   3. DDL: pre-create the unique partitions (separate brief tx)
+        #   4. Write: chunked write transactions; each commits its hub +
+        #      sidecar inserts before yielding the conn back to the pool.
+        #      No per-item read-back inside the write tx — that used to
+        #      accumulate AccessShare locks on every iteration.
+        #   5. Read-back: one bulk SELECT WHERE geoid = ANY(:geoids) on a
+        #      separate read conn, after writes have committed.
+        engine = db_resource or self.engine
+        from dynastore.tools.identifiers import generate_geoid
+        import os as _os
+
+        # Phase 1 — config + sidecars + physical table
+        async with managed_transaction(engine) as conn:
             _configs = get_protocol(ConfigsProtocol)
             assert _configs is not None, "ConfigsProtocol not registered"
             collection_config = await _configs.get_config(
-                CollectionPluginConfig, catalog_id, collection_id, ctx=DriverContext(db_resource=conn
-            ))
+                CollectionPluginConfig, catalog_id, collection_id,
+                ctx=DriverContext(db_resource=conn),
+            )
             max_bulk = getattr(collection_config, "max_bulk_features", 10000)
             if len(items_list) > max_bulk:
                 raise ValueError(
@@ -391,144 +409,137 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
             assert primary is not None, "primary driver required for PostgreSQL write path"
             col_config = await primary.driver.get_driver_config(
-                catalog_id, collection_id, db_resource=conn
+                catalog_id, collection_id, db_resource=conn,
             )
 
-            # Resolve Physical Table (Hub)
             phys_table = await self._resolve_physical_table(
-                catalog_id, collection_id, db_resource=conn
+                catalog_id, collection_id, db_resource=conn,
             )
             if not phys_table:
-                # Fallback to promotion if missing (legacy)
                 await self.ensure_physical_table_exists(
-                    catalog_id, collection_id, col_config, db_resource=conn
+                    catalog_id, collection_id, col_config, db_resource=conn,
                 )
                 phys_table = await self._resolve_physical_table(
-                    catalog_id, collection_id, db_resource=conn
+                    catalog_id, collection_id, db_resource=conn,
                 )
 
             phys_schema = await self._resolve_physical_schema(
-                catalog_id, db_resource=conn
+                catalog_id, db_resource=conn,
             )
 
-            # Instantiate Sidecars
-            sidecars = []
+            sidecars: List[Any] = []
             if col_config.sidecars:
                 from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
 
                 for sc_config in col_config.sidecars:
-                    sc = SidecarRegistry.get_sidecar(sc_config)
-                    sidecars.append(sc)
+                    sidecars.append(SidecarRegistry.get_sidecar(sc_config))
 
-            created_rows = []
+            # Run item_metadata before attributes so its in-place prune of
+            # feature.properties takes effect before attributes captures them.
+            _PRUNE_FIRST = {"item_metadata"}
+            sidecars_ordered = sorted(
+                sidecars, key=lambda s: (0 if s.sidecar_id in _PRUNE_FIRST else 1),
+            )
 
-            for item_data in items_list:
-                # 1. Normalize Input to Dict
-                raw_item = {}
-                if hasattr(item_data, "model_dump"):
-                    raw_item = getattr(item_data, "model_dump")(by_alias=True, exclude_unset=True)
-                elif isinstance(item_data, dict):
-                    raw_item = item_data
-                else:
-                    raise ValueError(f"Unsupported item type: {type(item_data)}")
+        # Phase 2 — prepare every item in memory; dedupe partition keys
+        prepared: List[Dict[str, Any]] = []
+        unique_partition_values: set = set()
+        for item_data in items_list:
+            if hasattr(item_data, "model_dump"):
+                raw_item = item_data.model_dump(by_alias=True, exclude_unset=True)
+            elif isinstance(item_data, dict):
+                raw_item = item_data
+            else:
+                raise ValueError(f"Unsupported item type: {type(item_data)}")
 
-                # 2. Sidecar Processing
-                sidecar_payloads: Dict[str, Dict[str, Any]] = {}
-                from dynastore.tools.identifiers import generate_geoid
+            geoid = generate_geoid()
+            item_context: Dict[str, Any] = {
+                "geoid": geoid,
+                "operation": "insert",
+                "_raw_item": raw_item,
+                **(processing_context or {}),
+            }
+            hub_payload: Dict[str, Any] = {
+                "geoid": geoid,
+                "transaction_time": datetime.now(timezone.utc),
+                "deleted_at": None,
+            }
+            sidecar_payloads: Dict[str, Dict[str, Any]] = {}
+            partition_values: Dict[str, Any] = {}
 
-                geoid = generate_geoid()
-
-                # Context for sidecars (Fresh for each item to avoid leakage)
-                item_context = {
-                    "geoid": geoid,
-                    "operation": "insert",
-                    "_raw_item": raw_item,  # Preserve for place stats and other sidecar extensions
-                    **(processing_context or {}),
-                }
-
-                # Hub Payload (Base identity and temporal)
-                hub_payload = {
-                    "geoid": geoid,
-                    "transaction_time": datetime.now(timezone.utc),
-                    "deleted_at": None,
-                }
-
-                # Extract partition keys if any
-                partition_values = {}
-
-                # Run item_metadata before attributes so its in-place prune of
-                # feature.properties takes effect before attributes captures them.
-                _PRUNE_FIRST = {"item_metadata"}
-                sidecars_ordered = sorted(
-                    sidecars, key=lambda s: (0 if s.sidecar_id in _PRUNE_FIRST else 1)
-                )
-
-                for sidecar in sidecars_ordered:
-                    # A. Validation
-                    val_result = sidecar.validate_insert(raw_item, item_context)
-                    if not val_result.valid:
-                        raise ValueError(
-                            f"Sidecar {sidecar.sidecar_id} rejected item: {val_result.error}"
-                        )
-
-                    # B. Prepare Payload
-                    sc_payload = sidecar.prepare_upsert_payload(raw_item, item_context)
-                    if sc_payload:
-                        sidecar_payloads[sidecar.sidecar_id] = sc_payload
-
-                        # C. Capture Partition Key matching (using protocol methods)
-                        for pk in sidecar.get_partition_keys():
-                            if pk in sc_payload:
-                                partition_values[pk] = sc_payload[pk]
-                                item_context[pk] = sc_payload[pk]
-
-                # 4. Insert/Update Logic (Distributed)
-                # Ensure Partitions exist for Hub
-                if col_config.partitioning.enabled and partition_values:
-                    # For simplicity, we assume one level of list partitioning for the tool helper
-                    # If composite, we might need a more complex helper.
-                    # Currently dynastore handles simple list/range.
-                    p_val = (
-                        list(partition_values.values())[0] if partition_values else None
+            for sidecar in sidecars_ordered:
+                val_result = sidecar.validate_insert(raw_item, item_context)
+                if not val_result.valid:
+                    raise ValueError(
+                        f"Sidecar {sidecar.sidecar_id} rejected item: {val_result.error}"
                     )
+                sc_payload = sidecar.prepare_upsert_payload(raw_item, item_context)
+                if sc_payload:
+                    sidecar_payloads[sidecar.sidecar_id] = sc_payload
+                    for pk in sidecar.get_partition_keys():
+                        if pk in sc_payload:
+                            partition_values[pk] = sc_payload[pk]
+                            item_context[pk] = sc_payload[pk]
+
+            hub_payload.update(partition_values)
+            if col_config.partitioning.enabled and partition_values:
+                # Single-level partitioning today — first value is the partition key.
+                unique_partition_values.add(next(iter(partition_values.values())))
+
+            prepared.append({
+                "geoid": geoid,
+                "hub_payload": hub_payload,
+                "sidecar_payloads": sidecar_payloads,
+                "item_context": item_context,
+            })
+
+        # Phase 3 — pre-create unique partitions on a brief DDL conn so the
+        # write tx isn't holding a write lock during DDL coordination.
+        if col_config.partitioning.enabled and unique_partition_values:
+            async with managed_transaction(engine) as ddl_conn:
+                for p_val in unique_partition_values:
                     await self.ensure_partition_exists(
-                        catalog_id, collection_id, col_config, p_val, ctx=DriverContext(db_resource=conn)
+                        catalog_id, collection_id, col_config, p_val,
+                        ctx=DriverContext(db_resource=ddl_conn),
                     )
 
-                # Add partition keys to hub if missing
-                hub_payload.update(partition_values)
-
-                # Perform Distributed Upsert
-                new_row = await self.insert_or_update_distributed(
-                    conn,
-                    catalog_id,
-                    collection_id,
-                    hub_payload,
-                    sidecar_payloads,
-                    col_config=col_config,
-                    sidecars=sidecars,
-                    processing_context=item_context,
-                )
-
-                if new_row:
-                    created_rows.append(new_row)
-
-                    # 5. Post-Insert Hooks (Lifecycle)
-                    # e.g. notifies, or side-effects
-                    for sidecar in sidecars:
-                        # await sidecar.on_item_created(...) # If exists
-                        pass
-                else:
-                    # Generic error if upsert fails
-                    logger.error(
-                        f"FATAL: insert_or_update_distributed returned None for geoid: {geoid}"
+        # Phase 4 — chunked writes. Each chunk commits its own tx; row locks
+        # are released between chunks instead of accumulating across the whole
+        # ingestion. Tunable via env (default 500 — typical pentadal/dekadal
+        # batches under this commit cleanly in one chunk).
+        chunk_size = int(_os.getenv("DYNASTORE_INGEST_CHUNK", "500"))
+        write_results: List[Dict[str, Any]] = []
+        for start in range(0, len(prepared), chunk_size):
+            chunk = prepared[start:start + chunk_size]
+            async with managed_transaction(engine) as conn:
+                for plan in chunk:
+                    new_row = await self.insert_or_update_distributed(
+                        conn,
+                        catalog_id,
+                        collection_id,
+                        plan["hub_payload"],
+                        plan["sidecar_payloads"],
+                        col_config=col_config,
+                        sidecars=sidecars,
+                        processing_context=plan["item_context"],
                     )
-                    raise RuntimeError(f"Failed to upsert item. Geoid: {geoid}")
+                    if new_row is None:
+                        logger.error(
+                            f"FATAL: insert_or_update_distributed returned None for geoid: {plan['geoid']}"
+                        )
+                        raise RuntimeError(
+                            f"Failed to upsert item. Geoid: {plan['geoid']}"
+                        )
+                    write_results.append(new_row)
 
-            # created_rows already contains Feature objects from
-            # _execute_distributed_insert / _execute_distributed_update
-            # (which call map_row_to_feature internally).
-            results = created_rows
+        # Phase 5 — bulk read-back on a fresh conn, post-commit. One SELECT
+        # for the whole batch (vs N inside the write tx). Preserves input
+        # order so callers can correlate results 1:1 with the request.
+        result_geoids = [r["geoid"] for r in write_results]
+        async with managed_transaction(engine) as read_conn:
+            results = await self.fetch_features_bulk(
+                read_conn, phys_schema, phys_table, result_geoids, col_config,
+            )
 
         # ── Post-commit: fan-out to secondary drivers ──────────────────
         if results:
