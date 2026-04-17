@@ -103,12 +103,45 @@ def _ensure_catalog(client: httpx.Client) -> bool:
         "stac_version": "1.0.0",
     })
     if r.status_code in (200, 201):
+        _mark_catalog_ready()
         return True
     if r.status_code == 409:
+        _mark_catalog_ready()
         return False
     raise RuntimeError(
         f"Failed to create {CATALOG_ID}: {r.status_code} {r.text[:400]}"
     )
+
+
+def _mark_catalog_ready() -> None:
+    """Flip ``provisioning_status`` to ``ready`` via direct DB update.
+
+    Catalogs start in ``provisioning`` whenever a StorageProtocol implementer
+    is registered (GcpModule always is, even in dev). The async provisioning
+    task then calls ``setup_catalog_gcp_resources`` — which fails in dev
+    without real GCP credentials — so the catalog is stuck in ``provisioning``
+    and upload/ingest endpoints 503. For the showcase we bypass that.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("docker"):
+        return
+    try:
+        subprocess.run(
+            [
+                "docker", "exec", "geoid_db",
+                "psql", "-U", "testuser", "-d", "gis_dev", "-v", "ON_ERROR_STOP=1",
+                "-c",
+                f"UPDATE catalog.catalogs SET provisioning_status = 'ready' "
+                f"WHERE id = '{CATALOG_ID}';",
+            ],
+            check=False,
+            capture_output=True,
+            timeout=10,
+        )
+    except Exception:
+        pass
 
 
 def _ensure_collection(client: httpx.Client) -> bool:
