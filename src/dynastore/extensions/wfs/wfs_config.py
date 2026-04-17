@@ -12,17 +12,16 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-from typing import ClassVar, List, Optional
+from typing import List
 from pydantic import Field
 from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 
-class WFSPluginConfig(PluginConfig):
+class WFSPluginConfig(ExposableConfigMixin, PluginConfig):
     """
     Runtime configuration for the WFS extension.
     Controls caching and visibility.
     """
-    enabled: bool = Field(True, description="If False, WFS requests will be rejected.")
-    
     # Caching
     cache_on_demand: bool = Field(
         False, # Default to False for WFS as it might handle large geometries

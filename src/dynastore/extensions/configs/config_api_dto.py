@@ -1,7 +1,7 @@
 """DTOs for the centralised Config API endpoints (/configs/.../config)."""
 
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, RootModel
 
 
 class ResolvedDriverEntry(BaseModel):
@@ -115,3 +115,13 @@ class PlatformConfigResponse(BaseModel):
             "Paginated child categories: 'catalogs'. Null if depth=0."
         ),
     )
+
+
+class PatchConfigBody(RootModel[Dict[str, Optional[Dict[str, Any]]]]):
+    """Partial composed configuration.
+
+    Keys: plugin_id (class key). Values:
+      - non-null dict: partial merge into the stored config at this scope.
+      - null: delete the stored record at this scope (revert to inherit / class default).
+    """
+    pass

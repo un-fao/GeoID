@@ -14,3 +14,5 @@ from dynastore.modules.catalog.log_manager import (
 )
 
 __all__ = ['log_event', 'log_info', 'log_warning', 'log_error', 'LogEntryCreate', 'LOG_SERVICE']
+
+from . import config  # noqa: F401  -- service-exposure plugin registration

@@ -1,0 +1,61 @@
+"""Parametrised coverage test: every togglable extension must inherit ExposableConfigMixin."""
+
+# Importing each extension/module package (not the .config submodule directly) is
+# sufficient for registration: each __init__.py now carries `from . import config`
+# which triggers auto-registration via PersistentModel.__init_subclass__.
+import dynastore.extensions.features  # noqa: F401
+import dynastore.extensions.wfs  # noqa: F401
+import dynastore.modules.tiles  # noqa: F401
+import dynastore.modules.stac  # noqa: F401
+import dynastore.modules.gcp  # noqa: F401
+import dynastore.extensions.maps  # noqa: F401
+import dynastore.extensions.coverages  # noqa: F401
+import dynastore.extensions.records  # noqa: F401
+import dynastore.extensions.processes  # noqa: F401
+import dynastore.extensions.dimensions  # noqa: F401
+import dynastore.extensions.dwh  # noqa: F401
+import dynastore.extensions.search  # noqa: F401
+import dynastore.modules.stats  # noqa: F401
+import dynastore.extensions.logs  # noqa: F401
+import dynastore.extensions.notebooks  # noqa: F401
+import dynastore.extensions.crs  # noqa: F401
+import dynastore.extensions.gdal  # noqa: F401
+import dynastore.extensions.assets  # noqa: F401
+import dynastore.extensions.styles  # noqa: F401
+
+import pytest
+from dynastore.extensions.tools.exposure_mixin import (
+    ExposableConfigMixin,
+    KNOWN_EXTENSION_IDS,
+    ALWAYS_ON_EXTENSIONS,
+)
+from dynastore.modules.db_config.platform_config_service import list_registered_configs
+
+
+TOGGLABLE = KNOWN_EXTENSION_IDS - ALWAYS_ON_EXTENSIONS
+
+
+@pytest.mark.parametrize("ext_id", sorted(TOGGLABLE))
+def test_togglable_has_exposable_config(ext_id):
+    """Every togglable extension MUST register at least one PluginConfig inheriting the mixin."""
+    classes = list_registered_configs().values()
+    matching = [
+        c for c in classes
+        if c.__module__.startswith(f"dynastore.extensions.{ext_id}")
+        or c.__module__.startswith(f"dynastore.modules.{ext_id}")
+    ]
+    assert matching, f"Extension '{ext_id}' registers no PluginConfig; add one (atomic design, no always-on hedge)."
+    assert any(issubclass(c, ExposableConfigMixin) for c in matching), (
+        f"Extension '{ext_id}' has no PluginConfig inheriting ExposableConfigMixin."
+    )
+
+
+def test_no_extension_redeclares_enabled_field():
+    """Inherited field only — do not shadow the mixin."""
+    for cls in list_registered_configs().values():
+        if not issubclass(cls, ExposableConfigMixin):
+            continue
+        own_fields = set(cls.__annotations__ or {})
+        assert "enabled" not in own_fields, (
+            f"{cls.__name__} shadows ExposableConfigMixin.enabled — remove the local field."
+        )

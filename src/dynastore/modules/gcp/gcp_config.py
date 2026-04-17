@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import Callable, ClassVar, Optional, Literal, List, Annotated, Dict, Any, Union, TYPE_CHECKING
 from datetime import date
 from dynastore.modules.db_config.platform_config_service import PluginConfig, Immutable
+from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 import os
 if TYPE_CHECKING:
     from dynastore.modules.gcp.gcp_module import GCPModule
@@ -155,7 +156,7 @@ class GcpCatalogBucketConfig(PluginConfig):
     )
 
 
-class GcpModuleConfig(PluginConfig):
+class GcpModuleConfig(ExposableConfigMixin, PluginConfig):
     """
     Defines global configurations for the GCP module.
     """

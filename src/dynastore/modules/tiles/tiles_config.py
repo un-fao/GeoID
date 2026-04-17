@@ -15,17 +15,15 @@
 from typing import List, Optional, Dict, Tuple
 from pydantic import Field, BaseModel
 from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.tools.geospatial import SimplificationAlgorithm
 
-class TilesConfig(PluginConfig):
+class TilesConfig(ExposableConfigMixin, PluginConfig):
     """
     Runtime configuration for the Tiles extension.
     Controls visibility, bounds, and on-the-fly generation settings.
     """
 
-    # Enabled by default if this config exists/is loaded.
-    enabled: bool = Field(True, description="If False, tile requests will be rejected.")
-    
     # Global mask/bounds
     bbox: Optional[List[Tuple[float, float, float, float]]] = Field(default=None, 
         description="Global bounding boxes for the collection/catalog. Requests outside these bounds return 404/Empty. If None, assumes world/max extent."

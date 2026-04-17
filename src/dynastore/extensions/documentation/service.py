@@ -1,17 +1,17 @@
 #    Copyright 2025 FAO
-# 
+#
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
 #    You may obtain a copy of the License at
-# 
+#
 #        http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 #    Unless required by applicable law or agreed to in writing, software
 #    distributed under the License is distributed on an "AS IS" BASIS,
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
-# 
+#
 #    Author: Carlo Cancellieri (ccancellieri@gmail.com)
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
@@ -21,16 +21,15 @@ import logging
 import os
 import re
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set
 
-from fastapi import APIRouter, FastAPI, Request, Response
-from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import HTMLResponse
 
-from .registry import ExtensionConfig
-from dynastore.extensions.tools.url import get_root_url
+from dynastore.extensions.registry import ExtensionConfig
+from dynastore.extensions.documentation._fastapi_docs import custom_swagger_ui_html
 
 logger = logging.getLogger(__name__)
+
 
 def configure_swagger_ui(app: FastAPI):
     """
@@ -39,7 +38,7 @@ def configure_swagger_ui(app: FastAPI):
     """
     if app.swagger_ui_parameters is None:
         app.swagger_ui_parameters = {}
-    
+
     app.swagger_ui_parameters.update({
         "docExpansion": "none",
         "persistAuthorization": True,
@@ -52,41 +51,12 @@ def configure_swagger_ui(app: FastAPI):
         if getattr(route, "path", "") == "/docs":
             app.router.routes.remove(route)
             logger.info("Removed default FastAPI /docs route to inject custom Swagger UI wrapper.")
-            
-    # Now we can safely add our own /docs handler
-    async def custom_swagger_ui_html(req: Request):
-        root_path = req.scope.get("root_path", "").rstrip("/")
-        openapi_url = root_path + app.openapi_url
-        oauth2_redirect_url = app.swagger_ui_oauth2_redirect_url
-        if oauth2_redirect_url:
-            oauth2_redirect_url = root_path + oauth2_redirect_url
-            
-        response = get_swagger_ui_html(
-            openapi_url=openapi_url,
-            title=app.title + " - Swagger UI",
-            oauth2_redirect_url=oauth2_redirect_url,
-            init_oauth=app.swagger_ui_init_oauth,
-            swagger_ui_parameters=app.swagger_ui_parameters,
-            swagger_favicon_url=f"{root_path}/web/static/dynastore.png"
-        )
-        
-        static_url = f"{root_path}/web/extension-static"
 
-        # --- CUSTOM JS INJECTION ---
-        # We inject BOTH URLs so the JS can load the common layout and the dark theme separately.
-        custom_js = f"""
-        <script>
-            window.SWAGGER_LAYOUT_CSS_URL = "{static_url}/swagger_common.css";
-            window.SWAGGER_THEME_CSS_URL = "{static_url}/swagger_theme.css";
-        </script>
-        <script src="{static_url}/swagger_custom.js"></script>
-        """
-        
-        original_content = bytes(response.body).decode("utf-8")
-        new_content = original_content.replace("</body>", f"{custom_js}</body>")
-        return HTMLResponse(new_content)
+    # Now we can safely add our own /docs handler using the extracted function
+    async def _docs_handler(req: Request):
+        return await custom_swagger_ui_html(app, req)
 
-    app.add_api_route("/docs", custom_swagger_ui_html, include_in_schema=False)
+    app.add_api_route("/docs", _docs_handler, include_in_schema=False)
 
 
 def setup_global_help_endpoint(app: FastAPI):
@@ -102,18 +72,17 @@ def setup_global_help_endpoint(app: FastAPI):
             import markdown
         except ImportError:
             return HTMLResponse("<h1>Documentation renderer (markdown) not installed</h1>", status_code=500)
-        
-        
+
         registry = getattr(request.app.state, "extension_docs_registry", {})
         readme_path = registry.get(name)
-        
+
         if not readme_path or not os.path.exists(readme_path):
             return HTMLResponse("<h1>Documentation not found</h1>", status_code=404)
-            
+
         try:
             with open(readme_path, "r", encoding="utf-8") as f:
                 md_content = f.read()
-            
+
             html_content = f"""
             <!DOCTYPE html>
             <html>
@@ -151,10 +120,10 @@ def setup_global_help_endpoint(app: FastAPI):
     route_path = "/_help/{name}"
     if not any(getattr(route, "path", None) == route_path for route in app.routes):
         app.add_api_route(
-            route_path, 
-            global_extension_help_handler, 
-            methods=["GET"], 
-            include_in_schema=False 
+            route_path,
+            global_extension_help_handler,
+            methods=["GET"],
+            include_in_schema=False,
         )
 
 
@@ -163,7 +132,7 @@ def enrich_extension_metadata(app: FastAPI, config: ExtensionConfig, router: API
     Checks for a README, creates the help route, and enriches OpenAPI tags.
     """
     extension_name = getattr(config.cls, "_registered_name", config.cls.__name__)
-    
+
     try:
         extension_dir = os.path.dirname(inspect.getfile(config.cls))
         readme_path = os.path.join(extension_dir, "readme.md")
@@ -171,9 +140,9 @@ def enrich_extension_metadata(app: FastAPI, config: ExtensionConfig, router: API
         if os.path.exists(readme_path):
             # 1. Register path in registry
             if not hasattr(app.state, "extension_docs_registry"):
-                 app.state.extension_docs_registry = {}
+                app.state.extension_docs_registry = {}
             app.state.extension_docs_registry[extension_name] = readme_path
-            
+
             # 2. Read content
             readme_content = ""
             try:
@@ -186,7 +155,7 @@ def enrich_extension_metadata(app: FastAPI, config: ExtensionConfig, router: API
             # Calculate safe_help_url — at enrichment time we have no Request,
             # so fall back to the app's root_path (set at FastAPI() construction).
             root_path_prefix = app.root_path.rstrip("/")
-            
+
             if not root_path_prefix.startswith("/"):
                 root_path_prefix = "/" + root_path_prefix
 
@@ -194,53 +163,55 @@ def enrich_extension_metadata(app: FastAPI, config: ExtensionConfig, router: API
 
             # --- 4. Determine Tags (MOVED UP for Header generation) ---
             tags_to_enrich = set()
-            if router.tags: tags_to_enrich.update(router.tags)
+            if router.tags:
+                tags_to_enrich.update(router.tags)
             for route in router.routes:
                 route_tags = getattr(route, "tags", None)
                 if route_tags:
                     tags_to_enrich.update(route_tags)
-            if not tags_to_enrich: tags_to_enrich.add(extension_name)
+            if not tags_to_enrich:
+                tags_to_enrich.add(extension_name)
 
             # --- HEADER GENERATION ---
             help_link = (
                 f'<a href="{safe_help_url}" target="_blank" title="Open documentation in a new tab" '
                 f'style="display: inline-flex; align-items: center; gap: 6px;">'
-                f'<b>Documentation</b> ❓</a>'
+                f'<b>Documentation</b> \u2753</a>'
             )
-            
+
             header_html = (
                 f'<div class="help-box" style="display: flex; justify-content: flex-end;">'
                 f'{help_link}'
                 f'</div>'
             )
-            
+
             # Prepend header to content
             readme_content = header_html + "\n\n" + readme_content
 
             # --- LINK FIXING ---
             def replace_anchor(match):
                 text = match.group(1)
-                anchor = match.group(2) 
+                anchor = match.group(2)
                 return f'<a href="{safe_help_url}{anchor}" target="_blank">{text}</a>'
 
             readme_content = re.sub(r'\[([^\]]+)\]\((#[^)]+)\)', replace_anchor, readme_content)
 
             # 3. Add visible endpoint to "Help" section
-            from dynastore.extensions.documentation import setup_global_help_endpoint 
-            
             async def _specific_help_handler(request: Request, ext_name: str = extension_name):
                 registry = getattr(request.app.state, "extension_docs_registry", {})
                 path = registry.get(ext_name)
-                if not path: return HTMLResponse("Docs not found", 404)
+                if not path:
+                    return HTMLResponse("Docs not found", 404)
                 try:
                     import markdown
                 except ImportError:
                     return HTMLResponse("Markdown renderer not installed", 500)
-                with open(path, "r", encoding="utf-8") as f: content = f.read()
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
                 return HTMLResponse(markdown.markdown(content, extensions=['fenced_code', 'tables']))
 
             op_id = f"read_{extension_name}_docs"
-            
+
             app.add_api_route(
                 f"/extension-docs/{extension_name}",
                 _specific_help_handler,
@@ -248,18 +219,20 @@ def enrich_extension_metadata(app: FastAPI, config: ExtensionConfig, router: API
                 tags=["Help"],
                 summary=f"Read {extension_name} documentation",
                 operation_id=op_id,
-                description=readme_content 
+                description=readme_content,
             )
 
             # 5. Enrich Tags Metadata
-            if not app.openapi_tags: app.openapi_tags = []
+            if not app.openapi_tags:
+                app.openapi_tags = []
 
             for tag in tags_to_enrich:
                 tag_name = str(tag.value) if isinstance(tag, Enum) else str(tag)
                 existing_tag = next((t for t in app.openapi_tags if t.get('name') == tag_name), None)
-                
+
                 if existing_tag:
-                    if "description" not in existing_tag: existing_tag["description"] = ""
+                    if "description" not in existing_tag:
+                        existing_tag["description"] = ""
                     # Avoid duplication if lifespan runs multiple times
                     if "help-box" not in existing_tag["description"]:
                         existing_tag["description"] = header_html + "\n\n" + existing_tag["description"]

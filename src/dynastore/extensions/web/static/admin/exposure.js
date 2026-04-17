@@ -1,0 +1,278 @@
+(async () => {
+  const $ = (sel) => document.querySelector(sel);
+  const state = {
+    scope: "platform",
+    catalog: null,
+    resolved: {},
+    explicit: {},
+    dirty: {}
+  };
+
+  // Utility: fetch JSON with error handling
+  async function getJSON(url) {
+    const r = await fetch(url);
+    if (!r.ok) {
+      const text = await r.text();
+      throw new Error(`${url} -> ${r.status}: ${text}`);
+    }
+    return r.json();
+  }
+
+  // Utility: PATCH JSON with error handling
+  async function patchJSON(url, body) {
+    const r = await fetch(url, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) {
+      const text = await r.text();
+      throw new Error(`${url} -> ${r.status}: ${text}`);
+    }
+    return r.json();
+  }
+
+  // Load list of catalogs
+  async function loadCatalogs() {
+    try {
+      const res = await getJSON("/catalogs");
+      const sel = $("#catalog-select");
+      while (sel.firstChild) sel.removeChild(sel.firstChild);
+
+      const opt0 = document.createElement("option");
+      opt0.value = "";
+      opt0.textContent = "-- select catalog --";
+      sel.appendChild(opt0);
+
+      const items = res.items || res || [];
+      if (!Array.isArray(items)) return;
+
+      for (const c of items) {
+        const opt = document.createElement("option");
+        const id = c.id || c.catalog_id || (typeof c === "string" ? c : null);
+        if (!id) continue;
+        opt.value = id;
+        opt.textContent = id;
+        sel.appendChild(opt);
+      }
+      if (items.length > 0) {
+        const firstId = items[0].id || items[0].catalog_id || items[0];
+        if (firstId) state.catalog = firstId;
+      }
+    } catch (e) {
+      // Catalogs may not exist; safe to ignore
+      console.debug("loadCatalogs:", e.message);
+    }
+  }
+
+  // Load configuration matrix (resolved and explicit)
+  async function loadMatrix() {
+    const base = state.scope === "platform"
+      ? "/configs/config"
+      : `/configs/catalogs/${encodeURIComponent(state.catalog)}/config`;
+
+    try {
+      state.resolved = await loadIndex(`${base}?resolved=true`);
+      state.explicit = await loadIndex(`${base}?resolved=false`);
+    } catch (e) {
+      setStatus(`Load error: ${e.message}`, "err");
+      return;
+    }
+    state.dirty = {};
+    render();
+  }
+
+  // Normalize response to { class_key -> config_object }
+  async function loadIndex(url) {
+    const page = await getJSON(url);
+    const out = {};
+
+    // Try items array first
+    if (Array.isArray(page.items)) {
+      for (const e of page.items) {
+        const key = e.class_key || e.plugin_id || e.key;
+        if (key) out[key] = e.value || e.config_data || e;
+      }
+    }
+
+    // Fall back to configs object
+    if (!Object.keys(out).length && page.configs && typeof page.configs === "object") {
+      for (const [k, v] of Object.entries(page.configs)) {
+        out[k] = v;
+      }
+    }
+
+    return out;
+  }
+
+  // Create a table cell with text content (safe-DOM)
+  function td(text) {
+    const c = document.createElement("td");
+    c.textContent = text;
+    return c;
+  }
+
+  // Create a table cell with a DOM node (safe-DOM)
+  function tdNode(node) {
+    const c = document.createElement("td");
+    c.appendChild(node);
+    return c;
+  }
+
+  // Create a checkbox input (safe-DOM)
+  function cbox(key, checked) {
+    const i = document.createElement("input");
+    i.type = "checkbox";
+    i.dataset.key = key;
+    i.checked = !!checked;
+    return i;
+  }
+
+  // Create a three-way select (inherit/ON/OFF) (safe-DOM)
+  function selectThreeWay(key, current) {
+    const s = document.createElement("select");
+    s.dataset.key = key;
+
+    const opts = [
+      ["inherit", "inherit"],
+      ["true", "ON"],
+      ["false", "OFF"]
+    ];
+
+    for (const [val, label] of opts) {
+      const o = document.createElement("option");
+      o.value = val;
+      o.textContent = label;
+
+      if ((current === null && val === "inherit") ||
+          (current === true && val === "true") ||
+          (current === false && val === "false")) {
+        o.selected = true;
+      }
+
+      s.appendChild(o);
+    }
+
+    return s;
+  }
+
+  // Render the grid
+  function render() {
+    const body = $("#exposure-grid tbody");
+    while (body.firstChild) body.removeChild(body.firstChild);
+
+    for (const [key, val] of Object.entries(state.resolved)) {
+      if (!val || typeof val.enabled !== "boolean") continue;
+
+      const platformEnabled = val.enabled;
+      const explicit = state.explicit[key];
+      const explicitEnabled = (explicit && typeof explicit.enabled === "boolean")
+        ? explicit.enabled
+        : null;
+
+      const dirtyVal = state.dirty[key];
+      const effective = (dirtyVal === undefined)
+        ? (explicitEnabled !== null ? explicitEnabled : platformEnabled)
+        : (dirtyVal === null ? platformEnabled : !!dirtyVal.enabled);
+
+      const row = document.createElement("tr");
+
+      // Extension name
+      row.appendChild(td(key));
+
+      // Platform column (shows current platform value, or edit if in platform scope)
+      if (state.scope === "platform") {
+        row.appendChild(tdNode(cbox(key, effective)));
+      } else {
+        row.appendChild(td(platformEnabled ? "ON" : "(platform off)"));
+      }
+
+      // Catalog override column (only in catalog scope)
+      if (state.scope === "catalog") {
+        row.appendChild(tdNode(selectThreeWay(key, explicitEnabled)));
+      } else {
+        row.appendChild(td("-"));
+      }
+
+      // Effective column
+      row.appendChild(td(effective ? "on" : "off"));
+
+      body.appendChild(row);
+    }
+  }
+
+  // Handle input changes
+  function onChange(e) {
+    const key = e.target.dataset.key;
+    if (!key) return;
+
+    if (state.scope === "platform") {
+      state.dirty[key] = { enabled: !!e.target.checked };
+    } else {
+      const v = e.target.value;
+      state.dirty[key] = (v === "inherit") ? null : { enabled: v === "true" };
+    }
+
+    render();
+  }
+
+  // Set status message
+  function setStatus(msg, cls = null) {
+    const s = $("#status");
+    s.textContent = msg;
+    s.className = cls || "";
+  }
+
+  // Apply changes
+  async function apply() {
+    if (!Object.keys(state.dirty).length) {
+      setStatus("No changes.", "");
+      return;
+    }
+
+    const url = state.scope === "platform"
+      ? "/configs/config"
+      : `/configs/catalogs/${encodeURIComponent(state.catalog)}/config`;
+
+    setStatus("Applying...", "");
+    try {
+      await patchJSON(url, state.dirty);
+      setStatus("Applied successfully.", "ok");
+      await loadMatrix();
+    } catch (err) {
+      setStatus(`Error: ${err.message}`, "err");
+    }
+  }
+
+  // Revert changes
+  function revert() {
+    state.dirty = {};
+    render();
+  }
+
+  // Event listeners
+  document.querySelectorAll('input[name="scope"]').forEach(r => {
+    r.addEventListener("change", e => {
+      state.scope = e.target.value;
+      $("#catalog-select").disabled = state.scope !== "catalog";
+      if (state.scope === "catalog") {
+        const sel = $("#catalog-select");
+        if (sel.value) state.catalog = sel.value;
+      }
+      loadMatrix();
+    });
+  });
+
+  $("#catalog-select").addEventListener("change", e => {
+    state.catalog = e.target.value;
+    if (state.catalog) loadMatrix();
+  });
+
+  $("#exposure-grid").addEventListener("change", onChange);
+  $("#apply").addEventListener("click", apply);
+  $("#revert").addEventListener("click", revert);
+
+  // Initialize
+  await loadCatalogs();
+  await loadMatrix();
+})();

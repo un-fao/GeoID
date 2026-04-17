@@ -16,5 +16,6 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 from .service import StatsService
+from . import config  # noqa: F401  -- service-exposure plugin registration
 
 __all__ = ["StatsService"]

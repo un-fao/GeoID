@@ -22,6 +22,7 @@ from enum import Enum
 from typing import Any, ClassVar, Dict, List, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.models.localization import LocalizedText, Language
 
 # --- STAC Core & Navigation ---
@@ -264,7 +265,7 @@ class StacAssetDefinition(BaseModel):
 
 # --- THE PLUGIN DEFINITION ---
 
-class StacPluginConfig(PluginConfig):
+class StacPluginConfig(ExposableConfigMixin, PluginConfig):
     """
     Mutable STAC metadata and behavior configuration.
     """
