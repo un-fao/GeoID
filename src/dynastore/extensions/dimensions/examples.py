@@ -1,12 +1,12 @@
-"""Self-contained demonstration of OGC Dimension generators.
+"""Self-contained demonstration of OGC Dimension providers.
 
-Covers the three FAO-relevant generator types:
+Covers the three FAO-relevant provider types:
 
   Dekadal      — 10-day periods (FAO ASIS, FEWS NET, TUW-GEO)
   Pentadal     — 5-day periods, month-aligned (FAO / CHIRPS / CDT)
   Admin tree   — leveled continent -> country hierarchy with multilingual labels
 
-All temporal generators use the same DailyPeriodGenerator with different
+All temporal providers use the same DailyPeriodProvider with different
 config: period_days (5 or 10) and scheme ("monthly" or "annual").
 
 Run with:
@@ -18,18 +18,18 @@ from __future__ import annotations
 
 def demo_dekadal() -> None:
     """Dekadal: 10-day periods, 36/year, D3 absorbs remainder of month."""
-    from ogc_dimensions.generators import DailyPeriodGenerator  # type: ignore[import]
+    from ogc_dimensions.providers import DailyPeriodProvider  # type: ignore[import]
 
-    gen = DailyPeriodGenerator(period_days=10, scheme="monthly")
-    print(f"  generator_type = {gen.generator_type}")
-    print(f"  config         = {gen.config_as_dict()}")
+    gen = DailyPeriodProvider(period_days=10, scheme="monthly")
+    print(f"  provider_type = {gen.provider_type}")
+    print(f"  config        = {gen.config_as_dict()}")
 
     result = gen.generate("2025-01-01", "2025-03-31", limit=3)
     for m in result.members:
         print(f"    {m.code}  {m.start} -> {m.end}")
 
     inv = gen.inverse("2025-01-15")
-    print(f"  inverse('2025-01-15') -> {inv.member}  range={inv.range}")
+    print(f"  inverse('2025-01-15') -> {inv.code}  range=({inv.start}, {inv.end})")
 
     desc = gen.generate("2025-01-01", "2025-03-31", limit=2, sort_dir="desc")
     print(f"  desc first: {desc.members[0].code}")
@@ -37,29 +37,29 @@ def demo_dekadal() -> None:
 
 def demo_pentadal() -> None:
     """Pentadal monthly: 5-day periods, 72/year, P6 absorbs 26-EOM."""
-    from ogc_dimensions.generators import DailyPeriodGenerator  # type: ignore[import]
+    from ogc_dimensions.providers import DailyPeriodProvider  # type: ignore[import]
 
-    gen = DailyPeriodGenerator(period_days=5, scheme="monthly")
-    print(f"  generator_type = {gen.generator_type}")
-    print(f"  config         = {gen.config_as_dict()}")
+    gen = DailyPeriodProvider(period_days=5, scheme="monthly")
+    print(f"  provider_type = {gen.provider_type}")
+    print(f"  config        = {gen.config_as_dict()}")
 
     result = gen.generate("2025-01-01", "2025-01-31", limit=6)
     for m in result.members:
         print(f"    {m.code}  {m.start} -> {m.end}")
 
     inv = gen.inverse("2025-01-27")
-    print(f"  inverse('2025-01-27') -> {inv.member}  range={inv.range}")
+    print(f"  inverse('2025-01-27') -> {inv.code}  range=({inv.start}, {inv.end})")
 
 
 def demo_admin_hierarchy() -> None:
     """Admin boundaries: leveled tree with multilingual labels."""
-    from ogc_dimensions.generators import LeveledTreeGenerator  # type: ignore[import]
+    from ogc_dimensions.providers import LeveledTreeProvider  # type: ignore[import]
 
     from .use_cases import ADMIN_NODES
 
-    gen = LeveledTreeGenerator(nodes=ADMIN_NODES)
-    print(f"  generator_type = {gen.generator_type}")
-    print(f"  config         = {gen.config_as_dict()}")
+    gen = LeveledTreeProvider(nodes=ADMIN_NODES)
+    print(f"  provider_type = {gen.provider_type}")
+    print(f"  config        = {gen.config_as_dict()}")
     print(f"  hierarchical   = {gen.hierarchical}")
 
     continents = gen.generate("", "", limit=10)

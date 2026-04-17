@@ -1,7 +1,7 @@
 """Sample datasets for OGC Dimensions use case demonstrations.
 
-Each dataset is a list of nodes for ``StaticTreeGenerator`` or
-``LeveledTreeGenerator``. Every node carries at minimum ``code``, ``label``,
+Each dataset is a list of nodes for ``StaticTreeProvider`` or
+``LeveledTreeProvider``. Every node carries at minimum ``code``, ``label``,
 and ``parent_code`` (null for root members). Nodes in leveled datasets also
 carry a ``level`` integer.
 
