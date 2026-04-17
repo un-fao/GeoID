@@ -24,7 +24,13 @@ from dynastore.models.protocols import ProxyProtocol, DatabaseProtocol
 from .storage import AbstractProxyStorage
 from dynastore.modules.proxy.models import ShortURL, AnalyticsPage
 from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
-from dynastore.modules.db_config.query_executor import managed_transaction, DbResource
+from dynastore.modules.db_config.query_executor import (
+    managed_transaction,
+    DbResource,
+    DDLQuery,
+    DDLBatch,
+)
+from dynastore.modules.db_config.locking_tools import check_table_exists
 logger = logging.getLogger(__name__)
 import dynastore.modules.db_config.maintenance_tools as maintenance_tools
 from contextlib import asynccontextmanager
@@ -53,21 +59,44 @@ CREATE TABLE IF NOT EXISTS {schema}.short_urls_catalog PARTITION OF {schema}.sho
 FOR VALUES IN ('_catalog_');
 """
 
+def _build_proxy_tenant_ddl_batch(schema: str) -> DDLBatch:
+    """Build a per-tenant DDL batch for the proxy slice.
+
+    Warm path: the ``short_urls_catalog`` default partition (last object
+    created for a new tenant) is the sentinel. If it exists, sequence +
+    functions + parent table are skipped in a single round-trip. Cold
+    path runs all 5 steps under one conn with nested savepoints.
+    """
+    from .queries import (
+        CREATE_SHORT_URL_SEQUENCE,
+        CREATE_BASE62_FUNCTION,
+        CREATE_OBFUSCATE_FUNCTION,
+    )
+
+    def _check_sentinel(conn):
+        return check_table_exists(conn, "short_urls_catalog", schema)
+
+    return DDLBatch(
+        sentinel=DDLQuery(
+            TENANT_SHORT_URLS_CATALOG_PARTITION_DDL, check_query=_check_sentinel
+        ),
+        steps=[
+            CREATE_SHORT_URL_SEQUENCE,
+            CREATE_BASE62_FUNCTION,
+            CREATE_OBFUSCATE_FUNCTION,
+            DDLQuery(TENANT_SHORT_URLS_DDL),
+            DDLQuery(
+                TENANT_SHORT_URLS_CATALOG_PARTITION_DDL, check_query=_check_sentinel
+            ),
+        ],
+    )
+
+
 @lifecycle_registry.sync_catalog_initializer()
 async def _initialize_proxy_tenant_slice(conn: DbResource, schema: str, catalog_id: str):
     """Initializes the proxy module's slice of the tenant schema (URL shortening only)."""
-    from dynastore.modules.db_config.query_executor import DDLQuery
-    from .queries import CREATE_SHORT_URL_SEQUENCE, CREATE_BASE62_FUNCTION, CREATE_OBFUSCATE_FUNCTION
-
-    await CREATE_SHORT_URL_SEQUENCE.execute(conn, schema=schema)
-    await CREATE_BASE62_FUNCTION.execute(conn, schema=schema)
-    await CREATE_OBFUSCATE_FUNCTION.execute(conn, schema=schema)
-
-    logger.info(f"PROXY_INIT: Creating short_urls table for schema: {schema}")
-    await DDLQuery(TENANT_SHORT_URLS_DDL).execute(conn, schema=schema)
-    logger.info(f"PROXY_INIT: Creating short_urls_catalog partition for schema: {schema}")
-    await DDLQuery(TENANT_SHORT_URLS_CATALOG_PARTITION_DDL).execute(conn, schema=schema)
-
+    logger.info(f"PROXY_INIT: Ensuring short_urls slice for schema: {schema}")
+    await _build_proxy_tenant_ddl_batch(schema).execute(conn, schema=schema)
     logger.info(f"Proxy tenant slice initialization complete for schema '{schema}'")
 
 

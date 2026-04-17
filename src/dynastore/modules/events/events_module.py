@@ -522,15 +522,26 @@ class EventsModule(ModuleProtocol):
             logger.info("EventsModule: %s.events ready.", _EVENTS_SCHEMA)
 
             # Create 16 shard leaf partitions (single-level LIST partitioning)
+            # as one multi-statement DDL blob with an explicit sentinel check:
+            # if the last shard (events_s15) already exists, skip all 16
+            # CREATE TABLE IF NOT EXISTS statements — 1 round-trip vs 16.
+            # Auto-inference returns None for PARTITION OF, so the check
+            # must be explicit.
+            from dynastore.modules.db_config.locking_tools import check_table_exists
+
+            shard_partitions_ddl = "\n".join(
+                f"CREATE TABLE IF NOT EXISTS {_EVENTS_SCHEMA}.events_s{i} "
+                f"PARTITION OF {_EVENTS_SCHEMA}.events FOR VALUES IN ({i});"
+                for i in range(16)
+            )
+
+            def _check_last_shard(conn):
+                return check_table_exists(conn, "events_s15", _EVENTS_SCHEMA)
+
             async with managed_transaction(self._engine) as conn:
-                for shard_id in range(16):
-                    await DDLQuery(
-                        f"""
-                        CREATE TABLE IF NOT EXISTS {_EVENTS_SCHEMA}.events_s{shard_id}
-                        PARTITION OF {_EVENTS_SCHEMA}.events
-                        FOR VALUES IN ({shard_id});
-                        """
-                    ).execute(conn)
+                await DDLQuery(
+                    shard_partitions_ddl, check_query=_check_last_shard
+                ).execute(conn)
 
                 policy = self.accumulation_policy
                 await _register_events_retention(conn, policy.dead_letter_days)

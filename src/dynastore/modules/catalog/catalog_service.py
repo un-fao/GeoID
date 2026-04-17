@@ -110,6 +110,31 @@ CREATE TABLE IF NOT EXISTS {schema}.metadata (
 """
 
 
+def _build_tenant_core_ddl_batch(schema: str) -> "DDLBatch":
+    """Build the per-tenant core DDL batch.
+
+    Warm path: ``collection_configs`` (the last table created by
+    ``tenant_configs_ddl``) acts as the sentinel. If it exists, the
+    collections + metadata + config tables are all skipped in a single
+    round-trip. Cold path runs all three DDLs under one conn with nested
+    savepoints.
+    """
+    from dynastore.modules.db_config.query_executor import DDLBatch
+    from dynastore.modules.db_config.locking_tools import check_table_exists
+
+    def _check_sentinel(conn):
+        return check_table_exists(conn, "collection_configs", schema)
+
+    tenant_configs_sql = tenant_configs_ddl(schema)
+    return DDLBatch(
+        sentinel=DDLQuery(tenant_configs_sql, check_query=_check_sentinel),
+        steps=[
+            DDLQuery(TENANT_COLLECTIONS_DDL + METADATA_DDL),
+            DDLQuery(tenant_configs_sql, check_query=_check_sentinel),
+        ],
+    )
+
+
 async def initialize_core_tenant_tables(conn: DbResource, schema: str, catalog_id: str):
     """
     Creates the complete isolated table set for a new tenant (Catalog).
@@ -120,17 +145,15 @@ async def initialize_core_tenant_tables(conn: DbResource, schema: str, catalog_i
     Do NOT re-register this as a `sync_catalog_initializer`.
     """
     logger.info(f"Initializing core tenant tables for schema: {schema} (Catalog: {catalog_id})")
-    
+
     schema = schema.strip('\'\'" ')
 
     # 1. Create Schema
     await ensure_schema_exists(conn, schema)
-    
-    # 2. Core Tables (Tenant-local, not globally partitioned)
-    logger.info(f"Executing core DDL for schema: {schema}")
-    await DDLQuery(TENANT_COLLECTIONS_DDL + METADATA_DDL).execute(conn, schema=schema)
-    # Config tables: single source of truth in typed_store/ddl.py.
-    await DDLQuery(tenant_configs_ddl(schema)).execute(conn)
+
+    # 2. Core Tables (collections + metadata + tenant configs) under a single
+    # batch sentinel — warm path skips the whole thing in one round-trip.
+    await _build_tenant_core_ddl_batch(schema).execute(conn, schema=schema)
     logger.info(f"Core tenant tables (collections, configs, metadata) initialized for {schema}.")
 
 from dynastore.tools.discovery import get_protocol
@@ -512,13 +535,15 @@ class CatalogService(CatalogsProtocol):
             await DDLQuery(PLATFORM_SCHEMAS_DDL).execute(conn)
             await ensure_schema_exists(conn, physical_schema)
 
-            # 2. Core Tables (collections, assets, catalog_configs, collection_configs)
+            # 2. Core Tables (collections, metadata, catalog_configs, collection_configs)
+            # Single module-level batch — warm path skips everything in one
+            # round-trip once collection_configs (the last table) exists.
             logger.info(
                 f"Creating core tenant tables for schema: {physical_schema} (Catalog: {catalog_model.id})"
             )
-            await DDLQuery(TENANT_COLLECTIONS_DDL + METADATA_DDL).execute(conn, schema=physical_schema)
-            # Config tables: single source of truth in typed_store/ddl.py.
-            await DDLQuery(tenant_configs_ddl(physical_schema)).execute(conn)
+            await _build_tenant_core_ddl_batch(physical_schema).execute(
+                conn, schema=physical_schema
+            )
 
             # 3. Module-specific lifecycle hooks (stats, tiles, …) all run AFTER
             #    the schema and core tables exist, inside their own SAVEPOINTs.
