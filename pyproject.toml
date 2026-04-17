@@ -286,7 +286,7 @@ scope_geoid = ["dynastore[scope_catalog,extension_geoid,auth_grp]"]
 # scope_worker: background task processor — headless Cloud Run job runner
 scope_worker = ["dynastore[core,module_catalog,gcp,extension_dwh,index_grp,tasks,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision]"]
 # scope_tools: proxy + template tools service — no auth
-scope_tools = ["dynastore[core,template,notebooks,cache]"]
+scope_tools = ["dynastore[core,template,notebooks,cache,dimensions,proxy]"]
 # scope_maps: map tiles/styles service — no auth
 scope_maps = ["dynastore[core,catalog_grp,google_grp,maps_grp,monitor_grp,module_cache,notebooks,index_grp,drivers_grp]"]
 
