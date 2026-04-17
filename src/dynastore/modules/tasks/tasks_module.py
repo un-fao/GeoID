@@ -136,12 +136,24 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS on_task_insert ON {schema}.tasks;
-CREATE TRIGGER on_task_insert
-    AFTER INSERT ON {schema}.tasks
-    FOR EACH ROW
-    WHEN (NEW.status = 'PENDING')
-    EXECUTE FUNCTION {schema}.notify_task_ready();
+-- Guard trigger creation behind pg_trigger existence check.
+-- DROP+CREATE TRIGGER takes AccessExclusiveLock on tasks and deadlocks against
+-- a concurrently-live dispatcher in another pod (RowExclusiveLock from
+-- claim_batch DML). Changes to trigger body are a migration concern.
+DO $do$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'on_task_insert'
+          AND tgrelid = '{schema}.tasks'::regclass
+    ) THEN
+        CREATE TRIGGER on_task_insert
+            AFTER INSERT ON {schema}.tasks
+            FOR EACH ROW
+            WHEN (NEW.status = 'PENDING')
+            EXECUTE FUNCTION {schema}.notify_task_ready();
+    END IF;
+END $do$;
 
 CREATE OR REPLACE FUNCTION {schema}.notify_task_status_changed()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
@@ -151,12 +163,20 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS on_task_status_update ON {schema}.tasks;
-CREATE TRIGGER on_task_status_update
-    AFTER UPDATE ON {schema}.tasks
-    FOR EACH ROW
-    WHEN (OLD.status IS DISTINCT FROM NEW.status)
-    EXECUTE FUNCTION {schema}.notify_task_status_changed();
+DO $do$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'on_task_status_update'
+          AND tgrelid = '{schema}.tasks'::regclass
+    ) THEN
+        CREATE TRIGGER on_task_status_update
+            AFTER UPDATE ON {schema}.tasks
+            FOR EACH ROW
+            WHEN (OLD.status IS DISTINCT FROM NEW.status)
+            EXECUTE FUNCTION {schema}.notify_task_status_changed();
+    END IF;
+END $do$;
 """
 
 
