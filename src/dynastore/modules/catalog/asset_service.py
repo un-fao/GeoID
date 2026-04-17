@@ -1105,14 +1105,28 @@ class AssetService(AssetsProtocol):
                     hub_table = table[: -len(suffix)]
                     break
 
-            # 4. Create the trigger
-            # Note: We use a multi-statement DDL; DDLQuery handles splitting.
+            # 4. Create the trigger (idempotent, lock-free on warm path).
+            # DROP+CREATE TRIGGER takes AccessExclusiveLock on the target table
+            # and deadlocks against concurrent ingest DML. Guard behind a
+            # pg_trigger existence check so warm paths skip DDL entirely.
+            # Trigger body changes are a migration concern.
             trigger_ddl = f"""
-            DROP TRIGGER IF EXISTS trg_asset_cleanup ON "{schema}"."{table}";
-            CREATE TRIGGER trg_asset_cleanup
-            AFTER DELETE OR UPDATE OF asset_id ON "{schema}"."{table}"
-            FOR EACH ROW
-            EXECUTE FUNCTION platform.asset_cleanup('{hub_table}');
+            DO $do$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_trigger t
+                    JOIN pg_class c ON t.tgrelid = c.oid
+                    JOIN pg_namespace n ON c.relnamespace = n.oid
+                    WHERE t.tgname = 'trg_asset_cleanup'
+                      AND c.relname = '{table}'
+                      AND n.nspname = '{schema}'
+                ) THEN
+                    CREATE TRIGGER trg_asset_cleanup
+                    AFTER DELETE OR UPDATE OF asset_id ON "{schema}"."{table}"
+                    FOR EACH ROW
+                    EXECUTE FUNCTION platform.asset_cleanup('{hub_table}');
+                END IF;
+            END $do$;
             """.strip()
 
             await DDLQuery(trigger_ddl).execute(conn, schema=schema)

@@ -113,12 +113,24 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS on_event_insert ON {_EVENTS_SCHEMA}.events;
-CREATE TRIGGER on_event_insert
-    AFTER INSERT ON {_EVENTS_SCHEMA}.events
-    FOR EACH ROW
-    WHEN (NEW.status = 'PENDING')
-    EXECUTE FUNCTION {_EVENTS_SCHEMA}.notify_event_ready();
+-- Guard trigger creation behind pg_trigger existence check.
+-- DROP+CREATE TRIGGER takes AccessExclusiveLock on events.events and deadlocks
+-- against a concurrently-live consumer in another pod (RowExclusiveLock from
+-- _consume_query). Changes to trigger body are a migration concern.
+DO $do$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'on_event_insert'
+          AND tgrelid = '{_EVENTS_SCHEMA}.events'::regclass
+    ) THEN
+        CREATE TRIGGER on_event_insert
+            AFTER INSERT ON {_EVENTS_SCHEMA}.events
+            FOR EACH ROW
+            WHEN (NEW.status = 'PENDING')
+            EXECUTE FUNCTION {_EVENTS_SCHEMA}.notify_event_ready();
+    END IF;
+END $do$;
 """
 
 # ---------------------------------------------------------------------------
