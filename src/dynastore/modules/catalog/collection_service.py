@@ -852,8 +852,9 @@ class CollectionService:
             # the logical collection identity, not the physical table. Keeping
             # them behind a tombstoned collection would leak stale state if the
             # id is later reused.
-            await DDLQuery(
-                f'DELETE FROM "{phys_schema}".collection_configs WHERE collection_id = :id;'
+            await DQLQuery(
+                f'DELETE FROM "{phys_schema}".collection_configs WHERE collection_id = :id;',
+                result_handler=ResultHandler.NONE,
             ).execute(conn, id=collection_id)
 
             logger.info(

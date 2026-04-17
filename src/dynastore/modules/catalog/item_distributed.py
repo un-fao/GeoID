@@ -511,4 +511,10 @@ INSERT INTO "{schema}"."{table}" ({", ".join(cols)})
 VALUES ({", ".join(vals)})
 ON CONFLICT ({conflict_target}) {on_conflict_clause};
 """
-        await DDLQuery(sql).execute(conn, **params)
+        # DML — must use DQLQuery, not DDLQuery. DDLQuery wraps every
+        # statement in a savepoint + pg_try_advisory_xact_lock + 30s
+        # statement_timeout that's correct for CREATE/ALTER but adds
+        # 5-10x overhead to a per-item upsert hot path.
+        await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
+            conn, **params
+        )
