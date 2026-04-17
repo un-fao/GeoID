@@ -481,7 +481,10 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
                 class_key=class_key,
                 schema_id=type(config).schema_id(),
                 config_data=json.dumps(
-                    config.model_dump(mode="json"), cls=CustomJSONEncoder
+                    config.model_dump(
+                        mode="json", context={"secret_mode": "db"}
+                    ),
+                    cls=CustomJSONEncoder,
                 ),
             )
 

@@ -215,8 +215,13 @@ class PostgresTypedStore:
                 )
             class_key = type(instance).class_key()
             schema_id = type(instance).schema_id()
+            # ``secret_mode="db"`` tells every ``Secret`` field to serialize as
+            # its encrypted Fernet envelope before we write jsonb. Without this
+            # mode Secrets would dump as ``"***"`` (the mask) and the plaintext
+            # would be lost on the next load. See tools/secrets.py.
             payload = json.dumps(
-                instance.model_dump(mode="json"), cls=CustomJSONEncoder
+                instance.model_dump(mode="json", context={"secret_mode": "db"}),
+                cls=CustomJSONEncoder,
             )
 
             if isinstance(scope, CollectionScope):

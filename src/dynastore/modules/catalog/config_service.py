@@ -398,8 +398,12 @@ class ConfigService(ConfigsProtocol):
 
             await _register_schema(conn, config)
 
+            # secret_mode="db" → every Secret field serializes to its
+            # encrypted envelope before jsonb persistence. See tools/secrets.py.
             config_data = (
-                config.model_dump(mode="json") if hasattr(config, "model_dump") else config
+                config.model_dump(mode="json", context={"secret_mode": "db"})
+                if hasattr(config, "model_dump")
+                else config
             )
             await _cq.upsert_catalog_config(phys_schema).execute(
                 conn,
@@ -479,8 +483,12 @@ class ConfigService(ConfigsProtocol):
 
             await _register_schema(conn, config)
 
+            # secret_mode="db" → every Secret field serializes to its
+            # encrypted envelope before jsonb persistence. See tools/secrets.py.
             config_data = (
-                config.model_dump(mode="json") if hasattr(config, "model_dump") else config
+                config.model_dump(mode="json", context={"secret_mode": "db"})
+                if hasattr(config, "model_dump")
+                else config
             )
             await _cq.upsert_collection_config(phys_schema).execute(
                 conn,

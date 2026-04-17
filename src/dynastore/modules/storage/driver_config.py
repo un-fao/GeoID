@@ -41,6 +41,8 @@ from typing import Any, ClassVar, Dict, FrozenSet, List, Optional
 
 from pydantic import ConfigDict, Field, SerializeAsAny, field_validator, model_validator
 
+from dynastore.tools.secrets import Secret
+
 from dynastore.modules.db_config.platform_config_service import (
     Immutable,
     PluginConfig,
@@ -612,20 +614,26 @@ class CollectionIcebergDriverConfig(CollectionDriverConfig):
         description="Catalog type: sql | rest | hive | glue | dynamodb | nessie "
                     "(overrides ICEBERG_CATALOG_TYPE).",
     )
-    catalog_uri: Optional[str] = Field(
+    catalog_uri: Optional[Secret] = Field(
         default=None,
         description="Catalog URI — JDBC URL for sql, HTTP endpoint for rest/nessie, "
-                    "etc. (overrides ICEBERG_CATALOG_URI).",
+                    "etc. (overrides ICEBERG_CATALOG_URI). **Treated as a Secret** "
+                    "because JDBC URLs commonly embed credentials "
+                    "(postgresql+psycopg2://user:pass@host/db).",
     )
-    catalog_properties: Optional[Dict[str, Any]] = Field(
+    catalog_properties: Optional[Dict[str, Secret]] = Field(
         default=None,
         description="Extra catalog-specific properties merged into PyIceberg's "
-                    "load_catalog kwargs (overrides ICEBERG_CATALOG_PROPERTIES).",
+                    "load_catalog kwargs (overrides ICEBERG_CATALOG_PROPERTIES). "
+                    "Every value is treated as a Secret — these commonly carry "
+                    "auth tokens, service-account JSON, or provider API keys.",
     )
-    warehouse_uri: Optional[str] = Field(
+    warehouse_uri: Optional[Secret] = Field(
         default=None,
         description="Warehouse location for tables managed by this catalog "
-                    "(gs://, s3://, file://, etc.; overrides ICEBERG_WAREHOUSE_URI).",
+                    "(gs://, s3://, file://, etc.; overrides ICEBERG_WAREHOUSE_URI). "
+                    "**Treated as a Secret** because signed / pre-authorized URLs "
+                    "carry embedded tokens.",
     )
     warehouse_scheme: Optional[str] = Field(
         default=None,
@@ -657,24 +665,34 @@ class CollectionIcebergDriverConfig(CollectionDriverConfig):
         return (self.catalog_type or IcebergConfig.catalog_type).lower()
 
     def resolve_catalog_uri(self) -> Optional[str]:
-        return self.catalog_uri or IcebergConfig.catalog_uri
+        """Return the plaintext catalog URI for the driver. Callers must never
+        log or echo the return value."""
+        if self.catalog_uri is not None:
+            return self.catalog_uri.reveal()
+        return IcebergConfig.catalog_uri
 
     def resolve_catalog_properties(self) -> Optional[Dict[str, Any]]:
-        """Merge env-level and per-collection catalog_properties.
+        """Merge env-level and per-collection catalog_properties into a
+        plaintext dict for driver consumption.
 
         Per-collection keys take precedence on collision so a tenant can
-        override a platform default while inheriting the rest.
+        override a platform default while inheriting the rest. Every
+        per-collection value is revealed from its Secret wrapper.
         """
         env_props = IcebergConfig.catalog_properties or {}
         col_props = self.catalog_properties or {}
         if not env_props and not col_props:
             return None
         merged: Dict[str, Any] = dict(env_props)
-        merged.update(col_props)
+        for k, v in col_props.items():
+            merged[k] = v.reveal() if isinstance(v, Secret) else v
         return merged
 
     def resolve_warehouse_uri(self) -> Optional[str]:
-        return self.warehouse_uri or IcebergConfig.warehouse_uri
+        """Return the plaintext warehouse URI for the driver."""
+        if self.warehouse_uri is not None:
+            return self.warehouse_uri.reveal()
+        return IcebergConfig.warehouse_uri
 
     def resolve_warehouse_scheme(self) -> Optional[str]:
         return self.warehouse_scheme or IcebergConfig.warehouse_scheme
