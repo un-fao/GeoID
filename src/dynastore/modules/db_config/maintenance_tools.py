@@ -193,6 +193,11 @@ async def register_retention_policy(
             row RECORD;
             cutoff_date DATE;
         BEGIN
+            -- Bound AccessExclusiveLock wait: if a partition is being scanned
+            -- (SKIP LOCKED consumers), fail this DROP fast and let the next
+            -- cron tick retry. Without this, DROP could wait unboundedly and
+            -- pile up cron workers behind a long scan.
+            SET LOCAL lock_timeout = '10s';
             cutoff_date := date_trunc('{interval}', NOW()) - INTERVAL '{retention_period}';
             -- nspname match in pg_namespace is a literal string comparison, so case must match exactly.
             FOR row IN SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '{schema}' AND c.relkind = 'r' AND c.relname ~ '^{table}_\\d{{4}}_\\d{{2}}$' LOOP
@@ -208,6 +213,8 @@ async def register_retention_policy(
                         EXECUTE format('DROP TABLE "{schema}".%I', row.relname);
                     END IF;
                 EXCEPTION WHEN OTHERS THEN
+                    -- 55P03 (lock_timeout) lands here too — log-and-continue so
+                    -- one contended partition can't block the whole sweep.
                     RAISE WARNING 'Failed to process partition %.%: %', '{schema}', row.relname, SQLERRM;
                 END;
             END LOOP;

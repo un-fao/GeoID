@@ -49,6 +49,7 @@ from dynastore.modules.db_config.locking_tools import (
     acquire_lock_if_needed,
     check_table_exists,
     check_function_exists,
+    safe_drop_relation,
 )
 from dynastore.models.protocols import LogsProtocol, CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
@@ -238,8 +239,9 @@ async def _drop_logs_partition(
         logger.debug("No logs partition to drop for collection '%s'.", collection_id)
         return
 
-    drop_sql = f'DROP TABLE IF EXISTS "{schema}"."{partition_table}";'
-    await DDLQuery(drop_sql).execute(conn)
+    # Bound AccessExclusiveLock wait — concurrent log appenders on other pods
+    # may still be writing to this partition when hard-delete races them.
+    await safe_drop_relation(conn, schema, partition_table, kind="table")
     logger.info("Dropped logs partition '%s.%s'.", schema, partition_table)
 
 

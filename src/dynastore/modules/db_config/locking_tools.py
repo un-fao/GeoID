@@ -545,3 +545,67 @@ async def force_drop_schema(conn: DbResource, schema_name: str):
     # Give a small window for backends to actually exit
     await asyncio.sleep(0.1)
     await DDLQuery(f'DROP SCHEMA "{schema_name}" CASCADE;').execute(conn)
+
+
+# --- Safe DROP for hot relations ---
+
+
+async def safe_drop_relation(
+    conn: DbResource,
+    schema: str,
+    relation: str,
+    kind: str = "table",
+    *,
+    cascade: bool = False,
+    lock_timeout: str = "5s",
+    max_retries: int = 3,
+    on_table: Optional[str] = None,
+) -> None:
+    """Drop a relation under a bounded ``lock_timeout`` with retries.
+
+    ``DROP`` on a hot relation takes ``AccessExclusiveLock`` and will deadlock
+    against concurrent DML. This helper runs ``SET LOCAL lock_timeout`` before
+    the DROP so a blocked statement fails fast (SQLSTATE 55P03) and retries
+    on transient lock / deadlock codes via :func:`retry_on_lock_conflict`.
+
+    Parameters
+    ----------
+    conn : DbResource
+        Active connection or engine.
+    schema : str
+        Target schema (unquoted).
+    relation : str
+        Target relation name (unquoted).
+    kind : {"table", "index", "trigger", "schema"}
+        Kind of object. For ``trigger``, ``on_table`` is required.
+    cascade : bool
+        Append ``CASCADE`` to the DROP.
+    lock_timeout : str
+        PostgreSQL lock_timeout string; default ``5s``.
+    max_retries : int
+        Max retries on 55P03 / 40P01.
+    on_table : str | None
+        For ``kind='trigger'``: the table the trigger is attached to.
+    """
+    kind_lower = kind.lower()
+    tail = " CASCADE" if cascade else ""
+    if kind_lower == "table":
+        sql = f'DROP TABLE IF EXISTS "{schema}"."{relation}"{tail};'
+    elif kind_lower == "index":
+        sql = f'DROP INDEX IF EXISTS "{schema}"."{relation}"{tail};'
+    elif kind_lower == "trigger":
+        if not on_table:
+            raise ValueError("on_table is required when kind='trigger'")
+        sql = f'DROP TRIGGER IF EXISTS "{relation}" ON "{schema}"."{on_table}"{tail};'
+    elif kind_lower == "schema":
+        sql = f'DROP SCHEMA IF EXISTS "{schema}"{tail};'
+    else:
+        raise ValueError(f"unsupported kind: {kind!r}")
+
+    @retry_on_lock_conflict(max_retries=max_retries)
+    async def _drop():
+        async with managed_transaction(conn) as tx:
+            await tx.execute(text(f"SET LOCAL lock_timeout = '{lock_timeout}'"))
+            await tx.execute(text(sql))
+
+    await _drop()

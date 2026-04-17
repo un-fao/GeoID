@@ -98,11 +98,13 @@ async def _initialize_proxy_collection(conn: DbResource, schema: str, catalog_id
 @sync_collection_destroyer()
 async def _destroy_proxy_collection(conn: DbResource, schema: str, catalog_id: str, collection_id: str):
     """Drops the partition for the collection in the proxy table."""
-    from dynastore.modules.db_config.query_executor import DDLQuery
+    from dynastore.modules.db_config.locking_tools import safe_drop_relation
 
     safe_suffix = sanitize_for_sql_identifier(collection_id)
-    ddl = f"DROP TABLE IF EXISTS {{schema}}.short_urls_{safe_suffix} CASCADE;"
-    await DDLQuery(ddl).execute(conn, schema=schema)
+    partition_name = f"short_urls_{safe_suffix}"
+    # Proxy-URL lookups are read-heavy; bound the AccessExclusiveLock wait so
+    # concurrent resolvers don't pile up behind the DROP.
+    await safe_drop_relation(conn, schema, partition_name, kind="table", cascade=True)
     logger.info(f"Dropped proxy partition for collection '{collection_id}' in schema '{schema}'.")
 
 
