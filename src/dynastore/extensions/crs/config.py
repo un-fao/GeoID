@@ -12,23 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-from typing import List
-from pydantic import Field
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 
-class FeaturesPluginConfig(ExposableConfigMixin, PluginConfig):
-    """
-    Runtime configuration for the OGC Features extension.
-    Controls caching and visibility.
-    """
-    # Caching
-    cache_on_demand: bool = Field(
-        False,
-        description="If True, generated Features responses are saved to the bucket storage."
-    )
-    
-    storage_priority: List[str] = Field(
-        default=["bucket"], 
-        description="Priority list of storage providers to use for saving cached responses."
-    )
+
+class CrsPluginConfig(ExposableConfigMixin, PluginConfig):
+    """Service-exposure config for the crs extension."""
+    # `enabled` inherited from ExposableConfigMixin — no further fields.
