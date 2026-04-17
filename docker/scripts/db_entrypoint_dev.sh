@@ -24,12 +24,18 @@ set -euo pipefail
 
 trap 'kill -TERM "${PG_PID:-0}" 2>/dev/null || true; wait "${PG_PID:-0}" 2>/dev/null || true' TERM INT
 
+# Clean stale postmaster.pid from unclean shutdown
+rm -f /var/lib/postgresql/data/postmaster.pid
+
 /usr/local/bin/docker-entrypoint.sh "$@" &
 PG_PID=$!
 
-until pg_isready -h localhost -U "${POSTGRES_USER:-testuser}" -d "${POSTGRES_DB:-gis_dev}" -q; do
-    sleep 1
-done
+# Wait for PostgreSQL to be ready, with timeout
+timeout 60 bash -c "until pg_isready -h localhost -U \"\${POSTGRES_USER:-testuser}\" -d \"\${POSTGRES_DB:-gis_dev}\" -q; do sleep 1; done" || {
+  echo "ERROR: PostgreSQL failed to start within 60s" >&2
+  kill -9 "${PG_PID:-0}" 2>/dev/null || true
+  exit 1
+}
 
 # db_reset.sh connection resolution: DATABASE_URL > docker exec > localhost:54320 fallback.
 # The fallback uses the host-mapped port (54320) which is unreachable inside the container.
