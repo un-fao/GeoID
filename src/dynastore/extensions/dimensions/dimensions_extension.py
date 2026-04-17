@@ -254,15 +254,17 @@ async def _materialize_dimension(
     provider = _build_provider(generator)
     cube_dimensions = _build_cube_dimensions(dim_name, dim_type, generator)
 
-    # Build extent for temporal dimensions
+    # Build extent for temporal dimensions. STAC Collection requires `spatial`;
+    # dimension records are not geographically bounded, so default to global bbox.
     extent = None
     if dim_type == "temporal" and dim_config.extent_min and dim_config.extent_max:
         extent = {
+            "spatial": {"bbox": [[-180.0, -90.0, 180.0, 90.0]]},
             "temporal": {
                 "interval": [
                     [f"{dim_config.extent_min}T00:00:00Z", f"{dim_config.extent_max}T00:00:00Z"]
                 ]
-            }
+            },
         }
 
     # Create RECORDS collection (idempotent — skips if exists)
