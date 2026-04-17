@@ -18,7 +18,7 @@
 
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
-from typing import List, cast
+from typing import List
 
 from fastapi import APIRouter, FastAPI
 
@@ -102,7 +102,11 @@ async def lifespan(app: FastAPI):
         logger.info("--- Phase 3: Mounting all extension routers ---")
 
         # Build the exposure matrix + custom route class.
-        configs_svc = cast(ConfigsProtocol, get_protocol(ConfigsProtocol))
+        configs_svc = get_protocol(ConfigsProtocol)
+        if configs_svc is None:
+            raise RuntimeError(
+                "ConfigsProtocol not registered. Ensure the db_config module is enabled in Phase 2."
+            )
         togglable = KNOWN_EXTENSION_IDS - ALWAYS_ON_EXTENSIONS
         plugin_cls_by_ext: dict[str, type] = {}
         for cls in list_registered_configs().values():
