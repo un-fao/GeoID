@@ -394,6 +394,100 @@ class LocalAsyncCacheBackend:
 
 
 # ---------------------------------------------------------------------------
+#  TieredAsyncBackend
+# ---------------------------------------------------------------------------
+
+
+class TieredAsyncBackend:
+    """Chain multiple cache backends in priority order (L1, L2, L3...).
+
+    Read path: tries each tier in order, populating upstream tiers on miss.
+    Write path: writes to all tiers.
+    Delete/clear: deletes from all tiers.
+
+    Implements get_lock by delegating to the first tier that supports it.
+    """
+
+    def __init__(self, backends: List[CacheBackend]) -> None:
+        """Initialize with an ordered list of backends (best to worst)."""
+        if not backends:
+            raise ValueError("TieredAsyncBackend requires at least one backend")
+        self._backends = backends
+        self._name = "-".join(b.name for b in backends)
+        self._priority = min(b.priority for b in backends)
+
+    @property
+    def name(self) -> str:
+        return f"tiered({self._name})"
+
+    @property
+    def priority(self) -> int:
+        return self._priority
+
+    async def get(self, key: str) -> Optional[bytes]:
+        """Try each tier in order, populating upstream on miss."""
+        for i, backend in enumerate(self._backends):
+            value = await backend.get(key)
+            if value is not None:
+                # Populate all upstream tiers (0..i-1) with miss TTL
+                for j in range(i):
+                    await self._backends[j].set(key, value, ttl=60)  # L1 short TTL
+                return value
+        return None
+
+    async def set(
+        self,
+        key: str,
+        value: bytes,
+        *,
+        ttl: Optional[float] = None,
+        exist: Optional[bool] = None,
+    ) -> bool:
+        """Write to all tiers (with tier-specific TTLs)."""
+        # L1 gets short TTL, L2+ get full TTL
+        results = []
+        for i, backend in enumerate(self._backends):
+            tier_ttl = min(ttl or 300, 60) if i == 0 else ttl
+            result = await backend.set(key, value, ttl=tier_ttl, exist=exist)
+            results.append(result)
+        return all(results)
+
+    async def clear(
+        self,
+        *,
+        key: Optional[str] = None,
+        namespace: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ) -> bool:
+        """Clear from all tiers."""
+        results = []
+        for backend in self._backends:
+            result = await backend.clear(key=key, namespace=namespace, tags=tags)
+            results.append(result)
+        return any(results)
+
+    async def exists(self, key: str) -> bool:
+        """Check any tier."""
+        for backend in self._backends:
+            if await backend.exists(key):
+                return True
+        return False
+
+    async def close(self) -> None:
+        """Close all backends."""
+        for backend in self._backends:
+            await backend.close()
+
+    async def get_lock(self, key: str) -> asyncio.Lock:
+        """Delegate to first tier that implements LockableCacheBackend."""
+        for backend in self._backends:
+            if isinstance(backend, LockableCacheBackend):
+                return await backend.get_lock(key)
+        # Fallback: create a new lock (caller's decorator will cache it)
+        return asyncio.Lock()
+
+
+# ---------------------------------------------------------------------------
 #  LocalSyncCacheBackend
 # ---------------------------------------------------------------------------
 
@@ -713,6 +807,16 @@ class CacheManager:
             else:
                 self._sync_backends[backend.name] = backend  # type: ignore[assignment]
         logger.info("Registered cache backend: %s (priority=%d)", backend.name, backend.priority)
+        _notify_backend_change()
+
+    def unregister_backend(
+        self, backend: Union[CacheBackend, SyncCacheBackend]
+    ) -> None:
+        """Unregister a backend (e.g. on circuit breaker trip)."""
+        self._async_backends.pop(backend.name, None)
+        self._sync_backends.pop(backend.name, None)
+        logger.warning("Unregistered cache backend: %s", backend.name)
+        _notify_backend_change()
 
     def get_async_backend(
         self, name: Optional[str] = None
@@ -789,14 +893,18 @@ def _register_cache_manager_as_plugin() -> None:
 _backend_generation: int = 0
 
 
-def _notify_backend_upgrade() -> None:
-    """Called by CacheModule after registering a distributed backend (Valkey).
+def _notify_backend_change() -> None:
+    """Called when a backend is registered or unregistered.
 
     Bumps the generation counter so that ``@cached`` functions lazily
     re-resolve their backend on the next call.
     """
     global _backend_generation
     _backend_generation += 1
+
+
+# Backward compatibility alias
+_notify_backend_upgrade = _notify_backend_change
 
 
 # ---------------------------------------------------------------------------
@@ -873,11 +981,17 @@ def cached(
             if _is_named_backend:
                 _backend = get_cache_manager().get_async_backend(backend)
             elif distributed:
-                best = get_cache_manager().get_async_backend()  # lowest priority wins
-                if best.priority < 1000:
-                    _backend = best  # Distributed backend available (Valkey)
-                else:
-                    _backend = LocalAsyncCacheBackend(max_size=maxsize)
+                local = LocalAsyncCacheBackend(max_size=maxsize)
+                try:
+                    distributed_backend = get_cache_manager().get_async_backend()
+                    if distributed_backend.priority < 1000:
+                        # Tiered: L1 (local) + L2 (distributed)
+                        _backend = TieredAsyncBackend([local, distributed_backend])
+                    else:
+                        # No distributed backend registered, use local only
+                        _backend = local
+                except RuntimeError:
+                    _backend = local
             else:
                 _backend = LocalAsyncCacheBackend(max_size=maxsize)  # forced local
             _backend_has_lock = isinstance(_backend, LockableCacheBackend)

@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import os
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -38,6 +39,8 @@ import msgpack
 from dynastore.models.protocols.cache import CacheStats
 
 logger = logging.getLogger(__name__)
+
+_VALKEY_CIRCUIT_BREAKER_THRESHOLD = int(os.getenv("VALKEY_CIRCUIT_BREAKER_THRESHOLD", "3"))
 
 # ---------------------------------------------------------------------------
 #  Valkey INFO section → field mapping (used by ValkeyCacheBackend.info())
@@ -167,6 +170,7 @@ class ValkeyCacheBackend:
         self._prefix = key_prefix
         self._stats = CacheStats(maxsize=0)
         self._locks: Dict[str, asyncio.Lock] = {}
+        self._consecutive_failures: int = 0
 
     @property
     def name(self) -> str:
@@ -180,11 +184,35 @@ class ValkeyCacheBackend:
         """Prefix a cache key for Valkey namespace isolation."""
         return f"{self._prefix}{key}"
 
+    def _record_failure(self) -> None:
+        """Increment failure counter and trip circuit breaker if threshold exceeded."""
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= _VALKEY_CIRCUIT_BREAKER_THRESHOLD:
+            logger.error(
+                "ValkeyCacheBackend: circuit breaker tripped after %d consecutive failures — degrading to L1-only.",
+                self._consecutive_failures,
+            )
+            try:
+                from dynastore.tools.cache import get_cache_manager
+                get_cache_manager().unregister_backend(self)
+            except Exception:
+                logger.exception("ValkeyCacheBackend: failed to unregister backend on circuit trip")
+
+    def _record_success(self) -> None:
+        """Reset failure counter on successful operation."""
+        self._consecutive_failures = 0
+
     async def get(self, key: str) -> Optional[bytes]:
-        raw = await self._client.get(self._key(key))
-        if raw is None:
+        try:
+            raw = await self._client.get(self._key(key))
+            self._record_success()
+            if raw is None:
+                return None
+            return _deserialize(raw)
+        except Exception:
+            self._record_failure()
+            logger.debug("ValkeyCacheBackend.get failed", exc_info=True)
             return None
-        return _deserialize(raw)
 
     async def set(
         self,
@@ -194,17 +222,23 @@ class ValkeyCacheBackend:
         ttl: Optional[float] = None,
         exist: Optional[bool] = None,
     ) -> bool:
-        serialized = _serialize(value)
-        kwargs: Dict[str, Any] = {}
-        if exist is True:
-            kwargs["xx"] = True
-        if exist is False:
-            kwargs["nx"] = True
-        if ttl is not None:
-            # Use millisecond precision for sub-second TTLs
-            kwargs["px"] = int(ttl * 1000)
-        result = await self._client.set(self._key(key), serialized, **kwargs)
-        return bool(result)
+        try:
+            serialized = _serialize(value)
+            kwargs: Dict[str, Any] = {}
+            if exist is True:
+                kwargs["xx"] = True
+            if exist is False:
+                kwargs["nx"] = True
+            if ttl is not None:
+                # Use millisecond precision for sub-second TTLs
+                kwargs["px"] = int(ttl * 1000)
+            result = await self._client.set(self._key(key), serialized, **kwargs)
+            self._record_success()
+            return bool(result)
+        except Exception:
+            self._record_failure()
+            logger.debug("ValkeyCacheBackend.set failed", exc_info=True)
+            return False
 
     async def clear(
         self,
@@ -213,30 +247,45 @@ class ValkeyCacheBackend:
         namespace: Optional[str] = None,
         tags: Optional[List[str]] = None,
     ) -> bool:
-        if key is not None:
-            return bool(await self._client.unlink(self._key(key)))
-        if namespace is not None:
-            # SCAN + UNLINK by prefix pattern
-            # Cache keys use "|" as separator (from _make_cache_key)
-            pattern = f"{self._prefix}{namespace}|*"
-            count = 0
-            cursor: int = 0
-            while True:
-                cursor, keys = await self._client.scan(
-                    cursor, match=pattern, count=200
-                )
-                if keys:
-                    await self._client.unlink(*keys)
-                    count += len(keys)
-                if cursor == 0:
-                    break
-            return count > 0
-        if tags is not None:
-            return False  # Tag-based invalidation not supported
-        return False
+        try:
+            if key is not None:
+                result = bool(await self._client.unlink(self._key(key)))
+                self._record_success()
+                return result
+            if namespace is not None:
+                # SCAN + UNLINK by prefix pattern
+                # Cache keys use "|" as separator (from _make_cache_key)
+                pattern = f"{self._prefix}{namespace}|*"
+                count = 0
+                cursor: int = 0
+                while True:
+                    cursor, keys = await self._client.scan(
+                        cursor, match=pattern, count=200
+                    )
+                    if keys:
+                        await self._client.unlink(*keys)
+                        count += len(keys)
+                    if cursor == 0:
+                        break
+                self._record_success()
+                return count > 0
+            if tags is not None:
+                return False  # Tag-based invalidation not supported
+            return False
+        except Exception:
+            self._record_failure()
+            logger.debug("ValkeyCacheBackend.clear failed", exc_info=True)
+            return False
 
     async def exists(self, key: str) -> bool:
-        return bool(await self._client.exists(self._key(key)))
+        try:
+            result = bool(await self._client.exists(self._key(key)))
+            self._record_success()
+            return result
+        except Exception:
+            self._record_failure()
+            logger.debug("ValkeyCacheBackend.exists failed", exc_info=True)
+            return False
 
     async def get_lock(self, key: str) -> asyncio.Lock:
         """Per-process asyncio lock for stampede protection.
@@ -250,7 +299,14 @@ class ValkeyCacheBackend:
 
     async def ping(self) -> bool:
         """Health check — verify Valkey connectivity."""
-        return bool(await self._client.ping())
+        try:
+            result = bool(await self._client.ping())
+            self._record_success()
+            return result
+        except Exception:
+            self._record_failure()
+            logger.debug("ValkeyCacheBackend.ping failed", exc_info=True)
+            return False
 
     async def info(self) -> dict:
         """Return server info sections (server, memory, stats, replication).
