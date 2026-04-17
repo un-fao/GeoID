@@ -18,7 +18,7 @@
 
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
-from typing import List
+from typing import List, cast
 
 from fastapi import APIRouter, FastAPI
 
@@ -37,6 +37,15 @@ from .documentation import (
     setup_global_help_endpoint,
     enrich_extension_metadata
 )
+from dynastore.extensions.tools.exposure_matrix import ExposureMatrix
+from dynastore.extensions.tools.exposure_mixin import (
+    ALWAYS_ON_EXTENSIONS, KNOWN_EXTENSION_IDS, ExposableConfigMixin,
+)
+from dynastore.extensions.tools.exposure_openapi import install_filtered_openapi
+from dynastore.extensions.tools.exposure_route import make_exposure_gated_route
+from dynastore.modules.db_config.platform_config_service import list_registered_configs
+from dynastore.models.protocols import ConfigsProtocol
+from dynastore.tools.discovery import get_protocol
 
 logger = logging.getLogger(__name__)
 
@@ -91,24 +100,49 @@ async def lifespan(app: FastAPI):
 
         # --- PHASE 3: Routers & Docs ---
         logger.info("--- Phase 3: Mounting all extension routers ---")
+
+        # Build the exposure matrix + custom route class.
+        configs_svc = cast(ConfigsProtocol, get_protocol(ConfigsProtocol))
+        togglable = KNOWN_EXTENSION_IDS - ALWAYS_ON_EXTENSIONS
+        plugin_cls_by_ext: dict[str, type] = {}
+        for cls in list_registered_configs().values():
+            if not issubclass(cls, ExposableConfigMixin):
+                continue
+            parts = cls.__module__.split(".")
+            if len(parts) >= 3 and parts[1] in ("extensions", "modules"):
+                ext = parts[2]
+                if ext in togglable:
+                    plugin_cls_by_ext.setdefault(ext, cls)
+
+        matrix = ExposureMatrix(
+            configs_service=configs_svc,
+            togglable_extensions=togglable,
+            plugin_class_by_extension=plugin_cls_by_ext,
+            ttl_seconds=30.0,
+        )
+        app.state.exposure_matrix = matrix
+        install_filtered_openapi(app, matrix)
+        GatedRoute = make_exposure_gated_route(matrix)
+
         for config in configs:
             if config.instance is None: continue
-            
+
             router = getattr(config.instance, "router", None)
-            
+
             if isinstance(router, APIRouter):
                 # 1. Enrich Metadata (READMEs, Tags, Help Links)
                 enrich_extension_metadata(app, config, router)
-                
+
                 # 2. Mount Router
                 extension_name = config.cls._registered_name  # type: ignore[attr-defined]
+                router.route_class = GatedRoute
                 if not router.tags:
                     app.include_router(router, tags=[extension_name])
                 else:
                     app.include_router(router)
-                
+
                 logger.info(f"Mounted router for '{config.cls.__name__}' at prefix '{router.prefix}'.")
-        
+
         # --- Force OpenAPI Schema Refresh ---
         app.openapi_schema = None
         
