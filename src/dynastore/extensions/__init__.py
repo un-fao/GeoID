@@ -20,7 +20,7 @@ import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import List
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 
 # Re-export key components for compatibility with main.py
 from .protocols import ExtensionProtocol
@@ -42,7 +42,7 @@ from dynastore.extensions.tools.exposure_mixin import (
     ALWAYS_ON_EXTENSIONS, KNOWN_EXTENSION_IDS, ExposableConfigMixin,
 )
 from dynastore.extensions.tools.exposure_openapi import install_filtered_openapi
-from dynastore.extensions.tools.exposure_route import make_exposure_gated_route
+from dynastore.extensions.tools.exposure_route import make_exposure_dependency
 from dynastore.modules.db_config.platform_config_service import list_registered_configs
 from dynastore.models.protocols import ConfigsProtocol
 from dynastore.tools.discovery import get_protocol
@@ -126,7 +126,6 @@ async def lifespan(app: FastAPI):
         )
         app.state.exposure_matrix = matrix
         install_filtered_openapi(app, matrix)
-        GatedRoute = make_exposure_gated_route(matrix)
 
         for config in configs:
             if config.instance is None: continue
@@ -139,11 +138,18 @@ async def lifespan(app: FastAPI):
 
                 # 2. Mount Router
                 extension_name = config.cls._registered_name  # type: ignore[attr-defined]
-                router.route_class = GatedRoute
-                if not router.tags:
-                    app.include_router(router, tags=[extension_name])
-                else:
-                    app.include_router(router)
+                # Always append the extension_name tag so the filtered OpenAPI
+                # can map operations back to their extension. Gated extensions
+                # also get a dependency that 503s when the matrix says so.
+                include_kwargs: dict = {"tags": [extension_name]}
+                if (
+                    extension_name in KNOWN_EXTENSION_IDS
+                    and extension_name not in ALWAYS_ON_EXTENSIONS
+                ):
+                    include_kwargs["dependencies"] = [
+                        Depends(make_exposure_dependency(matrix, extension_name))
+                    ]
+                app.include_router(router, **include_kwargs)
 
                 logger.info(f"Mounted router for '{config.cls.__name__}' at prefix '{router.prefix}'.")
 

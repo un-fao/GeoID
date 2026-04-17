@@ -16,9 +16,11 @@ def _make_configs_service_with_matrix():
     app.state = State()
     app.openapi_schema = {"info": {"title": "test"}}  # simulates cached schema
 
-    # Mock ExposureMatrix
+    # Mock ExposureMatrix — invalidate is sync, get is async (awaited by
+    # _invalidate_exposure to reload the snapshot).
     matrix = MagicMock()
     matrix.invalidate = MagicMock()
+    matrix.get = AsyncMock()
     app.state.exposure_matrix = matrix
 
     return app, matrix
@@ -35,9 +37,10 @@ async def test_invalidate_exposure_clears_matrix_and_schema():
     svc = ConfigsService.__new__(ConfigsService)
     svc.app = app
 
-    svc._invalidate_exposure()
+    await svc._invalidate_exposure()
 
     matrix.invalidate.assert_called_once()
+    matrix.get.assert_awaited_once()
     assert app.openapi_schema is None
 
 
@@ -57,7 +60,7 @@ async def test_invalidate_exposure_no_matrix_does_not_raise():
     svc.app = app
 
     # Should not raise
-    svc._invalidate_exposure()
+    await svc._invalidate_exposure()
     assert app.openapi_schema is None
 
 
