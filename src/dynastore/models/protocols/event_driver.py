@@ -26,15 +26,17 @@ Implementations:
 
 Backend-agnostic consumer loop:
 
-    async with storage.acquire_consumer_lock(leader_key) as is_leader:
-        if not is_leader:
-            return
-        while not shutdown.is_set():
-            events = await storage.consume_batch(scope, batch_size, shard=shard_id)
-            if not events:
-                await storage.wait_for_events(timeout=poll_interval)
+    while not shutdown.is_set():
+        async with storage.acquire_consumer_lock(leader_key) as is_leader:
+            if not is_leader:
+                await asyncio.sleep(retry_s)
                 continue
-            # dispatch…
+            while not shutdown.is_set():
+                events = await storage.consume_batch(scope, batch_size, shard=shard_id)
+                if not events:
+                    await storage.wait_for_events(timeout=poll_interval)
+                    continue
+                # dispatch…
 """
 
 from __future__ import annotations
@@ -213,21 +215,26 @@ class EventDriverProtocol(Protocol):
 
     def acquire_consumer_lock(self, key: str) -> Any:
         """
-        Acquire a distributed consumer lock as an async context manager.
+        Try to acquire a distributed consumer lock as an async context manager.
 
-        Yields ``True`` if this instance became the leader; ``False`` for
-        backends without the ``LOCKING`` capability (immediate return).
+        Non-blocking: yields ``True`` if this instance became the leader,
+        ``False`` otherwise (either the lock is already held by a peer, or the
+        backend lacks the ``LOCKING`` capability). Callers must sleep & retry
+        on ``False`` to poll for leadership.
 
-        The lock is held for the lifetime of the context manager and is
-        released automatically on connection drop (PG advisory lock on a
-        dedicated AUTOCOMMIT connection) — no heartbeat required.
+        When ``True`` is yielded, the lock is held for the lifetime of the
+        context manager and released automatically on connection drop (PG
+        advisory lock on a dedicated AUTOCOMMIT connection) — no heartbeat
+        required.
 
         Usage::
 
-            async with storage.acquire_consumer_lock(leader_key) as is_leader:
-                if not is_leader:
-                    return
-                await run_consume_loop(shutdown_event)
+            while not shutdown_event.is_set():
+                async with storage.acquire_consumer_lock(leader_key) as is_leader:
+                    if not is_leader:
+                        await asyncio.sleep(5.0)
+                        continue
+                    await run_consume_loop(shutdown_event)
         """
         ...
 

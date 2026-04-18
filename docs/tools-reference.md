@@ -29,7 +29,8 @@ Developer guide for all shared utility modules. **Before writing new helpers, ch
 | String type parsing | `tools.json` | `parse_string_to_python_type()` |
 | Pydantic dict parsing | `tools.pydantic` | `FlexibleDictParam`, `TemplateParam` |
 | URL helpers | `extensions.tools.url` | `build_sibling_redirect()`, `get_base_url()` |
-| Auth dependency | `extensions.iam.guards` | `get_principal()`, `get_principal_optional()`, `require_sysadmin()`, `require_admin()`, `require_authenticated()` |
+| Auth context | `extensions.iam.guards` | `security_context_from_request()`, `principal_from_request()`, `ensure_privileged_role_assignment()` |
+| Permission check | `modules.iam.authorization` | `require_permission(ctx, Permission.X)` |
 | Request state access | `extensions.tools.request_state` | `get_principal()`, `get_catalog_id()` |
 | Conflict to HTTP 409 | `extensions.tools.conflict_handler` | `conflict_to_409()` |
 | OGC response envelope | `extensions.tools.formatters` | `OGCResponseMetadata` |
@@ -299,14 +300,25 @@ root = get_root_url(request)
 ### Auth & Request State
 
 ```python
-# FastAPI dependency (resolves JWT -> Principal)
-from dynastore.extensions.iam.guards import get_principal, require_sysadmin
+# Request → SecurityContext + Permission enforcement
+from dynastore.extensions.iam.guards import (
+    security_context_from_request,
+    principal_from_request,
+)
+from dynastore.models.protocols.authorization import Permission
+from dynastore.modules.iam.authorization import require_permission
+
+ctx = security_context_from_request(request)
+await require_permission(ctx, Permission.SYSADMIN)  # raises PermissionError
 
 # Typed request.state accessors (replaces scattered getattr)
 from dynastore.extensions.tools.request_state import get_principal, get_catalog_id, get_principal_role
 principal = get_principal(request)
 catalog_id = get_catalog_id(request)
 ```
+
+Endpoint-level authorization is enforced by `IamMiddleware` against the policy
+registry — route handlers no longer declare `Depends(require_*)` guards.
 
 ### Conflict Handling
 

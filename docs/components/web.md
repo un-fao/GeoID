@@ -106,7 +106,6 @@ Reads available languages from `window.__DS_LANGUAGES__` and persists selection 
 | `data_explorer` | features | main | — | Feature data explorer |
 | `configs_editor` | configs | admin | sysadmin | Configuration management |
 | `admin_panel` | admin | admin | sysadmin | User/key management |
-| `migrations_panel` | admin | admin | sysadmin | Database migrations dashboard |
 | `logs_viewer` | logs | admin | sysadmin | Access log viewer |
 
 ## Files

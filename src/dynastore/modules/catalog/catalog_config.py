@@ -87,5 +87,18 @@ class CollectionPluginConfig(PluginConfig):
         description="Maximum number of features allowed in a single bulk insert.",
     )
 
+    ingest_chunk_size: int = Field(
+        default=50,
+        ge=1,
+        le=10000,
+        description=(
+            "Number of items per write-transaction chunk during bulk ingest. "
+            "Each chunk commits independently, releasing row locks before the "
+            "next chunk opens its tx. Default 50 is safe for geometry-heavy "
+            "collections (large per-row payloads); lightweight attribute-only "
+            "collections can raise this to several hundred."
+        ),
+    )
+
 
 CollectionPluginConfig.model_rebuild()

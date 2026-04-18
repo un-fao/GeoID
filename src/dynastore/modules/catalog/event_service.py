@@ -504,7 +504,9 @@ class EventService(EventBusProtocol):
                 await asyncio.sleep(60.0)
             except Exception as e:
                 logger.error(
-                    f"EventService shard {shard_id} consumer error: {e}", exc_info=True
+                    "EventService shard %d consumer error: %s: %s",
+                    shard_id, type(e).__name__, e or "<no message>",
+                    exc_info=True,
                 )
                 await asyncio.sleep(5.0)
 
@@ -553,6 +555,7 @@ class EventService(EventBusProtocol):
         self._consumer_task = None
 
         async def _leader_loop():
+            retry_s = 5.0
             while not getattr(shutdown_event, "is_set", lambda: False)():
                 try:
                     driver = get_protocol(EventDriverProtocol)
@@ -560,12 +563,13 @@ class EventService(EventBusProtocol):
                         logger.warning(
                             "EventService: EventDriverProtocol not available; retrying in 5s."
                         )
-                        await asyncio.sleep(5.0)
+                        await asyncio.sleep(retry_s)
                         continue
 
                     async with driver.acquire_consumer_lock(leader_key) as is_leader:
                         if not is_leader:
-                            return
+                            await asyncio.sleep(retry_s)
+                            continue
                         logger.info(
                             "EventService: leadership acquired (key=%s).", leader_key
                         )
@@ -580,7 +584,7 @@ class EventService(EventBusProtocol):
                     logger.exception(
                         "EventService leader loop error; reconnecting in 5s."
                     )
-                    await asyncio.sleep(5.0)
+                    await asyncio.sleep(retry_s)
 
             self._consumer_running = False
             logger.info("EventService: leader loop stopped (key=%s).", leader_key)

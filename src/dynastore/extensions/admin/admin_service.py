@@ -19,69 +19,54 @@ import logging
 from typing import Optional
 from uuid import UUID
 
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, APIRouter, HTTPException, Query, Request
 from contextlib import asynccontextmanager
 
 from dynastore.extensions import ExtensionProtocol
 from dynastore.modules import get_protocol
-from dynastore.models.protocols import WebModuleProtocol
 from dynastore.modules.iam.iam_service import IamService
-from dynastore.models.protocols.policies import PermissionProtocol, Policy, Role, Principal
+from dynastore.models.protocols.authorization import Permission
+from dynastore.modules.iam.authorization import require_permission
+from dynastore.extensions.iam.guards import security_context_from_request
+from dynastore.models.protocols.policies import Policy, Role, Principal
 
 from .models import (
-    UserCreate, UserUpdate, UserResponse,
+    UserCreate, UserUpdate,
     RoleCreate, RoleUpdate, RoleResponse,
     PolicyCreate, PolicyUpdate, PolicyResponse,
-    PrincipalResponse, AssignRoleRequest, CatalogRoleAssignment,
+    PrincipalResponse, AssignRoleRequest,
 )
 from .policies import register_admin_policies
-from dynastore.extensions.web.decorators import expose_web_page
 
 logger = logging.getLogger(__name__)
 
-# Default role names that can only be modified/deleted by sysadmin
-DEFAULT_ROLE_NAMES = frozenset({"sysadmin", "admin", "anonymous", "user"})
 
-
-# --- Auth dependency ---
-
-def _require_admin(request: Request):
-    """Dependency: checks that the caller has sysadmin or admin role."""
-    principal: Optional[Principal] = getattr(request.state, "principal", None)
-    if not principal:
-        raise HTTPException(status_code=401, detail="Authentication required.")
-    admin_roles = {"sysadmin", "admin"}
-    if not admin_roles.intersection(set(principal.roles or [])):
-        raise HTTPException(status_code=403, detail="Admin role required.")
-    return principal
-
-
-def _get_iam_manager() -> IamService:
-    """Dependency: returns the IamService from the protocol registry."""
+def _iam() -> IamService:
     mgr = get_protocol(IamService)
     if mgr is None:
         raise HTTPException(status_code=503, detail="Auth service not available.")
     return mgr
+
+
+async def _require_sysadmin(request: Request) -> None:
+    ctx = security_context_from_request(request)
+    try:
+        await require_permission(ctx, Permission.SYSADMIN)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="System Administrator privileges required.")
+
+
 class AdminService(ExtensionProtocol):
     priority: int = 200
-    """Admin REST API — user, role, policy, and catalog assignment management."""
+    """Admin REST API — user, role, policy, and catalog assignment management.
+
+    Endpoint-level authorization is delegated to `IamMiddleware`, which evaluates
+    policies dynamically against `request.url.path` + `request.method` using
+    `PermissionProtocol.evaluate_access`. When the IAM module is not loaded the
+    fail-closed `DefaultAuthorizer` protects privileged paths.
+    """
 
     router: APIRouter = APIRouter(tags=["Admin"], prefix="/admin")
-
-    def get_web_pages(self):
-        from dynastore.extensions.tools.web_collect import collect_web_pages
-        return collect_web_pages(self)
-
-    def configure_app(self, app: FastAPI):
-        # Include migration admin sub-routers
-        from .migration_routes import router as migration_router, schema_router, configs_router
-        self.router.include_router(migration_router, prefix="")
-        self.router.include_router(schema_router, prefix="")
-        self.router.include_router(configs_router, prefix="")
-
-        # Web pages are discovered by WebModule via the WebPageContributor
-        # capability protocol (see get_web_pages below).
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
@@ -97,11 +82,9 @@ class AdminService(ExtensionProtocol):
     async def list_users(
         limit: int = Query(50, ge=1, le=500),
         offset: int = Query(0, ge=0),
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
     ):
+        mgr = _iam()
         principals = await mgr.list_principals(limit=limit, offset=offset)
-        # Filter to local (system) principals only
         local = [p for p in principals if p.provider in ("local", "system", None)]
         return [
             PrincipalResponse(
@@ -116,19 +99,13 @@ class AdminService(ExtensionProtocol):
         ]
 
     @router.post("/users", summary="Create a new local user", status_code=201)
-    async def create_user(
-        body: UserCreate,
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
-    ):
-        # Resolve the local identity provider
+    async def create_user(body: UserCreate):
+        mgr = _iam()
         providers = mgr.get_identity_providers()
         local_provider = next(
             (p for p in providers if getattr(p, "get_provider_id", lambda: None)() == "local"), None
         )
 
-        # Create the user in the local users table first to obtain the authoritative UUID.
-        # local_provider.create_user hashes the password internally.
         if local_provider and hasattr(local_provider, "create_user"):
             user_uuid = await local_provider.create_user(
                 username=body.username,
@@ -137,11 +114,8 @@ class AdminService(ExtensionProtocol):
             )
             subject_id = str(user_uuid)
         else:
-            # Fallback: no local provider — use username as subject_id
             subject_id = body.username
 
-        # Build the principal using the UUID as subject_id so that JWT sub claims
-        # (which also encode the UUID) resolve correctly via get_effective_permissions.
         new_principal = Principal(
             provider="local",
             subject_id=subject_id,
@@ -161,11 +135,8 @@ class AdminService(ExtensionProtocol):
         )
 
     @router.get("/users/{principal_id}", summary="Get user details")
-    async def get_user(
-        principal_id: UUID,
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
-    ):
+    async def get_user(principal_id: UUID):
+        mgr = _iam()
         p = await mgr.get_principal(principal_id)
         if not p:
             raise HTTPException(status_code=404, detail="User not found.")
@@ -175,12 +146,8 @@ class AdminService(ExtensionProtocol):
         )
 
     @router.put("/users/{principal_id}", summary="Update user")
-    async def update_user(
-        principal_id: UUID,
-        body: UserUpdate,
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
-    ):
+    async def update_user(principal_id: UUID, body: UserUpdate):
+        mgr = _iam()
         p = await mgr.get_principal(principal_id)
         if not p:
             raise HTTPException(status_code=404, detail="User not found.")
@@ -195,11 +162,8 @@ class AdminService(ExtensionProtocol):
         )
 
     @router.delete("/users/{principal_id}", status_code=204, summary="Delete user")
-    async def delete_user(
-        principal_id: UUID,
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
-    ):
+    async def delete_user(principal_id: UUID):
+        mgr = _iam()
         deleted = await mgr.delete_principal(principal_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="User not found.")
@@ -215,9 +179,8 @@ class AdminService(ExtensionProtocol):
         catalog_id: Optional[str] = Query(None),
         limit: int = Query(50, ge=1, le=500),
         offset: int = Query(0, ge=0),
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
     ):
+        mgr = _iam()
         results = await mgr.search_principals(
             identifier=identifier, role=role, limit=limit, offset=offset, catalog_id=catalog_id
         )
@@ -230,12 +193,8 @@ class AdminService(ExtensionProtocol):
         ]
 
     @router.post("/principals/{principal_id}/roles", summary="Assign global role to principal", status_code=204)
-    async def assign_global_role(
-        principal_id: UUID,
-        body: AssignRoleRequest,
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
-    ):
+    async def assign_global_role(principal_id: UUID, body: AssignRoleRequest):
+        mgr = _iam()
         p = await mgr.get_principal(principal_id)
         if not p:
             raise HTTPException(status_code=404, detail="Principal not found.")
@@ -244,12 +203,8 @@ class AdminService(ExtensionProtocol):
         await mgr.update_principal(p)
 
     @router.delete("/principals/{principal_id}/roles/{role_name}", status_code=204, summary="Remove global role")
-    async def remove_global_role(
-        principal_id: UUID,
-        role_name: str,
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
-    ):
+    async def remove_global_role(principal_id: UUID, role_name: str):
+        mgr = _iam()
         p = await mgr.get_principal(principal_id)
         if not p:
             raise HTTPException(status_code=404, detail="Principal not found.")
@@ -257,13 +212,8 @@ class AdminService(ExtensionProtocol):
         await mgr.update_principal(p)
 
     @router.post("/principals/{principal_id}/catalogs/{catalog_id}/roles", status_code=204, summary="Assign catalog-scoped role")
-    async def assign_catalog_role(
-        principal_id: UUID,
-        catalog_id: str,
-        body: AssignRoleRequest,
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
-    ):
+    async def assign_catalog_role(principal_id: UUID, catalog_id: str, body: AssignRoleRequest):
+        mgr = _iam()
         p = await mgr.get_principal(principal_id)
         if not p:
             raise HTTPException(status_code=404, detail="Principal not found.")
@@ -280,13 +230,8 @@ class AdminService(ExtensionProtocol):
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.delete("/principals/{principal_id}/catalogs/{catalog_id}/roles/{role_name}", status_code=204)
-    async def remove_catalog_role(
-        principal_id: UUID,
-        catalog_id: str,
-        role_name: str,
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
-    ):
+    async def remove_catalog_role(principal_id: UUID, catalog_id: str, role_name: str):
+        mgr = _iam()
         p = await mgr.get_principal(principal_id)
         if not p:
             raise HTTPException(status_code=404, detail="Principal not found.")
@@ -303,18 +248,13 @@ class AdminService(ExtensionProtocol):
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("/catalogs/{catalog_id}/users", summary="List users assigned to a catalog")
-    async def list_catalog_users(
-        catalog_id: str,
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
-    ):
-        """Return all principals that have any roles assigned to the given catalog."""
+    async def list_catalog_users(catalog_id: str):
+        mgr = _iam()
         try:
             schema = await mgr.resolve_schema(catalog_id)
         except Exception:
             raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
 
-        # List all principals and filter to those with roles in this catalog's schema
         all_principals = await mgr.list_principals(limit=10000, offset=0)
         catalog_users = []
 
@@ -326,7 +266,7 @@ class AdminService(ExtensionProtocol):
                         subject_id=p.subject_id,
                         schema=schema,
                     )
-                    if roles:  # Only include principals with at least one role
+                    if roles:
                         catalog_users.append(
                             PrincipalResponse(
                                 id=str(p.id),
@@ -338,7 +278,6 @@ class AdminService(ExtensionProtocol):
                             )
                         )
                 except Exception:
-                    # Skip principals we can't retrieve roles for
                     pass
 
         return catalog_users
@@ -348,11 +287,8 @@ class AdminService(ExtensionProtocol):
     # -------------------------------------------------------------------------
 
     @router.get("/roles", summary="List all roles")
-    async def list_roles(
-        catalog_id: Optional[str] = Query(None),
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
-    ):
+    async def list_roles(catalog_id: Optional[str] = Query(None)):
+        mgr = _iam()
         roles = await mgr.list_roles(catalog_id=catalog_id)
         return [
             RoleResponse(
@@ -365,12 +301,8 @@ class AdminService(ExtensionProtocol):
         ]
 
     @router.post("/roles", summary="Create a new role", status_code=201)
-    async def create_role(
-        body: RoleCreate,
-        catalog_id: Optional[str] = Query(None),
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
-    ):
+    async def create_role(body: RoleCreate, catalog_id: Optional[str] = Query(None)):
+        mgr = _iam()
         role = Role(
             name=body.name,
             description=body.description,
@@ -388,15 +320,12 @@ class AdminService(ExtensionProtocol):
         role_name: str,
         body: RoleUpdate,
         catalog_id: Optional[str] = Query(None),
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
     ):
+        mgr = _iam()
         roles = await mgr.list_roles(catalog_id=catalog_id)
         existing = next((r for r in roles if r.name == role_name), None)
         if not existing:
             raise HTTPException(status_code=404, detail=f"Role '{role_name}' not found.")
-        if role_name in DEFAULT_ROLE_NAMES and "sysadmin" not in (principal.roles or []):
-            raise HTTPException(status_code=403, detail="Only sysadmin can modify default roles.")
         if body.description is not None:
             existing.description = body.description
         if body.policies is not None:
@@ -410,18 +339,12 @@ class AdminService(ExtensionProtocol):
         )
 
     @router.delete("/roles/{role_name}", status_code=204, summary="Delete a role")
-    async def delete_role(
-        role_name: str,
-        catalog_id: Optional[str] = Query(None),
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
-    ):
+    async def delete_role(role_name: str, catalog_id: Optional[str] = Query(None)):
+        mgr = _iam()
         roles = await mgr.list_roles(catalog_id=catalog_id)
         existing = next((r for r in roles if r.name == role_name), None)
         if not existing:
             raise HTTPException(status_code=404, detail=f"Role '{role_name}' not found.")
-        if role_name in DEFAULT_ROLE_NAMES and "sysadmin" not in (principal.roles or []):
-            raise HTTPException(status_code=403, detail="Only sysadmin can delete default roles.")
         await mgr.delete_role(role_name, catalog_id=catalog_id)
 
     # -------------------------------------------------------------------------
@@ -429,11 +352,8 @@ class AdminService(ExtensionProtocol):
     # -------------------------------------------------------------------------
 
     @router.get("/policies", summary="List all policies")
-    async def list_policies(
-        catalog_id: Optional[str] = Query(None),
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
-    ):
+    async def list_policies(catalog_id: Optional[str] = Query(None)):
+        mgr = _iam()
         pm = mgr.get_policy_service()
         if not pm:
             raise HTTPException(status_code=503, detail="Policy manager not available.")
@@ -447,12 +367,8 @@ class AdminService(ExtensionProtocol):
         ]
 
     @router.post("/policies", summary="Create a new policy", status_code=201)
-    async def create_policy(
-        body: PolicyCreate,
-        catalog_id: Optional[str] = Query(None),
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
-    ):
+    async def create_policy(body: PolicyCreate, catalog_id: Optional[str] = Query(None)):
+        mgr = _iam()
         pm = mgr.get_policy_service()
         if not pm:
             raise HTTPException(status_code=503, detail="Policy manager not available.")
@@ -477,9 +393,8 @@ class AdminService(ExtensionProtocol):
         policy_id: str,
         body: PolicyUpdate,
         catalog_id: Optional[str] = Query(None),
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
     ):
+        mgr = _iam()
         pm = mgr.get_policy_service()
         if not pm:
             raise HTTPException(status_code=503, detail="Policy manager not available.")
@@ -501,12 +416,8 @@ class AdminService(ExtensionProtocol):
         )
 
     @router.delete("/policies/{policy_id}", status_code=204, summary="Delete a policy")
-    async def delete_policy(
-        policy_id: str,
-        catalog_id: Optional[str] = Query(None),
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
-    ):
+    async def delete_policy(policy_id: str, catalog_id: Optional[str] = Query(None)):
+        mgr = _iam()
         pm = mgr.get_policy_service()
         if not pm:
             raise HTTPException(status_code=503, detail="Policy manager not available.")
@@ -520,12 +431,11 @@ class AdminService(ExtensionProtocol):
 
     @router.post("/reset-defaults", summary="Reset default policies and roles")
     async def reset_defaults(
+        request: Request,
         catalog_id: Optional[str] = Query(None, description="Catalog ID for tenant-scoped reset, or None for global"),
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
     ):
-        if "sysadmin" not in (principal.roles or []):
-            raise HTTPException(status_code=403, detail="Only sysadmin can reset defaults.")
+        await _require_sysadmin(request)
+        mgr = _iam()
         pm = mgr.get_policy_service()
         if not pm:
             raise HTTPException(status_code=503, detail="Policy manager not available.")
@@ -533,33 +443,10 @@ class AdminService(ExtensionProtocol):
         return {"message": "Default policies and roles have been reset.", "catalog_id": catalog_id or "global"}
 
     @router.post("/rotate-jwt-secret", summary="Rotate JWT signing secret")
-    async def rotate_jwt_secret(
-        principal: Principal = Depends(_require_admin),
-        mgr=Depends(_get_iam_manager),
-    ):
-        if "sysadmin" not in (principal.roles or []):
-            raise HTTPException(status_code=403, detail="Only sysadmin can rotate JWT secrets.")
+    async def rotate_jwt_secret(request: Request):
+        await _require_sysadmin(request)
+        mgr = _iam()
         if not hasattr(mgr, "rotate_jwt_secret"):
             raise HTTPException(status_code=503, detail="JWT rotation not supported.")
         await mgr.rotate_jwt_secret()
         return {"message": "JWT secret rotated. Previous secret remains valid for existing tokens."}
-
-    # -------------------------------------------------------------------------
-    # Migrations Dashboard (/web/pages/migrations_panel)
-    # -------------------------------------------------------------------------
-
-    @expose_web_page(
-        page_id="migrations_panel",
-        title="Database Migrations",
-        icon="fa-database",
-        description="Manage structural database migrations, view history, and monitor schema health.",
-        required_roles=["sysadmin", "admin"],
-        section="admin",
-        priority=10,
-    )
-    def provide_migrations_panel(self, request: Request):
-        import os
-        html_path = os.path.join(os.path.dirname(__file__), "static", "migrations_panel.html")
-        with open(html_path, "r") as f:
-            return HTMLResponse(f.read())
-

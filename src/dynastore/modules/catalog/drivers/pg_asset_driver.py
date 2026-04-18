@@ -59,6 +59,7 @@ from dynastore.modules.db_config.query_executor import (
     ResultHandler,
     managed_transaction,
 )
+from dynastore.modules.db_config.locking_tools import safe_drop_relation
 from dynastore.tools.json import CustomJSONEncoder
 
 logger = logging.getLogger(__name__)
@@ -210,13 +211,18 @@ class AssetPostgresqlDriver:
         if not schema:
             return
 
-        async with managed_transaction(db_resource or self.engine) as conn:
-            if collection_id:
-                partition_name = f"assets_{catalog_id}_{collection_id}"
-                await DDLQuery(
-                    f'DROP TABLE IF EXISTS "{schema}"."{partition_name}";'
-                ).execute(conn)
-            else:
+        if collection_id:
+            partition_name = f"assets_{catalog_id}_{collection_id}"
+            # Hot-table DROP — bound AccessExclusiveLock wait with lock_timeout
+            # + retry so concurrent ingest DML can't pile us up into a deadlock.
+            await safe_drop_relation(
+                db_resource or self.engine,
+                schema,
+                partition_name,
+                kind="table",
+            )
+        else:
+            async with managed_transaction(db_resource or self.engine) as conn:
                 # Remove all asset_references for this catalog
                 await DQLQuery(
                     f'DELETE FROM "{schema}".asset_references WHERE catalog_id = :catalog_id',

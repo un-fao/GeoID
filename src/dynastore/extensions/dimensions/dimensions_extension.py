@@ -36,6 +36,8 @@ The extension declares OGC API - Dimensions conformance as a
 - ``dimension-hierarchical`` — children / ancestors navigation
 """
 
+import hashlib
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
@@ -46,6 +48,181 @@ from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.models.driver_context import DriverContext
 
 logger = logging.getLogger(__name__)
+
+
+_FINGERPRINT_PROPERTY_PREFIX = "dimensions_materialized_fingerprint:"
+
+# Bumped when the migration target changes. Existing pods write this key
+# after a successful one-shot, so subsequent boots skip the inspection
+# entirely (one PropertiesProtocol round-trip vs N pg_index queries).
+_STALE_INDEX_MIGRATION_KEY = "dimensions_stale_ext_id_index_migration_v1"
+
+
+async def _migrate_stale_attributes_indexes(properties: Any, engine: Any) -> None:
+    """One-shot migration: rebuild any 2-column ``idx_*_attributes_ext_id``
+    on a table that has a ``validity`` column.
+
+    Pre-2026-04-18 attributes-sidecar DDL emitted the unique index as
+    ``(geoid, external_id)`` even when the table tracked validity ranges.
+    The fix at attributes.py:400 changed it to ``(geoid, validity, external_id)``
+    but ``CREATE UNIQUE INDEX IF NOT EXISTS`` does not drop the old shape
+    on existing tables. Result: the upsert's ``ON CONFLICT (geoid, validity)``
+    target misses the stale 2-column index → 23505 → fingerprint sentinel
+    never persists → every reboot re-runs the failed materialise.
+
+    This migration finds those stale indexes in the dimensions catalog's
+    physical schema and rebuilds them. Bounded scope: we only touch the
+    ``_dimensions_`` catalog because that's the only path that re-upserts
+    on every lifespan boot — other tenant schemas hit this latent bug only
+    on explicit re-ingestion of conflicting rows.
+
+    Idempotent: persists a done flag via PropertiesProtocol so the
+    inspection runs at most once per pod boot per platform deployment.
+    """
+    if properties is None:
+        return  # No PropertiesProtocol → can't gate the migration; skip.
+
+    try:
+        already_done = await properties.get_property(_STALE_INDEX_MIGRATION_KEY)
+    except Exception as exc:  # noqa: BLE001 — degrade silently
+        logger.debug("Stale-index migration: get_property failed: %s", exc)
+        already_done = None
+    if already_done == "done":
+        return
+
+    # Late import — avoids dragging the framework into module-import time.
+    from dynastore.modules.db_config.query_executor import (
+        DQLQuery,
+        DDLQuery,
+        ResultHandler,
+        managed_transaction,
+    )
+
+    _resolve_phys_schema = DQLQuery(
+        "SELECT physical_schema FROM catalog.catalogs "
+        "WHERE id = :id AND deleted_at IS NULL",
+        result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
+    )
+
+    # Tables whose unique ext_id index is the old 2-column shape AND that
+    # actually have a validity column (so the new shape is required).
+    _find_stale = DQLQuery(
+        """
+        SELECT c.relname AS table_name, i.relname AS index_name
+          FROM pg_index x
+          JOIN pg_class i ON i.oid = x.indexrelid
+          JOIN pg_class c ON c.oid = x.indrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE x.indisunique
+           AND n.nspname = :schema
+           AND c.relname LIKE :ext_id_table_pattern
+           AND i.relname LIKE :ext_id_index_pattern
+           AND array_length(x.indkey::int[], 1) = 2
+           AND EXISTS (
+               SELECT 1 FROM pg_attribute a
+                WHERE a.attrelid = c.oid
+                  AND a.attname = 'validity'
+                  AND a.attnum > 0
+           )
+        """,
+        result_handler=ResultHandler.ALL_DICTS,
+    )
+
+    async with managed_transaction(engine) as conn:
+        phys_schema = await _resolve_phys_schema.execute(conn, id=DIMENSIONS_CATALOG_ID)
+        if not phys_schema:
+            # Catalog hasn't been created yet — nothing to migrate.
+            return
+
+        rows = await _find_stale.execute(
+            conn,
+            schema=phys_schema,
+            ext_id_table_pattern="%_attributes",
+            ext_id_index_pattern="idx_%_attributes_ext_id",
+        )
+
+    if not rows:
+        # Nothing stale; record done so we don't keep re-checking.
+        try:
+            await properties.set_property(
+                _STALE_INDEX_MIGRATION_KEY, "done", "dimensions_extension",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Stale-index migration: set_property failed: %s", exc)
+        return
+
+    logger.warning(
+        "Stale-index migration: rebuilding %d unique index(es) in schema %r "
+        "from (geoid, external_id) → (geoid, validity, external_id).",
+        len(rows), phys_schema,
+    )
+
+    for row in rows:
+        table_name = row["table_name"]
+        index_name = row["index_name"]
+        # Drop + create in one round-trip per table. The CREATE uses the
+        # corrected column order; uniqueness now matches the upsert's
+        # ON CONFLICT (geoid, validity) target plus the trailing external_id.
+        rebuild_sql = (
+            f'DROP INDEX IF EXISTS "{phys_schema}"."{index_name}"; '
+            f'CREATE UNIQUE INDEX "{index_name}" '
+            f'ON "{phys_schema}"."{table_name}" (geoid, validity, external_id);'
+        )
+        try:
+            async with managed_transaction(engine) as conn:
+                await DDLQuery(rebuild_sql).execute(conn)
+            logger.info("Stale-index migration: rebuilt %s.%s", phys_schema, index_name)
+        except Exception as exc:  # noqa: BLE001 — surface but continue
+            logger.error(
+                "Stale-index migration: failed to rebuild %s.%s: %s",
+                phys_schema, index_name, exc,
+            )
+            return  # Bail without setting the done flag — retry next boot.
+
+    try:
+        await properties.set_property(
+            _STALE_INDEX_MIGRATION_KEY, "done", "dimensions_extension",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Stale-index migration: set_property failed: %s", exc)
+
+
+def _dimension_fingerprint(dim_config: Any) -> str:
+    """Deterministic 16-hex-char fingerprint of the inputs that materially
+    change a dimension's materialised members.
+
+    Two pods with the same code produce the same fingerprint; a code
+    change to the provider class, its serialisable state, or the extent
+    bounds yields a different fingerprint and forces re-materialisation.
+
+    Provider state is extracted in this order of precedence:
+    1. ``model_dump()`` — Pydantic v2 path; recurses through nested models.
+    2. ``vars(provider)`` — plain Python objects; returns ``__dict__`` which
+       holds the constructor-stored field values.
+    3. ``repr(provider)`` — last-resort fallback. **Avoid landing here**:
+       the default ``object.__repr__`` includes the instance memory
+       address, which makes the fingerprint non-deterministic across
+       pod boots and silently disables the materialisation sentinel.
+    """
+    provider = getattr(dim_config, "provider", None)
+    if provider is None:
+        provider_state: Any = None
+    elif hasattr(provider, "model_dump"):
+        provider_state = provider.model_dump()
+    else:
+        try:
+            provider_state = vars(provider)
+        except TypeError:
+            provider_state = repr(provider)
+
+    payload = {
+        "provider_class": type(provider).__qualname__ if provider is not None else None,
+        "provider_state": provider_state,
+        "extent_min": getattr(dim_config, "extent_min", None),
+        "extent_max": getattr(dim_config, "extent_max", None),
+    }
+    blob = json.dumps(payload, sort_keys=True, default=str).encode()
+    return hashlib.sha256(blob).hexdigest()[:16]
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -239,35 +416,68 @@ async def _enumerate_all_members(
 
 async def _materialize_dimension(
     catalogs: Any,
+    properties: Any,
     dim_name: str,
     dim_config: Any,
     db_resource: Any,
 ) -> int:
     """Create a RECORDS collection and upsert all dimension members.
 
-    Returns the number of records materialized.
+    Returns the number of records materialised. Returns 0 (skips silently)
+    when the persisted fingerprint matches the current ``dim_config`` —
+    i.e. nothing in the dimension definition has changed since the last
+    successful materialisation, so we'd just re-do identical UPSERTs and
+    burn round-trips on every pod startup.
     """
-    generator = dim_config.generator
+    expected_fp = _dimension_fingerprint(dim_config)
+    fp_key = f"{_FINGERPRINT_PROPERTY_PREFIX}{dim_name}"
+
+    if properties is not None:
+        try:
+            stored_fp = await properties.get_property(fp_key, db_resource=db_resource)
+        except Exception as exc:  # noqa: BLE001 — degrade to re-materialise
+            logger.debug("Failed to read fingerprint for '%s': %s", dim_name, exc)
+            stored_fp = None
+        if stored_fp == expected_fp:
+            logger.info(
+                "Dimension '%s' already materialised (fingerprint=%s) — skipping.",
+                dim_name, expected_fp,
+            )
+            return 0
+
+    generator = dim_config.provider
     dim_type = _infer_dim_type(generator)
 
     # Build provider objects: full at collection level, slim inside cube:dimensions
     provider = _build_provider(generator)
     cube_dimensions = _build_cube_dimensions(dim_name, dim_type, generator)
 
-    # Build extent for temporal dimensions
+    # Build extent for temporal dimensions. STAC Collection requires `spatial`;
+    # dimension records are not geographically bounded, so default to global bbox.
     extent = None
     if dim_type == "temporal" and dim_config.extent_min and dim_config.extent_max:
         extent = {
+            "spatial": {"bbox": [[-180.0, -90.0, 180.0, 90.0]]},
             "temporal": {
                 "interval": [
                     [f"{dim_config.extent_min}T00:00:00Z", f"{dim_config.extent_max}T00:00:00Z"]
                 ]
-            }
+            },
         }
+
+    # Defensive: ensure the dimensions catalog row is visible inside THIS
+    # transaction. The outer lifespan pre-creates it, but if that tx lost a
+    # multi-replica race (two pods starting at once) the row may not be where
+    # this tx can see it yet — re-asserting here is idempotent thanks to the
+    # ON CONFLICT guard in the INSERT, and closes the window cheaply.
+    await catalogs.ensure_catalog_exists(
+        DIMENSIONS_CATALOG_ID, ctx=DriverContext(db_resource=db_resource),
+    )
 
     # Create RECORDS collection (idempotent — skips if exists)
     existing = await catalogs.get_collection(
         DIMENSIONS_CATALOG_ID, dim_name, lang="en",
+        ctx=DriverContext(db_resource=db_resource),
     )
     if not existing:
         collection_def: Dict[str, Any] = {
@@ -312,17 +522,33 @@ async def _materialize_dimension(
             i, i + len(batch), dim_name, total,
         )
 
+    # Persist the fingerprint so subsequent pod startups skip this work.
+    if properties is not None:
+        try:
+            await properties.set_property(
+                fp_key, expected_fp, "dimensions_extension",
+                db_resource=db_resource,
+            )
+        except Exception as exc:  # noqa: BLE001 — non-fatal; next reboot retries
+            logger.warning(
+                "Failed to persist materialisation fingerprint for '%s': %s",
+                dim_name, exc,
+            )
+
     return total
 
 
 async def _materialize_all_dimensions(dimensions: Dict[str, Any]) -> None:
     """Materialize all registered dimensions as Records collections.
 
-    Passes the engine (not a held connection) through to inner catalog ops so
-    each short-lived call owns its own transaction — avoids pinning one
-    connection across thousands of SAVEPOINT-per-item inner txns.
+    Each dimension's materialisation is gated by a fingerprint stored via
+    ``PropertiesProtocol``: warm restarts (no code change) skip the work
+    entirely, so the lifespan no longer storms the cluster on every pod
+    boot. Cold deploys with changed dimension definitions re-materialise
+    only the affected dimensions.
     """
     from dynastore.models.protocols.catalogs import CatalogsProtocol
+    from dynastore.models.protocols import PropertiesProtocol
     from dynastore.tools.discovery import get_protocol
     from dynastore.tools.protocol_helpers import get_engine
 
@@ -331,12 +557,24 @@ async def _materialize_all_dimensions(dimensions: Dict[str, Any]) -> None:
         logger.warning("CatalogsProtocol not available — skipping dimension materialization.")
         return
 
+    properties = get_protocol(PropertiesProtocol)
+    if properties is None:
+        logger.warning(
+            "PropertiesProtocol not available — fingerprint sentinel disabled, "
+            "every reboot will re-materialise all dimensions."
+        )
+
     engine = get_engine()
     if not engine:
         logger.warning("DB engine not available — skipping dimension materialization.")
         return
 
     try:
+        # Pass engine, not a held conn: ensure_catalog_exists opens its own
+        # short-lived tx. Holding one outer tx across the full materialisation
+        # caused asyncpg `connection was closed in the middle of operation`
+        # after thousands of nested savepoints (one SAVEPOINT per item via
+        # configs.get_config → resolve_physical_schema).
         await catalogs.ensure_catalog_exists(
             DIMENSIONS_CATALOG_ID, ctx=DriverContext(db_resource=engine),
         )
@@ -344,11 +582,23 @@ async def _materialize_all_dimensions(dimensions: Dict[str, Any]) -> None:
         logger.error("Failed to ensure dimensions catalog: %s", exc)
         return
 
+    # One-shot: rebuild any stale unique attribute indexes on existing
+    # dimension tables that predate the attributes.py:400 fix. Without
+    # this the materialise upsert keeps failing → fingerprint never
+    # persists → every reboot re-runs the same failing upsert.
+    try:
+        await _migrate_stale_attributes_indexes(properties, engine)
+    except Exception as exc:  # noqa: BLE001 — non-fatal; log and proceed
+        logger.warning(
+            "Stale-index migration aborted: %s. Materialisation will "
+            "still try, but pre-fix tables may keep failing.", exc,
+        )
+
     grand_total = 0
     for dim_name, dim_config in dimensions.items():
         try:
             count = await _materialize_dimension(
-                catalogs, dim_name, dim_config, db_resource=engine,
+                catalogs, properties, dim_name, dim_config, db_resource=engine,
             )
             grand_total += count
             logger.info(

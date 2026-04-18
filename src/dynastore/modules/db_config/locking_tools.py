@@ -319,34 +319,6 @@ async def acquire_lock_if_needed(
         held.discard(lock_key)
 
 
-async def execute_safe_ddl(
-    conn: DbResource,
-    ddl_statement: str,
-    lock_key: Optional[str] = None,
-    existence_check: Optional[Callable[[], Awaitable[bool]]] = None,
-    **ddl_params,
-):
-    """
-    [DEPRECATED] Safely executes a DDL block with granular locking and deduplication.
-    Use DDLQuery(...) directly instead.
-    """
-    import warnings
-    warnings.warn(
-        "execute_safe_ddl is deprecated and will be removed in a future version. "
-        "Use DDLQuery directly instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    # Simply use DDLQuery which now handles existence checks and locking centrally
-    # We pass existence_check as a wrapped function if it exists
-    query = DDLQuery(
-        ddl_statement, 
-        check_query=existence_check, 
-        lock_key=lock_key
-    )
-    return await query.execute(conn, **ddl_params)
-
-
 async def check_table_exists(
     conn: DbResource, table_name: str, schema: str = "platform"
 ) -> bool:
@@ -396,17 +368,39 @@ async def check_extension_exists(conn: DbResource, extension_name: str) -> bool:
 
 
 async def check_trigger_exists(
-    conn: DbResource, trigger_name: str, schema: str = "platform"
+    conn: DbResource,
+    trigger_name: str,
+    schema: str = "platform",
+    table: Optional[str] = None,
 ) -> bool:
-    """Checks if a trigger exists."""
+    """Checks if a trigger exists.
+
+    When *table* is provided, the match is scoped to that specific relation —
+    required when the same trigger name is applied per-table across a schema
+    (e.g. ``trg_asset_cleanup`` on every tenant asset/sidecar table).
+    """
     from dynastore.modules.db_config.maintenance_tools import DQLQuery, ResultHandler
 
-    query = DQLQuery(
-        "SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = :schema AND t.tgname = :name",
-        result_handler=ResultHandler.SCALAR,
-    )
+    if table is None:
+        sql = (
+            "SELECT 1 FROM pg_trigger t "
+            "JOIN pg_class c ON c.oid = t.tgrelid "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = :schema AND t.tgname = :name"
+        )
+        params = {"schema": schema, "name": trigger_name}
+    else:
+        sql = (
+            "SELECT 1 FROM pg_trigger t "
+            "JOIN pg_class c ON c.oid = t.tgrelid "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = :schema AND c.relname = :table AND t.tgname = :name"
+        )
+        params = {"schema": schema, "table": table, "name": trigger_name}
+
+    query = DQLQuery(sql, result_handler=ResultHandler.SCALAR)
     try:
-        return await query.execute(conn, schema=schema, name=trigger_name) is not None
+        return await query.execute(conn, **params) is not None
     except Exception:
         return False
 
@@ -523,3 +517,67 @@ async def force_drop_schema(conn: DbResource, schema_name: str):
     # Give a small window for backends to actually exit
     await asyncio.sleep(0.1)
     await DDLQuery(f'DROP SCHEMA "{schema_name}" CASCADE;').execute(conn)
+
+
+# --- Safe DROP for hot relations ---
+
+
+async def safe_drop_relation(
+    conn: DbResource,
+    schema: str,
+    relation: str,
+    kind: str = "table",
+    *,
+    cascade: bool = False,
+    lock_timeout: str = "5s",
+    max_retries: int = 3,
+    on_table: Optional[str] = None,
+) -> None:
+    """Drop a relation under a bounded ``lock_timeout`` with retries.
+
+    ``DROP`` on a hot relation takes ``AccessExclusiveLock`` and will deadlock
+    against concurrent DML. This helper runs ``SET LOCAL lock_timeout`` before
+    the DROP so a blocked statement fails fast (SQLSTATE 55P03) and retries
+    on transient lock / deadlock codes via :func:`retry_on_lock_conflict`.
+
+    Parameters
+    ----------
+    conn : DbResource
+        Active connection or engine.
+    schema : str
+        Target schema (unquoted).
+    relation : str
+        Target relation name (unquoted).
+    kind : {"table", "index", "trigger", "schema"}
+        Kind of object. For ``trigger``, ``on_table`` is required.
+    cascade : bool
+        Append ``CASCADE`` to the DROP.
+    lock_timeout : str
+        PostgreSQL lock_timeout string; default ``5s``.
+    max_retries : int
+        Max retries on 55P03 / 40P01.
+    on_table : str | None
+        For ``kind='trigger'``: the table the trigger is attached to.
+    """
+    kind_lower = kind.lower()
+    tail = " CASCADE" if cascade else ""
+    if kind_lower == "table":
+        sql = f'DROP TABLE IF EXISTS "{schema}"."{relation}"{tail};'
+    elif kind_lower == "index":
+        sql = f'DROP INDEX IF EXISTS "{schema}"."{relation}"{tail};'
+    elif kind_lower == "trigger":
+        if not on_table:
+            raise ValueError("on_table is required when kind='trigger'")
+        sql = f'DROP TRIGGER IF EXISTS "{relation}" ON "{schema}"."{on_table}"{tail};'
+    elif kind_lower == "schema":
+        sql = f'DROP SCHEMA IF EXISTS "{schema}"{tail};'
+    else:
+        raise ValueError(f"unsupported kind: {kind!r}")
+
+    @retry_on_lock_conflict(max_retries=max_retries)
+    async def _drop():
+        async with managed_transaction(conn) as tx:
+            await tx.execute(text(f"SET LOCAL lock_timeout = '{lock_timeout}'"))
+            await tx.execute(text(sql))
+
+    await _drop()

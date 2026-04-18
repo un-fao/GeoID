@@ -244,7 +244,7 @@ class PostgresTypedStore:
                         config_data = EXCLUDED.config_data,
                         updated_at  = NOW();
                 '''
-            await DDLQuery(sql).execute(
+            await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
                 conn,
                 class_key=class_key,
                 schema_id=schema_id,
@@ -262,7 +262,7 @@ class PostgresTypedStore:
                 f'DELETE FROM "{loc["schema"]}".{loc["table"]} '
                 f'WHERE {loc["pk_filter"]}class_key = :class_key;'
             )
-            await DDLQuery(sql).execute(
+            await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
                 conn, class_key=cls.class_key(), **loc["pk_values"]
             )
 
@@ -334,7 +334,7 @@ class PostgresTypedStore:
                 VALUES (:schema_id, :class_key, :schema_json::jsonb, :created_by)
                 ON CONFLICT (schema_id) DO NOTHING;
             """
-            await DDLQuery(sql).execute(
+            await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
                 conn,
                 schema_id=model.schema_id(),
                 class_key=model.class_key(),

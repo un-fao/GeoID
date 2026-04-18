@@ -1,31 +1,24 @@
-"""Unit tests for config_cache.py — M6.
+"""Unit tests for config_cache.py — L4 per-request context var.
 
 Covers:
 - L4 per-request context var lifecycle (init / get / clear)
 - L4 isolation across independent async task contexts
-- publish_router_invalidation: local-only path (no VALKEY_URL)
-- RouterCacheInvalidator.start/stop: no-op when VALKEY_URL absent
+- Sentinel behavior when L4 is not initialized
 """
 import asyncio
-import os
 
 import pytest
 
 from dynastore.modules.storage.config_cache import (
-    RouterCacheInvalidator,
     clear_request_driver_cache,
     get_request_driver_cache,
     init_request_driver_cache,
-    publish_router_invalidation,
 )
 
 
-# ---------------------------------------------------------------------------
-# L4 context-var tests
-# ---------------------------------------------------------------------------
-
-
 class TestRequestDriverCache:
+    """L4 per-request cache via contextvars.ContextVar."""
+
     def test_get_before_init_returns_empty_dict(self):
         """Outside a request context the cache is an ephemeral empty dict."""
         cache = get_request_driver_cache()
@@ -35,6 +28,7 @@ class TestRequestDriverCache:
         assert get_request_driver_cache() == {}
 
     def test_init_and_get_returns_same_dict(self):
+        """After init, subsequent get calls return the same dict instance."""
         token = init_request_driver_cache()
         try:
             cache1 = get_request_driver_cache()
@@ -44,6 +38,7 @@ class TestRequestDriverCache:
             clear_request_driver_cache(token)
 
     def test_clear_resets_to_unset(self):
+        """After clear, context var returns to None state (sentinel dict)."""
         token = init_request_driver_cache()
         cache = get_request_driver_cache()
         cache["key"] = "value"
@@ -54,6 +49,7 @@ class TestRequestDriverCache:
         assert after is not cache
 
     def test_writes_are_visible_within_same_context(self):
+        """Writes to the context dict are immediately visible."""
         token = init_request_driver_cache()
         try:
             cache = get_request_driver_cache()
@@ -109,46 +105,3 @@ class TestRequestDriverCache:
 
         clear_request_driver_cache(outer_token)
         assert get_request_driver_cache() == {}
-
-
-# ---------------------------------------------------------------------------
-# publish_router_invalidation — local-only (no Valkey)
-# ---------------------------------------------------------------------------
-
-
-class TestPublishRouterInvalidation:
-    def test_local_invalidation_does_not_raise(self, monkeypatch):
-        """publish_router_invalidation must not raise even with no Valkey."""
-        monkeypatch.delenv("VALKEY_URL", raising=False)
-        # Should complete without exception
-        publish_router_invalidation("cat1", "col1")
-
-    def test_local_invalidation_with_none_ids(self, monkeypatch):
-        monkeypatch.delenv("VALKEY_URL", raising=False)
-        publish_router_invalidation(None, None)
-
-    @pytest.mark.asyncio
-    async def test_local_invalidation_from_async_context(self, monkeypatch):
-        monkeypatch.delenv("VALKEY_URL", raising=False)
-        publish_router_invalidation("cat2", "col2")
-        # Allow any tasks to settle
-        await asyncio.sleep(0)
-
-
-# ---------------------------------------------------------------------------
-# RouterCacheInvalidator — no-op without Valkey
-# ---------------------------------------------------------------------------
-
-
-class TestRouterCacheInvalidator:
-    @pytest.mark.asyncio
-    async def test_start_noop_without_valkey_url(self, monkeypatch):
-        monkeypatch.delenv("VALKEY_URL", raising=False)
-        await RouterCacheInvalidator.start()
-        assert RouterCacheInvalidator._task is None
-
-    @pytest.mark.asyncio
-    async def test_stop_noop_when_never_started(self, monkeypatch):
-        monkeypatch.delenv("VALKEY_URL", raising=False)
-        RouterCacheInvalidator._task = None
-        await RouterCacheInvalidator.stop()  # must not raise

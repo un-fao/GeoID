@@ -17,6 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
+from dynastore.models.protocols.authorization import DefaultRole
 from dynastore.models.protocols.policies import Policy, Role
 from dynastore.tools.discovery import get_protocol
 
@@ -45,6 +46,6 @@ def register_stac_policies():
         effect="ALLOW",
     )
     pm.register_policy(stac_policy)
-    pm.register_role(Role(name="anonymous", policies=["stac_public_access"]))
+    pm.register_role(Role(name=DefaultRole.ANONYMOUS.value, policies=["stac_public_access"]))
 
     logger.debug("STAC policies registered via PermissionProtocol.")

@@ -314,13 +314,22 @@ class GCPModule(
             register_plugin(self._bq_service)
             register_plugin(self._bq_collection_enricher)
 
+            # Register GCS-backed asset processes (``download``).
+            from dynastore.modules.gcp.asset_processes import GcsDownloadAssetProcess
+
+            self._asset_download_process = GcsDownloadAssetProcess(
+                client_provider=self,
+                identity_provider=self if hasattr(self, "get_fresh_token") else None,
+            )
+            register_plugin(self._asset_download_process)
+
             yield
         finally:
             logger.info("GCP Module: Exiting lifespan - closing all clients.")
             # Unregister BigQuery plugins
             from dynastore.tools.discovery import unregister_plugin
 
-            for attr in ("_bq_service", "_bq_collection_enricher"):
+            for attr in ("_bq_service", "_bq_collection_enricher", "_asset_download_process"):
                 obj = getattr(self, attr, None)
                 if obj:
                     unregister_plugin(obj)

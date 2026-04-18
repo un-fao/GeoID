@@ -30,6 +30,7 @@ from dynastore.modules.processes.models import (
     ExecuteRequest,
     Process,
     ProcessOutput,
+    ProcessScope,
     JobControlOptions,
 )
 from dynastore.modules.catalog.asset_tasks_spi import AssetTasksSPI
@@ -46,6 +47,7 @@ GDALINFO_PROCESS_DEFINITION = Process(
     title="GDAL Info Task",
     description="Calculates GDAL/OGR information for an asset and enriches its metadata.",
     version="1.0.0",
+    scopes=[ProcessScope.ASSET],
     jobControlOptions=[JobControlOptions.SYNC_EXECUTE, JobControlOptions.ASYNC_EXECUTE],
     inputs={},  # It operates on the asset provided by SPI
     outputs={

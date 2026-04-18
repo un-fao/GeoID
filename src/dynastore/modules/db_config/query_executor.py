@@ -542,13 +542,79 @@ class DQLExecutor(BaseExecutor):
             self._handle_db_exception(e)
 
 
+def _strip_line_comments(ddl_text: str) -> str:
+    """Strip ``-- ...`` line comments while preserving them inside string
+    literals and dollar-quoted blocks.
+
+    Required before ``split_ddl`` so a ``;`` appearing inside a comment does
+    not produce a spurious statement boundary.
+    """
+    if "--" not in ddl_text:
+        return ddl_text
+
+    out: list[str] = []
+    i = 0
+    n = len(ddl_text)
+    active_dollar_tag: str | None = None
+    in_quote = False
+
+    while i < n:
+        ch = ddl_text[i]
+        # Inside dollar-quoted block: only exit on matching tag
+        if active_dollar_tag is not None:
+            if ch == "$":
+                m = re.match(r"\$[a-zA-Z0-9_]*\$", ddl_text[i:])
+                if m and m.group(0) == active_dollar_tag:
+                    out.append(m.group(0))
+                    i += len(m.group(0))
+                    active_dollar_tag = None
+                    continue
+            out.append(ch)
+            i += 1
+            continue
+        # Inside single-quoted literal: only exit on closing quote
+        if in_quote:
+            out.append(ch)
+            if ch == "'":
+                in_quote = False
+            i += 1
+            continue
+        # Outside any quote: detect entries
+        if ch == "$":
+            m = re.match(r"\$[a-zA-Z0-9_]*\$", ddl_text[i:])
+            if m:
+                active_dollar_tag = m.group(0)
+                out.append(m.group(0))
+                i += len(m.group(0))
+                continue
+        if ch == "'":
+            in_quote = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "-" and i + 1 < n and ddl_text[i + 1] == "-":
+            # Skip until newline (or EOF)
+            nl = ddl_text.find("\n", i)
+            if nl == -1:
+                break
+            i = nl  # keep the newline itself
+            continue
+        out.append(ch)
+        i += 1
+
+    return "".join(out)
+
+
 def split_ddl(ddl_text: str) -> List[str]:
     """
-    Smarter split that respects dollar-quoting (e.g. $$, $BODY$) and '' string literals.
-    This avoids breaking function bodies or complex DDL containing semicolons.
+    Smarter split that respects dollar-quoting (e.g. $$, $BODY$), ``''`` string
+    literals, and ``-- ...`` line comments. This avoids breaking function
+    bodies or complex DDL containing semicolons in comments or strings.
     """
     if not ddl_text or ";" not in ddl_text:
         return [ddl_text] if ddl_text else []
+
+    ddl_text = _strip_line_comments(ddl_text)
 
     statements = []
     parts = re.split(r"(\$[a-zA-Z0-9_]*\$|'|;)", ddl_text)
@@ -578,7 +644,7 @@ def split_ddl(ddl_text: str) -> List[str]:
     final_stmt = "".join(current_stmt).strip()
     if final_stmt:
         statements.append(final_stmt)
-    
+
     return statements
 
 
@@ -990,15 +1056,27 @@ from .ddl_inference import _infer_existence_check, _ddl_existence_cache
 
 
 class DDLQuery(BaseQuery):
-    def __init__(self, sql_template, check_query=None, lock_key=None):
+    def __init__(self, sql_template, check_query=None):
         # We wrap check_query into a function that DDLExecutor can use
         existence_check: Optional[Any] = None
         if check_query:
 
             async def _existence_check_impl(conn, params):
                 if callable(check_query):
-                    # Handle callable (may be async or sync)
-                    res = check_query()
+                    # Accept either zero-arg ``check_query()`` closures (the
+                    # simple, single-site pattern) or ``check_query(conn)``
+                    # callables used by module-level DDLBatch sentinels where
+                    # ``conn`` is not known at construction time.
+                    try:
+                        sig = inspect.signature(check_query)
+                        needs_conn = any(
+                            p.kind in (p.POSITIONAL_OR_KEYWORD, p.POSITIONAL_ONLY)
+                            for p in sig.parameters.values()
+                            if p.default is inspect.Parameter.empty
+                        )
+                    except (TypeError, ValueError):
+                        needs_conn = False
+                    res = check_query(conn) if needs_conn else check_query()
                     if inspect.isawaitable(res):
                         return await res
                     return res
@@ -1027,7 +1105,7 @@ class DDLQuery(BaseQuery):
             executor_class=DDLExecutor,
             existence_check=existence_check,
         )
-        self.check_query, self.lock_key = check_query, lock_key
+        self.check_query = check_query
 
     @classmethod
     def from_builder(cls, builder, **kwargs):

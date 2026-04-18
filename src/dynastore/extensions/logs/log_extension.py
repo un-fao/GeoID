@@ -23,7 +23,6 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 from contextlib import asynccontextmanager
 from dynastore.extensions.protocols import ExtensionProtocol
-from dynastore.extensions.iam.guards import require_admin, require_sysadmin
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     ResultHandler,
@@ -33,7 +32,7 @@ from dynastore.modules.db_config.query_executor import (
 from dynastore.modules.catalog.catalog_module import register_event_listener
 from dynastore.models.shared_models import SYSTEM_CATALOG_ID, SYSTEM_LOGS_TABLE
 from dynastore.modules.catalog.log_manager import log_event
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Query
 from .models import LogEntryCreate, LogEntry, LogsListResponse
 from dynastore.modules.catalog.event_service import CatalogEventType
 from dynastore.models.protocols.catalogs import CatalogsProtocol
@@ -72,7 +71,6 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
             methods=["GET"],
             response_model=LogsListResponse,
             summary="Retrieve global system-level logs",
-            dependencies=[Depends(require_sysadmin)],
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}",
@@ -80,7 +78,6 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
             methods=["GET"],
             response_model=LogsListResponse,
             summary="Retrieve logs for a specific catalog",
-            dependencies=[Depends(require_admin)],
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/logs",
@@ -88,7 +85,6 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
             methods=["GET"],
             response_model=LogsListResponse,
             summary="Retrieve logs for a specific catalog",
-            dependencies=[Depends(require_admin)],
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/collections/{collection_id}/logs",
@@ -96,7 +92,6 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
             methods=["GET"],
             response_model=LogsListResponse,
             summary="Retrieve logs for a specific collection",
-            dependencies=[Depends(require_admin)],
         )
 
     @property

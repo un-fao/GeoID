@@ -42,6 +42,36 @@ class TransmissionMode(str, Enum):
     VALUE = "value"
     REFERENCE = "reference"
 
+
+class ProcessScope(str, Enum):
+    """
+    Declares the target resource scope a process is defined against.
+
+    The scope determines:
+      - which URL path(s) are legal for execution;
+      - which path parameters (catalog_id, collection_id, asset_id) are required;
+      - the DB schema where the task row is persisted;
+      - the authorization subject (platform vs tenant-scoped).
+
+    Values:
+      - PLATFORM:   system-wide; sysadmin only. No catalog / collection / asset
+                    in the URL. Task rows live in ``public``.
+      - CATALOG:    targets a single catalog. Requires ``catalog_id`` in URL.
+                    Task rows live in the tenant schema.
+      - COLLECTION: targets a single collection. Requires ``catalog_id`` +
+                    ``collection_id`` in URL. Task rows live in the tenant schema.
+      - ASSET:      targets a single asset (e.g. gdalinfo, vector ingestion).
+                    Requires ``catalog_id`` + ``collection_id`` in URL plus
+                    ``asset_id`` in the inputs (or via ``AssetTasksSPI`` when
+                    triggered by the AssetService).
+    """
+
+    PLATFORM = "platform"
+    CATALOG = "catalog"
+    COLLECTION = "collection"
+    ASSET = "asset"
+
+
 class ProcessSummary(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
@@ -51,6 +81,7 @@ class ProcessSummary(BaseModel):
                     "title": "Data Ingestion",
                     "description": "Ingest geospatial data into a collection.",
                     "version": "1.0.0",
+                    "scopes": ["collection"],
                     "jobControlOptions": ["async-execute"],
                     "outputTransmission": ["reference"],
                     "links": [],
@@ -63,6 +94,15 @@ class ProcessSummary(BaseModel):
     title: str
     description: Optional[str] = None
     version: str
+    scopes: List[ProcessScope] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "One or more resource scopes at which this process can be executed. "
+            "A process declaring ['catalog', 'collection'] is executable at both "
+            "catalog-level and collection-level URLs."
+        ),
+    )
     jobControlOptions: List[JobControlOptions] = [JobControlOptions.ASYNC_EXECUTE]
     outputTransmission: List[TransmissionMode] = [TransmissionMode.REFERENCE]
     links: List[Link] = []

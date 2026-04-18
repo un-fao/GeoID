@@ -45,6 +45,19 @@ from dynastore.modules.db_config import shared_queries
 logger = logging.getLogger(__name__)
 
 
+def _make_collection_exists_query(phys_schema: str) -> DQLQuery:
+    """SELECT id FROM ``phys_schema``.collections by id (non-deleted only).
+
+    Used as a pre-check on read/update paths. Factoring keeps the SELECT
+    projection and deleted_at filter in one place.
+    """
+    return DQLQuery(
+        f'SELECT id FROM "{phys_schema}".collections '
+        "WHERE id = :id AND deleted_at IS NULL;",
+        result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
+    )
+
+
 class CollectionService:
     """Service for collection-level operations."""
 
@@ -128,10 +141,9 @@ class CollectionService:
             return None
 
         # 1. Verify existence in thin PG registry (always PG — thin registry is authoritative).
-        exists_sql = f'SELECT id FROM "{phys_schema}".collections WHERE id = :id AND deleted_at IS NULL;'
-        exists = await DQLQuery(
-            exists_sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
-        ).execute(conn, id=collection_id)
+        exists = await _make_collection_exists_query(phys_schema).execute(
+            conn, id=collection_id
+        )
         if not exists:
             return None
 
@@ -783,10 +795,9 @@ class CollectionService:
             )
 
             # First verify the collection exists in thin registry
-            exists_sql = f'SELECT id FROM "{phys_schema}".collections WHERE id = :id AND deleted_at IS NULL;'
-            exists = await DQLQuery(
-                exists_sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
-            ).execute(conn, id=collection_id)
+            exists = await _make_collection_exists_query(phys_schema).execute(
+                conn, id=collection_id
+            )
             if not exists:
                 return None
 
@@ -841,8 +852,9 @@ class CollectionService:
             # the logical collection identity, not the physical table. Keeping
             # them behind a tombstoned collection would leak stale state if the
             # id is later reused.
-            await DDLQuery(
-                f'DELETE FROM "{phys_schema}".collection_configs WHERE collection_id = :id;'
+            await DQLQuery(
+                f'DELETE FROM "{phys_schema}".collection_configs WHERE collection_id = :id;',
+                result_handler=ResultHandler.NONE,
             ).execute(conn, id=collection_id)
 
             logger.info(

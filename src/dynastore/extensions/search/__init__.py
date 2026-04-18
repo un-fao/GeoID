@@ -46,4 +46,6 @@ class SearchExtension:
             app.state.conformance_classes = conformance
 
 
+from . import config  # noqa: F401  -- service-exposure plugin registration
+
 __all__ = ["SearchExtension"]

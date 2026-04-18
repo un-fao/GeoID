@@ -34,7 +34,7 @@ from dynastore.models.protocols import (
     StorageProtocol,
 )
 from dynastore.models.protocols.authentication import AuthenticatorProtocol
-from dynastore.extensions.iam.guards import require_bearer_token
+from dynastore.models.protocols.authorization import DefaultRole
 
 
 import dynastore.modules.db_config.shared_queries as shared_queries
@@ -265,7 +265,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         principal = getattr(request.state, "principal", None)
         if principal and principal.roles:
             roles = set(principal.roles)
-            if "admin" in roles and "sysadmin" not in roles:
+            if DefaultRole.ADMIN.value in roles and DefaultRole.SYSADMIN.value not in roles:
                 try:
                     iam = get_protocol(AuthenticatorProtocol)
                     if iam and iam.storage:  # type: ignore[attr-defined]
@@ -378,7 +378,6 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         self,
         definition: STACCatalogRequest,
         language: str = Depends(get_language),
-        principal = Depends(require_bearer_token),
     ):
         try:
             # We use STACCatalog (DTO) for validation but the catalogs_svc expects the structure to be merged

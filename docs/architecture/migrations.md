@@ -19,11 +19,11 @@ This means a new deployment can start serving traffic immediately, and the opera
 
 ### Tamper Detection
 
-Every applied migration script is stored in `platform.schema_migrations` with a SHA-256 hash. On each startup the runner re-hashes all scripts registered in memory and compares them to the stored hashes. If a previously applied script has been modified on disk, `DRIFT_DETECTED` is returned and the service logs an error — no further migrations are applied until the drift is resolved.
+Every applied migration script is stored in `public.schema_migrations` with a SHA-256 hash. On each startup the runner re-hashes all scripts registered in memory and compares them to the stored hashes. If a previously applied script has been modified on disk, `DRIFT_DETECTED` is returned and the service logs an error — no further migrations are applied until the drift is resolved.
 
 ### Fast-Path Manifest Hash
 
-To avoid reading the filesystem on every cold start, the runner pre-computes a single manifest hash from all registered script hashes. This value is stored in `platform.schema_migrations` under the synthetic key `__manifest__`. A fast-path check compares the in-memory manifest hash against the stored value in one `SELECT`. When they match, startup completes without scanning any migration files.
+To avoid reading the filesystem on every cold start, the runner pre-computes a single manifest hash from all registered script hashes. This value is stored in `public.schema_migrations` under the synthetic key `__manifest__`. A fast-path check compares the in-memory manifest hash against the stored value in one `SELECT`. When they match, startup completes without scanning any migration files.
 
 ---
 
@@ -31,7 +31,7 @@ To avoid reading the filesystem on every cold start, the runner pre-computes a s
 
 ### Global Migrations
 
-Applied to the `platform` schema. These cover shared infrastructure: the `tasks` tables, `catalogs`, `collections`, `schema_migrations` itself, and any cross-tenant indexes or functions.
+Applied to the `public` (or a nominated global) schema. These cover shared infrastructure: the `tasks` tables, `catalogs`, `collections`, `schema_migrations` itself, and any cross-tenant indexes or functions.
 
 Global migrations are registered by module name:
 
@@ -70,18 +70,18 @@ On migration apply, the runner iterates all rows in `catalog.catalogs`, substitu
 ## Tracking Table
 
 ```
-platform.schema_migrations
-├── module        VARCHAR(100) NOT NULL  -- e.g. "db_config", "tasks"
-├── version       VARCHAR(10)  NOT NULL  -- e.g. "v0002"
-├── description   VARCHAR(255) NOT NULL  -- derived from filename
-├── applied_at    TIMESTAMPTZ            -- when this version was applied
-├── applied_by    VARCHAR(200)           -- service NAME env var
-├── checksum      VARCHAR(64)  NOT NULL  -- SHA-256 of script content
-├── rollback_sql  TEXT                   -- content of paired _rollback.sql (nullable)
-└── PRIMARY KEY (module, version)
+public.schema_migrations
+├── id            SERIAL PRIMARY KEY
+├── version       VARCHAR(10)      -- e.g. "v0002"
+├── module        VARCHAR(255)     -- e.g. "db_config", "tasks"
+├── description   TEXT             -- derived from filename
+├── script_hash   VARCHAR(64)      -- SHA-256 of script content
+├── rollback_sql  TEXT             -- content of paired _rollback.sql (nullable)
+├── applied_at    TIMESTAMPTZ      -- when this version was applied
+└── applied_by    VARCHAR(255)     -- service NAME env var
 ```
 
-The fast-path check uses `platform.app_state.manifest_hash` — a 16-char hex digest of the full module→version manifest. On normal startup this single `SELECT` determines whether migrations are needed, avoiding any file I/O.
+The synthetic `__manifest__` row stores the combined hash of all registered scripts for the fast-path check.
 
 ---
 

@@ -41,6 +41,7 @@ from dynastore.extensions.tools.conformance import (
     Conformance,
 )
 from dynastore.extensions.web.decorators import expose_static, expose_web_page
+from dynastore.models.protocols.authorization import DefaultRole
 from dynastore.models.protocols.policies import PermissionProtocol, Policy, Role, Principal
 from dynastore.tools.discovery import get_protocol, get_protocols, register_plugin
 
@@ -82,7 +83,7 @@ def register_web_policies():
         effect="ALLOW",
     )
     pm.register_policy(web_policy)
-    pm.register_role(Role(name="anonymous", policies=["web_public_access"]))
+    pm.register_role(Role(name=DefaultRole.ANONYMOUS.value, policies=["web_public_access"]))
 
     # Sysadmin-only: POST/DELETE actions on /web/admin/* (demo populate/cleanup, etc.)
     web_sysadmin_policy = Policy(
@@ -94,11 +95,12 @@ def register_web_policies():
             "/web/admin/",
             "/web/admin/.*",
             "/web/pages/demo_manager",  # expose_web_page route
+            "/web/pages/exposure",      # Service Exposure admin page
         ],
         effect="ALLOW",
     )
     pm.register_policy(web_sysadmin_policy)
-    pm.register_role(Role(name="sysadmin", policies=["web_sysadmin_access"]))
+    pm.register_role(Role(name=DefaultRole.SYSADMIN.value, policies=["web_sysadmin_access"]))
 
     logger.debug("Web policies registered via PermissionProtocol.")
 
@@ -106,9 +108,9 @@ def register_web_policies():
     register_plugin(
         Principal(
             provider="system",
-            subject_id="anonymous",
+            subject_id=DefaultRole.ANONYMOUS.value,
             display_name="Anonymous User",
-            roles=["anonymous"],
+            roles=[DefaultRole.ANONYMOUS.value],
             is_active=True,
         )
     )
@@ -698,7 +700,7 @@ class Web(ExtensionProtocol):
         title="Demo Data",
         icon="fa-flask",
         description="Provision or clean up the demo catalog for testing.",
-        required_roles=["sysadmin"],
+        required_roles=[DefaultRole.SYSADMIN.value],
         section="admin",
         priority=40,
     )
@@ -802,6 +804,24 @@ async function demoAction(action) {
 }
 </script>
 """
+
+    @expose_web_page(
+        page_id="exposure",
+        title="Service Exposure",
+        icon="fa-toggle-on",
+        description="Toggle extensions per platform / catalog scope.",
+        required_roles=[DefaultRole.SYSADMIN.value],
+        section="admin",
+        priority=20,
+    )
+    async def exposure_page(self, request: Request):
+        """Serve the service exposure control panel HTML page."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static", "admin")
+        html_path = os.path.join(static_dir, "exposure.html")
+        if not os.path.exists(html_path):
+            raise HTTPException(status_code=404, detail="Service exposure panel template not found.")
+        with open(html_path, "r") as f:
+            return HTMLResponse(f.read())
 
     @expose_web_page(page_id="docs", title="Documentation", icon="fa-book", priority=-100)
     def docs_page(self, language: str = "en"):
@@ -1069,9 +1089,9 @@ async function demoAction(action) {
             results = []
             for page in pages:
                 roles = page.get("required_roles")
-                if not roles or "anonymous" in roles:
+                if not roles or DefaultRole.ANONYMOUS.value in roles:
                     results.append(page)
-                elif user_roles and "sysadmin" in user_roles:
+                elif user_roles and DefaultRole.SYSADMIN.value in user_roles:
                     results.append(page)
                 elif user_roles and any(r in user_roles for r in roles):
                     results.append(page)
@@ -1100,16 +1120,10 @@ async function demoAction(action) {
         DEMO_CATALOG_ID = "demo_catalog"
         DEMO_COLLECTION_ID = "demo_collection"
 
-        def _require_sysadmin(request: Request):
-            principal = getattr(request.state, "principal", None)
-            if not principal or "sysadmin" not in (principal.roles or []):
-                raise HTTPException(status_code=403, detail="Requires sysadmin role")
-
         @self.router.post("/admin/demo/populate", response_class=JSONResponse, tags=["Admin"])
         async def demo_populate(request: Request):
-            """Provision demo catalog, collection and sample items (sysadmin only)."""
+            """Provision demo catalog, collection and sample items."""
             from dynastore.models.protocols import CatalogsProtocol as _CatProt
-            _require_sysadmin(request)
             cats = get_protocol(_CatProt)
             if not cats:
                 raise HTTPException(status_code=500, detail="Catalog service not available")
@@ -1168,9 +1182,8 @@ async function demoAction(action) {
 
         @self.router.post("/admin/demo/cleanup", response_class=JSONResponse, tags=["Admin"])
         async def demo_cleanup(request: Request):
-            """Delete only the demo collection and catalog, leaving all other data intact (sysadmin only)."""
+            """Delete only the demo collection and catalog, leaving all other data intact."""
             from dynastore.models.protocols import CatalogsProtocol as _CatProt
-            _require_sysadmin(request)
             cats = get_protocol(_CatProt)
             if not cats:
                 raise HTTPException(status_code=500, detail="Catalog service not available")
@@ -1305,7 +1318,7 @@ async function demoAction(action) {
             if not catalogs_provider:
                 return []
 
-            if "sysadmin" in user_roles:
+            if DefaultRole.SYSADMIN.value in user_roles:
                 # Sysadmin sees every catalog
                 cats = await catalogs_provider.list_catalogs(limit=limit, offset=offset, q=q)
             elif principal_id:

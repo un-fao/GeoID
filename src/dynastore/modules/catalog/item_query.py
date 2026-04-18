@@ -524,19 +524,17 @@ class ItemQueryMixin:
                         if sidecar is None:
                             continue
                         sc_table = f"{phys_table}_{sidecar.sidecar_id}"
-                        # Delete ALL hub rows linked to this external_id via the sidecar
-                        delete_sql = sa_text(
+                        # Soft-delete ALL hub rows linked to this external_id via the sidecar.
+                        # DQLQuery handles both async/sync conns uniformly.
+                        rows = await DQLQuery(
                             f'UPDATE "{phys_schema}"."{phys_table}" h '
-                            f'SET deleted_at = NOW() '
+                            f"SET deleted_at = NOW() "
                             f'FROM "{phys_schema}"."{sc_table}" s '
-                            f'WHERE s.{sc.feature_id_field_name} = :ext_id '
-                            f'AND h.deleted_at IS NULL '
-                            f'AND h.geoid = s.geoid'
-                        )
-                        _raw = conn.execute(delete_sql, {"ext_id": str(item_id)})
-                        import inspect as _insp
-                        result = (await _raw) if _insp.isawaitable(_raw) else _raw
-                        rows = getattr(result, "rowcount", 0)
+                            f"WHERE s.{sc.feature_id_field_name} = :ext_id "
+                            f"AND h.deleted_at IS NULL "
+                            f"AND h.geoid = s.geoid",
+                            result_handler=ResultHandler.ROWCOUNT,
+                        ).execute(conn, ext_id=str(item_id))
                         break
 
             if not rows:

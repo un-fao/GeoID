@@ -37,7 +37,6 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from dynastore.extensions import ExtensionProtocol
 from dynastore.extensions.tools.db import get_async_connection, get_async_engine
 from dynastore.extensions.tools.exception_handlers import http_errors
-from dynastore.extensions.iam.guards import get_principal_optional as get_principal
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
 
@@ -69,14 +68,226 @@ PROCESSES_CONFORMANCE = [
 router: APIRouter = APIRouter(prefix="/processes", tags=["OGC API - Processes"])
 
 
-@router.get("/processes", response_model=models.ProcessList)
-async def list_processes(request: Request):
-    """Lists all available processes."""
-    process_definitions = get_definitions_by_type(models.Process)
-    process_summaries = []
+# Which process scopes are listable / executable at each URL mount point.
+# This is the single source of truth for scope→URL alignment — used by both
+# `_validate_process_scope_or_raise` (enforcement) and `list_processes`
+# (filtering) so a process that can't be executed at a given mount is not
+# advertised there either.
+_PLATFORM_ALLOWED_SCOPES = frozenset({models.ProcessScope.PLATFORM})
+_CATALOG_ALLOWED_SCOPES = frozenset({models.ProcessScope.CATALOG})
+_COLLECTION_ALLOWED_SCOPES = frozenset({models.ProcessScope.COLLECTION})
+# ASSET-scoped processes are NOT executable at `/processes` mounts — they
+# route through the asset-service parametric process surface
+# (`/assets/catalogs/.../assets/{asset_id}/{process_id}`, see proposed
+# STAC API Asset Transactions extension in docs/proposals/) because that
+# path resolves the Asset object and dispatches via `AssetProcessProtocol`.
+# Exposing them at the collection mount would advertise a URL that can't
+# resolve the asset context at runtime.
 
+
+def _allowed_scopes_for(
+    catalog_id: Optional[str], collection_id: Optional[str]
+) -> frozenset:
+    if catalog_id and collection_id:
+        return _COLLECTION_ALLOWED_SCOPES
+    if catalog_id:
+        return _CATALOG_ALLOWED_SCOPES
+    return _PLATFORM_ALLOWED_SCOPES
+
+
+_SCOPE_URL_HINTS = {
+    models.ProcessScope.PLATFORM:
+        "POST /processes/{process_id}/execution (platform/sysadmin scope)",
+    models.ProcessScope.CATALOG:
+        "POST /catalogs/{catalog_id}/processes/{process_id}/execution",
+    models.ProcessScope.COLLECTION:
+        "POST /catalogs/{catalog_id}/collections/{collection_id}"
+        "/processes/{process_id}/execution",
+    models.ProcessScope.ASSET:
+        "POST /assets/catalogs/{catalog_id}/collections/{collection_id}"
+        "/assets/{asset_id}/{process_id}",
+}
+
+# Templated paths advertised via HATEOAS `rel=execute` links on
+# `GET /processes/{id}` — machine-readable counterparts of _SCOPE_URL_HINTS.
+# RFC 6570 URI templates; the `templated: true` extra marks them as such.
+_SCOPE_URL_TEMPLATES = {
+    models.ProcessScope.PLATFORM:
+        "/processes/{process_id}/execution",
+    models.ProcessScope.CATALOG:
+        "/catalogs/{catalog_id}/processes/{process_id}/execution",
+    models.ProcessScope.COLLECTION:
+        "/catalogs/{catalog_id}/collections/{collection_id}"
+        "/processes/{process_id}/execution",
+    models.ProcessScope.ASSET:
+        "/assets/catalogs/{catalog_id}/collections/{collection_id}"
+        "/assets/{asset_id}/{process_id}",
+}
+
+# OGC link relation for "execute this process"
+# (OGC API - Processes - Part 1, §7.11, rel type registry).
+_OGC_REL_EXECUTE = "http://www.opengis.net/def/rel/ogc/1.0/execute"
+
+
+def _build_execution_links(
+    process: models.Process,
+    request: Request,
+    catalog_id: Optional[str] = None,
+    collection_id: Optional[str] = None,
+) -> List[models.Link]:
+    """
+    Return HATEOAS ``rel=execute`` links for a process.
+
+    When called from a scoped listing (``catalog_id`` / ``collection_id``
+    set), emit a single concrete execution URL for that mount — this keeps
+    the OGC Core §7.11 invariant ("every process listed is executable at the
+    same context") true per-mount.
+
+    When called from the canonical description endpoint (no scope), emit
+    one templated URL per declared scope so clients can discover the full
+    set of mount points without mining the docs.
+    """
+    links: List[models.Link] = []
+
+    def _link(href: str, *, title: str, templated: bool) -> models.Link:
+        return models.Link.model_validate(
+            {
+                "href": href,
+                "rel": _OGC_REL_EXECUTE,
+                "type": "application/json",
+                "title": title,
+                "method": "POST",
+                "templated": templated,
+            }
+        )
+
+    if catalog_id and collection_id:
+        href = str(
+            request.url_for(
+                "execute_process_collection",
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                process_id=process.id,
+            )
+        )
+        links.append(_link(href, title="Execute at this collection", templated=False))
+        return links
+
+    if catalog_id:
+        href = str(
+            request.url_for(
+                "execute_process_catalog",
+                catalog_id=catalog_id,
+                process_id=process.id,
+            )
+        )
+        links.append(_link(href, title="Execute at this catalog", templated=False))
+        return links
+
+    # Canonical description: advertise one templated URL per declared scope.
+    base = str(request.base_url).rstrip("/")
+    for scope in process.scopes:
+        template = _SCOPE_URL_TEMPLATES[scope].replace(
+            "{process_id}", process.id
+        )
+        links.append(
+            _link(
+                f"{base}{template}",
+                title=f"Execute at {scope.value} scope",
+                templated=True,
+            )
+        )
+    return links
+
+
+def _validate_process_scope_or_raise(
+    process: models.Process,
+    catalog_id: Optional[str],
+    collection_id: Optional[str],
+) -> None:
+    """
+    Reject execution requests that route a process through a URL whose scope
+    isn't in the process definition's declared ``scopes``.
+
+    A process may declare multiple scopes (e.g. a backup that runs at catalog
+    or collection level): the request is accepted if ANY declared scope is
+    legal at the resolved URL mount. Fails fast with 400 *before* any task
+    row is written or event emitted.
+    """
+    allowed = _allowed_scopes_for(catalog_id, collection_id)
+    if any(s in allowed for s in process.scopes):
+        return
+
+    hints = [_SCOPE_URL_HINTS[s] for s in process.scopes]
+    declared = ", ".join(s.value for s in process.scopes)
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            f"Process '{process.id}' declares scopes [{declared}] and cannot "
+            f"be executed at this URL. Valid routes: {'; '.join(hints)}."
+        ),
+    )
+
+
+def _inject_path_into_inputs(
+    execution_request: models.ExecuteRequest,
+    catalog_id: Optional[str],
+    collection_id: Optional[str],
+) -> models.ExecuteRequest:
+    """
+    Copy URL path identifiers into ``execution_request.inputs`` so task
+    implementations can read them uniformly (without each task having to
+    know how it was invoked).
+
+    If the client included a conflicting value in the body, reject with 400 —
+    the URL path is the only source of truth for target identifiers.
+    """
+    inputs = dict(execution_request.inputs or {})
+    for key, value in (("catalog_id", catalog_id), ("collection_id", collection_id)):
+        if value is None:
+            continue
+        existing = inputs.get(key)
+        if existing is not None and existing != value:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Conflicting '{key}' in inputs ({existing!r}) vs URL "
+                    f"path ({value!r}). Remove '{key}' from the request body — "
+                    f"the URL path is authoritative."
+                ),
+            )
+        inputs[key] = value
+    return execution_request.model_copy(update={"inputs": inputs})
+
+
+def _lookup_process_or_404(process_id: str) -> models.Process:
+    process = next(
+        (p for p in get_definitions_by_type(models.Process) if p.id == process_id),
+        None,
+    )
+    if not process:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Process '{process_id}' not found.",
+        )
+    return process
+
+
+def _render_process_list(
+    request: Request,
+    catalog_id: Optional[str] = None,
+    collection_id: Optional[str] = None,
+) -> models.ProcessList:
+    """Render the OGC process list, filtered to scopes legal at this URL."""
+    allowed_scopes = _allowed_scopes_for(catalog_id, collection_id)
+    process_definitions = [
+        p
+        for p in get_definitions_by_type(models.Process)
+        if any(s in allowed_scopes for s in p.scopes)
+    ]
+
+    process_summaries = []
     for process in process_definitions:
-        # Create the "self" link pointing to the detailed description
         process_url = str(
             request.url_for("get_process_description", process_id=process.id)
         )
@@ -87,14 +298,15 @@ async def list_processes(request: Request):
             title="Detailed process description",  # type: ignore[arg-type]
             hreflang=None,
         )
-
-        # Convert the process object to a dictionary, add the links,
-        # and then validate the complete dictionary into a ProcessSummary.
-        process_dict = process.model_dump()
-        process_dict["links"] = [self_link]
-        summary = models.ProcessSummary.model_validate(process_dict)
-
-        process_summaries.append(summary)
+        execute_links = _build_execution_links(
+            process, request, catalog_id=catalog_id, collection_id=collection_id
+        )
+        # by_alias=True: ProcessInput/Output declare ``schema_`` with
+        # ``alias="schema"`` — round-tripping without it drops the alias and
+        # breaks re-validation.
+        process_dict = process.model_dump(by_alias=True)
+        process_dict["links"] = [self_link, *execute_links]
+        process_summaries.append(models.ProcessSummary.model_validate(process_dict))
 
     links = [
         models.Link(
@@ -104,18 +316,67 @@ async def list_processes(request: Request):
     return models.ProcessList(processes=process_summaries, links=links)
 
 
-@router.get("/processes/{process_id}", response_model=models.Process)
-async def get_process_description(process_id: str):
-    """Gets a detailed description of a single process."""
-    process = next(
-        (p for p in get_definitions_by_type(models.Process) if p.id == process_id), None
+@router.get(
+    "/processes",
+    response_model=models.ProcessList,
+    name="list_processes",
+)
+async def list_processes(request: Request):
+    """Lists platform-scoped processes available at the system mount."""
+    return _render_process_list(request)
+
+
+@router.get(
+    "/catalogs/{catalog_id}/processes",
+    response_model=models.ProcessList,
+    name="list_processes_catalog",
+)
+async def list_processes_catalog(catalog_id: str, request: Request):
+    """Lists catalog-scoped processes available for this catalog."""
+    return _render_process_list(request, catalog_id=catalog_id)
+
+
+@router.get(
+    "/catalogs/{catalog_id}/collections/{collection_id}/processes",
+    response_model=models.ProcessList,
+    name="list_processes_collection",
+)
+async def list_processes_collection(
+    catalog_id: str, collection_id: str, request: Request
+):
+    """Lists collection- and asset-scoped processes available for this collection."""
+    return _render_process_list(
+        request, catalog_id=catalog_id, collection_id=collection_id
     )
-    if not process:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Process '{process_id}' not found.",
-        )
-    return process
+
+
+@router.get(
+    "/processes/{process_id}",
+    response_model=models.Process,
+    name="get_process_description",
+)
+async def get_process_description(process_id: str, request: Request):
+    """
+    Describes a process with HATEOAS ``rel=execute`` links.
+
+    The description is served from the canonical (unscoped) URL but each
+    declared scope contributes one templated execution URL so OGC clients
+    can discover where the process may actually be invoked — this restores
+    the §7.11 "every listed process is executable" invariant that scoped
+    URL mounts would otherwise obscure.
+    """
+    process = _lookup_process_or_404(process_id)
+    self_link = models.Link(
+        href=str(request.url),
+        rel="self",
+        type="application/json",
+        title="Self",  # type: ignore[arg-type]
+        hreflang=None,
+    )
+    execute_links = _build_execution_links(process, request)
+    process_dict = process.model_dump(by_alias=True)
+    process_dict["links"] = [self_link, *execute_links]
+    return models.Process.model_validate(process_dict)
 
 
 @router.post(
@@ -124,6 +385,7 @@ async def get_process_description(process_id: str):
     response_model=Union[
         models.StatusInfo, Any
     ],  # The response can be a status or a direct result
+    name="execute_process",
 )
 async def execute_process(
     process_id: str,
@@ -134,48 +396,32 @@ async def execute_process(
         examples=[
             {
                 "inputs": {
-                    "asset_id": "target-asset-id",
-                    "catalog_id": "target-catalog-id",
-                    "collection_id": "target-collection-id",
-                    "asset_uri": "gs://bucket/path.tif",
-                    "asset_type": "RASTER",
-                    "asset_metadata": {"custom_field": "value"},
+                    "dry_run": False,
                 },
                 "response": "document",
             },
-            {
-                "inputs": {
-                    "catalog_id": "target-catalog-id",
-                    "collection_id": "target-collection-id",
-                    "ingestion_request": {
-                        "asset": {"uri": "gs://bucket/data.csv"},
-                        "source_srid": 4326,
-                        "column_mapping": {
-                            "external_id": "id",
-                            "attributes_source_type": "all",
-                        },
-                        "format": "csv",
-                    },
-                }
-            },
         ],
-        description="Execution inputs. See process definition for details.",
+        description=(
+            "Execution inputs. Only PLATFORM-scoped processes may be executed "
+            "at this URL. Tenant-scoped processes must be posted to "
+            "/catalogs/{catalog_id}[/collections/{collection_id}]/processes/"
+            "{process_id}/execution."
+        ),
     ),
-    principal: Optional[Principal] = Depends(get_principal),
 ):
-    """Executes a process, creating a new job (task)."""
+    """Executes a platform-scoped process, creating a new job (task)."""
+    # Validate routing BEFORE touching the DB engine so bad-URL requests
+    # never acquire DB resources or emit events.
+    process = _lookup_process_or_404(process_id)
+    _validate_process_scope_or_raise(process, catalog_id=None, collection_id=None)
+
+    principal = getattr(request.state, "principal", None)
     caller_id = str(principal.id) if principal else SYSTEM_USER_ID
     caller_roles = list(principal.roles or []) if principal else None
     engine = get_async_engine(request)
 
-    # Determine preferred mode from 'Prefer' header
-    preferred_mode = None
-    prefer_header = request.headers.get("Prefer")
-    if prefer_header:
-        if "respond-async" in prefer_header:
-            preferred_mode = models.JobControlOptions.ASYNC_EXECUTE
-        elif "wait=" in prefer_header:
-            preferred_mode = models.JobControlOptions.SYNC_EXECUTE
+    preferred_mode = _get_preferred_mode(request)
+    result = None
 
     try:
         result = await processes_module.execute_process(
@@ -187,18 +433,8 @@ async def execute_process(
             preferred_mode=preferred_mode,
             background_tasks=background_tasks,
         )
-    except (ValidationError, ValueError) as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
-        )
-    except NotImplementedError as e:
-        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(e))
     except Exception as e:
-        logger.error(f"Execution of process '{process_id}' failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Process execution failed: {e}",
-        )
+        _handle_execution_exception(process_id, e)
 
     return _handle_execution_result(result, request)
 
@@ -207,6 +443,7 @@ async def execute_process(
     "/catalogs/{catalog_id}/processes/{process_id}/execution",
     status_code=status.HTTP_201_CREATED,
     response_model=Union[models.StatusInfo, Any],
+    name="execute_process_catalog",
 )
 async def execute_process_catalog(
     catalog_id: str,
@@ -214,9 +451,15 @@ async def execute_process_catalog(
     execution_request: models.ExecuteRequest,
     request: Request,
     background_tasks: BackgroundTasks,
-    principal: Optional[Principal] = Depends(get_principal),
 ):
-    """Executes a process specialized for a catalog."""
+    """Executes a catalog-scoped process."""
+    process = _lookup_process_or_404(process_id)
+    _validate_process_scope_or_raise(process, catalog_id=catalog_id, collection_id=None)
+    execution_request = _inject_path_into_inputs(
+        execution_request, catalog_id=catalog_id, collection_id=None
+    )
+
+    principal = getattr(request.state, "principal", None)
     caller_id = str(principal.id) if principal else SYSTEM_USER_ID
     caller_roles = list(principal.roles or []) if principal else None
     engine = get_async_engine(request)
@@ -244,6 +487,7 @@ async def execute_process_catalog(
     "/catalogs/{catalog_id}/collections/{collection_id}/processes/{process_id}/execution",
     status_code=status.HTTP_201_CREATED,
     response_model=Union[models.StatusInfo, Any],
+    name="execute_process_collection",
 )
 async def execute_process_collection(
     catalog_id: str,
@@ -252,9 +496,17 @@ async def execute_process_collection(
     execution_request: models.ExecuteRequest,
     request: Request,
     background_tasks: BackgroundTasks,
-    principal: Optional[Principal] = Depends(get_principal),
 ):
-    """Executes a process specialized for a collection."""
+    """Executes a collection- or asset-scoped process."""
+    process = _lookup_process_or_404(process_id)
+    _validate_process_scope_or_raise(
+        process, catalog_id=catalog_id, collection_id=collection_id
+    )
+    execution_request = _inject_path_into_inputs(
+        execution_request, catalog_id=catalog_id, collection_id=collection_id
+    )
+
+    principal = getattr(request.state, "principal", None)
     caller_id = str(principal.id) if principal else SYSTEM_USER_ID
     caller_roles = list(principal.roles or []) if principal else None
     engine = get_async_engine(request)
@@ -662,9 +914,9 @@ class _CreateJobRequest(models.BaseModel):
 async def create_job(
     body: _CreateJobRequest,
     request: Request,
-    principal: Optional[Principal] = Depends(get_principal),
 ):
     """Create a deferred job (System context). Status = CREATED."""
+    principal = getattr(request.state, "principal", None)
     caller_id = str(principal.id) if principal else SYSTEM_USER_ID
     caller_roles = list(principal.roles or []) if principal else None
     engine = get_async_engine(request)
@@ -696,9 +948,9 @@ async def create_job_catalog(
     body: _CreateJobRequest,
     request: Request,
     conn: AsyncConnection = Depends(get_async_connection),
-    principal: Optional[Principal] = Depends(get_principal),
 ):
     """Create a deferred job (Catalog context). Status = CREATED."""
+    principal = getattr(request.state, "principal", None)
     caller_id = str(principal.id) if principal else SYSTEM_USER_ID
     caller_roles = list(principal.roles or []) if principal else None
     engine = get_async_engine(request)
@@ -732,9 +984,9 @@ async def create_job_collection(
     body: _CreateJobRequest,
     request: Request,
     conn: AsyncConnection = Depends(get_async_connection),
-    principal: Optional[Principal] = Depends(get_principal),
 ):
     """Create a deferred job (Collection context). Status = CREATED."""
+    principal = getattr(request.state, "principal", None)
     caller_id = str(principal.id) if principal else SYSTEM_USER_ID
     caller_roles = list(principal.roles or []) if principal else None
     engine = get_async_engine(request)

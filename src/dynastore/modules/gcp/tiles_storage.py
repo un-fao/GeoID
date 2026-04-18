@@ -20,6 +20,7 @@ from dynastore.modules.tiles.tiles_module import TileStorageSPI, register_named_
 from dynastore.modules.concurrency import run_in_thread
 from dynastore.models.protocols import StorageProtocol, CloudStorageClientProtocol, CloudIdentityProtocol
 from dynastore.modules import get_protocol
+from dynastore.modules.gcp.tools.signed_urls import generate_gcs_signed_url
 
 logger = logging.getLogger(__name__)
 
@@ -142,30 +143,14 @@ class TileBucketPreseedStorage(TileStorageSPI):
             return None
 
         blob_path = f"tiles/collections/{collection_id}/{tms_id}/{z}/{x}/{y}.{format}"
-
-        # Check existence if we want to be sure, or just return the public URL
-        # For redirects, it's safer to check first or just return if we trust the flow.
-        # But SPI says "returns None if not found".
-        storage_client = client_provider.get_storage_client()
-        bucket = storage_client.bucket(bucket_name)
-        blob = bucket.blob(blob_path)
-
-        exists = await run_in_thread(blob.exists)
-        if exists:
-            # Asynchronously ensure credentials are valid and get a fresh token.
-            # This offloads the refresh to a background thread.
-            access_token = await identity_provider.get_fresh_token()
-            
-            # Use the IAM API to sign the URL remotely.
-            # Use the injected concurrency backend for the blocking signed URL generation.
-            return await run_in_thread(
-                blob.generate_signed_url,
-                version="v4",
-                expiration=timedelta(minutes=60),
-                service_account_email=identity_provider.get_account_email(),
-                access_token=access_token
-            )
-        return None
+        return await generate_gcs_signed_url(
+            f"gs://{bucket_name}/{blob_path}",
+            method="GET",
+            expiration=timedelta(minutes=60),
+            client_provider=client_provider,
+            identity_provider=identity_provider,
+            check_exists=True,
+        )
 
     async def get_preseed_state(self, catalog_id: str, collection_id: str, tms_id: str) -> Dict[str, Any]:
         """GCS storage doesn't track preseed state internally yet."""

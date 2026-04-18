@@ -17,7 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 from dynastore.tools.process_factory import create_process_definition
-from dynastore.modules.processes.models import JobControlOptions, TransmissionMode
+from dynastore.modules.processes.models import JobControlOptions, ProcessScope, TransmissionMode
 from .models import TilePreseedRequest
 
 TILES_PRESEED_PROCESS_DEFINITION = create_process_definition(
@@ -26,6 +26,7 @@ TILES_PRESEED_PROCESS_DEFINITION = create_process_definition(
     description="Pre-seeds tiles for a given collection and TMS.",
     version="1.0.0",
     input_model=TilePreseedRequest,
+    scopes=[ProcessScope.COLLECTION],
     job_control_options=[JobControlOptions.ASYNC_EXECUTE],
     output_transmission=[TransmissionMode.REFERENCE],
 )

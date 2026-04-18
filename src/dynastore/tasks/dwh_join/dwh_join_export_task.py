@@ -9,6 +9,7 @@ from dynastore.tools.protocol_helpers import get_engine
 from dynastore.modules.processes.models import (
     Process,
     ProcessOutput,
+    ProcessScope,
     ExecuteRequest,
     StatusInfo,
     JobControlOptions,
@@ -39,6 +40,7 @@ DWH_JOIN_EXPORT_PROCESS_DEFINITION = Process(
     version="1.0.0",
     title="DWH Join Export",
     description="Joins catalog features with DWH query results and exports to Cloud Storage.",
+    scopes=[ProcessScope.COLLECTION],
     inputs=pydantic_to_process_inputs(DwhJoinExportRequest),
     outputs={
         "result": ProcessOutput.model_validate({"title": "Result", "schema": {"type": "object"}})

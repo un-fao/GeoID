@@ -37,7 +37,10 @@ from dynastore.modules.db_config.query_executor import (
 )
 from dynastore.tools.json import CustomJSONEncoder
 from dynastore.tools.db import validate_sql_identifier
-from dynastore.modules.db_config.locking_tools import acquire_startup_lock
+from dynastore.modules.db_config.locking_tools import (
+    acquire_startup_lock,
+    check_trigger_exists,
+)
 from dynastore.modules.db_config.partition_tools import (
     ensure_partition_exists as ensure_partition_tool,
     ensure_hierarchical_partitions_exist,
@@ -149,6 +152,28 @@ class AssetFilter(BaseModel):
 # Obsolete global DDL removed.
 # Assets correspond to {schema}.assets in the tenant schema.
 
+# Column list shared by all asset-row selects — keeps the SELECT projection
+# in one place so adding/removing a column touches one string instead of N.
+_ASSET_COLUMNS = (
+    "asset_id, catalog_id, collection_id, asset_type, uri, "
+    "created_at, deleted_at, metadata"
+)
+
+
+def _make_get_asset_query(phys_schema: str) -> DQLQuery:
+    """Single-asset SELECT keyed by (asset_id, catalog_id, collection_id).
+
+    The tenant schema is injected up-front because it's a trusted identifier
+    (not a bind parameter). Returns a parametrised DQLQuery — call sites
+    pass asset_id/catalog_id/collection_id via execute(**kwargs).
+    """
+    return DQLQuery(
+        f'SELECT {_ASSET_COLUMNS} FROM "{phys_schema}".assets '
+        "WHERE asset_id = :asset_id AND catalog_id = :catalog_id "
+        "AND collection_id = :collection_id AND deleted_at IS NULL;",
+        result_handler=PydanticResultHandler.pydantic_one(Asset),
+    )
+
 
 class AssetManager(AssetsProtocol):
     """Manages Asset lifecycle with advanced search and event-driven architecture."""
@@ -198,11 +223,7 @@ class AssetManager(AssetsProtocol):
             phys_schema = await self._resolve_schema(catalog_id, conn)
             if not phys_schema:
                 return None
-            # asset_id in DB is VARCHAR now
-            sql = f'SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata FROM "{phys_schema}".assets WHERE asset_id = :asset_id AND catalog_id = :catalog_id AND collection_id = :collection_id AND deleted_at IS NULL;'
-            return await DQLQuery(
-                sql, result_handler=PydanticResultHandler.pydantic_one(Asset)
-            ).execute(
+            return await _make_get_asset_query(phys_schema).execute(
                 conn,
                 asset_id=asset_id,
                 catalog_id=catalog_id,
@@ -225,10 +246,7 @@ class AssetManager(AssetsProtocol):
                 phys_schema = await self._resolve_schema(catalog_id, conn)
                 if not phys_schema:
                     return None
-                sql = f'SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata FROM "{phys_schema}".assets WHERE asset_id = :asset_id AND catalog_id = :catalog_id AND collection_id = :collection_id AND deleted_at IS NULL;'
-                return await DQLQuery(
-                    sql, result_handler=PydanticResultHandler.pydantic_one(Asset)
-                ).execute(
+                return await _make_get_asset_query(phys_schema).execute(
                     conn,
                     asset_id=asset_id,
                     catalog_id=catalog_id,
@@ -264,13 +282,13 @@ class AssetManager(AssetsProtocol):
             if not phys_schema:
                 return []
 
-            sql = f"""
-            SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata FROM "{phys_schema}".assets 
-            WHERE catalog_id = :catalog_id 
-              AND collection_id = :collection_id
-              AND deleted_at IS NULL
-            ORDER BY created_at DESC LIMIT :limit OFFSET :offset;
-            """
+            sql = (
+                f'SELECT {_ASSET_COLUMNS} FROM "{phys_schema}".assets '
+                "WHERE catalog_id = :catalog_id "
+                "AND collection_id = :collection_id "
+                "AND deleted_at IS NULL "
+                "ORDER BY created_at DESC LIMIT :limit OFFSET :offset;"
+            )
             return await DQLQuery(
                 sql, result_handler=PydanticResultHandler.pydantic_all(Asset)
             ).execute(
@@ -299,7 +317,10 @@ class AssetManager(AssetsProtocol):
             if not phys_schema:
                 return []
 
-            sql_base = f'SELECT asset_id, catalog_id, collection_id, asset_type, uri, created_at, deleted_at, metadata FROM "{phys_schema}".assets WHERE catalog_id = :catalog_id AND deleted_at IS NULL'
+            sql_base = (
+                f'SELECT {_ASSET_COLUMNS} FROM "{phys_schema}".assets '
+                "WHERE catalog_id = :catalog_id AND deleted_at IS NULL"
+            )
             params = {"catalog_id": catalog_id, "limit": limit, "offset": offset}
 
             target_col_id = (
@@ -651,14 +672,19 @@ class AssetManager(AssetsProtocol):
                     hub_table = table[: -len(suffix)]
                     break
 
-            # 4. Create the trigger
-            # Note: We use a multi-statement DDL; DDLQuery handles splitting.
+            # 4. Create the trigger. Guarded by check_trigger_exists so warm
+            # paths skip DDL entirely and avoid the AccessExclusiveLock that
+            # DROP+CREATE TRIGGER would take against concurrent ingest DML.
             trigger_ddl = f"""
-            DROP TRIGGER IF EXISTS trg_asset_cleanup ON "{schema}"."{table}";
             CREATE TRIGGER trg_asset_cleanup
             AFTER DELETE OR UPDATE OF asset_id ON "{schema}"."{table}"
             FOR EACH ROW
             EXECUTE FUNCTION platform.asset_cleanup('{hub_table}');
             """.strip()
 
-            await DDLQuery(trigger_ddl).execute(conn, schema=schema)
+            await DDLQuery(
+                trigger_ddl,
+                check_query=lambda: check_trigger_exists(
+                    conn, "trg_asset_cleanup", schema, table=table
+                ),
+            ).execute(conn)

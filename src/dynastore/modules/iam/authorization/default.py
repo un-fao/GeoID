@@ -27,11 +27,11 @@ carrying a broad ALLOW policy (e.g. a baseline `user` role with
 Role enforcement must be independent of path-level policy decisions.
 """
 
-from dynastore.models.protocols.authorization import Permission
+from dynastore.models.protocols.authorization import DefaultRole, Permission
 from dynastore.models.protocols.authorization_context import SecurityContext
 
 
-_ADMIN_ROLES = {"admin", "sysadmin"}
+_ADMIN_ROLES = frozenset({DefaultRole.ADMIN.value, DefaultRole.SYSADMIN.value})
 
 
 class DefaultAuthorizer:
@@ -47,7 +47,7 @@ class DefaultAuthorizer:
                 return
             raise PermissionError("Administrative privileges required.")
         if permission is Permission.SYSADMIN:
-            if "sysadmin" in ctx.roles:
+            if DefaultRole.SYSADMIN.value in ctx.roles:
                 return
             raise PermissionError("System administrator privileges required.")
         raise PermissionError(f"Unknown permission: {permission!r}")

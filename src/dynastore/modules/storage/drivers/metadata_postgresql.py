@@ -174,7 +174,8 @@ class MetadataPostgresqlDriver:
                     item_assets    = EXCLUDED.item_assets,
                     extra_metadata = EXCLUDED.extra_metadata;
             """
-            await DDLQuery(sql).execute(
+            # DML — DQLQuery, not DDLQuery (avoids per-call advisory lock).
+            await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
                 conn,
                 id=collection_id,
                 title=self._to_json(metadata.get("title")),
@@ -223,7 +224,9 @@ class MetadataPostgresqlDriver:
             else:
                 sql = f'DELETE FROM "{phys_schema}".metadata WHERE collection_id = :id;'
 
-            await DDLQuery(sql).execute(conn, id=collection_id)
+            await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
+                conn, id=collection_id
+            )
 
     async def search_metadata(
         self,

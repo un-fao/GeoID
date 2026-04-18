@@ -66,6 +66,7 @@ from dynastore.modules.stats.storage import (
     StatsSummary,
 )
 from dynastore.modules import get_protocol
+from dynastore.models.protocols.authorization import DefaultRole
 from dynastore.models.protocols.policies import PermissionProtocol
 from dynastore.modules.iam.exceptions import (
     ConflictingResourceError,
@@ -111,18 +112,14 @@ def register_iam_service_policies():
         )
     )
 
-    pm.register_role(Role(name="admin", policies=["admin_authorization_api"]))
-    pm.register_role(Role(name="sysadmin", policies=["admin_authorization_api"]))
-    pm.register_role(Role(name="user", policies=["self_service_authorization_api"]))
+    pm.register_role(Role(name=DefaultRole.ADMIN.value, policies=["admin_authorization_api"]))
+    pm.register_role(Role(name=DefaultRole.SYSADMIN.value, policies=["admin_authorization_api"]))
+    pm.register_role(Role(name=DefaultRole.USER.value, policies=["self_service_authorization_api"]))
 
     logger.debug("IAM service policies registered via PermissionProtocol.")
 
 
-from dynastore.extensions.iam.guards import (
-    require_admin,
-    require_sysadmin,
-    ensure_sysadmin_if_targeting_admin,
-)
+from dynastore.extensions.iam.guards import ensure_privileged_role_assignment
 
 # --- DTOs (Data Transfer Objects) ---
 
@@ -235,57 +232,57 @@ class IamExtension(ExtensionProtocol):
 
         # Governance
         self.gov_router.add_api_route(
-            "/policies", self.create_access_policy, methods=["POST"], response_model=Policy, dependencies=[Depends(require_admin)]
+            "/policies", self.create_access_policy, methods=["POST"], response_model=Policy,
         )
         self.gov_router.add_api_route(
-            "/policies/{policy_id}", self.update_access_policy, methods=["PUT"], response_model=Policy, dependencies=[Depends(require_admin)]
+            "/policies/{policy_id}", self.update_access_policy, methods=["PUT"], response_model=Policy,
         )
         self.gov_router.add_api_route(
-            "/policies", self.search_access_policies, methods=["GET"], response_model=List[Policy], dependencies=[Depends(require_admin)]
+            "/policies", self.search_access_policies, methods=["GET"], response_model=List[Policy],
         )
         self.gov_router.add_api_route(
-            "/policies/{policy_id}", self.delete_access_policy, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin)]
+            "/policies/{policy_id}", self.delete_access_policy, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT,
         )
         self.gov_router.add_api_route(
-            "/roles", self.list_roles, methods=["GET"], response_model=List[Role], dependencies=[Depends(require_admin)]
+            "/roles", self.list_roles, methods=["GET"], response_model=List[Role],
         )
         self.gov_router.add_api_route(
-            "/roles", self.create_role, methods=["POST"], response_model=Role, dependencies=[Depends(require_admin)]
+            "/roles", self.create_role, methods=["POST"], response_model=Role,
         )
         self.gov_router.add_api_route(
-            "/roles/{name}", self.update_role, methods=["PUT"], response_model=Role, dependencies=[Depends(require_admin)]
+            "/roles/{name}", self.update_role, methods=["PUT"], response_model=Role,
         )
         self.gov_router.add_api_route(
-            "/roles/{name}", self.delete_role, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin)]
+            "/roles/{name}", self.delete_role, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT,
         )
         self.gov_router.add_api_route(
-            "/hierarchies", self.add_role_hierarchy, methods=["POST"], status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin)]
+            "/hierarchies", self.add_role_hierarchy, methods=["POST"], status_code=status.HTTP_204_NO_CONTENT,
         )
         self.gov_router.add_api_route(
-            "/hierarchies", self.remove_role_hierarchy, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin)]
+            "/hierarchies", self.remove_role_hierarchy, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT,
         )
         self.gov_router.add_api_route(
-            "/hierarchies/{role_name}", self.get_role_hierarchy, methods=["GET"], response_model=List[str], dependencies=[Depends(require_admin)]
+            "/hierarchies/{role_name}", self.get_role_hierarchy, methods=["GET"], response_model=List[str],
         )
         self.gov_router.add_api_route(
-            "/principals", self.create_principal, methods=["POST"], response_model=Principal, dependencies=[Depends(require_admin)]
+            "/principals", self.create_principal, methods=["POST"], response_model=Principal,
         )
         self.gov_router.add_api_route(
-            "/principals/{principal_id}", self.update_principal, methods=["PUT"], response_model=Principal, dependencies=[Depends(require_admin)]
+            "/principals/{principal_id}", self.update_principal, methods=["PUT"], response_model=Principal,
         )
         self.gov_router.add_api_route(
-            "/principals", self.search_principals, methods=["GET"], response_model=List[Principal], dependencies=[Depends(require_admin)]
+            "/principals", self.search_principals, methods=["GET"], response_model=List[Principal],
         )
         self.gov_router.add_api_route(
-            "/principals/{principal_id}", self.delete_principal, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin)]
+            "/principals/{principal_id}", self.delete_principal, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT,
         )
 
         # Stats
         self.stats_router.add_api_route(
-            "/stats/summary", self.get_system_stats_summary, methods=["GET"], response_model=StatsSummary, dependencies=[Depends(require_admin)]
+            "/stats/summary", self.get_system_stats_summary, methods=["GET"], response_model=StatsSummary,
         )
         self.stats_router.add_api_route(
-            "/stats/logs", self.get_system_access_logs, methods=["GET"], response_model=AccessLogPage, dependencies=[Depends(require_admin)]
+            "/stats/logs", self.get_system_access_logs, methods=["GET"], response_model=AccessLogPage,
         )
 
 
@@ -333,7 +330,7 @@ class IamExtension(ExtensionProtocol):
         title="Admin",
         icon="fa-shield-halved",
         description="Administration and platform management.",
-        required_roles=["sysadmin", "admin"],
+        required_roles=[DefaultRole.SYSADMIN.value, DefaultRole.ADMIN.value],
         priority=10,
     )
     async def provide_admin_hub(self, request: Request):
@@ -394,7 +391,7 @@ class IamExtension(ExtensionProtocol):
         title="Admin Panel",
         icon="fa-users-gear",
         description="Manage users, roles, policies and catalog permissions.",
-        required_roles=["sysadmin", "admin"],
+        required_roles=[DefaultRole.SYSADMIN.value, DefaultRole.ADMIN.value],
         section="admin",
         priority=20,
     )
@@ -608,7 +605,7 @@ class IamExtension(ExtensionProtocol):
 
         # Check roles for privilege escalation
         for role in principal_req.roles:
-            ensure_sysadmin_if_targeting_admin(request, role)
+            await ensure_privileged_role_assignment(request, role)
 
         principal_model = Principal(
             provider=principal_req.provider,
@@ -649,7 +646,7 @@ class IamExtension(ExtensionProtocol):
 
         # 2. Security Check (Admin cannot elevate/manage Admin/Sysadmin)
         for role in existing.roles:
-            ensure_sysadmin_if_targeting_admin(request, role)
+            await ensure_privileged_role_assignment(request, role)
 
         # 3. Update fields
         update_data = principal_req.model_dump(exclude_unset=True)
@@ -657,7 +654,7 @@ class IamExtension(ExtensionProtocol):
         # If new roles are provided, check they are safe
         if "roles" in update_data:
             for role in update_data["roles"]:
-                ensure_sysadmin_if_targeting_admin(request, role)
+                await ensure_privileged_role_assignment(request, role)
 
         updated_model = existing.model_copy(update=update_data)
 
@@ -708,7 +705,7 @@ class IamExtension(ExtensionProtocol):
         if principal:
             target_role = principal.attributes.get("role")
             if target_role:
-                ensure_sysadmin_if_targeting_admin(request, target_role)
+                await ensure_privileged_role_assignment(request, target_role)
 
         deleted = await self.iam_manager.delete_principal( # Changed _iam_manager to self.iam_manager
             principal_id, catalog_id=catalog_id

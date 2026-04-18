@@ -65,7 +65,7 @@ extension_web = ["dynastore[extension_base]", "markdown>=3.3.7"]
 extension_httpx = ["dynastore[extension_base]", "httpx"]
 extension_catalog = ["dynastore[extension_base,module_catalog]"]
 extension_stac = ["dynastore[extension_base]", "pystac[validation]>=1.13.0", "stac-pydantic[validation]>=3.1.0"]
-extension_auth = ["dynastore[extension_base]", "python-multipart>=0.0.26"]
+extension_auth = ["dynastore[extension_base]", "python-multipart>=0.0.26", "itsdangerous>=2.0"]
 extension_template = ["dynastore[extension_base]", "attrs>=25.3.0", "aiohttp>=3.12.15", "jinja2>=3.1.6", "xmltodict>=0.13.0", "httpx>=0.24.1"]
 extension_processes = ["dynastore[extension_base]", "jsonschema"]
 extension_features = ["dynastore[extension_base,geospatial_core]", "pygeofilter[backend-sqlalchemy]"]
@@ -91,7 +91,7 @@ extension_geoid = ["dynastore[extension_base,extension_web]", "user-agents>=2.2.
 extension_maps = ["dynastore[extension_base,geospatial_core,mvt]", "GDAL==3.12.3"]
 extension_coverages = ["dynastore[extension_base,geospatial_core]"]
 extension_dwh = ["dynastore[extension_base,dwh]"]
-extension_dimensions = ["dynastore[extension_base]", "ogc-dimensions @ git+https://github.com/ccancellieri/ogc-dimensions.git@7cd827bddfbbc8cadb07a909ace5534d87e4d782#subdirectory=reference-implementation"]
+extension_dimensions = ["dynastore[extension_base]", "ogc-dimensions @ git+https://github.com/ccancellieri/ogc-dimensions.git@main#subdirectory=reference-implementation"]
 
 # ==========================================================================
 # GRANULAR TASKS
@@ -286,7 +286,7 @@ scope_geoid = ["dynastore[scope_catalog,extension_geoid,auth_grp]"]
 # scope_worker: background task processor — headless Cloud Run job runner
 scope_worker = ["dynastore[core,module_catalog,gcp,extension_dwh,index_grp,tasks,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision]"]
 # scope_tools: proxy + template tools service — no auth
-scope_tools = ["dynastore[core,template,notebooks,cache]"]
+scope_tools = ["dynastore[core,template,notebooks,cache,dimensions,proxy]"]
 # scope_maps: map tiles/styles service — no auth
 scope_maps = ["dynastore[core,catalog_grp,google_grp,maps_grp,monitor_grp,module_cache,notebooks,index_grp,drivers_grp]"]
 
@@ -373,8 +373,6 @@ export_features = "dynastore.tasks.export_features.export_features_task:ExportFe
 tiles_preseed = "dynastore.tasks.tiles_preseed.task:TilePreseedTask"
 gcs_storage_event = "dynastore.tasks.gcp.gcs_storage_event_task:GcsStorageEventTask"
 gcp_catalog_cleanup = "dynastore.tasks.gcp.gcp_catalog_cleanup_task:GcpCatalogCleanupTask"
-structural_migration = "dynastore.tasks.structural_migration:StructuralMigrationTask"
-schema_migration = "dynastore.tasks.schema_migration:SchemaMigrationTask"
 
 [tool.setuptools.dynamic]
 version = {file = "VERSION"}

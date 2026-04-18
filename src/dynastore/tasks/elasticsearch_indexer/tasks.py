@@ -173,7 +173,7 @@ async def _reindex_collection(
             bulk_body.append(doc)
 
         if bulk_body:
-            resp = await es.bulk(body=bulk_body)
+            resp = await es.bulk(body=bulk_body, request_timeout=60)
             errors = [i for i in resp.get("items", []) if "error" in i.get("index", {})]
             if errors:
                 logger.warning(

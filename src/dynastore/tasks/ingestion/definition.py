@@ -18,7 +18,7 @@
 
 from dynastore.tools.process_factory import create_process_definition
 from dynastore.tasks.ingestion.ingestion_models import IngestionProcessRequest
-from dynastore.modules.processes.models import JobControlOptions, TransmissionMode
+from dynastore.modules.processes.models import JobControlOptions, ProcessScope, TransmissionMode
 
 # Define the "ingestion" process according to the OGC standard
 INGESTION_PROCESS_DEFINITION = create_process_definition(
@@ -27,6 +27,7 @@ INGESTION_PROCESS_DEFINITION = create_process_definition(
     description="Ingests a geospatial file into a physical collection. This process creates a new versioned layer or appends to an existing one.",
     version="1.0.0",
     input_model=IngestionProcessRequest, # Use the combined request model
+    scopes=[ProcessScope.COLLECTION],
     job_control_options=[JobControlOptions.ASYNC_EXECUTE, JobControlOptions.SYNC_EXECUTE],
     output_transmission=[TransmissionMode.REFERENCE]
 )

@@ -30,11 +30,13 @@ from dynastore.modules.db_config.query_executor import (
     DbEngine,
     managed_transaction,
     DDLQuery,
+    DDLBatch,
     DQLQuery,
     ResultHandler,
 )
 from dynastore.modules.db_config.locking_tools import (
     acquire_startup_lock,
+    check_trigger_exists,
     _get_stable_lock_id,
 )
 from dynastore.models.protocols import (
@@ -61,6 +63,7 @@ from .primitives import (
     SystemEventType,
 )
 from sqlalchemy import text as _sql_text
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 logger = logging.getLogger(__name__)
 
@@ -111,14 +114,39 @@ BEGIN
     RETURN NEW;
 END;
 $$;
+"""
 
-DROP TRIGGER IF EXISTS on_event_insert ON {_EVENTS_SCHEMA}.events;
+# Trigger is kept separate so we can guard creation with a pg_trigger
+# existence check. DROP+CREATE TRIGGER takes AccessExclusiveLock on
+# events.events and would deadlock against a concurrently-live consumer
+# in another pod (RowExclusiveLock from _consume_query). Trigger body
+# changes are a migration concern — never re-create in place on a hot table.
+GLOBAL_EVENTS_TRIGGER_DDL = f"""
 CREATE TRIGGER on_event_insert
     AFTER INSERT ON {_EVENTS_SCHEMA}.events
     FOR EACH ROW
     WHEN (NEW.status = 'PENDING')
     EXECUTE FUNCTION {_EVENTS_SCHEMA}.notify_event_ready();
 """
+
+
+def _events_trigger_check(conn):
+    return check_trigger_exists(
+        conn, "on_event_insert", _EVENTS_SCHEMA, table="events"
+    )
+
+
+# Module-level batch: on warm starts, the sentinel (trigger) existence check
+# is the only round-trip — table and indexes are skipped entirely.
+# Advisory lock keys are auto-derived from statement hash by DDLExecutor.
+GLOBAL_EVENTS_DDL_BATCH = DDLBatch(
+    sentinel=DDLQuery(GLOBAL_EVENTS_TRIGGER_DDL, check_query=_events_trigger_check),
+    steps=[
+        DDLQuery(GLOBAL_EVENTS_TABLE_DDL),
+        DDLQuery(GLOBAL_EVENTS_INDEXES_DDL),
+        DDLQuery(GLOBAL_EVENTS_TRIGGER_DDL, check_query=_events_trigger_check),
+    ],
+)
 
 # ---------------------------------------------------------------------------
 # Subscription table DDL
@@ -490,24 +518,30 @@ class EventsModule(ModuleProtocol):
         )
         try:
             async with managed_transaction(self._engine) as conn:
-                await DDLQuery(GLOBAL_EVENTS_TABLE_DDL).execute(
-                    conn, lock_key=f"events_storage_init_table.{_EVENTS_SCHEMA}"
-                )
-                await DDLQuery(GLOBAL_EVENTS_INDEXES_DDL).execute(
-                    conn, lock_key=f"events_storage_init_idx.{_EVENTS_SCHEMA}"
-                )
+                await GLOBAL_EVENTS_DDL_BATCH.execute(conn)
             logger.info("EventsModule: %s.events ready.", _EVENTS_SCHEMA)
 
             # Create 16 shard leaf partitions (single-level LIST partitioning)
+            # as one multi-statement DDL blob with an explicit sentinel check:
+            # if the last shard (events_s15) already exists, skip all 16
+            # CREATE TABLE IF NOT EXISTS statements — 1 round-trip vs 16.
+            # Auto-inference returns None for PARTITION OF, so the check
+            # must be explicit.
+            from dynastore.modules.db_config.locking_tools import check_table_exists
+
+            shard_partitions_ddl = "\n".join(
+                f"CREATE TABLE IF NOT EXISTS {_EVENTS_SCHEMA}.events_s{i} "
+                f"PARTITION OF {_EVENTS_SCHEMA}.events FOR VALUES IN ({i});"
+                for i in range(16)
+            )
+
+            def _check_last_shard(conn):
+                return check_table_exists(conn, "events_s15", _EVENTS_SCHEMA)
+
             async with managed_transaction(self._engine) as conn:
-                for shard_id in range(16):
-                    await DDLQuery(
-                        f"""
-                        CREATE TABLE IF NOT EXISTS {_EVENTS_SCHEMA}.events_s{shard_id}
-                        PARTITION OF {_EVENTS_SCHEMA}.events
-                        FOR VALUES IN ({shard_id});
-                        """
-                    ).execute(conn)
+                await DDLQuery(
+                    shard_partitions_ddl, check_query=_check_last_shard
+                ).execute(conn)
 
                 policy = self.accumulation_policy
                 await _register_events_retention(conn, policy.dead_letter_days)
@@ -592,8 +626,7 @@ class EventsModule(ModuleProtocol):
 
     async def initialize(self, conn: Any) -> None:
         """Create global events table (idempotent). Called by lifespan; exposed for tests."""
-        await DDLQuery(GLOBAL_EVENTS_TABLE_DDL).execute(conn)
-        await DDLQuery(GLOBAL_EVENTS_INDEXES_DDL).execute(conn)
+        await GLOBAL_EVENTS_DDL_BATCH.execute(conn)
 
     async def init_catalog_scope(self, conn: Any, catalog_schema: str) -> None:
         """No-op. The global shard-partitioned outbox serves all catalogs."""
@@ -618,19 +651,34 @@ class EventsModule(ModuleProtocol):
     @asynccontextmanager
     async def acquire_consumer_lock(self, key: str) -> AsyncIterator[bool]:
         """
-        Acquire a PostgreSQL session-scoped advisory lock on a dedicated
-        AUTOCOMMIT connection.
+        Try to acquire a PostgreSQL session-scoped advisory lock on a dedicated
+        AUTOCOMMIT connection. Non-blocking: yields True if this worker became
+        the leader, False otherwise. Callers must poll to retry leadership.
 
-        Yields True if this worker became the leader; the lock is held for
-        the lifetime of the context.  On connection drop (pod/worker death)
-        the lock is released automatically — no heartbeat needed.
+        The lock is held for the lifetime of the context. On connection drop
+        (pod/worker death) it is released automatically — no heartbeat needed.
         """
+        engine = self._engine
+        if not isinstance(engine, AsyncEngine):
+            if not getattr(self, "_sync_engine_warned", False):
+                logger.warning(
+                    "EventsModule: acquire_consumer_lock requires AsyncEngine "
+                    "(got %s); event consumer disabled on this instance.",
+                    type(engine).__name__ if engine else "None",
+                )
+                self._sync_engine_warned = True
+            yield False
+            return
         lock_id = _get_stable_lock_id(key)
-        async with self._engine.connect() as conn:  # type: ignore[union-attr]
+        async with engine.connect() as conn:
             conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
-            await DQLQuery(
-                "SELECT pg_advisory_lock(:id)", result_handler=ResultHandler.NONE
+            acquired = await DQLQuery(
+                "SELECT pg_try_advisory_lock(:id)",
+                result_handler=ResultHandler.SCALAR,
             ).execute(conn, id=lock_id)
+            if not acquired:
+                yield False
+                return
             logger.info("EventsModule: consumer lock acquired (key=%s).", key)
             try:
                 yield True
@@ -651,29 +699,36 @@ class EventsModule(ModuleProtocol):
     ) -> None:
         """Log per-shard backlog warnings when PENDING count exceeds threshold.
 
-        Runs on the leader only (advisory lock); other instances sleep waiting
-        for the lock. On cancellation or connection drop the lock releases.
+        Runs on the leader only (non-blocking advisory lock); non-leaders poll
+        for leadership on the same cadence. On cancellation or connection drop
+        the lock releases and another instance can take over.
         """
         try:
-            async with self.acquire_consumer_lock("events_backlog_monitor"):
-                from dynastore.tools.protocol_helpers import get_engine
-                engine = self._engine or get_engine()
-                while True:
-                    try:
-                        async with managed_transaction(engine) as conn:
-                            rows = await _backlog_query.execute(
-                                conn, warn_threshold=warn_threshold
-                            )
-                        for row in rows or []:
-                            logger.warning(
-                                "events.backlog shard=%s pending=%s oldest_age_sec=%s",
-                                row["shard"],
-                                row["pending"],
-                                row["oldest_age_sec"],
-                            )
-                    except Exception:
-                        logger.exception("events.backlog monitor query failed")
-                    await asyncio.sleep(cadence_seconds)
+            while True:
+                async with self.acquire_consumer_lock(
+                    "events_backlog_monitor"
+                ) as is_leader:
+                    if not is_leader:
+                        await asyncio.sleep(cadence_seconds)
+                        continue
+                    from dynastore.tools.protocol_helpers import get_engine
+                    engine = self._engine or get_engine()
+                    while True:
+                        try:
+                            async with managed_transaction(engine) as conn:
+                                rows = await _backlog_query.execute(
+                                    conn, warn_threshold=warn_threshold
+                                )
+                            for row in rows or []:
+                                logger.warning(
+                                    "events.backlog shard=%s pending=%s oldest_age_sec=%s",
+                                    row["shard"],
+                                    row["pending"],
+                                    row["oldest_age_sec"],
+                                )
+                        except Exception:
+                            logger.exception("events.backlog monitor query failed")
+                        await asyncio.sleep(cadence_seconds)
         except asyncio.CancelledError:
             raise
         except Exception:

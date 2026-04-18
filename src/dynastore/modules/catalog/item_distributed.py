@@ -10,11 +10,8 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Any, Dict, TYPE_CHECKING
 
-from geojson_pydantic import Feature
-
 from dynastore.models.driver_context import DriverContext
 from dynastore.modules.db_config.query_executor import (
-    DDLQuery,
     DQLQuery,
     DbResource,
     ResultHandler,
@@ -71,7 +68,7 @@ class ItemDistributedMixin(_Host):
         if not phys_table:
             phys_table = collection_id
 
-        logger.info(
+        logger.debug(
             f"DISTRIBUTED UPSERT: collection={catalog_id}.{collection_id}, phys={phys_schema}.{phys_table}, sidecars={[s.sidecar_id for s in sidecars]}"
         )
 
@@ -176,25 +173,14 @@ class ItemDistributedMixin(_Host):
                 matcher=str(matcher_name),
             )
 
-        # 1.9 REFUSE_RETURN: echo the existing feature without writing.
+        # 1.9 REFUSE_RETURN: echo the existing record without writing. Caller
+        # picks it up via the bulk read-back keyed on the returned geoid.
         if active_rec and on_conflict == WriteConflictPolicy.REFUSE_RETURN:
             logger.info(
-                "DISTRIBUTED UPSERT: REFUSE_RETURN — returning existing feature "
+                "DISTRIBUTED UPSERT: REFUSE_RETURN — keeping existing record "
                 f"geoid={active_rec.get('geoid')}"
             )
-            optimizer = QueryOptimizer(col_config)
-            fetch_req = QueryRequest(
-                raw_where="h.geoid = :target_geoid",
-                raw_params={"target_geoid": active_rec["geoid"]},
-                limit=1,
-            )
-            sql, params = optimizer.build_optimized_query(fetch_req, phys_schema, phys_table)
-            row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
-                conn, **params
-            )
-            if row is None:
-                return None
-            return self.map_row_to_feature(dict(row), col_config)
+            return {"geoid": active_rec["geoid"], "_refuse_return": True}
 
         result = None
         # 2. Execution Path
@@ -273,6 +259,12 @@ class ItemDistributedMixin(_Host):
                 # Non-partitioned: keep validity in context for sidecars but not hub
                 validity = active_rec["validity"]
 
+            # Propagate the resolved validity to processing_context so sidecars'
+            # finalize_upsert_payload() reuses it instead of synthesising a fresh
+            # Range(now(), None) — which would miss ON CONFLICT (geoid, validity)
+            # and trip the (geoid, external_id) unique index on re-upsert.
+            processing_context["validity"] = validity
+
             result = await self._execute_distributed_update(
                 conn,
                 phys_schema,
@@ -299,11 +291,17 @@ class ItemDistributedMixin(_Host):
         sidecars: Optional[List[SidecarProtocol]] = None,
         processing_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Performs inserts across Hub and all sidecars."""
+        """Inserts the hub row + every relevant sidecar row.
+
+        Returns the inserted hub row (dict). The caller is responsible for
+        reading back the joined Feature *after* the write transaction has
+        committed — see ``fetch_features_bulk``. Doing the read-back inside
+        the same transaction would accumulate ``AccessShare`` locks across
+        every iteration of a batch loop and pin the connection until commit.
+        """
         sidecars = sidecars or []
         processing_context = processing_context or {}
         # A. Insert Hub
-        logger.warning(f"DEBUG: Inserting into Hub {schema}.{hub_table}")
         hub_row = await self._insert_table_raw(conn, schema, hub_table, hub_payload)
         hub_data = getattr(hub_row, "_mapping", hub_row)
         geoid = hub_data["geoid"]
@@ -334,7 +332,6 @@ class ItemDistributedMixin(_Host):
                 sc_payload, hub_data, processing_context or {}
             )
 
-            logger.debug(f"Upserting sidecar {sc_table} for geoid {geoid}")
             await self._upsert_sidecar_table_raw(
                 conn, schema, sc_table, full_payload, conflict_cols=conflict_cols
             )
@@ -353,25 +350,10 @@ class ItemDistributedMixin(_Host):
                         await self._upsert_sidecar_table_raw(
                             conn, schema, place_table, place_payload, conflict_cols=["geoid"]
                         )
-                        logger.debug(f"Upserted place stats into {schema}.{place_table} for geoid {geoid}")
                 except Exception as e:
                     logger.warning(f"Place stats upsert skipped for geoid {geoid}: {e}")
 
-        optimizer = QueryOptimizer(col_config)
-        fetch_req = QueryRequest(
-            raw_where="h.geoid = :target_geoid",
-            raw_params={"target_geoid": geoid},
-            limit=1,
-        )
-        sql, params = optimizer.build_optimized_query(fetch_req, schema, hub_table)
-        row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
-            conn, **params
-        )
-        if row is None:
-            return None
-        res = self.map_row_to_feature(dict(row), col_config)
-        logger.debug(f"FINAL RESULT FROM EXECUTOR: {res}")
-        return res
+        return dict(hub_data)
 
     async def _execute_distributed_update(
         self,
@@ -386,7 +368,13 @@ class ItemDistributedMixin(_Host):
         processing_context: Optional[Dict[str, Any]] = None,
         active_rec=None,
     ) -> Optional[Dict[str, Any]]:
-        """Performs updates across Hub and all sidecars."""
+        """Updates the hub row + every relevant sidecar row.
+
+        Returns the updated hub row (dict). Read-back of the joined Feature
+        is the caller's responsibility, post-commit — see
+        ``fetch_features_bulk``. See ``_execute_distributed_insert`` for the
+        rationale (no shared-lock accumulation inside the write tx).
+        """
         sidecars = sidecars or []
         # A. Update Hub
         hub_row = await self._update_table_raw(conn, schema, hub_table, geoid, hub_data)
@@ -394,7 +382,6 @@ class ItemDistributedMixin(_Host):
             return None
 
         row_data = getattr(hub_row, "_mapping", hub_row)
-        res_geoid = row_data["geoid"]
 
         # B. Resolve Identity and Finalize Payloads for Sidecars
         for sidecar in sidecars:
@@ -428,19 +415,8 @@ class ItemDistributedMixin(_Host):
             await self._upsert_sidecar_table_raw(
                 conn, schema, sc_table, full_payload, conflict_cols=conflict_cols
             )
-        optimizer = QueryOptimizer(col_config)
-        fetch_req = QueryRequest(
-            raw_where="h.geoid = :lookup_geoid",
-            raw_params={"lookup_geoid": geoid},
-            limit=1,
-        )
-        sql, params = optimizer.build_optimized_query(fetch_req, schema, hub_table)
-        row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
-            conn, **params
-        )
-        if row is None:
-            return None
-        return self.map_row_to_feature(dict(row), col_config)
+
+        return dict(row_data)
 
     async def _insert_table_raw(self, conn, schema, table, data) -> Dict[str, Any]:
         """Generic table insert (No special geometry handling here, already processed by sidecars)."""
@@ -514,4 +490,55 @@ INSERT INTO "{schema}"."{table}" ({", ".join(cols)})
 VALUES ({", ".join(vals)})
 ON CONFLICT ({conflict_target}) {on_conflict_clause};
 """
-        await DDLQuery(sql).execute(conn, **params)
+        # DML — must use DQLQuery, not DDLQuery. DDLQuery wraps every
+        # statement in a savepoint + pg_try_advisory_xact_lock + 30s
+        # statement_timeout that's correct for CREATE/ALTER but adds
+        # 5-10x overhead to a per-item upsert hot path.
+        await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
+            conn, **params
+        )
+
+    async def fetch_features_bulk(
+        self,
+        conn: DbResource,
+        schema: str,
+        hub_table: str,
+        geoids: List[Any],
+        col_config,
+    ) -> List[Dict[str, Any]]:
+        """Bulk-load joined Features for a list of geoids in a single SELECT.
+
+        Intended to be called *after* the write transaction has committed,
+        on a fresh connection. This replaces the per-item read-back that
+        used to live inside ``_execute_distributed_insert`` /
+        ``_execute_distributed_update`` and used to accumulate
+        ``AccessShare`` locks across the whole batch.
+
+        Returns a list of Feature dicts in the same order as ``geoids``.
+        Missing geoids are skipped silently.
+        """
+        if not geoids:
+            return []
+
+        optimizer = QueryOptimizer(col_config)
+        fetch_req = QueryRequest(
+            raw_where="h.geoid = ANY(:bulk_geoids)",
+            raw_params={"bulk_geoids": list(geoids)},
+            limit=len(geoids),
+        )
+        sql, params = optimizer.build_optimized_query(fetch_req, schema, hub_table)
+        rows = await DQLQuery(
+            sql, result_handler=ResultHandler.ALL_DICTS
+        ).execute(conn, **params)
+        if not rows:
+            return []
+
+        # Preserve caller's geoid order so the response lines up 1:1 with the
+        # input batch — important for IngestionReport row indexing.
+        by_geoid = {row["geoid"]: row for row in rows}
+        out: List[Dict[str, Any]] = []
+        for g in geoids:
+            row = by_geoid.get(g)
+            if row is not None:
+                out.append(self.map_row_to_feature(dict(row), col_config))
+        return out

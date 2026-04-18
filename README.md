@@ -16,13 +16,11 @@ A key innovation is the database architecture, which leverages advanced features
 - [Architecture Overview](docs/architecture/overview.md)
 - [The Database Layer](docs/architecture/database.md)
 - [The Query Executor Pattern](docs/architecture/query_executor.md)
-- [The Migration System](docs/architecture/migrations.md)
 - [Distributed Tasks](docs/architecture/distributed-tasks.md)
 
 **Part 2: Deep Dive into Modules and Extensions**
 - [The Catalog Module](docs/components/catalog.md)
 - [The Asynchronous Task Ecosystem](docs/components/tasks.md)
-- [Schema Evolution Engine](docs/components/schema_evolution.md)
 - [The GCP Extension](docs/components/gcp.md)
 - [The OGC Features Extension](docs/components/features.md)
 - [The STAC Extension](docs/components/stac.md)

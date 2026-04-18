@@ -7,14 +7,8 @@ from fastapi import Query
 
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.web import expose_static, expose_web_page
-from dynastore.extensions.iam.guards import require_sysadmin
 from dynastore.modules.notebooks import notebooks_module as notebook_service
 from dynastore.modules.notebooks.models import NotebookCreate, Notebook, PlatformNotebookCreate, PlatformNotebook, OwnerType
-
-
-def _get_current_active_user():
-    from dynastore.extensions.auth.dependencies import get_current_active_user
-    return get_current_active_user
 
 import logging
 import os
@@ -172,9 +166,8 @@ class NotebooksExtension(ExtensionProtocol):
         self,
         notebook_id: str,
         content: Dict[str, Any],
-        _: None = Depends(require_sysadmin),
     ):
-        """Create or update a platform notebook (sysadmin only)."""
+        """Create or update a platform notebook."""
         title = content.get("metadata", {}).get("title", notebook_id)
         notebook_model = PlatformNotebookCreate(
             notebook_id=notebook_id,
@@ -190,9 +183,8 @@ class NotebooksExtension(ExtensionProtocol):
     async def delete_platform_notebook(
         self,
         notebook_id: str,
-        _: None = Depends(require_sysadmin),
     ):
-        """Soft-delete a platform notebook (sysadmin only)."""
+        """Soft-delete a platform notebook."""
         await notebook_service.delete_platform_notebook(notebook_id)
         return {"status": "deleted", "notebook_id": notebook_id}
 
@@ -204,10 +196,11 @@ class NotebooksExtension(ExtensionProtocol):
         self,
         catalog_id: str,
         platform_notebook_id: str,
-        current_user=Depends(_get_current_active_user()),
+        request: Request,
     ):
         """Copy a platform notebook into a tenant catalog."""
-        owner_id = str(current_user.id) if hasattr(current_user, "id") else None
+        principal = getattr(request.state, "principal", None)
+        owner_id = str(principal.id) if principal and hasattr(principal, "id") else None
         return await notebook_service.copy_from_platform(
             catalog_id, platform_notebook_id, owner_id  # type: ignore[arg-type]
         )
@@ -223,7 +216,6 @@ class NotebooksExtension(ExtensionProtocol):
         tags: Optional[str] = Query(None, description="Comma-separated tag filter"),
         limit: int = Query(20, ge=1, le=100),
         offset: int = Query(0, ge=0),
-        current_user=Depends(_get_current_active_user()),
     ):
         """List all active notebooks in a catalog."""
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
@@ -236,7 +228,6 @@ class NotebooksExtension(ExtensionProtocol):
         self,
         catalog_id: str,
         notebook_code: str,
-        current_user=Depends(_get_current_active_user()),
     ):
         """Get full notebook content."""
         return await notebook_service.get_notebook(catalog_id, notebook_code)
@@ -246,7 +237,7 @@ class NotebooksExtension(ExtensionProtocol):
         catalog_id: str,
         notebook_code: str,
         content: Dict[str, Any],
-        current_user=Depends(_get_current_active_user()),
+        request: Request,
     ):
         """Save a notebook."""
         title = content.get("metadata", {}).get("title", notebook_code)
@@ -256,14 +247,14 @@ class NotebooksExtension(ExtensionProtocol):
             content=content,
             metadata=content.get("metadata", {}),
         )
-        owner_id = str(current_user.id) if hasattr(current_user, "id") else None
+        principal = getattr(request.state, "principal", None)
+        owner_id = str(principal.id) if principal and hasattr(principal, "id") else None
         return await notebook_service.save_notebook(catalog_id, notebook_model, owner_id=owner_id)
 
     async def delete_notebook(
         self,
         catalog_id: str,
         notebook_code: str,
-        current_user=Depends(_get_current_active_user()),
     ):
         """Soft-delete a notebook from a catalog."""
         await notebook_service.delete_notebook(catalog_id, notebook_code)

@@ -34,6 +34,8 @@ def _validate_schema_name(schema: str) -> str:
         raise ValueError(f"Invalid schema name: {schema!r}")
     return schema
 
+from dynastore.models.protocols.authorization import DefaultRole
+
 from .models import PolicyBundle, Policy, Condition, Role, Principal
 from .policy_storage import AbstractPolicyStorage
 from .iam_storage import AbstractIamStorage
@@ -286,22 +288,22 @@ class PolicyService:
         """Returns the core default roles for the platform."""
         return [
             Role(
-                name="sysadmin",
+                name=DefaultRole.SYSADMIN.value,
                 description="System Administrator with full access.",
                 policies=["sysadmin_full_access"],
             ),
             Role(
-                name="admin",
+                name=DefaultRole.ADMIN.value,
                 description="Administrator with full access.",
                 policies=["sysadmin_full_access"],
             ),
             Role(
-                name="anonymous",
+                name=DefaultRole.ANONYMOUS.value,
                 description="Anonymous user with limited access.",
                 policies=["public_access"],
             ),
             Role(
-                name="user",
+                name=DefaultRole.USER.value,
                 description="Default role for any authenticated user.",
                 policies=["self_service_access"],
             ),

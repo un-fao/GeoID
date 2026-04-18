@@ -351,11 +351,11 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
             content = str(content).encode("utf-8")
         return hashlib.md5(content).hexdigest()
 
-    def get_cache_headers(self, etag: str) -> Dict[str, str]:
-        """Returns standard cache headers including ETag."""
+    def get_cache_headers(self, max_age: int = 3600) -> Dict[str, str]:
+        """Returns standard cache-control headers. Callers set ETag separately."""
         return {
-            "ETag": f'"{etag}"',
-            "Cache-Control": "public, max-age=3600",
+            "Cache-Control": f"public, max-age={max_age}, stale-while-revalidate=60",
+            "Vary": "Accept-Encoding",
         }
 
 

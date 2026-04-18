@@ -69,6 +69,7 @@ def _build_client() -> AsyncOpenSearch:
         "hosts": [f"{scheme}://{host}:{port}"],
         "verify_certs": verify_certs,
         "maxsize": int(os.environ.get("ES_CONNECTIONS_PER_NODE", "10")),
+        "timeout": int(os.environ.get("ES_REQUEST_TIMEOUT", "30")),
         "retry_on_timeout": True,
         "max_retries": 3,
     }

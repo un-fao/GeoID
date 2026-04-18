@@ -5,7 +5,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 LITE_CONFIG="${REPO_DIR}/src/dynastore/extensions/notebooks/jupyterlite"
 LITE_OUT="${REPO_DIR}/src/dynastore/extensions/notebooks/static/lite"
 
@@ -23,6 +23,15 @@ if [ -s "${LITE_CONFIG}/requirements.txt" ]; then
         || echo "WARN: wheel pre-download partial; packages will fall back to piplite CDN"
 fi
 
+# ogc-dimensions: not on PyPI — build from sibling checkout if present.
+OGC_DIM_SRC="${REPO_DIR}/../ogc-dimensions/reference-implementation"
+if [ -d "${OGC_DIM_SRC}" ]; then
+    echo "Building ogc-dimensions wheel from ${OGC_DIM_SRC}…"
+    rm -f "${WHEELS_DIR}"/ogc_dimensions-*.whl
+    pip wheel --no-deps --wheel-dir "${WHEELS_DIR}" "${OGC_DIM_SRC}" \
+        || echo "WARN: ogc-dimensions wheel build failed; notebooks using it will error in-browser"
+fi
+
 echo "Building JupyterLite into ${LITE_OUT}…"
 # Preserve bridge.js across rebuilds.
 cp "${LITE_OUT}/bridge.js" "${LITE_OUT}/../bridge.js.bak" 2>/dev/null || true
@@ -32,7 +41,7 @@ for w in "${WHEELS_DIR}"/*.whl; do
     # piplite resolves relative paths against its own cwd; always pass absolute.
     [ -e "$w" ] && WHEEL_ARGS+=("--piplite-wheels=$(cd "$(dirname "$w")" && pwd)/$(basename "$w")")
 done
-jupyter lite build --lite-dir "${LITE_CONFIG}" --output-dir "${LITE_OUT}" "${WHEEL_ARGS[@]}"
+jupyter lite build --lite-dir "${LITE_CONFIG}" --output-dir "${LITE_OUT}" ${WHEEL_ARGS[@]+"${WHEEL_ARGS[@]}"}
 
 mv "${LITE_OUT}/../bridge.js.bak" "${LITE_OUT}/bridge.js" 2>/dev/null || true
 
