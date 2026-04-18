@@ -52,6 +52,140 @@ logger = logging.getLogger(__name__)
 
 _FINGERPRINT_PROPERTY_PREFIX = "dimensions_materialized_fingerprint:"
 
+# Bumped when the migration target changes. Existing pods write this key
+# after a successful one-shot, so subsequent boots skip the inspection
+# entirely (one PropertiesProtocol round-trip vs N pg_index queries).
+_STALE_INDEX_MIGRATION_KEY = "dimensions_stale_ext_id_index_migration_v1"
+
+
+async def _migrate_stale_attributes_indexes(properties: Any, engine: Any) -> None:
+    """One-shot migration: rebuild any 2-column ``idx_*_attributes_ext_id``
+    on a table that has a ``validity`` column.
+
+    Pre-2026-04-18 attributes-sidecar DDL emitted the unique index as
+    ``(geoid, external_id)`` even when the table tracked validity ranges.
+    The fix at attributes.py:400 changed it to ``(geoid, validity, external_id)``
+    but ``CREATE UNIQUE INDEX IF NOT EXISTS`` does not drop the old shape
+    on existing tables. Result: the upsert's ``ON CONFLICT (geoid, validity)``
+    target misses the stale 2-column index → 23505 → fingerprint sentinel
+    never persists → every reboot re-runs the failed materialise.
+
+    This migration finds those stale indexes in the dimensions catalog's
+    physical schema and rebuilds them. Bounded scope: we only touch the
+    ``_dimensions_`` catalog because that's the only path that re-upserts
+    on every lifespan boot — other tenant schemas hit this latent bug only
+    on explicit re-ingestion of conflicting rows.
+
+    Idempotent: persists a done flag via PropertiesProtocol so the
+    inspection runs at most once per pod boot per platform deployment.
+    """
+    if properties is None:
+        return  # No PropertiesProtocol → can't gate the migration; skip.
+
+    try:
+        already_done = await properties.get_property(_STALE_INDEX_MIGRATION_KEY)
+    except Exception as exc:  # noqa: BLE001 — degrade silently
+        logger.debug("Stale-index migration: get_property failed: %s", exc)
+        already_done = None
+    if already_done == "done":
+        return
+
+    # Late import — avoids dragging the framework into module-import time.
+    from dynastore.modules.db_config.query_executor import (
+        DQLQuery,
+        DDLQuery,
+        ResultHandler,
+        managed_transaction,
+    )
+
+    _resolve_phys_schema = DQLQuery(
+        "SELECT physical_schema FROM catalog.catalogs "
+        "WHERE id = :id AND deleted_at IS NULL",
+        result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
+    )
+
+    # Tables whose unique ext_id index is the old 2-column shape AND that
+    # actually have a validity column (so the new shape is required).
+    _find_stale = DQLQuery(
+        """
+        SELECT c.relname AS table_name, i.relname AS index_name
+          FROM pg_index x
+          JOIN pg_class i ON i.oid = x.indexrelid
+          JOIN pg_class c ON c.oid = x.indrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE x.indisunique
+           AND n.nspname = :schema
+           AND c.relname LIKE :ext_id_table_pattern
+           AND i.relname LIKE :ext_id_index_pattern
+           AND array_length(x.indkey::int[], 1) = 2
+           AND EXISTS (
+               SELECT 1 FROM pg_attribute a
+                WHERE a.attrelid = c.oid
+                  AND a.attname = 'validity'
+                  AND a.attnum > 0
+           )
+        """,
+        result_handler=ResultHandler.ALL_DICTS,
+    )
+
+    async with managed_transaction(engine) as conn:
+        phys_schema = await _resolve_phys_schema.execute(conn, id=DIMENSIONS_CATALOG_ID)
+        if not phys_schema:
+            # Catalog hasn't been created yet — nothing to migrate.
+            return
+
+        rows = await _find_stale.execute(
+            conn,
+            schema=phys_schema,
+            ext_id_table_pattern="%_attributes",
+            ext_id_index_pattern="idx_%_attributes_ext_id",
+        )
+
+    if not rows:
+        # Nothing stale; record done so we don't keep re-checking.
+        try:
+            await properties.set_property(
+                _STALE_INDEX_MIGRATION_KEY, "done", "dimensions_extension",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Stale-index migration: set_property failed: %s", exc)
+        return
+
+    logger.warning(
+        "Stale-index migration: rebuilding %d unique index(es) in schema %r "
+        "from (geoid, external_id) → (geoid, validity, external_id).",
+        len(rows), phys_schema,
+    )
+
+    for row in rows:
+        table_name = row["table_name"]
+        index_name = row["index_name"]
+        # Drop + create in one round-trip per table. The CREATE uses the
+        # corrected column order; uniqueness now matches the upsert's
+        # ON CONFLICT (geoid, validity) target plus the trailing external_id.
+        rebuild_sql = (
+            f'DROP INDEX IF EXISTS "{phys_schema}"."{index_name}"; '
+            f'CREATE UNIQUE INDEX "{index_name}" '
+            f'ON "{phys_schema}"."{table_name}" (geoid, validity, external_id);'
+        )
+        try:
+            async with managed_transaction(engine) as conn:
+                await DDLQuery(rebuild_sql).execute(conn)
+            logger.info("Stale-index migration: rebuilt %s.%s", phys_schema, index_name)
+        except Exception as exc:  # noqa: BLE001 — surface but continue
+            logger.error(
+                "Stale-index migration: failed to rebuild %s.%s: %s",
+                phys_schema, index_name, exc,
+            )
+            return  # Bail without setting the done flag — retry next boot.
+
+    try:
+        await properties.set_property(
+            _STALE_INDEX_MIGRATION_KEY, "done", "dimensions_extension",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Stale-index migration: set_property failed: %s", exc)
+
 
 def _dimension_fingerprint(dim_config: Any) -> str:
     """Deterministic 16-hex-char fingerprint of the inputs that materially
@@ -415,7 +549,6 @@ async def _materialize_all_dimensions(dimensions: Dict[str, Any]) -> None:
     """
     from dynastore.models.protocols.catalogs import CatalogsProtocol
     from dynastore.models.protocols import PropertiesProtocol
-    from dynastore.modules.db_config.query_executor import managed_transaction
     from dynastore.tools.discovery import get_protocol
     from dynastore.tools.protocol_helpers import get_engine
 
@@ -437,26 +570,40 @@ async def _materialize_all_dimensions(dimensions: Dict[str, Any]) -> None:
         return
 
     try:
-        async with managed_transaction(engine) as conn:
-            # Ensure dimensions catalog exists
-            await catalogs.ensure_catalog_exists(
-                DIMENSIONS_CATALOG_ID, ctx=DriverContext(db_resource=conn),
-            )
+        # Pass engine, not a held conn: ensure_catalog_exists opens its own
+        # short-lived tx. Holding one outer tx across the full materialisation
+        # caused asyncpg `connection was closed in the middle of operation`
+        # after thousands of nested savepoints (one SAVEPOINT per item via
+        # configs.get_config → resolve_physical_schema).
+        await catalogs.ensure_catalog_exists(
+            DIMENSIONS_CATALOG_ID, ctx=DriverContext(db_resource=engine),
+        )
     except Exception as exc:
         logger.error("Failed to ensure dimensions catalog: %s", exc)
         return
 
+    # One-shot: rebuild any stale unique attribute indexes on existing
+    # dimension tables that predate the attributes.py:400 fix. Without
+    # this the materialise upsert keeps failing → fingerprint never
+    # persists → every reboot re-runs the same failing upsert.
+    try:
+        await _migrate_stale_attributes_indexes(properties, engine)
+    except Exception as exc:  # noqa: BLE001 — non-fatal; log and proceed
+        logger.warning(
+            "Stale-index migration aborted: %s. Materialisation will "
+            "still try, but pre-fix tables may keep failing.", exc,
+        )
+
     grand_total = 0
     for dim_name, dim_config in dimensions.items():
         try:
-            async with managed_transaction(engine) as conn:
-                count = await _materialize_dimension(
-                    catalogs, properties, dim_name, dim_config, db_resource=conn,
-                )
-                grand_total += count
-                logger.info(
-                    "Materialized %d records for dimension '%s'", count, dim_name,
-                )
+            count = await _materialize_dimension(
+                catalogs, properties, dim_name, dim_config, db_resource=engine,
+            )
+            grand_total += count
+            logger.info(
+                "Materialized %d records for dimension '%s'", count, dim_name,
+            )
         except Exception as exc:
             logger.error(
                 "Failed to materialize dimension '%s': %s", dim_name, exc,
