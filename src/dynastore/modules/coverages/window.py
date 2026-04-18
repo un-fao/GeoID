@@ -55,9 +55,10 @@ def resolve_window(req: SubsetRequest, ref: RasterGeoRef) -> WindowBox:
                 f"{sorted(x_aliases | y_aliases)}",
             )
 
-    if x_lo is None:
-        x_lo, x_hi = ref.origin_x, ref.origin_x + ref.pixel_x * ref.width
-    if y_lo is None:
+    if x_lo is None or x_hi is None:
+        x_lo = ref.origin_x
+        x_hi = ref.origin_x + ref.pixel_x * ref.width
+    if y_lo is None or y_hi is None:
         top = ref.origin_y
         bot = ref.origin_y + ref.pixel_y * ref.height
         y_lo, y_hi = min(top, bot), max(top, bot)
