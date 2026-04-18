@@ -389,7 +389,6 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         #      separate read conn, after writes have committed.
         engine = db_resource or self.engine
         from dynastore.tools.identifiers import generate_geoid
-        import os as _os
 
         # Phase 1 — config + sidecars + physical table
         async with managed_transaction(engine) as conn:
@@ -399,7 +398,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 CollectionPluginConfig, catalog_id, collection_id,
                 ctx=DriverContext(db_resource=conn),
             )
-            max_bulk = getattr(collection_config, "max_bulk_features", 10000)
+            max_bulk = collection_config.max_bulk_features
             if len(items_list) > max_bulk:
                 raise ValueError(
                     f"FeatureCollection contains {len(items_list)} features, "
@@ -505,9 +504,10 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
         # Phase 4 — chunked writes. Each chunk commits its own tx; row locks
         # are released between chunks instead of accumulating across the whole
-        # ingestion. Tunable via env (default 500 — typical pentadal/dekadal
-        # batches under this commit cleanly in one chunk).
-        chunk_size = int(_os.getenv("DYNASTORE_INGEST_CHUNK", "500"))
+        # ingestion. Per-collection knob via `CollectionPluginConfig.ingest_chunk_size`
+        # (default 50 — safe for geometry-heavy payloads; lightweight
+        # attribute-only collections can raise it).
+        chunk_size = collection_config.ingest_chunk_size
         write_results: List[Dict[str, Any]] = []
         for start in range(0, len(prepared), chunk_size):
             chunk = prepared[start:start + chunk_size]

@@ -397,7 +397,13 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         # Add Indices
         # Identity Indices
         if self.config.enable_external_id and self.config.index_external_id:
-            ddl += f'\nCREATE UNIQUE INDEX IF NOT EXISTS "idx_{table_name}_ext_id" ON {{schema}}."{table_name}" ({", ".join(pk_columns[:-1] + ["external_id"] if len(pk_columns) > 1 else ["external_id"])});'
+            # external_id is unique WITHIN a PK scope (e.g. per validity window
+            # for versioned tables), not globally per geoid. Including the full
+            # PK in the unique index keeps it compatible with the upsert's
+            # ON CONFLICT target and allows re-materialization with a fresh
+            # validity range to INSERT instead of colliding.
+            ext_id_cols = pk_columns + ["external_id"] if pk_columns else ["external_id"]
+            ddl += f'\nCREATE UNIQUE INDEX IF NOT EXISTS "idx_{table_name}_ext_id" ON {{schema}}."{table_name}" ({", ".join(ext_id_cols)});'
 
         if self.config.enable_asset_id and self.config.index_asset_id:
             ddl += f'\nCREATE INDEX IF NOT EXISTS "idx_{table_name}_asset_id" ON {{schema}}."{table_name}" (asset_id);'

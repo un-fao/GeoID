@@ -273,6 +273,8 @@ class MetadataElasticsearchDriver:
             return None
 
         index_name = _metadata_index_name(self._get_prefix(), catalog_id)
+        if not await client.indices.exists(index=index_name):
+            return None
         try:
             resp = await client.get(index=index_name, id=collection_id)
             return resp["_source"]
