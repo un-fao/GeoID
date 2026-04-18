@@ -115,3 +115,36 @@ def get_vector_info(file_path: str) -> dict:
     except Exception as e:
         logger.error(f"OGR error processing vector '{file_path}': {e}")
         raise
+
+
+def _href_to_vsi_path(href: str) -> str:
+    """Translate a canonical URI to a GDAL VSI path."""
+    if href.startswith("gs://"):
+        return "/vsigs/" + href[len("gs://"):]
+    if href.startswith("s3://"):
+        return "/vsis3/" + href[len("s3://"):]
+    if href.startswith("http://") or href.startswith("https://"):
+        return "/vsicurl/" + href
+    return href
+
+
+def open_raster_vsi(href: str):
+    """Open a raster at an arbitrary URI through GDAL's VSI layer.
+
+    Lazy-imports rasterio so callers that never open a raster can run
+    without the heavy GDAL/rasterio stack installed.
+    """
+    import rasterio
+
+    vsi = _href_to_vsi_path(href)
+    env = rasterio.Env(
+        GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
+        VSI_CACHE="TRUE",
+        CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif,.tiff,.nc",
+    )
+    env.__enter__()
+    try:
+        return rasterio.open(vsi, "r")
+    except Exception:
+        env.__exit__(None, None, None)
+        raise

@@ -126,3 +126,27 @@ def test_full_pass1_uri_set_is_declared_somewhere():
         f"Pass 1 conformance regression — these URIs are no longer declared: "
         f"{sorted(missing)}"
     )
+
+
+EXPECTED_PASS2_COVERAGES_URIS = {
+    "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/coverage-subset",
+    "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/coverage-bbox",
+    "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/coverage-datetime",
+    "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/geotiff",
+    "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/netcdf",
+    "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/coveragejson",
+    "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/html",
+}
+
+
+def _read_coverages_conformance_uris_from_source() -> set:
+    return _read_uri_list_from_source(
+        "extensions/coverages/coverages_service.py", "OGC_API_COVERAGES_URIS",
+    )
+
+
+def test_coverages_declares_pass2_conformance_set():
+    declared = _read_coverages_conformance_uris_from_source()
+    missing = EXPECTED_PASS2_COVERAGES_URIS - declared
+    assert not missing, f"Coverages missing Pass 2 URIs: {sorted(missing)}"
+    assert "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/core" in declared

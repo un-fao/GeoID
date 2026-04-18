@@ -12,10 +12,21 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
+from typing import Optional
+
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 
 
-class CoveragesPluginConfig(ExposableConfigMixin, PluginConfig):
-    """Service-exposure config for the coverages extension."""
-    # `enabled` inherited from ExposableConfigMixin — no further fields.
+class CoveragesConfig(ExposableConfigMixin, PluginConfig):
+    """Service-exposure and runtime guardrail config for the coverages extension."""
+    # `enabled` inherited from ExposableConfigMixin.
+    max_bands_per_request: int = 16
+    request_deadline_soft_s: int = 60
+    request_deadline_hard_s: int = 120
+    default_block_size: int = 512
+    default_style_id: Optional[str] = None
+
+
+# Backward-compatible alias — historical name used elsewhere in the codebase.
+CoveragesPluginConfig = CoveragesConfig

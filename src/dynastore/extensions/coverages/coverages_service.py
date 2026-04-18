@@ -21,17 +21,129 @@ and protocol-specific response models. Zero core changes needed.
 
 import logging
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, cast
 
-from pydantic import BaseModel
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
-
+from dynastore.extensions.coverages.config import CoveragesConfig
+from dynastore.extensions.coverages.links import build_coverage_links
 from dynastore.extensions.ogc_base import OGCServiceMixin
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.tools.ogc_policies import register_ogc_public_access_policy
+from dynastore.extensions.tools.url import get_root_url
+from dynastore.modules.coverages.domainset import build_domainset
+from dynastore.modules.coverages.rangetype import build_rangetype
+from dynastore.modules.coverages.subset import parse_subset
+from dynastore.modules.coverages.writers import MEDIA_TYPE_FOR
 
 from . import coverages_models as cm
+
+
+def _asset_href(item: dict) -> str:
+    assets = item.get("assets") or {}
+    for key in ("data", "coverage"):
+        if key in assets and assets[key].get("href"):
+            return assets[key]["href"]
+    for a in assets.values():
+        if a.get("href"):
+            return a["href"]
+    raise HTTPException(status_code=404, detail="No asset href on coverage item.")
+
+
+def _stream_coverage_geotiff(href: str, subset):
+    """Stream a GeoTIFF response by reading the source raster at ``href``.
+
+    Imports rasterio lazily so the helper remains importable without it.
+    """
+    from dynastore.modules.coverages.reader import read_window_iter
+    from dynastore.modules.coverages.window import RasterGeoRef, resolve_window
+    from dynastore.modules.coverages.writers.geotiff import write_geotiff
+    from dynastore.modules.gdal.service import open_raster_vsi
+    from rasterio.transform import from_origin
+
+    req = parse_subset(subset)
+    ds = open_raster_vsi(href)
+    try:
+        t = ds.transform
+        ref = RasterGeoRef(
+            width=ds.width, height=ds.height,
+            origin_x=t.c, origin_y=t.f,
+            pixel_x=t.a, pixel_y=t.e,
+            crs=str(ds.crs),
+            axis_order=("Lon", "Lat"),
+        )
+        box = resolve_window(req, ref)
+        out_transform = from_origin(
+            ref.origin_x + ref.pixel_x * box.col_off,
+            ref.origin_y + ref.pixel_y * box.row_off,
+            ref.pixel_x, -ref.pixel_y,
+        )
+        tiles = ((0, 0, block) for block in read_window_iter(ds, box))
+        yield from write_geotiff(
+            width=box.width, height=box.height,
+            transform=out_transform, crs=ds.crs,
+            dtype=str(ds.dtypes[0]), band_count=1,
+            tiles=tiles,
+        )
+    finally:
+        ds.close()
+
+
+def _resolve_format(f) -> str:
+    if f is None:
+        return "geotiff"
+    v = f.lower()
+    if v not in MEDIA_TYPE_FOR:
+        raise HTTPException(status_code=415, detail=f"Unsupported coverage format: {f!r}")
+    return v
+
+
+def _extract_domainset(item: Optional[dict]) -> dict:
+    ds = build_domainset(item) if item is not None else None
+    if ds is None:
+        raise HTTPException(status_code=404, detail="No coverage item found.")
+    return ds
+
+
+def _extract_rangetype(item: Optional[dict]) -> dict:
+    rt = build_rangetype(item) if item is not None else None
+    if rt is None:
+        raise HTTPException(status_code=404, detail="No coverage item found.")
+    return rt
+
+
+def _resolve_default_style_for_coverage(*, config, item):
+    """Pass 2 precedence: CoveragesConfig.default_style_id > STAC item-assets default > None."""
+    if getattr(config, "default_style_id", None):
+        return config.default_style_id
+    if item is None:
+        return None
+    default = (item.get("assets") or {}).get("default_style") or {}
+    return default.get("id")
+
+
+def _build_metadata_response(
+    *,
+    item: dict,
+    base_url: str,
+    catalog_id: str,
+    collection_id: str,
+    default_style_id: Optional[str],
+) -> dict:
+    """Assemble the /coverage/metadata payload for a given STAC-ish item dict."""
+    return {
+        "title": item.get("id"),
+        "extent": {"spatial": {"bbox": [item.get("bbox", [])]}},
+        "domainset": build_domainset(item),
+        "rangetype": build_rangetype(item),
+        "links": build_coverage_links(
+            base_url=base_url,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            default_style_id=default_style_id,
+        ),
+    }
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +155,13 @@ OGC_API_COVERAGES_URIS = [
     "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/core",
     "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/geodata-coverage",
     "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/json",
+    "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/html",
+    "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/coverage-subset",
+    "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/coverage-bbox",
+    "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/coverage-datetime",
+    "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/geotiff",
+    "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/netcdf",
+    "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/coveragejson",
 ]
 
 
@@ -108,16 +227,19 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
             methods=["GET"],
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/coverage/domainset",
-            self.get_domain_set,
+            "/catalogs/{catalog_id}/collections/{collection_id}/coverage/metadata",
+            self.get_coverage_metadata,
             methods=["GET"],
-            response_model=cm.DomainSet,
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/coverage/domainset",
+            self.get_coverage_domainset,
+            methods=["GET"],
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/collections/{collection_id}/coverage/rangetype",
-            self.get_range_type,
+            self.get_coverage_rangetype,
             methods=["GET"],
-            response_model=cm.RangeType,
         )
 
     # ------------------------------------------------------------------
@@ -138,187 +260,100 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
         self,
         catalog_id: str,
         collection_id: str,
-        request: Request,
+        subset: Optional[str] = Query(None),
+        f: Optional[str] = Query("geotiff"),
     ):
-        """Return coverage data as CoverageJSON.
+        """Stream a coverage by content-negotiated format with optional subset."""
+        fmt = _resolve_format(f)
+        item = await self._get_first_coverage_item(catalog_id, collection_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="No coverage item found.")
+        href = _asset_href(item)
+        if fmt == "geotiff":
+            gen = _stream_coverage_geotiff(href, subset=subset)
+        elif fmt == "covjson":
+            from dynastore.modules.coverages.writers.coveragejson import (
+                write_coveragejson,
+            )
+            ds = build_domainset(item) or {}
+            rt = build_rangetype(item) or {"type": "DataRecord", "field": []}
+            gen = write_coveragejson(ds, rt, iter([]))
+        elif fmt == "netcdf":
+            raise HTTPException(
+                status_code=503,
+                detail="NetCDF streaming not yet wired end-to-end.",
+            )
+        else:  # pragma: no cover - guarded by _resolve_format above
+            raise HTTPException(status_code=415, detail=f"Unsupported format: {fmt!r}")
+        return StreamingResponse(gen, media_type=MEDIA_TYPE_FOR[fmt])
 
-        Supports optional bbox and datetime query parameters for subsetting.
+    async def get_coverage_domainset(
+        self, catalog_id: str, collection_id: str,
+    ) -> dict:
+        """Return the OGC Coverages DomainSet derived from the first item."""
+        item = await self._get_first_coverage_item(catalog_id, collection_id)
+        return _extract_domainset(item)
+
+    async def get_coverage_rangetype(
+        self, catalog_id: str, collection_id: str,
+    ) -> dict:
+        """Return the OGC Coverages RangeType derived from the first item."""
+        item = await self._get_first_coverage_item(catalog_id, collection_id)
+        return _extract_rangetype(item)
+
+    async def _get_coverages_config(
+        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None,
+    ) -> CoveragesConfig:
+        """Fetch CoveragesConfig via the platform configs service with waterfall.
+
+        Falls back to a default-constructed CoveragesConfig if the configs service
+        is unavailable (keeps handlers resilient in test / stub contexts).
         """
-        from dynastore.modules.storage.router import get_driver
-        from dynastore.modules.storage.routing_config import Operation
+        try:
+            configs_svc = await self._get_configs_service()
+            return await configs_svc.get_config(
+                CoveragesConfig, catalog_id, collection_id,
+            )
+        except Exception:  # pragma: no cover - defensive fallback
+            return CoveragesConfig()
+
+    async def _get_first_coverage_item(
+        self, catalog_id: str, collection_id: str,
+    ) -> Optional[dict]:
+        """Return the first item in a collection as a plain dict, or None."""
+        from dynastore.models.protocols import CatalogsProtocol
         from dynastore.models.query_builder import QueryRequest
 
-        bbox_str = request.query_params.get("bbox")
-        datetime_str = request.query_params.get("datetime")
-        limit = int(request.query_params.get("limit", "1000"))
-
-        cql_parts: list[str] = []
-        if bbox_str:
-            try:
-                bbox_nums = [float(v) for v in bbox_str.split(",")]
-            except ValueError:
-                raise HTTPException(400, detail="Invalid bbox format")
-            if len(bbox_nums) != 4:
-                raise HTTPException(400, detail="bbox must have 4 values")
-            cql_parts.append(
-                f"S_INTERSECTS(geometry,BBOX({bbox_nums[0]},{bbox_nums[1]},{bbox_nums[2]},{bbox_nums[3]}))"
-            )
-        if datetime_str:
-            cql_parts.append(f"T_INTERSECTS(datetime,INTERVAL('{datetime_str}'))")
-
-        qr = QueryRequest(limit=limit, cql_filter=" AND ".join(cql_parts) or None)
-
+        catalogs = cast(CatalogsProtocol, await self._get_catalogs_service())
         try:
-            driver = await get_driver(Operation.READ, catalog_id, collection_id)
-        except Exception:
-            raise HTTPException(404, detail=f"Collection '{collection_id}' not found")
-
-        features = []
-        iterator = await driver.read_entities(
-            catalog_id, collection_id, request=qr, limit=limit,
-        )
-        async for feature in iterator:
-            features.append(feature.model_dump(by_alias=True, exclude_none=True))
-
-        # Build CoverageJSON response
-        coverage_json = {
-            "type": "Coverage",
-            "domain": await self._build_domain(catalog_id, collection_id),
-            "ranges": {},
-            "parameters": {},
-        }
-
-        # Extract parameter values from features
-        if features:
-            props_keys = set()
-            for f in features:
-                props = f.get("properties", {})
-                for k, v in props.items():
-                    if isinstance(v, (int, float)):
-                        props_keys.add(k)
-
-            for key in sorted(props_keys):
-                values = [
-                    f.get("properties", {}).get(key)
-                    for f in features
-                ]
-                coverage_json["parameters"][key] = {
-                    "type": "Parameter",
-                    "observedProperty": {"label": {"en": key}},
-                }
-                coverage_json["ranges"][key] = {
-                    "type": "NdArray",
-                    "dataType": "float",
-                    "values": values,
-                }
-
-        from fastapi.responses import JSONResponse
-
-        return JSONResponse(
-            content=coverage_json,
-            media_type="application/prs.coverage+json",
-        )
-
-    async def get_domain_set(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        request: Request,
-    ) -> cm.DomainSet:
-        """Return the domain (spatial/temporal extent) of the coverage."""
-        catalogs = await self._get_catalogs_service()
-        collection = await catalogs.get_collection(catalog_id, collection_id)
-        if not collection:
-            raise HTTPException(404, detail=f"Collection '{collection_id}' not found")
-
-        extent = collection.extent
-        general_grid = {}
-
-        if extent:
-            extent_dict = extent.model_dump(exclude_none=True)
-            spatial = extent_dict.get("spatial") or {}
-            temporal = extent_dict.get("temporal") or {}
-
-            if spatial.get("bbox"):
-                bbox = spatial["bbox"]
-                first_bbox = bbox[0] if isinstance(bbox[0], list) else bbox
-                general_grid["axis"] = [
-                    {
-                        "type": "RegularAxis",
-                        "axisLabel": "x",
-                        "lowerBound": first_bbox[0],
-                        "upperBound": first_bbox[2],
-                    },
-                    {
-                        "type": "RegularAxis",
-                        "axisLabel": "y",
-                        "lowerBound": first_bbox[1],
-                        "upperBound": first_bbox[3],
-                    },
-                ]
-                general_grid["srsName"] = spatial.get("crs", "http://www.opengis.net/def/crs/OGC/1.3/CRS84")
-
-            if temporal.get("interval"):
-                intervals = temporal["interval"]
-                if intervals:
-                    first_interval = intervals[0] if isinstance(intervals[0], list) else intervals
-                    time_axis = {
-                        "type": "RegularAxis",
-                        "axisLabel": "t",
-                        "lowerBound": first_interval[0] if first_interval[0] else None,
-                        "upperBound": first_interval[1] if len(first_interval) > 1 and first_interval[1] else None,
-                    }
-                    axes = general_grid.get("axis", [])
-                    axes.append(time_axis)
-                    general_grid["axis"] = axes
-
-        return cm.DomainSet(
-            type="DomainSet",
-            generalGrid=general_grid if general_grid else None,
-        )
-
-    async def get_range_type(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        request: Request,
-    ) -> cm.RangeType:
-        """Return the range type (data fields) of the coverage."""
-        from dynastore.modules.storage.router import get_driver
-        from dynastore.modules.storage.routing_config import Operation
-        from dynastore.models.protocols.storage_driver import Capability
-
-        try:
-            driver = await get_driver(Operation.READ, catalog_id, collection_id)
-        except Exception:
-            raise HTTPException(404, detail=f"Collection '{collection_id}' not found")
-
-        if Capability.INTROSPECTION not in driver.capabilities:
-            raise HTTPException(
-                501,
-                detail=f"Driver '{type(driver).__name__}' does not support field introspection",
+            features = await catalogs.search_items(
+                catalog_id, collection_id, QueryRequest(limit=1),
             )
+        except Exception:
+            return None
+        if not features:
+            return None
+        first = features[0]
+        # Feature is a pydantic model — coerce to the same dict shape the
+        # domainset/rangetype helpers expect.
+        if hasattr(first, "model_dump"):
+            return first.model_dump(by_alias=True, exclude_none=True)
+        return dict(first)
 
-        fields = await driver.introspect_schema(catalog_id, collection_id)
-
-        # Map FieldDefinition to OGC range type fields
-        range_fields = []
-        for fd in fields:
-            field_entry = {
-                "type": "Quantity",
-                "id": fd.name,
-                "name": fd.name,
-                "definition": f"https://dynastore.fao.org/def/{fd.data_type}",
-                "encodingInfo": {"dataType": f"http://www.opengis.net/def/dataType/OGC/0/{fd.data_type}"},
-            }
-            if fd.description:
-                desc = fd.description
-                field_entry["description"] = (
-                    desc.model_dump(exclude_none=True) if isinstance(desc, BaseModel) else desc
-                )
-            range_fields.append(field_entry)
-
-        return cm.RangeType(type="DataRecord", field=range_fields)
+    async def get_coverage_metadata(
+        self, catalog_id: str, collection_id: str, request: Request,
+    ):
+        item = await self._get_first_coverage_item(catalog_id, collection_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="No coverage item found.")
+        cfg = await self._get_coverages_config(catalog_id, collection_id)
+        return _build_metadata_response(
+            item=item,
+            base_url=get_root_url(request).rstrip("/"),
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            default_style_id=_resolve_default_style_for_coverage(config=cfg, item=item),
+        )
 
     async def _build_domain(self, catalog_id: str, collection_id: str) -> dict:
         """Build a CoverageJSON domain dict from collection extent."""
