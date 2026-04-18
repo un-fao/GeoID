@@ -113,6 +113,16 @@ def _extract_rangetype(item: Optional[dict]) -> dict:
     return rt
 
 
+def _resolve_default_style_for_coverage(*, config, item):
+    """Pass 2 precedence: CoveragesConfig.default_style_id > STAC item-assets default > None."""
+    if getattr(config, "default_style_id", None):
+        return config.default_style_id
+    if item is None:
+        return None
+    default = (item.get("assets") or {}).get("default_style") or {}
+    return default.get("id")
+
+
 def _build_metadata_response(
     *,
     item: dict,
@@ -342,7 +352,7 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
             base_url=get_root_url(request).rstrip("/"),
             catalog_id=catalog_id,
             collection_id=collection_id,
-            default_style_id=getattr(cfg, "default_style_id", None),
+            default_style_id=_resolve_default_style_for_coverage(config=cfg, item=item),
         )
 
     async def _build_domain(self, catalog_id: str, collection_id: str) -> dict:
