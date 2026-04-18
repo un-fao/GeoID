@@ -150,3 +150,47 @@ class TestCountAndAggregate:
         )
         with pytest.raises(ValueError):
             await d.aggregate("cat", "col", aggregation_type="sum", field="x; DROP TABLE")
+
+
+class TestIntrospect:
+    @pytest.mark.asyncio
+    async def test_introspect_schema_translates_bq_fields_to_field_definitions(
+        self, monkeypatch,
+    ):
+        from dynastore.modules.storage.drivers.bigquery import CollectionBigQueryDriver
+        from dynastore.modules.storage.drivers.bigquery_models import (
+            BigQueryTarget, CollectionBigQueryDriverConfig,
+        )
+        from unittest.mock import AsyncMock, MagicMock
+        import dynastore.modules.storage.drivers.bigquery as mod
+
+        fake_schema = []
+        for name, ftype, mode in [
+            ("id",    "STRING",    "REQUIRED"),
+            ("value", "INTEGER",   "NULLABLE"),
+            ("geom",  "GEOGRAPHY", "NULLABLE"),
+        ]:
+            f = MagicMock()
+            f.name = name
+            f.field_type = ftype
+            f.mode = mode
+            fake_schema.append(f)
+        fake_table = MagicMock()
+        fake_table.schema = fake_schema
+
+        def fake_client_factory(project_id):
+            c = MagicMock()
+            c.get_table = MagicMock(return_value=fake_table)
+            return c
+        monkeypatch.setattr(mod, "_make_bq_client", fake_client_factory)
+
+        d = CollectionBigQueryDriver()
+        monkeypatch.setattr(
+            d, "get_driver_config",
+            AsyncMock(return_value=CollectionBigQueryDriverConfig(
+                target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
+            )),
+        )
+        fields = await d.introspect_schema("cat", "col")
+        names = [f.name for f in fields]
+        assert names == ["id", "value", "geom"]

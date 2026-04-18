@@ -8,8 +8,10 @@ from typing import Any, AsyncIterator, Dict, FrozenSet, List, Optional
 from dynastore.models.ogc import Feature
 from dynastore.models.protocols import (
     BigQueryProtocol,
+    CloudIdentityProtocol,
     ConfigsProtocol,
 )
+from dynastore.models.protocols.field_definition import FieldDefinition
 from dynastore.modules.storage.drivers.bigquery_models import (
     CollectionBigQueryDriverConfig,
 )
@@ -139,6 +141,41 @@ class CollectionBigQueryDriver:
         return next(iter(rows[0].values())) if rows else None
 
 
+    async def introspect_schema(
+        self, catalog_id: str, collection_id: str,
+        *, db_resource: Optional[Any] = None,
+    ) -> List[FieldDefinition]:
+        cfg = await self.get_driver_config(catalog_id, collection_id)
+        if cfg is None or not cfg.target.is_fully_qualified():
+            raise ValueError("BigQuery driver requires a fully-qualified target")
+
+        client = _make_bq_client(cfg.target.project_id)
+        table = client.get_table(cfg.target.fqn())
+        return [_bq_field_to_field_definition(f) for f in table.schema]
+
+
 def _is_safe_identifier(name: str) -> bool:
     import re
     return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name))
+
+
+def _make_bq_client(project_id: Optional[str]):
+    from google.cloud import bigquery
+    identity = get_protocol(CloudIdentityProtocol)
+    creds = identity.get_credentials_object() if identity else None
+    return bigquery.Client(project=project_id, credentials=creds)
+
+
+def _bq_field_to_field_definition(f) -> FieldDefinition:
+    bq_to_stac = {
+        "STRING": "string", "INTEGER": "int64", "INT64": "int64",
+        "FLOAT": "float64", "FLOAT64": "float64", "BOOL": "bool",
+        "BOOLEAN": "bool", "TIMESTAMP": "timestamp", "DATE": "date",
+        "GEOGRAPHY": "geometry",
+    }
+    dtype = bq_to_stac.get(f.field_type.upper(), "string")
+    return FieldDefinition(
+        name=f.name,
+        data_type=dtype,
+        required=(f.mode == "REQUIRED"),
+    )
