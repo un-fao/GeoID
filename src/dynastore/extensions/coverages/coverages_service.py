@@ -21,17 +21,45 @@ and protocol-specific response models. Zero core changes needed.
 
 import logging
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, cast
 
 from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 
+from dynastore.extensions.coverages.config import CoveragesConfig
+from dynastore.extensions.coverages.links import build_coverage_links
 from dynastore.extensions.ogc_base import OGCServiceMixin
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.tools.ogc_policies import register_ogc_public_access_policy
+from dynastore.extensions.tools.url import get_root_url
+from dynastore.modules.coverages.domainset import build_domainset
+from dynastore.modules.coverages.rangetype import build_rangetype
 
 from . import coverages_models as cm
+
+
+def _build_metadata_response(
+    *,
+    item: dict,
+    base_url: str,
+    catalog_id: str,
+    collection_id: str,
+    default_style_id: Optional[str],
+) -> dict:
+    """Assemble the /coverage/metadata payload for a given STAC-ish item dict."""
+    return {
+        "title": item.get("id"),
+        "extent": {"spatial": {"bbox": [item.get("bbox", [])]}},
+        "domainset": build_domainset(item),
+        "rangetype": build_rangetype(item),
+        "links": build_coverage_links(
+            base_url=base_url,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            default_style_id=default_style_id,
+        ),
+    }
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +140,11 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
         self.router.add_api_route(
             "/catalogs/{catalog_id}/collections/{collection_id}/coverage",
             self.get_coverage,
+            methods=["GET"],
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/coverage/metadata",
+            self.get_coverage_metadata,
             methods=["GET"],
         )
         self.router.add_api_route(
@@ -326,6 +359,60 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
             range_fields.append(field_entry)
 
         return cm.RangeType(type="DataRecord", field=range_fields)
+
+    async def _get_coverages_config(
+        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None,
+    ) -> CoveragesConfig:
+        """Fetch CoveragesConfig via the platform configs service with waterfall.
+
+        Falls back to a default-constructed CoveragesConfig if the configs service
+        is unavailable (keeps handlers resilient in test / stub contexts).
+        """
+        try:
+            configs_svc = await self._get_configs_service()
+            return await configs_svc.get_config(
+                CoveragesConfig, catalog_id, collection_id,
+            )
+        except Exception:  # pragma: no cover - defensive fallback
+            return CoveragesConfig()
+
+    async def _get_first_coverage_item(
+        self, catalog_id: str, collection_id: str,
+    ) -> Optional[dict]:
+        """Return the first item in a collection as a plain dict, or None."""
+        from dynastore.models.protocols import CatalogsProtocol
+        from dynastore.models.query_builder import QueryRequest
+
+        catalogs = cast(CatalogsProtocol, await self._get_catalogs_service())
+        try:
+            features = await catalogs.search_items(
+                catalog_id, collection_id, QueryRequest(limit=1),
+            )
+        except Exception:
+            return None
+        if not features:
+            return None
+        first = features[0]
+        # Feature is a pydantic model — coerce to the same dict shape the
+        # domainset/rangetype helpers expect.
+        if hasattr(first, "model_dump"):
+            return first.model_dump(by_alias=True, exclude_none=True)
+        return dict(first)
+
+    async def get_coverage_metadata(
+        self, catalog_id: str, collection_id: str, request: Request,
+    ):
+        item = await self._get_first_coverage_item(catalog_id, collection_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="No coverage item found.")
+        cfg = await self._get_coverages_config(catalog_id, collection_id)
+        return _build_metadata_response(
+            item=item,
+            base_url=get_root_url(request).rstrip("/"),
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            default_style_id=getattr(cfg, "default_style_id", None),
+        )
 
     async def _build_domain(self, catalog_id: str, collection_id: str) -> dict:
         """Build a CoverageJSON domain dict from collection extent."""
