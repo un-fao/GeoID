@@ -91,7 +91,7 @@ from dynastore.models.protocols.authorization import (
 from dynastore.models.protocols.authorization_context import SecurityContext
 from dynastore.models.protocols.role_admin import RoleAdminProtocol
 from dynastore.models.protocols.principal_admin import PrincipalAdminProtocol
-from dynastore.models.protocols.catalog_enricher import CatalogEnricherProtocol
+from dynastore.models.protocols.catalog_pipeline import CatalogPipelineProtocol
 from dynastore.models.protocols.item_pipeline import ItemPipelineProtocol
 from dynastore.models.protocols.collection_pipeline import CollectionPipelineProtocol
 from dynastore.models.protocols.link_contrib import (
@@ -168,6 +168,7 @@ __all__ = [
     "LinkContributor",
     "ItemPipelineProtocol",
     "CollectionPipelineProtocol",
+    "CatalogPipelineProtocol",
     "ConformanceContributor",
     "WebPageContributor",
     "StaticAssetProvider",
