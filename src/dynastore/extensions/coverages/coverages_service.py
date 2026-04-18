@@ -23,9 +23,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional, cast
 
-from pydantic import BaseModel
-
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 
 from dynastore.extensions.coverages.config import CoveragesConfig
 from dynastore.extensions.coverages.links import build_coverage_links
@@ -37,6 +35,20 @@ from dynastore.modules.coverages.domainset import build_domainset
 from dynastore.modules.coverages.rangetype import build_rangetype
 
 from . import coverages_models as cm
+
+
+def _extract_domainset(item: Optional[dict]) -> dict:
+    ds = build_domainset(item) if item is not None else None
+    if ds is None:
+        raise HTTPException(status_code=404, detail="No coverage item found.")
+    return ds
+
+
+def _extract_rangetype(item: Optional[dict]) -> dict:
+    rt = build_rangetype(item) if item is not None else None
+    if rt is None:
+        raise HTTPException(status_code=404, detail="No coverage item found.")
+    return rt
 
 
 def _build_metadata_response(
@@ -149,15 +161,13 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/collections/{collection_id}/coverage/domainset",
-            self.get_domain_set,
+            self.get_coverage_domainset,
             methods=["GET"],
-            response_model=cm.DomainSet,
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/collections/{collection_id}/coverage/rangetype",
-            self.get_range_type,
+            self.get_coverage_rangetype,
             methods=["GET"],
-            response_model=cm.RangeType,
         )
 
     # ------------------------------------------------------------------
@@ -259,106 +269,19 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
             media_type="application/prs.coverage+json",
         )
 
-    async def get_domain_set(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        request: Request,
-    ) -> cm.DomainSet:
-        """Return the domain (spatial/temporal extent) of the coverage."""
-        catalogs = await self._get_catalogs_service()
-        collection = await catalogs.get_collection(catalog_id, collection_id)
-        if not collection:
-            raise HTTPException(404, detail=f"Collection '{collection_id}' not found")
+    async def get_coverage_domainset(
+        self, catalog_id: str, collection_id: str,
+    ) -> dict:
+        """Return the OGC Coverages DomainSet derived from the first item."""
+        item = await self._get_first_coverage_item(catalog_id, collection_id)
+        return _extract_domainset(item)
 
-        extent = collection.extent
-        general_grid = {}
-
-        if extent:
-            extent_dict = extent.model_dump(exclude_none=True)
-            spatial = extent_dict.get("spatial") or {}
-            temporal = extent_dict.get("temporal") or {}
-
-            if spatial.get("bbox"):
-                bbox = spatial["bbox"]
-                first_bbox = bbox[0] if isinstance(bbox[0], list) else bbox
-                general_grid["axis"] = [
-                    {
-                        "type": "RegularAxis",
-                        "axisLabel": "x",
-                        "lowerBound": first_bbox[0],
-                        "upperBound": first_bbox[2],
-                    },
-                    {
-                        "type": "RegularAxis",
-                        "axisLabel": "y",
-                        "lowerBound": first_bbox[1],
-                        "upperBound": first_bbox[3],
-                    },
-                ]
-                general_grid["srsName"] = spatial.get("crs", "http://www.opengis.net/def/crs/OGC/1.3/CRS84")
-
-            if temporal.get("interval"):
-                intervals = temporal["interval"]
-                if intervals:
-                    first_interval = intervals[0] if isinstance(intervals[0], list) else intervals
-                    time_axis = {
-                        "type": "RegularAxis",
-                        "axisLabel": "t",
-                        "lowerBound": first_interval[0] if first_interval[0] else None,
-                        "upperBound": first_interval[1] if len(first_interval) > 1 and first_interval[1] else None,
-                    }
-                    axes = general_grid.get("axis", [])
-                    axes.append(time_axis)
-                    general_grid["axis"] = axes
-
-        return cm.DomainSet(
-            type="DomainSet",
-            generalGrid=general_grid if general_grid else None,
-        )
-
-    async def get_range_type(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        request: Request,
-    ) -> cm.RangeType:
-        """Return the range type (data fields) of the coverage."""
-        from dynastore.modules.storage.router import get_driver
-        from dynastore.modules.storage.routing_config import Operation
-        from dynastore.models.protocols.storage_driver import Capability
-
-        try:
-            driver = await get_driver(Operation.READ, catalog_id, collection_id)
-        except Exception:
-            raise HTTPException(404, detail=f"Collection '{collection_id}' not found")
-
-        if Capability.INTROSPECTION not in driver.capabilities:
-            raise HTTPException(
-                501,
-                detail=f"Driver '{type(driver).__name__}' does not support field introspection",
-            )
-
-        fields = await driver.introspect_schema(catalog_id, collection_id)
-
-        # Map FieldDefinition to OGC range type fields
-        range_fields = []
-        for fd in fields:
-            field_entry = {
-                "type": "Quantity",
-                "id": fd.name,
-                "name": fd.name,
-                "definition": f"https://dynastore.fao.org/def/{fd.data_type}",
-                "encodingInfo": {"dataType": f"http://www.opengis.net/def/dataType/OGC/0/{fd.data_type}"},
-            }
-            if fd.description:
-                desc = fd.description
-                field_entry["description"] = (
-                    desc.model_dump(exclude_none=True) if isinstance(desc, BaseModel) else desc
-                )
-            range_fields.append(field_entry)
-
-        return cm.RangeType(type="DataRecord", field=range_fields)
+    async def get_coverage_rangetype(
+        self, catalog_id: str, collection_id: str,
+    ) -> dict:
+        """Return the OGC Coverages RangeType derived from the first item."""
+        item = await self._get_first_coverage_item(catalog_id, collection_id)
+        return _extract_rangetype(item)
 
     async def _get_coverages_config(
         self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None,
