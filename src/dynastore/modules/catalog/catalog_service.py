@@ -212,7 +212,8 @@ def get_catalog_engine(db_resource: Optional[DbResource] = None) -> DbResource:
 
 _create_catalog_strict_query = DQLQuery(
     "INSERT INTO catalog.catalogs (id, physical_schema, title, description, keywords, license, conforms_to, links, assets, extra_metadata, provisioning_status, stac_version, stac_extensions) "
-    "VALUES (:id, :physical_schema, :title, :description, :keywords, :license, :conforms_to, :links, :assets, :extra_metadata, :provisioning_status, :stac_version, :stac_extensions);",
+    "VALUES (:id, :physical_schema, :title, :description, :keywords, :license, :conforms_to, :links, :assets, :extra_metadata, :provisioning_status, :stac_version, :stac_extensions) "
+    "ON CONFLICT (id) DO NOTHING;",
     result_handler=ResultHandler.ROWCOUNT,
 )
 

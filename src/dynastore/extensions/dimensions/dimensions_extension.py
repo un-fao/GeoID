@@ -331,9 +331,19 @@ async def _materialize_dimension(
             },
         }
 
+    # Defensive: ensure the dimensions catalog row is visible inside THIS
+    # transaction. The outer lifespan pre-creates it, but if that tx lost a
+    # multi-replica race (two pods starting at once) the row may not be where
+    # this tx can see it yet — re-asserting here is idempotent thanks to the
+    # ON CONFLICT guard in the INSERT, and closes the window cheaply.
+    await catalogs.ensure_catalog_exists(
+        DIMENSIONS_CATALOG_ID, ctx=DriverContext(db_resource=db_resource),
+    )
+
     # Create RECORDS collection (idempotent — skips if exists)
     existing = await catalogs.get_collection(
         DIMENSIONS_CATALOG_ID, dim_name, lang="en",
+        ctx=DriverContext(db_resource=db_resource),
     )
     if not existing:
         collection_def: Dict[str, Any] = {
