@@ -207,8 +207,10 @@ class SyncRunner(RunnerProtocol, ProtocolPlugin[Any]):
             hydrated_payload = hydrate_task_payload(task_instance, raw_payload)
             result = await task_instance.run(hydrated_payload)
 
-            # OGC sync processes return the result directly; it's not stored in 'outputs'.
-            update_data = TaskUpdate(status=TaskStatusEnum.COMPLETED, progress=100)
+            # OGC API - Processes Part 1 requires ``GET /jobs/{id}/results`` to work
+            # for both async AND sync executions when status=successful. Persist
+            # outputs on the audit task so sync-executed jobs can be retrieved later.
+            update_data = TaskUpdate(status=TaskStatusEnum.COMPLETED, progress=100, outputs=result)
             await tasks_mgr.update_task(context.engine, job.task_id, update_data, schema=context.db_schema)
             logger.info(f"Sync task '{job.task_id}' completed successfully.")
             return result

@@ -536,14 +536,27 @@ def _task_to_status_info(task: Task, request: Request) -> models.StatusInfo:
     return models.task_to_status_info(task, links=links)
 
 
-def _get_preferred_mode(request: Request):
-    prefer_header = request.headers.get("Prefer")
-    if prefer_header:
-        if "respond-async" in prefer_header:
-            return models.JobControlOptions.ASYNC_EXECUTE
-        elif "wait=" in prefer_header:
-            return models.JobControlOptions.SYNC_EXECUTE
+def _parse_prefer_header(prefer_header: Optional[str]):
+    """Extract OGC dispatch preference from an HTTP Prefer header.
+
+    Honors RFC 7240 tokens per OGC API - Processes Part 1 §7.1:
+    ``respond-async`` and ``respond-sync``. Also accepts the legacy
+    ``wait=`` token (which sometimes appears from HTTP clients that
+    treat ``respond-sync`` as an ``wait=0``-like hint) as a sync
+    indicator so existing callers keep working.
+    """
+    if not prefer_header:
+        return None
+    hdr = prefer_header.lower()
+    if "respond-async" in hdr:
+        return models.JobControlOptions.ASYNC_EXECUTE
+    if "respond-sync" in hdr or "wait=" in hdr:
+        return models.JobControlOptions.SYNC_EXECUTE
     return None
+
+
+def _get_preferred_mode(request: Request):
+    return _parse_prefer_header(request.headers.get("Prefer"))
 
 
 def _handle_execution_exception(process_id: str, e: Exception):
