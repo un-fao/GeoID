@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Optional
 
 from dynastore.models.ogc import Feature
 
@@ -68,3 +68,34 @@ def _wkt_to_geojson(wkt: str) -> Dict[str, Any]:
         ]
         return {"type": "Polygon", "coordinates": [ring]}
     raise ValueError(f"Unsupported WKT geometry: {wkt!r}")
+
+
+async def paged_feature_stream(
+    execute_query,  # async (query: str, project_id: str) -> List[Dict[str, Any]]
+    *,
+    project_id: str,
+    base_query: str,
+    id_column: str,
+    geometry_column: Optional[str],
+    page_size: int = 1000,
+    max_items: int = 100_000,
+) -> AsyncIterator[Feature]:
+    """Stream Features from BQ by paging LIMIT/OFFSET over ``base_query``."""
+    emitted = 0
+    offset = 0
+    while emitted < max_items:
+        page_limit = min(page_size, max_items - emitted)
+        query = f"{base_query.rstrip().rstrip(';')} LIMIT {page_limit} OFFSET {offset}"
+        rows = await execute_query(query, project_id)
+        if not rows:
+            return
+        for row in rows:
+            yield row_to_feature(
+                row, id_column=id_column, geometry_column=geometry_column,
+            )
+            emitted += 1
+            if emitted >= max_items:
+                return
+        if len(rows) < page_limit:
+            return
+        offset += page_limit
