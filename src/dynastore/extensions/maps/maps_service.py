@@ -20,7 +20,7 @@
 
 import logging
 import asyncio
-from typing import Any, List, Optional
+from typing import Any, Optional
 from concurrent.futures import ProcessPoolExecutor
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Response, Query, Request, Path
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -28,6 +28,11 @@ from contextlib import asynccontextmanager
 from pyproj import CRS
 
 from dynastore.extensions.tools.db import get_async_connection
+from dynastore.extensions.maps.format_convert import (
+    FORMAT_MEDIA_TYPES as _FORMAT_MEDIA_TYPES,
+    SUPPORTED_MAP_FORMATS as _SUPPORTED_MAP_FORMATS,
+    convert_png_to_format as _convert_png_to_format,
+)
 from dynastore.extensions.maps.renderer import render_map_image
 import dynastore.modules.catalog.catalog_module as catalog_manager
 import dynastore.modules.tiles.tiles_module as tms_manager
@@ -61,86 +66,9 @@ OGC_API_MAPS_URIS = [
 # --- Output format conversion ---------------------------------------------
 #
 # The rendering pipeline produces PNG bytes. For JPEG and GeoTIFF we convert
-# after the renderer returns. PIL handles PNG→JPEG (flattening alpha onto a
-# white background). rasterio wraps the image as a geo-referenced GeoTIFF
-# when the caller supplies bbox + CRS (required for the GeoTIFF path).
-#
-# Supported output formats on the OGC API - Maps response:
-#   png    (default) — image/png
-#   jpeg            — image/jpeg
-#   geotiff         — image/tiff;application=geotiff (requires bbox + crs)
-
-_SUPPORTED_MAP_FORMATS = {"png", "jpeg", "geotiff"}
-_FORMAT_MEDIA_TYPES = {
-    "png": "image/png",
-    "jpeg": "image/jpeg",
-    "geotiff": "image/tiff;application=geotiff",
-}
-
-
-def _convert_png_to_format(
-    png_bytes: bytes,
-    fmt: str,
-    *,
-    bbox: Optional[List[float]] = None,
-    crs: Optional[str] = None,
-) -> bytes:
-    """Convert PNG bytes to the requested output format.
-
-    Returns the converted bytes. Raises ``HTTPException(415)`` for
-    unsupported formats. ``bbox`` and ``crs`` are required for ``geotiff``
-    so the output carries valid georeferencing; otherwise a 400 is raised.
-    """
-    if fmt == "png":
-        return png_bytes
-    if fmt == "jpeg":
-        from io import BytesIO
-        from PIL import Image
-
-        with Image.open(BytesIO(png_bytes)) as img:
-            # Flatten alpha on white so JPEG (no alpha) stays opaque.
-            if img.mode in ("RGBA", "LA"):
-                background = Image.new("RGB", img.size, (255, 255, 255))
-                background.paste(img, mask=img.split()[-1])
-                rgb = background
-            else:
-                rgb = img.convert("RGB")
-            buf = BytesIO()
-            rgb.save(buf, format="JPEG", quality=85, optimize=True)
-            return buf.getvalue()
-    if fmt == "geotiff":
-        if bbox is None or crs is None:
-            raise HTTPException(
-                status_code=400,
-                detail="GeoTIFF output requires bbox and crs.",
-            )
-        from io import BytesIO
-
-        import numpy as np
-        import rasterio
-        from PIL import Image
-        from rasterio.transform import from_bounds
-
-        with Image.open(BytesIO(png_bytes)) as img:
-            arr = np.array(img.convert("RGBA"))  # (H, W, 4)
-        bands = arr.transpose(2, 0, 1)  # (4, H, W)
-        height, width = bands.shape[1:]
-        transform = from_bounds(*bbox, width, height)
-        with rasterio.MemoryFile() as mem:
-            with mem.open(
-                driver="GTiff",
-                count=4,
-                dtype=bands.dtype,
-                width=width,
-                height=height,
-                transform=transform,
-                crs=crs,
-                photometric="RGB",
-                alpha="unassociated",
-            ) as dst:
-                dst.write(bands)
-            return mem.read()
-    raise HTTPException(status_code=415, detail=f"Unsupported map format: {fmt!r}")
+# after the renderer returns via ``format_convert.convert_png_to_format``.
+# The helper lives in its own module so it is importable without the GDAL
+# renderer (useful for unit testing in dev venvs without osgeo).
 
 # --- Helpers ---
 
@@ -480,8 +408,14 @@ class MapsService(ExtensionProtocol):
         bgcolor: Optional[str] = Query(None, description="Background color of the map."),
         transparent: bool = Query(True, description="Whether the map background should be transparent."),
         datetime: Optional[str] = Query(None, description="Temporal filter (timestamp or interval)."),
-        subset: Optional[str] = Query(None, description="Custom dimension filter.")
+        subset: Optional[str] = Query(None, description="Custom dimension filter."),
+        f: str = Query("png", description="Output format: png | jpeg | geotiff."),
     ):
+        fmt = f.lower()
+        if fmt not in _SUPPORTED_MAP_FORMATS:
+            raise HTTPException(
+                status_code=415, detail=f"Unsupported map format: {f!r}",
+            )
         # ... (Existing validation logic) ...
         if not await catalog_manager.get_catalog(dataset):
             raise HTTPException(status_code=404, detail=f"Dataset '{dataset}' not found.")
@@ -552,7 +486,18 @@ class MapsService(ExtensionProtocol):
                 layers_data, style_to_render,
                 transparent, bgcolor
             )
-            return Response(content=image_bytes, media_type="image/png")
         except Exception as e:
             logger.error(f"Render Error: {e}")
             raise HTTPException(status_code=500, detail="Failed to render map.")
+
+        # Convert PNG to requested format (png passthrough; jpeg/geotiff post-process).
+        try:
+            out_bytes = _convert_png_to_format(
+                image_bytes, fmt, bbox=bbox_list, crs=crs,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Format conversion error: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Format conversion failed.")
+        return Response(content=out_bytes, media_type=_FORMAT_MEDIA_TYPES[fmt])
