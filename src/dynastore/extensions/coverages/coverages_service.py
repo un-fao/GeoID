@@ -40,6 +40,56 @@ from dynastore.modules.coverages.writers import MEDIA_TYPE_FOR
 from . import coverages_models as cm
 
 
+def _asset_href(item: dict) -> str:
+    assets = item.get("assets") or {}
+    for key in ("data", "coverage"):
+        if key in assets and assets[key].get("href"):
+            return assets[key]["href"]
+    for a in assets.values():
+        if a.get("href"):
+            return a["href"]
+    raise HTTPException(status_code=404, detail="No asset href on coverage item.")
+
+
+def _stream_coverage_geotiff(href: str, subset):
+    """Stream a GeoTIFF response by reading the source raster at ``href``.
+
+    Imports rasterio lazily so the helper remains importable without it.
+    """
+    from dynastore.modules.coverages.reader import read_window_iter
+    from dynastore.modules.coverages.window import RasterGeoRef, resolve_window
+    from dynastore.modules.coverages.writers.geotiff import write_geotiff
+    from dynastore.modules.gdal.service import open_raster_vsi
+    from rasterio.transform import from_origin
+
+    req = parse_subset(subset)
+    ds = open_raster_vsi(href)
+    try:
+        t = ds.transform
+        ref = RasterGeoRef(
+            width=ds.width, height=ds.height,
+            origin_x=t.c, origin_y=t.f,
+            pixel_x=t.a, pixel_y=t.e,
+            crs=str(ds.crs),
+            axis_order=("Lon", "Lat"),
+        )
+        box = resolve_window(req, ref)
+        out_transform = from_origin(
+            ref.origin_x + ref.pixel_x * box.col_off,
+            ref.origin_y + ref.pixel_y * box.row_off,
+            ref.pixel_x, -ref.pixel_y,
+        )
+        tiles = ((0, 0, block) for block in read_window_iter(ds, box))
+        yield from write_geotiff(
+            width=box.width, height=box.height,
+            transform=out_transform, crs=ds.crs,
+            dtype=str(ds.dtypes[0]), band_count=1,
+            tiles=tiles,
+        )
+    finally:
+        ds.close()
+
+
 def _resolve_format(f) -> str:
     if f is None:
         return "geotiff"
@@ -203,18 +253,29 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
         subset: Optional[str] = Query(None),
         f: Optional[str] = Query("geotiff"),
     ):
-        """Dispatch coverage streaming by ``f`` format + optional ``subset``.
-
-        Pass 2 Task 16 body: empty-stream stub — I/O wiring lands in Task 17.
-        """
+        """Stream a coverage by content-negotiated format with optional subset."""
         fmt = _resolve_format(f)
-        parse_subset(subset)  # early-fail on malformed subset
-
-        async def _noop():
-            if False:
-                yield b""
-
-        return StreamingResponse(_noop(), media_type=MEDIA_TYPE_FOR[fmt])
+        item = await self._get_first_coverage_item(catalog_id, collection_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="No coverage item found.")
+        href = _asset_href(item)
+        if fmt == "geotiff":
+            gen = _stream_coverage_geotiff(href, subset=subset)
+        elif fmt == "covjson":
+            from dynastore.modules.coverages.writers.coveragejson import (
+                write_coveragejson,
+            )
+            ds = build_domainset(item) or {}
+            rt = build_rangetype(item) or {"type": "DataRecord", "field": []}
+            gen = write_coveragejson(ds, rt, iter([]))
+        elif fmt == "netcdf":
+            raise HTTPException(
+                status_code=503,
+                detail="NetCDF streaming not yet wired end-to-end.",
+            )
+        else:  # pragma: no cover - guarded by _resolve_format above
+            raise HTTPException(status_code=415, detail=f"Unsupported format: {fmt!r}")
+        return StreamingResponse(gen, media_type=MEDIA_TYPE_FOR[fmt])
 
     async def get_coverage_domainset(
         self, catalog_id: str, collection_id: str,
