@@ -1,8 +1,12 @@
+import dataclasses
+
+import pytest
+
+from dynastore.models.protocols.asset_contrib import ResourceRef
 from dynastore.models.protocols.link_contrib import (
     AnchoredLink,
     LinkContributor,
 )
-from dynastore.models.protocols.asset_contrib import ResourceRef
 
 
 def test_anchored_link_is_frozen_dataclass():
@@ -13,13 +17,8 @@ def test_anchored_link_is_frozen_dataclass():
         title="Styles list",
         media_type="application/json",
     )
-    # Frozen — assignment should raise.
-    import dataclasses
-    try:
+    with pytest.raises(dataclasses.FrozenInstanceError):
         link.rel = "other"  # type: ignore[misc]
-    except dataclasses.FrozenInstanceError:
-        return
-    raise AssertionError("AnchoredLink should be frozen")
 
 
 def test_link_contributor_structural_protocol():
@@ -39,7 +38,10 @@ def test_link_contributor_structural_protocol():
     assert isinstance(Fake(), LinkContributor)
 
 
-def test_anchor_accepts_three_values():
+def test_anchor_documents_supported_values():
+    # Literal is a typing construct, not a runtime guard — this test pins the
+    # intended value set as documentation. Runtime acceptance of other strings
+    # is caught by type-checkers (pyright/mypy), not by dataclass validation.
     for anchor in ("resource_root", "data_asset", "collection_root"):
         AnchoredLink(
             anchor=anchor,
