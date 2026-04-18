@@ -81,6 +81,8 @@ class CollectionBigQueryDriver:
             raise RuntimeError("BigQueryService not registered")
 
         fqn = cfg.target.fqn()
+        project_id = cfg.target.project_id
+        assert project_id is not None  # guaranteed by is_fully_qualified()
         id_col = (context or {}).get("id_column", "id")
         geom_col = (context or {}).get("geometry_column")
         select_cols = (context or {}).get("select_columns", "*")
@@ -91,7 +93,7 @@ class CollectionBigQueryDriver:
 
         async for feat in paged_feature_stream(
             service.execute_query,
-            project_id=cfg.target.project_id,
+            project_id=project_id,
             base_query=base_query,
             id_column=id_col,
             geometry_column=geom_col,
@@ -110,9 +112,11 @@ class CollectionBigQueryDriver:
         service = _get_bq_service()
         if service is None:
             raise RuntimeError("BigQueryService not registered")
+        project_id = cfg.target.project_id
+        assert project_id is not None
         rows = await service.execute_query(
             f"SELECT COUNT(*) FROM `{cfg.target.fqn()}`",
-            cfg.target.project_id,
+            project_id,
         )
         return int(next(iter(rows[0].values()))) if rows else 0
 
@@ -134,9 +138,11 @@ class CollectionBigQueryDriver:
         if field and not _is_safe_identifier(field):
             raise ValueError(f"Unsafe field identifier: {field!r}")
         expr = "*" if agg == "COUNT" and not field else field
+        project_id = cfg.target.project_id
+        assert project_id is not None
         rows = await service.execute_query(
             f"SELECT {agg}({expr}) FROM `{cfg.target.fqn()}`",
-            cfg.target.project_id,
+            project_id,
         )
         return next(iter(rows[0].values())) if rows else None
 
