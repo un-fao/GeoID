@@ -194,3 +194,10 @@ class TestIntrospect:
         fields = await d.introspect_schema("cat", "col")
         names = [f.name for f in fields]
         assert names == ["id", "value", "geom"]
+
+
+def test_driver_discovered_via_entry_point():
+    from importlib.metadata import entry_points
+    eps = [ep for ep in entry_points(group="dynastore.modules") if ep.name == "storage_bigquery"]
+    assert len(eps) == 1
+    assert "CollectionBigQueryDriver" in eps[0].value
