@@ -92,7 +92,11 @@ from dynastore.models.protocols.authorization_context import SecurityContext
 from dynastore.models.protocols.role_admin import RoleAdminProtocol
 from dynastore.models.protocols.principal_admin import PrincipalAdminProtocol
 from dynastore.models.protocols.catalog_enricher import CatalogEnricherProtocol
-from dynastore.models.protocols.item_enricher import ItemEnricherProtocol
+from dynastore.models.protocols.item_pipeline import ItemPipelineProtocol
+from dynastore.models.protocols.link_contrib import (
+    AnchoredLink,
+    LinkContributor,
+)
 from dynastore.models.protocols.bigquery import BigQueryProtocol
 from dynastore.models.protocols.field_definition import (
     FieldCapability,
@@ -159,6 +163,9 @@ __all__ = [
     "AssetContributor",
     "AssetLink",
     "ResourceRef",
+    "AnchoredLink",
+    "LinkContributor",
+    "ItemPipelineProtocol",
     "ConformanceContributor",
     "WebPageContributor",
     "StaticAssetProvider",

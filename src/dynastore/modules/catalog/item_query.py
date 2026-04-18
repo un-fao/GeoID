@@ -116,32 +116,34 @@ async def _try_driver_dispatch(
     )
 
     return QueryResponse(
-        items=_apply_item_enrichers(items, catalog_id, collection_id),
+        items=_apply_item_pipeline(items, catalog_id, collection_id),
         total_count=None,  # non-PG drivers do not provide a total count
         catalog_id=catalog_id,
         collection_id=collection_id,
     )
 
 
-async def _apply_item_enrichers(
+async def _apply_item_pipeline(
     items: AsyncIterator,
     catalog_id: str,
     collection_id: str,
     context: Optional[Dict[str, Any]] = None,
 ) -> AsyncIterator:
-    """Wrap item stream with ItemEnricherProtocol pipeline (streaming).
+    """Wrap item stream with ItemPipelineProtocol stages (streaming).
 
-    The ``can_enrich()`` guard is evaluated once per query, not per item.
-    If no enrichers are active, the stream passes through with zero overhead.
+    The ``can_apply()`` guard is evaluated once per query, not per item.
+    If no stages are active, the stream passes through with zero overhead.
+
+    Stages can return ``None`` to drop the item from the output stream.
     """
     try:
-        from dynastore.models.protocols.item_enricher import ItemEnricherProtocol
+        from dynastore.models.protocols.item_pipeline import ItemPipelineProtocol
         from dynastore.tools.discovery import get_protocols
 
-        enrichers = sorted(
-            get_protocols(ItemEnricherProtocol), key=lambda e: e.priority,
+        stages = sorted(
+            get_protocols(ItemPipelineProtocol), key=lambda s: s.priority,
         )
-        active = [e for e in enrichers if e.can_enrich(catalog_id, collection_id)]
+        active = [s for s in stages if s.can_apply(catalog_id, collection_id)]
     except Exception:
         active = []
 
@@ -153,15 +155,24 @@ async def _apply_item_enrichers(
     ctx = context or {}
     async for item in items:
         doc = item
-        for enricher in active:
+        dropped = False
+        for stage in active:
             try:
-                doc = await enricher.enrich_item(catalog_id, collection_id, doc, ctx)
+                result = await stage.apply(catalog_id, collection_id, doc, ctx)
             except Exception as err:
                 logger.warning(
-                    "ItemEnricher '%s' failed for %s/%s: %s",
-                    getattr(enricher, "enricher_id", "?"),
+                    "ItemPipeline stage '%s' failed for %s/%s: %s",
+                    getattr(stage, "stage_id", "?"),
                     catalog_id, collection_id, err,
                 )
+                continue
+            if result is None:
+                # Stage dropped the item — short-circuit remaining stages.
+                dropped = True
+                break
+            doc = result
+        if dropped:
+            continue
         yield doc
 
 
@@ -637,7 +648,7 @@ class ItemQueryMixin:
                     )
 
         return QueryResponse(
-            items=_apply_item_enrichers(feature_stream(), catalog_id, collection_id),
+            items=_apply_item_pipeline(feature_stream(), catalog_id, collection_id),
             total_count=total_count,
             catalog_id=catalog_id,
             collection_id=collection_id,
