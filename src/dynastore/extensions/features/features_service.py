@@ -776,7 +776,24 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 title=LocalizedText(en="Queryable properties"),
             ),
         ]
-        return JSONResponse(content=ogc_collection, status_code=status.HTTP_200_OK)
+
+        # Run CollectionPipelineProtocol stages (e.g. StylesCollectionPipeline
+        # merging item_assets defaults). Pipeline works on the fully-composed
+        # collection document; a stage returning None drops the collection → 404.
+        from dynastore.modules.catalog.collection_pipeline_runner import (
+            apply_collection_pipeline,
+        )
+        collection_dict_out = (
+            ogc_collection.model_dump(exclude_none=True)
+            if hasattr(ogc_collection, "model_dump")
+            else ogc_collection.dict(exclude_none=True)
+        )
+        rewritten = await apply_collection_pipeline(
+            catalog_id, collection_id, collection_dict_out, context={},
+        )
+        if rewritten is None:
+            raise HTTPException(status_code=404, detail="Collection not found")
+        return JSONResponse(content=rewritten, status_code=status.HTTP_200_OK)
 
     async def update_collection(
         self,
