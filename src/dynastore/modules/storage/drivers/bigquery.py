@@ -97,3 +97,48 @@ class CollectionBigQueryDriver:
             max_items=limit,
         ):
             yield feat
+
+    async def count_entities(
+        self, catalog_id: str, collection_id: str,
+        *, request: Optional[Any] = None, db_resource: Optional[Any] = None,
+    ) -> int:
+        cfg = await self.get_driver_config(catalog_id, collection_id)
+        if cfg is None or not cfg.target.is_fully_qualified():
+            raise ValueError("BigQuery driver requires a fully-qualified target")
+        service = _get_bq_service()
+        if service is None:
+            raise RuntimeError("BigQueryService not registered")
+        rows = await service.execute_query(
+            f"SELECT COUNT(*) FROM `{cfg.target.fqn()}`",
+            cfg.target.project_id,
+        )
+        return int(next(iter(rows[0].values()))) if rows else 0
+
+    async def aggregate(
+        self, catalog_id: str, collection_id: str,
+        *, aggregation_type: str, field: Optional[str] = None,
+        request: Optional[Any] = None, db_resource: Optional[Any] = None,
+    ) -> Any:
+        cfg = await self.get_driver_config(catalog_id, collection_id)
+        if cfg is None or not cfg.target.is_fully_qualified():
+            raise ValueError("BigQuery driver requires a fully-qualified target")
+        service = _get_bq_service()
+        if service is None:
+            raise RuntimeError("BigQueryService not registered")
+
+        agg = aggregation_type.upper()
+        if agg not in {"COUNT", "SUM", "AVG", "MIN", "MAX"}:
+            raise ValueError(f"Unsupported aggregation_type: {aggregation_type!r}")
+        if field and not _is_safe_identifier(field):
+            raise ValueError(f"Unsafe field identifier: {field!r}")
+        expr = "*" if agg == "COUNT" and not field else field
+        rows = await service.execute_query(
+            f"SELECT {agg}({expr}) FROM `{cfg.target.fqn()}`",
+            cfg.target.project_id,
+        )
+        return next(iter(rows[0].values())) if rows else None
+
+
+def _is_safe_identifier(name: str) -> bool:
+    import re
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name))

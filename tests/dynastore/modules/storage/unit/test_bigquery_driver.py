@@ -78,3 +78,75 @@ class TestReadEntities:
         feats = [f async for f in d.read_entities("cat", "col", limit=10)]
         assert [f.id for f in feats] == ["a", "b"]
         assert fake_service.execute_query.called
+
+
+class TestCountAndAggregate:
+    @pytest.mark.asyncio
+    async def test_count_entities_runs_count_star(self, monkeypatch):
+        from dynastore.modules.storage.drivers.bigquery import CollectionBigQueryDriver
+        from dynastore.modules.storage.drivers.bigquery_models import (
+            BigQueryTarget, CollectionBigQueryDriverConfig,
+        )
+        from unittest.mock import AsyncMock
+        import dynastore.modules.storage.drivers.bigquery as mod
+
+        fake = type("S", (), {})()
+        fake.execute_query = AsyncMock(return_value=[{"f0_": 42}])
+        monkeypatch.setattr(mod, "_get_bq_service", lambda: fake)
+
+        d = CollectionBigQueryDriver()
+        monkeypatch.setattr(
+            d, "get_driver_config",
+            AsyncMock(return_value=CollectionBigQueryDriverConfig(
+                target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
+            )),
+        )
+        assert await d.count_entities("cat", "col") == 42
+        called_sql = fake.execute_query.call_args[0][0]
+        assert "COUNT(*)" in called_sql.upper()
+
+    @pytest.mark.asyncio
+    async def test_aggregate_sum(self, monkeypatch):
+        from dynastore.modules.storage.drivers.bigquery import CollectionBigQueryDriver
+        from dynastore.modules.storage.drivers.bigquery_models import (
+            BigQueryTarget, CollectionBigQueryDriverConfig,
+        )
+        from unittest.mock import AsyncMock
+        import dynastore.modules.storage.drivers.bigquery as mod
+
+        fake = type("S", (), {})()
+        fake.execute_query = AsyncMock(return_value=[{"f0_": 100.0}])
+        monkeypatch.setattr(mod, "_get_bq_service", lambda: fake)
+
+        d = CollectionBigQueryDriver()
+        monkeypatch.setattr(
+            d, "get_driver_config",
+            AsyncMock(return_value=CollectionBigQueryDriverConfig(
+                target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
+            )),
+        )
+        result = await d.aggregate("cat", "col", aggregation_type="sum", field="value")
+        assert result == 100.0
+
+    @pytest.mark.asyncio
+    async def test_aggregate_rejects_unsafe_field(self, monkeypatch):
+        from dynastore.modules.storage.drivers.bigquery import CollectionBigQueryDriver
+        from dynastore.modules.storage.drivers.bigquery_models import (
+            BigQueryTarget, CollectionBigQueryDriverConfig,
+        )
+        from unittest.mock import AsyncMock
+        import dynastore.modules.storage.drivers.bigquery as mod
+
+        fake = type("S", (), {})()
+        fake.execute_query = AsyncMock(return_value=[{"f0_": 0}])
+        monkeypatch.setattr(mod, "_get_bq_service", lambda: fake)
+
+        d = CollectionBigQueryDriver()
+        monkeypatch.setattr(
+            d, "get_driver_config",
+            AsyncMock(return_value=CollectionBigQueryDriverConfig(
+                target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
+            )),
+        )
+        with pytest.raises(ValueError):
+            await d.aggregate("cat", "col", aggregation_type="sum", field="x; DROP TABLE")
