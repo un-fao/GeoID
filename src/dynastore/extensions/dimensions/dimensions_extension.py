@@ -60,12 +60,26 @@ def _dimension_fingerprint(dim_config: Any) -> str:
     Two pods with the same code produce the same fingerprint; a code
     change to the provider class, its serialisable state, or the extent
     bounds yields a different fingerprint and forces re-materialisation.
+
+    Provider state is extracted in this order of precedence:
+    1. ``model_dump()`` — Pydantic v2 path; recurses through nested models.
+    2. ``vars(provider)`` — plain Python objects; returns ``__dict__`` which
+       holds the constructor-stored field values.
+    3. ``repr(provider)`` — last-resort fallback. **Avoid landing here**:
+       the default ``object.__repr__`` includes the instance memory
+       address, which makes the fingerprint non-deterministic across
+       pod boots and silently disables the materialisation sentinel.
     """
     provider = getattr(dim_config, "provider", None)
-    if hasattr(provider, "model_dump"):
+    if provider is None:
+        provider_state: Any = None
+    elif hasattr(provider, "model_dump"):
         provider_state = provider.model_dump()
     else:
-        provider_state = repr(provider)
+        try:
+            provider_state = vars(provider)
+        except TypeError:
+            provider_state = repr(provider)
 
     payload = {
         "provider_class": type(provider).__qualname__ if provider is not None else None,
