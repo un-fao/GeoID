@@ -23,7 +23,8 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional, cast
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 
 from dynastore.extensions.coverages.config import CoveragesConfig
 from dynastore.extensions.coverages.links import build_coverage_links
@@ -33,8 +34,19 @@ from dynastore.extensions.tools.ogc_policies import register_ogc_public_access_p
 from dynastore.extensions.tools.url import get_root_url
 from dynastore.modules.coverages.domainset import build_domainset
 from dynastore.modules.coverages.rangetype import build_rangetype
+from dynastore.modules.coverages.subset import parse_subset
+from dynastore.modules.coverages.writers import MEDIA_TYPE_FOR
 
 from . import coverages_models as cm
+
+
+def _resolve_format(f) -> str:
+    if f is None:
+        return "geotiff"
+    v = f.lower()
+    if v not in MEDIA_TYPE_FOR:
+        raise HTTPException(status_code=415, detail=f"Unsupported coverage format: {f!r}")
+    return v
 
 
 def _extract_domainset(item: Optional[dict]) -> dict:
@@ -188,86 +200,21 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
         self,
         catalog_id: str,
         collection_id: str,
-        request: Request,
+        subset: Optional[str] = Query(None),
+        f: Optional[str] = Query("geotiff"),
     ):
-        """Return coverage data as CoverageJSON.
+        """Dispatch coverage streaming by ``f`` format + optional ``subset``.
 
-        Supports optional bbox and datetime query parameters for subsetting.
+        Pass 2 Task 16 body: empty-stream stub — I/O wiring lands in Task 17.
         """
-        from dynastore.modules.storage.router import get_driver
-        from dynastore.modules.storage.routing_config import Operation
-        from dynastore.models.query_builder import QueryRequest
+        fmt = _resolve_format(f)
+        parse_subset(subset)  # early-fail on malformed subset
 
-        bbox_str = request.query_params.get("bbox")
-        datetime_str = request.query_params.get("datetime")
-        limit = int(request.query_params.get("limit", "1000"))
+        async def _noop():
+            if False:
+                yield b""
 
-        cql_parts: list[str] = []
-        if bbox_str:
-            try:
-                bbox_nums = [float(v) for v in bbox_str.split(",")]
-            except ValueError:
-                raise HTTPException(400, detail="Invalid bbox format")
-            if len(bbox_nums) != 4:
-                raise HTTPException(400, detail="bbox must have 4 values")
-            cql_parts.append(
-                f"S_INTERSECTS(geometry,BBOX({bbox_nums[0]},{bbox_nums[1]},{bbox_nums[2]},{bbox_nums[3]}))"
-            )
-        if datetime_str:
-            cql_parts.append(f"T_INTERSECTS(datetime,INTERVAL('{datetime_str}'))")
-
-        qr = QueryRequest(limit=limit, cql_filter=" AND ".join(cql_parts) or None)
-
-        try:
-            driver = await get_driver(Operation.READ, catalog_id, collection_id)
-        except Exception:
-            raise HTTPException(404, detail=f"Collection '{collection_id}' not found")
-
-        features = []
-        iterator = await driver.read_entities(
-            catalog_id, collection_id, request=qr, limit=limit,
-        )
-        async for feature in iterator:
-            features.append(feature.model_dump(by_alias=True, exclude_none=True))
-
-        # Build CoverageJSON response
-        coverage_json = {
-            "type": "Coverage",
-            "domain": await self._build_domain(catalog_id, collection_id),
-            "ranges": {},
-            "parameters": {},
-        }
-
-        # Extract parameter values from features
-        if features:
-            props_keys = set()
-            for f in features:
-                props = f.get("properties", {})
-                for k, v in props.items():
-                    if isinstance(v, (int, float)):
-                        props_keys.add(k)
-
-            for key in sorted(props_keys):
-                values = [
-                    f.get("properties", {}).get(key)
-                    for f in features
-                ]
-                coverage_json["parameters"][key] = {
-                    "type": "Parameter",
-                    "observedProperty": {"label": {"en": key}},
-                }
-                coverage_json["ranges"][key] = {
-                    "type": "NdArray",
-                    "dataType": "float",
-                    "values": values,
-                }
-
-        from fastapi.responses import JSONResponse
-
-        return JSONResponse(
-            content=coverage_json,
-            media_type="application/prs.coverage+json",
-        )
+        return StreamingResponse(_noop(), media_type=MEDIA_TYPE_FOR[fmt])
 
     async def get_coverage_domainset(
         self, catalog_id: str, collection_id: str,
