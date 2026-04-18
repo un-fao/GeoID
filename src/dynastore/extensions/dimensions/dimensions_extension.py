@@ -318,11 +318,11 @@ async def _materialize_dimension(
 async def _materialize_all_dimensions(dimensions: Dict[str, Any]) -> None:
     """Materialize all registered dimensions as Records collections.
 
-    Uses ``managed_transaction`` to get a DB connection outside of
-    request context.
+    Passes the engine (not a held connection) through to inner catalog ops so
+    each short-lived call owns its own transaction — avoids pinning one
+    connection across thousands of SAVEPOINT-per-item inner txns.
     """
     from dynastore.models.protocols.catalogs import CatalogsProtocol
-    from dynastore.modules.db_config.query_executor import managed_transaction
     from dynastore.tools.discovery import get_protocol
     from dynastore.tools.protocol_helpers import get_engine
 
@@ -337,11 +337,9 @@ async def _materialize_all_dimensions(dimensions: Dict[str, Any]) -> None:
         return
 
     try:
-        async with managed_transaction(engine) as conn:
-            # Ensure dimensions catalog exists
-            await catalogs.ensure_catalog_exists(
-                DIMENSIONS_CATALOG_ID, ctx=DriverContext(db_resource=conn),
-            )
+        await catalogs.ensure_catalog_exists(
+            DIMENSIONS_CATALOG_ID, ctx=DriverContext(db_resource=engine),
+        )
     except Exception as exc:
         logger.error("Failed to ensure dimensions catalog: %s", exc)
         return
@@ -349,14 +347,13 @@ async def _materialize_all_dimensions(dimensions: Dict[str, Any]) -> None:
     grand_total = 0
     for dim_name, dim_config in dimensions.items():
         try:
-            async with managed_transaction(engine) as conn:
-                count = await _materialize_dimension(
-                    catalogs, dim_name, dim_config, db_resource=conn,
-                )
-                grand_total += count
-                logger.info(
-                    "Materialized %d records for dimension '%s'", count, dim_name,
-                )
+            count = await _materialize_dimension(
+                catalogs, dim_name, dim_config, db_resource=engine,
+            )
+            grand_total += count
+            logger.info(
+                "Materialized %d records for dimension '%s'", count, dim_name,
+            )
         except Exception as exc:
             logger.error(
                 "Failed to materialize dimension '%s': %s", dim_name, exc,
