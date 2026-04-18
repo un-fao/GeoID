@@ -324,6 +324,40 @@ class StylesService(protocols.ExtensionProtocol, StylesProtocol):
             "links": links,
         })
 
+    # --- Legend redirect ---------------------------------------------------
+    #
+    # OGC API - Styles declares the legend as a ``rel="preview"`` link on the
+    # style metadata. The server does not generate legends — it points at
+    # whatever image URL the style has pre-declared. Clients may follow the
+    # link directly (from ``/metadata``) or hit the convenience subpath below
+    # which 307-redirects to the first preview link.
+
+    @router.get(
+        "/catalogs/{catalog_id}/collections/{collection_id}/styles/{style_id}/legend",
+        summary="Redirect to the style's legend image (rel=preview)",
+    )
+    async def get_style_legend(
+        catalog_id: str,
+        collection_id: str,
+        style_id: str,
+        conn: AsyncConnection = Depends(get_async_connection),
+    ):
+        from fastapi.responses import RedirectResponse
+
+        validate_sql_identifier(catalog_id)
+        validate_sql_identifier(collection_id)
+        style = await styles_db.get_style_by_id_and_collection(
+            conn, catalog_id, collection_id, style_id,
+        )
+        if style is None:
+            raise HTTPException(status_code=404, detail="Style not found.")
+        for link in (style.links or []):
+            rel = link.get("rel") if isinstance(link, dict) else getattr(link, "rel", None)
+            href = link.get("href") if isinstance(link, dict) else getattr(link, "href", None)
+            if rel == "preview" and href:
+                return RedirectResponse(url=href, status_code=307)
+        raise HTTPException(status_code=404, detail="Style has no legend.")
+
     # --- Flat styles list (root discovery) ---
 
     @router.get(
