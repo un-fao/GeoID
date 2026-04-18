@@ -93,6 +93,7 @@ from dynastore.models.protocols.role_admin import RoleAdminProtocol
 from dynastore.models.protocols.principal_admin import PrincipalAdminProtocol
 from dynastore.models.protocols.catalog_enricher import CatalogEnricherProtocol
 from dynastore.models.protocols.item_pipeline import ItemPipelineProtocol
+from dynastore.models.protocols.collection_pipeline import CollectionPipelineProtocol
 from dynastore.models.protocols.link_contrib import (
     AnchoredLink,
     LinkContributor,
@@ -166,6 +167,7 @@ __all__ = [
     "AnchoredLink",
     "LinkContributor",
     "ItemPipelineProtocol",
+    "CollectionPipelineProtocol",
     "ConformanceContributor",
     "WebPageContributor",
     "StaticAssetProvider",
