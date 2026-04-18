@@ -162,6 +162,38 @@ class CollectionsProtocol(Protocol):
         """Retrieves the physical column names for a collection."""
         ...
 
+    # === Lazy Activation ===
+
+    async def is_active(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        db_resource: Any = None,
+    ) -> bool:
+        """True once storage has been provisioned for this collection.
+
+        A freshly-created collection is *pending* until its first
+        `POST /items` (lazy activation) or an explicit
+        `POST /collections/{col}/activate`. During the pending window,
+        collection-scope configs (routing, write policy, schema) can be
+        freely set; the Immutability guard accepts first-writes.
+        """
+        ...
+
+    async def activate_collection(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        ctx: Optional["DriverContext"] = None,
+    ) -> None:
+        """Provision storage + pin routing for a pending collection.
+
+        Idempotent: no-op when already active. Backs the explicit
+        `POST /stac/catalogs/{cid}/collections/{col}/activate` endpoint
+        and is also invoked lazily from the items write path.
+        """
+        ...
+
     # === OTF Extension: Snapshots ===
 
     async def list_snapshots(

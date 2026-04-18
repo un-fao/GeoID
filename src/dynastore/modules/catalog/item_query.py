@@ -613,8 +613,27 @@ class ItemQueryMixin:
             phys_schema = await self._resolve_physical_schema(catalog_id, db_resource=conn)
             phys_table = await self._resolve_physical_table(catalog_id, collection_id, db_resource=conn)
 
-            if not phys_schema or not phys_table:
+            if not phys_schema:
                 raise ValueError(f"Collection '{catalog_id}/{collection_id}' not found.")
+
+            if not phys_table:
+                # Pending collection: metadata exists but storage has not been
+                # provisioned yet (awaiting first-item lazy activation or an
+                # explicit `POST /activate`).  OGC API Features Req. 26
+                # permits an empty FeatureCollection response on `/items`;
+                # STAC and Records inherit the same semantics.
+                async def _empty_stream():
+                    if False:
+                        yield  # pragma: no cover — empty async generator
+                return QueryResponse(
+                    items=_apply_item_pipeline(
+                        _empty_stream(), catalog_id, collection_id,
+                    ),
+                    total_count=0 if request.include_total_count else None,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                    collection_config=col_config,
+                )
 
             # Apply transformations and generate SQL
             context = {

@@ -125,6 +125,119 @@ class CollectionService:
             catalog_id, collection_id, physical_table, db_resource=db_resource
         )
 
+    async def is_active(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        db_resource: Optional[DbResource] = None,
+    ) -> bool:
+        """True once storage has been provisioned for this collection.
+
+        Activation state is derived from the PG driver config's
+        `physical_table` (`WriteOnce[Optional[str]]`) — pinned exactly
+        once at `_activate_collection`.
+        """
+        phys_table = await self.resolve_physical_table(
+            catalog_id, collection_id, db_resource=db_resource
+        )
+        return phys_table is not None
+
+    async def _activate_collection(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        conn: DbResource,
+        col_config: Optional[Any] = None,
+    ) -> None:
+        """Provision storage + pin routing for a pending collection.
+
+        Idempotent. Runs `ensure_storage` against the write driver (creates
+        hub + sidecar tables / ES index / GCS prefix), then pins
+        `CollectionRoutingConfig` at collection scope so future platform
+        default changes cannot silently re-route existing data.
+
+        Skipped gracefully when no storage drivers are registered (test
+        environments without `StorageModule`).
+        """
+        from dynastore.modules.storage.router import get_driver
+        from dynastore.modules.storage.routing_config import CollectionRoutingConfig
+
+        # Load current collection-scope driver config (may already be pinned
+        # by a prior inline configure step) so ensure_storage sees the
+        # caller-supplied sidecars / schema.
+        if col_config is None:
+            from dynastore.modules.storage.router import get_driver as _get_driver
+            from dynastore.modules.storage.routing_config import Operation
+            try:
+                _meta_driver = await _get_driver(
+                    Operation.READ, catalog_id, collection_id
+                )
+                col_config = await _meta_driver.get_driver_config(
+                    catalog_id, collection_id, db_resource=conn,
+                )
+            except ValueError:
+                col_config = None
+
+        # Provision storage. `ensure_storage` is idempotent; concurrent
+        # first-inserts will both call it safely.
+        try:
+            write_driver = await get_driver("WRITE", catalog_id, collection_id)
+            await write_driver.ensure_storage(
+                catalog_id,
+                collection_id,
+                db_resource=conn,
+                col_config=col_config,
+            )
+        except ValueError:
+            # No storage drivers registered — PG-native tables are handled
+            # separately; nothing to provision.
+            return
+
+        # Pin the resolved routing at collection scope. FOR UPDATE row lock
+        # serialises concurrent activators; loser sees equal value and the
+        # immutability guard short-circuits (equal values accepted).
+        try:
+            configs = get_protocol(ConfigsProtocol)
+            if configs is None:
+                raise ValueError("ConfigsProtocol not registered")
+            resolved_routing = await configs.get_config(
+                CollectionRoutingConfig,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                ctx=DriverContext(db_resource=conn),
+            )
+            if resolved_routing:
+                await configs.set_config(
+                    CollectionRoutingConfig,
+                    resolved_routing,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                    ctx=DriverContext(db_resource=conn),
+                )
+        except Exception as _routing_e:
+            logger.warning(
+                "_activate_collection: failed to pin routing for %s/%s: %s",
+                catalog_id, collection_id, _routing_e,
+            )
+
+    async def activate_collection(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        ctx: Optional["DriverContext"] = None,
+    ) -> None:
+        """Public entrypoint for explicit activation.
+
+        Backs `POST /stac/catalogs/{cid}/collections/{col}/activate`.
+        Idempotent — safe to call on already-active collections.
+        """
+        db_resource = ctx.db_resource if ctx else None
+        async with managed_transaction(db_resource or self.engine) as conn:
+            await self._activate_collection(
+                catalog_id, collection_id, conn=conn,
+            )
+
     async def _get_collection_model_db(
         self, catalog_id: str, collection_id: str
     ) -> Optional[Collection]:
@@ -547,50 +660,15 @@ class CollectionService:
                     ctx=DriverContext(db_resource=conn),
                 )
 
-            # 6. Call write driver's ensure_storage() — creates hub + sidecar tables
-            #    and pins physical_table in driver config (check_immutability=False).
-            #    Skipped gracefully when no storage drivers are registered (e.g. tests
-            #    that don't load StorageModule; PG-native tables are handled separately).
-            from dynastore.modules.storage.router import get_driver
-            try:
-                write_driver = await get_driver(
-                    "WRITE", catalog_id, collection_model.id
-                )
-                await write_driver.ensure_storage(
-                    catalog_id,
-                    collection_model.id,
-                    db_resource=conn,
-                    col_config=init_config,
-                )
-            except ValueError:
-                pass
-
-            # 6b. Pin the resolved routing config at collection level so future
-            #     platform default changes don't silently re-route existing collections.
-            try:
-                from dynastore.modules.storage.routing_config import CollectionRoutingConfig
-                configs = get_protocol(ConfigsProtocol)
-                if configs is None:
-                    raise ValueError("ConfigsProtocol not registered")
-                resolved_routing = await configs.get_config(
-                    CollectionRoutingConfig,
-                    catalog_id=catalog_id,
-                    collection_id=collection_model.id,
-                    ctx=DriverContext(db_resource=conn),
-                )
-                if resolved_routing:
-                    await configs.set_config(
-                        CollectionRoutingConfig,
-                        resolved_routing,
-                        catalog_id=catalog_id,
-                        collection_id=collection_model.id,
-                        ctx=DriverContext(db_resource=conn),
-                    )
-            except Exception as _routing_e:
-                logger.warning(
-                    "create_collection: failed to pin routing config for %s/%s: %s",
-                    catalog_id, collection_model.id, _routing_e,
-                )
+            # 6. (Lazy activation) Steps formerly responsible for
+            #    `ensure_storage` + routing pin have moved to
+            #    `_activate_collection`. A newly-created collection is
+            #    **pending** until either:
+            #       - the first `POST /items` triggers lazy activation, or
+            #       - an operator calls `POST /collections/{col}/activate`.
+            #    During the pending window, `PUT /configs/.../CollectionRoutingConfig`
+            #    (and any other collection-scope config) can be freely set —
+            #    the Immutable guard short-circuits while `current=None`.
 
             # 7. Store collection metadata — fan out to every driver resolved
             #    by MetadataRoutingConfig.operations[WRITE]. Default waterfall:

@@ -407,6 +407,21 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 )
 
             assert primary is not None, "primary driver required for PostgreSQL write path"
+
+            # Lazy activation: a pending collection is activated on its first
+            # insert. `activate_collection` is idempotent (no-op if already
+            # active) and reuses the current transaction so the routing pin
+            # commits atomically with the first item write.
+            catalogs_for_activation = get_protocol(CatalogsProtocol)
+            assert catalogs_for_activation is not None, "CatalogsProtocol not registered"
+            if not await catalogs_for_activation.is_active(
+                catalog_id, collection_id, db_resource=conn,
+            ):
+                await catalogs_for_activation.activate_collection(
+                    catalog_id, collection_id,
+                    ctx=DriverContext(db_resource=conn),
+                )
+
             col_config = await primary.driver.get_driver_config(
                 catalog_id, collection_id, db_resource=conn,
             )
@@ -415,6 +430,9 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 catalog_id, collection_id, db_resource=conn,
             )
             if not phys_table:
+                # Fallback: activation did not pin a physical_table (e.g. no
+                # storage driver registered in test environments).  Run the
+                # legacy PG-specific promotion path so the table gets created.
                 await self.ensure_physical_table_exists(
                     catalog_id, collection_id, col_config, db_resource=conn,
                 )
