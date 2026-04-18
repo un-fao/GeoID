@@ -60,6 +60,8 @@ async def test_merge_adds_default_when_missing():
     coll = {"id": "col"}  # no item_assets at all
     out = await stage.apply("c", "col", coll, {})
     assert out is not None
-    assert out["item_assets"]["default_style"] == {"href": "/styles/x", "roles": ["style"]}
+    assert out["item_assets"]["default_style"] == {
+        "href": "/styles/x", "roles": ["style"],
+    }
     # original not mutated
     assert "item_assets" not in coll

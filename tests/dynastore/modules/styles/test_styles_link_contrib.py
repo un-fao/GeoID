@@ -1,7 +1,6 @@
 import pytest
 
 from dynastore.models.protocols.asset_contrib import ResourceRef
-from dynastore.models.protocols.link_contrib import AnchoredLink
 from dynastore.modules.styles.encodings import (
     MEDIA_TYPE_MAPBOX_GL,
     MEDIA_TYPE_SLD_11,

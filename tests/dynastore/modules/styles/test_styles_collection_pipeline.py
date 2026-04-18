@@ -43,8 +43,12 @@ async def test_adds_default_style_when_none_existing():
     assert asset["id"] == "style-a"
     assert asset["type"] == MEDIA_TYPE_MAPBOX_GL
     assert "style" in asset["roles"]
-    assert asset["href"].endswith("/styles/cat1/collections/col/styles/style-a") \
-        or asset["href"].endswith("/styles/catalogs/cat1/collections/col/styles/style-a")
+    # Accept either the short or the catalog-prefixed form (the implementation
+    # uses the catalog-prefixed convention; the short form is legacy fallback).
+    href = asset["href"]
+    suffix_a = "/styles/cat1/collections/col/styles/style-a"
+    suffix_b = "/styles/catalogs/cat1/collections/col/styles/style-a"
+    assert href.endswith(suffix_a) or href.endswith(suffix_b)
 
 
 @pytest.mark.asyncio
