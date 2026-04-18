@@ -57,6 +57,7 @@ OGC_API_RECORDS_URIS = [
     "http://www.opengis.net/spec/ogcapi-records-1/1.0/conf/record-core",
     "http://www.opengis.net/spec/ogcapi-records-1/1.0/conf/record-collection",
     "http://www.opengis.net/spec/ogcapi-records-1/1.0/conf/json",
+    "http://www.opengis.net/spec/ogcapi-records-1/1.0/conf/geojson",
     "http://www.opengis.net/spec/ogcapi-records-1/1.0/conf/sorting",
 ]
 

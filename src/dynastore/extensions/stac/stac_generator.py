@@ -991,7 +991,7 @@ async def create_item_from_feature(
         stac_config=stac_config,
         asset_id=feat_asset_id,
     )
-    asset_factory.add_dynamic_assets(item, asset_context)
+    await asset_factory.add_dynamic_assets_and_links(item, asset_context)
 
     # Hierarchy and source links apply to all feature items.
     apply_hierarchy_links(

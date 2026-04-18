@@ -19,6 +19,7 @@
 
 import logging
 from types import SimpleNamespace
+from typing import Optional
 import asyncio
 import json
 import uuid
@@ -144,6 +145,33 @@ app = FastAPI(
 
 # Add correlation ID middleware
 app.add_middleware(CorrelationIdMiddleware)
+
+@app.get("/api", include_in_schema=False)
+async def get_api_document(f: Optional[str] = None, request: Request = None):  # type: ignore[assignment]
+    """OGC API - Common canonical API document.
+
+    Returns the OpenAPI schema with OAS 3.0 by default (what FastAPI emits
+    natively). Callers can opt into OAS 3.1 with ``?f=oas31`` or
+    ``Accept: application/vnd.oai.openapi+json;version=3.1``.
+
+    OAS 3.1 upgrades just the ``openapi`` field — the underlying schema
+    structures are 3.0-compatible. Callers needing strict 3.1 constructs
+    (e.g. ``type: ["x","null"]`` over 3.0's ``nullable: true``) should
+    treat this as a best-effort compatibility profile until FastAPI emits
+    native 3.1.
+    """
+    accept = ""
+    if request is not None:
+        accept = request.headers.get("accept", "")
+    want_oas31 = (
+        (f or "").lower() == "oas31"
+        or "application/vnd.oai.openapi+json;version=3.1" in accept.lower()
+    )
+    schema = app.openapi()
+    if want_oas31:
+        schema = {**schema, "openapi": "3.1.0"}
+    return ORJSONResponse(content=schema)
+
 
 @app.get("/health", tags=["Web Health"])
 async def health_check():

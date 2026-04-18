@@ -20,7 +20,7 @@
 
 import logging
 import asyncio
-from typing import Optional, Any
+from typing import Any, Optional
 from concurrent.futures import ProcessPoolExecutor
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Response, Query, Request, Path
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -28,6 +28,11 @@ from contextlib import asynccontextmanager
 from pyproj import CRS
 
 from dynastore.extensions.tools.db import get_async_connection
+from dynastore.extensions.maps.format_convert import (
+    FORMAT_MEDIA_TYPES as _FORMAT_MEDIA_TYPES,
+    SUPPORTED_MAP_FORMATS as _SUPPORTED_MAP_FORMATS,
+    convert_png_to_format as _convert_png_to_format,
+)
 from dynastore.extensions.maps.renderer import render_map_image
 import dynastore.modules.catalog.catalog_module as catalog_manager
 import dynastore.modules.tiles.tiles_module as tms_manager
@@ -52,8 +57,18 @@ OGC_API_MAPS_URIS = [
     "http://www.opengis.net/spec/ogcapi-maps-1/1.0/conf/dataset-map",
     "http://www.opengis.net/spec/ogcapi-maps-1/1.0/conf/styled-map",
     "http://www.opengis.net/spec/ogcapi-maps-1/1.0/conf/png",
+    "http://www.opengis.net/spec/ogcapi-maps-1/1.0/conf/jpeg",
+    "http://www.opengis.net/spec/ogcapi-maps-1/1.0/conf/geotiff",
     "http://www.opengis.net/spec/ogcapi-maps-1/1.0/conf/tilesets-map",
 ]
+
+
+# --- Output format conversion ---------------------------------------------
+#
+# The rendering pipeline produces PNG bytes. For JPEG and GeoTIFF we convert
+# after the renderer returns via ``format_convert.convert_png_to_format``.
+# The helper lives in its own module so it is importable without the GDAL
+# renderer (useful for unit testing in dev venvs without osgeo).
 
 # --- Helpers ---
 
@@ -393,8 +408,14 @@ class MapsService(ExtensionProtocol):
         bgcolor: Optional[str] = Query(None, description="Background color of the map."),
         transparent: bool = Query(True, description="Whether the map background should be transparent."),
         datetime: Optional[str] = Query(None, description="Temporal filter (timestamp or interval)."),
-        subset: Optional[str] = Query(None, description="Custom dimension filter.")
+        subset: Optional[str] = Query(None, description="Custom dimension filter."),
+        f: str = Query("png", description="Output format: png | jpeg | geotiff."),
     ):
+        fmt = f.lower()
+        if fmt not in _SUPPORTED_MAP_FORMATS:
+            raise HTTPException(
+                status_code=415, detail=f"Unsupported map format: {f!r}",
+            )
         # ... (Existing validation logic) ...
         if not await catalog_manager.get_catalog(dataset):
             raise HTTPException(status_code=404, detail=f"Dataset '{dataset}' not found.")
@@ -465,7 +486,18 @@ class MapsService(ExtensionProtocol):
                 layers_data, style_to_render,
                 transparent, bgcolor
             )
-            return Response(content=image_bytes, media_type="image/png")
         except Exception as e:
             logger.error(f"Render Error: {e}")
             raise HTTPException(status_code=500, detail="Failed to render map.")
+
+        # Convert PNG to requested format (png passthrough; jpeg/geotiff post-process).
+        try:
+            out_bytes = _convert_png_to_format(
+                image_bytes, fmt, bbox=bbox_list, crs=crs,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Format conversion error: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Format conversion failed.")
+        return Response(content=out_bytes, media_type=_FORMAT_MEDIA_TYPES[fmt])

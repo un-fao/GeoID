@@ -370,7 +370,19 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                 status_code=404,
                 detail=f"Collection '{catalog_id}:{collection_id}' not found.",
             )
-        return JSONResponse(content=collection.to_dict())
+        from dynastore.modules.catalog.collection_pipeline_runner import (
+            apply_collection_pipeline,
+        )
+        collection_dict = collection.to_dict()
+        rewritten = await apply_collection_pipeline(
+            catalog_id, collection_id, collection_dict, context={},
+        )
+        if rewritten is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{catalog_id}:{collection_id}' not found.",
+            )
+        return JSONResponse(content=rewritten)
 
     # --- Write Endpoints ---
 

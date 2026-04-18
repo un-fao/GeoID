@@ -702,40 +702,48 @@ class CatalogService(CatalogsProtocol):
         if catalog is None:
             return None
 
-        return await self._run_catalog_enrichers(catalog_id, catalog)
+        return await self._run_catalog_pipeline(catalog_id, catalog)
 
-    async def _run_catalog_enrichers(
+    async def _run_catalog_pipeline(
         self, catalog_id: str, catalog: Catalog
-    ) -> Catalog:
-        """Apply CatalogEnricherProtocol pipeline (optional, priority-ordered).
+    ) -> Optional[Catalog]:
+        """Apply CatalogPipelineProtocol stages (optional, priority-ordered).
 
-        Each enricher can augment, filter, or transform the catalog metadata
-        dict.  Enrichers are registered via ``register_plugin()``; an empty
-        registry is safe.
+        Stages may augment, filter, or transform the catalog metadata dict.
+        Stages returning ``None`` drop the catalog — the caller is
+        responsible for rendering that as a 404 in the HTTP layer.
+
+        An empty stage registry is safe: the input catalog passes through
+        unchanged.
         """
         try:
             from dynastore.tools.discovery import get_protocols
-            from dynastore.models.protocols.catalog_enricher import CatalogEnricherProtocol
+            from dynastore.models.protocols.catalog_pipeline import CatalogPipelineProtocol
 
-            enrichers = sorted(
-                get_protocols(CatalogEnricherProtocol),
-                key=lambda e: e.priority,
+            stages = sorted(
+                get_protocols(CatalogPipelineProtocol),
+                key=lambda s: s.priority,
             )
-            if not enrichers:
+            if not stages:
                 return catalog
 
             data = catalog.model_dump(by_alias=True, exclude_none=True)
-            for enricher in enrichers:
+            for stage in stages:
                 try:
-                    if enricher.can_enrich(catalog_id):
-                        data = await enricher.enrich(catalog_id, data, context={})
-                except Exception as _enrich_err:
+                    if not stage.can_apply(catalog_id):
+                        continue
+                    result = await stage.apply(catalog_id, data, context={})
+                except Exception as _stage_err:
                     logger.warning(
-                        "CatalogEnricher '%s' failed for %s: %s",
-                        getattr(enricher, "enricher_id", repr(enricher)),
+                        "CatalogPipeline stage '%s' failed for %s: %s",
+                        getattr(stage, "pipeline_id", repr(stage)),
                         catalog_id,
-                        _enrich_err,
+                        _stage_err,
                     )
+                    continue
+                if result is None:
+                    return None  # stage dropped the catalog
+                data = result
             return Catalog.model_validate(data)
         except Exception:
             return catalog  # discovery failure must not break the read path

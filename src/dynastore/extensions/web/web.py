@@ -184,6 +184,7 @@ def _has_app_structure(root_dir: Path) -> bool:
 
 WEB_CONFORMANCE_URIS = [
     "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/oas30",
+    "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/oas31",
     "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/html",
 ]
 

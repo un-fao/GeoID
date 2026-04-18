@@ -230,7 +230,7 @@ class StacVirtualMixin(_Host):
             stac_config=stac_config,
             asset_id=asset.asset_id,
         )
-        asset_factory.add_dynamic_assets(collection, asset_context)
+        await asset_factory.add_dynamic_assets_and_links(collection, asset_context)
 
         return JSONResponse(content=collection.to_dict())
 
