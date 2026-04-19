@@ -212,11 +212,19 @@ def _ensure_collection(client: httpx.Client) -> bool:
     )
 
 
-def _apply_driver_configs(client: httpx.Client):
-    base = f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}"
-    # NOTE: config class_keys default to the class __qualname__, not user-friendly
-    # aliases like "driver:postgresql". The registered keys for the storage
-    # drivers are CollectionPostgresqlDriverConfig / CollectionRoutingConfig.
+def _apply_catalog_scope_driver_configs(client: httpx.Client):
+    """Set driver + routing config at CATALOG scope.
+
+    Required BEFORE collection creation: the STAC create-collection endpoint
+    validates that a READ driver can be resolved via the routing waterfall, and
+    the waterfall falls back to catalog scope when no collection-scope override
+    exists. CollectionRoutingConfig.operations is Immutable, so it must be in
+    place before the collection is created.
+
+    driver_id references the implementation class name (``CollectionPostgresqlDriver``),
+    not an alias.
+    """
+    base = f"/configs/catalogs/{CATALOG_ID}"
     client.put(f"{base}/configs/CollectionPostgresqlDriverConfig", json={
         "enabled": True,
         "collection_type": "VECTOR",
@@ -224,8 +232,8 @@ def _apply_driver_configs(client: httpx.Client):
     client.put(f"{base}/configs/CollectionRoutingConfig", json={
         "enabled": True,
         "operations": {
-            "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
-            "READ": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
+            "WRITE": [{"driver_id": "CollectionPostgresqlDriver", "hints": [], "on_failure": "fatal"}],
+            "READ": [{"driver_id": "CollectionPostgresqlDriver", "hints": [], "on_failure": "fatal"}],
         },
     })
 
@@ -280,9 +288,11 @@ def pytest_sessionstart(session):
     )
     _SESSION_STATE["client"] = client
     _SESSION_STATE["catalog_created"] = _ensure_catalog(client)
-    collection_created = _ensure_collection(client)
-    if collection_created:
-        _apply_driver_configs(client)
+    # Driver + routing config must exist at catalog scope BEFORE collection
+    # creation — create-collection validates a READ driver resolves via the
+    # routing waterfall, and CollectionRoutingConfig.operations is Immutable.
+    _apply_catalog_scope_driver_configs(client)
+    _ensure_collection(client)
 
 
 def pytest_sessionfinish(session, exitstatus):
