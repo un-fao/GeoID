@@ -1087,6 +1087,59 @@ async def heartbeat_tasks(
         )
 
 
+async def claim_by_id(
+    engine: DbResource,
+    task_id: uuid.UUID,
+    visibility_timeout: timedelta,
+    owner_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Atomically claim a specific PENDING task by ID (used by run_ephemeral)."""
+    task_schema = get_task_schema()
+    locked_until = datetime.now(timezone.utc) + visibility_timeout
+    sql = f"""
+        UPDATE {task_schema}.tasks
+        SET status = 'ACTIVE',
+            locked_until = :locked_until,
+            owner_id = :owner_id,
+            started_at = COALESCE(started_at, NOW()),
+            last_heartbeat_at = NOW()
+        WHERE task_id = :task_id
+          AND status = 'PENDING'
+        RETURNING task_id, schema_name, scope, task_type, execution_mode,
+                  caller_id, inputs, collection_id, retry_count, max_retries,
+                  timestamp, dedup_key;
+    """
+    async with managed_transaction(engine) as conn:
+        return await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
+            conn, task_id=task_id, locked_until=locked_until, owner_id=owner_id,
+        )
+
+
+async def reset_task_to_pending(
+    engine: DbResource,
+    task_id: uuid.UUID,
+) -> None:
+    """Requeue an ACTIVE task to PENDING without incrementing retry_count.
+
+    Called by run_ephemeral on CancelledError so the task stays visible
+    for another process to pick up rather than being lost on shutdown.
+    """
+    task_schema = get_task_schema()
+    sql = f"""
+        UPDATE {task_schema}.tasks
+        SET status = 'PENDING',
+            locked_until = NULL,
+            owner_id = NULL,
+            last_heartbeat_at = NULL
+        WHERE task_id = :task_id
+          AND status = 'ACTIVE';
+    """
+    async with managed_transaction(engine) as conn:
+        await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
+            conn, task_id=task_id,
+        )
+
+
 async def find_stale_tasks(
     engine: DbResource,
     stale_threshold: timedelta,

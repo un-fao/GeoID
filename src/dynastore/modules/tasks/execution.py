@@ -42,6 +42,7 @@ OGC Job State Machine::
 
 import json
 import logging
+from datetime import timedelta
 from typing import Any, Optional, List
 from uuid import UUID
 
@@ -508,6 +509,73 @@ class ExecutionEngine:
     # ------------------------------------------------------------------
     # Job query helpers (used by OGC endpoints)
     # ------------------------------------------------------------------
+
+    async def run_ephemeral(
+        self,
+        task_data: TaskCreate,
+        schema: str,
+        *,
+        engine: DbResource,
+        visibility_timeout: timedelta = timedelta(minutes=5),
+    ) -> Any:
+        """Enqueue a task as PENDING then immediately claim and run it in this process.
+
+        Unlike BackgroundRunner (which creates tasks as RUNNING), the task starts
+        as PENDING so it remains visible to the dispatcher queue. A heartbeat loop
+        extends the visibility window while the task runs. On CancelledError (SIGTERM)
+        the task is reset to PENDING so another process can pick it up.
+
+        Use for long-running operations that must survive process restarts.
+        """
+        import asyncio
+        from datetime import datetime, timezone
+        from dynastore.modules.tasks.models import PermanentTaskFailure
+        from dynastore.modules.tasks.tasks_module import (
+            claim_by_id,
+            complete_task,
+            create_task,
+            fail_task,
+            heartbeat_tasks,
+            reset_task_to_pending,
+        )
+
+        task = await create_task(engine, task_data, schema)
+        owner_id = f"ephemeral-{task.task_id}"
+        row = await claim_by_id(engine, task.task_id, visibility_timeout, owner_id)
+        if row is None:
+            raise RuntimeError(
+                f"run_ephemeral: failed to claim task {task.task_id}"
+            )
+
+        async def _heartbeat() -> None:
+            interval = visibility_timeout.total_seconds() / 3
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    await heartbeat_tasks(engine, [task.task_id], visibility_timeout)
+                except Exception:
+                    pass
+
+        hb = asyncio.create_task(_heartbeat())
+        try:
+            result = await self.dispatch(row, engine=engine)
+            await complete_task(engine, task.task_id, row["timestamp"], outputs=result)
+            return result
+        except asyncio.CancelledError:
+            await reset_task_to_pending(engine, task.task_id)
+            raise
+        except PermanentTaskFailure as exc:
+            await fail_task(
+                engine, task.task_id, datetime.now(timezone.utc), str(exc), retry=False,
+            )
+            raise
+        except Exception as exc:
+            await fail_task(
+                engine, task.task_id, datetime.now(timezone.utc), str(exc), retry=True,
+            )
+            raise
+        finally:
+            hb.cancel()
 
     async def get_job(
         self,
