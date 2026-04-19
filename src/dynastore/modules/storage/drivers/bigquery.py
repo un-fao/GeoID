@@ -13,6 +13,7 @@ from dynastore.models.protocols import (
 )
 from dynastore.models.protocols.field_definition import FieldDefinition
 from dynastore.modules.storage.drivers.bigquery_models import (
+    BigQueryCredentials,
     CollectionBigQueryDriverConfig,
 )
 from dynastore.modules.storage.drivers.bigquery_stream import (
@@ -155,7 +156,10 @@ class CollectionBigQueryDriver:
         if cfg is None or not cfg.target.is_fully_qualified():
             raise ValueError("BigQuery driver requires a fully-qualified target")
 
-        client = _make_bq_client(cfg.target.project_id)
+        client = _make_bq_client(
+            cfg.target.project_id,
+            credentials=cfg.credentials,
+        )
         table = client.get_table(cfg.target.fqn())
         return [_bq_field_to_field_definition(f) for f in table.schema]
 
@@ -165,8 +169,41 @@ def _is_safe_identifier(name: str) -> bool:
     return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name))
 
 
-def _make_bq_client(project_id: Optional[str]):
+def _make_bq_client(
+    project_id: Optional[str],
+    *,
+    credentials: Optional[BigQueryCredentials] = None,
+):
+    """Build a short-lived BigQuery client.
+
+    Credential resolution order:
+    1. ``credentials.service_account_json`` -- Secret-wrapped SA JSON
+       revealed inside this function; never logged.
+    2. ``credentials.api_key`` -- Secret-wrapped API key (future, External
+       Connections). Not wired to bigquery.Client() yet -- logged as a
+       warning until BigQuery API-key auth lands upstream.
+    3. Fallback to CloudIdentityProtocol (Phase 4a path) -- keeps
+       back-compat for deployments that haven't migrated.
+    """
     from google.cloud import bigquery
+
+    if credentials is not None and not credentials.is_empty():
+        if credentials.service_account_json is not None:
+            import json as _json
+
+            from google.oauth2 import service_account
+            # SINGLE reveal site -- never logged, never returned outside this function.
+            raw = credentials.service_account_json.reveal()
+            info = _json.loads(raw)
+            sa_creds = service_account.Credentials.from_service_account_info(info)
+            return bigquery.Client(project=project_id, credentials=sa_creds)
+        if credentials.api_key is not None:
+            logger.warning(
+                "BigQueryCredentials.api_key supplied but google-cloud-bigquery "
+                "does not yet support api-key auth directly. Falling back to "
+                "CloudIdentityProtocol.",
+            )
+
     identity = get_protocol(CloudIdentityProtocol)
     creds = identity.get_credentials_object() if identity else None
     return bigquery.Client(project=project_id, credentials=creds)
