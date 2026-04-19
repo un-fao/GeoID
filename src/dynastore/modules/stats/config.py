@@ -16,6 +16,5 @@ from dynastore.modules.db_config.platform_config_service import PluginConfig
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 
 
-class StatsPluginConfig(ExposableConfigMixin, PluginConfig):
+class StatsConfig(ExposableConfigMixin, PluginConfig):
     """Service-exposure config for the stats extension."""
-    # `enabled` inherited from ExposableConfigMixin — no further fields.

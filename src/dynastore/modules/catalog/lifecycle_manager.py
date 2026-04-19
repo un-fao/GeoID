@@ -649,13 +649,10 @@ class LifecycleRegistry:
 
     def init_async_catalog(
         self, catalog_id: str, context: LifecycleContext
-    ) -> asyncio.Task:
+    ) -> asyncio.Task | None:
         """Execute all registered async catalog initializers (external)."""
         if not self._async_catalog_initializers:
-            # Return a dummy completed task if no hooks are registered
-            task = asyncio.create_task(asyncio.sleep(0))
-            task.cancel() # Mark as cancelled to indicate no work was done
-            return task
+            return None
 
         logger.info(f"Scheduling async catalog initialization for '{catalog_id}'")
 
@@ -694,16 +691,13 @@ class LifecycleRegistry:
 
     def destroy_async_catalog(
         self, catalog_id: str, context: LifecycleContext
-    ) -> asyncio.Task:
+    ) -> asyncio.Task | None:
         """
         Execute async external component destroyers for catalog (e.g., GCP bucket deletion).
         Runs in background with config snapshot BEFORE schema drop.
         """
         if not self._async_catalog_destroyers:
-            # Return a dummy completed task if no hooks are registered
-            task = asyncio.create_task(asyncio.sleep(0))
-            task.cancel() # Mark as cancelled to indicate no work was done
-            return task
+            return None
 
         logger.info(f"Scheduling async catalog destruction for '{catalog_id}'")
 
@@ -753,13 +747,10 @@ class LifecycleRegistry:
         catalog_id: str,
         collection_id: str,
         context: LifecycleContext,
-    ) -> asyncio.Task:
+    ) -> asyncio.Task | None:
         """Execute all registered async collection initializers (external)."""
         if not self._async_collection_initializers:
-            # Return a dummy completed task if no hooks are registered
-            task = asyncio.create_task(asyncio.sleep(0))
-            task.cancel() # Mark as cancelled to indicate no work was done
-            return task
+            return None
 
         logger.info(
             f"Scheduling async collection initialization for '{catalog_id}:{collection_id}'"
@@ -804,13 +795,10 @@ class LifecycleRegistry:
         catalog_id: str,
         collection_id: str,
         context: LifecycleContext,
-    ) -> asyncio.Task:
+    ) -> asyncio.Task | None:
         """Execute all registered async collection destroyers (external)."""
         if not self._async_collection_destroyers:
-            # Return a dummy completed task if no hooks are registered
-            task = asyncio.create_task(asyncio.sleep(0))
-            task.cancel() # Mark as cancelled to indicate no work was done
-            return task
+            return None
 
         logger.info(
             f"Scheduling async collection destruction for '{catalog_id}:{collection_id}'"
@@ -897,13 +885,10 @@ class LifecycleRegistry:
         collection_id: str,
         asset_code: str,
         context: LifecycleContext,
-    ) -> asyncio.Task:
+    ) -> asyncio.Task | None:
         """Execute all registered async asset initializers (external)."""
         if not self._async_asset_initializers:
-            # Return a dummy completed task if no hooks are registered
-            task = asyncio.create_task(asyncio.sleep(0))
-            task.cancel() # Mark as cancelled to indicate no work was done
-            return task
+            return None
 
         logger.info(
             f"Scheduling async asset initialization for "
@@ -939,13 +924,10 @@ class LifecycleRegistry:
         collection_id: str,
         asset_code: str,
         context: LifecycleContext,
-    ) -> asyncio.Task:
+    ) -> asyncio.Task | None:
         """Execute all registered async asset destroyers (external)."""
         if not self._async_asset_destroyers:
-            # Return a dummy completed task if no hooks are registered
-            task = asyncio.create_task(asyncio.sleep(0))
-            task.cancel() # Mark as cancelled to indicate no work was done
-            return task
+            return None
 
         logger.info(
             f"Scheduling async asset destruction for "
