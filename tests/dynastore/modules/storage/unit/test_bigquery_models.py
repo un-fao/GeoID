@@ -37,3 +37,76 @@ def test_driver_config_defaults():
     assert cfg.location == "EU"
     assert cfg.page_size == 1000
     assert cfg.query_timeout_s == 60
+
+
+def test_credentials_default_is_empty():
+    from dynastore.modules.storage.drivers.bigquery_models import (
+        BigQueryCredentials,
+        CollectionBigQueryDriverConfig,
+    )
+    creds = BigQueryCredentials()
+    assert creds.is_empty()
+    cfg = CollectionBigQueryDriverConfig()
+    assert cfg.credentials.is_empty()
+
+
+def test_credentials_accept_secret_wrapped_sa_json():
+    from dynastore.modules.storage.drivers.bigquery_models import (
+        BigQueryCredentials,
+    )
+    from dynastore.tools.secrets import Secret
+
+    creds = BigQueryCredentials(service_account_json=Secret("{...}"))
+    assert not creds.is_empty()
+    assert creds.service_account_json is not None
+    # Reveal preserves the plaintext, __str__ masks it.
+    assert creds.service_account_json.reveal() == "{...}"
+    assert "***" in str(creds.service_account_json)
+
+
+def test_credentials_accept_plain_string_coerced_to_secret():
+    """Pydantic pre-validator in Secret should coerce plain str -> Secret."""
+    from dynastore.modules.storage.drivers.bigquery_models import (
+        BigQueryCredentials,
+    )
+    creds = BigQueryCredentials(service_account_json="raw-json-text")
+    assert creds.service_account_json is not None
+    # str -> Secret via Pydantic validator; reveal() works.
+    assert creds.service_account_json.reveal() == "raw-json-text"
+
+
+def test_credentials_rejects_extra_fields():
+    from dynastore.modules.storage.drivers.bigquery_models import (
+        BigQueryCredentials,
+    )
+    with pytest.raises(ValidationError):
+        BigQueryCredentials(bogus="x")  # type: ignore[call-arg]
+
+
+def test_credentials_are_masked_in_model_dump_default():
+    """Default model_dump must NOT expose plaintext.
+
+    Regression guard: belt-and-suspenders check that Secret-wrapped
+    credentials never leak through any default serialization path
+    (model_dump, repr, str) of the registered driver config.
+    """
+    from dynastore.modules.storage.drivers.bigquery_models import (
+        BigQueryCredentials,
+        CollectionBigQueryDriverConfig,
+    )
+    from dynastore.tools.secrets import Secret
+
+    cfg = CollectionBigQueryDriverConfig(
+        credentials=BigQueryCredentials(
+            service_account_json=Secret("SENSITIVE-PLAINTEXT-XYZ"),
+        ),
+    )
+    dumped = cfg.model_dump(mode="python")
+    flat = repr(dumped)
+    assert "SENSITIVE-PLAINTEXT-XYZ" not in flat, (
+        "Plaintext SA JSON leaked through model_dump - NEVER commit this state"
+    )
+    assert "SENSITIVE-PLAINTEXT-XYZ" not in repr(cfg)
+    assert "SENSITIVE-PLAINTEXT-XYZ" not in str(cfg)
+
+
