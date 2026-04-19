@@ -14,13 +14,18 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
-from fastapi import APIRouter, Body, FastAPI, Request
+from fastapi import APIRouter, Body, FastAPI, HTTPException, Request
 
 from dynastore.extensions.ogc_base import OGCServiceMixin
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.tools.ogc_policies import register_ogc_public_access_policy
 from dynastore.models.ogc import Feature
-from dynastore.modules.joins.models import JoinRequest
+from dynastore.modules.joins.bq_secondary import stream_bigquery_secondary
+from dynastore.modules.joins.executor import index_secondary, run_join
+from dynastore.modules.joins.models import (
+    BigQuerySecondarySpec,
+    JoinRequest,
+)
 from dynastore.modules.storage.router import resolve_drivers
 
 logger = logging.getLogger(__name__)
@@ -123,29 +128,48 @@ class JoinsService(ExtensionProtocol, OGCServiceMixin):
     ):
         """Execute the join.
 
-        PR-1: stub for both driver types.
-        PR-2: BigQuerySecondarySpec materializes the secondary side via
-        Phase 4a's BQ driver; primary stream wiring lands next.
+        PR-3: BigQuerySecondarySpec runs the join end-to-end via the
+        platform's driver registry for the primary side. NamedSecondarySpec
+        stub remains until its own PR.
         """
-        from dynastore.modules.joins import bq_secondary as bq_mod
-        from dynastore.modules.joins.executor import index_secondary
-        from dynastore.modules.joins.models import BigQuerySecondarySpec
-
         if isinstance(body.secondary, BigQuerySecondarySpec):
+            # Materialize secondary side via Phase 4a's BQ driver (inline target).
             secondary_index = await index_secondary(
-                bq_mod.stream_bigquery_secondary(
+                stream_bigquery_secondary(
                     body.secondary, secondary_column=body.join.secondary_column,
                 ),
                 secondary_column=body.join.secondary_column,
             )
+            # Resolve primary driver via the platform's storage router.
+            primary_driver = await _resolve_primary_driver(catalog_id, collection_id)
+            if primary_driver is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"No READ driver registered for {catalog_id}/{collection_id}. "
+                        "Configure a CollectionRoutingConfig before /join."
+                    ),
+                )
+            primary_stream = _stream_primary_features(
+                primary_driver,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                primary_column=body.join.primary_column,
+                limit=(body.paging.limit if body.paging else 100_000),
+            )
+            joined = [
+                feat async for feat in run_join(
+                    body, primary_stream=primary_stream,
+                    secondary_index=secondary_index,
+                )
+            ]
             return {
                 "type": "FeatureCollection",
-                "features": [],
-                "_phase4b_pr2_note": (
-                    f"Secondary materialized: {len(secondary_index)} rows. "
-                    "Primary stream wiring (resolve_drivers READ) lands next; "
-                    "until then the join produces zero matches."
-                ),
+                "features": [f.model_dump(by_alias=True, exclude_none=True) for f in joined],
+                "_join_meta": {
+                    "secondary_rows_materialized": len(secondary_index),
+                    "joined_features": len(joined),
+                },
             }
 
         # NamedSecondarySpec — registered-ref resolution is a separate PR.
