@@ -83,3 +83,30 @@ def test_credentials_rejects_extra_fields():
         BigQueryCredentials(bogus="x")  # type: ignore[call-arg]
 
 
+def test_credentials_are_masked_in_model_dump_default():
+    """Default model_dump must NOT expose plaintext.
+
+    Regression guard: belt-and-suspenders check that Secret-wrapped
+    credentials never leak through any default serialization path
+    (model_dump, repr, str) of the registered driver config.
+    """
+    from dynastore.modules.storage.drivers.bigquery_models import (
+        BigQueryCredentials,
+        CollectionBigQueryDriverConfig,
+    )
+    from dynastore.tools.secrets import Secret
+
+    cfg = CollectionBigQueryDriverConfig(
+        credentials=BigQueryCredentials(
+            service_account_json=Secret("SENSITIVE-PLAINTEXT-XYZ"),
+        ),
+    )
+    dumped = cfg.model_dump(mode="python")
+    flat = repr(dumped)
+    assert "SENSITIVE-PLAINTEXT-XYZ" not in flat, (
+        "Plaintext SA JSON leaked through model_dump - NEVER commit this state"
+    )
+    assert "SENSITIVE-PLAINTEXT-XYZ" not in repr(cfg)
+    assert "SENSITIVE-PLAINTEXT-XYZ" not in str(cfg)
+
+
