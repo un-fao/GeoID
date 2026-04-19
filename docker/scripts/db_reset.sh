@@ -148,6 +148,19 @@ BEGIN
         EXECUTE format('TRUNCATE TABLE keycloak.%I CASCADE', r.tablename);
     END LOOP;
 END \$\$;"
+        else
+            # Detect corrupt Liquibase state: tables exist but databasechangelog is missing.
+            # This happens when databasechangelog was dropped manually while keycloak tables remain.
+            # Liquibase would then fail with "relation X already exists" on every restart.
+            # Fix: drop and recreate the schema so Liquibase starts fresh.
+            corrupt=$(run_psql "SELECT CASE
+                WHEN EXISTS (SELECT 1 FROM pg_tables WHERE schemaname='keycloak' AND tablename='client')
+                 AND NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname='keycloak' AND tablename='databasechangelog')
+                THEN 'yes' ELSE 'no' END;" | awk 'NR==3{print $1}')
+            if [[ "$corrupt" == "yes" ]]; then
+                echo "WARNING: keycloak schema is in a corrupt Liquibase state (tables exist but databasechangelog is missing). Dropping and recreating schema..."
+                run_psql "DROP SCHEMA keycloak CASCADE; CREATE SCHEMA keycloak;"
+            fi
         fi
         echo "Reset complete. Restart dynastore to rebuild schemas."
         ;;
