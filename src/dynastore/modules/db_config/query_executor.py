@@ -877,8 +877,32 @@ async def managed_transaction(db_resource: Optional[DbResource]):
     is_async = is_async_resource(db_resource)
     if isinstance(db_resource, (AsyncEngine, Engine)):
         if isinstance(db_resource, AsyncEngine):
-            async with db_resource.begin() as conn:
-                yield conn
+            # Pool-hygiene guard: a connection returned from the pool may carry a
+            # pending rollback from a prior task that exited without cleanly
+            # closing its transaction. Issuing a cheap rollback as a reset-on-
+            # checkout eliminates that poisoning before we open a new transaction.
+            # On InvalidRequestError / PendingRollbackError we invalidate the
+            # connection and retry with a fresh one; the wire_id is logged so the
+            # upstream leak can be located.
+            conn = await db_resource.connect()
+            try:
+                try:
+                    await conn.rollback()
+                except (PendingRollbackError, InvalidRequestError) as exc:
+                    wire_id = id(_get_wire_identity(conn))
+                    logger.warning(
+                        "managed_transaction pool-hygiene: invalidating poisoned "
+                        "pooled connection wire_id=%s (%s)",
+                        wire_id, exc.__class__.__name__,
+                    )
+                    await conn.invalidate()
+                    await conn.close()
+                    conn = await db_resource.connect()
+                    await conn.rollback()
+                async with conn.begin():
+                    yield conn
+            finally:
+                await conn.close()
         else:
             with db_resource.begin() as conn:
                 yield conn
