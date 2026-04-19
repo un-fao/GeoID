@@ -53,3 +53,27 @@ async def test_stream_primary_features_passes_id_column():
         )
     ]
     assert [f.id for f in feats] == ["1", "2"]
+
+
+@pytest.mark.asyncio
+async def test_stream_primary_features_forwards_request():
+    """When query_request is supplied, it reaches read_entities."""
+    from dynastore.extensions.joins.joins_service import _stream_primary_features
+    from dynastore.models.query_builder import QueryRequest
+
+    seen = {}
+
+    class _Recording:
+        async def read_entities(self, cat_id, col_id, **kwargs):
+            seen.update(kwargs)
+            yield Feature(type="Feature", id="1", geometry=None, properties={"uid": "a"})
+
+    qr = QueryRequest(limit=10, cql_filter="x='y'")
+    _ = [
+        f async for f in _stream_primary_features(
+            _Recording(), catalog_id="c", collection_id="l",
+            primary_column="uid", limit=10, query_request=qr,
+        )
+    ]
+    assert seen["request"] is qr
+    assert seen["context"] == {"id_column": "uid"}

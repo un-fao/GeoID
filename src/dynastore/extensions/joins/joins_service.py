@@ -20,12 +20,14 @@ from dynastore.extensions.ogc_base import OGCServiceMixin
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.tools.ogc_policies import register_ogc_public_access_policy
 from dynastore.models.ogc import Feature
+from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.joins.bq_secondary import stream_bigquery_secondary
 from dynastore.modules.joins.executor import index_secondary, run_join
 from dynastore.modules.joins.models import (
     BigQuerySecondarySpec,
     JoinRequest,
     NamedSecondarySpec,
+    PrimaryFilterSpec,
 )
 from dynastore.modules.storage.router import resolve_drivers
 
@@ -47,6 +49,7 @@ async def _resolve_primary_driver(catalog_id: str, collection_id: str):
 async def _stream_primary_features(
     driver, *, catalog_id: str, collection_id: str,
     primary_column: str, limit: int = 100_000,
+    query_request: Optional[QueryRequest] = None,
 ) -> AsyncIterator[Feature]:
     """Wrap any CollectionItemsStore driver's read_entities into the
     plain ``AsyncIterator[Feature]`` shape ``run_join`` expects.
@@ -56,13 +59,33 @@ async def _stream_primary_features(
     key can use it for projection. Drivers that ignore context just
     return all columns — the executor reads ``primary_column`` from
     ``feature.properties`` either way.
+
+    When ``query_request`` is set, it's forwarded via ``request=`` so
+    drivers that honor ``QueryRequest.cql_filter`` apply the primary-side
+    filter. Drivers that ignore ``request`` treat it as a no-op.
     """
     async for feat in driver.read_entities(
         catalog_id, collection_id,
         limit=limit,
+        request=query_request,
         context={"id_column": primary_column},
     ):
         yield feat
+
+
+def _build_primary_query_request(
+    primary_filter: Optional[PrimaryFilterSpec],
+    limit: int,
+) -> QueryRequest:
+    """Construct the QueryRequest the primary driver will receive.
+
+    The driver parses ``cql_filter`` downstream (see modules/tools/cql.py);
+    drivers that don't support CQL2 ignore the field.
+    """
+    req = QueryRequest(limit=limit)
+    if primary_filter is not None:
+        req.cql_filter = primary_filter.cql
+    return req
 
 
 # Draft URIs — OGC API - Joins Part 1 0.0 (working draft).
@@ -151,19 +174,27 @@ class JoinsService(ExtensionProtocol, OGCServiceMixin):
                         "Configure a CollectionRoutingConfig before /join."
                     ),
                 )
-            primary_stream = _stream_primary_features(
-                primary_driver,
-                catalog_id=catalog_id,
-                collection_id=collection_id,
-                primary_column=body.join.primary_column,
-                limit=(body.paging.limit if body.paging else 100_000),
-            )
-            joined = [
-                feat async for feat in run_join(
-                    body, primary_stream=primary_stream,
-                    secondary_index=secondary_index,
+            limit = body.paging.limit if body.paging else 100_000
+            query_request = _build_primary_query_request(body.primary_filter, limit=limit)
+            try:
+                primary_stream = _stream_primary_features(
+                    primary_driver,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                    primary_column=body.join.primary_column,
+                    limit=limit,
+                    query_request=query_request,
                 )
-            ]
+                joined = [
+                    feat async for feat in run_join(
+                        body, primary_stream=primary_stream,
+                        secondary_index=secondary_index,
+                    )
+                ]
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=400, detail=f"Invalid primary_filter: {e}",
+                )
             return {
                 "type": "FeatureCollection",
                 "features": [f.model_dump(by_alias=True, exclude_none=True) for f in joined],
@@ -205,19 +236,27 @@ class JoinsService(ExtensionProtocol, OGCServiceMixin):
                         f"{catalog_id}/{collection_id}."
                     ),
                 )
-            primary_stream = _stream_primary_features(
-                primary_driver,
-                catalog_id=catalog_id,
-                collection_id=collection_id,
-                primary_column=body.join.primary_column,
-                limit=(body.paging.limit if body.paging else 100_000),
-            )
-            joined = [
-                feat async for feat in run_join(
-                    body, primary_stream=primary_stream,
-                    secondary_index=secondary_index,
+            limit = body.paging.limit if body.paging else 100_000
+            query_request = _build_primary_query_request(body.primary_filter, limit=limit)
+            try:
+                primary_stream = _stream_primary_features(
+                    primary_driver,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                    primary_column=body.join.primary_column,
+                    limit=limit,
+                    query_request=query_request,
                 )
-            ]
+                joined = [
+                    feat async for feat in run_join(
+                        body, primary_stream=primary_stream,
+                        secondary_index=secondary_index,
+                    )
+                ]
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=400, detail=f"Invalid primary_filter: {e}",
+                )
             return {
                 "type": "FeatureCollection",
                 "features": [f.model_dump(by_alias=True, exclude_none=True) for f in joined],
