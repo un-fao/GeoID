@@ -12,16 +12,51 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from fastapi import APIRouter, Body, FastAPI, Request
 
 from dynastore.extensions.ogc_base import OGCServiceMixin
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.tools.ogc_policies import register_ogc_public_access_policy
+from dynastore.models.ogc import Feature
 from dynastore.modules.joins.models import JoinRequest
+from dynastore.modules.storage.router import resolve_drivers
 
 logger = logging.getLogger(__name__)
+
+
+async def _resolve_primary_driver(catalog_id: str, collection_id: str):
+    """Resolve the first READ driver for the primary collection.
+
+    Returns the driver instance (any CollectionItemsStore impl) or None
+    if no driver is registered for this catalog/collection on READ.
+    """
+    drivers = await resolve_drivers(
+        "READ", catalog_id, collection_id, hint="features",
+    )
+    return drivers[0].driver if drivers else None
+
+
+async def _stream_primary_features(
+    driver, *, catalog_id: str, collection_id: str,
+    primary_column: str, limit: int = 100_000,
+) -> AsyncIterator[Feature]:
+    """Wrap any CollectionItemsStore driver's read_entities into the
+    plain ``AsyncIterator[Feature]`` shape ``run_join`` expects.
+
+    The ``primary_column`` is passed via ``context["id_column"]`` so
+    drivers (e.g. BQ) that need to know which column carries the join
+    key can use it for projection. Drivers that ignore context just
+    return all columns — the executor reads ``primary_column`` from
+    ``feature.properties`` either way.
+    """
+    async for feat in driver.read_entities(
+        catalog_id, collection_id,
+        limit=limit,
+        context={"id_column": primary_column},
+    ):
+        yield feat
 
 
 # Draft URIs — OGC API - Joins Part 1 0.0 (working draft).
