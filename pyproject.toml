@@ -299,7 +299,12 @@ dev = ["ruff", "black", "mypy", "pyright>=1.1.390", "debugpy", "dynastore[test]"
 
 # Internals/Aliases
 mvt = []
-dwh = ["google-cloud-bigquery", "db-dtypes", "pandas"]
+# /join/* OGC API - Joins extension. Ships alongside dwh (same BQ deps;
+# joins extension is OGC-conformant, dwh keeps the legacy tile-join surface).
+joins = ["google-cloud-bigquery", "db-dtypes", "pandas"]
+# Installing dwh pulls in joins so deployments that ship the legacy
+# tile-join surface also expose the new OGC /join/* endpoints.
+dwh = ["dynastore[joins]"]
 psycopg_pool = ["psycopg[binary,pool]"]
 
 [project.entry-points."dynastore.modules"]
@@ -335,6 +340,7 @@ metadata_elasticsearch = "dynastore.modules.elasticsearch.es_metadata_driver:Met
 maps = "dynastore.extensions.maps.maps_service:MapsService"
 stac = "dynastore.extensions.stac.stac_service:STACService"
 dwh = "dynastore.extensions.dwh.dwh:DwhService"
+joins = "dynastore.extensions.joins.joins_service:JoinsService"
 tasks = "dynastore.extensions.tasks.tasks_service:TasksService"
 proxy = "dynastore.extensions.proxy.proxy_service:ProxyService"
 gdal = "dynastore.extensions.gdal.gdal_service:GdalService"

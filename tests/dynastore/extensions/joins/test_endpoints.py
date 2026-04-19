@@ -225,3 +225,19 @@ async def test_execute_join_named_404_when_secondary_missing(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         await svc.execute_join("c", "l", req, body=body)
     assert exc.value.status_code == 404
+
+
+def test_joins_service_discovered_via_entry_point():
+    """JoinsService must be wired through the dynastore.extensions entry-point group.
+
+    Bundles with the dwh extra: ``dynastore[dwh]`` installs both, so
+    deployments that ship the legacy tile-join surface also expose the
+    new OGC /join/* endpoints.
+    """
+    from importlib.metadata import entry_points
+    eps = [
+        ep for ep in entry_points(group="dynastore.extensions")
+        if ep.name == "joins"
+    ]
+    assert len(eps) == 1
+    assert "JoinsService" in eps[0].value
