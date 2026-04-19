@@ -1,5 +1,7 @@
 # The Catalog Module
 
+> **See also:** [`docs/architecture/collection-lifecycle.md`](../architecture/collection-lifecycle.md) — pending → active transitions, the three-call `POST /collections` → (optional) `PUT /configs/...` → `POST /items` workflow, and OGC compliance notes for lazy activation.
+
 The `catalog` module serves as the authoritative source of truth for all metadata related to data organization within Agro-Informatics Platform (AIP) - Catalog Services. It is the system's "librarian", responsible for knowing what data exists, how it is grouped, and whether it is configured for physical storage.
 
 ## Responsibilities and Ownership
