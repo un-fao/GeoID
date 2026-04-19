@@ -62,7 +62,7 @@ class TilesPreseedConfig(PluginConfig):
     """
     # Implicitly enabled if this config is present and defaults are acceptable, 
     # but explicit flag allows disabling without deleting config.
-    enabled: bool = Field(True, description="If True, the pre-seeding task will process this configuration.")
+    enabled: bool = Field(default=True, description="If True, the pre-seeding task will process this configuration.")
     
     # What to seed
     target_tms_ids: List[str] = Field(

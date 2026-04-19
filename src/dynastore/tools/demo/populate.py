@@ -30,20 +30,11 @@ logger = logging.getLogger("populate_demo_data")
 
 def _get_or_register_catalogs_service():
     catalogs_svc = get_protocol(CatalogsProtocol)
-    if catalogs_svc:
-        return catalogs_svc
-
-    logger.info("CatalogsProtocol not available via discovery, instantiating manually...")
-    from dynastore.modules.catalog.catalog_service import CatalogService
-    from dynastore.modules.catalog.collection_service import CollectionService
-    from dynastore.modules.catalog.item_service import ItemService
-    from dynastore.tools.discovery import register_provider
-
-    item_svc = ItemService()
-    coll_svc = CollectionService()
-    catalogs_svc = CatalogService(collection_service=coll_svc, item_service=item_svc)
-    register_provider(catalogs_svc)
-    logger.info("Manually registered CatalogsProtocol.")
+    if catalogs_svc is None:
+        raise RuntimeError(
+            "CatalogsProtocol not registered. Ensure modules.discover_modules() "
+            "and modules.instantiate_modules() ran before calling this helper."
+        )
     return catalogs_svc
 
 

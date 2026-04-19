@@ -221,8 +221,10 @@ class CollectionIcebergDriver(ModuleProtocol):
         catalog's GCS bucket with an ``iceberg/`` subfolder), else a local
         temp-dir fallback.
         """
-        if loc is not None and loc.warehouse_uri:
-            return loc.warehouse_uri
+        if loc is not None:
+            resolved = loc.resolve_warehouse_uri()
+            if resolved:
+                return resolved
         if IcebergConfig.warehouse_uri:
             return IcebergConfig.warehouse_uri
 

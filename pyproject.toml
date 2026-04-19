@@ -47,7 +47,7 @@ module_iam = ["pydantic[email]", "PyJWT>=2.0.0"]
 module_db = ["dynastore[db_async]", "sqlalchemy[asyncio]", "asyncpg"]
 module_crs = ["dynastore[geospatial_core]", "pyproj>=3.0.0"]
 module_events = ["psycopg[binary,pool]"]
-module_elasticsearch = ["opensearch-py[async]"]
+module_elasticsearch = ["opensearch-py[async]", "httpx"]
 module_gdal = ["dynastore[geospatial_core]", "GDAL==3.12.3"]
 module_tiles = ["dynastore[geospatial_core]"]
 module_cache = ["valkey>=6.0", "msgpack>=1.0"]
@@ -75,7 +75,7 @@ extension_proxy = ["dynastore[extension_base,module_proxy]"]
 extension_gdal = ["dynastore[extension_base,module_gdal]"]
 extension_styles = ["dynastore[extension_base,module_styles]"]
 extension_iam = ["dynastore[extension_base,module_iam]"]
-extension_logs = ["dynastore[extension_base]"]
+extension_logs = ["dynastore[extension_base]", "httpx"]
 extension_configs = ["dynastore[extension_base]"]
 extension_stats = ["dynastore[extension_base,module_stats]"]
 extension_crs = ["dynastore[extension_base,module_crs]"]
@@ -430,6 +430,24 @@ reportUnnecessaryTypeIgnoreComment = "warning"
 [[tool.pyright.executionEnvironments]]
 root = "src/dynastore/models/protocols"
 typeCheckingMode = "strict"
+
+# Optional-extra raster paths (rasterio): silence missing-import noise on files
+# that lazy-import these at call time. Runtime guards with try/except.
+[[tool.pyright.executionEnvironments]]
+root = "src/dynastore/modules/coverages"
+reportMissingImports = "none"
+
+[[tool.pyright.executionEnvironments]]
+root = "src/dynastore/modules/gdal"
+reportMissingImports = "none"
+
+[[tool.pyright.executionEnvironments]]
+root = "src/dynastore/extensions/coverages"
+reportMissingImports = "none"
+
+[[tool.pyright.executionEnvironments]]
+root = "src/dynastore/extensions/maps"
+reportMissingImports = "none"
 
 # Machine compositions have been moved to docker/.env (Docker) and
 # .github/config/apps.base.yml (cloud). Use the extras groups above as building blocks.

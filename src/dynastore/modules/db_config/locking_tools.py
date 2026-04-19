@@ -22,9 +22,9 @@ import asyncio
 import functools
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
-from typing import Optional, Callable, Awaitable, Any, TypeVar, Dict, AsyncGenerator, Iterator, Set
+from typing import Optional, Callable, Awaitable, Any, TypeVar, Dict, AsyncGenerator, Iterator, Set, cast
 from sqlalchemy import text, Engine
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     DDLQuery,
@@ -577,7 +577,8 @@ async def safe_drop_relation(
     @retry_on_lock_conflict(max_retries=max_retries)
     async def _drop():
         async with managed_transaction(conn) as tx:
-            await tx.execute(text(f"SET LOCAL lock_timeout = '{lock_timeout}'"))
-            await tx.execute(text(sql))
+            atx = cast(AsyncConnection, tx)
+            await atx.execute(text(f"SET LOCAL lock_timeout = '{lock_timeout}'"))
+            await atx.execute(text(sql))
 
     await _drop()

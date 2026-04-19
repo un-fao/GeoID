@@ -33,6 +33,7 @@ from dynastore.models.protocols import CloudIdentityProtocol, CloudStorageClient
 from dynastore.models.protocols.asset_process import (
     AssetProcessDescriptor,
     AssetProcessOutput,
+    HTTPMethod,
 )
 from dynastore.modules.catalog.asset_service import Asset
 from dynastore.modules.gcp.tools.signed_urls import generate_gcs_signed_url
@@ -52,7 +53,7 @@ class GcsDownloadAssetProcess:
     """
 
     process_id = "download"
-    http_method = "GET"
+    http_method: HTTPMethod = "GET"
 
     def __init__(
         self,
