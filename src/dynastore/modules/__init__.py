@@ -25,7 +25,7 @@ import os
 import inspect
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, Dict, Type, TypeVar, cast, List, Optional
+from typing import Any, Dict, Type, TypeVar, List, Optional
 from pathlib import Path
 
 from .protocols import ModuleProtocol
@@ -65,36 +65,6 @@ def _register_module(cls: Type[T_Module], registration_name: Optional[str] = Non
     cls._registered_name = registration_name  # type: ignore[attr-defined]
     logger.info(f"Registered module: {cls.__name__} (as '{registration_name}')")
     return cls
-
-def get_module_instance(name: str) -> ModuleProtocol | None:
-    """Retrieves the singleton instance of a registered module by name."""
-    import warnings
-    warnings.warn(
-        f"get_module_instance('{name}') is deprecated. Use get_protocol(...) instead for better decoupling.",
-        DeprecationWarning,
-        stacklevel=2
-    )
-    config = _DYNASTORE_MODULES.get(name)
-    return config.instance if config else None
-
-def get_module_instance_by_class(cls: Type[T_Module]) -> T_Module | None:
-    """
-    Retrieves the singleton instance of a registered module by its class type.
-    This provides better type hinting than get_module_instance(name).
-    """
-    import warnings
-    warnings.warn(
-        f"get_module_instance_by_class({cls.__name__}) is deprecated. Use get_protocol(...) instead for better decoupling.",
-        DeprecationWarning,
-        stacklevel=2
-    )
-    for name, config in _DYNASTORE_MODULES.items():
-        if config.instance and isinstance(config.instance, cls):
-            logger.warning(f"DEBUG: get_module_instance_by_class({cls.__name__}) found instance of {type(config.instance).__name__} registered as '{name}' at {id(config.instance)}")
-            # We can safely cast here because we've confirmed the class type.
-            return cast(T_Module, config.instance)
-    logger.warning(f"DEBUG: get_module_instance_by_class({cls.__name__}) found NOTHING")
-    return None
 
 
 def discover_modules(include_only: Optional[List[str]] = None):
