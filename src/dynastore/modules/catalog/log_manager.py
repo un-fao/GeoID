@@ -163,14 +163,7 @@ async def initialize_system_logs(conn: DbResource):
     # Ensure system schema exists (idempotent)
     await ensure_schema_exists(conn, SYSTEM_SCHEMA)
 
-    async def system_logs_exists(active_conn=None, params=None):
-        target = active_conn or conn
-        return await check_table_exists(target, SYSTEM_LOGS_TABLE, SYSTEM_SCHEMA)
-
-    await DDLQuery(
-        SYSTEM_LOGS_DDL,
-        check_query=system_logs_exists,
-    ).execute(conn)
+    await DDLQuery(SYSTEM_LOGS_DDL).execute(conn)
 
     # System logs have no dead-letter table; old rows are pruned directly via pg_cron.
 

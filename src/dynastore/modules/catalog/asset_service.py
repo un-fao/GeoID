@@ -158,7 +158,6 @@ from dynastore.modules.db_config.query_executor import (
     DbResource,
     DbConnection,
 )
-from dynastore.modules.db_config.locking_tools import check_trigger_exists
 from dynastore.tools.json import CustomJSONEncoder
 from dynastore.tools.db import validate_sql_identifier
 from dynastore.modules.catalog.models import AssetReferenceType, CoreAssetReferenceType, EventType
@@ -1106,9 +1105,9 @@ class AssetService(AssetsProtocol):
                     hub_table = table[: -len(suffix)]
                     break
 
-            # 4. Create the trigger. Guarded by check_trigger_exists so warm
-            # paths skip DDL entirely and avoid the AccessExclusiveLock that
-            # DROP+CREATE TRIGGER would take against concurrent ingest DML.
+            # 4. Create the trigger. Warm paths skip DDL via auto-inferred existence
+            # check — avoids the AccessExclusiveLock that DROP+CREATE TRIGGER
+            # would take against concurrent ingest DML.
             trigger_ddl = f"""
             CREATE TRIGGER trg_asset_cleanup
             AFTER DELETE OR UPDATE OF asset_id ON "{schema}"."{table}"
@@ -1116,12 +1115,7 @@ class AssetService(AssetsProtocol):
             EXECUTE FUNCTION platform.asset_cleanup('{hub_table}');
             """.strip()
 
-            await DDLQuery(
-                trigger_ddl,
-                check_query=lambda: check_trigger_exists(
-                    conn, "trg_asset_cleanup", schema, table=table
-                ),
-            ).execute(conn)
+            await DDLQuery(trigger_ddl).execute(conn)
 
     # -------------------------------------------------------------------------
     # Asset reference table bootstrap

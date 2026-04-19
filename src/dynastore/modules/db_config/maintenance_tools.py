@@ -77,10 +77,7 @@ async def ensure_schema_exists(conn: DbResource, schema_name: str):
     """
     Ensures a database schema exists using centralized DDL coordination.
     """
-    await DDLQuery(
-        f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"',
-        check_query="SELECT 1 FROM pg_namespace WHERE nspname = :schema_name",
-    ).execute(conn, schema_name=schema_name)
+    await DDLQuery(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"').execute(conn)
     logger.info(f"Schema '{schema_name}' verified/ready.")
 
 

@@ -36,7 +36,6 @@ from dynastore.modules.db_config.query_executor import (
 )
 from dynastore.modules.db_config.locking_tools import (
     acquire_startup_lock,
-    check_trigger_exists,
     _get_stable_lock_id,
 )
 from dynastore.models.protocols import (
@@ -130,21 +129,15 @@ CREATE TRIGGER on_event_insert
 """
 
 
-def _events_trigger_check(conn):
-    return check_trigger_exists(
-        conn, "on_event_insert", _EVENTS_SCHEMA, table="events"
-    )
-
-
 # Module-level batch: on warm starts, the sentinel (trigger) existence check
 # is the only round-trip — table and indexes are skipped entirely.
 # Advisory lock keys are auto-derived from statement hash by DDLExecutor.
 GLOBAL_EVENTS_DDL_BATCH = DDLBatch(
-    sentinel=DDLQuery(GLOBAL_EVENTS_TRIGGER_DDL, check_query=_events_trigger_check),
+    sentinel=DDLQuery(GLOBAL_EVENTS_TRIGGER_DDL),
     steps=[
         DDLQuery(GLOBAL_EVENTS_TABLE_DDL),
         DDLQuery(GLOBAL_EVENTS_INDEXES_DDL),
-        DDLQuery(GLOBAL_EVENTS_TRIGGER_DDL, check_query=_events_trigger_check),
+        DDLQuery(GLOBAL_EVENTS_TRIGGER_DDL),
     ],
 )
 
