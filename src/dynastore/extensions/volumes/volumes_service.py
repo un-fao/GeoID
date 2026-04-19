@@ -22,9 +22,13 @@ from dynastore.extensions.ogc_base import OGCServiceMixin
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.tools.ogc_policies import register_ogc_public_access_policy
 from dynastore.extensions.volumes.config import VolumesConfig
-from dynastore.modules.volumes.bounds import FeatureBounds
+from dynastore.models.protocols.bounds_source import (
+    BoundsSourceProtocol,
+    EmptyBoundsSource,
+)
 from dynastore.modules.volumes.tileset_builder import build_tileset
 from dynastore.modules.volumes.writers.tileset_json import write_tileset_json
+from dynastore.tools.discovery import get_protocol
 
 logger = logging.getLogger(__name__)
 
@@ -112,9 +116,10 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
         self, catalog_id: str, collection_id: str, request: Request,
     ) -> StreamingResponse:
         cfg = await self._get_volumes_config(catalog_id, collection_id)
-        # Phase 5c stub: empty feature list -> empty-skeleton tileset.json.
-        # Phase 5d replaces this with bounds sourced from the geometries sidecar.
-        bounds: list[FeatureBounds] = []
+        bounds_source: BoundsSourceProtocol = (
+            get_protocol(BoundsSourceProtocol) or EmptyBoundsSource()
+        )
+        bounds = list(await bounds_source.get_bounds(catalog_id, collection_id))
         base = str(request.url).rstrip("/").rsplit("/", 1)[0]  # strip "/tileset.json"
         template = f"{base}/tiles/{{tile_id}}.b3dm"
         tileset = build_tileset(bounds, cfg, content_uri_template=template)
