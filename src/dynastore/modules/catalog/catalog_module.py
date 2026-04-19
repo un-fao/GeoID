@@ -243,6 +243,21 @@ class CatalogModule(ModuleProtocol):
 
                 await ensure_stored_procedures(conn)
 
+            # One-shot cross-schema migration for the pre-2026-04-18
+            # `idx_*_attributes_ext_id` shape. Runs after catalog.catalogs
+            # exists so the broader pg_index scan can't fault on missing
+            # platform tables. Self-idempotent — see stale_index_migration.
+            from dynastore.modules.db_config.stale_index_migration import (
+                migrate_stale_attributes_ext_id_indexes,
+            )
+            try:
+                await migrate_stale_attributes_ext_id_indexes(engine)
+            except Exception as exc:  # noqa: BLE001 — never block startup
+                logger.warning(
+                    "Stale-index migration aborted: %s. Affected ingestions "
+                    "may continue to hit 23505 until next boot.", exc,
+                )
+
             # 5. Register Internal Observers
             # Observers will use get_protocol() to access services
             register_event_listener(
