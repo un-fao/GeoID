@@ -7,9 +7,11 @@ with per-request target overrides + Secret-wrapped credentials.
 
 from __future__ import annotations
 
-from typing import Annotated, List, Literal, Optional
+from typing import Annotated, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from dynastore.modules.storage.drivers.bigquery_models import BigQueryTarget
 
 
 class NamedSecondarySpec(BaseModel):
@@ -20,10 +22,24 @@ class NamedSecondarySpec(BaseModel):
     ref: str = Field(..., description="Collection id of the registered secondary.")
 
 
-# PR-2 will add BigQuerySecondarySpec(driver: Literal["bigquery"], target, credentials).
-# The discriminator-union type is already declared so PR-2 just adds the second variant.
+class BigQuerySecondarySpec(BaseModel):
+    """Per-request BigQuery secondary — target identity supplied inline.
+
+    Phase 4b PR-2: target only; auth still flows through CloudIdentityProtocol
+    (same as Phase 4a's ``CollectionBigQueryDriver``). Phase 4e adds
+    ``credentials: BigQueryCredentials`` for Secret-wrapped per-request
+    credential overrides.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    driver: Literal["bigquery"] = "bigquery"
+    target: BigQueryTarget = Field(
+        ..., description="Fully-qualified target (project_id, dataset_id, table_name).",
+    )
+
+
 SecondarySpec = Annotated[
-    NamedSecondarySpec,  # PR-2: Union[NamedSecondarySpec, BigQuerySecondarySpec]
+    Union[NamedSecondarySpec, BigQuerySecondarySpec],
     Field(discriminator="driver"),
 ]
 

@@ -48,3 +48,38 @@ def test_output_format_enum_validated():
     JoinRequest(**base, output={"format": "csv"})
     with pytest.raises(ValidationError):
         JoinRequest(**base, output={"format": "xml"})
+
+
+def test_bigquery_secondary_round_trips():
+    from dynastore.modules.joins.models import BigQuerySecondarySpec
+    from dynastore.modules.storage.drivers.bigquery_models import BigQueryTarget
+
+    spec = BigQuerySecondarySpec(
+        target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
+    )
+    assert spec.driver == "bigquery"
+    assert spec.target.fqn() == "p.d.t"
+
+
+def test_join_request_accepts_bigquery_secondary():
+    body = {
+        "secondary": {
+            "driver": "bigquery",
+            "target": {"project_id": "p", "dataset_id": "d", "table_name": "t"},
+        },
+        "join": {"primary_column": "uid", "secondary_column": "user_id"},
+    }
+    req = JoinRequest(**body)
+    assert req.secondary.driver == "bigquery"
+    assert req.secondary.target.dataset_id == "d"
+
+
+def test_bigquery_secondary_rejects_unfully_qualified_target_at_use_time():
+    """The DTO accepts partial targets (consistent with Phase 4a's BigQueryTarget),
+    but the executor's resolver will reject at request time. The DTO-level test
+    just confirms partial targets are *accepted* by the discriminator."""
+    from dynastore.modules.joins.models import BigQuerySecondarySpec
+    from dynastore.modules.storage.drivers.bigquery_models import BigQueryTarget
+
+    spec = BigQuerySecondarySpec(target=BigQueryTarget(project_id="p"))
+    assert not spec.target.is_fully_qualified()
