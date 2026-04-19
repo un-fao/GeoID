@@ -150,3 +150,22 @@ def test_coverages_declares_pass2_conformance_set():
     missing = EXPECTED_PASS2_COVERAGES_URIS - declared
     assert not missing, f"Coverages missing Pass 2 URIs: {sorted(missing)}"
     assert "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/core" in declared
+
+
+EXPECTED_PASS5_VOLUMES_URIS = {
+    "http://www.opengis.net/spec/ogcapi-3d-geovolumes-1/0.0/conf/core",
+    "http://www.opengis.net/spec/ogcapi-3d-geovolumes-1/0.0/conf/3dtiles",
+    "http://www.opengis.net/spec/ogcapi-3d-geovolumes-1/0.0/conf/tileset",
+}
+
+
+def _read_volumes_conformance_uris_from_source() -> set:
+    return _read_uri_list_from_source(
+        "extensions/volumes/volumes_service.py", "OGC_API_VOLUMES_URIS",
+    )
+
+
+def test_volumes_declares_pass5_conformance_set():
+    declared = _read_volumes_conformance_uris_from_source()
+    missing = EXPECTED_PASS5_VOLUMES_URIS - declared
+    assert not missing, f"Volumes missing Pass 5 URIs: {sorted(missing)}"
