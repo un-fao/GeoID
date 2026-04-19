@@ -14,7 +14,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import APIRouter, Body, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Body, FastAPI, Request
 
 from dynastore.extensions.ogc_base import OGCServiceMixin
 from dynastore.extensions.protocols import ExtensionProtocol
@@ -76,7 +76,7 @@ class JoinsService(ExtensionProtocol, OGCServiceMixin):
         return {
             "title": "OGC API - Joins describe",
             "primary": {"catalog": catalog_id, "collection": collection_id},
-            "supported_secondary_drivers": ["registered"],  # PR-2 adds "bigquery"
+            "supported_secondary_drivers": ["registered", "bigquery"],
             "links": [
                 {"rel": "self", "type": "application/json", "href": base},
             ],
@@ -86,23 +86,39 @@ class JoinsService(ExtensionProtocol, OGCServiceMixin):
         self, catalog_id: str, collection_id: str, request: Request,
         body: JoinRequest = Body(...),
     ):
-        """Execute the join. PR-1: NamedSecondarySpec only."""
-        # Discriminator already validated by Pydantic; defensive guard for
-        # forward-compat when PR-2 adds BigQuerySecondarySpec.
-        if body.secondary.driver != "registered":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Driver {body.secondary.driver!r} not supported in this build",
+        """Execute the join.
+
+        PR-1: stub for both driver types.
+        PR-2: BigQuerySecondarySpec materializes the secondary side via
+        Phase 4a's BQ driver; primary stream wiring lands next.
+        """
+        from dynastore.modules.joins import bq_secondary as bq_mod
+        from dynastore.modules.joins.executor import index_secondary
+        from dynastore.modules.joins.models import BigQuerySecondarySpec
+
+        if isinstance(body.secondary, BigQuerySecondarySpec):
+            secondary_index = await index_secondary(
+                bq_mod.stream_bigquery_secondary(
+                    body.secondary, secondary_column=body.join.secondary_column,
+                ),
+                secondary_column=body.join.secondary_column,
             )
-        # PR-1 emits a structurally-valid empty result so the surface is
-        # exercisable end-to-end. Real primary/secondary stream wiring lands
-        # in a follow-up that resolves the registered secondary collection
-        # via the platform's Items/Bigquery driver registry.
+            return {
+                "type": "FeatureCollection",
+                "features": [],
+                "_phase4b_pr2_note": (
+                    f"Secondary materialized: {len(secondary_index)} rows. "
+                    "Primary stream wiring (resolve_drivers READ) lands next; "
+                    "until then the join produces zero matches."
+                ),
+            }
+
+        # NamedSecondarySpec — registered-ref resolution is a separate PR.
         return {
             "type": "FeatureCollection",
             "features": [],
             "_phase4b_pr1_note": (
-                "Surface live; primary+secondary stream wiring lands next. "
-                "GET .../join describes supported drivers."
+                "Registered secondary resolution lands in a follow-up. "
+                "Use BigQuerySecondarySpec for inline targets in this build."
             ),
         }
