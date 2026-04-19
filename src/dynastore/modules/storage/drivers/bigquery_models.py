@@ -12,6 +12,7 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from dynastore.modules.storage.driver_config import CollectionDriverConfig
+from dynastore.tools.secrets import Secret
 
 
 class BigQueryTarget(BaseModel):
@@ -37,15 +38,52 @@ class BigQueryTarget(BaseModel):
         return f"{self.project_id}.{self.dataset_id}.{self.table_name}"
 
 
+class BigQueryCredentials(BaseModel):
+    """Secret-wrapped BigQuery credentials.
+
+    Registered-per-collection only — stored encrypted at rest in the
+    platform's PluginConfig jsonb, masked in API responses, revealed only
+    inside the BQ client constructor. Matches the platform credential
+    framework (see project_credential_framework.md memory note).
+
+    Per-request credential overrides (spec lines 546-581's
+    BigQuerySecondarySpec with credentials field) are explicitly NOT
+    added in this phase per user direction.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    service_account_json: Optional[Secret] = Field(
+        default=None,
+        description="Full service-account JSON (Secret-wrapped). Preferred.",
+    )
+    api_key: Optional[Secret] = Field(
+        default=None,
+        description="BigQuery External Connections API key (Secret-wrapped). Future-proof.",
+    )
+
+    def is_empty(self) -> bool:
+        """True iff no credential material supplied.
+
+        Drivers fall back to CloudIdentityProtocol (Phase 4a path) when
+        ``is_empty()`` — preserves back-compat for deployments that never
+        migrate to Secret-wrapped credentials.
+        """
+        return self.service_account_json is None and self.api_key is None
+
+
 class CollectionBigQueryDriverConfig(CollectionDriverConfig):
     """Registered per-collection config for the BigQuery driver.
 
     Phase 4a: READ-only, credentials via CloudIdentityProtocol.
     Phase 4b adds ``credentials: BigQueryCredentials`` for per-request overrides.
     Phase 4d adds write-path fields (streaming_threshold, partition_column, etc.).
+    Phase 4e adds registered-per-collection Secret-wrapped credentials on the
+    config itself; per-request overrides remain deferred.
     """
 
     target: BigQueryTarget = Field(default_factory=BigQueryTarget)
+    credentials: BigQueryCredentials = Field(default_factory=BigQueryCredentials)
     location: str = "EU"
     page_size: int = Field(default=1000, ge=1, le=50000)
     query_timeout_s: int = Field(default=60, ge=1, le=600)
