@@ -99,6 +99,10 @@ from dynastore.models.protocols.link_contrib import (
     LinkContributor,
 )
 from dynastore.models.protocols.bigquery import BigQueryProtocol
+from dynastore.models.protocols.bounds_source import (
+    BoundsSourceProtocol,
+    EmptyBoundsSource,
+)
 from dynastore.models.protocols.field_definition import (
     FieldCapability,
     FieldDefinition,
@@ -184,6 +188,8 @@ __all__ = [
     "FieldDefinition",
     "EntityLevel",
     "FeatureTypeDefinition",
+    "BoundsSourceProtocol",
+    "EmptyBoundsSource",
     "AssetUploadProtocol",
     "UploadTicket",
     "UploadStatus",
