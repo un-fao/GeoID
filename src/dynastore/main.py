@@ -23,7 +23,6 @@ from typing import Optional
 import asyncio
 import json
 import uuid
-from contextvars import ContextVar
 from fastapi import FastAPI, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 import sys
@@ -34,14 +33,12 @@ from dynastore._version import VERSION, get_build_info
 from dynastore.extensions.tools.fast_api import ORJSONResponse
 from dynastore.extensions.bootstrap import bootstrap_app
 from dynastore.modules.concurrency import set_concurrency_backend
+from dynastore.tools.correlation import _correlation_id_var, set_correlation_id
 from fastapi.concurrency import run_in_threadpool
 
 # --- Initialize Concurrency Backend ---
 # Since this is the FastAPI entry point, we use FastAPI's threadpool runner.
 set_concurrency_backend(run_in_threadpool)
-
-# --- Correlation ID Management ---
-_correlation_id_var: ContextVar[str | None] = ContextVar("correlation_id", default=None)
 
 
 class _CorrelationFilter(logging.Filter):
@@ -74,7 +71,7 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         cid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        token = _correlation_id_var.set(cid)
+        token = set_correlation_id(cid)
         try:
             response = await call_next(request)
             response.headers["X-Request-ID"] = cid

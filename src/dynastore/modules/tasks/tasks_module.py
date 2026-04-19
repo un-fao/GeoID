@@ -632,6 +632,12 @@ async def create_task(
             RETURNING *;
         """
 
+        from dynastore.tools.correlation import _INTERNAL_KEY, get_correlation_id
+        inputs = dict(task_data.inputs) if task_data.inputs else {}
+        cid = get_correlation_id()
+        if cid is not None:
+            inputs[_INTERNAL_KEY] = cid
+
         task_dict = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
             conn,
             task_id=task_id,
@@ -641,7 +647,7 @@ async def create_task(
             task_type=task_data.task_type,
             type=task_data.type,
             execution_mode=task_data.execution_mode,
-            inputs=json.dumps(task_data.inputs) if task_data.inputs else None,
+            inputs=json.dumps(inputs) if inputs else None,
             timestamp=creation_time,
             collection_id=task_data.collection_id,
             dedup_key=task_data.dedup_key,

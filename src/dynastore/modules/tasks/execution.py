@@ -444,54 +444,64 @@ class ExecutionEngine:
             ),
         }
 
+        from dynastore.tools.correlation import _INTERNAL_KEY, set_correlation_id
+        task_inputs = raw_payload["inputs"]
+        cid = task_inputs.pop(_INTERNAL_KEY, None)
+        token = set_correlation_id(cid) if cid else None
+
         context = RunnerContext(
             engine=engine,
             task_type=task_type,
             caller_id=raw_payload["caller_id"],
-            inputs=raw_payload["inputs"],
+            inputs=task_inputs,
             db_schema=task_row.get("schema_name", "tasks"),
             extra_context={"task_id": str(task_id)},
         )
 
-        # 1. Try runners (skip those needing request context)
-        runners = self.get_runners_for(
-            task_type, runner_mode, has_request_context=False
-        )
-
-        result = None
-        for runner in runners:
-            logger.debug(
-                "ExecutionEngine.dispatch: trying runner '%s' for task %s.",
-                runner.__class__.__name__,
-                task_id,
+        try:
+            # 1. Try runners (skip those needing request context)
+            runners = self.get_runners_for(
+                task_type, runner_mode, has_request_context=False
             )
-            result = await runner.run(context)
-            if result is not None:
-                logger.info(
-                    "ExecutionEngine.dispatch: task %s handled by '%s'.",
-                    task_id,
-                    runner.__class__.__name__,
-                )
-                break
 
-        # 2. Fallback: direct TaskProtocol singleton execution
-        if result is None:
-            task_instance = get_task_instance(task_type)
-            if task_instance:
-                logger.info(
-                    "ExecutionEngine.dispatch: executing task '%s' "
-                    "via TaskProtocol singleton.",
-                    task_type,
+            result = None
+            for runner in runners:
+                logger.debug(
+                    "ExecutionEngine.dispatch: trying runner '%s' for task %s.",
+                    runner.__class__.__name__,
+                    task_id,
                 )
-                hydrated_payload = hydrate_task_payload(
-                    task_instance, raw_payload
-                )
-                result = await task_instance.run(hydrated_payload)
-            else:
-                raise RuntimeError(
-                    f"No runner or task implementation found "
-                    f"for '{task_type}'."
-                )
+                result = await runner.run(context)
+                if result is not None:
+                    logger.info(
+                        "ExecutionEngine.dispatch: task %s handled by '%s'.",
+                        task_id,
+                        runner.__class__.__name__,
+                    )
+                    break
+
+            # 2. Fallback: direct TaskProtocol singleton execution
+            if result is None:
+                task_instance = get_task_instance(task_type)
+                if task_instance:
+                    logger.info(
+                        "ExecutionEngine.dispatch: executing task '%s' "
+                        "via TaskProtocol singleton.",
+                        task_type,
+                    )
+                    hydrated_payload = hydrate_task_payload(
+                        task_instance, raw_payload
+                    )
+                    result = await task_instance.run(hydrated_payload)
+                else:
+                    raise RuntimeError(
+                        f"No runner or task implementation found "
+                        f"for '{task_type}'."
+                    )
+        finally:
+            if token is not None:
+                from dynastore.tools.correlation import _correlation_id_var
+                _correlation_id_var.reset(token)
 
         return result
 

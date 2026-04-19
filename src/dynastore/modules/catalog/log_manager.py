@@ -541,6 +541,14 @@ class LogService(ProtocolPlugin[Any], LogsProtocol):
                 logger.info(safe_msg)
             return None
 
+        from dynastore.tools.correlation import get_correlation_id
+        cid = get_correlation_id()
+        if cid is not None:
+            details = dict(details) if details else {}
+            details.setdefault("request_context", {})
+            if isinstance(details["request_context"], dict):
+                details["request_context"].setdefault("correlation_id", cid)
+
         entry = LogEntryCreate(
             catalog_id=catalog_id,
             collection_id=collection_id,
