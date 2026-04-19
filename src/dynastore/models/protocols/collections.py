@@ -188,9 +188,9 @@ class CollectionsProtocol(Protocol):
     ) -> None:
         """Provision storage + pin routing for a pending collection.
 
-        Idempotent: no-op when already active. Backs the explicit
-        `POST /stac/catalogs/{cid}/collections/{col}/activate` endpoint
-        and is also invoked lazily from the items write path.
+        Idempotent: no-op when already active. Invoked transparently
+        from the items write path on the first insert; no REST endpoint
+        exposes it to clients.
         """
         ...
 

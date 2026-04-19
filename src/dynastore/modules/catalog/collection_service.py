@@ -227,10 +227,13 @@ class CollectionService:
         collection_id: str,
         ctx: Optional["DriverContext"] = None,
     ) -> None:
-        """Public entrypoint for explicit activation.
+        """Ensure the collection is active.
 
-        Backs `POST /stac/catalogs/{cid}/collections/{col}/activate`.
-        Idempotent — safe to call on already-active collections.
+        Idempotent — safe to call on already-active collections. Called
+        from the items write path (lazy activation); no REST endpoint
+        backs this method (activation happens transparently on the
+        first ``POST /items``). Kept on ``CollectionsProtocol`` so
+        ``item_service`` can invoke it via the protocol layer.
         """
         db_resource = ctx.db_resource if ctx else None
         async with managed_transaction(db_resource or self.engine) as conn:

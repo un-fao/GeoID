@@ -738,6 +738,17 @@ class ItemQueryMixin:
 
         # --- PG path ---
         db_resource = ctx.db_resource if ctx else None
+
+        # Pending collection: metadata exists but storage has not been
+        # provisioned yet.  Return an empty result set rather than
+        # letting the SQL path fail on a missing table (same semantics
+        # as stream_items — OGC Features Part 1 Req. 26).
+        phys_table = await self._resolve_physical_table(
+            catalog_id, collection_id, db_resource=db_resource
+        )
+        if not phys_table:
+            return []
+
         async with self._prepare_search(
             catalog_id, collection_id, request, config, db_resource
         ) as (query, conn, params):
