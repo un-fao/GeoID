@@ -311,7 +311,22 @@ class IamExtension(ExtensionProtocol):
                 "type": "http",
                 "scheme": "bearer",
                 "bearerFormat": "JWT",
-                "description": "Admin/User Token or API Key",
+                "description": "Paste a JWT access token obtained from /auth/token.",
+            }
+            openapi_schema["components"]["securitySchemes"]["OAuth2AuthorizationCode"] = {
+                "type": "oauth2",
+                "description": "OIDC Authorization Code flow via Keycloak (use the Authorize button above).",
+                "flows": {
+                    "authorizationCode": {
+                        "authorizationUrl": "/auth/authorize",
+                        "tokenUrl": "/auth/token",
+                        "scopes": {
+                            "openid": "OpenID Connect",
+                            "email": "User email",
+                            "profile": "User profile",
+                        },
+                    }
+                },
             }
 
             app.openapi_schema = openapi_schema

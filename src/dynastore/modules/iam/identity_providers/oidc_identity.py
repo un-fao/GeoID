@@ -223,6 +223,7 @@ class OidcIdentityProvider(IdentityProviderProtocol):
         identity: Dict[str, Any] = {
             "provider": "oidc:service_account" if is_service_account else "oidc",
             "sub": subject_id,
+            "preferred_username": claims.get("preferred_username"),
             "email": claims.get("email"),
             "name": (
                 claims.get("name")
@@ -240,6 +241,7 @@ class OidcIdentityProvider(IdentityProviderProtocol):
             "azp": claims.get("azp"),
             "client_id": client_id_claim,
             "is_service_account": is_service_account,
+            "account_url": self._public_endpoint(self.issuer_url) + "/account/",
             "raw_claims": claims,
         }
         logger.debug(

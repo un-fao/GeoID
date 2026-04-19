@@ -180,8 +180,9 @@
 
             <div id="auth-buttons">
                 <a href="../auth/authorize?response_type=code&client_id=dynastore&redirect_uri=/web/&state=init"
-                   class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all flex items-center gap-2">
-                    <i class="fa-solid fa-right-to-bracket"></i> Sign In
+                   title="Sign In"
+                   class="w-9 h-9 rounded-full bg-slate-800/50 border border-white/10 hover:bg-blue-600/20 hover:border-blue-500/50 flex items-center justify-center text-slate-400 hover:text-white transition-all">
+                    <i class="fa-solid fa-user text-sm"></i>
                 </a>
             </div>
 
@@ -433,15 +434,14 @@
                     </div>
 
                     <div class="pt-2 border-t border-white/10 mt-4">
-                        <label class="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1 mt-4">Update Password</label>
-                        <div class="space-y-3">
-                            <input type="password" id="profile-current-password" placeholder="Current Password" class="w-full bg-slate-900/50 border border-white/10 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-blue-500 transition-colors">
-                            <input type="password" id="profile-new-password" placeholder="New Password" class="w-full bg-slate-900/50 border border-white/10 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-blue-500 transition-colors">
-                            <input type="password" id="profile-confirm-password" placeholder="Confirm New Password" class="w-full bg-slate-900/50 border border-white/10 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-blue-500 transition-colors">
-                        </div>
-                        <div class="mt-3 flex justify-end">
-                            <button type="button" onclick="updatePassword()" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition-colors border border-white/10">Update Password</button>
-                        </div>
+                        <label class="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1 mt-4">Security</label>
+                        <button type="button"
+                            onclick="if(currentUser?.account_url) window.open(currentUser.account_url + '#/security/signingin', '_blank')"
+                            class="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-slate-900/50 border border-white/10 hover:border-blue-500/30 hover:bg-blue-500/5 transition-all group">
+                            <span class="text-sm text-slate-300 group-hover:text-white">Change Password</span>
+                            <i class="fa-solid fa-arrow-up-right-from-square text-[10px] text-slate-500 group-hover:text-blue-400"></i>
+                        </button>
+                        <p class="text-[10px] text-slate-600 mt-1.5 ml-1">Opens the Keycloak account console in a new tab.</p>
                     </div>
                 </form>
             </div>

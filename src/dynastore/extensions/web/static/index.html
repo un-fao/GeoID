@@ -98,7 +98,7 @@
                             <button onclick="showProfileModal()" class="w-full text-left px-4 py-2 text-sm text-slate-300 hover:text-white hover:bg-white/5 flex items-center gap-3 transition-colors">
                                 <i class="fa-solid fa-user-circle w-5"></i> My Profile
                             </button>
-                            <button id="admin-panel-link" onclick="switchTab('extensions')" class="w-full text-left px-4 py-2 text-sm text-slate-300 hover:text-white hover:bg-white/5 hidden items-center gap-3 transition-colors">
+                            <button id="admin-panel-link" onclick="switchTab('admin')" class="w-full text-left px-4 py-2 text-sm text-slate-300 hover:text-white hover:bg-white/5 hidden items-center gap-3 transition-colors">
                                 <i class="fa-solid fa-shield-halved w-5"></i> Admin Panel
                             </button>
                             <div class="h-px bg-white/5 my-2"></div>
@@ -111,8 +111,9 @@
                     <!-- Login Button (shown when logged out) -->
                     <div id="auth-buttons">
                         <a href="../../auth/authorize?response_type=code&client_id=dynastore&redirect_uri=/web/&state=init"
-                            class="px-4 py-2 rounded-lg bg-dyna-primary hover:bg-blue-600 text-white text-sm font-bold transition-all shadow-lg shadow-blue-500/20">
-                            Sign In
+                            title="Sign In"
+                            class="w-9 h-9 rounded-full bg-slate-800/50 border border-white/10 hover:bg-dyna-primary/20 hover:border-dyna-primary/50 flex items-center justify-center text-slate-400 hover:text-white transition-all">
+                            <i class="fa-solid fa-user text-sm"></i>
                         </a>
                     </div>
                 </div>
@@ -905,7 +906,11 @@
                     </div>
 
                     <div class="pt-2">
-                        <button type="button" onclick="alert('Password reset link sent to your email!')" class="text-sm text-dyna-primary hover:underline font-medium">Change Password?</button>
+                        <button type="button"
+                            onclick="if(currentUser?.account_url) window.open(currentUser.account_url + '#/security/signingin', '_blank')"
+                            class="text-sm text-dyna-primary hover:underline font-medium flex items-center gap-1.5">
+                            Change Password <i class="fa-solid fa-arrow-up-right-from-square text-[10px]"></i>
+                        </button>
                     </div>
                 </form>
             </div>

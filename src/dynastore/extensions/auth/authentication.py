@@ -174,7 +174,9 @@ class Authentication(ExtensionProtocol):
         async def userinfo(authorization: str = Header(None)):
             """
             OAuth2 UserInfo Endpoint.
-            Returns user profile from Keycloak token.
+            Returns normalized user profile from the validated JWT token.
+            Uses validate_token so realm_roles, client_roles, account_url are always present
+            regardless of Keycloak mapper configuration.
             """
             if not authorization or not authorization.startswith("Bearer "):
                 raise HTTPException(401, "Missing or invalid Authorization header")
@@ -182,11 +184,9 @@ class Authentication(ExtensionProtocol):
             token = authorization[7:]
 
             if self.identity_provider:
-                try:
-                    user_info = await self.identity_provider.get_user_info(token)
-                    return user_info
-                except Exception as e:
-                    logger.debug("IdP userinfo failed: %s", e)
+                identity = await self.identity_provider.validate_token(token)
+                if identity:
+                    return identity
 
             raise HTTPException(401, "Invalid access token")
 

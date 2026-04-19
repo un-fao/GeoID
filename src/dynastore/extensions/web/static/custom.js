@@ -815,17 +815,17 @@ function updateUserWidget(user) {
     const avatarEl = document.getElementById('user-avatar');
     const adminLink = document.getElementById('admin-panel-link');
 
-    if (nameEl) nameEl.innerText = user.username || user.name || 'User';
+    if (nameEl) nameEl.innerText = user.preferred_username || user.name || user.sub || 'User';
     if (emailEl) emailEl.innerText = user.email || '';
-    
+
     if (avatarEl) {
-        const initial = (user.username || user.name || 'U').charAt(0).toUpperCase();
+        const initial = (user.preferred_username || user.name || user.sub || 'U').charAt(0).toUpperCase();
         avatarEl.innerText = initial;
     }
 
     // Role-based visibility for Admin Panel
     if (adminLink) {
-        const roles = user.roles || []; // Note: /auth/me should return roles if possible
+        const roles = user.roles || [...(user.realm_roles || []), ...(user.client_roles || [])];
         const isPrivileged = roles.includes('sysadmin') || roles.includes('admin');
         if (isPrivileged) {
             adminLink.classList.remove('hidden');
@@ -886,14 +886,16 @@ function showProfileModal() {
 
     // Populate modal
     if (currentUser) {
-        document.getElementById('modal-display-name').innerText = currentUser.username || currentUser.name || 'User';
+        const displayName = currentUser.preferred_username || currentUser.name || currentUser.sub || 'User';
+        document.getElementById('modal-display-name').innerText = displayName;
         document.getElementById('modal-email').innerText = currentUser.email || '';
-        document.getElementById('modal-avatar-init').innerText = (currentUser.username || 'U').charAt(0).toUpperCase();
-        document.getElementById('profile-name-input').value = currentUser.username || '';
+        document.getElementById('modal-avatar-init').innerText = displayName.charAt(0).toUpperCase();
+        document.getElementById('profile-name-input').value = displayName;
         document.getElementById('profile-lang-input').value = currentLocale;
-        
-        const roles = currentUser.roles || ['user'];
-        document.getElementById('user-role-badge').innerText = roles[0].toUpperCase();
+
+        const roles = currentUser.roles || [...(currentUser.realm_roles || []), ...(currentUser.client_roles || [])];
+        const topRole = roles.find(r => ['sysadmin', 'admin'].includes(r)) || roles[0] || 'user';
+        document.getElementById('user-role-badge').innerText = topRole.toUpperCase();
     }
 
     modal.classList.remove('hidden');

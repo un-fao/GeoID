@@ -46,6 +46,12 @@ def configure_swagger_ui(app: FastAPI):
         "displayOperationId": False,
     })
 
+    app.swagger_ui_init_oauth = {
+        "clientId": "dynastore",
+        "usePkceWithAuthorizationCodeGrant": True,
+        "scopes": "openid email profile",
+    }
+
     # --- CRITICAL FIX: Remove existing /docs route ---
     for route in list(app.router.routes):
         if getattr(route, "path", "") == "/docs":
