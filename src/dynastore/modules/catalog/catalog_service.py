@@ -393,6 +393,26 @@ class CatalogService(CatalogsProtocol):
             catalog_id, collection_id, db_resource=db_resource
         )
 
+    async def is_active(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        db_resource: Optional[DbResource] = None,
+    ) -> bool:
+        return await self._col_svc.is_active(
+            catalog_id, collection_id, db_resource=db_resource
+        )
+
+    async def activate_collection(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        ctx: Optional["DriverContext"] = None,
+    ) -> None:
+        await self._col_svc.activate_collection(
+            catalog_id, collection_id, ctx=ctx,
+        )
+
     async def set_physical_table(
         self,
         catalog_id: str,
