@@ -169,3 +169,20 @@ def test_volumes_declares_pass5_conformance_set():
     declared = _read_volumes_conformance_uris_from_source()
     missing = EXPECTED_PASS5_VOLUMES_URIS - declared
     assert not missing, f"Volumes missing Pass 5 URIs: {sorted(missing)}"
+
+
+EXPECTED_PASS4_JOINS_URIS = {
+    "http://www.opengis.net/spec/ogcapi-joins-1/0.0/conf/core",
+}
+
+
+def _read_joins_conformance_uris_from_source() -> set:
+    return _read_uri_list_from_source(
+        "extensions/joins/joins_service.py", "OGC_API_JOINS_URIS",
+    )
+
+
+def test_joins_declares_pass4_conformance_set():
+    declared = _read_joins_conformance_uris_from_source()
+    missing = EXPECTED_PASS4_JOINS_URIS - declared
+    assert not missing, f"Joins missing Pass 4 URIs: {sorted(missing)}"
