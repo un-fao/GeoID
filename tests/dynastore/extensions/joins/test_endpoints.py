@@ -227,6 +227,96 @@ async def test_execute_join_named_404_when_secondary_missing(monkeypatch):
     assert exc.value.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_primary_filter_forwarded_as_cql_filter_on_query_request(monkeypatch):
+    """When primary_filter is set, driver.read_entities sees request.cql_filter."""
+    from unittest.mock import AsyncMock, MagicMock
+    from fastapi import Request
+    from dynastore.extensions.joins.joins_service import JoinsService
+    from dynastore.modules.joins.models import (
+        BigQuerySecondarySpec, JoinRequest, JoinSpec, PrimaryFilterSpec,
+    )
+    from dynastore.modules.storage.drivers.bigquery_models import BigQueryTarget
+
+    observed_requests = []
+
+    class _RecordingPrimary:
+        async def read_entities(self, catalog_id, collection_id, **kwargs):
+            observed_requests.append(kwargs.get("request"))
+            if False:
+                yield  # empty stream — join returns no features
+
+    async def fake_bq_stream(spec, *, secondary_column, **kwargs):
+        if False:
+            yield
+
+    import dynastore.modules.joins.bq_secondary as bq_mod
+    monkeypatch.setattr(bq_mod, "stream_bigquery_secondary", fake_bq_stream)
+    import dynastore.extensions.joins.joins_service as svc_mod
+    monkeypatch.setattr(svc_mod, "stream_bigquery_secondary", fake_bq_stream)
+
+    primary_resolved = type("R", (), {"driver": _RecordingPrimary()})()
+    monkeypatch.setattr(svc_mod, "resolve_drivers", AsyncMock(return_value=[primary_resolved]))
+
+    svc = JoinsService()
+    req = MagicMock(spec=Request)
+    body = JoinRequest(
+        secondary=BigQuerySecondarySpec(
+            target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
+        ),
+        join=JoinSpec(primary_column="uid", secondary_column="user_id"),
+        primary_filter=PrimaryFilterSpec(cql="status='active'"),
+    )
+    await svc.execute_join("c", "l", req, body=body)
+    assert len(observed_requests) == 1
+    qr = observed_requests[0]
+    assert qr is not None
+    assert qr.cql_filter == "status='active'"
+
+
+@pytest.mark.asyncio
+async def test_primary_filter_validation_error_maps_to_400(monkeypatch):
+    """If the primary driver raises ValueError while parsing CQL, map to 400."""
+    from unittest.mock import AsyncMock, MagicMock
+    from fastapi import HTTPException, Request
+    from dynastore.extensions.joins.joins_service import JoinsService
+    from dynastore.modules.joins.models import (
+        BigQuerySecondarySpec, JoinRequest, JoinSpec, PrimaryFilterSpec,
+    )
+    from dynastore.modules.storage.drivers.bigquery_models import BigQueryTarget
+
+    class _RaisingPrimary:
+        async def read_entities(self, catalog_id, collection_id, **kwargs):
+            raise ValueError("Unknown CQL2 property: bogus_field")
+            yield  # pragma: no cover
+
+    async def fake_bq_stream(spec, *, secondary_column, **kwargs):
+        if False:
+            yield
+
+    import dynastore.modules.joins.bq_secondary as bq_mod
+    monkeypatch.setattr(bq_mod, "stream_bigquery_secondary", fake_bq_stream)
+    import dynastore.extensions.joins.joins_service as svc_mod
+    monkeypatch.setattr(svc_mod, "stream_bigquery_secondary", fake_bq_stream)
+
+    primary_resolved = type("R", (), {"driver": _RaisingPrimary()})()
+    monkeypatch.setattr(svc_mod, "resolve_drivers", AsyncMock(return_value=[primary_resolved]))
+
+    svc = JoinsService()
+    req = MagicMock(spec=Request)
+    body = JoinRequest(
+        secondary=BigQuerySecondarySpec(
+            target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
+        ),
+        join=JoinSpec(primary_column="uid", secondary_column="user_id"),
+        primary_filter=PrimaryFilterSpec(cql="bogus_field='x'"),
+    )
+    with pytest.raises(HTTPException) as exc:
+        await svc.execute_join("c", "l", req, body=body)
+    assert exc.value.status_code == 400
+    assert "Unknown CQL2 property" in str(exc.value.detail)
+
+
 def test_joins_service_discovered_via_entry_point():
     """JoinsService must be wired through the dynastore.extensions entry-point group.
 

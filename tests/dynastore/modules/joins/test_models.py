@@ -83,3 +83,30 @@ def test_bigquery_secondary_rejects_unfully_qualified_target_at_use_time():
 
     spec = BigQuerySecondarySpec(target=BigQueryTarget(project_id="p"))
     assert not spec.target.is_fully_qualified()
+
+
+def test_primary_filter_optional_and_validated():
+    from dynastore.modules.joins.models import PrimaryFilterSpec  # noqa: F401
+
+    # Absent by default.
+    req = JoinRequest(**_minimal_request_dict())
+    assert req.primary_filter is None
+
+    # Accepts CQL2-text (default).
+    req = JoinRequest(**_minimal_request_dict(), primary_filter={"cql": "status='active'"})
+    assert req.primary_filter is not None
+    assert req.primary_filter.cql == "status='active'"
+    assert req.primary_filter.cql_lang == "cql2-text"
+
+    # Rejects empty string.
+    with pytest.raises(ValidationError):
+        JoinRequest(**_minimal_request_dict(), primary_filter={"cql": ""})
+
+    # Rejects unknown cql_lang.
+    with pytest.raises(ValidationError):
+        JoinRequest(**_minimal_request_dict(), primary_filter={"cql": "x", "cql_lang": "ogc-filter"})
+
+
+def test_primary_filter_rejects_extra_fields():
+    with pytest.raises(ValidationError):
+        JoinRequest(**_minimal_request_dict(), primary_filter={"cql": "x", "bogus": 1})

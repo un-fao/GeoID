@@ -83,6 +83,21 @@ class OutputSpec(BaseModel):
     encoding: str = "utf-8"
 
 
+class PrimaryFilterSpec(BaseModel):
+    """CQL2 filter applied to the primary collection stream before join.
+
+    Forwarded to the primary driver via ``QueryRequest.cql_filter``.
+    The driver is responsible for parsing CQL2 (platform standard —
+    see ``modules/tools/cql.py:parse_cql_filter``). Drivers that don't
+    support CQL2 (e.g. the current ``CollectionBigQueryDriver`` Phase
+    4a impl) treat this as a no-op.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    cql: str = Field(..., min_length=1)
+    cql_lang: Literal["cql2-text", "cql2-json"] = "cql2-text"
+
+
 class JoinRequest(BaseModel):
     """Top-level POST body for /join/.../join.
 
@@ -94,6 +109,7 @@ class JoinRequest(BaseModel):
 
     secondary: SecondarySpec
     join: JoinSpec
+    primary_filter: Optional[PrimaryFilterSpec] = None
     projection: ProjectionSpec = Field(default_factory=ProjectionSpec)
     paging: Optional[PagingSpec] = None
     output: OutputSpec = Field(default_factory=OutputSpec)
