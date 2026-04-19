@@ -1,0 +1,61 @@
+# Exclude everything from the Docker build context that isn't required to
+# produce a runtime image. Keeps build uploads small, prevents accidental
+# secrets from leaking into layers, and isolates agent-facing context
+# files from the image.
+
+# VCS / tooling state
+.git
+.gitignore
+.github
+
+# Virtualenvs
+.venv
+venv
+env
+
+# Test / coverage / profiler artifacts
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+coverage.xml
+htmlcov
+*.prof
+*.log
+test_error.txt
+notebook_analysis.log
+test_output.log
+
+# Build artifacts
+build
+dist
+*.egg-info
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+
+# Logs produced by the stack itself (compose mounts `logs/` as a volume)
+logs
+
+# Notebook execution byproducts
+notebook_showcase/.output
+notebook_showcase/_output
+notebook_showcase/**/output*
+
+# Local / IDE state
+.vscode
+.idea
+*.swp
+.DS_Store
+
+# Agent-facing context files — local-only, never copied into the image.
+# See ~/.claude/CLAUDE.md rule: never commit / never bake.
+.memory
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+.cursorrules
+.aider*
+session-ses_*.md
+.claude

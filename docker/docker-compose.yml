@@ -49,6 +49,7 @@ services:
         BUILD_JUPYTERLITE: "true"
     container_name: geoid_catalog
     restart: always
+    stop_grace_period: 30s
     env_file: .env
     environment:
       SCOPE: ${CATALOG_SCOPE:-scope_catalog}
@@ -74,11 +75,21 @@ services:
         BUILD_JUPYTERLITE: "true"
     container_name: geoid_web
     restart: always
+    stop_grace_period: 30s
     env_file: .env
     environment:
       SCOPE: ${GEOID_SCOPE:-scope_geoid}
       TCP_PORT: 80
       UVICORN_WORKERS: 1
+      # Embedded logs dashboard: upstream URL includes the Dashboards base
+      # path so both the provisioner and the reverse proxy can forward
+      # requests unchanged. Keep in sync with the kibana service
+      # SERVER_BASEPATH env above. For prod against Elastic Cloud, set this
+      # to the managed Kibana endpoint (no /dashboards suffix) and provide
+      # KIBANA_UPSTREAM_API_KEY via Secret Manager.
+      KIBANA_UPSTREAM_URL: ${KIBANA_UPSTREAM_URL:-http://kibana:5601/dashboards}
+      KIBANA_UPSTREAM_API_KEY: ${KIBANA_UPSTREAM_API_KEY:-}
+      KIBANA_PUBLIC_PATH: ${KIBANA_PUBLIC_PATH:-/dashboards}
     ports:
       - "8080:80"
     volumes:
@@ -98,6 +109,7 @@ services:
         BUILD_JUPYTERLITE: "false"
     container_name: geoid_worker
     restart: always
+    stop_grace_period: 30s
     env_file: .env
     # Run in worker mode (same image as catalog, different modules + CMD)
     command: ["worker"]
@@ -122,9 +134,11 @@ services:
       dockerfile: docker/Dockerfile
       args:
         SCOPE: ${TOOLS_SCOPE:-scope_tools}
-        BUILD_JUPYTERLITE: "true"
+        # tools doesn't serve /web/pages/notebooks — skip the ~250 MB stage.
+        BUILD_JUPYTERLITE: "false"
     container_name: geoid_tools
     restart: always
+    stop_grace_period: 30s
     env_file: .env
     environment:
       SCOPE: ${TOOLS_SCOPE:-scope_tools}
@@ -147,9 +161,11 @@ services:
       dockerfile: docker/Dockerfile
       args:
         SCOPE: ${MAPS_SCOPE:-scope_maps}
-        BUILD_JUPYTERLITE: "true"
+        # maps serves raster tiles, not notebooks — skip the ~250 MB stage.
+        BUILD_JUPYTERLITE: "false"
     container_name: geoid_maps
     restart: always
+    stop_grace_period: 30s
     env_file: .env
     environment:
       SCOPE: ${MAPS_SCOPE:-scope_maps}
@@ -198,6 +214,13 @@ services:
     environment:
       - OPENSEARCH_HOSTS=http://elasticsearch:9200
       - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+      # Serve Dashboards under /dashboards so the geoid reverse-proxy
+      # (see extensions/logs/dashboards_proxy.py) can mount same-origin on
+      # the geoid ingress without path rewriting. Rendered URLs in
+      # responses are prefixed with /dashboards, which matches the proxy
+      # mount path.
+      - SERVER_BASEPATH=/dashboards
+      - SERVER_REWRITEBASEPATH=true
     ports:
       - "5601:5601"
     depends_on:
