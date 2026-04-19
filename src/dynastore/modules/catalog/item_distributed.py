@@ -68,9 +68,13 @@ class ItemDistributedMixin(_Host):
         if not phys_table:
             phys_table = collection_id
 
-        logger.debug(
-            f"DISTRIBUTED UPSERT: collection={catalog_id}.{collection_id}, phys={phys_schema}.{phys_table}, sidecars={[s.sidecar_id for s in sidecars]}"
-        )
+        # Previously logged a per-item DEBUG line here ("DISTRIBUTED UPSERT:
+        # collection=..., phys=..., sidecars=..."). Removed because callers
+        # invoke this in tight loops (dimension materialisation, bulk
+        # ingestion, migrations) — thousands of identical lines per second
+        # flooded Cloud Logging and produced no signal the batch-level
+        # loggers don't already carry. If you need per-row tracing for
+        # debugging, enable TRACE-style logging at the caller.
 
         # 1. Resolve write policy from the config waterfall (same as all drivers)
         configs = get_protocol(ConfigsProtocol)

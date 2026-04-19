@@ -104,6 +104,7 @@ task_ingestion = ["dynastore[geospatial,module_gcp]"]
 task_dwh_join = ["dynastore[dwh]"]
 task_export_features = ["dynastore[geospatial_core,stac]"]
 task_tiles_preseed = ["dynastore[geospatial_core]", "morecantile==7.0.2"]
+task_dimensions_materialize = ["dynastore[extension_dimensions]"]
 
 # ==========================================================================
 # PUBLIC FEATURE ALIASES — compose module + extension in one name
@@ -196,6 +197,7 @@ task_ingestion_job = ["dynastore[ingestion,catalog_grp,google_grp,gdal]"]
 task_export_features_job = ["dynastore[task_base,stac,geospatial_core]"]
 task_tiles_preseed_job = ["dynastore[task_base,tiles,crs]"]
 task_gdal_job = ["dynastore[task_base,gdal]"]
+task_dimensions_materialize_job = ["dynastore[task_base,extension_dimensions]"]
 
 # ==========================================================================
 # SERVICE COMPOSITIONS (async-db)
@@ -269,7 +271,7 @@ api_full = ["dynastore[api_catalog,maps_grp,geospatial_io]"]
 # geoid_service: api_catalog + geoid extension — the ONLY service with auth
 geoid_service = ["dynastore[api_catalog,extension_geoid]"]
 # worker_service: background task processor (sync-db tasks + async-db catalog reads), no auth
-worker_service = ["dynastore[core,catalog_grp,google_grp,index_grp,tasks,processes,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision]"]
+worker_service = ["dynastore[core,catalog_grp,google_grp,index_grp,tasks,processes,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision,task_dimensions_materialize,task_dimensions_materialize_job]"]
 # catalog_local: local dev catalog — api_open without google_grp/gcp_cloud_runner (no tools_grp: use the dedicated tools service)
 catalog_local = ["dynastore[core,catalog_grp,monitor_grp,index_grp,processes]"]
 # worker_local: local HTTP simulation of Cloud Run Jobs — all tasks + processes/stats UI
@@ -284,7 +286,7 @@ scope_catalog = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,pr
 # scope_geoid: catalog + geoid UI + auth/iam — maps to geospatial-auth in cloud
 scope_geoid = ["dynastore[scope_catalog,extension_geoid,auth_grp]"]
 # scope_worker: background task processor — headless Cloud Run job runner
-scope_worker = ["dynastore[core,module_catalog,gcp,extension_dwh,index_grp,tasks,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision]"]
+scope_worker = ["dynastore[core,module_catalog,gcp,extension_dwh,index_grp,tasks,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision,task_dimensions_materialize,task_dimensions_materialize_job]"]
 # scope_tools: proxy + template tools service — no auth
 scope_tools = ["dynastore[core,template,notebooks,cache,dimensions,proxy]"]
 # scope_maps: map tiles/styles service — no auth
@@ -378,6 +380,7 @@ ingestion = "dynastore.tasks.ingestion.ingestion_task:IngestionTask"
 dwh_join = "dynastore.tasks.dwh_join.dwh_join_export_task:DwhJoinExportTask"
 export_features = "dynastore.tasks.export_features.export_features_task:ExportFeaturesTask"
 tiles_preseed = "dynastore.tasks.tiles_preseed.task:TilePreseedTask"
+dimensions_materialize = "dynastore.tasks.dimensions_materialize.task:DimensionsMaterializeTask"
 gcs_storage_event = "dynastore.tasks.gcp.gcs_storage_event_task:GcsStorageEventTask"
 gcp_catalog_cleanup = "dynastore.tasks.gcp.gcp_catalog_cleanup_task:GcpCatalogCleanupTask"
 

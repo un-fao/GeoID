@@ -36,9 +36,8 @@ The extension declares OGC API - Dimensions conformance as a
 - ``dimension-hierarchical`` — children / ancestors navigation
 """
 
-import hashlib
-import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
@@ -49,8 +48,6 @@ from dynastore.models.driver_context import DriverContext
 
 logger = logging.getLogger(__name__)
 
-
-_FINGERPRINT_PROPERTY_PREFIX = "dimensions_materialized_fingerprint:"
 
 # Bumped when the migration target changes. Existing pods write this key
 # after a successful one-shot, so subsequent boots skip the inspection
@@ -67,14 +64,14 @@ async def _migrate_stale_attributes_indexes(properties: Any, engine: Any) -> Non
     The fix at attributes.py:400 changed it to ``(geoid, validity, external_id)``
     but ``CREATE UNIQUE INDEX IF NOT EXISTS`` does not drop the old shape
     on existing tables. Result: the upsert's ``ON CONFLICT (geoid, validity)``
-    target misses the stale 2-column index → 23505 → fingerprint sentinel
-    never persists → every reboot re-runs the failed materialise.
+    target misses the stale 2-column index → 23505 → the materialisation
+    task fails and the collection's ``cube:dimensions`` never gets updated →
+    every re-run goes through the full upsert path again.
 
     This migration finds those stale indexes in the dimensions catalog's
-    physical schema and rebuilds them. Bounded scope: we only touch the
-    ``_dimensions_`` catalog because that's the only path that re-upserts
-    on every lifespan boot — other tenant schemas hit this latent bug only
-    on explicit re-ingestion of conflicting rows.
+    physical schema and rebuilds them. Bounded scope: only the
+    ``_dimensions_`` catalog is touched — other tenant schemas hit this
+    latent bug only on explicit re-ingestion of conflicting rows.
 
     Idempotent: persists a done flag via PropertiesProtocol so the
     inspection runs at most once per pod boot per platform deployment.
@@ -186,43 +183,6 @@ async def _migrate_stale_attributes_indexes(properties: Any, engine: Any) -> Non
     except Exception as exc:  # noqa: BLE001
         logger.debug("Stale-index migration: set_property failed: %s", exc)
 
-
-def _dimension_fingerprint(dim_config: Any) -> str:
-    """Deterministic 16-hex-char fingerprint of the inputs that materially
-    change a dimension's materialised members.
-
-    Two pods with the same code produce the same fingerprint; a code
-    change to the provider class, its serialisable state, or the extent
-    bounds yields a different fingerprint and forces re-materialisation.
-
-    Provider state is extracted in this order of precedence:
-    1. ``model_dump()`` — Pydantic v2 path; recurses through nested models.
-    2. ``vars(provider)`` — plain Python objects; returns ``__dict__`` which
-       holds the constructor-stored field values.
-    3. ``repr(provider)`` — last-resort fallback. **Avoid landing here**:
-       the default ``object.__repr__`` includes the instance memory
-       address, which makes the fingerprint non-deterministic across
-       pod boots and silently disables the materialisation sentinel.
-    """
-    provider = getattr(dim_config, "provider", None)
-    if provider is None:
-        provider_state: Any = None
-    elif hasattr(provider, "model_dump"):
-        provider_state = provider.model_dump()
-    else:
-        try:
-            provider_state = vars(provider)
-        except TypeError:
-            provider_state = repr(provider)
-
-    payload = {
-        "provider_class": type(provider).__qualname__ if provider is not None else None,
-        "provider_state": provider_state,
-        "extent_min": getattr(dim_config, "extent_min", None),
-        "extent_max": getattr(dim_config, "extent_max", None),
-    }
-    blob = json.dumps(payload, sort_keys=True, default=str).encode()
-    return hashlib.sha256(blob).hexdigest()[:16]
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -414,46 +374,61 @@ async def _enumerate_all_members(
     return features
 
 
-async def _materialize_dimension(
+def _extract_stored_cube_dimensions(existing: Any) -> Dict[str, Any]:
+    """Return the ``cube:dimensions`` subtree stored on an existing collection.
+
+    Handles both localized (``LocalizedExtraMetadata``) and plain-dict shapes
+    of ``extra_metadata`` — the read path returns a Pydantic model whose
+    ``resolve("en")`` yields the flat dict, while some callers pass the raw
+    dict. Missing values resolve to ``{}``.
+    """
+    if existing is None:
+        return {}
+    em = getattr(existing, "extra_metadata", None) or {}
+    if hasattr(em, "resolve"):
+        try:
+            em = em.resolve("en") or {}
+        except Exception:
+            em = {}
+    if not isinstance(em, dict):
+        return {}
+    cube = em.get("cube:dimensions") or {}
+    return cube if isinstance(cube, dict) else {}
+
+
+async def materialize_dimension(
     catalogs: Any,
-    properties: Any,
     dim_name: str,
     dim_config: Any,
     db_resource: Any,
-) -> int:
-    """Create a RECORDS collection and upsert all dimension members.
+    *,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Create (if missing) a RECORDS collection and upsert all dimension
+    members for ``dim_name``.
 
-    Returns the number of records materialised. Returns 0 (skips silently)
-    when the persisted fingerprint matches the current ``dim_config`` —
-    i.e. nothing in the dimension definition has changed since the last
-    successful materialisation, so we'd just re-do identical UPSERTs and
-    burn round-trips on every pod startup.
+    Idempotency is gated by a **deep-equal comparison** between the
+    collection's persisted ``extra_metadata["cube:dimensions"]`` and the
+    value built from the current ``dim_config``. When they match the
+    upsert loop is skipped entirely — the existing collection already
+    reflects the desired state. This replaces the previous
+    ``PropertiesProtocol``-backed SHA256 fingerprint (opaque, split-state,
+    fragile when the property store was missing).
+
+    Pass ``force=True`` to bypass the skip and re-upsert unconditionally
+    (used by the ``dimensions_materialize`` OGC Process when the caller
+    explicitly asks for a rebuild).
+
+    Returns a small summary dict: ``{"materialized": int, "skipped": bool,
+    "reason": str}``. Callers can aggregate these across dimensions.
     """
-    expected_fp = _dimension_fingerprint(dim_config)
-    fp_key = f"{_FINGERPRINT_PROPERTY_PREFIX}{dim_name}"
-
-    if properties is not None:
-        try:
-            stored_fp = await properties.get_property(fp_key, db_resource=db_resource)
-        except Exception as exc:  # noqa: BLE001 — degrade to re-materialise
-            logger.debug("Failed to read fingerprint for '%s': %s", dim_name, exc)
-            stored_fp = None
-        if stored_fp == expected_fp:
-            logger.info(
-                "Dimension '%s' already materialised (fingerprint=%s) — skipping.",
-                dim_name, expected_fp,
-            )
-            return 0
-
     generator = dim_config.provider
     dim_type = _infer_dim_type(generator)
-
-    # Build provider objects: full at collection level, slim inside cube:dimensions
-    provider = _build_provider(generator)
     cube_dimensions = _build_cube_dimensions(dim_name, dim_type, generator)
+    provider = _build_provider(generator)
 
-    # Build extent for temporal dimensions. STAC Collection requires `spatial`;
-    # dimension records are not geographically bounded, so default to global bbox.
+    # Extent for temporal dimensions — STAC Collection requires `spatial`;
+    # dimension records are not geographically bounded, so default to global.
     extent = None
     if dim_type == "temporal" and dim_config.extent_min and dim_config.extent_max:
         extent = {
@@ -466,30 +441,42 @@ async def _materialize_dimension(
         }
 
     # Defensive: ensure the dimensions catalog row is visible inside THIS
-    # transaction. The outer lifespan pre-creates it, but if that tx lost a
-    # multi-replica race (two pods starting at once) the row may not be where
-    # this tx can see it yet — re-asserting here is idempotent thanks to the
-    # ON CONFLICT guard in the INSERT, and closes the window cheaply.
+    # transaction. The outer caller may have pre-created it, but multi-replica
+    # races can leave the row invisible to this tx. ``ensure_catalog_exists``
+    # is idempotent thanks to ON CONFLICT.
     await catalogs.ensure_catalog_exists(
         DIMENSIONS_CATALOG_ID, ctx=DriverContext(db_resource=db_resource),
     )
 
-    # Create RECORDS collection (idempotent — skips if exists)
     existing = await catalogs.get_collection(
         DIMENSIONS_CATALOG_ID, dim_name, lang="en",
         ctx=DriverContext(db_resource=db_resource),
     )
+
+    # Fast-path: collection exists and its persisted cube:dimensions matches
+    # what the current dim_config would produce → nothing to do.
+    if existing and not force:
+        stored_cube = _extract_stored_cube_dimensions(existing)
+        if stored_cube == cube_dimensions:
+            logger.info(
+                "Dimension '%s' unchanged (cube:dimensions match) — skipping.",
+                dim_name,
+            )
+            return {"materialized": 0, "skipped": True, "reason": "unchanged"}
+
+    desired_extra: Dict[str, Any] = {
+        "provider": provider,
+        "cube:dimensions": cube_dimensions,
+        "itemType": "record",
+    }
+
     if not existing:
         collection_def: Dict[str, Any] = {
             "id": dim_name,
             "title": dim_name.replace("-", " ").title(),
             "description": dim_config.description,
             "layer_config": {"collection_type": "RECORDS"},
-            "extra_metadata": {
-                "provider": provider,
-                "cube:dimensions": cube_dimensions,
-                "itemType": "record",
-            },
+            "extra_metadata": desired_extra,
         }
         if extent:
             collection_def["extent"] = extent
@@ -501,15 +488,20 @@ async def _materialize_dimension(
         )
         logger.info("Created RECORDS collection: %s/%s", DIMENSIONS_CATALOG_ID, dim_name)
 
-    # Generate all members
+    # Generate all members.
     features = await _enumerate_all_members(
         generator, dim_config.extent_min, dim_config.extent_max, dim_name, dim_type,
     )
 
     if not features:
-        return 0
+        # Still refresh cube:dimensions on the collection so a future run
+        # with members can detect "unchanged" correctly.
+        if existing:
+            await _update_collection_cube_dims(
+                catalogs, dim_name, desired_extra, extent, db_resource,
+            )
+        return {"materialized": 0, "skipped": False, "reason": "no_members"}
 
-    # Batch upsert
     total = 0
     for i in range(0, len(features), UPSERT_BATCH_SIZE):
         batch = features[i : i + UPSERT_BATCH_SIZE]
@@ -522,52 +514,116 @@ async def _materialize_dimension(
             i, i + len(batch), dim_name, total,
         )
 
-    # Persist the fingerprint so subsequent pod startups skip this work.
-    if properties is not None:
-        try:
-            await properties.set_property(
-                fp_key, expected_fp, "dimensions_extension",
-                db_resource=db_resource,
-            )
-        except Exception as exc:  # noqa: BLE001 — non-fatal; next reboot retries
-            logger.warning(
-                "Failed to persist materialisation fingerprint for '%s': %s",
-                dim_name, exc,
-            )
+    # Refresh cube:dimensions / provider / extent on the collection so the
+    # next run's equality check sees the new state (and the cache drops
+    # its stale copy via the update_collection invalidation hook).
+    if existing:
+        await _update_collection_cube_dims(
+            catalogs, dim_name, desired_extra, extent, db_resource,
+        )
 
-    return total
+    return {"materialized": total, "skipped": False, "reason": "materialized"}
 
 
-async def _materialize_all_dimensions(dimensions: Dict[str, Any]) -> None:
-    """Materialize all registered dimensions as Records collections.
+async def _update_collection_cube_dims(
+    catalogs: Any,
+    dim_name: str,
+    desired_extra: Dict[str, Any],
+    extent: Optional[Dict[str, Any]],
+    db_resource: Any,
+) -> None:
+    """Update a dimensions-catalog collection's extra_metadata (and extent)
+    to reflect the latest ``cube:dimensions`` / ``provider`` values.
 
-    Each dimension's materialisation is gated by a fingerprint stored via
-    ``PropertiesProtocol``: warm restarts (no code change) skip the work
-    entirely, so the lifespan no longer storms the cluster on every pod
-    boot. Cold deploys with changed dimension definitions re-materialise
-    only the affected dimensions.
+    Called after the upsert loop so the persisted collection row is the
+    single source of truth for future equality-based skip decisions, and
+    so ``update_collection``'s cache invalidation propagates the new
+    values to the L1/L2 cache.
+    """
+    updates: Dict[str, Any] = {"extra_metadata": desired_extra}
+    if extent:
+        updates["extent"] = extent
+    try:
+        await catalogs.update_collection(
+            DIMENSIONS_CATALOG_ID,
+            dim_name,
+            updates,
+            ctx=DriverContext(db_resource=db_resource),
+        )
+    except Exception as exc:  # noqa: BLE001 — non-fatal; next run will retry
+        logger.warning(
+            "Failed to refresh cube:dimensions on '%s/%s': %s. "
+            "Next run will re-materialise and try again.",
+            DIMENSIONS_CATALOG_ID, dim_name, exc,
+        )
+
+
+def get_registered_dimensions() -> Dict[str, Any]:
+    """Return the ``{dim_name: DimensionConfig}`` dict the running
+    ``DimensionsExtension`` instance registered at init time.
+
+    Looked up via the extensions registry so callers (notably the
+    ``dimensions_materialize`` task) don't have to import
+    ``ogc_dimensions`` directly — that package is an optional extra,
+    and importing it at task-module import time would break scopes
+    that don't include the dimensions extension.
+
+    Returns an empty dict if the extension isn't registered in the
+    current process.
+    """
+    try:
+        from dynastore.extensions.registry import _DYNASTORE_EXTENSIONS
+    except ImportError:
+        return {}
+
+    for config in _DYNASTORE_EXTENSIONS.values():
+        instance = getattr(config, "instance", None)
+        if instance is None:
+            continue
+        # Match by class name to avoid importing DimensionsExtension here —
+        # the extension module pulls in ``ogc_dimensions`` at import time.
+        if type(instance).__name__ == "DimensionsExtension":
+            dims = getattr(instance, "_dimensions", None)
+            if isinstance(dims, dict):
+                return dims
+    return {}
+
+
+async def materialize_all_dimensions(
+    dimensions: Dict[str, Any],
+    *,
+    dim_names: Optional[List[str]] = None,
+    force: bool = False,
+) -> Dict[str, Dict[str, Any]]:
+    """Materialize the configured dimensions as Records collections.
+
+    ``dim_names=None`` (default) materialises every dimension in
+    ``dimensions``; otherwise only the named subset is processed.
+
+    ``force=True`` bypasses the per-dimension cube:dimensions equality
+    skip. Use it from the OGC Process task when the caller explicitly
+    asks for a rebuild.
+
+    Returns a summary dict ``{dim_name: {"materialized": int,
+    "skipped": bool, "reason": str, "error": str | None}}`` so callers
+    (the task, a notebook, a test) can report per-dimension results.
     """
     from dynastore.models.protocols.catalogs import CatalogsProtocol
     from dynastore.models.protocols import PropertiesProtocol
     from dynastore.tools.discovery import get_protocol
     from dynastore.tools.protocol_helpers import get_engine
 
+    results: Dict[str, Dict[str, Any]] = {}
+
     catalogs = get_protocol(CatalogsProtocol)
     if not catalogs:
         logger.warning("CatalogsProtocol not available — skipping dimension materialization.")
-        return
-
-    properties = get_protocol(PropertiesProtocol)
-    if properties is None:
-        logger.warning(
-            "PropertiesProtocol not available — fingerprint sentinel disabled, "
-            "every reboot will re-materialise all dimensions."
-        )
+        return results
 
     engine = get_engine()
     if not engine:
         logger.warning("DB engine not available — skipping dimension materialization.")
-        return
+        return results
 
     try:
         # Pass engine, not a held conn: ensure_catalog_exists opens its own
@@ -580,12 +636,15 @@ async def _materialize_all_dimensions(dimensions: Dict[str, Any]) -> None:
         )
     except Exception as exc:
         logger.error("Failed to ensure dimensions catalog: %s", exc)
-        return
+        return results
 
     # One-shot: rebuild any stale unique attribute indexes on existing
     # dimension tables that predate the attributes.py:400 fix. Without
-    # this the materialise upsert keeps failing → fingerprint never
-    # persists → every reboot re-runs the same failing upsert.
+    # this, upserts fail with 23505, the collection's cube:dimensions is
+    # never updated, and every invocation re-runs the same failing upsert.
+    # Gated by PropertiesProtocol; if the protocol isn't registered the
+    # migration is skipped (the upserts will still retry on next call).
+    properties = get_protocol(PropertiesProtocol)
     try:
         await _migrate_stale_attributes_indexes(properties, engine)
     except Exception as exc:  # noqa: BLE001 — non-fatal; log and proceed
@@ -594,27 +653,48 @@ async def _materialize_all_dimensions(dimensions: Dict[str, Any]) -> None:
             "still try, but pre-fix tables may keep failing.", exc,
         )
 
+    targets: Dict[str, Any]
+    if dim_names is None:
+        targets = dimensions
+    else:
+        targets = {k: v for k, v in dimensions.items() if k in set(dim_names)}
+        missing = set(dim_names) - set(targets.keys())
+        for m in missing:
+            results[m] = {
+                "materialized": 0, "skipped": False,
+                "reason": "not_registered", "error": None,
+            }
+
     grand_total = 0
-    for dim_name, dim_config in dimensions.items():
+    for dim_name, dim_config in targets.items():
         try:
-            count = await _materialize_dimension(
-                catalogs, properties, dim_name, dim_config, db_resource=engine,
+            summary = await materialize_dimension(
+                catalogs, dim_name, dim_config, db_resource=engine, force=force,
             )
-            grand_total += count
+            results[dim_name] = {**summary, "error": None}
+            grand_total += summary.get("materialized", 0)
+            if summary.get("skipped"):
+                continue
             logger.info(
-                "Materialized %d records for dimension '%s'", count, dim_name,
+                "Materialized %d records for dimension '%s'",
+                summary.get("materialized", 0), dim_name,
             )
         except Exception as exc:
             logger.error(
                 "Failed to materialize dimension '%s': %s", dim_name, exc,
                 exc_info=True,
             )
+            results[dim_name] = {
+                "materialized": 0, "skipped": False,
+                "reason": "error", "error": str(exc),
+            }
 
     logger.info(
         "Dimension materialization complete: %d total records across %d dimensions.",
         grand_total,
-        len(dimensions),
+        len(targets),
     )
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -743,11 +823,26 @@ class DimensionsExtension(ExtensionProtocol):
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
-        # Materialize all dimension members as Records
-        await _materialize_all_dimensions(self._dimensions)
-
-        logger.info(
-            "DimensionsExtension: materialization complete "
-            "(OGC Dimensions profile of OGC API - Records)."
+        # Heavy dimension materialisation used to run on every pod boot.
+        # On Cloud Run that blocked readiness and stormed the DB at scale.
+        # The work now lives in the `dimensions_materialize` OGC Process
+        # task — trigger it explicitly once per deploy (manually or via a
+        # deploy hook). The lifespan only keeps the fallback for local/dev
+        # convenience, gated by an env flag (default off).
+        on_boot = os.getenv("DIMENSIONS_MATERIALIZE_ON_BOOT", "").lower() in (
+            "1", "true", "yes", "on",
         )
+        if on_boot:
+            logger.info(
+                "DIMENSIONS_MATERIALIZE_ON_BOOT=1 — running in-lifespan "
+                "materialisation. Prefer the dimensions_materialize task "
+                "for production.",
+            )
+            await materialize_all_dimensions(self._dimensions)
+        else:
+            logger.info(
+                "DimensionsExtension: lifespan materialisation skipped "
+                "(set DIMENSIONS_MATERIALIZE_ON_BOOT=1 to enable). Trigger "
+                "the 'dimensions_materialize' OGC Process to populate.",
+            )
         yield
