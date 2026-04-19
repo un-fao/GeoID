@@ -21,25 +21,6 @@ async def test_describe_lists_registered_driver():
     assert payload["primary"]["catalog"] == "c"
 
 
-@pytest.mark.asyncio
-async def test_execute_join_pr1_returns_empty_feature_collection():
-    from unittest.mock import MagicMock
-    from fastapi import Request
-    from dynastore.modules.joins.models import (
-        JoinRequest,
-        JoinSpec,
-        NamedSecondarySpec,
-    )
-
-    svc = _build_service()
-    req = MagicMock(spec=Request)
-    body = JoinRequest(
-        secondary=NamedSecondarySpec(ref="some-collection"),
-        join=JoinSpec(primary_column="uid", secondary_column="user_id"),
-    )
-    resp = await svc.execute_join("c", "l", req, body=body)
-    assert resp["type"] == "FeatureCollection"
-    assert resp["features"] == []
 
 
 @pytest.mark.asyncio
@@ -172,20 +153,75 @@ async def test_execute_join_bigquery_returns_404_when_no_primary_driver(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_execute_join_named_still_returns_pr1_stub():
+async def test_execute_join_named_secondary_resolves_via_registry(monkeypatch):
+    """Both primary and secondary resolved via resolve_drivers; join executes."""
     from unittest.mock import MagicMock
     from fastapi import Request
     from dynastore.extensions.joins.joins_service import JoinsService
     from dynastore.modules.joins.models import (
         JoinRequest, JoinSpec, NamedSecondarySpec,
     )
+    from dynastore.models.ogc import Feature
+
+    class _PrimaryDriver:
+        async def read_entities(self, *args, **kwargs):
+            yield Feature(type="Feature", id="p1", geometry=None,
+                          properties={"uid": "alice", "color": "red"})
+
+    class _SecondaryDriver:
+        async def read_entities(self, *args, **kwargs):
+            yield Feature(type="Feature", id="s1", geometry=None,
+                          properties={"user_id": "alice", "score": 99})
+
+    primary_resolved = type("R", (), {"driver": _PrimaryDriver()})()
+    secondary_resolved = type("R", (), {"driver": _SecondaryDriver()})()
+
+    # resolve_drivers is called twice: once for the secondary (with secondary
+    # collection_id) and once for the primary. Use a side_effect that returns
+    # the right driver per call.
+    calls = []
+    async def fake_resolve(operation, catalog_id, collection_id=None, **kwargs):
+        calls.append((catalog_id, collection_id))
+        if collection_id == "the-other-collection":
+            return [secondary_resolved]
+        return [primary_resolved]
+
+    import dynastore.extensions.joins.joins_service as svc_mod
+    monkeypatch.setattr(svc_mod, "resolve_drivers", fake_resolve)
 
     svc = JoinsService()
     req = MagicMock(spec=Request)
     body = JoinRequest(
-        secondary=NamedSecondarySpec(ref="some-collection"),
+        secondary=NamedSecondarySpec(ref="the-other-collection"),
         join=JoinSpec(primary_column="uid", secondary_column="user_id"),
     )
     resp = await svc.execute_join("c", "l", req, body=body)
     assert resp["type"] == "FeatureCollection"
-    assert "_phase4b_pr1_note" in resp
+    assert len(resp["features"]) == 1
+    assert resp["features"][0]["properties"]["score"] == 99
+    assert resp["_join_meta"]["secondary_ref"] == "the-other-collection"
+
+
+@pytest.mark.asyncio
+async def test_execute_join_named_404_when_secondary_missing(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+    from fastapi import HTTPException, Request
+    from dynastore.extensions.joins.joins_service import JoinsService
+    from dynastore.modules.joins.models import (
+        JoinRequest, JoinSpec, NamedSecondarySpec,
+    )
+
+    import dynastore.extensions.joins.joins_service as svc_mod
+    monkeypatch.setattr(
+        svc_mod, "resolve_drivers", AsyncMock(return_value=[]),
+    )
+
+    svc = JoinsService()
+    req = MagicMock(spec=Request)
+    body = JoinRequest(
+        secondary=NamedSecondarySpec(ref="missing"),
+        join=JoinSpec(primary_column="uid", secondary_column="user_id"),
+    )
+    with pytest.raises(HTTPException) as exc:
+        await svc.execute_join("c", "l", req, body=body)
+    assert exc.value.status_code == 404

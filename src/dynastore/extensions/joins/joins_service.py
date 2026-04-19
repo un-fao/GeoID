@@ -25,6 +25,7 @@ from dynastore.modules.joins.executor import index_secondary, run_join
 from dynastore.modules.joins.models import (
     BigQuerySecondarySpec,
     JoinRequest,
+    NamedSecondarySpec,
 )
 from dynastore.modules.storage.router import resolve_drivers
 
@@ -172,12 +173,62 @@ class JoinsService(ExtensionProtocol, OGCServiceMixin):
                 },
             }
 
-        # NamedSecondarySpec — registered-ref resolution is a separate PR.
-        return {
-            "type": "FeatureCollection",
-            "features": [],
-            "_phase4b_pr1_note": (
-                "Registered secondary resolution lands in a follow-up. "
-                "Use BigQuerySecondarySpec for inline targets in this build."
-            ),
-        }
+        if isinstance(body.secondary, NamedSecondarySpec):
+            # Resolve secondary collection via the platform's driver registry.
+            secondary_driver = await _resolve_primary_driver(catalog_id, body.secondary.ref)
+            if secondary_driver is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"Secondary collection {body.secondary.ref!r} has no READ "
+                        f"driver registered in catalog {catalog_id!r}."
+                    ),
+                )
+            # Drain the secondary into a lookup dict.
+            secondary_stream = _stream_primary_features(
+                secondary_driver,
+                catalog_id=catalog_id,
+                collection_id=body.secondary.ref,
+                primary_column=body.join.secondary_column,
+                limit=100_000,
+            )
+            secondary_index = await index_secondary(
+                secondary_stream, secondary_column=body.join.secondary_column,
+            )
+            # Resolve primary driver.
+            primary_driver = await _resolve_primary_driver(catalog_id, collection_id)
+            if primary_driver is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"No READ driver registered for primary "
+                        f"{catalog_id}/{collection_id}."
+                    ),
+                )
+            primary_stream = _stream_primary_features(
+                primary_driver,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                primary_column=body.join.primary_column,
+                limit=(body.paging.limit if body.paging else 100_000),
+            )
+            joined = [
+                feat async for feat in run_join(
+                    body, primary_stream=primary_stream,
+                    secondary_index=secondary_index,
+                )
+            ]
+            return {
+                "type": "FeatureCollection",
+                "features": [f.model_dump(by_alias=True, exclude_none=True) for f in joined],
+                "_join_meta": {
+                    "secondary_rows_materialized": len(secondary_index),
+                    "joined_features": len(joined),
+                    "secondary_ref": body.secondary.ref,
+                },
+            }
+
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported secondary spec: {type(body.secondary).__name__}",
+        )
