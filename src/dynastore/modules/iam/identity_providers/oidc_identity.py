@@ -193,14 +193,31 @@ class OidcIdentityProvider(IdentityProviderProtocol):
             decode_options: Dict[str, Any] = {"verify_exp": True}
             if not verify_audience:
                 decode_options["verify_aud"] = False
-            claims = jwt.decode(
-                token,
-                key=signing_key.key,
-                algorithms=["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"],
-                audience=self.audience if verify_audience else None,
-                issuer=self.issuer_url,
-                options=decode_options,
+            # Keycloak sets iss to the public/frontend URL (self.public_url),
+            # which may differ from the internal Docker issuer_url used for
+            # JWKS discovery. Accept either to handle proxy deployments.
+            accepted_issuers = (
+                [self.public_url, self.issuer_url]
+                if self.public_url != self.issuer_url
+                else [self.issuer_url]
             )
+            claims = None
+            last_err: Exception = RuntimeError("No issuers to try")
+            for iss in accepted_issuers:
+                try:
+                    claims = jwt.decode(
+                        token,
+                        key=signing_key.key,
+                        algorithms=["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"],
+                        audience=self.audience if verify_audience else None,
+                        issuer=iss,
+                        options=decode_options,
+                    )
+                    break
+                except InvalidTokenError as _e:
+                    last_err = _e
+            if claims is None:
+                raise last_err
         except ExpiredSignatureError:
             logger.debug("OIDC token expired")
             return None
