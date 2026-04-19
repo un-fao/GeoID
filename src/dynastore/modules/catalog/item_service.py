@@ -327,12 +327,25 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
         from dynastore.models.protocols.storage_driver import Capability
         if primary is not None and Capability.QUERY_FALLBACK_SOURCE not in primary.driver.capabilities:
-            results = await primary.driver.write_entities(
-                catalog_id,
-                collection_id,
-                items_list,
-                context=processing_context,
-            )
+            chunk_size = getattr(primary.driver, "preferred_chunk_size", 0)
+            if chunk_size > 0 and len(items_list) > chunk_size:
+                results = []
+                for i in range(0, len(items_list), chunk_size):
+                    chunk = items_list[i : i + chunk_size]
+                    chunk_results = await primary.driver.write_entities(
+                        catalog_id,
+                        collection_id,
+                        chunk,
+                        context=processing_context,
+                    )
+                    results.extend(chunk_results or [])
+            else:
+                results = await primary.driver.write_entities(
+                    catalog_id,
+                    collection_id,
+                    items_list,
+                    context=processing_context,
+                )
             results = results or []
 
             # Fan-out to secondary drivers (positions 1+)

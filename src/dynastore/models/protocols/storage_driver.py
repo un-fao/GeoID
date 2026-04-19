@@ -182,6 +182,7 @@ class CollectionItemsStore(Protocol):
     capabilities: FrozenSet[str]
     preferred_for: FrozenSet[str]
     supported_hints: FrozenSet[str]
+    preferred_chunk_size: int  # 0 = no preference; >0 = max items per write_entities call
     # description: ClassVar[LocalizedText]  — declared in each concrete driver class
 
     def is_available(self) -> bool:

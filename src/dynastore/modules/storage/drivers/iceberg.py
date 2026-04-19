@@ -136,6 +136,7 @@ class CollectionIcebergDriver(ModuleProtocol):
     """
 
     priority: int = 20
+    preferred_chunk_size: int = 1000
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,
         Capability.WRITE,

@@ -212,6 +212,7 @@ class CollectionDuckdbDriver(ModuleProtocol):
     """
 
     priority: int = 30
+    preferred_chunk_size: int = 1000
 
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,

@@ -244,6 +244,7 @@ class CollectionElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
     """
 
     priority: int = 50
+    preferred_chunk_size: int = 500
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,
         Capability.WRITE,
@@ -1127,6 +1128,7 @@ class CollectionElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol
     """
 
     priority: int = 51
+    preferred_chunk_size: int = 500
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,
         Capability.WRITE,

@@ -52,6 +52,7 @@ class CollectionPostgresqlDriver(ModuleProtocol):
     """
 
     priority: int = 10
+    preferred_chunk_size: int = 0
     capabilities: FrozenSet[str] = frozenset({
         Capability.READ,
         Capability.WRITE,

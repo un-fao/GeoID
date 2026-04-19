@@ -32,6 +32,7 @@ class CollectionBigQueryDriver:
     """BigQuery read driver (Phase 4a — READ + STREAMING capabilities)."""
 
     priority: int = 50
+    preferred_chunk_size: int = 500
 
     capabilities: FrozenSet[str] = frozenset({
         "READ", "STREAMING", "INTROSPECTION", "COUNT", "AGGREGATION",
