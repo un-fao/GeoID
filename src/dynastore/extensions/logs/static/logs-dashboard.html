@@ -1,0 +1,299 @@
+<!--
+  Embedded logs dashboard page.
+  Served as an HTML fragment via @expose_web_page — the outer geoid web shell
+  provides Tailwind classes, the global ``authToken`` variable, and the
+  TOKEN_KEY constant. Do NOT add <html>/<head>/<body>; this is a fragment.
+
+  Architecture: the iframe points at ${KIBANA_PUBLIC_PATH} (default
+  ``/dashboards``), which is reverse-proxied into the configured
+  OpenSearch Dashboards / Kibana upstream by
+  ``dynastore.extensions.logs.dashboards_proxy``. Because the proxy runs on
+  the geoid origin, iframe embedding is same-origin and no CSP tweaks are
+  needed on the upstream.
+-->
+
+<div class="space-y-4">
+  <div class="flex items-center justify-between">
+    <div>
+      <h2 class="text-2xl font-bold text-white mb-1">Log Analytics</h2>
+      <p class="text-slate-400 text-sm">
+        OpenSearch Dashboards embedded via the geoid proxy — users authenticate
+        here, the proxy injects credentials upstream.
+      </p>
+    </div>
+    <button id="logs-dash-refresh"
+      class="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs">
+      <i class="fa-solid fa-rotate mr-1"></i> Recheck
+    </button>
+  </div>
+
+  <!-- Status strip -->
+  <div id="logs-dash-status" class="glass-panel p-4 rounded-xl border border-white/5 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+    <div data-check="es" class="flex items-center gap-2 text-slate-400">
+      <span class="status-dot w-2.5 h-2.5 rounded-full bg-slate-600"></span>
+      <span>Elasticsearch</span>
+    </div>
+    <div data-check="upstream" class="flex items-center gap-2 text-slate-400">
+      <span class="status-dot w-2.5 h-2.5 rounded-full bg-slate-600"></span>
+      <span>Dashboards upstream</span>
+    </div>
+    <div data-check="provisioned" class="flex items-center gap-2 text-slate-400">
+      <span class="status-dot w-2.5 h-2.5 rounded-full bg-slate-600"></span>
+      <span>Dashboard objects</span>
+    </div>
+    <div data-check="authorized" class="flex items-center gap-2 text-slate-400">
+      <span class="status-dot w-2.5 h-2.5 rounded-full bg-slate-600"></span>
+      <span>API key authorized</span>
+    </div>
+  </div>
+
+  <!-- Iframe (hidden until we know the status) -->
+  <div id="logs-dash-iframe-wrap" class="hidden glass-panel rounded-2xl border border-white/5 overflow-hidden">
+    <iframe id="logs-dash-iframe"
+      sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+      style="width:100%; height: calc(100vh - 260px); border: 0; display: block;"
+      src="about:blank">
+    </iframe>
+  </div>
+
+  <!-- Fallback banner (hidden until we determine we need it) -->
+  <div id="logs-dash-fallback" class="hidden glass-panel p-5 rounded-2xl border border-amber-500/30 text-amber-200 text-sm">
+    <div class="flex items-start gap-3">
+      <i class="fa-solid fa-triangle-exclamation text-amber-400 mt-0.5"></i>
+      <div id="logs-dash-fallback-msg">Checking&hellip;</div>
+    </div>
+  </div>
+
+  <!-- Setup Guide accordion -->
+  <details id="logs-dash-setup" class="glass-panel rounded-2xl border border-white/5">
+    <summary class="px-5 py-3 cursor-pointer text-slate-200 text-sm font-medium flex items-center gap-2">
+      <i class="fa-solid fa-wrench text-slate-400"></i>
+      Setup Guide &amp; Troubleshooting
+      <span class="ml-auto text-[10px] text-slate-500">
+        <span id="logs-dash-setup-hint"></span>
+      </span>
+    </summary>
+    <div class="px-5 pb-5 pt-1 text-sm text-slate-300 space-y-4">
+      <p>
+        geoid proxies Kibana under <code class="bg-slate-800 px-1 rounded text-xs">/dashboards/</code>
+        with an injected API key — end-users authenticate once with Keycloak
+        and never see a Kibana login. The iframe above is same-origin with
+        geoid, so no CSP or <code class="bg-slate-800 px-1 rounded text-xs">X-Frame-Options</code>
+        tweaks are needed on the upstream.
+      </p>
+
+      <div>
+        <div class="text-white font-medium mb-2">Resolved configuration</div>
+        <table class="w-full text-xs border border-white/5 rounded overflow-hidden">
+          <tbody id="logs-dash-config-table">
+            <tr><td colspan="2" class="px-3 py-2 text-slate-500">Loading&hellip;</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div>
+        <div class="text-white font-medium mb-2">Production setup (Cloud Run + Elastic Cloud)</div>
+        <ol class="list-decimal list-inside space-y-2 text-slate-300">
+          <li>
+            In Elastic Cloud, create an API key with
+            <code class="bg-slate-800 px-1 rounded text-xs">read</code> on
+            <code class="bg-slate-800 px-1 rounded text-xs">dynastore-logs-*</code>
+            and the <code class="bg-slate-800 px-1 rounded text-xs">kibana_user</code>
+            application role scoped to the space containing the dashboard.
+          </li>
+          <li>
+            Store the key in Secret Manager:
+            <pre class="bg-slate-900 p-2 rounded mt-1 text-[11px] overflow-x-auto"><code>gcloud secrets create kibana-upstream-api-key --replication-policy=automatic
+echo -n "$KEY" | gcloud secrets versions add kibana-upstream-api-key --data-file=-</code></pre>
+          </li>
+          <li>
+            Mount it on the geoid Cloud Run service as
+            <code class="bg-slate-800 px-1 rounded text-xs">KIBANA_UPSTREAM_API_KEY</code>
+            and set
+            <code class="bg-slate-800 px-1 rounded text-xs">KIBANA_UPSTREAM_URL</code>
+            to the Elastic Cloud Kibana endpoint.
+          </li>
+          <li>
+            If Elastic Cloud is on a private VPC / PSC, attach a Serverless
+            VPC Connector to the geoid Cloud Run service.
+          </li>
+          <li>
+            Restart the service. All four status dots should go green on the
+            next page load.
+          </li>
+        </ol>
+      </div>
+
+      <div>
+        <div class="text-white font-medium mb-2">Troubleshooting</div>
+        <table class="w-full text-xs border border-white/5 rounded overflow-hidden">
+          <thead class="bg-white/5 text-slate-400">
+            <tr>
+              <th class="px-3 py-2 text-left">Failing check</th>
+              <th class="px-3 py-2 text-left">Likely cause</th>
+              <th class="px-3 py-2 text-left">Verify</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-white/5">
+            <tr>
+              <td class="px-3 py-2">Elasticsearch</td>
+              <td class="px-3 py-2">ES_HOST/ES_PORT unset or unreachable from the geoid container</td>
+              <td class="px-3 py-2"><code class="bg-slate-800 px-1 rounded text-xs">curl $ES_HOST:$ES_PORT/_cluster/health</code></td>
+            </tr>
+            <tr>
+              <td class="px-3 py-2">Dashboards upstream</td>
+              <td class="px-3 py-2"><code class="bg-slate-800 px-1 rounded text-xs">KIBANA_UPSTREAM_URL</code> unset, wrong host, or network egress blocked</td>
+              <td class="px-3 py-2"><code class="bg-slate-800 px-1 rounded text-xs">curl $KIBANA_UPSTREAM_URL/api/status</code> from the geoid container</td>
+            </tr>
+            <tr>
+              <td class="px-3 py-2">Dashboard objects</td>
+              <td class="px-3 py-2">Auto-import failed (see warning logs for <code class="bg-slate-800 px-1 rounded text-xs">dashboards_provisioner</code>) — usually an auth issue</td>
+              <td class="px-3 py-2">Restart the service; re-check this page</td>
+            </tr>
+            <tr>
+              <td class="px-3 py-2">API key authorized</td>
+              <td class="px-3 py-2"><code class="bg-slate-800 px-1 rounded text-xs">KIBANA_UPSTREAM_API_KEY</code> missing, expired, or lacks the required role</td>
+              <td class="px-3 py-2">Inspect the key in Elastic Cloud; generate a fresh one with the roles above</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </details>
+</div>
+
+<script>
+// Build DOM via textContent / createElement only — no innerHTML with
+// server-provided values. Config comes from env vars controlled by the
+// sysadmin, but we still treat it as untrusted for defence-in-depth.
+(function() {
+  const tkey = (typeof TOKEN_KEY !== 'undefined') ? TOKEN_KEY : 'ds_token';
+  const token = (typeof authToken !== 'undefined' && authToken) ||
+                localStorage.getItem(tkey) || sessionStorage.getItem(tkey);
+  const authHeaders = token ? { 'Authorization': 'Bearer ' + token } : {};
+
+  const DASHBOARD_ID = 'dynastore-logs-dashboard';
+
+  function setDot(checkName, state) {
+    const row = document.querySelector('#logs-dash-status [data-check="' + checkName + '"]');
+    if (!row) return;
+    const dot = row.querySelector('.status-dot');
+    row.classList.remove('text-slate-400', 'text-emerald-300', 'text-red-300', 'text-amber-300');
+    dot.classList.remove('bg-slate-600', 'bg-emerald-400', 'bg-red-400', 'bg-amber-400');
+    if (state === true) {
+      row.classList.add('text-emerald-300'); dot.classList.add('bg-emerald-400');
+    } else if (state === false) {
+      row.classList.add('text-red-300');     dot.classList.add('bg-red-400');
+    } else {
+      row.classList.add('text-amber-300');   dot.classList.add('bg-amber-400');
+    }
+  }
+
+  function configRow(label, valueNode) {
+    const tr = document.createElement('tr');
+    tr.className = 'border-t border-white/5';
+    const td1 = document.createElement('td');
+    td1.className = 'px-3 py-1.5 font-mono text-slate-400';
+    td1.textContent = label;
+    const td2 = document.createElement('td');
+    td2.className = 'px-3 py-1.5';
+    if (typeof valueNode === 'string') td2.textContent = valueNode;
+    else td2.appendChild(valueNode);
+    tr.appendChild(td1); tr.appendChild(td2);
+    return tr;
+  }
+
+  function unsetSpan() {
+    const s = document.createElement('span');
+    s.className = 'text-slate-500';
+    s.textContent = '(unset)';
+    return s;
+  }
+
+  function stateSpan(ok, labelOk, labelNo) {
+    const s = document.createElement('span');
+    s.className = ok ? 'text-emerald-400' : 'text-red-400';
+    s.textContent = ok ? labelOk : labelNo;
+    return s;
+  }
+
+  function renderConfig(cfg) {
+    const tbody = document.getElementById('logs-dash-config-table');
+    if (!tbody) return;
+    // Clear existing rows
+    while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+    tbody.appendChild(configRow('KIBANA_UPSTREAM_URL',
+      cfg.upstream_url ? String(cfg.upstream_url) : unsetSpan()));
+    tbody.appendChild(configRow('KIBANA_UPSTREAM_API_KEY',
+      stateSpan(!!cfg.api_key_set, 'set', 'unset')));
+    tbody.appendChild(configRow('KIBANA_PUBLIC_PATH',
+      cfg.public_path ? String(cfg.public_path) : unsetSpan()));
+  }
+
+  function showFallback(msg) {
+    const wrap = document.getElementById('logs-dash-fallback');
+    const m = document.getElementById('logs-dash-fallback-msg');
+    if (m) m.textContent = msg;
+    if (wrap) wrap.classList.remove('hidden');
+    document.getElementById('logs-dash-iframe-wrap').classList.add('hidden');
+  }
+
+  function showIframe(publicPath) {
+    const wrap = document.getElementById('logs-dash-iframe-wrap');
+    const iframe = document.getElementById('logs-dash-iframe');
+    // publicPath comes from server-side env; ensure it starts with "/" and
+    // doesn't contain scheme/host (prevent src redirection to an attacker
+    // origin via a tampered env var).
+    let base = String(publicPath || '/dashboards');
+    if (!base.startsWith('/')) base = '/' + base;
+    const url = base + '/app/dashboards#/view/' + encodeURIComponent(DASHBOARD_ID);
+    if (iframe.src !== url) iframe.src = url;
+    wrap.classList.remove('hidden');
+    document.getElementById('logs-dash-fallback').classList.add('hidden');
+  }
+
+  async function refresh() {
+    ['es', 'upstream', 'provisioned', 'authorized'].forEach(c => setDot(c, null));
+
+    let cfg = { upstream_url: null, api_key_set: false, public_path: '/dashboards' };
+    try {
+      const r = await fetch('/logs/_dashboards_config', { headers: authHeaders });
+      if (r.ok) cfg = await r.json();
+    } catch (e) { /* ignore */ }
+    renderConfig(cfg);
+
+    let health = { es: false, upstream: false, provisioned: false, authorized: false };
+    try {
+      const r = await fetch('/logs/_dashboards_health', { headers: authHeaders });
+      if (r.ok) health = await r.json();
+    } catch (e) { /* ignore */ }
+
+    setDot('es', health.es);
+    setDot('upstream', health.upstream);
+    setDot('provisioned', health.provisioned);
+    setDot('authorized', health.authorized);
+
+    const allGreen = health.es && health.upstream && health.provisioned && health.authorized;
+    const setup = document.getElementById('logs-dash-setup');
+    const hint = document.getElementById('logs-dash-setup-hint');
+
+    if (allGreen) {
+      showIframe(cfg.public_path || '/dashboards');
+      setup.open = false;
+      if (hint) hint.textContent = '';
+    } else {
+      let msg = 'Log analytics unavailable — see the Setup Guide below.';
+      if (!health.es) msg = 'Elasticsearch is not reachable from the geoid service. Check ES_HOST/ES_PORT and network.';
+      else if (!health.upstream) msg = 'OpenSearch Dashboards / Kibana upstream is not reachable. Check KIBANA_UPSTREAM_URL and egress.';
+      else if (!health.authorized) msg = 'Upstream rejected the API key (401/403). Check KIBANA_UPSTREAM_API_KEY.';
+      else if (!health.provisioned) msg = 'Dashboard objects have not been imported yet. Restart the service to trigger auto-provisioning.';
+      showFallback(msg);
+      setup.open = true;
+      if (hint) hint.textContent = 'open — action required';
+    }
+  }
+
+  document.getElementById('logs-dash-refresh')?.addEventListener('click', refresh);
+  refresh();
+})();
+</script>

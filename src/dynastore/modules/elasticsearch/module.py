@@ -214,6 +214,19 @@ class ElasticsearchModule(ModuleProtocol):
                     exc,
                 )
 
+        # Auto-provision the logs dashboard into OpenSearch Dashboards / Kibana.
+        # No-op when KIBANA_UPSTREAM_URL is unset; never raises.
+        from dynastore.modules.elasticsearch.dashboards_provisioner import (
+            provision_dashboards,
+        )
+        try:
+            await provision_dashboards()
+        except Exception as exc:  # defensive — provisioner already swallows internally
+            logger.warning(
+                "ElasticsearchModule: dashboard provisioning raised unexpectedly: %s",
+                exc,
+            )
+
         try:
             yield
         finally:

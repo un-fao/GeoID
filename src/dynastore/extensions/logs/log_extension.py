@@ -23,6 +23,8 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 from contextlib import asynccontextmanager
 from dynastore.extensions.protocols import ExtensionProtocol
+from dynastore.extensions.web.decorators import expose_web_page
+from dynastore.models.protocols.authorization import DefaultRole
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     ResultHandler,
@@ -32,7 +34,8 @@ from dynastore.modules.db_config.query_executor import (
 from dynastore.modules.catalog.catalog_module import register_event_listener
 from dynastore.models.shared_models import SYSTEM_CATALOG_ID, SYSTEM_LOGS_TABLE
 from dynastore.modules.catalog.log_manager import log_event
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from .models import LogEntryCreate, LogEntry, LogsListResponse
 from dynastore.modules.catalog.event_service import CatalogEventType
 from dynastore.models.protocols.catalogs import CatalogsProtocol
@@ -42,16 +45,134 @@ from dynastore.tools.discovery import get_protocol
 logger = logging.getLogger(__name__)
 
 
-def _kibana_url() -> Optional[str]:
-    """Build Kibana dashboard URL if KIBANA_URL is set and ES client is active."""
-    from dynastore.modules.elasticsearch.client import get_client, get_index_prefix
-    from dynastore.modules.elasticsearch.mappings import get_log_index_name
+_DASHBOARD_ID = "dynastore-logs-dashboard"
 
-    base = os.environ.get("KIBANA_URL", "").rstrip("/")
-    if not base or get_client() is None:
+
+def _public_path() -> str:
+    """Resolve ``KIBANA_PUBLIC_PATH`` — the path under which the proxy is mounted."""
+    raw = os.environ.get("KIBANA_PUBLIC_PATH", "/dashboards").strip()
+    if not raw.startswith("/"):
+        raw = "/" + raw
+    return raw.rstrip("/") or "/dashboards"
+
+
+def _kibana_url() -> Optional[str]:
+    """Return a deep-link to the logs dashboard via the same-origin proxy.
+
+    Returns ``None`` when ES isn't connected, so existing consumers of the
+    ``kibana_dashboard_url`` field keep their ``None`` semantic. The returned
+    URL is a path on the geoid origin (``/dashboards/...``), not a full
+    URL to the upstream — so users don't need Kibana credentials.
+    """
+    from dynastore.modules.elasticsearch.client import get_client
+
+    if get_client() is None:
         return None
-    index = get_log_index_name(get_index_prefix())
-    return f"{base}#/discover?_g=(filters:!(),refreshInterval:(pause:!t),time:(from:now-24h,to:now))&_a=(index:'{index}')"
+    return f"{_public_path()}/app/dashboards#/view/{_DASHBOARD_ID}"
+
+
+async def _probe_dashboards_health() -> Dict[str, bool]:
+    """Probe the four dependencies the in-page status strip reports on."""
+    from dynastore.modules.elasticsearch.client import get_client
+
+    result = {
+        "es": False,
+        "upstream": False,
+        "provisioned": False,
+        "authorized": False,
+    }
+
+    # 1. ES reachable — singleton client present AND ping succeeds.
+    es = get_client()
+    if es is not None:
+        try:
+            await es.info()
+            result["es"] = True
+        except Exception:
+            result["es"] = False
+
+    # 2-4. Dashboards upstream reachable + authorized + dashboard present.
+    upstream = os.environ.get("KIBANA_UPSTREAM_URL", "").strip().rstrip("/")
+    if not upstream:
+        return result
+
+    import httpx
+
+    headers = {"osd-xsrf": "true", "kbn-xsrf": "true"}
+    key = os.environ.get("KIBANA_UPSTREAM_API_KEY", "").strip()
+    if key:
+        headers["Authorization"] = f"ApiKey {key}"
+
+    try:
+        async with httpx.AsyncClient(headers=headers, timeout=5.0) as client:
+            try:
+                r = await client.get(f"{upstream}/api/status")
+                result["upstream"] = r.status_code < 500
+                # 401/403 means we reached the upstream but auth failed.
+                result["authorized"] = r.status_code not in (401, 403)
+            except httpx.RequestError:
+                return result
+
+            if not result["authorized"]:
+                return result
+
+            try:
+                # Direct by-type/id lookup avoids text-search on non-indexed
+                # fields (saved-objects' `id` is a keyword, not analyzed).
+                r = await client.get(
+                    f"{upstream}/api/saved_objects/dashboard/{_DASHBOARD_ID}"
+                )
+                if r.status_code == 200:
+                    result["provisioned"] = True
+                elif r.status_code in (401, 403):
+                    result["authorized"] = False
+                # 404 → present upstream but dashboard not imported yet;
+                # leave provisioned=False and return.
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.debug("dashboards_health: probe failed: %s", exc)
+
+    return result
+
+
+def _register_logs_dashboard_policy() -> None:
+    """Register the sysadmin-only policy guarding the proxy + the page."""
+    from dynastore.models.protocols.policies import PermissionProtocol, Policy, Role
+
+    pm = get_protocol(PermissionProtocol)
+    if not pm:
+        logger.warning(
+            "LogExtension: PermissionProtocol unavailable — dashboard policies not registered."
+        )
+        return
+
+    public_path = _public_path()
+    # Escape regex meta-chars; the framework treats resources as regexes.
+    import re
+    escaped = re.escape(public_path)
+
+    policy = Policy(
+        id="logs_dashboard_sysadmin_access",
+        description=(
+            "Sysadmin-only access to the embedded OpenSearch Dashboards / Kibana "
+            "proxy and its status endpoints."
+        ),
+        actions=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+        resources=[
+            f"{escaped}",
+            f"{escaped}/.*",
+            "/web/pages/logs_dashboard",
+            "/logs/_dashboards_health",
+            "/logs/_dashboards_config",
+        ],
+        effect="ALLOW",
+    )
+    pm.register_policy(policy)
+    pm.register_role(
+        Role(name=DefaultRole.SYSADMIN.value, policies=["logs_dashboard_sysadmin_access"])
+    )
+    logger.info("LogExtension: dashboard policy registered (path=%s).", public_path)
 
 
 from dynastore.models.protocols.logs import LogsProtocol
@@ -93,6 +214,68 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
             response_model=LogsListResponse,
             summary="Retrieve logs for a specific collection",
         )
+        # Status endpoints feeding the embedded logs dashboard page.
+        self.router.add_api_route(
+            "/_dashboards_health",
+            self._get_dashboards_health,
+            methods=["GET"],
+            response_class=JSONResponse,
+            include_in_schema=False,
+        )
+        self.router.add_api_route(
+            "/_dashboards_config",
+            self._get_dashboards_config,
+            methods=["GET"],
+            response_class=JSONResponse,
+            include_in_schema=False,
+        )
+
+    def configure_app(self, app: FastAPI) -> None:
+        """Mount the cross-origin-dashboard reverse proxy on the app.
+
+        The proxy uses its own prefix (``${KIBANA_PUBLIC_PATH}``) rather than
+        living under ``/logs`` so iframe-relative URLs in Kibana's bundles
+        resolve correctly.
+        """
+        from dynastore.extensions.logs.dashboards_proxy import (
+            build_dashboards_proxy_router,
+        )
+        app.include_router(build_dashboards_proxy_router())
+
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
+
+    @expose_web_page(
+        page_id="logs_dashboard",
+        title="Log Analytics",
+        icon="fa-chart-line",
+        description="Embedded OpenSearch Dashboards / Kibana view of system logs.",
+        required_roles=[DefaultRole.SYSADMIN.value],
+        section="admin",
+        priority=25,
+    )
+    async def provide_logs_dashboard_page(self, request: Request):
+        """Serve the embedded logs dashboard fragment."""
+        html_path = os.path.join(
+            os.path.dirname(__file__), "static", "logs-dashboard.html"
+        )
+        if not os.path.exists(html_path):
+            raise HTTPException(status_code=404, detail="Logs dashboard template not found.")
+        with open(html_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+
+    async def _get_dashboards_health(self) -> Dict[str, bool]:
+        """Live probe of the four dependencies surfaced in the status strip."""
+        return await _probe_dashboards_health()
+
+    async def _get_dashboards_config(self) -> Dict[str, Any]:
+        """Return resolved, **masked** configuration for the embedded dashboard."""
+        return {
+            "upstream_url": os.environ.get("KIBANA_UPSTREAM_URL", "").strip() or None,
+            "api_key_set": bool(os.environ.get("KIBANA_UPSTREAM_API_KEY", "").strip()),
+            "public_path": _public_path(),
+        }
 
     @property
     def catalogs(self) -> CatalogsProtocol:
@@ -104,6 +287,11 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
 
     @asynccontextmanager
     async def lifespan(self, app: Any):
+        # Register the sysadmin-only policy guarding both the proxy paths and
+        # the /logs/_dashboards_* status endpoints. Done unconditionally so
+        # the page's sysadmin filter works even if the DB engine is missing.
+        _register_logs_dashboard_policy()
+
         db = self.database
         if db:
             self.engine = db.engine
