@@ -175,8 +175,9 @@ class Authentication(ExtensionProtocol):
             """
             OAuth2 UserInfo Endpoint.
             Returns normalized user profile from the validated JWT token.
-            Uses validate_token so realm_roles, client_roles, account_url are always present
-            regardless of Keycloak mapper configuration.
+            Tries strict audience validation first; falls back to lax (no aud
+            check) when the token was issued for a different audience (e.g.
+            ``account``) but signature + expiry + issuer are still verified.
             """
             if not authorization or not authorization.startswith("Bearer "):
                 raise HTTPException(401, "Missing or invalid Authorization header")
@@ -185,6 +186,12 @@ class Authentication(ExtensionProtocol):
 
             if self.identity_provider:
                 identity = await self.identity_provider.validate_token(token)
+                if identity is None:
+                    # Audience mismatch (token aud ≠ client_id) — re-try
+                    # without aud check; signature/expiry/issuer still verified.
+                    identity = await self.identity_provider.validate_token(
+                        token, verify_audience=False
+                    )
                 if identity:
                     return identity
 

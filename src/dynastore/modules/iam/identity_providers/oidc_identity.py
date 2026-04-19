@@ -165,7 +165,9 @@ class OidcIdentityProvider(IdentityProviderProtocol):
     # Token Validation (Resource Server role)
     # ------------------------------------------------------------------
 
-    async def validate_token(self, token: str) -> Optional[Dict[str, Any]]:
+    async def validate_token(
+        self, token: str, *, verify_audience: bool = True
+    ) -> Optional[Dict[str, Any]]:
         """
         Validate a JWT access token.
 
@@ -174,6 +176,11 @@ class OidcIdentityProvider(IdentityProviderProtocol):
         2. Resolve the signing key by JWT ``kid`` header via PyJWKClient.
         3. Decode and verify claims (signature, expiry, issuer, audience).
         4. Return a normalised identity dict or ``None`` on any failure.
+
+        Set ``verify_audience=False`` to skip the ``aud`` claim check while
+        still verifying signature, expiry, and issuer. Useful when the token
+        was issued for a different audience (e.g. ``account``) but the IDP
+        has already validated it via the userinfo endpoint.
         """
         if not token:
             return None
@@ -183,13 +190,16 @@ class OidcIdentityProvider(IdentityProviderProtocol):
             if self._jwks_client is None:
                 raise RuntimeError("JWKS client not initialised")
             signing_key = self._jwks_client.get_signing_key_from_jwt(token)
+            decode_options: Dict[str, Any] = {"verify_exp": True}
+            if not verify_audience:
+                decode_options["verify_aud"] = False
             claims = jwt.decode(
                 token,
                 key=signing_key.key,
                 algorithms=["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"],
-                audience=self.audience,
+                audience=self.audience if verify_audience else None,
                 issuer=self.issuer_url,
-                options={"verify_exp": True},
+                options=decode_options,
             )
         except ExpiredSignatureError:
             logger.debug("OIDC token expired")
