@@ -51,3 +51,34 @@ async def test_tileset_json_template_points_at_tiles_subpath():
     )
     assert ts["root"]["content"]["uri"].startswith(base + "/tiles/")
     assert ts["root"]["content"]["uri"].endswith(".b3dm")
+
+
+@pytest.mark.asyncio
+async def test_b3dm_returns_501_pending_phase5b():
+    from unittest.mock import MagicMock
+
+    from fastapi import HTTPException, Request
+
+    svc = _build_service()
+    request = MagicMock(spec=Request)
+    with pytest.raises(HTTPException) as exc:
+        await svc.get_tile_b3dm("c", "l", "0", request)
+    assert exc.value.status_code == 501
+
+
+@pytest.mark.asyncio
+async def test_metadata_emits_self_and_data_links():
+    from unittest.mock import MagicMock
+
+    from fastapi import Request
+
+    svc = _build_service()
+    request = MagicMock(spec=Request)
+    request.url = "http://ex/volumes/catalogs/c/collections/l/3dtiles/metadata"
+
+    payload = await svc.get_volumes_metadata("c", "l", request)
+    assert payload["title"].startswith("3D GeoVolumes")
+    rels = {lk["rel"] for lk in payload["links"]}
+    assert rels == {"self", "data"}
+    data_link = next(lk for lk in payload["links"] if lk["rel"] == "data")
+    assert data_link["href"].endswith("/tileset.json")

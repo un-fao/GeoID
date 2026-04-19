@@ -15,7 +15,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from dynastore.extensions.ogc_base import OGCServiceMixin
@@ -67,6 +67,46 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
             "/catalogs/{catalog_id}/collections/{collection_id}/3dtiles/tileset.json",
             self.get_tileset_json, methods=["GET"],
         )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/3dtiles/tiles/{tile_id}.b3dm",
+            self.get_tile_b3dm, methods=["GET"],
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/3dtiles/metadata",
+            self.get_volumes_metadata, methods=["GET"],
+        )
+
+    async def get_tile_b3dm(
+        self, catalog_id: str, collection_id: str, tile_id: str, request: Request,
+    ):
+        # Phase 5b will implement actual b3dm assembly. Until then, signal
+        # that the surface is wired but the byte producer is not yet ready.
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "b3dm tile generation is not yet implemented (Phase 5b). "
+                "tileset.json + endpoint surface available; tile content pending."
+            ),
+        )
+
+    async def get_volumes_metadata(
+        self, catalog_id: str, collection_id: str, request: Request,
+    ):
+        cfg = await self._get_volumes_config(catalog_id, collection_id)
+        base = str(request.url).rstrip("/").rsplit("/", 1)[0]  # strip "/metadata"
+        return {
+            "title": f"3D GeoVolumes for {catalog_id}/{collection_id}",
+            "description": "OGC API - 3D GeoVolumes (Cesium 3D Tiles encoding)",
+            "config": {
+                "max_features_per_tile": cfg.max_features_per_tile,
+                "max_tree_depth": cfg.max_tree_depth,
+                "root_geometric_error": cfg.root_geometric_error,
+            },
+            "links": [
+                {"rel": "self", "type": "application/json", "href": f"{base}/metadata"},
+                {"rel": "data", "type": "application/json", "href": f"{base}/tileset.json"},
+            ],
+        }
 
     async def get_tileset_json(
         self, catalog_id: str, collection_id: str, request: Request,
