@@ -238,10 +238,10 @@ class AdminService(ExtensionProtocol):
         if not p.provider or not p.subject_id:
             raise HTTPException(status_code=400, detail="Principal has no identity provider link.")
         try:
-            await mgr.storage.revoke_roles(
+            await mgr.storage.revoke_role(
                 provider=p.provider,
                 subject_id=p.subject_id,
-                roles=[role_name],
+                role_name=role_name,
                 schema=await mgr.resolve_schema(catalog_id),
             )
         except Exception as e:
@@ -261,7 +261,7 @@ class AdminService(ExtensionProtocol):
         for p in all_principals:
             if p.provider and p.subject_id:
                 try:
-                    roles = await mgr.storage.get_roles(
+                    roles = await mgr.storage.get_identity_roles(
                         provider=p.provider,
                         subject_id=p.subject_id,
                         schema=schema,
