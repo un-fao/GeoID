@@ -15,11 +15,16 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
+from fastapi.responses import StreamingResponse
 
 from dynastore.extensions.ogc_base import OGCServiceMixin
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.tools.ogc_policies import register_ogc_public_access_policy
+from dynastore.extensions.volumes.config import VolumesConfig
+from dynastore.modules.volumes.bounds import FeatureBounds
+from dynastore.modules.volumes.tileset_builder import build_tileset
+from dynastore.modules.volumes.writers.tileset_json import write_tileset_json
 
 logger = logging.getLogger(__name__)
 
@@ -58,5 +63,35 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
         register_ogc_public_access_policy("volumes")
 
     def _register_routes(self) -> None:
-        # Routes added in Tasks 2 + 3.
-        pass
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/3dtiles/tileset.json",
+            self.get_tileset_json, methods=["GET"],
+        )
+
+    async def get_tileset_json(
+        self, catalog_id: str, collection_id: str, request: Request,
+    ) -> StreamingResponse:
+        cfg = await self._get_volumes_config(catalog_id, collection_id)
+        # Phase 5c stub: empty feature list -> empty-skeleton tileset.json.
+        # Phase 5d replaces this with bounds sourced from the geometries sidecar.
+        bounds: list[FeatureBounds] = []
+        base = str(request.url).rstrip("/").rsplit("/", 1)[0]  # strip "/tileset.json"
+        template = f"{base}/tiles/{{tile_id}}.b3dm"
+        tileset = build_tileset(bounds, cfg, content_uri_template=template)
+        return StreamingResponse(
+            write_tileset_json(tileset),
+            media_type="application/json",
+        )
+
+    async def _get_volumes_config(
+        self, catalog_id: str, collection_id: Optional[str] = None,
+    ) -> VolumesConfig:
+        """Resolve VolumesConfig via the platform's PluginConfig waterfall.
+
+        Phase 5c falls back to defaults when no override exists. Phase 5d
+        will hook the real ConfigsProtocol resolver once its registration
+        pattern is confirmed.
+        """
+        # TODO(Phase 5d): replace with
+        # `await get_protocol(ConfigsProtocol).get_config(VolumesConfig, ...)`
+        return VolumesConfig()
