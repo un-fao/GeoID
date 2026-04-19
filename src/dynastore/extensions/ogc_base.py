@@ -257,11 +257,19 @@ class OGCTransactionMixin:
         catalogs_svc = await self._get_catalogs_service()  # type: ignore[attr-defined]
 
         rejections: list[SidecarRejection] = []
+        # Seed the typed out-list so the PG write path can record per-row
+        # SidecarRejectedError events without collapsing the whole batch.
+        # The core service reads/writes ``ctx.extensions["_rejections"]``.
+        ctx.extensions["_rejections"] = []
         try:
             created = await catalogs_svc.upsert(
                 catalog_id, collection_id, items=payload, ctx=ctx
             )
         except SidecarRejectedError as rej:
+            # Non-PG primary drivers still surface rejections as a single
+            # batch-level exception; PG now catches per-row and delivers via
+            # the out-list below, so we only reach here when the primary
+            # driver aborted the whole payload.
             rejections.append(
                 SidecarRejection(
                     geoid=rej.geoid,
@@ -277,6 +285,20 @@ class OGCTransactionMixin:
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            )
+
+        # Drain per-row rejections delivered via the DriverContext out-list.
+        for entry in ctx.extensions.pop("_rejections", []) or []:
+            rejections.append(
+                SidecarRejection(
+                    geoid=entry.get("geoid"),
+                    external_id=entry.get("external_id"),
+                    sidecar_id=entry.get("sidecar_id"),
+                    matcher=entry.get("matcher"),
+                    reason=entry.get("reason") or "sidecar_rejected",
+                    message=entry.get("message") or "",
+                    policy_source=policy_source,
+                )
             )
 
         accepted_rows: list[Any] = (

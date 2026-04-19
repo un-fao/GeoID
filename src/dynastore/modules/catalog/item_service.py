@@ -151,6 +151,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         from dynastore.modules.storage.routing_config import Operation
 
         # Try READ driver; if it returns a non-PG config, fall back to WRITE.
+        config = None
         for _op in (Operation.READ, None):
             try:
                 if _op is None:
@@ -169,7 +170,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             if hasattr(config, "physical_table"):
                 return config
             # Non-PG config (e.g. DuckDB) — try next driver.
-        return config  # Return whatever we got last
+        return config  # Return whatever we got last (may be None)
 
     def map_row_to_feature(
         self,
@@ -527,20 +528,40 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         # attribute-only collections can raise it).
         chunk_size = collection_config.ingest_chunk_size
         write_results: List[Dict[str, Any]] = []
+        # Per-row rejection collector. SidecarRejectedError is raised by the
+        # distributed upsert's acceptance check BEFORE any DB writes for the
+        # offending item, so catching it inside the chunk loop does not poison
+        # the enclosing transaction and sibling items in the same chunk still
+        # commit. Rejections are surfaced to the caller via
+        # ``ctx.extensions["_rejections"]`` so the HTTP layer can build a 207
+        # ``IngestionReport`` instead of reporting a 500 on a single bad row.
+        from dynastore.modules.storage.errors import SidecarRejectedError
+        rejections: List[Dict[str, Any]] = []
         for start in range(0, len(prepared), chunk_size):
             chunk = prepared[start:start + chunk_size]
             async with managed_transaction(engine) as conn:
                 for plan in chunk:
-                    new_row = await self.insert_or_update_distributed(
-                        conn,
-                        catalog_id,
-                        collection_id,
-                        plan["hub_payload"],
-                        plan["sidecar_payloads"],
-                        col_config=col_config,
-                        sidecars=sidecars,
-                        processing_context=plan["item_context"],
-                    )
+                    try:
+                        new_row = await self.insert_or_update_distributed(
+                            conn,
+                            catalog_id,
+                            collection_id,
+                            plan["hub_payload"],
+                            plan["sidecar_payloads"],
+                            col_config=col_config,
+                            sidecars=sidecars,
+                            processing_context=plan["item_context"],
+                        )
+                    except SidecarRejectedError as rej:
+                        rejections.append({
+                            "geoid": rej.geoid or plan["geoid"],
+                            "external_id": rej.external_id,
+                            "sidecar_id": rej.sidecar_id,
+                            "matcher": rej.matcher,
+                            "reason": rej.reason,
+                            "message": str(rej),
+                        })
+                        continue
                     if new_row is None:
                         logger.error(
                             f"FATAL: insert_or_update_distributed returned None for geoid: {plan['geoid']}"
@@ -549,6 +570,13 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                             f"Failed to upsert item. Geoid: {plan['geoid']}"
                         )
                     write_results.append(new_row)
+
+        # Hand rejections to the caller via the typed DriverContext escape
+        # hatch. The OGC mixin seeds an empty list before the call and drains
+        # this key after so rejections and accepted rows can be combined into
+        # a single 207 IngestionReport.
+        if ctx is not None and rejections:
+            ctx.extensions["_rejections"] = rejections
 
         # Phase 5 — bulk read-back on a fresh conn, post-commit. One SELECT
         # for the whole batch (vs N inside the write tx). Preserves input
@@ -590,7 +618,12 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             except Exception as e:
                 logger.warning(f"Failed to emit item creation events: {e}")
 
-        return results[0] if is_single else results
+        # Single-item callers expect a bare row or None (when the sole item
+        # was rejected by the write policy); bulk callers always get a list,
+        # possibly empty if every item was rejected.
+        if is_single:
+            return results[0] if results else None
+        return results
 
     # ------------------------------------------------------------------
     # Multi-driver write fan-out
