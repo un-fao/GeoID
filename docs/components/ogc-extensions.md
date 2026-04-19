@@ -14,8 +14,8 @@ map of what's wired and how the pieces relate.
 | Styles | `/styles` | `extensions/styles/` | Core, manage-styles, style-info, MapboxGL, SLD-1.0/1.1, HTML, JSON; content-negotiated `/stylesheet`, `/metadata`, `/legend`, root `/styles` list |
 | Coverages | `/coverages` | `extensions/coverages/` | Core, geodata-coverage, JSON, HTML, subset/bbox/datetime, GeoTIFF/NetCDF/CoverageJSON encodings |
 | Processes | `/processes` | `extensions/processes/` | Part 1 Core, ogc-process-description, JSON, job-list, dismiss; sync (`Prefer: respond-sync`) + async dispatch |
-| 3D GeoVolumes | `/volumes` | `extensions/volumes/` | Draft URIs (core, 3dtiles, tileset); `tileset.json` route shell, `/tiles/{id}.b3dm` 501 pending writer phase, `/metadata` |
-| Joins | `/join` | `extensions/joins/` | Draft URI (core); discriminated `secondary` (NamedSecondarySpec / BigQuerySecondarySpec); resolves both sides via `resolve_drivers("READ", ..., hint="features")` |
+| 3D GeoVolumes | `/volumes` | `extensions/volumes/` | Draft URIs (core, 3dtiles, tileset); `tileset.json` from `BoundsSourceProtocol` (pluggable — empty default or sidecar-backed opt-in), `/tiles/{id}.b3dm` 501 pending writer phase, `/metadata` |
+| Joins | `/join` | `extensions/joins/` | Draft URI (core); discriminated `secondary` (NamedSecondarySpec / BigQuerySecondarySpec); both sides resolved via `resolve_drivers("READ", ..., hint="features")`; CQL2 on primary via `primary_filter` → `QueryRequest.cql_filter` |
 
 The legacy `/dwh/*` extension (tile-join MVT/PBF surface) lives at
 `extensions/dwh/` and remains supported. `/join/*` is the OGC-conformant
@@ -62,6 +62,38 @@ endpoints during migration without forcing a deployment to choose.
   `CollectionItemsStore.read_entities` (and write/lifecycle methods where
   capable). `resolve_drivers("READ", catalog, collection, hint="features")`
   walks the platform routing config and returns an ordered list.
+- **`SidecarBoundsSource`** (`modules/volumes/sidecar_bounds.py`) — sidecar-backed
+  `BoundsSourceProtocol` implementation. Registers opt-in via
+  `register_sidecar_bounds_source()` in deployment startup code. Queries
+  `ST_XMin/ST_XMax/ST_YMin/ST_YMax/ST_ZMin/ST_ZMax` on `ST_Force3D(geom)`
+  joined through the geometries sidecar; `VolumesConfig.default_height_attr`
+  provides a z-extrude fallback for 2D features.
+
+## BigQuery driver (`modules/storage/drivers/bigquery.py`)
+
+READ+STREAMING+INTROSPECTION+COUNT+AGGREGATION capabilities; wraps
+`BigQueryService` for query execution.
+
+**Credential resolution** (Phase 4e):
+1. `CollectionBigQueryDriverConfig.credentials.service_account_json` (Secret-wrapped)
+   — revealed only inside `_make_bq_client`, never logged or returned.
+2. `CollectionBigQueryDriverConfig.credentials.api_key` (Secret-wrapped) — logs
+   a warning and falls back (google-cloud-bigquery doesn't support api-key auth
+   directly yet).
+3. **Fallback:** `CloudIdentityProtocol.get_credentials_object()` — the Phase 4a
+   path, used when `credentials.is_empty()`. Preserves back-compat for deployments
+   that don't migrate to Secret-wrapped credentials.
+
+Credentials are configured per-collection in the platform's PluginConfig
+jsonb (encrypted at rest via Fernet), masked in API responses by
+`Secret.__str__`/`__repr__`, revealed only at the single BQ client construction
+site. **Per-request credential overrides are intentionally not supported** —
+the `BigQuerySecondarySpec` in `/join` carries `target` identity only.
+
+Current gap: `read_entities`/`count_entities`/`aggregate` route through
+`BigQueryService.execute_query` which still uses `CloudIdentityProtocol`
+internally. `introspect_schema` honors Secret-wrapped creds fully;
+integrating the SELECT paths is a follow-up.
 
 ## Adding a new OGC extension
 
