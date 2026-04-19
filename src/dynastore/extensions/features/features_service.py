@@ -90,6 +90,7 @@ OGC_API_FEATURES_URIS = [
     "http://www.opengis.net/spec/ogcapi-features-3/1.0/conf/features-filter",
     "http://www.opengis.net/spec/ogcapi-features-3/1.0/conf/queryables",
     "http://www.opengis.net/spec/ogcapi-features-3/1.0/conf/sort",
+    "http://www.opengis.net/spec/cql2/1.0/conf/cql2-text",
     "http://www.opengis.net/spec/ogcapi-features-4/1.0/conf/create-replace-delete",
 ]
 

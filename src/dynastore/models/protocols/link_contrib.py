@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import (
     Any,
-    Iterable,
+    AsyncIterator,
     Literal,
     Mapping,
     Protocol,
@@ -71,4 +71,4 @@ class LinkContributor(Protocol):
 
     priority: int
 
-    def contribute_links(self, ref: ResourceRef) -> Iterable[AnchoredLink]: ...
+    def contribute_links(self, ref: ResourceRef) -> AsyncIterator[AnchoredLink]: ...
