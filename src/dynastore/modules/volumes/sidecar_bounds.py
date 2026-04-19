@@ -19,10 +19,15 @@ database is deferred to a future test fixture setup.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional, Sequence
 
+from dynastore.models.protocols.bounds_source import BoundsSourceProtocol
 from dynastore.modules.volumes.bounds import FeatureBounds
+from dynastore.tools.db import validate_sql_identifier
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -122,3 +127,75 @@ def rows_to_bounds(rows: Iterable[Dict[str, Any]]) -> Sequence[FeatureBounds]:
             continue
         out.append(row_to_feature_bounds(r))
     return out
+
+
+class SidecarBoundsSource:
+    """BoundsSourceProtocol backed by the geometries sidecar.
+
+    Requires a PostGIS tenant DB. Constructed with a ``connection_factory``
+    (a callable returning an ``async with``-able SQL connection with a
+    ``.execute(sql)`` coroutine that yields rows as dict-like objects).
+    Keeping the factory injectable lets unit tests run without a live DB.
+    """
+
+    def __init__(
+        self,
+        *,
+        connection_factory,
+        schema_resolver,
+        hub_table_for_collection,
+        geometries_table_for_collection,
+        height_column: Optional[str] = None,
+    ) -> None:
+        self._connect = connection_factory
+        self._resolve_schema = schema_resolver
+        self._hub_table_for_collection = hub_table_for_collection
+        self._geometries_table_for_collection = geometries_table_for_collection
+        self._height_column = height_column
+
+    async def get_bounds(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        limit: Optional[int] = None,
+    ) -> Sequence[FeatureBounds]:
+        # Validate every identifier that's spliced into SQL upstream —
+        # defense in depth; validate_sql_identifier is idempotent + cheap.
+        for ident in (catalog_id, collection_id):
+            validate_sql_identifier(ident)
+
+        schema = await self._resolve_schema(catalog_id)
+        validate_sql_identifier(schema)
+        hub = await self._hub_table_for_collection(catalog_id, collection_id)
+        geoms = await self._geometries_table_for_collection(
+            catalog_id, collection_id,
+        )
+        for t in (hub, geoms):
+            validate_sql_identifier(t)
+
+        spec = BoundsQuerySpec(
+            schema=schema,
+            hub_table=hub,
+            geometries_table=geoms,
+            height_column=self._height_column,
+            limit=limit,
+        )
+        sql = build_bounds_query(spec)
+
+        async with self._connect() as conn:
+            rows = await conn.execute(sql)
+            # rows may be a list, an async iterator, or an aiopg/asyncpg
+            # cursor — normalize to a sync list.
+            if hasattr(rows, "__aiter__"):
+                rows = [r async for r in rows]
+            elif hasattr(rows, "fetchall"):
+                rows = await rows.fetchall()
+        return rows_to_bounds(rows)
+
+
+# Structural protocol sanity check — ensures the class still satisfies
+# BoundsSourceProtocol at import time. isinstance on a Protocol checks
+# method signatures, so a simple reference here would not catch drift;
+# we check issubclass against the runtime_checkable protocol instead.
+assert issubclass(SidecarBoundsSource, BoundsSourceProtocol)
