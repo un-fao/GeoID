@@ -110,11 +110,11 @@ DynaStore supports distributed task execution across multiple application instan
    *   **Cons:** CPU-heavy tasks (like ingestion) can degrade API responsiveness.
 
 2. **Split Configuration (Specialized Workers)**
-   Distinct services are deployed for API vs. specific background workloads using the `DYNASTORE_TASK_MODULES` filter.
+   Distinct services are deployed for API vs. specific background workloads using the `SCOPE` filter.
    ```
-   [ Cloud Run API ] x 5 Replicas (DYNASTORE_TASK_MODULES="")
-   [ Cloud Run Provisioner ] x 2 Replicas (DYNASTORE_TASK_MODULES="gcp_provision")
-   [ Cloud Run Ingestor ] x 20 Replicas (DYNASTORE_TASK_MODULES="stac_ingest")
+   [ Cloud Run API ] x 5 Replicas (SCOPE="api_open")
+   [ Cloud Run Provisioner ] x 2 Replicas (SCOPE="gcp_provision")
+   [ Cloud Run Ingestor ] x 20 Replicas (SCOPE="stac_ingest")
            |
            v
    [ Database (Shared Task Infrastructure) ]

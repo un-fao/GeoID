@@ -372,6 +372,19 @@ def pytest_sessionstart(session):
     _ensure_collection(client)
 
 
+_RUNTEST_COUNTER = 0
+_MARK_READY_EVERY = 20  # re-mark catalog ready every N test items
+
+
+def pytest_runtest_setup(item):
+    """Periodically re-mark the demo-catalog as ready to counter the GCP
+    provisioning task that can race and flip it back to 'provisioning'."""
+    global _RUNTEST_COUNTER
+    _RUNTEST_COUNTER += 1
+    if _RUNTEST_COUNTER % _MARK_READY_EVERY == 0:
+        _mark_catalog_ready()
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Tear down only what this session created."""
     client = _SESSION_STATE.get("client")

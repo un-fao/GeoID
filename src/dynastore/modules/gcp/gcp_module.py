@@ -493,13 +493,16 @@ class GCPModule(
                 ):
                     for container in job.template.template.containers:
                         for env_var in container.env:
-                            if env_var.name == "DYNASTORE_TASK_MODULES":
-                                task_type = env_var.value
-                                if task_type:
-                                    job_map[task_type.strip()] = job_name
-                                    logger.info(
-                                        f"Discovered GCP job mapping: task '{task_type}' -> job '{job_name}'"
-                                    )
+                            if env_var.name == "SCOPE":
+                                scope_value = env_var.value
+                                if scope_value:
+                                    for task_type in (
+                                        s.strip() for s in scope_value.split(",") if s.strip()
+                                    ):
+                                        job_map[task_type] = job_name
+                                        logger.info(
+                                            f"Discovered GCP job mapping: task '{task_type}' -> job '{job_name}'"
+                                        )
                                 break
         except Exception as e:
             logger.error(

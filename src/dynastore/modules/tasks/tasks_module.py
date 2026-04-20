@@ -361,6 +361,15 @@ class TasksModule(TaskQueueProtocol, ModuleProtocol):
             engine = None
 
         async with manage_tasks(app_state):
+            from dynastore.modules.tasks.runners import get_all_runners_with_setup
+            for _prio, runner in sorted(get_all_runners_with_setup(), key=lambda x: -x[0]):
+                try:
+                    await runner.setup(app_state)
+                except Exception as e:
+                    logger.error(
+                        f"Runner {type(runner).__name__}.setup failed: {e}",
+                        exc_info=True,
+                    )
             logger.info("TasksModule: Task singletons active.")
 
             if engine is not None:
