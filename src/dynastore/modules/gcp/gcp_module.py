@@ -502,6 +502,9 @@ class GCPModule(
             logger.info(f"Discovering GCP jobs in {parent}...")
             async for job in client.list_jobs(request=request):
                 job_name = job.name.split("/")[-1]
+                task_types_found = set()
+
+                # Strategy 1: Check SCOPE env var for explicit task type mapping
                 if (
                     job.template
                     and job.template.template
@@ -516,13 +519,27 @@ class GCPModule(
                                         s.strip() for s in scope_value.split(",") if s.strip()
                                     ):
                                         task_type = _task_type_from_scope_token(token)
-                                        if task_type is None:
-                                            continue
-                                        job_map[task_type] = job_name
-                                        logger.info(
-                                            f"Discovered GCP job mapping: task '{task_type}' -> job '{job_name}'"
-                                        )
+                                        if task_type is not None:
+                                            task_types_found.add(task_type)
                                 break
+
+                # Strategy 2: Infer task type from job name (fallback if no SCOPE)
+                # Job names like "gdal", "export-features" map to task types
+                if not task_types_found:
+                    inferred_task = job_name.replace("-", "_")
+                    task_types_found.add(inferred_task)
+
+                # Add to job_map; will be validated when Process definitions are loaded
+                for task_type in task_types_found:
+                    job_map[task_type] = job_name
+                    if len(task_types_found) > 1 or not job_name.replace("-", "_") == task_type:
+                        logger.info(
+                            f"Discovered GCP job mapping: task '{task_type}' -> job '{job_name}' (via SCOPE)"
+                        )
+                    else:
+                        logger.info(
+                            f"Discovered GCP job mapping: task '{task_type}' -> job '{job_name}' (inferred from job name)"
+                        )
         except Exception as e:
             logger.error(
                 f"Error discovering GCP jobs (Project: {project_id}, Region: {region}): {e}",

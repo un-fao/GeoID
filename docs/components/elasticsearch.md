@@ -211,7 +211,7 @@ The `geospatial-elasticsearch-indexer` Cloud Run Job (`apps.base.yml`) handles b
 geospatial-elasticsearch-indexer:
   type: "job"
   env:
-    SCOPE: "task-elasticsearch-indexer-job"
+    SCOPE: "worker_task_elasticsearch_indexer"
     TASK_TIMEOUT: 7200    # 2 hours
     RAM: "2Gi"
     MAX_RETRIES: 2

@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from typing import Optional
+from typing import Dict, Optional
 from google.api_core.operation import Operation
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import JobExecutionProtocol
@@ -24,6 +24,8 @@ from dynastore.tools.cache import cached
 import logging
 
 logger = logging.getLogger(__name__)
+
+_JOB_MAP_SYNC: Dict[str, str] = {}
 
 
 async def run_cloud_run_job_async(
@@ -50,14 +52,51 @@ async def run_cloud_run_job_async(
     return await job_runner.run_job(job_name, args, env_vars)
 
 
-@cached(maxsize=1, namespace="job_config", distributed=False)
-async def load_job_config():
-    """
-    Discovers deployed jobs and returns a mapping of task_type to job name.
-    """
+async def _fetch_job_config() -> Dict[str, str]:
     job_runner = get_protocol(JobExecutionProtocol)
     if not job_runner:
         logger.warning("JobExecutionProtocol not available. Unable to discover jobs.")
         return {}
-
     return await job_runner.get_job_config()
+
+
+@cached(maxsize=1, namespace="job_config", distributed=False, ttl=900, jitter=60)
+async def load_job_config() -> Dict[str, str]:
+    """
+    Discovers deployed jobs and returns a mapping of task_type to job name.
+    TTL=900s; also updates the sync snapshot used by can_handle().
+    """
+    global _JOB_MAP_SYNC
+    result = await _fetch_job_config()
+    _JOB_MAP_SYNC = result
+    return result
+
+
+def get_job_map_sync() -> Dict[str, str]:
+    """Sync read of the last successfully fetched job map."""
+    return _JOB_MAP_SYNC
+
+
+def try_load_process_definition(task_type: str) -> Optional[object]:
+    """Load a Process definition from a lightweight definition.py module.
+
+    Tries both dotted (``export_features``) and hyphenated (``export-features``)
+    task_type forms. Returns the first ``Process`` instance found, or None.
+    Definition modules only depend on pydantic — safe to import anywhere.
+    """
+    import importlib
+    from dynastore.modules.processes.models import Process
+
+    candidates = [
+        f"dynastore.tasks.{task_type}.definition",
+        f"dynastore.tasks.{task_type.replace('-', '_')}.definition",
+    ]
+    for mod_path in candidates:
+        try:
+            mod = importlib.import_module(mod_path)
+            for attr in vars(mod).values():
+                if isinstance(attr, Process):
+                    return attr
+        except ImportError:
+            pass
+    return None

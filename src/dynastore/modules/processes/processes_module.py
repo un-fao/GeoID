@@ -25,9 +25,10 @@ from dynastore.modules import get_protocol
 from dynastore.modules.tasks import runners
 from dynastore.modules.tasks.models import TaskExecutionMode
 from dynastore.modules.processes import models
+from dynastore.modules.processes.protocols import ProcessRegistryProtocol
 from dynastore.modules.iam.models import SYSTEM_USER_ID
-from dynastore.tasks import get_definitions_by_type
 from dynastore.models.protocols import CatalogsProtocol
+from dynastore.tools.discovery import get_protocols
 from dynastore.models.auth import AuthorizationProtocol, Principal, Action
 from dynastore.modules.tasks.execution import execution_engine
 
@@ -122,10 +123,11 @@ async def execute_process(
       5. Delegate to ExecutionEngine.execute()
     """
     # 1. Find the requested process definition.
-    process = next(
-        (p for p in get_definitions_by_type(models.Process) if p.id == process_id),
-        None,
-    )
+    process: Optional[models.Process] = None
+    for registry in get_protocols(ProcessRegistryProtocol):
+        process = await registry.get_process(process_id)
+        if process:
+            break
     if not process:
         raise ValueError(f"Process '{process_id}' not found.")
 

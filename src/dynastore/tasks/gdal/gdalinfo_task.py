@@ -26,43 +26,17 @@ from dynastore.modules.catalog.asset_service import (
     AssetUpdate,
 )
 from dynastore.modules.tasks.models import TaskPayload
-from dynastore.modules.processes.models import (
-    ExecuteRequest,
-    Process,
-    ProcessOutput,
-    ProcessScope,
-    JobControlOptions,
-)
+from dynastore.modules.processes.models import ExecuteRequest, Process
 from dynastore.modules.catalog.asset_tasks_spi import AssetTasksSPI
 from dynastore.tasks.protocols import TaskProtocol
 from dynastore.models.protocols import AssetsProtocol
 from dynastore.modules import get_protocol
 from dynastore.modules.gdal import service as gdal_module
-from dynastore.modules.gdal.models import RasterInfo, VectorInfo
+from dynastore.tasks.gdal.definition import GDALINFO_PROCESS_DEFINITION
 
 logger = logging.getLogger(__name__)
 
-GDALINFO_PROCESS_DEFINITION = Process(
-    id="gdal",
-    title="GDAL Info Task",
-    description="Calculates GDAL/OGR information for an asset and enriches its metadata.",
-    version="1.0.0",
-    scopes=[ProcessScope.ASSET],
-    jobControlOptions=[JobControlOptions.SYNC_EXECUTE, JobControlOptions.ASYNC_EXECUTE],
-    inputs={},  # It operates on the asset provided by SPI
-    outputs={
-        "info": ProcessOutput(
-            title="Result Info",
-            description="The calculated GDAL/OGR information.",
-            schema={
-                "oneOf": [
-                    RasterInfo.model_json_schema(),
-                    VectorInfo.model_json_schema(),
-                ]
-            },
-        )
-    },
-)
+
 class GdalInfoTask(TaskProtocol, AssetTasksSPI):
     """
     Task that calculates GDAL/OGR info for an asset and enriches its metadata.

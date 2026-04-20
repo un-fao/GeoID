@@ -66,6 +66,15 @@ def discover_tasks(include_only: Optional[List[str]] = None):
     """
     Discovers tasks using PEP-517 entry points defined in pyproject.toml
     under the "dynastore.tasks" group.
+
+    Clean Discovery Protocol
+    ------------------------
+    When a task's strict dependencies are missing (the entry point fails to
+    import), we still try to surface its Process definition via a lightweight
+    ``<task_package>.definition`` sibling module. Any ``Process`` instance found
+    at module scope is registered under a placeholder class. This lets the
+    catalog service expose OGC Process metadata for tasks that actually execute
+    on remote workers (Cloud Run Jobs).
     """
     if include_only is None:
         scope = os.getenv("SCOPE")
@@ -73,11 +82,11 @@ def discover_tasks(include_only: Optional[List[str]] = None):
             include_only = [s.strip() for s in scope.split(",")]
 
     logger.info("--- [tasks] Discovering components via entry points... ---")
-    
+
     # Discovery returns uninstantiated classes
     from dynastore.tools.discovery import discover_and_load_plugins
     classes = discover_and_load_plugins("dynastore.tasks", include_only=include_only)
-    
+
     for name, cls in classes.items():
         # Use the task_type class attribute as key when available so the
         # registry key matches the value stored in the DB task_type column.
@@ -99,8 +108,86 @@ def discover_tasks(include_only: Optional[List[str]] = None):
             name=key,
             definition=definition
         )
- 
+
+    _register_definition_only_placeholders(
+        include_only, already_loaded=set(classes.keys())
+    )
+
     logger.info(f"--- DISCOVERED TASKS: {list(_DYNASTORE_TASKS.keys())} ---")
+
+
+def _register_definition_only_placeholders(
+    include_only: Optional[List[str]], already_loaded: set
+) -> None:
+    """Fallback for tasks whose heavy deps are missing.
+
+    Iterate entry points in ``dynastore.tasks`` that aren't already loaded,
+    load the ``<package>.definition`` sibling module (which must only depend on
+    lightweight packages), and register a placeholder TaskConfig exposing the
+    Process definition. The placeholder can't ``run()`` — it exists so callers
+    (e.g. ``/processes`` inventory, GcpCloudRunRunner) can see the metadata.
+    """
+    import importlib.metadata
+    import importlib
+
+    from dynastore.modules.processes.models import Process
+    from dynastore.tools.discovery import _normalize, resolve_scope
+
+    target_names: Optional[set] = None
+    if include_only is not None:
+        target_names = resolve_scope(",".join(include_only))
+
+    for ep in importlib.metadata.entry_points(group="dynastore.tasks"):
+        if ep.name in already_loaded:
+            continue
+        if target_names is not None and _normalize(ep.name) not in target_names:
+            continue
+        module_path = ep.value.split(":")[0]
+        pkg_path = module_path.rsplit(".", 1)[0]
+        definition_mod_path = f"{pkg_path}.definition"
+        try:
+            def_mod = importlib.import_module(definition_mod_path)
+        except ImportError as e:
+            logger.debug(
+                f"Task '{ep.name}' heavy deps missing and no {definition_mod_path} "
+                f"fallback available: {e}"
+            )
+            continue
+        process_def: Optional[Process] = None
+        for attr in vars(def_mod).values():
+            if isinstance(attr, Process):
+                process_def = attr
+                break
+        if process_def is None:
+            logger.debug(
+                f"Task '{ep.name}' fallback {definition_mod_path} has no Process "
+                "instance at module scope; skipping."
+            )
+            continue
+
+        task_type = getattr(process_def, "id", ep.name) or ep.name
+
+        class DefinitionOnlyTask:
+            """Placeholder: heavy deps missing; execution delegated to a runner."""
+            _task_type = task_type
+            _process_definition = process_def
+            is_placeholder = True
+
+            @staticmethod
+            def get_definition() -> Process:
+                return process_def  # type: ignore[return-value]
+
+        _DYNASTORE_TASKS[ep.name] = TaskConfig(
+            cls=cast(Type[TaskProtocol], DefinitionOnlyTask),
+            type="task",
+            module_name=definition_mod_path,
+            name=ep.name,
+            definition=process_def,
+        )
+        logger.info(
+            f"Registered definition-only placeholder for task '{ep.name}' "
+            f"from {definition_mod_path} (heavy deps not installed)."
+        )
 
 
 def _register_task(target_cls: Type[TaskProtocol], registration_name: Optional[str] = None, type: str = "task"):

@@ -16,8 +16,11 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from typing import Protocol, TypeVar, Generic, runtime_checkable, Optional, List
+from typing import TYPE_CHECKING, Protocol, TypeVar, Generic, runtime_checkable, Optional, List
 from dynastore.tasks.protocols import TaskProtocol
+
+if TYPE_CHECKING:
+    from dynastore.modules.processes.models import Process
 
 DefinitionType = TypeVar('DefinitionType', covariant=True)
 PayloadType = TypeVar('PayloadType', contravariant=True)
@@ -48,14 +51,14 @@ class ProcessRegistryProtocol(Protocol):
     OGC API Processes compliance.
     """
 
-    def list_processes(
+    async def list_processes(
         self, tenant: Optional[str] = None,
-    ) -> list:
+    ) -> List["Process"]:
         """Return all available process summaries, optionally filtered by tenant."""
         ...
 
-    def get_process(
+    async def get_process(
         self, process_id: str, tenant: Optional[str] = None,
-    ) -> Optional[object]:
+    ) -> Optional["Process"]:
         """Return a single process definition by ID, or None."""
         ...

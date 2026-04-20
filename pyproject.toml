@@ -95,18 +95,38 @@ extension_dimensions = ["dynastore[extension_base]", "ogc-dimensions @ git+https
 
 # ==========================================================================
 # GRANULAR TASKS
+#
+# Naming convention (SSOT — don't drift):
+#   * catalog_task_<name> — lightweight, in-process task hosted by the catalog
+#                           service (executed via FastAPI BackgroundTasks).
+#                           Examples: bucket provisioning, GCS finalize hooks,
+#                           catalog cleanup.
+#   * worker_task_<name>  — heavy task packaged for Cloud Run Jobs (sync-db).
+#                           On-prem, the `worker` service simulates these via
+#                           in-process BackgroundTasks but the SCOPE naming
+#                           stays the same so SCOPE=worker_task_<name> is a
+#                           single, unambiguous task-type declaration.
+#
+# The gcp_cloud_runner reads each Cloud Run Job's SCOPE env var, strips the
+# `worker_task_` prefix, and maps the remainder to the task entry-point name.
+# See src/dynastore/modules/gcp/gcp_module.py::get_job_config.
 # ==========================================================================
-task_gdal = ["dynastore[module_gdal]"]
-task_gcp_provision = ["dynastore[module_gcp]"]
-task_elasticsearch = ["dynastore[module_elasticsearch]"]
-task_elasticsearch_indexer = ["dynastore[module_elasticsearch]"]
-task_ingestion = ["dynastore[geospatial,module_gcp]"]
-task_dwh_join = ["dynastore[dwh]"]
-task_export_features = ["dynastore[geospatial_core,stac]"]
-task_tiles_preseed = ["dynastore[geospatial_core]", "morecantile==7.0.2"]
-task_dimensions_materialize = ["dynastore[extension_dimensions]"]
-task_gcs_storage_event = ["dynastore[module_gcp,module_catalog]"]
-task_gcp_catalog_cleanup = ["dynastore[module_gcp,module_catalog]"]
+
+# ---- Dependency-only aliases (not runner-typed; consumed by the
+#      catalog_task_* / worker_task_* extras below as composition blocks).
+task_gdal_deps = ["dynastore[module_gdal]"]
+task_elasticsearch_deps = ["dynastore[module_elasticsearch]"]
+task_elasticsearch_indexer_deps = ["dynastore[module_elasticsearch]"]
+task_ingestion_deps = ["dynastore[geospatial,module_gcp]"]
+task_dwh_join_deps = ["dynastore[dwh]"]
+task_export_features_deps = ["dynastore[geospatial_core,stac]"]
+task_tiles_preseed_deps = ["dynastore[geospatial_core]", "morecantile==7.0.2"]
+task_dimensions_materialize_deps = ["dynastore[extension_dimensions]"]
+
+# ---- Catalog-hosted lightweight tasks (async-db, in-process).
+catalog_task_gcp_provision = ["dynastore[module_gcp]"]
+catalog_task_gcs_storage_event = ["dynastore[module_gcp,module_catalog]"]
+catalog_task_gcp_catalog_cleanup = ["dynastore[module_gcp,module_catalog]"]
 
 # ==========================================================================
 # PUBLIC FEATURE ALIASES — compose module + extension in one name
@@ -120,8 +140,8 @@ db = ["dynastore[module_db]"]
 crs = ["dynastore[module_crs,extension_crs]"]
 cache = ["dynastore[module_cache]"]
 events = ["dynastore[module_events,extension_events]"]
-elasticsearch = ["dynastore[module_elasticsearch,task_elasticsearch]"]
-gdal = ["dynastore[module_gdal,extension_gdal,task_gdal]"]
+elasticsearch = ["dynastore[module_elasticsearch,task_elasticsearch_deps]"]
+gdal = ["dynastore[module_gdal,extension_gdal,task_gdal_deps]"]
 maps = ["dynastore[extension_maps]"]
 stac = ["dynastore[extension_stac]"]
 stats = ["dynastore[module_stats,extension_stats]"]
@@ -183,7 +203,7 @@ google_grp = ["dynastore[gcp,extension_dwh]"]
 auth_grp = ["dynastore[iam,auth,extension_admin]"]
 tools_grp = ["dynastore[extension_httpx,template,dimensions,notebooks]"]
 monitor_grp = ["dynastore[stats,logs]"]
-index_grp = ["dynastore[elasticsearch,task_elasticsearch_indexer]"]
+index_grp = ["dynastore[elasticsearch,task_elasticsearch_indexer_deps]"]
 # drivers_grp — all storage/asset/metadata drivers (both collection and asset domains)
 drivers_grp = ["dynastore[module_storage_postgresql,module_storage_duckdb,module_storage_iceberg,module_storage_elasticsearch,module_storage_elasticsearch_obfuscated,module_storage_elasticsearch_assets,module_metadata_postgresql,module_metadata_elasticsearch]"]
 
@@ -191,15 +211,19 @@ drivers_grp = ["dynastore[module_storage_postgresql,module_storage_duckdb,module
 # TASK GROUPINGS (sync-db)
 # ==========================================================================
 task_base = ["dynastore[db_sync,module_tasks,extension_processes]"]
-ingestion = ["dynastore[task_base,module_gcp,task_ingestion]"]
+ingestion = ["dynastore[task_base,module_gcp,task_ingestion_deps]"]
 
-# Per Cloud Run Job extras (all use db-sync via task-base)
-task_dwh_join_job = ["dynastore[task_base,dwh]"]
-task_ingestion_job = ["dynastore[ingestion,catalog_grp,google_grp,gdal]"]
-task_export_features_job = ["dynastore[task_base,stac,geospatial_core]"]
-task_tiles_preseed_job = ["dynastore[task_base,tiles,crs]"]
-task_gdal_job = ["dynastore[task_base,gdal]"]
-task_dimensions_materialize_job = ["dynastore[task_base,extension_dimensions]"]
+# ---- Worker / Cloud Run Job task extras (heavy; sync-db via task_base).
+# One extras per task. Each Cloud Run Job is deployed with
+# SCOPE=worker_task_<name> — a single unambiguous identifier the catalog's
+# gcp_cloud_runner uses to map discovered jobs back to task entry-points.
+worker_task_dwh_join = ["dynastore[task_base,dwh]"]
+worker_task_ingestion = ["dynastore[ingestion,catalog_grp,google_grp,gdal]"]
+worker_task_export_features = ["dynastore[task_base,stac,geospatial_core]"]
+worker_task_tiles_preseed = ["dynastore[task_base,tiles,crs]"]
+worker_task_gdal = ["dynastore[task_base,gdal]"]
+worker_task_dimensions_materialize = ["dynastore[task_base,extension_dimensions]"]
+worker_task_elasticsearch_indexer = ["dynastore[task_base,elasticsearch,task_elasticsearch_indexer_deps]"]
 
 # ==========================================================================
 # SERVICE COMPOSITIONS (async-db)
@@ -259,7 +283,7 @@ task_dimensions_materialize_job = ["dynastore[task_base,extension_dimensions]"]
 #
 # ==========================================================================
 # api_open: full catalog WITHOUT auth — open for testing (no tools_grp: proxy/template served by the dedicated tools service)
-api_open = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,task_gcp_provision,task_gcs_storage_event,task_gcp_catalog_cleanup]"]
+api_open = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,catalog_task_gcp_provision,catalog_task_gcs_storage_event,catalog_task_gcp_catalog_cleanup]"]
 # api_catalog: api_open + auth (most common production deployment)
 api_catalog = ["dynastore[api_open,auth_grp]"]
 # api_maps: maps/tiles/styles service — WITH auth (kept for reference / future use)
@@ -273,7 +297,7 @@ api_full = ["dynastore[api_catalog,maps_grp,geospatial_io]"]
 # geoid_service: api_catalog + geoid extension — the ONLY service with auth
 geoid_service = ["dynastore[api_catalog,extension_geoid]"]
 # worker_service: background task processor (sync-db tasks + async-db catalog reads), no auth
-worker_service = ["dynastore[core,catalog_grp,google_grp,index_grp,tasks,processes,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision,task_gcs_storage_event,task_gcp_catalog_cleanup,task_dimensions_materialize,task_dimensions_materialize_job]"]
+worker_service = ["dynastore[core,catalog_grp,google_grp,index_grp,tasks,processes,ingestion,worker_task_export_features,worker_task_dwh_join,worker_task_tiles_preseed,worker_task_gdal,worker_task_dimensions_materialize,catalog_task_gcp_provision,catalog_task_gcs_storage_event,catalog_task_gcp_catalog_cleanup]"]
 # catalog_local: local dev catalog — api_open without google_grp/gcp_cloud_runner (no tools_grp: use the dedicated tools service)
 catalog_local = ["dynastore[core,catalog_grp,monitor_grp,index_grp,processes]"]
 # worker_local: local HTTP simulation of Cloud Run Jobs — all tasks + processes/stats UI
@@ -284,11 +308,11 @@ worker_local = ["dynastore[worker_service,monitor_grp]"]
 # Prefixed with scope_ to avoid collision with module-level extras above.
 # ==========================================================================
 # scope_catalog: catalog API without auth — open for local testing
-scope_catalog = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,task_gcp_provision,task_gcs_storage_event,task_gcp_catalog_cleanup,module_cache,notebooks,dimensions,drivers_grp]"]
+scope_catalog = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,catalog_task_gcp_provision,catalog_task_gcs_storage_event,catalog_task_gcp_catalog_cleanup,module_cache,notebooks,dimensions,drivers_grp]"]
 # scope_geoid: catalog + geoid UI + auth/iam — maps to geospatial-auth in cloud
 scope_geoid = ["dynastore[scope_catalog,extension_geoid,auth_grp]"]
 # scope_worker: background task processor — headless Cloud Run job runner
-scope_worker = ["dynastore[core,module_catalog,gcp,extension_dwh,index_grp,tasks,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision,task_gcs_storage_event,task_gcp_catalog_cleanup,task_dimensions_materialize,task_dimensions_materialize_job]"]
+scope_worker = ["dynastore[core,module_catalog,gcp,extension_dwh,index_grp,tasks,ingestion,worker_task_export_features,worker_task_dwh_join,worker_task_tiles_preseed,worker_task_gdal,worker_task_dimensions_materialize,catalog_task_gcp_provision,catalog_task_gcs_storage_event,catalog_task_gcp_catalog_cleanup]"]
 # scope_tools: proxy + template tools service — no auth
 scope_tools = ["dynastore[core,template,notebooks,cache,dimensions,proxy]"]
 # scope_maps: map tiles/styles service — no auth

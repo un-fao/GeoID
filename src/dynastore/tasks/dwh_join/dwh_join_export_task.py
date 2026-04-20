@@ -1,53 +1,31 @@
 import logging
 import asyncio
 from typing import Any, Optional, List
-from pydantic import Field
 
 from dynastore.tasks.protocols import TaskProtocol
 from dynastore.modules.tasks.models import TaskPayload, TaskStatusEnum
 from dynastore.tools.protocol_helpers import get_engine
 from dynastore.modules.processes.models import (
     Process,
-    ProcessOutput,
-    ProcessScope,
     ExecuteRequest,
     StatusInfo,
-    JobControlOptions,
-    TransmissionMode,
 )
-from dynastore.modules.processes.schema_gen import pydantic_to_process_inputs
 from dynastore.tasks.tools import initialize_reporters
 from dynastore.tools.async_utils import SyncQueueIterator
 from dynastore.tools.file_io import get_features_as_byte_stream
 from dynastore.modules.gcp.tools.bucket import upload_stream_to_gcs
 from dynastore.modules.tools.features import FeatureStreamConfig, stream_features
 from dynastore.models.shared_models import OutputFormatEnum
-from dynastore.extensions.dwh.models import DWHJoinRequest
 from dynastore.extensions.dwh.dwh import execute_bigquery_async
 from dynastore.modules.concurrency import get_concurrency_backend
 from dynastore.extensions.tools.formatters import format_map
 
+from .definition import DWH_JOIN_EXPORT_PROCESS_DEFINITION
+from .models import DwhJoinExportRequest
+
 logger = logging.getLogger(__name__)
 
-# Define Input Model extending DWHJoinRequest with export specifics
-class DwhJoinExportRequest(DWHJoinRequest):
-    destination_uri: str = Field(..., description="GCS URI for output (gs://...)")
-    reporting: Optional[dict] = Field(None, description="Reporter configuration")
 
-# Generate process definition from Pydantic model
-DWH_JOIN_EXPORT_PROCESS_DEFINITION = Process(
-    id="dwh-join-export",
-    version="1.0.0",
-    title="DWH Join Export",
-    description="Joins catalog features with DWH query results and exports to Cloud Storage.",
-    scopes=[ProcessScope.COLLECTION],
-    inputs=pydantic_to_process_inputs(DwhJoinExportRequest),
-    outputs={
-        "result": ProcessOutput.model_validate({"title": "Result", "schema": {"type": "object"}})
-    },
-    jobControlOptions=[JobControlOptions.ASYNC_EXECUTE],
-    outputTransmission=[TransmissionMode.VALUE]
-)
 class DwhJoinExportTask(TaskProtocol[Process, TaskPayload[ExecuteRequest], Optional[StatusInfo]]):
     priority: int = 100
     @staticmethod

@@ -187,10 +187,18 @@ Optional-dependency keys use a prefix to indicate the plugin type:
 |--------|-------------|---------|
 | `module_` | Module | `module_catalog = [...]` |
 | `extension_` | Extension | `extension_web = [...]` |
-| `task_` | Task | `task_gdal = [...]` |
+| `catalog_task_` | In-process task hosted by the catalog (FastAPI BackgroundTasks) | `catalog_task_gcp_provision = [...]` |
+| `worker_task_` | Heavy task packaged for a Cloud Run Job (sync-db) | `worker_task_gdal = [...]` |
 
-The discovery system strips these prefixes automatically when matching against
-entry-point names (e.g. `extension_catalog_events` matches entry-point `catalog_events`).
+The discovery system strips `module_` / `extension_` prefixes automatically
+when matching against entry-point names (e.g. `extension_catalog_events`
+matches entry-point `catalog_events`).
+
+Task extras use a richer `<location>_task_<name>` shape so the **deployment
+topology** (in-process vs Cloud Run Job) is readable from the extras name
+alone. Each Cloud Run Job is deployed with a single `SCOPE=worker_task_<name>`
+env var; `gcp_cloud_runner` strips the `worker_task_` prefix to resolve the
+Cloud Run Job back to its task entry-point.
 
 ### Downstream projects
 

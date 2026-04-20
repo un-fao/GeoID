@@ -25,8 +25,8 @@ from dynastore.models.protocols.asset_process import (
 )
 from dynastore.models.tasks import TaskExecutionMode
 from dynastore.modules.processes import models
+from dynastore.modules.processes.protocols import ProcessRegistryProtocol
 from dynastore.modules.tasks.runners import RunnerProtocol
-from dynastore.tasks import get_definitions_by_type
 from dynastore.tools.discovery import get_protocols
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,13 @@ _ASSET_PROCESS_TYPOLOGY = models.ProcessTypology(
     runner_type="asset_process",
     mode=TaskExecutionMode.SYNCHRONOUS,
     priority=0,
+    location="in_process",
 )
+
+# Runner -> execution location. Anything not listed defaults to "in_process".
+_RUNNER_LOCATIONS = {
+    "gcp_cloud_run": "cloud_run",
+}
 
 
 def _substitute(template: str, **overrides: Optional[str]) -> str:
@@ -112,6 +118,9 @@ def resolve_typologies(task_type: str) -> List[models.ProcessTypology]:
             runner_type=getattr(r, "runner_type", "unknown"),
             mode=getattr(r, "mode", TaskExecutionMode.ASYNCHRONOUS),
             priority=getattr(r, "priority", 0),
+            location=_RUNNER_LOCATIONS.get(
+                getattr(r, "runner_type", "unknown"), "in_process"
+            ),
         )
         for r in capable
     ]
@@ -193,7 +202,7 @@ def parse_runner_filter(raw: Optional[str]) -> Optional[Set[str]]:
     return tokens or None
 
 
-def build_process_inventory_entries(
+async def build_process_inventory_entries(
     request: Request,
     *,
     catalog_id: Optional[str] = None,
@@ -205,14 +214,20 @@ def build_process_inventory_entries(
 ) -> List[models.ProcessSummary]:
     """Build the enriched process list used by ``GET /processes`` + siblings.
 
-    - Iterates OGC ``Process`` definitions registered via entry points.
+    - Queries all ``ProcessRegistryProtocol`` implementations (dedup by id).
     - When ``scope=asset`` / ``scope=all``, also includes
       ``AssetProcessProtocol`` implementations as synthetic entries.
     - Applies scope + runner filters.
     - Sets ``typologies`` / ``url_templates`` when ``include_typology=True``;
       leaves them empty otherwise (strict-OGC payload).
     """
-    processes: List[models.Process] = list(get_definitions_by_type(models.Process))
+    seen_ids: Set[str] = set()
+    processes: List[models.Process] = []
+    for registry in get_protocols(ProcessRegistryProtocol):
+        for p in await registry.list_processes():
+            if p.id not in seen_ids:
+                processes.append(p)
+                seen_ids.add(p.id)
 
     asset_wanted = scope_filter is None or models.ProcessScope.ASSET in scope_filter
     if asset_wanted:

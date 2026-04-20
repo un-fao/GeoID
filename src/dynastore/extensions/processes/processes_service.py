@@ -40,7 +40,8 @@ from dynastore.extensions.tools.exception_handlers import http_errors
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
 
-from dynastore.tasks import get_definitions_by_type
+from dynastore.modules.processes.protocols import ProcessRegistryProtocol
+from dynastore.tools.discovery import get_protocols
 
 import dynastore.modules.processes.processes_module as processes_module
 from dynastore.modules.tasks import tasks_module
@@ -265,11 +266,12 @@ def _inject_path_into_inputs(
     return execution_request.model_copy(update={"inputs": inputs})
 
 
-def _lookup_process_or_404(process_id: str) -> models.Process:
-    process = next(
-        (p for p in get_definitions_by_type(models.Process) if p.id == process_id),
-        None,
-    )
+async def _lookup_process_or_404(process_id: str) -> models.Process:
+    process: Optional[models.Process] = None
+    for registry in get_protocols(ProcessRegistryProtocol):
+        process = await registry.get_process(process_id)
+        if process:
+            break
     if not process:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -278,7 +280,7 @@ def _lookup_process_or_404(process_id: str) -> models.Process:
     return process
 
 
-def _render_process_list(
+async def _render_process_list(
     request: Request,
     catalog_id: Optional[str] = None,
     collection_id: Optional[str] = None,
@@ -310,7 +312,7 @@ def _render_process_list(
         # so strict OGC clients that don't know about `scope` see exactly today's list.
         scope_filter = set(_allowed_scopes_for(catalog_id, collection_id))
 
-    entries = build_process_inventory_entries(
+    entries = await build_process_inventory_entries(
         request,
         catalog_id=catalog_id,
         collection_id=collection_id,
@@ -321,7 +323,7 @@ def _render_process_list(
 
     process_summaries: List[models.ProcessSummary] = []
     for entry in entries:
-        process = _lookup_process_or_404_silent(entry.id)
+        process = await _lookup_process_or_404_silent(entry.id)
         self_link_href = (
             str(request.url_for("get_process_description", process_id=entry.id))
             if process is not None
@@ -353,13 +355,14 @@ def _render_process_list(
     return models.ProcessList(processes=process_summaries, links=links)
 
 
-def _lookup_process_or_404_silent(process_id: str) -> Optional[models.Process]:
+async def _lookup_process_or_404_silent(process_id: str) -> Optional[models.Process]:
     """Like ``_lookup_process_or_404`` but returns ``None`` for synthesised
     entries (asset processes) that don't live in the OGC registry."""
-    return next(
-        (p for p in get_definitions_by_type(models.Process) if p.id == process_id),
-        None,
-    )
+    for registry in get_protocols(ProcessRegistryProtocol):
+        process = await registry.get_process(process_id)
+        if process:
+            return process
+    return None
 
 
 @router.get(
@@ -396,7 +399,7 @@ async def list_processes(
     process across all scopes with typology + parametric URL templates. Set
     ``typology=false`` to get a strict OGC Core payload.
     """
-    return _render_process_list(
+    return await _render_process_list(
         request,
         scope_param=scope,
         runner_param=runner,
@@ -417,7 +420,7 @@ async def list_processes_catalog(
     runner: Optional[str] = Query(default=None),
 ):
     """Lists catalog-scoped processes available for this catalog."""
-    return _render_process_list(
+    return await _render_process_list(
         request,
         catalog_id=catalog_id,
         scope_param=scope,
@@ -440,7 +443,7 @@ async def list_processes_collection(
     runner: Optional[str] = Query(default=None),
 ):
     """Lists collection- and asset-scoped processes available for this collection."""
-    return _render_process_list(
+    return await _render_process_list(
         request,
         catalog_id=catalog_id,
         collection_id=collection_id,
@@ -465,7 +468,7 @@ async def get_process_description(process_id: str, request: Request):
     the §7.11 "every listed process is executable" invariant that scoped
     URL mounts would otherwise obscure.
     """
-    process = _lookup_process_or_404(process_id)
+    process = await _lookup_process_or_404(process_id)
     self_link = models.Link(
         href=str(request.url),
         rel="self",
@@ -512,7 +515,7 @@ async def execute_process(
     """Executes a platform-scoped process, creating a new job (task)."""
     # Validate routing BEFORE touching the DB engine so bad-URL requests
     # never acquire DB resources or emit events.
-    process = _lookup_process_or_404(process_id)
+    process = await _lookup_process_or_404(process_id)
     _validate_process_scope_or_raise(process, catalog_id=None, collection_id=None)
 
     principal = getattr(request.state, "principal", None)
@@ -553,7 +556,7 @@ async def execute_process_catalog(
     background_tasks: BackgroundTasks,
 ):
     """Executes a catalog-scoped process."""
-    process = _lookup_process_or_404(process_id)
+    process = await _lookup_process_or_404(process_id)
     _validate_process_scope_or_raise(process, catalog_id=catalog_id, collection_id=None)
     execution_request = _inject_path_into_inputs(
         execution_request, catalog_id=catalog_id, collection_id=None
@@ -598,7 +601,7 @@ async def execute_process_collection(
     background_tasks: BackgroundTasks,
 ):
     """Executes a collection- or asset-scoped process."""
-    process = _lookup_process_or_404(process_id)
+    process = await _lookup_process_or_404(process_id)
     _validate_process_scope_or_raise(
         process, catalog_id=catalog_id, collection_id=collection_id
     )

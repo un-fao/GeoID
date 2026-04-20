@@ -88,6 +88,14 @@ class ProcessTypology(BaseModel):
     )
     mode: TaskExecutionMode
     priority: int
+    location: Literal["in_process", "cloud_run"] = Field(
+        default="in_process",
+        description=(
+            "Where the runner executes the work. 'in_process' runs inside the "
+            "catalog service (FastAPI BackgroundTasks, sync, asset-process); "
+            "'cloud_run' dispatches to a Google Cloud Run Job worker."
+        ),
+    )
 
 
 class ProcessUrlTemplate(BaseModel):
