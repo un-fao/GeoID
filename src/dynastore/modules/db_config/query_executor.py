@@ -994,8 +994,36 @@ async def managed_transaction(db_resource: Optional[DbResource]):
                     raise
                 except Exception:
                     pass  # Safe: if we can't inspect, let asyncpg fail naturally
-                async with conn.begin_nested():
+
+                # Manual savepoint scope so we can intercept release/rollback
+                # errors. ``async with conn.begin_nested()`` hides RELEASE
+                # failures behind SQLAlchemy's __aexit__ commit() path, which
+                # surfaces as a cryptic PendingRollbackError when the outer
+                # transaction was invalidated between enter and exit — the
+                # actual poisoning happens earlier, in the nested body, via
+                # a swallowed exception or explicit rollback/invalidate.
+                savepoint = await conn.begin_nested()
+                try:
                     yield conn
+                except BaseException:
+                    try:
+                        await savepoint.rollback()
+                    except (PendingRollbackError, InvalidRequestError):
+                        # Outer tx already aborted — SAVEPOINT is gone.
+                        pass
+                    raise
+                else:
+                    try:
+                        await savepoint.commit()
+                    except (PendingRollbackError, InvalidRequestError) as exc:
+                        raise DatabaseConnectionError(
+                            f"Cannot release SAVEPOINT on connection {wire_id}: "
+                            f"outer transaction was invalidated during the nested "
+                            f"scope ({type(exc).__name__}). An earlier statement "
+                            "inside the nested body poisoned the outer transaction "
+                            "without propagating — check for swallowed exceptions "
+                            "or explicit rollback/invalidate calls inside it."
+                        ) from exc
             else:
                 async with conn.begin():
                     yield conn
@@ -1009,8 +1037,28 @@ async def managed_transaction(db_resource: Optional[DbResource]):
                         f"Cannot start nested transaction on connection {wire_id}: state is poisoned. "
                         "The parent transaction must be rolled back."
                     )
-                with conn.begin_nested():
+                # Manual savepoint scope (sync variant of the async branch above).
+                savepoint = conn.begin_nested()
+                try:
                     yield conn
+                except BaseException:
+                    try:
+                        savepoint.rollback()
+                    except (PendingRollbackError, InvalidRequestError):
+                        pass
+                    raise
+                else:
+                    try:
+                        savepoint.commit()
+                    except (PendingRollbackError, InvalidRequestError) as exc:
+                        raise DatabaseConnectionError(
+                            f"Cannot release SAVEPOINT on connection {wire_id}: "
+                            f"outer transaction was invalidated during the nested "
+                            f"scope ({type(exc).__name__}). An earlier statement "
+                            "inside the nested body poisoned the outer transaction "
+                            "without propagating — check for swallowed exceptions "
+                            "or explicit rollback/invalidate calls inside it."
+                        ) from exc
             else:
                 with conn.begin():
                     yield conn
