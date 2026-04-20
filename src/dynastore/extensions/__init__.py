@@ -136,6 +136,12 @@ async def lifespan(app: FastAPI):
                 "skipping exposure matrix — all extensions mount unconditionally."
             )
 
+        # Map router prefix → extension name so the filtered OpenAPI can hide
+        # disabled extensions without polluting each operation's tags (which
+        # would cause Swagger UI to render every endpoint twice — once under
+        # the router's display tag and once under the extension name).
+        extension_prefixes: list[tuple[str, str]] = []
+
         for config in configs:
             if config.instance is None: continue
 
@@ -147,10 +153,10 @@ async def lifespan(app: FastAPI):
 
                 # 2. Mount Router
                 extension_name = config.cls._registered_name  # type: ignore[attr-defined]
-                # Always append the extension_name tag so the filtered OpenAPI
-                # can map operations back to their extension. Gated extensions
-                # also get a dependency that 503s when the matrix says so.
-                include_kwargs: dict = {"tags": [extension_name]}
+                # Gated extensions get a dependency that 503s when the matrix
+                # says so. Operation→extension mapping is tracked via prefixes
+                # below rather than via an injected tag.
+                include_kwargs: dict = {}
                 if (
                     matrix is not None
                     and extension_name in KNOWN_EXTENSION_IDS
@@ -160,8 +166,12 @@ async def lifespan(app: FastAPI):
                         Depends(make_exposure_dependency(matrix, extension_name))
                     ]
                 app.include_router(router, **include_kwargs)
+                if router.prefix:
+                    extension_prefixes.append((router.prefix, extension_name))
 
                 logger.info(f"Mounted router for '{config.cls.__name__}' at prefix '{router.prefix}'.")
+
+        app.state.extension_prefixes = extension_prefixes
 
         # --- Force OpenAPI Schema Refresh ---
         app.openapi_schema = None

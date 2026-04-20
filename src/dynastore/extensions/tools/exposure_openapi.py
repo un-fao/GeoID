@@ -29,14 +29,21 @@ def install_filtered_openapi(app: FastAPI, matrix: ExposureMatrix) -> None:
         snap = matrix.get_sync()
         disabled = {e for e, on in snap.platform.items() if not on}
         if disabled:
+            # Longest-prefix-first match so nested prefixes resolve correctly.
+            prefixes = sorted(
+                getattr(app.state, "extension_prefixes", []),
+                key=lambda pe: len(pe[0]),
+                reverse=True,
+            )
             paths = {}
             for path, methods in schema.get("paths", {}).items():
-                kept = {
-                    m: op for m, op in methods.items()
-                    if not (set(op.get("tags", [])) & disabled)
-                }
-                if kept:
-                    paths[path] = kept
+                owner = next(
+                    (name for prefix, name in prefixes if path.startswith(prefix)),
+                    None,
+                )
+                if owner in disabled:
+                    continue
+                paths[path] = methods
             schema["paths"] = paths
         app.openapi_schema = schema
         return schema
