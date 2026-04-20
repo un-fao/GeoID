@@ -78,6 +78,7 @@ from dynastore.modules.gcp.models import (
     PushSubscriptionConfig,
     PUBSUB_JWT_AUDIENCE,
 )
+from dynastore.modules.processes.protocols import ProcessRegistryProtocol
 
 if not TYPE_CHECKING:
     try:
@@ -100,6 +101,32 @@ from .gcp_storage_ops import GcpStorageOpsMixin
 
 logger = logging.getLogger(__name__)
 
+
+def _task_type_from_scope_token(token: str) -> Optional[str]:
+    """Extract a task entry-point name from a Cloud Run Job's SCOPE env token.
+
+    Handles both the current canonical form and the legacy hyphenated form so
+    jobs deployed before the ``worker_task_*`` rename can still be discovered.
+
+    Canonical  : ``worker_task_gdal``           → ``gdal``
+    Legacy     : ``task-gdal-job``              → ``gdal``
+                 ``task_export_features_job``   → ``export_features``
+    Infra noise: ``task_base``, ``core``, …     → ``None`` (skip)
+    """
+    # Canonical form: worker_task_<name>
+    if token.startswith("worker_task_"):
+        name = token[len("worker_task_"):]
+        return name or None
+
+    # Legacy form: task[-_]<name>[-_]job (normalize separators first)
+    normalized = token.replace("-", "_").lower()
+    if normalized.startswith("task_") and normalized.endswith("_job"):
+        inner = normalized[len("task_"):-len("_job")]
+        return inner or None
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Provisioning retry tunables
 # ---------------------------------------------------------------------------
@@ -121,6 +148,7 @@ class GCPModule(
     CloudIdentityProtocol,
     EventingProtocol,
     AssetUploadProtocol,
+    ProcessRegistryProtocol,
 ):
     _credentials: Optional[Any] = None
     _identity: Optional[Dict[str, Any]] = None
@@ -194,15 +222,16 @@ class GCPModule(
                 credentials=self._credentials
             )
 
-            # Re-initialize async clients if they were already initialized
-            if self._jobs_client:
-                self._jobs_client = run_v2.JobsAsyncClient(
-                    credentials=self._credentials
-                )
-            if self._run_client:
-                self._run_client = run_v2.ServicesAsyncClient(
-                    credentials=self._credentials
-                )
+            # Async clients: always (re)create so that the module is usable as
+            # soon as __init__ runs — TasksModule starts its runner.setup() at
+            # priority 15, before GCPModule's lifespan runs (priority 30), so
+            # _jobs_client must be populated at __init__ time.
+            self._jobs_client = run_v2.JobsAsyncClient(
+                credentials=self._credentials
+            )
+            self._run_client = run_v2.ServicesAsyncClient(
+                credentials=self._credentials
+            )
 
             # Update BucketService if it exists
             if self._bucket_service:
@@ -251,22 +280,9 @@ class GCPModule(
             )
 
         try:
-            # Reuse credentials discovered in __init__
-            if self._credentials:
-                logger.info(
-                    f"GCP Module: Reusing discovered identity: {self.get_account_email()}"
-                )
-                # Pass the credentials object to the async clients.
-                self._jobs_client = run_v2.JobsAsyncClient(
-                    credentials=self._credentials
-                )
-                self._run_client = run_v2.ServicesAsyncClient(
-                    credentials=self._credentials
-                )
-            else:
-                logger.warning(
-                    "GCP Module: No credentials available for async clients."
-                )
+            # Async clients are already initialized in __init__ via reinitialize_clients().
+            # Recreate here so lifespan has fresh instances (e.g. after a hot-reload).
+            self.reinitialize_clients()
 
             # Initialize BucketService (Safe even if clients are None)
             self._bucket_service = BucketService(
@@ -484,7 +500,7 @@ class GCPModule(
             request = run_v2.ListJobsRequest(parent=parent)
 
             logger.info(f"Discovering GCP jobs in {parent}...")
-            async for job in await client.list_jobs(request=request):
+            async for job in client.list_jobs(request=request):
                 job_name = job.name.split("/")[-1]
                 if (
                     job.template
@@ -496,9 +512,12 @@ class GCPModule(
                             if env_var.name == "SCOPE":
                                 scope_value = env_var.value
                                 if scope_value:
-                                    for task_type in (
+                                    for token in (
                                         s.strip() for s in scope_value.split(",") if s.strip()
                                     ):
+                                        task_type = _task_type_from_scope_token(token)
+                                        if task_type is None:
+                                            continue
                                         job_map[task_type] = job_name
                                         logger.info(
                                             f"Discovered GCP job mapping: task '{task_type}' -> job '{job_name}'"
@@ -511,6 +530,23 @@ class GCPModule(
             )
 
         return job_map
+
+    # --- ProcessRegistryProtocol Implementation ---
+
+    async def list_processes(self, tenant: Optional[str] = None) -> List[Any]:
+        """ProcessRegistryProtocol: list all Cloud Run Job process definitions."""
+        from dynastore.modules.gcp.tools.jobs import load_job_config, try_load_process_definition
+        job_map = await load_job_config()
+        result = []
+        for task_type in job_map:
+            defn = try_load_process_definition(task_type)
+            if defn is not None:
+                result.append(defn)
+        return result
+
+    async def get_process(self, process_id: str, tenant: Optional[str] = None) -> Optional[Any]:
+        """ProcessRegistryProtocol: look up a single process definition by id."""
+        return next((p for p in await self.list_processes(tenant) if p.id == process_id), None)
 
     def get_run_client(self) -> "run_v2.ServicesAsyncClient":
         """
@@ -622,7 +658,7 @@ class GCPModule(
         return os.getenv("K_SERVICE")
 
     @cached(maxsize=1, distributed=False)
-    async def get_self_url(self) -> str:
+    async def get_self_url(self) -> str:  # type: ignore[override]
         """
         Dynamically discovers and returns the public URL of the running Cloud Run service.
         The result is cached for subsequent calls.
@@ -664,3 +700,9 @@ class GCPModule(
             return service_url
 
 
+try:
+    from dynastore.modules.gcp.gcp_runner import GcpJobRunner
+    from dynastore.tools.discovery import register_plugin as _reg_runner
+    _reg_runner(GcpJobRunner())
+except ImportError:
+    pass
