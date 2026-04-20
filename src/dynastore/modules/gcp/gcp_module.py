@@ -502,50 +502,35 @@ class GCPModule(
             logger.info(f"Discovering GCP jobs in {parent}...")
             async for job in await client.list_jobs(request=request):
                 job_name = job.name.split("/")[-1]
-                task_types_found = set()
 
-                # Strategy 1: Check SCOPE env var for explicit task type mapping
-                if (
-                    job.template
-                    and job.template.template
-                    and job.template.template.containers
-                ):
-                    for container in job.template.template.containers:
-                        for env_var in container.env:
-                            if env_var.name == "SCOPE":
-                                scope_value = env_var.value
-                                if scope_value:
-                                    for token in (
-                                        s.strip() for s in scope_value.split(",") if s.strip()
-                                    ):
-                                        task_type = _task_type_from_scope_token(token)
-                                        if task_type is not None:
-                                            task_types_found.add(task_type)
-                                break
+                if not (job.template and job.template.template and job.template.template.containers):
+                    continue
 
-                # Strategy 2: Infer task key from job name (fallback if no SCOPE)
-                # Only process jobs named with the "dynastore-" prefix — this is the
-                # implicit marker that a Cloud Run job belongs to this deployment.
-                # Strip prefix + optional "-job" suffix; hyphens preserved so
-                # try_load_process_definition can handle both hyphenated and underscored forms.
-                if not task_types_found and job_name.startswith("dynastore-"):
-                    inferred = job_name[len("dynastore-"):]
-                    if inferred.endswith("-job"):
-                        inferred = inferred[: -len("-job")]
-                    if inferred:
-                        task_types_found.add(inferred)
+                env_map = {}
+                for container in job.template.template.containers:
+                    for env_var in container.env:
+                        env_map[env_var.name] = env_var.value
+                    break  # first container only
 
-                # Add to job_map; will be validated when Process definitions are loaded
-                for task_type in task_types_found:
+                # Only process jobs marked as dynastore task runners
+                if env_map.get("APP") != "dynastore":
+                    continue
+
+                # Strategy 1 (explicit): TASK_TYPE env var — canonical task name
+                task_type = env_map.get("TASK_TYPE", "").strip() or None
+
+                # Strategy 2 (fallback): derive task type from SCOPE env var
+                if not task_type:
+                    for token in (
+                        s.strip() for s in env_map.get("SCOPE", "").split(",") if s.strip()
+                    ):
+                        task_type = _task_type_from_scope_token(token)
+                        if task_type:
+                            break
+
+                if task_type:
                     job_map[task_type] = job_name
-                    if len(task_types_found) > 1 or not job_name.replace("-", "_") == task_type:
-                        logger.info(
-                            f"Discovered GCP job mapping: task '{task_type}' -> job '{job_name}' (via SCOPE)"
-                        )
-                    else:
-                        logger.info(
-                            f"Discovered GCP job mapping: task '{task_type}' -> job '{job_name}' (inferred from job name)"
-                        )
+                    logger.info(f"Discovered GCP job: task '{task_type}' -> job '{job_name}'")
         except Exception as e:
             logger.error(
                 f"Error discovering GCP jobs (Project: {project_id}, Region: {region}): {e}",
