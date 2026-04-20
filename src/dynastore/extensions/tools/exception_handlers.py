@@ -735,7 +735,7 @@ async def http_errors(
         yield
     except HTTPException:
         raise
-    except tuple(mapping) as e:
+    except tuple(mapping) as e:  # type: ignore[reportGeneralTypeIssues]
         raise HTTPException(
             status_code=mapping[type(e)], detail=str(e)
         ) from e

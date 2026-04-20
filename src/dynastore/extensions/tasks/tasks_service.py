@@ -43,7 +43,7 @@ class TasksService(ExtensionProtocol):
     router: APIRouter = APIRouter(prefix="/tasks", tags=["Tasks API"])
 
     @router.get("/catalogs/{catalog_id}/monitor", response_class=HTMLResponse, summary="Task Monitoring Dashboard")
-    async def get_task_monitor_page(catalog_id: str):
+    async def get_task_monitor_page(catalog_id: str):  # type: ignore[reportGeneralTypeIssues]
         """
         Provides an HTML page to monitor the status of asynchronous tasks for a catalog.
         """
@@ -57,7 +57,7 @@ class TasksService(ExtensionProtocol):
 
     @router.get("/catalogs/{catalog_id}", response_model=List[Task], summary="List all asynchronous tasks")
     async def list_tasks_catalog(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         conn: AsyncConnection = Depends(get_async_connection),
         limit: int = Query(20, ge=1, le=100),
         offset: int = Query(0, ge=0),
@@ -69,7 +69,7 @@ class TasksService(ExtensionProtocol):
 
     @router.get("/catalogs/{catalog_id}/{task_id}", response_model=Task, summary="Get the status of a specific task")
     async def get_task_status_catalog(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         task_id: uuid.UUID,
         conn: AsyncConnection = Depends(get_async_connection),
     ):
@@ -84,7 +84,7 @@ class TasksService(ExtensionProtocol):
     # Global fallback for system tasks (can be moved to a separate extension if needed)
     @router.get("", response_model=List[Task], summary="List all system tasks", include_in_schema=False)
     async def list_tasks_system(
-        conn: AsyncConnection = Depends(get_async_connection),
+        conn: AsyncConnection = Depends(get_async_connection),  # type: ignore[reportGeneralTypeIssues]
         limit: int = Query(20, ge=1, le=100),
         offset: int = Query(0, ge=0)
     ):

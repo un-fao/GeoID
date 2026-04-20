@@ -371,7 +371,7 @@ class BucketService(ExtensionProtocol):
         deprecated=True,
     )
     async def init_upload_endpoint(
-        req: Request,
+        req: Request,  # type: ignore[reportGeneralTypeIssues]
         request: InitiateUploadRequest = Body(  # type: ignore[arg-type]
             ...,
             examples={  # type: ignore[arg-type]
@@ -453,7 +453,7 @@ class BucketService(ExtensionProtocol):
         summary="Initiate a resumable file upload to a catalog bucket.",
     )
     async def init_upload_catalog_endpoint(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         request: InitiateUploadRequest,
         storage_provider: StorageProtocol = Depends(get_storage_provider),
         storage_client_provider: CloudStorageClientProtocol = Depends(
@@ -484,7 +484,7 @@ class BucketService(ExtensionProtocol):
         summary="Initiate a resumable file upload to a collection bucket path.",
     )
     async def init_upload_collection_endpoint(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         collection_id: str,
         request: InitiateUploadRequest,
         storage_provider: StorageProtocol = Depends(get_storage_provider),
@@ -511,7 +511,7 @@ class BucketService(ExtensionProtocol):
         )
 
     async def _init_upload_v1_internal(
-        request: InitiateUploadRequest,
+        request: InitiateUploadRequest,  # type: ignore[reportGeneralTypeIssues]
         storage_provider: StorageProtocol,
         storage_client_provider: CloudStorageClientProtocol,
         eventing_provider: EventingProtocol,
@@ -679,7 +679,7 @@ class BucketService(ExtensionProtocol):
         summary="Get the GCP bucket configuration for a catalog.",
     )
     async def get_gcp_catalog_bucket_config(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         config_provider: ConfigsProtocol = Depends(get_configs_provider),
     ):
         """
@@ -734,7 +734,7 @@ class BucketService(ExtensionProtocol):
         summary="Get the eventing configuration for a catalog.",
     )
     async def get_eventing_config(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         eventing_provider: EventingProtocol = Depends(get_eventing_provider),
     ):
         """
@@ -752,7 +752,7 @@ class BucketService(ExtensionProtocol):
         summary="Webhook endpoint for receiving GCS event notifications via Pub/Sub.",
     )
     async def handle_pubsub_push_notification(
-        request: PubSubPushRequest,
+        request: PubSubPushRequest,  # type: ignore[reportGeneralTypeIssues]
         fastapi_request: Request,
         _=Depends(verify_pubsub_jwt),
     ):
@@ -873,7 +873,7 @@ class BucketService(ExtensionProtocol):
         summary="List files in a collection's GCS bucket folder (paginated).",
     )
     async def list_collection_files(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         collection_id: str,
         request: Request,
         page_size: int = Query(
@@ -924,7 +924,7 @@ class BucketService(ExtensionProtocol):
         summary="List files in a catalog's GCS bucket folder (paginated).",
     )
     async def list_catalog_files(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         request: Request,
         page_size: int = Query(
             100,
@@ -975,7 +975,7 @@ class BucketService(ExtensionProtocol):
         summary="Get details for a catalog's GCS bucket.",
     )
     async def get_catalog_bucket(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         storage_provider: StorageProtocol = Depends(get_storage_provider),
         storage_client_provider: CloudStorageClientProtocol = Depends(
             get_storage_client_provider
@@ -1012,7 +1012,7 @@ class BucketService(ExtensionProtocol):
         summary="Delete a file or folder from a collection's bucket.",
     )
     async def delete_collection_file_or_folder(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         collection_id: str,
         path: str = Query(
             ...,
@@ -1070,7 +1070,7 @@ class BucketService(ExtensionProtocol):
         summary="Delete a file or folder from a catalog's bucket.",
     )
     async def delete_catalog_file_or_folder(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         path: str = Query(
             ...,
             description="The relative path to the file or folder to delete. To delete a folder, the path must end with a '/'. For example, 'my_file.tif' or 'my_folder/'. The path is relative to the catalog's root folder in the bucket.",

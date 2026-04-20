@@ -259,9 +259,9 @@ class AssetService(ExtensionProtocol):
         # Canonical asset search routes
         self.router.add_api_route(
             "/assets-search",
-            self.advanced_search,
+            self.advanced_search_global,
             methods=["POST"],
-            summary="Advanced Asset Search",
+            summary="Advanced Asset Search (cross-catalog, sysadmin only)",
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/assets-search",
@@ -272,7 +272,7 @@ class AssetService(ExtensionProtocol):
         # Deprecated aliases (backward compat)
         self.router.add_api_route(
             "/search",
-            self.advanced_search,
+            self.advanced_search_global,
             methods=["POST"],
             summary="Advanced Search. Deprecated: use /assets-search.",
             deprecated=True,
@@ -758,6 +758,67 @@ class AssetService(ExtensionProtocol):
         except Exception as e:
             logger.error(f"Search failed: {e}")
             raise HTTPException(status_code=400, detail=str(e))
+
+    async def advanced_search_global(
+        self,
+        request: Request,
+        query: SearchQuery = Body(...),
+    ):
+        """Cross-catalog search. Admin-only; iterates accessible catalogs.
+
+        Aggregates up to `limit` matches across catalogs the caller can see.
+        Non-admin callers receive HTTP 403.
+        """
+        try:
+            from dynastore.extensions.iam.guards import security_context_from_request
+            from dynastore.modules.iam.authorization import require_permission
+            from dynastore.models.protocols.authorization import Permission
+        except Exception:
+            ctx = None
+        else:
+            ctx = security_context_from_request(request)
+            try:
+                await require_permission(ctx, Permission.ADMIN)
+            except PermissionError:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Cross-catalog search requires administrative privileges.",
+                )
+
+        from dynastore.models.protocols import CatalogsProtocol
+        catalogs_svc = cast(CatalogsProtocol, get_protocol(CatalogsProtocol))
+        if catalogs_svc is None:
+            raise HTTPException(status_code=503, detail="Catalog service unavailable.")
+
+        try:
+            catalogs = await catalogs_svc.list_catalogs(limit=1000)
+        except Exception as e:
+            logger.error(f"Global search: list_catalogs failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+        aggregated: List[Asset] = []
+        remaining = query.limit
+        for cat in catalogs:
+            if remaining <= 0:
+                break
+            cat_id = getattr(cat, "catalog_id", None) or getattr(cat, "id", None)
+            if not cat_id:
+                continue
+            try:
+                rows = await self.assets.search_assets(
+                    catalog_id=cat_id,
+                    filters=query.filters,
+                    collection_id=query.collection_id,
+                    limit=remaining,
+                    offset=0,
+                )
+            except Exception as e:
+                logger.warning(f"Global search: catalog={cat_id} failed: {e}")
+                continue
+            aggregated.extend(rows)
+            remaining = query.limit - len(aggregated)
+
+        return aggregated[: query.limit]
 
     # =============================================================================
     #  UPLOAD (BACKEND-AGNOSTIC)
@@ -1255,6 +1316,7 @@ class AssetService(ExtensionProtocol):
         if not asset:
             raise HTTPException(status_code=404, detail="Asset not found")
 
+        principal = getattr(request.state, "principal", None)
         caller_id_val = principal.id if principal else "nouser"
         return await AssetService._execute_asset_task(
             request,

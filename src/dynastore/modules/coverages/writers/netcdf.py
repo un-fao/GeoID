@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Iterator, List, Tuple
+from typing import Any, Iterable, Iterator, List, Tuple
 
 
 def write_netcdf(
@@ -12,7 +12,7 @@ def write_netcdf(
     bbox: List[float],
     crs: str,
     band_names: List[str],
-    tiles: Iterable[Tuple[int, int, object]],
+    tiles: Iterable[Tuple[int, int, Any]],
     chunk_bytes: int = 1 << 20,
 ) -> Iterator[bytes]:
     import os

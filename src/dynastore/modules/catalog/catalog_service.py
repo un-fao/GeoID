@@ -33,6 +33,7 @@ from typing import List, Optional, Any, Dict, Union, Set, Callable, Tuple, TYPE_
 
 if TYPE_CHECKING:
     from dynastore.modules.catalog.sidecars.base import ConsumerType
+    from dynastore.modules.db_config.query_executor import DDLBatch
 from dynastore.tools.cache import cached
 from dynastore.models.driver_context import DriverContext
 from sqlalchemy import text

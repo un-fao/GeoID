@@ -53,7 +53,6 @@ async def cleanup_collection_proxy_urls(event_payload: Optional[dict] = None, ca
 
         # 4. Clean up tracking table — DML, use DQLQuery (DDLQuery would
         # wrap each DELETE in advisory lock + savepoint, wrong for hot path)
-        from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
         await DQLQuery(
             f"DELETE FROM {phys_schema}.collection_proxy_urls WHERE collection_id = :coll",
             result_handler=ResultHandler.NONE,

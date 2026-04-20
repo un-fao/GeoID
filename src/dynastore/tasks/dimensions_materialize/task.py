@@ -69,6 +69,7 @@ class DimensionsMaterializeTask(
             raise RuntimeError(
                 "Required protocols/engine unavailable for dimensions_materialize task."
             )
+        engine = self.engine  # narrowed to non-None above
 
         # PLATFORM-scoped tasks persist status rows to the ``public`` schema
         # (see ProcessScope docstring). We do NOT resolve against
@@ -78,7 +79,7 @@ class DimensionsMaterializeTask(
 
         # Ensure task_storage exists in the target schema (cellular safety).
         try:
-            async with managed_transaction(self.engine) as conn:
+            async with managed_transaction(engine) as conn:
                 await tasks_module.ensure_task_storage_exists(conn, schema)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -92,7 +93,7 @@ class DimensionsMaterializeTask(
                 return
             try:
                 await tasks_module.update_task(
-                    self.engine, payload.task_id, update, schema=schema,
+                    engine, payload.task_id, update, schema=schema,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.debug(

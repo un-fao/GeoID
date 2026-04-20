@@ -581,17 +581,34 @@ class CollectionDuckdbDriverConfig(CollectionDriverConfig):
     )
 
 
-class CollectionIcebergDriverConfig(CollectionDriverConfig):
-    """Iceberg per-collection config — table identifiers + connection overrides.
+_ICEBERG_CONNECTION_FIELDS: frozenset[str] = frozenset({
+    "catalog_name", "catalog_uri", "catalog_type", "catalog_properties",
+    "warehouse_uri", "warehouse_scheme",
+})
 
-    In a multi-tenant platform each collection may point at a different Iceberg
-    catalog / warehouse (e.g. one collection reads from a Nessie catalog in
-    GCS, another from a SQL catalog on an on-prem NFS). The fields below let
-    each collection override the process-wide ``IcebergConfig`` env-var
-    defaults. Any field left as ``None`` falls back to the env default.
+
+class CollectionIcebergDriverConfig(CollectionDriverConfig):
+    """Iceberg per-collection config — table location and DDL hints only.
+
+    Connection-level settings (catalog type, URI, warehouse) must be configured
+    via ``IcebergConfig`` environment variables. Use the ``resolve_*`` helpers
+    to obtain the effective values at runtime.
     """
 
     model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_connection_level_fields(cls, values: Any) -> Any:
+        if not isinstance(values, dict):
+            return values
+        offenders = sorted(k for k in _ICEBERG_CONNECTION_FIELDS if values.get(k) is not None)
+        if offenders:
+            raise ValueError(
+                f"Connection-level fields {offenders} must be set via IcebergConfig "
+                f"environment variables, not per-collection overrides."
+            )
+        return values
 
     capabilities: FrozenSet[str] = Field(
         default=frozenset({DriverCapability.ASYNC, DriverCapability.BATCH}),

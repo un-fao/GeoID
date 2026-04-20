@@ -80,7 +80,7 @@ class AdminService(ExtensionProtocol):
 
     @router.get("/users", summary="List local users")
     async def list_users(
-        limit: int = Query(50, ge=1, le=500),
+        limit: int = Query(50, ge=1, le=500),  # type: ignore[reportGeneralTypeIssues]
         offset: int = Query(0, ge=0),
     ):
         mgr = _iam()
@@ -99,7 +99,7 @@ class AdminService(ExtensionProtocol):
         ]
 
     @router.post("/users", summary="Create a new local user", status_code=201)
-    async def create_user(body: UserCreate):
+    async def create_user(body: UserCreate):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
         providers = mgr.get_identity_providers()
         local_provider = next(
@@ -107,7 +107,8 @@ class AdminService(ExtensionProtocol):
         )
 
         if local_provider and hasattr(local_provider, "create_user"):
-            user_uuid = await local_provider.create_user(
+            _create_user_fn = getattr(local_provider, "create_user")
+            user_uuid = await _create_user_fn(
                 username=body.username,
                 password=body.password,
                 email=body.email,
@@ -135,7 +136,7 @@ class AdminService(ExtensionProtocol):
         )
 
     @router.get("/users/{principal_id}", summary="Get user details")
-    async def get_user(principal_id: UUID):
+    async def get_user(principal_id: UUID):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
         p = await mgr.get_principal(principal_id)
         if not p:
@@ -146,7 +147,7 @@ class AdminService(ExtensionProtocol):
         )
 
     @router.put("/users/{principal_id}", summary="Update user")
-    async def update_user(principal_id: UUID, body: UserUpdate):
+    async def update_user(principal_id: UUID, body: UserUpdate):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
         p = await mgr.get_principal(principal_id)
         if not p:
@@ -156,13 +157,15 @@ class AdminService(ExtensionProtocol):
         if body.roles is not None:
             p.roles = body.roles
         updated = await mgr.update_principal(p)
+        if updated is None:
+            raise HTTPException(status_code=404, detail="User not found after update.")
         return PrincipalResponse(
             id=str(updated.id), provider=updated.provider, subject_id=updated.subject_id,
             display_name=updated.display_name, roles=updated.roles, is_active=updated.is_active,
         )
 
     @router.delete("/users/{principal_id}", status_code=204, summary="Delete user")
-    async def delete_user(principal_id: UUID):
+    async def delete_user(principal_id: UUID):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
         deleted = await mgr.delete_principal(principal_id)
         if not deleted:
@@ -174,7 +177,7 @@ class AdminService(ExtensionProtocol):
 
     @router.get("/principals", summary="Search principals (all providers)")
     async def search_principals(
-        identifier: Optional[str] = Query(None),
+        identifier: Optional[str] = Query(None),  # type: ignore[reportGeneralTypeIssues]
         role: Optional[str] = Query(None),
         catalog_id: Optional[str] = Query(None),
         limit: int = Query(50, ge=1, le=500),
@@ -193,7 +196,7 @@ class AdminService(ExtensionProtocol):
         ]
 
     @router.post("/principals/{principal_id}/roles", summary="Assign global role to principal", status_code=204)
-    async def assign_global_role(principal_id: UUID, body: AssignRoleRequest):
+    async def assign_global_role(principal_id: UUID, body: AssignRoleRequest):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
         p = await mgr.get_principal(principal_id)
         if not p:
@@ -203,7 +206,7 @@ class AdminService(ExtensionProtocol):
         await mgr.update_principal(p)
 
     @router.delete("/principals/{principal_id}/roles/{role_name}", status_code=204, summary="Remove global role")
-    async def remove_global_role(principal_id: UUID, role_name: str):
+    async def remove_global_role(principal_id: UUID, role_name: str):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
         p = await mgr.get_principal(principal_id)
         if not p:
@@ -212,7 +215,7 @@ class AdminService(ExtensionProtocol):
         await mgr.update_principal(p)
 
     @router.post("/principals/{principal_id}/catalogs/{catalog_id}/roles", status_code=204, summary="Assign catalog-scoped role")
-    async def assign_catalog_role(principal_id: UUID, catalog_id: str, body: AssignRoleRequest):
+    async def assign_catalog_role(principal_id: UUID, catalog_id: str, body: AssignRoleRequest):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
         p = await mgr.get_principal(principal_id)
         if not p:
@@ -230,7 +233,7 @@ class AdminService(ExtensionProtocol):
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.delete("/principals/{principal_id}/catalogs/{catalog_id}/roles/{role_name}", status_code=204)
-    async def remove_catalog_role(principal_id: UUID, catalog_id: str, role_name: str):
+    async def remove_catalog_role(principal_id: UUID, catalog_id: str, role_name: str):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
         p = await mgr.get_principal(principal_id)
         if not p:
@@ -248,7 +251,7 @@ class AdminService(ExtensionProtocol):
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("/catalogs/{catalog_id}/users", summary="List users assigned to a catalog")
-    async def list_catalog_users(catalog_id: str):
+    async def list_catalog_users(catalog_id: str):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
         try:
             schema = await mgr.resolve_schema(catalog_id)
@@ -287,7 +290,7 @@ class AdminService(ExtensionProtocol):
     # -------------------------------------------------------------------------
 
     @router.get("/roles", summary="List all roles")
-    async def list_roles(catalog_id: Optional[str] = Query(None)):
+    async def list_roles(catalog_id: Optional[str] = Query(None)):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
         roles = await mgr.list_roles(catalog_id=catalog_id)
         return [
@@ -301,7 +304,7 @@ class AdminService(ExtensionProtocol):
         ]
 
     @router.post("/roles", summary="Create a new role", status_code=201)
-    async def create_role(body: RoleCreate, catalog_id: Optional[str] = Query(None)):
+    async def create_role(body: RoleCreate, catalog_id: Optional[str] = Query(None)):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
         role = Role(
             name=body.name,
@@ -317,7 +320,7 @@ class AdminService(ExtensionProtocol):
 
     @router.put("/roles/{role_name}", summary="Update a role")
     async def update_role(
-        role_name: str,
+        role_name: str,  # type: ignore[reportGeneralTypeIssues]
         body: RoleUpdate,
         catalog_id: Optional[str] = Query(None),
     ):
@@ -333,13 +336,15 @@ class AdminService(ExtensionProtocol):
         if body.parent_roles is not None:
             existing.parent_roles = body.parent_roles
         updated = await mgr.update_role(existing, catalog_id=catalog_id)
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Role not found after update.")
         return RoleResponse(
             name=updated.name, description=updated.description,
             policies=updated.policies or [], parent_roles=updated.parent_roles or [],
         )
 
     @router.delete("/roles/{role_name}", status_code=204, summary="Delete a role")
-    async def delete_role(role_name: str, catalog_id: Optional[str] = Query(None)):
+    async def delete_role(role_name: str, catalog_id: Optional[str] = Query(None)):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
         roles = await mgr.list_roles(catalog_id=catalog_id)
         existing = next((r for r in roles if r.name == role_name), None)
@@ -352,7 +357,7 @@ class AdminService(ExtensionProtocol):
     # -------------------------------------------------------------------------
 
     @router.get("/policies", summary="List all policies")
-    async def list_policies(catalog_id: Optional[str] = Query(None)):
+    async def list_policies(catalog_id: Optional[str] = Query(None)):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
         pm = mgr.get_policy_service()
         if not pm:
@@ -367,7 +372,7 @@ class AdminService(ExtensionProtocol):
         ]
 
     @router.post("/policies", summary="Create a new policy", status_code=201)
-    async def create_policy(body: PolicyCreate, catalog_id: Optional[str] = Query(None)):
+    async def create_policy(body: PolicyCreate, catalog_id: Optional[str] = Query(None)):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
         pm = mgr.get_policy_service()
         if not pm:
@@ -390,7 +395,7 @@ class AdminService(ExtensionProtocol):
 
     @router.put("/policies/{policy_id}", summary="Update a policy")
     async def update_policy(
-        policy_id: str,
+        policy_id: str,  # type: ignore[reportGeneralTypeIssues]
         body: PolicyUpdate,
         catalog_id: Optional[str] = Query(None),
     ):
@@ -410,13 +415,15 @@ class AdminService(ExtensionProtocol):
         if body.effect is not None:
             existing.effect = body.effect
         updated = await pm.update_policy(existing, catalog_id=catalog_id)
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Policy not found after update.")
         return PolicyResponse(
             id=updated.id, description=updated.description, actions=updated.actions,
             resources=updated.resources, effect=updated.effect, partition_key=updated.partition_key,
         )
 
     @router.delete("/policies/{policy_id}", status_code=204, summary="Delete a policy")
-    async def delete_policy(policy_id: str, catalog_id: Optional[str] = Query(None)):
+    async def delete_policy(policy_id: str, catalog_id: Optional[str] = Query(None)):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
         pm = mgr.get_policy_service()
         if not pm:
@@ -431,7 +438,7 @@ class AdminService(ExtensionProtocol):
 
     @router.post("/reset-defaults", summary="Reset default policies and roles")
     async def reset_defaults(
-        request: Request,
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
         catalog_id: Optional[str] = Query(None, description="Catalog ID for tenant-scoped reset, or None for global"),
     ):
         await _require_sysadmin(request)
@@ -443,7 +450,7 @@ class AdminService(ExtensionProtocol):
         return {"message": "Default policies and roles have been reset.", "catalog_id": catalog_id or "global"}
 
     @router.post("/rotate-jwt-secret", summary="Rotate JWT signing secret")
-    async def rotate_jwt_secret(request: Request):
+    async def rotate_jwt_secret(request: Request):  # type: ignore[reportGeneralTypeIssues]
         await _require_sysadmin(request)
         mgr = _iam()
         if not hasattr(mgr, "rotate_jwt_secret"):

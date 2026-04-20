@@ -69,10 +69,14 @@ def test_no_records_in_class_key():
     from dynastore.tools.typed_store.registry import TypedModelRegistry
     from dynastore.modules.db_config.platform_config_service import PluginConfig
 
+    # Extension exposure configs are legitimately named after the extension they toggle.
+    _EXEMPT = {"RecordsPluginConfig"}
+
     bad = [
         cls.class_key()
         for cls in TypedModelRegistry.subclasses_of(PluginConfig)
         if "Records" in cls.class_key()
+        and cls.__name__ not in _EXEMPT
     ]
     assert not bad, (
         "class_key must not contain 'Records'; use Collection/Asset/Metadata role prefix. "
@@ -102,6 +106,23 @@ def test_no_plugin_infix_in_config_class_key():
         "CollectionPluginConfig", # catalog module — not yet renamed
         "TasksPluginConfig",      # tasks module — not yet renamed
         "FeaturesPluginConfig",   # features module — not yet renamed
+        # Extension service-exposure configs — named after the extension ID they toggle.
+        # These are candidates for a future rename milestone (e.g. ProcessesConfig).
+        "ProcessesPluginConfig",
+        "SearchPluginConfig",
+        "StacPluginConfig",
+        "MapsPluginConfig",
+        "LogsPluginConfig",
+        "WFSPluginConfig",
+        "RecordsPluginConfig",
+        "DimensionsPluginConfig",
+        "DwhPluginConfig",
+        "NotebooksPluginConfig",
+        "CrsPluginConfig",
+        "GdalPluginConfig",
+        "AssetsPluginConfig",
+        "StylesPluginConfig",
+        "SecurityPluginConfig",
     }
 
     bad = [

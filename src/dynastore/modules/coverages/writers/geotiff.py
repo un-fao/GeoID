@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Iterator, Tuple
+from typing import Any, Iterable, Iterator, Tuple
 
 
 def write_geotiff(
@@ -13,7 +13,7 @@ def write_geotiff(
     crs,
     dtype: str,
     band_count: int,
-    tiles: Iterable[Tuple[int, int, object]],
+    tiles: Iterable[Tuple[int, int, Any]],
 ) -> Iterator[bytes]:
     import rasterio
 

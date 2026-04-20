@@ -192,7 +192,7 @@ class MapsService(ExtensionProtocol):
         )
 
     @router.get("/", response_model=MapsLandingPage)
-    async def get_maps_landing_page(request: Request):
+    async def get_maps_landing_page(request: Request):  # type: ignore[reportGeneralTypeIssues]
         # Correctly discover catalogs from the catalog_module
         catalogs = await catalog_manager.list_catalogs(limit=1000)
         links = [Link(href=str(request.url), rel="self", type="application/json", title=LocalizedText(en="this document"))]
@@ -220,7 +220,7 @@ class MapsService(ExtensionProtocol):
              return Response(content=f.read(), media_type="text/html")
 
     @router.get("/{dataset}", response_model=DatasetMaps)
-    async def get_dataset_maps(dataset: str, request: Request):
+    async def get_dataset_maps(dataset: str, request: Request):  # type: ignore[reportGeneralTypeIssues]
         if not await catalog_manager.get_catalog(dataset):
             raise HTTPException(status_code=404, detail=f"Dataset '{dataset}' not found.")
         
@@ -239,7 +239,7 @@ class MapsService(ExtensionProtocol):
     # --- Tiling Endpoints (Requirements Class "Map Tilesets") ---
 
     @router.get("/{dataset}/map/tiles", response_model=TileMatrixSetList, summary="Retrieve available Map Tile Matrix Sets")
-    async def get_map_tilesets(dataset: str, request: Request):
+    async def get_map_tilesets(dataset: str, request: Request):  # type: ignore[reportGeneralTypeIssues]
         """List all supported Tile Matrix Sets for rendering raster map tiles."""
         if not await catalog_manager.get_catalog(dataset):
             raise HTTPException(status_code=404, detail=f"Dataset '{dataset}' not found.")
@@ -275,7 +275,7 @@ class MapsService(ExtensionProtocol):
         return TileMatrixSetList(tileMatrixSets=tms_refs)
 
     @router.get("/{dataset}/map/tiles/{tileMatrixSetId}", response_model=TileMatrixSet, summary="Retrieve a Map Tile Matrix Set definition")
-    async def get_map_tileset(dataset: str, tileMatrixSetId: str = Path(..., description="The Identifier of the Tile Matrix Set")):
+    async def get_map_tileset(dataset: str, tileMatrixSetId: str = Path(..., description="The Identifier of the Tile Matrix Set")):  # type: ignore[reportGeneralTypeIssues]
         """Return the full definition of a specific Tile Matrix Set."""
         tms = await tms_manager.get_custom_tms(catalog_id=dataset, tms_id=tileMatrixSetId)
         if not tms:
@@ -286,7 +286,7 @@ class MapsService(ExtensionProtocol):
 
     @router.get("/{dataset}/map/tiles/{tileMatrixSetId}/{z}/{x}/{y}", summary="Get Rendered Map Tile")
     async def get_map_tile(
-        request: Request, dataset: str, tileMatrixSetId: str, z: str, x: int, y: int,
+        request: Request, dataset: str, tileMatrixSetId: str, z: str, x: int, y: int,  # type: ignore[reportGeneralTypeIssues]
         conn: AsyncConnection = Depends(get_async_connection),
         collections: str = Query(..., description="Comma-separated list of collection IDs."),
         datetime: Optional[str] = Query(None, description="Temporal filter."),
@@ -395,7 +395,7 @@ class MapsService(ExtensionProtocol):
 
     @router.get("/{dataset}/map")
     async def get_map(
-        dataset: str,
+        dataset: str,  # type: ignore[reportGeneralTypeIssues]
         request: Request,
         conn: AsyncConnection = Depends(get_async_connection),
         collections: str = Query(..., description="Comma-separated list of collections to render."),

@@ -312,8 +312,8 @@ class TestCompleteUpload:
 
         captured_uri = {}
 
-        async def _capture_create(asset_base, catalog_id, collection_id=None):
-            captured_uri["uri"] = asset_base.uri
+        async def _capture_create(catalog_id, asset=None, collection_id=None):
+            captured_uri["uri"] = asset.uri
             m2 = MagicMock()
             m2.asset_id = "a1"
             return m2
@@ -348,8 +348,8 @@ class TestCompleteUpload:
 
         captured_asset_base = {}
 
-        async def _capture(asset_base, catalog_id, collection_id=None):
-            captured_asset_base["obj"] = asset_base
+        async def _capture(catalog_id, asset=None, collection_id=None):
+            captured_asset_base["obj"] = asset
             m2 = MagicMock()
             m2.asset_id = "a1"
             return m2

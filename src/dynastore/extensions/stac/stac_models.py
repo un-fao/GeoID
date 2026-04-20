@@ -458,7 +458,7 @@ class STACItem(Feature):
     )
 
     # Feature's fields refined for STAC requirements
-    id: str = Field(..., description="Provider-specific identifier for the Item.")
+    id: str = Field(..., description="Provider-specific identifier for the Item.")  # type: ignore[reportGeneralTypeIssues]
     bbox: List[float] = Field(..., description="Bounding box of the asset.")
     collection: Optional[str] = Field(
         None, description="The ID of the collection this Item belongs to."

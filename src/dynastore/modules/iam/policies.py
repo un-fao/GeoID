@@ -109,9 +109,9 @@ class PolicyService:
         is granted every action on every resource without consulting the
         policy engine. This mirrors the guard-layer semantics in
         ``dynastore.modules.iam.authorization.default.DefaultAuthorizer``
-        (``require_sysadmin`` passes on role alone, no ALLOW policy needed)
+        (sysadmin short-circuits before reaching ALLOW policy checks)
         and is the convention used elsewhere in the codebase — e.g.
-        ``ensure_sysadmin_if_targeting_admin`` in extensions/iam/guards.py.
+        privilege-elevation guards in extensions/iam/guards.py.
         Without this, OGC process execution (which gates on
         ``Action.EXECUTE`` via ``check_permission``) 403s for any sysadmin
         caller unless someone remembers to seed a wildcard ALLOW policy.

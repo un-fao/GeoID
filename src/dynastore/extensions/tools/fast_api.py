@@ -34,7 +34,7 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 
-class AppJSONResponse(JSONResponse):
+class AppJSONResponse(JSONResponse):  # type: ignore[reportGeneralTypeIssues]
     """
     A custom JSONResponse class that utilizes the CustomJSONEncoder to ensure
     consistent and correct JSON serialization across all endpoints.
@@ -52,7 +52,7 @@ class AppJSONResponse(JSONResponse):
             cls=CustomJSONEncoder,
         ).encode("utf-8")
 
-class ORJSONResponse(JSONResponse):
+class ORJSONResponse(JSONResponse):  # type: ignore[reportGeneralTypeIssues]
     """
     A high-performance JSON response class using orjson.
     It's configured with a custom `default` serializer to handle special

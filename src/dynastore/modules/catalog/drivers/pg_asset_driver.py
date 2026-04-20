@@ -215,8 +215,11 @@ class AssetPostgresqlDriver:
             partition_name = f"assets_{catalog_id}_{collection_id}"
             # Hot-table DROP — bound AccessExclusiveLock wait with lock_timeout
             # + retry so concurrent ingest DML can't pile us up into a deadlock.
+            _drop_conn = db_resource or self.engine
+            if _drop_conn is None:
+                return
             await safe_drop_relation(
-                db_resource or self.engine,
+                _drop_conn,
                 schema,
                 partition_name,
                 kind="table",

@@ -67,7 +67,7 @@ def _pick_stylesheet_by_media_type(style: Style, media_type: str):
     """Return the StyleSheet matching ``media_type``, or ``None``."""
     for sheet in style.stylesheets:
         fmt = getattr(sheet.content, "format", None)
-        fmt_str = fmt.value if hasattr(fmt, "value") else str(fmt)
+        fmt_str = fmt.value if fmt is not None and hasattr(fmt, "value") else str(fmt)
         if STYLE_FORMAT_TO_MEDIA_TYPE.get(fmt_str) == media_type:
             return sheet
     return None
@@ -106,7 +106,7 @@ class StylesService(protocols.ExtensionProtocol, StylesProtocol):
 
     @router.post("/catalogs/{catalog_id}/collections/{collection_id}/styles", response_model=Style, status_code=status.HTTP_201_CREATED)
     async def create_style_for_collection(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         collection_id: str,
         style: StyleCreate = Body(...),
         conn: AsyncConnection = Depends(get_async_connection)
@@ -142,7 +142,7 @@ class StylesService(protocols.ExtensionProtocol, StylesProtocol):
 
     @router.get("/catalogs/{catalog_id}/collections/{collection_id}/styles", response_model=List[Style], summary="List styles for a collection")
     async def list_styles(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         collection_id: str,
         conn: AsyncConnection = Depends(get_async_connection),
         limit: int = Query(100, ge=1, le=1000),
@@ -157,7 +157,7 @@ class StylesService(protocols.ExtensionProtocol, StylesProtocol):
 
     @router.get("/catalogs/{catalog_id}/collections/{collection_id}/styles/{style_id}", response_model=Style, summary="Get a specific style by its ID")
     async def get_style(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         collection_id: str,
         style_id: str,
         conn: AsyncConnection = Depends(get_async_connection)
@@ -172,7 +172,7 @@ class StylesService(protocols.ExtensionProtocol, StylesProtocol):
 
     @router.put("/catalogs/{catalog_id}/collections/{collection_id}/styles/{style_id}", response_model=Style, summary="Update a style")
     async def update_style(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         collection_id: str,
         style_id: str,
         style_update: StyleUpdate = Body(...),
@@ -188,7 +188,7 @@ class StylesService(protocols.ExtensionProtocol, StylesProtocol):
 
     @router.delete("/catalogs/{catalog_id}/collections/{collection_id}/styles/{style_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete a style")
     async def delete_style(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         collection_id: str,
         style_id: str,
         conn: AsyncConnection = Depends(get_async_connection)
@@ -219,7 +219,7 @@ class StylesService(protocols.ExtensionProtocol, StylesProtocol):
         summary="Get a style's stylesheet body (content-negotiated by Accept / ?f=)",
     )
     async def get_stylesheet(
-        request: Request,
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
         catalog_id: str,
         collection_id: str,
         style_id: str,
@@ -237,7 +237,7 @@ class StylesService(protocols.ExtensionProtocol, StylesProtocol):
         available_media_types = []
         for sheet in style.stylesheets:
             fmt = getattr(sheet.content, "format", None)
-            fmt_str = fmt.value if hasattr(fmt, "value") else str(fmt)
+            fmt_str = fmt.value if fmt is not None and hasattr(fmt, "value") else str(fmt)
             mt = STYLE_FORMAT_TO_MEDIA_TYPE.get(fmt_str)
             if mt is not None:
                 available_media_types.append(mt)
@@ -281,7 +281,7 @@ class StylesService(protocols.ExtensionProtocol, StylesProtocol):
         summary="Style metadata with stylesheet links per encoding",
     )
     async def get_style_metadata(
-        request: Request,
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
         catalog_id: str,
         collection_id: str,
         style_id: str,
@@ -303,7 +303,7 @@ class StylesService(protocols.ExtensionProtocol, StylesProtocol):
         stylesheet_links = []
         for sheet in style.stylesheets:
             fmt = getattr(sheet.content, "format", None)
-            fmt_str = fmt.value if hasattr(fmt, "value") else str(fmt)
+            fmt_str = fmt.value if fmt is not None and hasattr(fmt, "value") else str(fmt)
             mt = STYLE_FORMAT_TO_MEDIA_TYPE.get(fmt_str)
             if mt is None:
                 continue  # unknown encoding — not advertised
@@ -337,7 +337,7 @@ class StylesService(protocols.ExtensionProtocol, StylesProtocol):
         summary="Redirect to the style's legend image (rel=preview)",
     )
     async def get_style_legend(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         collection_id: str,
         style_id: str,
         conn: AsyncConnection = Depends(get_async_connection),
@@ -365,7 +365,7 @@ class StylesService(protocols.ExtensionProtocol, StylesProtocol):
         summary="List all styles across catalogs (discovery convenience)",
     )
     async def list_all_styles(
-        conn: AsyncConnection = Depends(get_async_connection),
+        conn: AsyncConnection = Depends(get_async_connection),  # type: ignore[reportGeneralTypeIssues]
         limit: int = Query(100, ge=1, le=1000),
         offset: int = Query(0, ge=0),
     ):
@@ -376,7 +376,7 @@ class StylesService(protocols.ExtensionProtocol, StylesProtocol):
             # Prefer a dedicated helper if present.
             all_fn = getattr(styles_db, "list_all_styles", None)
             if callable(all_fn):
-                styles = await all_fn(conn, limit=limit, offset=offset)
+                styles = await all_fn(conn, limit=limit, offset=offset)  # type: ignore[reportOperatorIssue]
             else:
                 styles = []
         except Exception:

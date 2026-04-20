@@ -10,6 +10,9 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Any, Dict, TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from dynastore.models.ogc import Feature as _Feature
+
 from dynastore.models.driver_context import DriverContext
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
@@ -39,7 +42,7 @@ if TYPE_CHECKING:
         ) -> Optional[str]: ...
         def map_row_to_feature(
             self, row: Dict[str, Any], col_config: Any
-        ) -> Dict[str, Any]: ...
+        ) -> "_Feature": ...
 else:
     class _Host: ...
 
@@ -509,7 +512,7 @@ ON CONFLICT ({conflict_target}) {on_conflict_clause};
         hub_table: str,
         geoids: List[Any],
         col_config,
-    ) -> List[Dict[str, Any]]:
+    ) -> "List[_Feature]":
         """Bulk-load joined Features for a list of geoids in a single SELECT.
 
         Intended to be called *after* the write transaction has committed,
@@ -518,7 +521,7 @@ ON CONFLICT ({conflict_target}) {on_conflict_clause};
         ``_execute_distributed_update`` and used to accumulate
         ``AccessShare`` locks across the whole batch.
 
-        Returns a list of Feature dicts in the same order as ``geoids``.
+        Returns a list of Feature objects in the same order as ``geoids``.
         Missing geoids are skipped silently.
         """
         if not geoids:
@@ -540,7 +543,7 @@ ON CONFLICT ({conflict_target}) {on_conflict_clause};
         # Preserve caller's geoid order so the response lines up 1:1 with the
         # input batch — important for IngestionReport row indexing.
         by_geoid = {row["geoid"]: row for row in rows}
-        out: List[Dict[str, Any]] = []
+        out: List[Any] = []
         for g in geoids:
             row = by_geoid.get(g)
             if row is not None:

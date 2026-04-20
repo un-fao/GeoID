@@ -97,6 +97,9 @@ _ALLOWED_CROSS_EXTENSION_PREFIXES = (
     "dynastore.extensions.protocols",
     "dynastore.extensions.registry",
     "dynastore.extensions.documentation",
+    # Shared OGC multi-item ingestion response models (BulkCreationResponse,
+    # IngestionReport, SidecarRejection) used by all OGCTransactionMixin extensions.
+    "dynastore.extensions.ogc_models_shared",
     # Framework-free IAM FastAPI wrappers (always-importable)
     "dynastore.extensions.iam.guards",
     # De-facto shared infra: the @expose_web_page decorator and static

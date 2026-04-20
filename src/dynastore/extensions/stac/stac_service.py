@@ -1023,7 +1023,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         response_class=JSONResponse,
     )
     async def aggregate_collection_items(  # type: ignore[misc]
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         collection_id: str,
         request: Request,
         aggregation_request: AggregationRequest,

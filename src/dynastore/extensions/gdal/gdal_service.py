@@ -119,7 +119,7 @@ class GdalService(ExtensionProtocol):
 
     @router.get("/raster/info", response_model=RasterInfo, summary="Get metadata for a raster file.")
     async def raster_info(
-        file_url: str = Query(..., description="URL of the raster file (gs:// or https://)."),
+        file_url: str = Query(..., description="URL of the raster file (gs:// or https://)."),  # type: ignore[reportGeneralTypeIssues]
         gdal_uri: Optional[str] = Query(None, description="Direct GDAL-compatible URI."),
         mimetype: Optional[str] = Query(None, description="MIME type of the file.")
     ):
@@ -132,7 +132,7 @@ class GdalService(ExtensionProtocol):
 
     @router.get("/vector/info", response_model=VectorInfo, summary="Get metadata for a vector file.")
     async def vector_info(
-        file_url: str = Query(..., description="URL of the vector file (gs:// or https://)."),
+        file_url: str = Query(..., description="URL of the vector file (gs:// or https://)."),  # type: ignore[reportGeneralTypeIssues]
         gdal_uri: Optional[str] = Query(None, description="Direct GDAL-compatible URI."),
         mimetype: Optional[str] = Query(None, description="MIME type of the file.")
     ):
@@ -145,7 +145,7 @@ class GdalService(ExtensionProtocol):
 
     @router.get("/info", response_model=Union[RasterInfo, VectorInfo], summary="Auto-detect and get metadata.")
     async def info(
-        file_url: str = Query(..., description="URL of the geospatial file (gs:// or https://)."),
+        file_url: str = Query(..., description="URL of the geospatial file (gs:// or https://)."),  # type: ignore[reportGeneralTypeIssues]
         gdal_uri: Optional[str] = Query(None, description="Direct GDAL-compatible URI."),
         mimetype: Optional[str] = Query(None, description="MIME type of the file.")
     ):

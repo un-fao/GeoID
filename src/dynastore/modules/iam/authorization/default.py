@@ -23,7 +23,7 @@ signals only that the global path-level policy filter in
 `IamMiddleware` did not explicitly deny the request. That is necessary
 but not sufficient for role-gated endpoints — otherwise any principal
 carrying a broad ALLOW policy (e.g. a baseline `user` role with
-`resource=".*"`) would bypass `require_sysadmin` / `require_admin`.
+`resource=".*"`) would bypass the role-level checks for sysadmin and admin.
 Role enforcement must be independent of path-level policy decisions.
 """
 

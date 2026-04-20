@@ -477,7 +477,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         unique_partition_values: set = set()
         for item_data in items_list:
             if hasattr(item_data, "model_dump"):
-                raw_item = item_data.model_dump(by_alias=True, exclude_unset=True)
+                raw_item = item_data.model_dump(by_alias=True, exclude_unset=True)  # type: ignore[reportAttributeAccessIssue]
             elif isinstance(item_data, dict):
                 raw_item = item_data
             else:
@@ -595,6 +595,8 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         # for the whole batch (vs N inside the write tx). Preserves input
         # order so callers can correlate results 1:1 with the request.
         result_geoids = [r["geoid"] for r in write_results]
+        if not phys_schema or not phys_table:
+            raise RuntimeError("Physical schema/table unavailable for bulk read-back")
         async with managed_transaction(engine) as read_conn:
             results = await self.fetch_features_bulk(
                 read_conn, phys_schema, phys_table, result_geoids, col_config,

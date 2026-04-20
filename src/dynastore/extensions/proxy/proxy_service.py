@@ -146,7 +146,7 @@ class ProxyService(ExtensionProtocol):
         "/catalogs/{catalog_id}/urls", response_model=ShortURL, status_code=201
     )
     async def proxy_url_endpoint(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         request: ProxyRequest,
         engine: DbResource = Depends(get_async_engine),
     ):
@@ -169,7 +169,7 @@ class ProxyService(ExtensionProtocol):
         status_code=201,
     )
     async def proxy_collection_url_endpoint(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         collection_id: str,
         request: ProxyRequest,
         engine: DbResource = Depends(get_async_engine),
@@ -194,7 +194,7 @@ class ProxyService(ExtensionProtocol):
         status_code=204,
     )
     async def delete_collection_url_endpoint(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         collection_id: str,
         short_key: str,
         engine: DbResource = Depends(get_async_engine),
@@ -225,7 +225,7 @@ class ProxyService(ExtensionProtocol):
         summary="Redirects to the long URL, optionally appending a path.",
     )
     async def redirect_endpoint(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         short_key: str,
         request: Request,
         background_tasks: BackgroundTasks,
@@ -300,7 +300,7 @@ class ProxyService(ExtensionProtocol):
         summary="Collection-scoped redirect.",
     )
     async def redirect_collection_endpoint(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         collection_id: str,
         short_key: str,
         request: Request,
@@ -470,7 +470,7 @@ class ProxyService(ExtensionProtocol):
         "/catalogs/{catalog_id}/stats/{short_key}", response_model=AnalyticsPage
     )
     async def get_stats_endpoint(
-        catalog_id: str,
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         short_key: str,
         engine: DbResource = Depends(get_async_engine),
         cursor: Optional[str] = Query(
@@ -521,7 +521,7 @@ class ProxyService(ExtensionProtocol):
 
     @router.delete("/catalogs/{catalog_id}/urls/{short_key}", status_code=204)
     async def delete_url_endpoint(
-        catalog_id: str, short_key: str, engine: DbResource = Depends(get_async_engine)
+        catalog_id: str, short_key: str, engine: DbResource = Depends(get_async_engine)  # type: ignore[reportGeneralTypeIssues]
     ):  # type: ignore
         deleted_key = await delete_short_url(
             engine, catalog_id=catalog_id, short_key=short_key

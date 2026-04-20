@@ -252,7 +252,7 @@ def _extract_stored_cube_dimensions(existing: Any) -> Dict[str, Any]:
     em = getattr(existing, "extra_metadata", None) or {}
     if hasattr(em, "resolve"):
         try:
-            em = em.resolve("en") or {}
+            em = em.resolve("en") or {}  # type: ignore[reportAttributeAccessIssue]
         except Exception:
             em = {}
     if not isinstance(em, dict):

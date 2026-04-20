@@ -157,7 +157,7 @@ async def _interpolate_streaming(template, model: dict, escapeTemplate: bool = F
     jinja_template = jinja_env.from_string(template)
     # Apply auto-escaping if necessary
 
-    jinja_template.autoescape = autoEscape
+    jinja_template.autoescape = autoEscape  # type: ignore[reportGeneralTypeIssues]
     # jinja_template = Template(source=template, autoescape=autoEscape)
     try:
         for chunk in jinja_template.stream(model):
@@ -177,7 +177,7 @@ def _interpolate(template: str, model: dict, escapeTemplate: bool = False, autoE
     jinja_template = jinja_env.from_string(template)
 
     # Apply auto-escaping if necessary
-    jinja_template.autoescape = autoEscape
+    jinja_template.autoescape = autoEscape  # type: ignore[reportGeneralTypeIssues]
     # jinja_template = Template(source=template, autoescape=autoEscape)
 
     return jinja_template.render(model)

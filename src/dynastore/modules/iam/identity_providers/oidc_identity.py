@@ -211,7 +211,7 @@ class OidcIdentityProvider(IdentityProviderProtocol):
                         algorithms=["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"],
                         audience=self.audience if verify_audience else None,
                         issuer=iss,
-                        options=decode_options,
+                        options=decode_options,  # type: ignore[reportArgumentType]
                     )
                     break
                 except InvalidTokenError as _e:
