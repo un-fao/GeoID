@@ -157,6 +157,15 @@ async def initialize_core_tenant_tables(conn: DbResource, schema: str, catalog_i
     await _build_tenant_core_ddl_batch(schema).execute(conn, schema=schema)
     logger.info(f"Core tenant tables (collections, configs, metadata) initialized for {schema}.")
 
+    # 3. M2.0 — per-tenant metadata-domain split tables (metadata_core +
+    # metadata_stac).  Additive: coexists with the legacy {schema}.metadata
+    # table; no reads / writes change in M2.0.  Idempotent.
+    from dynastore.modules.catalog.db_init.metadata_domain_split import (
+        ensure_tenant_metadata_domain_tables,
+    )
+    await ensure_tenant_metadata_domain_tables(conn, schema)
+    logger.info(f"M2 metadata-domain split tables initialized for {schema}.")
+
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.query_builder import QueryRequest, QueryResponse
 from dynastore.modules.catalog.event_service import CatalogEventType, emit_event

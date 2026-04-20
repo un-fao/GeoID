@@ -238,6 +238,19 @@ class CatalogModule(ModuleProtocol):
 
                 await DDLQuery(CATALOGS_TABLE_DDL + SHARED_PROPERTIES_SCHEMA).execute(conn)
 
+                # M2.0 — metadata-domain split (role-based driver refactor).
+                # Additive: creates catalog.catalog_metadata_core, catalog.
+                # catalog_metadata_stac, and the created_at/updated_at columns
+                # on catalog.catalogs alongside the legacy metadata columns.
+                # Idempotent; no reads / writes change in M2.0 — the legacy
+                # columns on catalog.catalogs still drive everything.  The
+                # concrete Primary drivers that consume these tables land
+                # in M2.1; the read/write flip happens in M2.3 / M2.4.
+                from dynastore.modules.catalog.db_init.metadata_domain_split import (
+                    ensure_global_metadata_domain_tables,
+                )
+                await ensure_global_metadata_domain_tables(conn)
+
                 # Ensure stored procedures (replacing init.sql)
                 from dynastore.modules.catalog.db_init.stored_procedures import (
                     ensure_stored_procedures,
