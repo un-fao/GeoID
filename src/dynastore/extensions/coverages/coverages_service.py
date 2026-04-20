@@ -160,6 +160,7 @@ OGC_API_COVERAGES_URIS = [
     "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/coverage-bbox",
     "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/coverage-datetime",
     "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/geotiff",
+    "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/netcdf",
     "http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/coveragejson",
 ]
 

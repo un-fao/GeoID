@@ -30,6 +30,10 @@ def test_png_passthrough_returns_input_bytes():
     assert out is _TINY_PNG
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("PIL") is None,
+    reason="Pillow not installed",
+)
 def test_jpeg_conversion_returns_jpeg_bytes():
     out = _convert_png_to_format(_TINY_PNG, "jpeg")
     # JPEG SOI marker.

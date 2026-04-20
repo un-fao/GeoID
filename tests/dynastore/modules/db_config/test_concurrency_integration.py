@@ -100,20 +100,22 @@ async def test_concurrent_ddl_and_dml(shared_engine):
     Verifies that DDL (which takes locks) and DML can run concurrently
     without causing asyncpg InterfaceErrors.
     """
+    import uuid
+    table_name = f"test_concurrency_{uuid.uuid4().hex[:8]}"
+
     await DDLQuery(
-        "CREATE TABLE IF NOT EXISTS test_concurrency (id serial primary key, val text)"
+        f"CREATE TABLE IF NOT EXISTS {table_name} (id serial primary key, val text)"
     ).execute(shared_engine)
 
     async def do_ddl():
-        # DDL that might be slow or contention-heavy
-        await DDLQuery("COMMENT ON TABLE test_concurrency IS 'testing'").execute(
+        await DDLQuery(f"COMMENT ON TABLE {table_name} IS 'testing'").execute(
             shared_engine
         )
         return "ddl_ok"
 
     async def do_dml(val):
         await DQLQuery(
-            "INSERT INTO test_concurrency (val) VALUES (:val)",
+            f"INSERT INTO {table_name} (val) VALUES (:val)",
             result_handler=ResultHandler.NONE,
         ).execute(shared_engine, val=val)
         return "dml_ok"
@@ -130,7 +132,7 @@ async def test_concurrent_ddl_and_dml(shared_engine):
     assert "dml_ok" in results
 
     # Cleanup
-    await DDLQuery("DROP TABLE test_concurrency").execute(shared_engine)
+    await DDLQuery(f"DROP TABLE {table_name}").execute(shared_engine)
 
 
 @pytest.mark.asyncio
