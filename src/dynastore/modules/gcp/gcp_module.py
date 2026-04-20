@@ -551,14 +551,48 @@ class GCPModule(
     # --- ProcessRegistryProtocol Implementation ---
 
     async def list_processes(self, tenant: Optional[str] = None) -> List[Any]:
-        """ProcessRegistryProtocol: list all Cloud Run Job process definitions."""
+        """ProcessRegistryProtocol: list all Cloud Run Job process definitions.
+
+        Includes both explicitly-defined processes and synthetic entries for
+        Cloud Run jobs without Process definitions, making all jobs discoverable
+        and executable as external services.
+        """
         from dynastore.modules.gcp.tools.jobs import load_job_config, try_load_process_definition
+        from dynastore.modules.processes.models import Process, ProcessScope, JobControlOptions, TransmissionMode
+
         job_map = await load_job_config()
         result = []
-        for task_type in job_map:
+        seen_ids = set()
+
+        for task_type, job_name in job_map.items():
+            # Try to load explicit Process definition
             defn = try_load_process_definition(task_type)
             if defn is not None:
                 result.append(defn)
+                seen_ids.add(defn.id)
+            else:
+                # No definition found; create synthetic Process for this Cloud Run job
+                # so it's still discoverable and executable as an external service
+                process_id = task_type.replace("_", "-")
+                if process_id not in seen_ids:
+                    synthetic = Process(
+                        id=process_id,
+                        title=f"Cloud Run Job: {job_name}",
+                        description=f"External Cloud Run job deployed as {job_name}",
+                        version="1.0.0",
+                        scopes=[ProcessScope.PLATFORM],
+                        jobControlOptions=[JobControlOptions.ASYNC_EXECUTE],
+                        outputTransmission=[TransmissionMode.VALUE],
+                        inputs={},
+                        outputs={},
+                        links=[],
+                    )
+                    result.append(synthetic)
+                    seen_ids.add(process_id)
+                    logger.info(
+                        f"Created synthetic Process for Cloud Run job '{job_name}' (task_type={task_type})"
+                    )
+
         return result
 
     async def get_process(self, process_id: str, tenant: Optional[str] = None) -> Optional[Any]:
