@@ -406,9 +406,16 @@ class ConfigApiService:
             if value is None:
                 prepared.append((plugin_id, cls, None))
                 continue
-            # Merge incoming partial dict over the class defaults, then validate.
-            current = await self._config_service.get_config(cls, catalog_id=catalog_id)
-            current_data = current.model_dump() if current is not None else cls().model_dump()
+            # Merge incoming patch over the tier-local delta, not the
+            # waterfall-resolved view. Fall back to {} when no row exists at
+            # this tier — otherwise class defaults would get baked in on the
+            # first PATCH of a previously-unset plugin.
+            current_data = (
+                await self._config_service.get_persisted_config(
+                    cls, catalog_id=catalog_id
+                )
+                or {}
+            )
             merged = {**current_data, **value}
             cls.model_validate(merged)  # raises ValidationError on bad data
             prepared.append((plugin_id, cls, merged))

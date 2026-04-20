@@ -56,6 +56,19 @@ class ConfigsProtocol(Protocol):
         """
         ...
 
+    async def get_persisted_config(
+        self,
+        config_cls: Type["PluginConfig"],
+        catalog_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Tier-local read — returns the raw row data at the scope implied by
+        (catalog_id, collection_id), or None when absent. Never walks the
+        waterfall; never fills class defaults. Callers that need a
+        fully-resolved view should use ``get_config``.
+        """
+        ...
+
     async def set_config(
         self,
         config_cls: Type["PluginConfig"],

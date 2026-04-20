@@ -476,13 +476,18 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
 
             await _register_schema(conn, config)
 
+            # exclude_unset=True → platform row stores only fields the caller
+            # explicitly sent. Class defaults are resolved at read time, so
+            # bumping a class default propagates without rewriting this row.
             await upsert_platform_config_query.execute(
                 conn,
                 class_key=class_key,
                 schema_id=type(config).schema_id(),
                 config_data=json.dumps(
                     config.model_dump(
-                        mode="json", context={"secret_mode": "db"}
+                        mode="json",
+                        context={"secret_mode": "db"},
+                        exclude_unset=True,
                     ),
                     cls=CustomJSONEncoder,
                 ),

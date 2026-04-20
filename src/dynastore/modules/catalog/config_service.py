@@ -195,17 +195,21 @@ class ConfigService(ConfigsProtocol):
         ctx: Optional[DriverContext] = None,
         config_snapshot: Optional[Dict[str, Any]] = None,
     ) -> PluginConfig:
-        """Retrieves configuration with a waterfall:
+        """Retrieves configuration with a waterfall MERGE:
         1. Snapshot (if provided, overrides everything)
-        2. Collection (if provided)
-        3. Catalog (if provided)
-        4. Platform (global)
-        5. Code-level defaults (class default construction)
+        2. Start from platform tier (platform row overlaid on code defaults)
+        3. Overlay catalog delta (if catalog_id)
+        4. Overlay collection delta (if collection_id)
+
+        Each DB row holds only the keys explicitly set at that tier (a delta).
+        Fields absent from a delta inherit from the parent tier, so bumping a
+        class default or platform value propagates through without rewriting
+        per-catalog / per-collection rows.
         """
         cls, class_key = _resolve(config_cls)
         db_resource = ctx.db_resource if ctx else None
 
-        # Tier 0: Snapshot
+        # Tier 0: Snapshot (authoritative override)
         if config_snapshot is not None:
             if class_key in config_snapshot:
                 data = config_snapshot[class_key]
@@ -215,40 +219,69 @@ class ConfigService(ConfigsProtocol):
             catalog_id = None
             collection_id = None
 
-        # Tier 1: Collection
-        if catalog_id and collection_id:
-            if not db_resource:
-                data = await self.get_collection_config_internal_cached(
-                    catalog_id, collection_id, class_key
-                )
-                if data:
-                    return cls.model_validate(data)
-            else:
-                config = await self._get_collection_config_internal(
-                    catalog_id, collection_id, cls, db_resource=db_resource
-                )
-                if config:
-                    return config
-
-        # Tier 2: Catalog
-        if catalog_id:
-            if not db_resource:
-                data = await self.get_catalog_config_internal_cached(
-                    catalog_id, class_key
-                )
-                if data:
-                    return cls.model_validate(data)
-            else:
-                config = await self._get_catalog_config_internal(
-                    catalog_id, cls, db_resource=db_resource
-                )
-                if config:
-                    return config
-
-        # Tier 3 & 4: Platform & defaults
-        return await self._get_platform_config_service().get_config(
+        # Base: platform + code defaults (fully-populated model)
+        base = await self._get_platform_config_service().get_config(
             cls, ctx=DriverContext(db_resource=db_resource) if db_resource else None
         )
+
+        if not catalog_id:
+            return base
+
+        # Collect per-tier deltas top-down.
+        deltas: list[dict] = []
+
+        # Tier 2: Catalog delta
+        if not db_resource:
+            catalog_delta = await self.get_catalog_config_internal_cached(
+                catalog_id, class_key
+            )
+        else:
+            async with managed_transaction(db_resource) as conn:
+                phys_schema = await self._get_catalog_manager().resolve_physical_schema(
+                    catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True
+                )
+                if phys_schema and await check_table_exists(
+                    conn, CATALOG_CONFIGS_TABLE, phys_schema
+                ):
+                    catalog_delta = await _cq.select_catalog_config(phys_schema).execute(
+                        conn, class_key=class_key
+                    )
+                else:
+                    catalog_delta = None
+        if catalog_delta:
+            deltas.append(catalog_delta)
+
+        # Tier 1: Collection delta
+        if collection_id:
+            if not db_resource:
+                collection_delta = await self.get_collection_config_internal_cached(
+                    catalog_id, collection_id, class_key
+                )
+            else:
+                async with managed_transaction(db_resource) as conn:
+                    phys_schema = await self._get_catalog_manager().resolve_physical_schema(
+                        catalog_id, ctx=DriverContext(db_resource=conn)
+                    )
+                    if phys_schema and await check_table_exists(
+                        conn, COLLECTION_CONFIGS_TABLE, phys_schema
+                    ):
+                        collection_delta = await _cq.select_collection_config(phys_schema).execute(
+                            conn, collection_id=collection_id, class_key=class_key
+                        )
+                    else:
+                        collection_delta = None
+            if collection_delta:
+                deltas.append(collection_delta)
+
+        if not deltas:
+            return base
+
+        # Merge base.model_dump() with deltas in order (catalog → collection).
+        # mode="python" preserves native types for round-trip re-validation.
+        merged: Dict[str, Any] = base.model_dump(mode="python")
+        for delta in deltas:
+            merged.update(delta)
+        return cls.model_validate(merged)
 
     async def get_catalog_config_internal_cached(
         self, catalog_id: str, class_key: str
@@ -258,6 +291,31 @@ class ConfigService(ConfigsProtocol):
             self.engine, self._get_catalog_manager(), catalog_id, class_key
         )
 
+    async def get_persisted_config(
+        self,
+        config_cls: "Union[str, Type[PluginConfig]]",
+        catalog_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Return the raw row at the exact tier implied by the ids.
+
+        No waterfall, no class-default filling. ``None`` when the row is
+        absent. Used by PATCH handlers to merge partial updates over the
+        tier-local delta rather than the resolved view.
+        """
+        _, class_key = _resolve(config_cls)
+        if catalog_id and collection_id:
+            return await self.get_collection_config_internal_cached(
+                catalog_id, collection_id, class_key
+            )
+        if catalog_id:
+            return await self.get_catalog_config_internal_cached(catalog_id, class_key)
+        platform_svc = self._get_platform_config_service()
+        getter = getattr(platform_svc, "get_platform_config_internal_cached", None)
+        if getter is None:
+            return None
+        return await getter(class_key)
+
     async def get_collection_config_internal_cached(
         self, catalog_id: str, collection_id: str, class_key: str
     ) -> Optional[dict]:
@@ -265,63 +323,6 @@ class ConfigService(ConfigsProtocol):
         return await _collection_config_cache(
             self.engine, self._get_catalog_manager(), catalog_id, collection_id, class_key
         )
-
-    async def _get_catalog_config_internal(
-        self,
-        catalog_id: str,
-        cls: Type[PluginConfig],
-        db_resource: Optional[DbResource] = None,
-    ) -> Optional[PluginConfig]:
-        class_key = cls.class_key()
-        if not db_resource:
-            data = await self.get_catalog_config_internal_cached(catalog_id, class_key)
-            return cls.model_validate(data) if data else None
-
-        async with managed_transaction(db_resource) as conn:
-            phys_schema = await self._get_catalog_manager().resolve_physical_schema(
-                catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True
-            )
-            if not phys_schema:
-                return None
-
-            if not await check_table_exists(conn, CATALOG_CONFIGS_TABLE, phys_schema):
-                return None
-
-            data = await _cq.select_catalog_config(phys_schema).execute(conn, class_key=class_key)
-
-        return cls.model_validate(data) if data else None
-
-    async def _get_collection_config_internal(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        cls: Type[PluginConfig],
-        db_resource: Optional[DbResource] = None,
-    ) -> Optional[PluginConfig]:
-        class_key = cls.class_key()
-        if not db_resource:
-            data = await self.get_collection_config_internal_cached(
-                catalog_id, collection_id, class_key
-            )
-            return cls.model_validate(data) if data else None
-
-        async with managed_transaction(db_resource) as conn:
-            phys_schema = await self._get_catalog_manager().resolve_physical_schema(
-                catalog_id, ctx=DriverContext(db_resource=conn)
-            )
-            if not phys_schema:
-                return None
-
-            if not await check_table_exists(conn, COLLECTION_CONFIGS_TABLE, phys_schema):
-                return None
-
-            data = await _cq.select_collection_config(phys_schema).execute(
-                conn,
-                collection_id=collection_id,
-                class_key=class_key,
-            )
-
-        return cls.model_validate(data) if data else None
 
     async def set_config(
         self,
@@ -397,8 +398,15 @@ class ConfigService(ConfigsProtocol):
 
             # secret_mode="db" → every Secret field serializes to its
             # encrypted envelope before jsonb persistence. See tools/secrets.py.
+            # exclude_unset=True → store only fields the caller explicitly sent.
+            # Class defaults and parent-tier values are resolved at read time
+            # by the ``get_config`` waterfall, not baked in here.
             config_data = (
-                config.model_dump(mode="json", context={"secret_mode": "db"})
+                config.model_dump(
+                    mode="json",
+                    context={"secret_mode": "db"},
+                    exclude_unset=True,
+                )
                 if hasattr(config, "model_dump")
                 else config
             )
@@ -482,8 +490,15 @@ class ConfigService(ConfigsProtocol):
 
             # secret_mode="db" → every Secret field serializes to its
             # encrypted envelope before jsonb persistence. See tools/secrets.py.
+            # exclude_unset=True → store only fields the caller explicitly sent.
+            # Class defaults and parent-tier values are resolved at read time
+            # by the ``get_config`` waterfall, not baked in here.
             config_data = (
-                config.model_dump(mode="json", context={"secret_mode": "db"})
+                config.model_dump(
+                    mode="json",
+                    context={"secret_mode": "db"},
+                    exclude_unset=True,
+                )
                 if hasattr(config, "model_dump")
                 else config
             )
