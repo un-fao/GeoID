@@ -18,6 +18,13 @@ def _make_config_service(stored: Dict[str, Any]):
     async def _get_config(cls, catalog_id=None, collection_id=None, **_):
         return cls()  # always return defaults
 
+    async def _get_persisted_config(cls, catalog_id=None, collection_id=None, **_):
+        key = (cls.__name__, catalog_id, collection_id)
+        value = stored.get(key)
+        if value is None:
+            return None
+        return value.model_dump(exclude_unset=True) if hasattr(value, "model_dump") else value
+
     async def _set_config(cls, value, catalog_id=None, collection_id=None, **_):
         key = (cls.__name__, catalog_id, collection_id)
         stored[key] = value
@@ -36,6 +43,7 @@ def _make_config_service(stored: Dict[str, Any]):
         return {"items": items, "total": len(items)}
 
     svc.get_config = AsyncMock(side_effect=_get_config)
+    svc.get_persisted_config = AsyncMock(side_effect=_get_persisted_config)
     svc.set_config = AsyncMock(side_effect=_set_config)
     svc.delete_config = AsyncMock(side_effect=_delete_config)
     svc.list_configs = AsyncMock(side_effect=_list_configs)

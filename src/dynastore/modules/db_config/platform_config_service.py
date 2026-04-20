@@ -353,6 +353,26 @@ def _collect_required_fields(cls: Type[PluginConfig]) -> List[str]:
 # --- Manager ---
 
 
+def _post_commit_router_bust(cls: Type["PluginConfig"]) -> None:
+    """Bust the distributed storage-router cache after a platform-tier commit.
+
+    Only routing configs affect that cache; for anything else this is a
+    no-op. Lazy import keeps ``modules/db_config`` free of a hard dep on
+    ``modules/storage``.
+    """
+    try:
+        from dynastore.modules.storage.routing_config import (
+            CollectionRoutingConfig,
+            AssetRoutingConfig,
+        )
+        if not issubclass(cls, (CollectionRoutingConfig, AssetRoutingConfig)):
+            return
+        from dynastore.modules.storage.router import invalidate_router_cache
+        invalidate_router_cache(None, None)
+    except Exception:
+        pass
+
+
 from dynastore.tools.plugin import ProtocolPlugin
 
 
@@ -505,6 +525,10 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
                     )
 
         self.get_platform_config_internal_cached.cache_invalidate(class_key)
+        # Post-commit router bust closes the race where an apply_handler
+        # invalidates inside the open transaction and a concurrent reader
+        # re-caches the pre-commit row. Mirrors catalog/collection tiers.
+        _post_commit_router_bust(cls)
 
     async def list_configs(self) -> Dict[Type[PluginConfig], PluginConfig]:
         """Return ``{class: config}`` for every persisted platform config."""
@@ -538,5 +562,6 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
             )
             if rows_affected > 0:
                 self.get_platform_config_internal_cached.cache_invalidate(class_key)
+                _post_commit_router_bust(cls)
                 return True
         return False

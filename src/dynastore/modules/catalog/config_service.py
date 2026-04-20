@@ -22,6 +22,24 @@ import inspect
 from typing import Optional, Dict, Any, Type, Union, TYPE_CHECKING
 from dynastore.tools.cache import cached
 from dynastore.modules.storage.router import invalidate_router_cache
+
+
+def _maybe_bust_router(cls: Type["PluginConfig"], catalog_id: Optional[str], collection_id: Optional[str]) -> None:
+    """Bust the distributed router cache only for routing-config writes.
+
+    Non-routing writes (TilesConfig, FeaturesPluginConfig, ...) don't affect
+    driver resolution, so nuking the whole Valkey cache for them is pure waste.
+    """
+    try:
+        from dynastore.modules.storage.routing_config import (
+            CollectionRoutingConfig,
+            AssetRoutingConfig,
+        )
+        if not issubclass(cls, (CollectionRoutingConfig, AssetRoutingConfig)):
+            return
+    except Exception:
+        return
+    invalidate_router_cache(catalog_id, collection_id)
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     ResultHandler,
@@ -431,7 +449,7 @@ class ConfigService(ConfigsProtocol):
         _catalog_config_cache.cache_invalidate(
             self.engine, self._get_catalog_manager(), catalog_id, class_key
         )
-        invalidate_router_cache(catalog_id, None)
+        _maybe_bust_router(cls, catalog_id, None)
 
     async def _set_collection_config(
         self,
@@ -524,7 +542,7 @@ class ConfigService(ConfigsProtocol):
         _collection_config_cache.cache_invalidate(
             self.engine, self._get_catalog_manager(), catalog_id, collection_id, class_key
         )
-        invalidate_router_cache(catalog_id, collection_id)
+        _maybe_bust_router(cls, catalog_id, collection_id)
 
     async def list_configs(
         self,
@@ -751,11 +769,11 @@ class ConfigService(ConfigsProtocol):
             if catalog_id is None:
                 raise ValueError("catalog_id is required when collection_id is provided")
             await self._delete_collection_config(
-                catalog_id, collection_id, class_key, db_resource=db_resource
+                catalog_id, collection_id, cls, db_resource=db_resource
             )
         elif catalog_id is not None:
             await self._delete_catalog_config(
-                catalog_id, class_key, db_resource=db_resource
+                catalog_id, cls, db_resource=db_resource
             )
         else:
             await self._get_platform_config_service().delete_config(
@@ -763,8 +781,9 @@ class ConfigService(ConfigsProtocol):
             )
 
     async def _delete_catalog_config(
-        self, catalog_id: str, class_key: str, db_resource: Optional[DbResource] = None
+        self, catalog_id: str, cls: Type[PluginConfig], db_resource: Optional[DbResource] = None
     ) -> bool:
+        class_key = cls.class_key()
         validate_sql_identifier(catalog_id)
         async with managed_transaction(db_resource or self.engine) as conn:
             phys_schema = await self._get_catalog_manager().resolve_physical_schema(
@@ -784,7 +803,7 @@ class ConfigService(ConfigsProtocol):
                 _catalog_config_cache.cache_invalidate(
                     self.engine, self.catalog_manager, catalog_id, class_key
                 )
-                invalidate_router_cache(catalog_id, None)
+                _maybe_bust_router(cls, catalog_id, None)
                 return True
         return False
 
@@ -792,9 +811,10 @@ class ConfigService(ConfigsProtocol):
         self,
         catalog_id: str,
         collection_id: str,
-        class_key: str,
+        cls: Type[PluginConfig],
         db_resource: Optional[DbResource] = None,
     ) -> bool:
+        class_key = cls.class_key()
         validate_sql_identifier(catalog_id)
         validate_sql_identifier(collection_id)
         async with managed_transaction(db_resource or self.engine) as conn:
@@ -821,6 +841,6 @@ class ConfigService(ConfigsProtocol):
                     collection_id,
                     class_key,
                 )
-                invalidate_router_cache(catalog_id, collection_id)
+                _maybe_bust_router(cls, catalog_id, collection_id)
                 return True
         return False

@@ -14,6 +14,20 @@ PG_DRIVER_PLUGIN_ID = CollectionPostgresqlDriverConfig
 from dynastore.modules.db_config.exceptions import ImmutableConfigError
 
 
+def _pin_all(config):
+    """Re-validate through a dict so every top-level field is marked 'set'.
+
+    Persistence uses ``model_dump(exclude_unset=True)`` — only fields the
+    caller explicitly included live in the row. When a test seeds state by
+    constructing a default config and mutating nested attributes, those
+    mutations don't register at the top level, so immutability checks have
+    nothing to compare against on the next write. Re-validating through
+    ``model_dump()`` pins every top-level field, matching the production
+    API flow where the service receives a dict body.
+    """
+    return type(config).model_validate(config.model_dump())
+
+
 @pytest.mark.asyncio
 async def test_collection_config_immutability(
     app_lifespan, catalog_obj, catalog_id, collection_obj, collection_id
@@ -40,7 +54,7 @@ async def test_collection_config_immutability(
 
     await config_manager.set_config(
         PG_DRIVER_PLUGIN_ID,
-        initial_config,
+        _pin_all(initial_config),
         catalog_id=catalog_id,
         collection_id=collection_id,
         check_immutability=False,
@@ -56,7 +70,7 @@ async def test_collection_config_immutability(
     with pytest.raises(ImmutableConfigError) as excinfo:
         await config_manager.set_config(
             PG_DRIVER_PLUGIN_ID,
-            invalid_config_schema,
+            _pin_all(invalid_config_schema),
             catalog_id=catalog_id,
             collection_id=collection_id,
         )
@@ -71,7 +85,7 @@ async def test_collection_config_immutability(
     with pytest.raises(ImmutableConfigError) as excinfo:
         await config_manager.set_config(
             PG_DRIVER_PLUGIN_ID,
-            invalid_config,
+            _pin_all(invalid_config),
             catalog_id=catalog_id,
             collection_id=collection_id,
         )
@@ -87,7 +101,7 @@ async def test_collection_config_immutability(
     with pytest.raises(ImmutableConfigError) as excinfo:
         await config_manager.set_config(
             PG_DRIVER_PLUGIN_ID,
-            invalid_config_partitioning,
+            _pin_all(invalid_config_partitioning),
             catalog_id=catalog_id,
             collection_id=collection_id,
         )
@@ -112,7 +126,7 @@ async def test_platform_config_immutability(app_lifespan):
             if sidecar.sidecar_type == "geometries":
                 sidecar.h3_resolutions = [10]
 
-        await platform_manager.set_config(plugin_id, initial_config)
+        await platform_manager.set_config(plugin_id, _pin_all(initial_config))
 
         # 2. Try to update immutable field (nested in sidecars)
         invalid_config = initial_config.model_copy(deep=True)
@@ -122,7 +136,7 @@ async def test_platform_config_immutability(app_lifespan):
 
         with pytest.raises(ImmutableConfigError):
             await platform_manager.set_config(
-                plugin_id, invalid_config, check_immutability=True
+                plugin_id, _pin_all(invalid_config), check_immutability=True
             )
 
         # 3. Modify attribute_schema (nested in sidecars)
@@ -133,7 +147,7 @@ async def test_platform_config_immutability(app_lifespan):
 
         with pytest.raises(ImmutableConfigError):
             await platform_manager.set_config(
-                plugin_id, invalid_update, check_immutability=True
+                plugin_id, _pin_all(invalid_update), check_immutability=True
             )
 
     finally:
@@ -170,7 +184,7 @@ async def test_config_deletion(
     # Partitioning is enabled if we want, but let's stick to resolutions for this test
     await config_manager.set_config(
         PG_DRIVER_PLUGIN_ID,
-        col_config,
+        _pin_all(col_config),
         catalog_id=catalog_id,
         collection_id=collection_id,
     )
