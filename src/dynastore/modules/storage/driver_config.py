@@ -37,9 +37,9 @@ etc.), not *what operation* it performs.  Operations are defined in
 import json
 import os
 from enum import StrEnum
-from typing import Any, ClassVar, Dict, FrozenSet, List, Optional
+from typing import Annotated, Any, ClassVar, Dict, FrozenSet, List, Optional, Union
 
-from pydantic import ConfigDict, Field, SerializeAsAny, field_validator, model_validator
+from pydantic import ConfigDict, Discriminator, Field, field_validator, model_validator
 
 from dynastore.tools.secrets import Secret
 from dynastore.tools.ui_hints import ui
@@ -49,6 +49,33 @@ from dynastore.modules.db_config.platform_config_service import (
     PluginConfig,
     WriteOnce,
 )
+
+# PG sidecar configs — colocated with the PG driver (storage/drivers/pg_sidecars)
+# since M1b.0.  They are imported eagerly here so the discriminated-union field
+# type on CollectionPostgresqlDriverConfig.sidecars can reference them directly
+# without string forward refs.  No cycle: pg_sidecars doesn't import driver_config.
+from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+    FeatureAttributeSidecarConfig,
+)
+from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
+    GeometriesSidecarConfig,
+)
+from dynastore.modules.storage.drivers.pg_sidecars.item_metadata_config import (
+    ItemMetadataSidecarConfig,
+)
+
+# Discriminated union of all concrete PG sidecar configs.  The ``sidecar_type``
+# discriminator + the base-class validator that pins ``sidecar_type`` in
+# ``__pydantic_fields_set__`` (see pg_sidecars/base.py) makes
+# ``model_dump(exclude_unset=True)`` → ``model_validate`` lossless.
+_PgSidecarConfig = Annotated[
+    Union[
+        GeometriesSidecarConfig,
+        FeatureAttributeSidecarConfig,
+        ItemMetadataSidecarConfig,
+    ],
+    Discriminator("sidecar_type"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -406,8 +433,18 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
         default=None, description="Override auto-resolved table. Set once by ensure_storage()."
     )
 
-    # From CollectionPluginConfig — PG-specific structural fields
-    sidecars: Immutable[List[SerializeAsAny[Any]]] = Field(
+    # From CollectionPluginConfig — PG-specific structural fields.
+    # Discriminated union via `sidecar_type` (replaces the former
+    # `SerializeAsAny[Any]` + `validate_sidecars_polymorphic` field-validator
+    # dispatch).  The eager `[geometries, attributes]` default is still in
+    # place HERE in M1b.1 — it's removed in M1b.2 when the PG driver's
+    # `_effective_sidecars(...)` helper lands and resolves sidecars lazily
+    # from the registry at DDL/read/write time.  Keeping the eager default
+    # for M1b.1 keeps every existing DDL/write/query call site green; the
+    # only behavioural delta in this commit is that
+    # `model_dump(exclude_unset=True)` now preserves `sidecar_type` on each
+    # sidecar entry (base-class validator in pg_sidecars/base.py).
+    sidecars: Immutable[List[_PgSidecarConfig]] = Field(
         default_factory=lambda: _default_sidecars(),
         description="Sidecar table configs (GeometriesSidecarConfig, FeatureAttributeSidecarConfig, etc.)",
     )
@@ -424,52 +461,15 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
     # Validators (moved from CollectionPluginConfig)
     # ------------------------------------------------------------------
 
-    @field_validator("sidecars", mode="before")
-    @classmethod
-    def validate_sidecars_polymorphic(cls, v: Any) -> Any:
-        """Instantiate sidecar configs as their specialized subclasses.
-
-        Each item must be either a typed ``SidecarConfig`` instance or a mapping
-        carrying a ``sidecar_type`` discriminator. Malformed entries raise
-        immediately so data-corruption bugs surface at hydration time instead of
-        crashing downstream consumers (e.g. ``SidecarRegistry.get_sidecar``).
-
-        Rebase merge note: the robust fail-loudly semantics arrived on
-        ``main`` via ``aa6b8e7`` with imports from the pre-relocation
-        path ``modules/catalog/sidecars``.  M1b.0 relocates those to
-        ``modules/storage/drivers/pg_sidecars/``; this validator uses
-        the new path.  A later commit on this branch (M1b.1) may replace
-        this hand-rolled loop with Pydantic's native discriminated
-        union — at that point the ``SidecarConfigRegistry`` probe
-        disappears.
-        """
-        if not isinstance(v, list):
-            return v
-
-        from dynastore.modules.storage.drivers.pg_sidecars.base import (
-            SidecarConfig,
-            SidecarConfigRegistry,
-        )
-
-        processed = []
-        for idx, item in enumerate(v):
-            if isinstance(item, SidecarConfig):
-                processed.append(item)
-            elif isinstance(item, dict):
-                sidecar_type = item.get("sidecar_type")
-                if not sidecar_type:
-                    raise ValueError(
-                        f"sidecars[{idx}]: dict is missing required "
-                        f"'sidecar_type' discriminator. Keys: {sorted(item.keys())}"
-                    )
-                config_cls = SidecarConfigRegistry.resolve_config_class(sidecar_type)
-                processed.append(config_cls.model_validate(item))
-            else:
-                raise ValueError(
-                    f"sidecars[{idx}]: expected SidecarConfig or dict, "
-                    f"got {type(item).__name__}"
-                )
-        return processed
+    # Note: the former ``validate_sidecars_polymorphic`` field-validator is
+    # deleted here (M1b.1) — superseded by the ``_PgSidecarConfig``
+    # discriminated union declared above, which does the same dispatch
+    # natively via Pydantic's ``Discriminator("sidecar_type")``.  Main's
+    # ``aa6b8e7`` fix (robust error messages on malformed inputs) is
+    # subsumed by Pydantic's own ``ValidationError`` — which also fails
+    # loudly on missing discriminators or unknown ``sidecar_type`` values
+    # (strictly a tightening: main's version silently fell back to the
+    # base ``SidecarConfig`` on unknown types).
 
     @field_validator("partitioning", mode="before")
     @classmethod
@@ -555,14 +555,18 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
 
 
 def _default_sidecars() -> list:
-    """Lazy import to avoid circular dependency with sidecar configs."""
-    from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
-        GeometriesSidecarConfig,
-    )
-    from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
-        FeatureAttributeSidecarConfig,
-    )
+    """Return the eager-default sidecar list (geometries + attributes).
 
+    NOTE (role-based driver refactor M1b.1 / M1b.2): this helper is kept
+    during M1b.1 to preserve existing behaviour for all DDL/write/query
+    call sites that iterate ``col_config.sidecars`` directly.  In M1b.2
+    this function goes away: the PG driver's ``_effective_sidecars(...)``
+    helper resolves sidecar defaults lazily from the registry at the
+    first DDL/write/read that needs them, and the field's default
+    becomes ``list`` (empty).  That's what lets a default-body
+    POST /collections/{id} persist zero ``collection_configs`` rows
+    (plan §Principle — default-fast invariant).
+    """
     return [GeometriesSidecarConfig(), FeatureAttributeSidecarConfig()]
 
 

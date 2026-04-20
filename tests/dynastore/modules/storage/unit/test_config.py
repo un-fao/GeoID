@@ -48,6 +48,15 @@ class TestCollectionPostgresqlDriverConfigDefaults:
         assert CollectionPostgresqlDriverConfig.class_key() == "CollectionPostgresqlDriverConfig"
 
     def test_default_sidecars(self):
+        """M1b.1 keeps the eager `[geometries, attributes]` default.
+
+        The default is removed in M1b.2 when the PG driver's
+        ``_effective_sidecars(...)`` helper lands and resolves sidecar
+        defaults lazily from the registry.  At that point this test
+        asserts ``cfg.sidecars == []``; until then, the existing DDL /
+        write / query call sites that iterate ``col_config.sidecars``
+        directly stay green.
+        """
         cfg = CollectionPostgresqlDriverConfig()
         assert len(cfg.sidecars) == 2
 
@@ -64,6 +73,70 @@ class TestCollectionPostgresqlDriverConfigDefaults:
         cols = cfg.get_column_definitions()
         assert "geoid" in cols
         assert "transaction_time" in cols
+
+
+class TestSidecarConfigDiscriminatorRoundTrip:
+    """Round-trip tests for the M1b.1 discriminator-retention fix.
+
+    Before M1b.1, ``SidecarConfig.sidecar_type`` was declared in the base
+    class with no default; concrete subclasses supplied a
+    ``Literal[...] = "..."`` default.  Pydantic treated that subclass
+    default as not-explicitly-set on a default-constructed instance, so
+    ``model_dump(exclude_unset=True)`` dropped the discriminator — making
+    a round-trip through the ``Annotated[Union[...], Discriminator(...)]``
+    on ``CollectionPostgresqlDriverConfig.sidecars`` fail.
+
+    The fix is a ``@model_validator(mode="after")`` on ``SidecarConfig``
+    that adds ``"sidecar_type"`` to ``__pydantic_fields_set__`` on every
+    instance, regardless of how it was constructed.
+    """
+
+    def test_default_constructed_sidecar_dumps_keep_sidecar_type(self):
+        from dynastore.modules.storage.drivers.pg_sidecars import (
+            GeometriesSidecarConfig,
+            FeatureAttributeSidecarConfig,
+            ItemMetadataSidecarConfig,
+        )
+        for cls, expected in [
+            (GeometriesSidecarConfig, "geometries"),
+            (FeatureAttributeSidecarConfig, "attributes"),
+            (ItemMetadataSidecarConfig, "item_metadata"),
+        ]:
+            dumped = cls().model_dump(exclude_unset=True)
+            assert dumped.get("sidecar_type") == expected, (
+                f"{cls.__name__} lost its sidecar_type under exclude_unset=True"
+            )
+
+    def test_round_trip_exclude_unset_preserves_discriminator(self):
+        """model_dump(exclude_unset=True) → model_validate round-trips cleanly."""
+        from dynastore.modules.storage.drivers.pg_sidecars import (
+            GeometriesSidecarConfig,
+            FeatureAttributeSidecarConfig,
+            ItemMetadataSidecarConfig,
+        )
+        for cls in (GeometriesSidecarConfig, FeatureAttributeSidecarConfig, ItemMetadataSidecarConfig):
+            original = cls()
+            dumped = original.model_dump(exclude_unset=True)
+            reloaded = cls.model_validate(dumped)
+            assert reloaded.sidecar_type == original.sidecar_type
+            assert type(reloaded) is cls
+
+    def test_discriminated_union_dispatches_to_correct_subclass(self):
+        """A default-body PG driver config dumps + reloads with sidecar types intact."""
+        cfg = CollectionPostgresqlDriverConfig()
+        dumped = cfg.model_dump(exclude_unset=False)  # full dump — simulates DB persistence
+        reloaded = CollectionPostgresqlDriverConfig.model_validate(dumped)
+        types_out = [s.sidecar_type for s in reloaded.sidecars]
+        assert "geometries" in types_out
+        assert "attributes" in types_out
+        # Every reloaded entry is the specialised subclass (Union dispatched on sidecar_type)
+        from dynastore.modules.storage.drivers.pg_sidecars import (
+            GeometriesSidecarConfig,
+            FeatureAttributeSidecarConfig,
+        )
+        subclass_map = {s.sidecar_type: type(s) for s in reloaded.sidecars}
+        assert subclass_map.get("geometries") is GeometriesSidecarConfig
+        assert subclass_map.get("attributes") is FeatureAttributeSidecarConfig
 
 
 class TestCompositePartitionConfig:
