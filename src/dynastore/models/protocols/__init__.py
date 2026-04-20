@@ -67,7 +67,11 @@ from dynastore.models.protocols.styles import StylesProtocol
 from dynastore.models.protocols.search import SearchProtocol
 from dynastore.models.protocols.indexer import IndexerProtocol
 from dynastore.models.protocols.storage_driver import CollectionItemsStore
-from dynastore.models.protocols.metadata_driver import CollectionMetadataStore
+from dynastore.models.protocols.metadata_driver import (
+    CatalogMetadataStore,
+    CollectionMetadataStore,
+)
+from dynastore.models.protocols.driver_roles import DriverSla, MetadataDomain
 from dynastore.models.protocols.asset_driver import AssetStore
 from dynastore.models.protocols.enrichment import CollectionMetadataEnricherProtocol
 from dynastore.models.protocols.asset_enricher import AssetEnricherProtocol
@@ -162,6 +166,9 @@ __all__ = [
     "IndexerProtocol",
     "CollectionItemsStore",
     "CollectionMetadataStore",
+    "CatalogMetadataStore",
+    "DriverSla",
+    "MetadataDomain",
     "AssetStore",
     "CollectionMetadataEnricherProtocol",
     "AssetEnricherProtocol",
