@@ -47,18 +47,76 @@ class TestCollectionPostgresqlDriverConfigDefaults:
     def test_class_key(self):
         assert CollectionPostgresqlDriverConfig.class_key() == "CollectionPostgresqlDriverConfig"
 
-    def test_default_sidecars(self):
-        """M1b.1 keeps the eager `[geometries, attributes]` default.
+    def test_default_sidecars_is_empty(self):
+        """Default is empty as of M1b.2.
 
-        The default is removed in M1b.2 when the PG driver's
-        ``_effective_sidecars(...)`` helper lands and resolves sidecar
-        defaults lazily from the registry.  At that point this test
-        asserts ``cfg.sidecars == []``; until then, the existing DDL /
-        write / query call sites that iterate ``col_config.sidecars``
-        directly stay green.
+        The old eager ``[geometries, attributes]`` default was the
+        anti-pattern the role-based driver refactor evicts: every
+        default-body POST /collections used to persist those two
+        sidecar entries via ``configs.set_config``.  In M1b.2 the PG
+        driver resolves sidecar defaults lazily at DDL / read / write
+        time via ``pg_sidecars._effective_sidecars(...)`` — so a
+        default-body config persists zero ``collection_configs`` rows
+        (plan §Principle — default-fast invariant), and the first
+        real DDL/ingest call materialises ``[geometries, attributes]``
+        (+ registry injections like ``item_metadata``) on demand.
         """
         cfg = CollectionPostgresqlDriverConfig()
-        assert len(cfg.sidecars) == 2
+        assert cfg.sidecars == []
+
+    def test_effective_sidecars_vector_default(self):
+        """Empty VECTOR config resolves to [geometries, attributes]+injections."""
+        from dynastore.modules.storage.drivers.pg_sidecars import (
+            _effective_sidecars,
+            FeatureAttributeSidecarConfig,
+            GeometriesSidecarConfig,
+        )
+        cfg = CollectionPostgresqlDriverConfig()
+        resolved = _effective_sidecars(cfg, catalog_id="cat", collection_id="col")
+        types = [s.sidecar_type for s in resolved]
+        assert "geometries" in types
+        assert "attributes" in types
+        assert any(isinstance(s, GeometriesSidecarConfig) for s in resolved)
+        assert any(isinstance(s, FeatureAttributeSidecarConfig) for s in resolved)
+
+    def test_effective_sidecars_records_drops_geometry(self):
+        """RECORDS collections have no spatial component → geometry omitted."""
+        from dynastore.modules.storage.drivers.pg_sidecars import _effective_sidecars
+        cfg = CollectionPostgresqlDriverConfig(collection_type="RECORDS")
+        resolved = _effective_sidecars(cfg, catalog_id="cat", collection_id="col")
+        types = [s.sidecar_type for s in resolved]
+        assert "geometries" not in types
+        assert "attributes" in types
+
+    def test_effective_sidecars_explicit_config_preserved_and_supplemented(self):
+        """Caller-explicit sidecars are preserved; registry fills missing types.
+
+        Matches the pre-M1b.2 inline-injection semantics in
+        collection_service.py: the registry is additive over whatever
+        the caller supplied.  A caller that passes ``[attributes]`` for
+        a VECTOR collection still gets ``geometries`` appended by the
+        registry (since VECTOR collections always need it), mirroring
+        the old behaviour where the eager default was
+        ``[geometries, attributes]``.
+
+        A caller who wants ONLY attributes (no geometry) uses a
+        non-VECTOR ``collection_type`` — see
+        ``test_effective_sidecars_records_drops_geometry``.
+        """
+        from dynastore.modules.storage.drivers.pg_sidecars import (
+            _effective_sidecars,
+            FeatureAttributeSidecarConfig,
+        )
+        cfg = CollectionPostgresqlDriverConfig(
+            sidecars=[FeatureAttributeSidecarConfig()],
+        )
+        resolved = _effective_sidecars(cfg, catalog_id="cat", collection_id="col")
+        types = [s.sidecar_type for s in resolved]
+        # attributes is explicit → preserved; geometries is registry-supplemented.
+        assert "attributes" in types
+        assert "geometries" in types
+        # Explicit entry appears before registry-supplemented ones.
+        assert types.index("attributes") < types.index("geometries")
 
     def test_default_partitioning_disabled(self):
         cfg = CollectionPostgresqlDriverConfig()
@@ -122,21 +180,37 @@ class TestSidecarConfigDiscriminatorRoundTrip:
             assert type(reloaded) is cls
 
     def test_discriminated_union_dispatches_to_correct_subclass(self):
-        """A default-body PG driver config dumps + reloads with sidecar types intact."""
-        cfg = CollectionPostgresqlDriverConfig()
+        """Explicit-sidecars config dumps + reloads with discriminator-based dispatch.
+
+        Default ``CollectionPostgresqlDriverConfig()`` has empty sidecars
+        post-M1b.2 (see ``test_default_sidecars_is_empty``), so we supply
+        explicit sidecars here to exercise the
+        ``Annotated[Union[...], Discriminator("sidecar_type")]`` dispatch
+        on a realistic persisted payload.
+        """
+        from dynastore.modules.storage.drivers.pg_sidecars import (
+            GeometriesSidecarConfig,
+            FeatureAttributeSidecarConfig,
+            ItemMetadataSidecarConfig,
+        )
+        cfg = CollectionPostgresqlDriverConfig(
+            sidecars=[
+                GeometriesSidecarConfig(),
+                FeatureAttributeSidecarConfig(),
+                ItemMetadataSidecarConfig(),
+            ],
+        )
         dumped = cfg.model_dump(exclude_unset=False)  # full dump — simulates DB persistence
         reloaded = CollectionPostgresqlDriverConfig.model_validate(dumped)
         types_out = [s.sidecar_type for s in reloaded.sidecars]
         assert "geometries" in types_out
         assert "attributes" in types_out
+        assert "item_metadata" in types_out
         # Every reloaded entry is the specialised subclass (Union dispatched on sidecar_type)
-        from dynastore.modules.storage.drivers.pg_sidecars import (
-            GeometriesSidecarConfig,
-            FeatureAttributeSidecarConfig,
-        )
         subclass_map = {s.sidecar_type: type(s) for s in reloaded.sidecars}
         assert subclass_map.get("geometries") is GeometriesSidecarConfig
         assert subclass_map.get("attributes") is FeatureAttributeSidecarConfig
+        assert subclass_map.get("item_metadata") is ItemMetadataSidecarConfig
 
 
 class TestCompositePartitionConfig:

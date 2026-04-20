@@ -434,19 +434,20 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
     )
 
     # From CollectionPluginConfig — PG-specific structural fields.
-    # Discriminated union via `sidecar_type` (replaces the former
-    # `SerializeAsAny[Any]` + `validate_sidecars_polymorphic` field-validator
-    # dispatch).  The eager `[geometries, attributes]` default is still in
-    # place HERE in M1b.1 — it's removed in M1b.2 when the PG driver's
-    # `_effective_sidecars(...)` helper lands and resolves sidecars lazily
-    # from the registry at DDL/read/write time.  Keeping the eager default
-    # for M1b.1 keeps every existing DDL/write/query call site green; the
-    # only behavioural delta in this commit is that
-    # `model_dump(exclude_unset=True)` now preserves `sidecar_type` on each
-    # sidecar entry (base-class validator in pg_sidecars/base.py).
+    # Discriminated union via `sidecar_type`; default is EMPTY (M1b.2).
+    # The old eager `[geometries, attributes]` default is gone — the PG
+    # driver resolves sidecar defaults lazily at DDL / read / write time
+    # via ``storage.drivers.pg_sidecars.resolver._effective_sidecars(...)``.
+    # A default-body ``POST /collections/{id}`` therefore persists zero
+    # ``collection_configs`` rows (plan §Principle — default-fast).
     sidecars: Immutable[List[_PgSidecarConfig]] = Field(
-        default_factory=lambda: _default_sidecars(),
-        description="Sidecar table configs (GeometriesSidecarConfig, FeatureAttributeSidecarConfig, etc.)",
+        default_factory=list,
+        description=(
+            "Sidecar table configs — discriminated union on `sidecar_type`. "
+            "Empty → PG driver resolves defaults lazily from "
+            "``pg_sidecars._effective_sidecars(...)`` (core defaults + "
+            "registry injections) at first use."
+        ),
     )
     partitioning: Immutable[Any] = Field(
         default_factory=lambda: _default_partitioning(),
@@ -552,22 +553,6 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
                 continue
             all_fields.update(sidecar.get_field_definitions())
         return all_fields
-
-
-def _default_sidecars() -> list:
-    """Return the eager-default sidecar list (geometries + attributes).
-
-    NOTE (role-based driver refactor M1b.1 / M1b.2): this helper is kept
-    during M1b.1 to preserve existing behaviour for all DDL/write/query
-    call sites that iterate ``col_config.sidecars`` directly.  In M1b.2
-    this function goes away: the PG driver's ``_effective_sidecars(...)``
-    helper resolves sidecar defaults lazily from the registry at the
-    first DDL/write/read that needs them, and the field's default
-    becomes ``list`` (empty).  That's what lets a default-body
-    POST /collections/{id} persist zero ``collection_configs`` rows
-    (plan §Principle — default-fast invariant).
-    """
-    return [GeometriesSidecarConfig(), FeatureAttributeSidecarConfig()]
 
 
 def _default_partitioning() -> Any:

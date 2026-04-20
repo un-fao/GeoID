@@ -110,6 +110,37 @@ class CollectionPostgresqlDriver(ModuleProtocol):
             return CollectionPostgresqlDriverConfig()
         return config
 
+    async def _get_effective_driver_config(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> "CollectionPostgresqlDriverConfig":
+        """Load the driver config and materialise effective sidecars.
+
+        Use this at any call site that iterates ``col_config.sidecars``
+        (DDL generation, query composition, introspection, field flags).
+        Returns a config whose ``sidecars`` field is the result of
+        ``_effective_sidecars(...)`` — core defaults for the collection
+        type + registry injections.
+
+        M1b.2: replaces direct ``get_driver_config`` + ``.sidecars``
+        iteration, now that ``CollectionPostgresqlDriverConfig.sidecars``
+        defaults to empty (plan §Principle — default-fast invariant).
+        """
+        from dynastore.modules.storage.drivers.pg_sidecars import _effective_sidecars
+
+        config = await self.get_driver_config(
+            catalog_id, collection_id, db_resource=db_resource,
+        )
+        effective = _effective_sidecars(
+            config,
+            catalog_id=catalog_id,
+            collection_id=collection_id or "",
+        )
+        return config.model_copy(update={"sidecars": effective})
+
     @asynccontextmanager
     async def lifespan(self, app_state: object):
         logger.info("CollectionPostgresqlDriver: started (wraps existing ItemsProtocol)")
@@ -359,6 +390,20 @@ class CollectionPostgresqlDriver(ModuleProtocol):
             physical_table = col_config.physical_table
         if not physical_table:
             physical_table = generate_physical_name("t")
+
+        # --- Resolve effective sidecars (M1b.2) ---
+        # The sidecars list on `col_config` may be empty (default-fast path —
+        # caller didn't supply any PG-specific layout).  `_effective_sidecars`
+        # layers in registry-sourced defaults (geometries + attributes for
+        # VECTOR, attributes-only for RECORDS) plus extension-registered
+        # sidecars (e.g. item_metadata from STAC).  The result is pinned on
+        # col_config so downstream DDL, partition-key aggregation, and
+        # introspection all see the same materialised list.
+        from dynastore.modules.storage.drivers.pg_sidecars import _effective_sidecars
+        effective_sidecars = _effective_sidecars(
+            col_config, catalog_id=catalog_id, collection_id=collection_id,
+        )
+        col_config = col_config.model_copy(update={"sidecars": effective_sidecars})
 
         # --- Partition context ---
         partition_keys = []
@@ -737,8 +782,11 @@ class CollectionPostgresqlDriver(ModuleProtocol):
                 query_sql, result_handler=ResultHandler.ALL_DICTS
             ).execute(conn, schema=schema, table=table)
 
-            # Also collect fields from attribute sidecar (JSONB keys)
-            col_config = await self.get_driver_config(
+            # Also collect fields from attribute sidecar (JSONB keys).
+            # Use the effective-sidecars variant so an empty-config
+            # collection still resolves to its core+injected defaults
+            # (M1b.2).
+            col_config = await self._get_effective_driver_config(
                 catalog_id, collection_id, db_resource=conn,
             )
 
@@ -826,7 +874,11 @@ class CollectionPostgresqlDriver(ModuleProtocol):
         async def _resolve_item_fields(conn):
             if not collection_id:
                 return {}
-            col_config = await self.get_driver_config(
+            # M1b.2: effective sidecars (core defaults + registry injections)
+            # so introspection round-trips what ensure_storage will actually
+            # materialise, even for a default-body (no-explicit-sidecars)
+            # collection.
+            col_config = await self._get_effective_driver_config(
                 catalog_id, collection_id, db_resource=conn,
             )
             if col_config and col_config.sidecars:
@@ -959,7 +1011,10 @@ class CollectionPostgresqlDriver(ModuleProtocol):
             return None
 
         async def _query(conn):
-            layer_config = await self.get_driver_config(
+            # M1b.2: effective sidecars so compute_extents can see the
+            # geometry sidecar's target_srid / attributes sidecar layout
+            # even when the caller never persisted a PG-specific config.
+            layer_config = await self._get_effective_driver_config(
                 catalog_id, collection_id, db_resource=conn,
             )
             if not layer_config:
@@ -1084,7 +1139,10 @@ class CollectionPostgresqlDriver(ModuleProtocol):
             return None
 
         async def _query(conn):
-            layer_config = await self.get_driver_config(
+            # M1b.2: effective sidecars so the bbox-aggregation path can
+            # resolve the geometry sidecar's target_srid even when the
+            # caller never persisted a PG-specific config.
+            layer_config = await self._get_effective_driver_config(
                 catalog_id, collection_id, db_resource=conn,
             )
 

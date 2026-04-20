@@ -53,8 +53,13 @@ from dynastore.tools.json import CustomJSONEncoder
 from dynastore.modules.db_config import shared_queries
 from dynastore.models.query_builder import QueryRequest, QueryResponse
 from dynastore.modules.catalog.query_optimizer import QueryOptimizer
-from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
 from dynastore.modules.storage.drivers.pg_sidecars.base import FeaturePipelineContext
+# M1b.2: SidecarRegistry is now imported inline, next to each effective-
+# sidecars resolution site.  CollectionPostgresqlDriverConfig remains
+# imported at module level for type annotations on the bulk-write path
+# (see `col_config: CollectionPostgresqlDriverConfig`) — that's a known
+# carryover for a future cleanup pass; within M1b, the boundary guard
+# targets CollectionService / CatalogService / AssetService only.
 from dynastore.modules.catalog.item_query import ItemQueryMixin
 from dynastore.modules.catalog.item_distributed import ItemDistributedMixin
 
@@ -220,17 +225,33 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         if context is None:
             context = FeaturePipelineContext(lang=lang)
 
-        if col_config and col_config.sidecars:
-            from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
+        # M1b.2: resolve effective sidecars (core defaults + registry
+        # injections) so default-body collections — whose `col_config`
+        # now has an empty `sidecars` list (plan §Principle — default-
+        # fast invariant) — still get their row-to-feature pipeline
+        # materialised.  Explicit caller-supplied sidecars are preserved;
+        # the registry layers in any missing types for the collection
+        # type.  The helper is cheap enough to call per-row, but most
+        # callers iterate many rows with a shared col_config so the
+        # resolved list is stable across the loop.
+        from dynastore.modules.storage.drivers.pg_sidecars import (
+            SidecarRegistry,
+            _effective_sidecars,
+        )
+        sidecar_configs = _effective_sidecars(
+            col_config, catalog_id="", collection_id="",
+        )
+
+        if sidecar_configs:
             # Gather all internal columns to prevent property leaking across sidecars
             all_internal = set()
-            for sc_config in col_config.sidecars:
+            for sc_config in sidecar_configs:
                 sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
                 if sidecar:
                     all_internal.update(sidecar.get_internal_columns())
             context._all_internal_cols = all_internal
 
-            for sc_config in col_config.sidecars:
+            for sc_config in sidecar_configs:
                 sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
                 if sidecar:
                     sidecar.map_row_to_feature(row_dict, feature, context=context)
@@ -458,11 +479,22 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 catalog_id, db_resource=conn,
             )
 
-            sidecars: List[Any] = []
-            if col_config.sidecars:
-                from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
+            # M1b.2: resolve effective sidecars (core defaults for the
+            # collection_type + registry injections) so default-body
+            # collections still activate sidecars at first write time.
+            from dynastore.modules.storage.drivers.pg_sidecars import (
+                SidecarRegistry,
+                _effective_sidecars,
+            )
+            sidecar_configs = _effective_sidecars(
+                col_config,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+            )
 
-                for sc_config in col_config.sidecars:
+            sidecars: List[Any] = []
+            if sidecar_configs:
+                for sc_config in sidecar_configs:
                     sidecars.append(SidecarRegistry.get_sidecar(sc_config))
 
             # Run item_metadata before attributes so its in-place prune of
