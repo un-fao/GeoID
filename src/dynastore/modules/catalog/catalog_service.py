@@ -277,9 +277,17 @@ class CatalogService(CatalogsProtocol):
                 self._item_service = ItemService(self.engine)
 
         # Instance-bound caches (private)
-        self._get_catalog_model_cached = cached(maxsize=128, namespace="catalog_model")(
-            self._get_catalog_model_db
-        )
+        # Only cache 'ready' catalogs: transient states ('provisioning', 'failed')
+        # would otherwise stick in per-worker L1 forever (no cross-worker invalidation),
+        # making init-upload return 503 long after provisioning completes.
+        self._get_catalog_model_cached = cached(
+            maxsize=128,
+            ttl=30,
+            jitter=5,
+            namespace="catalog_model",
+            condition=lambda c: c is not None
+            and getattr(c, "provisioning_status", None) == "ready",
+        )(self._get_catalog_model_db)
 
     def is_available(self) -> bool:
         """Returns True if the service is initialized and ready."""
