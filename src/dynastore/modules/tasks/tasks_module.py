@@ -572,10 +572,15 @@ async def _resolve_catalog_schema(
 
 async def create_task_for_catalog(
     engine: DbResource, task_data: TaskCreate, catalog_id: str
-) -> Task:
+) -> Optional[Task]:
     """
     Creates a new task within a catalog's schema.
     Uses CatalogsProtocol to resolve the physical schema.
+
+    If `task_data.dedup_key` is set and a non-terminal task already exists
+    with that key, returns None instead of creating a duplicate. This protects
+    every event-driven caller against at-least-once redelivery (Pub/Sub push,
+    internal CatalogEvent retries, etc.) with a single consistent contract.
     """
     async with managed_transaction(engine) as conn:
         schema = await _resolve_catalog_schema(catalog_id, conn)
@@ -625,13 +630,18 @@ async def create_task(
     task_data: TaskCreate,
     schema: str,
     initial_status: str = "PENDING",
-) -> Task:
+) -> Optional[Task]:
     """
     Creates a new task in the global tasks table with schema_name = `schema`.
 
     Pass initial_status='RUNNING' to bypass the dispatcher queue (e.g. for
     audit tasks created by BackgroundRunner that are already being executed
     in-process and must not be re-claimed by the dispatcher).
+
+    Dedup: if `task_data.dedup_key` is set, a pre-check rejects insert when
+    a non-terminal task already carries the same (schema_name, dedup_key) —
+    this is what lets every event-driven caller survive at-least-once
+    redelivery. Returns None on dedup hit.
     """
     from dynastore.tools.identifiers import generate_uuidv7
 
@@ -640,6 +650,20 @@ async def create_task(
     task_schema = get_task_schema()
 
     async with managed_transaction(engine) as conn:
+        if task_data.dedup_key is not None:
+            check_sql = f"""
+                SELECT task_id FROM {task_schema}.tasks
+                WHERE dedup_key = :dedup_key
+                  AND schema_name = :schema_name
+                  AND status NOT IN ('COMPLETED', 'FAILED', 'DEAD_LETTER')
+                LIMIT 1;
+            """
+            existing = await DQLQuery(
+                check_sql, result_handler=ResultHandler.ONE_DICT
+            ).execute(conn, dedup_key=task_data.dedup_key, schema_name=schema)
+            if existing:
+                return None
+
         sql = f"""
             INSERT INTO {task_schema}.tasks
                 (task_id, schema_name, scope, caller_id, task_type, type,

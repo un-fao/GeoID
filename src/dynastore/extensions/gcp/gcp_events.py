@@ -115,11 +115,18 @@ def register_gcp_event_listener(subscription_id_pattern: str, listener: Callable
     Registers a listener function to be called for Pub/Sub messages that have a
     matching 'subscription_id' attribute.
 
-    Args:
-        subscription_id_pattern: A string pattern (supporting '*' wildcards) to match against the subscription ID.
-        listener: An async function that accepts a payload dictionary.
+    Idempotent: re-registering the same (pattern, listener) pair is a no-op.
+    Required because BucketService.lifespan can run multiple times per process
+    (extension re-init, gunicorn preload + worker fork), which would otherwise
+    cause each GCS notification to fan out into N duplicate task enqueues.
     """
-    _gcp_event_listeners[subscription_id_pattern].append(listener)
+    bucket = _gcp_event_listeners[subscription_id_pattern]
+    if listener in bucket:
+        logger.debug(
+            f"GCP event listener already registered for pattern '{subscription_id_pattern}'; skipping."
+        )
+        return
+    bucket.append(listener)
     logger.info(
         f"Registered GCP event listener for pattern '{subscription_id_pattern}'."
     )
@@ -538,11 +545,17 @@ async def _adapter_catalog_hard_deletion(catalog_id: str, **kwargs):
                 "catalog_id": catalog_id,
                 "bucket_name": bucket_name,
             },
+            dedup_key=f"catalog_cleanup:CATALOG:{catalog_id}",
         )
-        await create_task_for_catalog(db.engine, task_data, catalog_id)
-        logger.info(
-            f"Enqueued GcpCatalogCleanupTask[CATALOG] for catalog '{catalog_id}'."
-        )
+        task = await create_task_for_catalog(db.engine, task_data, catalog_id)
+        if task is None:
+            logger.info(
+                f"Dedup: GcpCatalogCleanupTask[CATALOG] for '{catalog_id}' already in flight."
+            )
+        else:
+            logger.info(
+                f"Enqueued GcpCatalogCleanupTask[CATALOG] for catalog '{catalog_id}'."
+            )
     except Exception as e:
         logger.error(
             f"Failed to enqueue GcpCatalogCleanupTask for catalog '{catalog_id}': {e}",
@@ -573,12 +586,19 @@ async def _adapter_collection_hard_deletion(
                 "catalog_id": catalog_id,
                 "collection_id": collection_id,
             },
+            dedup_key=f"catalog_cleanup:COLLECTION:{catalog_id}:{collection_id}",
         )
-        await create_task_for_catalog(db.engine, task_data, catalog_id)
-        logger.info(
-            f"Enqueued GcpCatalogCleanupTask[COLLECTION] for "
-            f"'{catalog_id}:{collection_id}'."
-        )
+        task = await create_task_for_catalog(db.engine, task_data, catalog_id)
+        if task is None:
+            logger.info(
+                f"Dedup: GcpCatalogCleanupTask[COLLECTION] for "
+                f"'{catalog_id}:{collection_id}' already in flight."
+            )
+        else:
+            logger.info(
+                f"Enqueued GcpCatalogCleanupTask[COLLECTION] for "
+                f"'{catalog_id}:{collection_id}'."
+            )
     except Exception as e:
         logger.error(
             f"Failed to enqueue GcpCatalogCleanupTask for collection "
@@ -618,8 +638,14 @@ async def handle_asset_events(
         )
         return
 
-    uri = f"gs://{event_payload.get('bucket')}/{object_name}"
+    bucket = event_payload.get("bucket")
+    uri = f"gs://{bucket}/{object_name}"
     asset_type = metadata.get("asset_type", "ASSET")
+    # GCS guarantees (bucket, objectId, generation) uniquely identifies a
+    # versioned object. Combined with eventType this is a stable idempotency
+    # key across Pub/Sub redeliveries. Re-uploads bump `generation` → new key.
+    generation = event_payload.get("generation")
+    dedup_key = f"gcs:{bucket}:{object_name}:{generation}:{event_type}"
 
     from dynastore.models.protocols import DatabaseProtocol
     from dynastore.models.tasks import TaskCreate
@@ -643,12 +669,19 @@ async def handle_asset_events(
                 "uri": uri,
                 "metadata": metadata,
             },
+            dedup_key=dedup_key,
         )
-        await create_task_for_catalog(db.engine, task_data, catalog_id)
-        logger.info(
-            f"Enqueued GcsStorageEventTask({event_type}) for asset '{asset_id}' "
-            f"in {catalog_id}:{collection_id or ''}."
-        )
+        task = await create_task_for_catalog(db.engine, task_data, catalog_id)
+        if task is None:
+            logger.info(
+                f"Dedup: GcsStorageEventTask({event_type}) for asset '{asset_id}' "
+                f"in {catalog_id}:{collection_id or ''} already in flight; skipping."
+            )
+        else:
+            logger.info(
+                f"Enqueued GcsStorageEventTask({event_type}) for asset '{asset_id}' "
+                f"in {catalog_id}:{collection_id or ''} [dedup_key={dedup_key}]."
+            )
     except Exception as e:
         logger.error(
             f"Failed to enqueue GcsStorageEventTask for asset '{asset_id}': {e}",

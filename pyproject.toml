@@ -105,6 +105,8 @@ task_dwh_join = ["dynastore[dwh]"]
 task_export_features = ["dynastore[geospatial_core,stac]"]
 task_tiles_preseed = ["dynastore[geospatial_core]", "morecantile==7.0.2"]
 task_dimensions_materialize = ["dynastore[extension_dimensions]"]
+task_gcs_storage_event = ["dynastore[module_gcp,module_catalog]"]
+task_gcp_catalog_cleanup = ["dynastore[module_gcp,module_catalog]"]
 
 # ==========================================================================
 # PUBLIC FEATURE ALIASES — compose module + extension in one name
@@ -257,7 +259,7 @@ task_dimensions_materialize_job = ["dynastore[task_base,extension_dimensions]"]
 #
 # ==========================================================================
 # api_open: full catalog WITHOUT auth — open for testing (no tools_grp: proxy/template served by the dedicated tools service)
-api_open = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,task_gcp_provision]"]
+api_open = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,task_gcp_provision,task_gcs_storage_event,task_gcp_catalog_cleanup]"]
 # api_catalog: api_open + auth (most common production deployment)
 api_catalog = ["dynastore[api_open,auth_grp]"]
 # api_maps: maps/tiles/styles service — WITH auth (kept for reference / future use)
@@ -271,7 +273,7 @@ api_full = ["dynastore[api_catalog,maps_grp,geospatial_io]"]
 # geoid_service: api_catalog + geoid extension — the ONLY service with auth
 geoid_service = ["dynastore[api_catalog,extension_geoid]"]
 # worker_service: background task processor (sync-db tasks + async-db catalog reads), no auth
-worker_service = ["dynastore[core,catalog_grp,google_grp,index_grp,tasks,processes,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision,task_dimensions_materialize,task_dimensions_materialize_job]"]
+worker_service = ["dynastore[core,catalog_grp,google_grp,index_grp,tasks,processes,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision,task_gcs_storage_event,task_gcp_catalog_cleanup,task_dimensions_materialize,task_dimensions_materialize_job]"]
 # catalog_local: local dev catalog — api_open without google_grp/gcp_cloud_runner (no tools_grp: use the dedicated tools service)
 catalog_local = ["dynastore[core,catalog_grp,monitor_grp,index_grp,processes]"]
 # worker_local: local HTTP simulation of Cloud Run Jobs — all tasks + processes/stats UI
@@ -282,11 +284,11 @@ worker_local = ["dynastore[worker_service,monitor_grp]"]
 # Prefixed with scope_ to avoid collision with module-level extras above.
 # ==========================================================================
 # scope_catalog: catalog API without auth — open for local testing
-scope_catalog = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,task_gcp_provision,module_cache,notebooks,dimensions,drivers_grp]"]
+scope_catalog = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,task_gcp_provision,task_gcs_storage_event,task_gcp_catalog_cleanup,module_cache,notebooks,dimensions,drivers_grp]"]
 # scope_geoid: catalog + geoid UI + auth/iam — maps to geospatial-auth in cloud
 scope_geoid = ["dynastore[scope_catalog,extension_geoid,auth_grp]"]
 # scope_worker: background task processor — headless Cloud Run job runner
-scope_worker = ["dynastore[core,module_catalog,gcp,extension_dwh,index_grp,tasks,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision,task_dimensions_materialize,task_dimensions_materialize_job]"]
+scope_worker = ["dynastore[core,module_catalog,gcp,extension_dwh,index_grp,tasks,ingestion,task_export_features_job,task_dwh_join_job,task_tiles_preseed,task_tiles_preseed_job,task_gdal_job,task_gcp_provision,task_gcs_storage_event,task_gcp_catalog_cleanup,task_dimensions_materialize,task_dimensions_materialize_job]"]
 # scope_tools: proxy + template tools service — no auth
 scope_tools = ["dynastore[core,template,notebooks,cache,dimensions,proxy]"]
 # scope_maps: map tiles/styles service — no auth
