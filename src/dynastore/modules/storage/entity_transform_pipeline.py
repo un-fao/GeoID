@@ -19,18 +19,27 @@
 """
 EntityTransformPipeline — metadata enrichment via the TRANSFORM operation chain.
 
-Implements ``CollectionMetadataEnricherProtocol``.  When a collection has
-``metadata.operations[TRANSFORM]`` drivers configured in
-``CollectionRoutingConfig``, this pipeline calls
-``driver.get_collection_metadata()`` on each in declared order and merges
+**Status (role-based driver refactor M1a)**: previously implemented the
+deleted ``CollectionMetadataEnricherProtocol`` and was invoked by
+``CollectionService`` on every collection read.  That invocation path is
+now removed (default read path is transform-free).  This class remains as
+a **dormant helper** — its ``enrich()`` method still contains the correct
+logic for merging ``metadata.operations[TRANSFORM]`` driver output into a
+collection metadata envelope, and M3's ``ReindexWorker`` will invoke it
+directly (no protocol discovery) when it hydrates transformed envelopes
+for INDEX / BACKUP propagation.
+
+What the logic still does: reads
+``CollectionRoutingConfig.metadata.operations[TRANSFORM]`` to find
+configured ``CollectionItemsStore`` drivers, calls
+``driver.get_collection_metadata()`` on each in declared order, and merges
 supplementary fields (summaries, providers, item_assets, assets,
-extra_metadata) into the collection metadata dict.
+extra_metadata) without overwriting existing fields.  Drivers declaring
+``Capability.AGGREGATION`` additionally contribute extents via
+``compute_extents()`` when not already present.
 
-If any configured storage driver declares ``Capability.AGGREGATION``, the
-pipeline additionally calls ``driver.compute_extents()`` to fill
-spatial/temporal extent when not already present.
-
-Registered via ``register_plugin()`` during ``CatalogModule`` lifespan.
+The legacy ``enricher_id`` / ``priority`` / ``can_enrich`` attributes are
+kept as discovery no-ops until the registration is rewired in M3.
 """
 
 import logging
@@ -40,17 +49,23 @@ logger = logging.getLogger(__name__)
 
 
 class EntityTransformPipeline:
-    """CollectionMetadataEnricherProtocol implementation using the TRANSFORM chain.
+    """Dormant helper for merging TRANSFORM driver output into an envelope.
 
-    Runs at priority 200 (after core enrichers).  Activates when
-    ``metadata.operations[TRANSFORM]`` entries are configured for the collection.
+    Kept callable by M3's ``ReindexWorker``; no longer invoked on the
+    default read path (the enricher loop in ``CollectionService`` was
+    removed as part of the role-based driver refactor).
     """
 
+    # Discovery no-ops retained for back-compat until M3 rewires invocation.
     enricher_id: str = "entity_transform_pipeline"
     priority: int = 200
 
     def can_enrich(self, catalog_id: str, collection_id: str = "") -> bool:
-        """Returns True only for collection-level enrichment (requires collection_id)."""
+        """Returns True only for collection-level enrichment (requires collection_id).
+
+        Dormant — no caller invokes this post-refactor.  Kept for the M3
+        rewire where a dedicated worker will call it deliberately.
+        """
         return bool(collection_id)
 
     async def enrich(

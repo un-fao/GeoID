@@ -152,10 +152,10 @@ class AssetStore(Protocol):
     # Collection metadata (separated from asset data — enables enrichment)
     #
     # These methods store collection-level descriptors (title, extent,
-    # keywords, etc.) independently of the asset documents.  The
-    # CollectionMetadataEnricherProtocol pipeline can therefore use
-    # AssetStore.get_collection_metadata() to enrich base
-    # collection metadata with asset-derived information (e.g. asset
+    # keywords, etc.) independently of the asset documents.  A TRANSFORM
+    # driver (role-based driver plan §Protocols) can therefore use
+    # AssetStore.get_collection_metadata() as a hydration source when
+    # producing asset-derived collection-level contributions (asset
     # counts, ingestion timestamps, coverage).
     # ------------------------------------------------------------------
 

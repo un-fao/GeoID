@@ -519,34 +519,11 @@ class AssetService(AssetsProtocol):
             db_resource=self.engine,
         )
 
-    async def _apply_enricher_pipeline(
-        self,
-        asset_doc: Dict[str, Any],
-        catalog_id: str,
-        collection_id: Optional[str],
-    ) -> Dict[str, Any]:
-        """Apply AssetEnricherProtocol pipeline to an asset dict."""
-        from dynastore.tools.discovery import get_protocols
-        from dynastore.models.protocols.asset_enricher import AssetEnricherProtocol
-        try:
-            enrichers = sorted(
-                get_protocols(AssetEnricherProtocol), key=lambda e: e.priority
-            )
-            for enricher in enrichers:
-                try:
-                    if enricher.can_enrich(catalog_id, collection_id):
-                        asset_doc = await enricher.enrich_asset(
-                            catalog_id, asset_doc, context={}
-                        )
-                except Exception as err:
-                    logger.warning(
-                        "AssetEnricher '%s' failed for %s/%s: %s",
-                        getattr(enricher, "enricher_id", "?"),
-                        catalog_id, collection_id, err,
-                    )
-        except Exception:
-            pass
-        return asset_doc
+    # _apply_enricher_pipeline removed in the role-based driver refactor
+    # (plan §Protocols — AssetEnricherProtocol deleted).  Asset enrichment
+    # is now handled by TRANSFORM drivers routed through AssetRoutingConfig
+    # and invoked lazily by opt-in endpoints / the async reindex pipeline.
+    # Default read paths return raw asset docs — no enrichment hop.
 
     async def _get_secondary_drivers(
         self, catalog_id: str, collection_id: Optional[str]
@@ -663,10 +640,7 @@ class AssetService(AssetsProtocol):
         if not asset_doc:
             return None
 
-        asset_doc = await self._apply_enricher_pipeline(
-            dict(asset_doc), catalog_id, collection_id
-        )
-        asset = Asset.model_validate(asset_doc)
+        asset = Asset.model_validate(dict(asset_doc))
         if asset.collection_id == CATALOG_LEVEL_COLLECTION_ID:
             asset.collection_id = None
         return asset
@@ -704,10 +678,7 @@ class AssetService(AssetsProtocol):
         )
         assets = []
         for doc in docs:
-            enriched = await self._apply_enricher_pipeline(
-                dict(doc), catalog_id, collection_id
-            )
-            asset = Asset.model_validate(enriched)
+            asset = Asset.model_validate(dict(doc))
             if asset.collection_id == CATALOG_LEVEL_COLLECTION_ID:
                 asset.collection_id = None
             assets.append(asset)
@@ -758,10 +729,7 @@ class AssetService(AssetsProtocol):
             )
             assets = []
             for doc in docs:
-                enriched = await self._apply_enricher_pipeline(
-                    dict(doc), catalog_id, collection_id
-                )
-                asset = Asset.model_validate(enriched)
+                asset = Asset.model_validate(dict(doc))
                 if asset.collection_id == CATALOG_LEVEL_COLLECTION_ID:
                     asset.collection_id = None
                 assets.append(asset)
@@ -803,10 +771,7 @@ class AssetService(AssetsProtocol):
         )
         assets = []
         for doc in docs:
-            enriched = await self._apply_enricher_pipeline(
-                dict(doc), catalog_id, collection_id
-            )
-            asset = Asset.model_validate(enriched)
+            asset = Asset.model_validate(dict(doc))
             if asset.collection_id == CATALOG_LEVEL_COLLECTION_ID:
                 asset.collection_id = None
             assets.append(asset)

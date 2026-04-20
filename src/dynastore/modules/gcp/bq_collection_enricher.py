@@ -17,62 +17,82 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-BigQueryCollectionEnricher — adds BQ-sourced statistics to collection metadata.
+BigQueryMetadataTransformDriver — TRANSFORM-capability metadata driver.
 
-Implements ``CollectionMetadataEnricherProtocol``.  When a collection has a
-``bq_stats`` config (via ``ConfigsProtocol``), this enricher queries BigQuery
-for row counts, last-modified timestamps, or other aggregate stats and merges
-them into the collection metadata dict.
+Produces a partial collection-metadata envelope containing BigQuery-sourced
+statistics (row counts, last-modified timestamps, etc.) under the
+``bq_stats`` key.  The router's TRANSFORM chain merges this partial into the
+main envelope when an endpoint opts into transform-aware output or the async
+reindex pipeline is preparing a transformed INDEX / BACKUP envelope.
 
-Registered via ``register_plugin()`` during GCPModule lifespan.
+Replaces the deleted ``CollectionMetadataEnricherProtocol`` /
+``BigQueryCollectionEnricher`` — one mechanism, one priority model, one SLA
+model.  See role-based driver plan §Routing / §Transformer.
+
+Activation: per-collection ``bq_stats`` config (via ``ConfigsProtocol``).
+Absent config → returns ``None`` from ``get_metadata()``; the router skips
+the partial entirely.
 """
 
 import logging
-from typing import Any, Dict
+from typing import Any, ClassVar, Dict, FrozenSet, List, Optional, Tuple, TYPE_CHECKING
 
+from dynastore.models.protocols.driver_roles import DriverSla, MetadataDomain
+from dynastore.models.protocols.metadata_driver import MetadataCapability
 from dynastore.tools.discovery import get_protocol
+
+if TYPE_CHECKING:
+    from dynastore.modules.storage.storage_location import StorageLocation
 
 logger = logging.getLogger(__name__)
 
 BQ_STATS_CONFIG_ID = "bq_stats"
 
 
-class BigQueryCollectionEnricher:
-    """CollectionMetadataEnricherProtocol implementation using BigQuery.
+class BigQueryMetadataTransformDriver:
+    """TRANSFORM driver backed by BigQuery, returning ``bq_stats`` partials.
 
-    Runs at priority 200 (after core enrichers) and only activates when
-    a ``bq_stats`` config exists for the collection.
+    Structurally satisfies :class:`CollectionMetadataStore` (@runtime_checkable)
+    but only declares the ``TRANSFORM`` capability — the router never picks
+    this driver as a Primary for READ / WRITE / SEARCH.  Non-transform methods
+    raise ``NotImplementedError`` to make any accidental invocation loud.
+
+    Role-based driver attributes (plan §Driver roles):
+    - ``domain``       — ``CORE`` (the ``bq_stats`` key is core-supplementary).
+    - ``capabilities`` — ``{TRANSFORM}``.
+    - ``sla``          — 2 s timeout, ``degrade`` on timeout (BigQuery is
+                          high-variance; never block the hot path for it).
     """
 
-    enricher_id: str = "bq_stats_enricher"
-    priority: int = 200
+    # --- Role-based driver attributes ---------------------------------------
+    capabilities: FrozenSet[str] = frozenset({MetadataCapability.TRANSFORM})
+    domain: ClassVar[MetadataDomain] = MetadataDomain.CORE
+    sla: ClassVar[DriverSla] = DriverSla(
+        timeout_ms=2000,
+        on_timeout="degrade",
+        required=False,
+    )
 
-    def can_enrich(self, catalog_id: str, collection_id: str) -> bool:
-        """Always returns True; actual config check happens in ``enrich()``.
+    # --- TRANSFORM entry point ----------------------------------------------
 
-        The config lookup is async, so the guard is permissive and the
-        enricher no-ops when no config is found.
-        """
-        return True
-
-    async def enrich(
+    async def get_metadata(
         self,
         catalog_id: str,
         collection_id: str,
-        metadata: Dict[str, Any],
-        context: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """Add BQ-sourced stats to collection metadata if configured.
+        *,
+        context: Optional[Dict[str, Any]] = None,
+        db_resource: Optional[Any] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return a partial envelope with BQ stats, or ``None`` if not configured.
 
-        Looks up a ``bq_stats`` config for the collection.  If absent,
-        returns metadata unchanged.  If present, runs the configured
-        query and merges results under ``metadata["bq_stats"]``.
+        When the router's TRANSFORM chain invokes this driver, the returned
+        dict is merged into the main envelope.  Empty / None → no contribution.
         """
-        from dynastore.models.protocols import ConfigsProtocol, BigQueryProtocol
+        from dynastore.models.protocols import BigQueryProtocol, ConfigsProtocol
 
         configs = get_protocol(ConfigsProtocol)
         if not configs:
-            return metadata
+            return None
 
         try:
             stats_config = await configs.get_config(
@@ -81,32 +101,116 @@ class BigQueryCollectionEnricher:
                 collection_id=collection_id,
             )
         except Exception:
-            return metadata  # no config → nothing to enrich
+            return None  # no config → nothing to contribute
 
         if not stats_config:
-            return metadata
+            return None
 
         bq = get_protocol(BigQueryProtocol)
         if not bq:
             logger.debug(
-                "BigQueryCollectionEnricher: BigQueryProtocol not available for %s/%s",
+                "BigQueryMetadataTransformDriver: BigQueryProtocol not available for %s/%s",
                 catalog_id, collection_id,
             )
-            return metadata
+            return None
 
         query = getattr(stats_config, "query", None)
         project_id = getattr(stats_config, "project_id", None)
         if not query or not project_id:
-            return metadata
+            return None
 
         try:
             records = await bq.execute_query(query, project_id)
-            if records:
-                return {**metadata, "bq_stats": records[0]}
         except Exception as exc:
             logger.warning(
-                "BigQueryCollectionEnricher query failed for %s/%s: %s",
+                "BigQueryMetadataTransformDriver query failed for %s/%s: %s",
                 catalog_id, collection_id, exc,
             )
+            return None
 
-        return metadata
+        if not records:
+            return None
+        return {"bq_stats": records[0]}
+
+    # --- CollectionMetadataStore protocol stubs -----------------------------
+    # TRANSFORM-only driver — these must exist for structural-typing checks
+    # (@runtime_checkable), but must never be invoked.  A loud error makes
+    # misrouting detectable in tests and staging.
+
+    async def upsert_metadata(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        metadata: Dict[str, Any],
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> None:
+        raise NotImplementedError(
+            "BigQueryMetadataTransformDriver is TRANSFORM-only; "
+            "route writes to a Primary driver."
+        )
+
+    async def delete_metadata(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        soft: bool = False,
+        db_resource: Optional[Any] = None,
+    ) -> None:
+        raise NotImplementedError(
+            "BigQueryMetadataTransformDriver is TRANSFORM-only; "
+            "route deletes to a Primary driver."
+        )
+
+    async def search_metadata(
+        self,
+        catalog_id: str,
+        *,
+        q: Optional[str] = None,
+        bbox: Optional[List[float]] = None,
+        datetime_range: Optional[str] = None,
+        filter_cql: Optional[Dict[str, Any]] = None,
+        limit: int = 100,
+        offset: int = 0,
+        context: Optional[Dict[str, Any]] = None,
+        db_resource: Optional[Any] = None,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        raise NotImplementedError(
+            "BigQueryMetadataTransformDriver is TRANSFORM-only; "
+            "route searches to an Indexer or Primary with SEARCH capability."
+        )
+
+    async def get_driver_config(
+        self,
+        catalog_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> Any:
+        """TRANSFORM driver has no driver-specific config waterfall entry."""
+        return None
+
+    async def is_available(self) -> bool:
+        """Health check — available iff the BigQueryProtocol plugin is registered."""
+        from dynastore.models.protocols import BigQueryProtocol
+
+        return get_protocol(BigQueryProtocol) is not None
+
+    async def location(
+        self,
+        catalog_id: str,
+        collection_id: str,
+    ) -> "StorageLocation":
+        raise NotImplementedError(
+            "BigQueryMetadataTransformDriver does not declare PHYSICAL_ADDRESSING."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Back-compat shim — the old symbol name is still imported by gcp_module and
+# by at least one notebook.  Keep it as a direct alias of the new class until
+# M3 lands the async reindex pipeline and downstream renames settle.  Remove
+# this alias in a follow-up PR once all call sites are updated.
+# ---------------------------------------------------------------------------
+
+BigQueryCollectionEnricher = BigQueryMetadataTransformDriver

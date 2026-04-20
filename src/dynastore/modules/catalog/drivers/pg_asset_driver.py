@@ -25,9 +25,10 @@ Owns the DDL and all SQL operations for:
 
 Also implements ``get_collection_metadata()`` / ``set_collection_metadata()``
 by reading/upserting ``{schema}.metadata`` — the same table used
-by ``CollectionPostgresqlDriver`` — enabling ``CollectionMetadataEnricherProtocol``
-to enrich collection descriptors with asset-derived statistics (counts, last
-ingestion timestamp, coverage bounds).
+by ``CollectionPostgresqlDriver``.  TRANSFORM drivers (role-based driver
+plan §Protocols) use this to enrich collection descriptors with
+asset-derived statistics (counts, last ingestion timestamp, coverage
+bounds).
 
 Lifecycle
 ~~~~~~~~~

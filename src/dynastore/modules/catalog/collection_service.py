@@ -309,31 +309,13 @@ class CollectionService:
             "extra_metadata": meta_dict.get("extra_metadata"),
         }
 
-        # 3. CollectionMetadataEnricherProtocol pipeline (optional, priority-ordered).
-        #    Each enricher can augment, filter, or transform the metadata dict.
-        #    Enrichers are registered via register_plugin(); an empty registry is safe.
-        try:
-            from dynastore.tools.discovery import get_protocols
-            from dynastore.models.protocols.enrichment import CollectionMetadataEnricherProtocol
-
-            enrichers = sorted(
-                get_protocols(CollectionMetadataEnricherProtocol),
-                key=lambda e: e.priority,
-            )
-            for enricher in enrichers:
-                try:
-                    if enricher.can_enrich(catalog_id, collection_id):
-                        data = await enricher.enrich(catalog_id, collection_id, data, context={})
-                except Exception as _enrich_err:
-                    logger.warning(
-                        "CollectionMetadataEnricher '%s' failed for %s/%s: %s",
-                        getattr(enricher, "enricher_id", repr(enricher)),
-                        catalog_id,
-                        collection_id,
-                        _enrich_err,
-                    )
-        except Exception:
-            pass  # discovery failure must not break the read path
+        # 3. CollectionMetadataEnricherProtocol pipeline removed in the
+        #    role-based driver refactor (plan §Protocols — deleted).  Any
+        #    in-process hook that used to enrich the metadata dict here is
+        #    now a TRANSFORM driver routed through MetadataRoutingConfig —
+        #    invoked lazily when an endpoint opts in or when the async
+        #    reindex pipeline is preparing a transformed INDEX/BACKUP
+        #    envelope.  Default read path is deliberately transform-free.
 
         return Collection.model_validate(data)
 

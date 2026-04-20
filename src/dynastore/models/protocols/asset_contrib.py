@@ -15,8 +15,10 @@ Consumers (STAC, Records, Coverages, Features) iterate
 `get_protocols(AssetContributor)` and attach the yielded `AssetLink`s
 to their own representation, without importing each other.
 
-This is distinct from `AssetEnricherProtocol` (which mutates a single
-asset document at read time — e.g. resolves URIs, filters fields).
+This is distinct from TRANSFORM-capable asset drivers (role-based driver
+plan §Protocols), which mutate a single asset document at read time
+e.g. resolve URIs, filter fields.  `AssetContributor` adds sibling links;
+TRANSFORM rewrites the document.
 """
 
 from dataclasses import dataclass, field
