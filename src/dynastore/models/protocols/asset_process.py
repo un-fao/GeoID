@@ -26,8 +26,8 @@ Processes are registered as ``AssetProcessProtocol`` implementations discovered
 via ``get_protocols(AssetProcessProtocol)``. The asset REST layer mounts each
 registered process symmetrically under::
 
-    {GET|POST} /assets/catalogs/{cid}/assets/{aid}/{process_id}
-    {GET|POST} /assets/catalogs/{cid}/collections/{colid}/assets/{aid}/{process_id}
+    POST /catalogs/{cid}/assets/{aid}/processes/{process_id}/execution
+    POST /catalogs/{cid}/collections/{colid}/assets/{aid}/processes/{process_id}/execution
 
 This mirrors OGC API - Processes (`process_id` as path parameter) but scopes
 the input to an existing Asset, which is always the first parameter of
@@ -142,7 +142,13 @@ class AssetProcessProtocol(Protocol):
     """Stable URL segment used to route to this process (e.g. ``"download"``)."""
 
     http_method: HTTPMethod
-    """HTTP method the asset router will expose this process under."""
+    """HTTP method the asset router will expose this process under.
+
+    Post-OGC-realignment all asset processes are invoked via
+    ``POST /.../assets/{aid}/processes/{process_id}/execution`` with parameters
+    in the JSON body — regardless of this attribute. ``http_method`` is retained
+    for descriptor metadata only.
+    """
 
     async def describe(self, asset: "Asset") -> AssetProcessDescriptor:
         """Return a discovery entry for this process and asset.
@@ -187,4 +193,29 @@ def list_applicable_processes(
     """
     raise NotImplementedError(
         "Call via `await` from an async context; see AssetService.list_processes"
+    )
+
+
+def describe_asset_process_static(
+    process: AssetProcessProtocol,
+) -> AssetProcessDescriptor:
+    """Asset-free descriptor for deployment-wide discovery.
+
+    Used by the scope-agnostic process inventory (e.g.
+    ``GET /processes?scope=asset``) where no concrete asset exists.
+    Derives the descriptor from the instance's ``process_id`` /
+    ``http_method`` attributes plus optional ``title`` / ``description`` /
+    ``parameters_schema`` attributes.
+
+    Always returns ``applicable=True`` — per-asset applicability is only
+    meaningful when a concrete asset is provided via ``describe``.
+    """
+    return AssetProcessDescriptor(
+        process_id=process.process_id,
+        title=getattr(process, "title", process.process_id),
+        description=getattr(process, "description", ""),
+        http_method=getattr(process, "http_method", "POST"),
+        applicable=True,
+        reason=None,
+        parameters_schema=getattr(process, "parameters_schema", None),
     )

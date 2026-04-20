@@ -439,15 +439,15 @@ class AssetService(ExtensionProtocol):
             summary="List Collection Asset Processes",
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/assets/{asset_id}/{process_id}",
+            "/catalogs/{catalog_id}/assets/{asset_id}/processes/{process_id}/execution",
             self.invoke_catalog_asset_process,
-            methods=["GET", "POST"],
+            methods=["POST"],
             response_model=AssetProcessOutput,
             summary="Invoke Asset Process",
             description=(
-                "Executes a registered asset process. ``GET`` for idempotent "
-                "reads (download URL generation, inspect); ``POST`` for "
-                "state-changing operations (ingest, convert). A ``302`` "
+                "Executes a registered asset process (``download``, ``ingest``, "
+                "``validate``, etc.) on this asset. OGC API - Processes "
+                "style URL: parameters go in the JSON body. A ``302`` "
                 "redirect is returned when the process yields ``type=redirect``."
             ),
             responses={
@@ -458,9 +458,9 @@ class AssetService(ExtensionProtocol):
             },
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/assets/{asset_id}/{process_id}",
+            "/catalogs/{catalog_id}/collections/{collection_id}/assets/{asset_id}/processes/{process_id}/execution",
             self.invoke_collection_asset_process,
-            methods=["GET", "POST"],
+            methods=["POST"],
             response_model=AssetProcessOutput,
             summary="Invoke Collection Asset Process",
         )
@@ -1503,26 +1503,13 @@ class AssetService(ExtensionProtocol):
                 detail=f"Asset process {process_id!r} is not registered.",
             )
 
-        # GET → params come from the query string; POST → from the JSON body.
-        if request.method == "GET":
-            params = dict(request.query_params)
-        else:
-            try:
-                params = await request.json()
-            except Exception:
-                params = {}
-            if not isinstance(params, dict):
-                raise HTTPException(
-                    status_code=400, detail="Request body must be a JSON object."
-                )
-
-        if getattr(process, "http_method", "GET") != request.method:
+        try:
+            params = await request.json()
+        except Exception:
+            params = {}
+        if not isinstance(params, dict):
             raise HTTPException(
-                status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
-                detail=(
-                    f"Process {process_id!r} must be invoked with "
-                    f"{process.http_method}."
-                ),
+                status_code=400, detail="Request body must be a JSON object."
             )
 
         result = await process.execute(asset, params)

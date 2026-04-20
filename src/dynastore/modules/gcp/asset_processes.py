@@ -53,7 +53,7 @@ class GcsDownloadAssetProcess:
     """
 
     process_id = "download"
-    http_method: HTTPMethod = "GET"
+    http_method: HTTPMethod = "POST"
 
     def __init__(
         self,

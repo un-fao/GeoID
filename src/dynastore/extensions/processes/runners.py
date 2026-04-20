@@ -92,6 +92,7 @@ class FastAPIBackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
     """
     priority: int = 50
     mode = TaskExecutionMode.ASYNCHRONOUS
+    runner_type = "fastapi_background"
 
     @property
     def capabilities(self):

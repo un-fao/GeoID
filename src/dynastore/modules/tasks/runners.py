@@ -92,6 +92,11 @@ class RunnerProtocol(Protocol):
 
     priority: int
     mode: TaskExecutionMode
+    runner_type: str = "unknown"
+    """Stable identifier surfaced in `ProcessSummary.typologies[].runner_type`
+    so clients can tell how a process will execute (e.g. 'fastapi_background',
+    'gcp_cloud_run', 'sync'). Defaults to 'unknown' — concrete implementors
+    must override."""
 
     async def setup(self, app_state: Any) -> None:
         """
@@ -151,6 +156,7 @@ def get_all_runners_with_setup() -> List[Tuple[int, RunnerProtocol]]:
 class SyncRunner(RunnerProtocol, ProtocolPlugin[Any]):
     mode = TaskExecutionMode.SYNCHRONOUS
     priority = 100
+    runner_type = "sync"
     """
     An in-process, synchronous runner that executes the job immediately.
     """

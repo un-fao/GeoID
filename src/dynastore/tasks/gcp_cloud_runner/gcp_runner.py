@@ -39,6 +39,7 @@ from dynastore.tools.plugin import ProtocolPlugin
 class GcpCloudRunRunner(RunnerProtocol, ProtocolPlugin[Any]):
     mode = TaskExecutionMode.ASYNCHRONOUS
     priority = 10
+    runner_type = "gcp_cloud_run"
     """
     A runner for asynchronous processes that triggers a Google Cloud Run job.
     """

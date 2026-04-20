@@ -50,6 +50,11 @@ from dynastore.modules.tasks.models import (
 )
 from dynastore.modules.tasks.execution import execution_engine
 from dynastore.modules.processes import models
+from dynastore.modules.processes.inventory import (
+    build_process_inventory_entries,
+    parse_runner_filter,
+    parse_scope_filter,
+)
 from dynastore.modules.iam.models import Principal, SYSTEM_USER_ID
 from dynastore.models.driver_context import DriverContext
 
@@ -104,8 +109,8 @@ _SCOPE_URL_HINTS = {
         "POST /catalogs/{catalog_id}/collections/{collection_id}"
         "/processes/{process_id}/execution",
     models.ProcessScope.ASSET:
-        "POST /assets/catalogs/{catalog_id}/collections/{collection_id}"
-        "/assets/{asset_id}/{process_id}",
+        "POST /catalogs/{catalog_id}/collections/{collection_id}"
+        "/assets/{asset_id}/processes/{process_id}/execution",
 }
 
 # Templated paths advertised via HATEOAS `rel=execute` links on
@@ -120,8 +125,8 @@ _SCOPE_URL_TEMPLATES = {
         "/catalogs/{catalog_id}/collections/{collection_id}"
         "/processes/{process_id}/execution",
     models.ProcessScope.ASSET:
-        "/assets/catalogs/{catalog_id}/collections/{collection_id}"
-        "/assets/{asset_id}/{process_id}",
+        "/catalogs/{catalog_id}/collections/{collection_id}"
+        "/assets/{asset_id}/processes/{process_id}/execution",
 }
 
 # OGC link relation for "execute this process"
@@ -277,36 +282,68 @@ def _render_process_list(
     request: Request,
     catalog_id: Optional[str] = None,
     collection_id: Optional[str] = None,
+    scope_param: Optional[str] = None,
+    runner_param: Optional[str] = None,
+    typology: bool = True,
 ) -> models.ProcessList:
-    """Render the OGC process list, filtered to scopes legal at this URL."""
-    allowed_scopes = _allowed_scopes_for(catalog_id, collection_id)
-    process_definitions = [
-        p
-        for p in get_definitions_by_type(models.Process)
-        if any(s in allowed_scopes for s in p.scopes)
-    ]
+    """Render the OGC process list with optional typology enrichment.
 
-    process_summaries = []
-    for process in process_definitions:
-        process_url = str(
-            request.url_for("get_process_description", process_id=process.id)
+    Strict-OGC behaviour (``typology=False``, no ``scope_param``) matches
+    the pre-enrichment payload byte-for-byte: platform-only at root,
+    catalog/collection narrowed at scoped mounts.
+
+    When ``scope_param`` is given, it overrides the URL-natural scope —
+    e.g. ``/processes?scope=all`` lists every process registered in this
+    deployment regardless of scope, with parametric URL templates for
+    unresolved IDs. When ``typology=True`` (default), each entry carries
+    ``typologies[]`` priority-descending so callers can see which runner
+    will execute the process.
+    """
+    try:
+        scope_filter = parse_scope_filter(scope_param)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    runner_filter = parse_runner_filter(runner_param)
+
+    if scope_filter is None and scope_param is None:
+        # No explicit scope filter — preserve the pre-existing URL-natural narrowing
+        # so strict OGC clients that don't know about `scope` see exactly today's list.
+        scope_filter = set(_allowed_scopes_for(catalog_id, collection_id))
+
+    entries = build_process_inventory_entries(
+        request,
+        catalog_id=catalog_id,
+        collection_id=collection_id,
+        scope_filter=scope_filter,
+        runner_filter=runner_filter,
+        include_typology=typology,
+    )
+
+    process_summaries: List[models.ProcessSummary] = []
+    for entry in entries:
+        process = _lookup_process_or_404_silent(entry.id)
+        self_link_href = (
+            str(request.url_for("get_process_description", process_id=entry.id))
+            if process is not None
+            else ""
         )
         self_link = models.Link(
-            href=process_url,
+            href=self_link_href,
             rel="self",
             type="application/json",
             title="Detailed process description",  # type: ignore[arg-type]
             hreflang=None,
         )
-        execute_links = _build_execution_links(
-            process, request, catalog_id=catalog_id, collection_id=collection_id
+        execute_links = (
+            _build_execution_links(
+                process, request, catalog_id=catalog_id, collection_id=collection_id
+            )
+            if process is not None and models.ProcessScope.ASSET not in entry.scopes
+            else []
         )
-        # by_alias=True: ProcessInput/Output declare ``schema_`` with
-        # ``alias="schema"`` — round-tripping without it drops the alias and
-        # breaks re-validation.
-        process_dict = process.model_dump(by_alias=True)
-        process_dict["links"] = [self_link, *execute_links]
-        process_summaries.append(models.ProcessSummary.model_validate(process_dict))
+        summary_dict = entry.model_dump(by_alias=True)
+        summary_dict["links"] = [self_link, *execute_links]
+        process_summaries.append(models.ProcessSummary.model_validate(summary_dict))
 
     links = [
         models.Link(
@@ -316,14 +353,55 @@ def _render_process_list(
     return models.ProcessList(processes=process_summaries, links=links)
 
 
+def _lookup_process_or_404_silent(process_id: str) -> Optional[models.Process]:
+    """Like ``_lookup_process_or_404`` but returns ``None`` for synthesised
+    entries (asset processes) that don't live in the OGC registry."""
+    return next(
+        (p for p in get_definitions_by_type(models.Process) if p.id == process_id),
+        None,
+    )
+
+
 @router.get(
     "/processes",
     response_model=models.ProcessList,
     name="list_processes",
 )
-async def list_processes(request: Request):
-    """Lists platform-scoped processes available at the system mount."""
-    return _render_process_list(request)
+async def list_processes(
+    request: Request,
+    scope: Optional[str] = Query(
+        default="all",
+        description=(
+            "Comma-separated scopes to include: `platform`, `catalog`, "
+            "`collection`, `asset`, or `all` (default). Non-OGC filter."
+        ),
+    ),
+    typology: bool = Query(
+        default=True,
+        description=(
+            "Include `typologies[]` (priority-desc runner list) and "
+            "`url_templates[]` on each entry. Set `false` for strict-OGC payload."
+        ),
+    ),
+    runner: Optional[str] = Query(
+        default=None,
+        description=(
+            "Comma-separated runner_type filter (e.g. `gcp_cloud_run,asset_process`)."
+        ),
+    ),
+):
+    """Lists processes available in this deployment.
+
+    By default (``scope=all``, ``typology=true``) returns every registered
+    process across all scopes with typology + parametric URL templates. Set
+    ``typology=false`` to get a strict OGC Core payload.
+    """
+    return _render_process_list(
+        request,
+        scope_param=scope,
+        runner_param=runner,
+        typology=typology,
+    )
 
 
 @router.get(
@@ -331,9 +409,21 @@ async def list_processes(request: Request):
     response_model=models.ProcessList,
     name="list_processes_catalog",
 )
-async def list_processes_catalog(catalog_id: str, request: Request):
+async def list_processes_catalog(
+    catalog_id: str,
+    request: Request,
+    scope: Optional[str] = Query(default=None),
+    typology: bool = Query(default=True),
+    runner: Optional[str] = Query(default=None),
+):
     """Lists catalog-scoped processes available for this catalog."""
-    return _render_process_list(request, catalog_id=catalog_id)
+    return _render_process_list(
+        request,
+        catalog_id=catalog_id,
+        scope_param=scope,
+        runner_param=runner,
+        typology=typology,
+    )
 
 
 @router.get(
@@ -342,11 +432,21 @@ async def list_processes_catalog(catalog_id: str, request: Request):
     name="list_processes_collection",
 )
 async def list_processes_collection(
-    catalog_id: str, collection_id: str, request: Request
+    catalog_id: str,
+    collection_id: str,
+    request: Request,
+    scope: Optional[str] = Query(default=None),
+    typology: bool = Query(default=True),
+    runner: Optional[str] = Query(default=None),
 ):
     """Lists collection- and asset-scoped processes available for this collection."""
     return _render_process_list(
-        request, catalog_id=catalog_id, collection_id=collection_id
+        request,
+        catalog_id=catalog_id,
+        collection_id=collection_id,
+        scope_param=scope,
+        runner_param=runner,
+        typology=typology,
     )
 
 

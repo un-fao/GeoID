@@ -18,13 +18,13 @@
 
 from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from typing import List, Dict, Any, Literal, Optional, TYPE_CHECKING
 from dynastore.models.localization import LocalizedText
 from uuid import UUID
 from datetime import datetime
 from dynastore.models.shared_models import Link
 import uuid
-from dynastore.models.tasks import Task, TaskPayload
+from dynastore.models.tasks import Task, TaskPayload, TaskExecutionMode
 
 if TYPE_CHECKING:
     from dynastore.modules.tasks.models import Task
@@ -72,6 +72,39 @@ class ProcessScope(str, Enum):
     ASSET = "asset"
 
 
+class ProcessTypology(BaseModel):
+    """Describes one runner capable of executing a process.
+
+    `ProcessSummary.typologies` is priority-descending: element 0 is the runner
+    the dispatcher will pick first; subsequent entries are fallbacks.
+    """
+
+    runner_type: str = Field(
+        ...,
+        description=(
+            "Stable runner identifier (e.g. 'fastapi_background', 'gcp_cloud_run', "
+            "'sync', 'asset_process')."
+        ),
+    )
+    mode: TaskExecutionMode
+    priority: int
+
+
+class ProcessUrlTemplate(BaseModel):
+    """URL at which a process can be invoked, concrete or parametric."""
+
+    scope: ProcessScope
+    method: Literal["GET", "POST"]
+    url_template: str = Field(
+        ...,
+        description=(
+            "Fully-qualified URL when IDs are resolved, else a template with "
+            "`{catalog_id}` / `{collection_id}` / `{asset_id}` placeholders."
+        ),
+    )
+    rel: str = "execute"
+
+
 class ProcessSummary(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
@@ -106,6 +139,22 @@ class ProcessSummary(BaseModel):
     jobControlOptions: List[JobControlOptions] = [JobControlOptions.ASYNC_EXECUTE]
     outputTransmission: List[TransmissionMode] = [TransmissionMode.REFERENCE]
     links: List[Link] = []
+    typologies: List[ProcessTypology] = Field(
+        default_factory=list,
+        description=(
+            "Runners able to execute this process, priority-descending. Populated "
+            "when the caller opts in with `?typology=true`; empty otherwise. "
+            "Non-OGC additive field — clients ignore if unknown."
+        ),
+    )
+    url_templates: List[ProcessUrlTemplate] = Field(
+        default_factory=list,
+        description=(
+            "Invocation URLs for each scope this process supports. Concrete when "
+            "IDs are bound (e.g. under `/catalogs/{cat}/.../processes`), else "
+            "parametric templates. Non-OGC additive field."
+        ),
+    )
 
 class ProcessInput(BaseModel):
     title: str
