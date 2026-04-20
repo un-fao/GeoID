@@ -541,6 +541,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         catalog_id: str,
         collection_id: str,
         request_body: STACCollectionUpdate,
+        request: Request,
         language: str = Depends(get_language),
     ):
         # Auto-detect if multi-language input is used
@@ -548,8 +549,15 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
 
         input_data = request_body.model_dump(exclude_unset=True)
 
-        # Write-time STAC validation (lenient — warnings only)
-        validate_stac_collection(input_data)
+        # Validate the *resulting* state (post-merge), not the raw partial body.
+        # PATCH sends a subset of fields; validating it in isolation fails
+        # required-field checks that the merged collection would pass.
+        existing_collection = await stac_generator.create_collection(
+            request, catalog_id=catalog_id, collection_id=collection_id, lang=language
+        )
+        if existing_collection is not None:
+            merged = {**existing_collection.to_dict(), **input_data}
+            validate_stac_collection(merged)
 
         # Sidecars are now handled transparently by ItemsProtocol / LifecycleRegistry
         # No need to manually inject them here.
