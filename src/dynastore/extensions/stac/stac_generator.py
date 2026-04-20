@@ -49,7 +49,7 @@ from dynastore.tools.geospatial import (
 from dynastore.modules.storage.driver_config import (
     CollectionPostgresqlDriverConfig,
 )
-from dynastore.modules.catalog.sidecars.geometries_config import GeometriesSidecarConfig
+from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import GeometriesSidecarConfig
 from dynastore.modules.stac.stac_config import (
     StacPluginConfig,
     StacAssetDefinition,

@@ -497,7 +497,7 @@ class CollectionService:
                 )
 
             # Registry-Based Auto-Injection
-            from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+            from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
 
             # Aggregate context for injection (including kwargs like stac_context)
             injection_context = dict(kwargs)

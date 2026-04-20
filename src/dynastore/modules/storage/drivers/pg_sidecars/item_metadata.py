@@ -39,8 +39,8 @@ from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     ResultHandler,
 )
-from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
-from dynastore.modules.catalog.sidecars.base import (
+from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
+from dynastore.modules.storage.drivers.pg_sidecars.base import (
     SidecarProtocol,
     SidecarConfig,
     FeaturePipelineContext,
@@ -48,7 +48,7 @@ from dynastore.modules.catalog.sidecars.base import (
     FieldDefinition,
     FieldCapability,
 )
-from dynastore.modules.catalog.sidecars.item_metadata_config import (
+from dynastore.modules.storage.drivers.pg_sidecars.item_metadata_config import (
     ItemMetadataSidecarConfig,
 )
 

@@ -23,7 +23,7 @@ from sqlalchemy import text # type: ignore
 from pydantic import BaseModel
 
 from dynastore.modules.storage.driver_config import CollectionPostgresqlDriverConfig
-from dynastore.modules.catalog.sidecars.base import SidecarProtocol
+from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarProtocol
 from dynastore.modules.db_config.query_executor import DbResource, GeoDQLQuery, ResultHandler
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ class CatalogQueryOrchestrator:
         # This duplicates logic in ItemService, maybe we should centralize the factory? 
         # For now, inline.
         if self.config.sidecars:
-            from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+            from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
             for sc_config in self.config.sidecars:
                 try:
                     sidecar = SidecarRegistry.get_sidecar(sc_config)

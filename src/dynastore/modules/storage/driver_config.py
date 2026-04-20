@@ -433,11 +433,20 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
         carrying a ``sidecar_type`` discriminator. Malformed entries raise
         immediately so data-corruption bugs surface at hydration time instead of
         crashing downstream consumers (e.g. ``SidecarRegistry.get_sidecar``).
+
+        Rebase merge note: the robust fail-loudly semantics arrived on
+        ``main`` via ``aa6b8e7`` with imports from the pre-relocation
+        path ``modules/catalog/sidecars``.  M1b.0 relocates those to
+        ``modules/storage/drivers/pg_sidecars/``; this validator uses
+        the new path.  A later commit on this branch (M1b.1) may replace
+        this hand-rolled loop with Pydantic's native discriminated
+        union — at that point the ``SidecarConfigRegistry`` probe
+        disappears.
         """
         if not isinstance(v, list):
             return v
 
-        from dynastore.modules.catalog.sidecars.base import (
+        from dynastore.modules.storage.drivers.pg_sidecars.base import (
             SidecarConfig,
             SidecarConfigRegistry,
         )
@@ -483,7 +492,7 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
         if isinstance(data, dict) and data.get("collection_type") == "RECORDS":
             sidecars = data.get("sidecars")
             if sidecars and isinstance(sidecars, list):
-                from dynastore.modules.catalog.sidecars.geometries_config import (
+                from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
                     GeometriesSidecarConfig,
                 )
                 data["sidecars"] = [
@@ -533,7 +542,7 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
     def get_all_field_definitions(self) -> Dict[str, Any]:
         """Aggregate field definitions from all enabled sidecars."""
         all_fields: Dict[str, Any] = {}
-        from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+        from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
 
         for sc_config in self.sidecars:
             if not sc_config.enabled:
@@ -547,10 +556,10 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
 
 def _default_sidecars() -> list:
     """Lazy import to avoid circular dependency with sidecar configs."""
-    from dynastore.modules.catalog.sidecars.geometries_config import (
+    from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
         GeometriesSidecarConfig,
     )
-    from dynastore.modules.catalog.sidecars.attributes_config import (
+    from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
         FeatureAttributeSidecarConfig,
     )
 

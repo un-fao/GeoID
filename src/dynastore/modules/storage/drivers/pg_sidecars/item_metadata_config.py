@@ -18,7 +18,7 @@
 
 """Configuration for the generic Item Metadata sidecar."""
 
-from dynastore.modules.catalog.sidecars.base import SidecarConfig, SidecarConfigRegistry
+from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarConfig, SidecarConfigRegistry
 
 
 class ItemMetadataSidecarConfig(SidecarConfig):

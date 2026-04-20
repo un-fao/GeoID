@@ -37,7 +37,7 @@ from dynastore.models.protocols import ConfigsProtocol, AssetsProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.db_config.tools import map_pg_to_json_type
 from dynastore.tools.json import CustomJSONEncoder
-from dynastore.modules.catalog.sidecars.base import (
+from dynastore.modules.storage.drivers.pg_sidecars.base import (
     SidecarProtocol,
     SidecarConfig,
     FeaturePipelineContext,
@@ -46,7 +46,7 @@ from dynastore.modules.catalog.sidecars.base import (
     FieldCapability,
 )
 from dynastore.modules.catalog.models import LocalizedText
-from dynastore.modules.catalog.sidecars.attributes_config import (
+from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
     FeatureAttributeSidecarConfig,
     AttributeStorageMode,
     PostgresType,

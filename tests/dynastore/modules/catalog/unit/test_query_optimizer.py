@@ -7,14 +7,14 @@ from dynastore.modules.catalog.query_optimizer import (
     FilterCondition,
     SortOrder,
 )
-from dynastore.modules.catalog.sidecars.base import FieldDefinition, FieldCapability
-from dynastore.modules.catalog.sidecars.geometries_config import (
+from dynastore.modules.storage.drivers.pg_sidecars.base import FieldDefinition, FieldCapability
+from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
     GeometriesSidecarConfig,
     TargetDimension,
     InvalidGeometryPolicy,
     SridMismatchPolicy,
 )
-from dynastore.modules.catalog.sidecars.attributes_config import (
+from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
     FeatureAttributeSidecarConfig,
     AttributeStorageMode,
 )
@@ -64,7 +64,7 @@ def mock_col_config():
 # Mock Sidecar Registry
 @pytest.fixture
 def mock_registry():
-    with patch("dynastore.modules.catalog.sidecars.registry.SidecarRegistry") as mock:
+    with patch("dynastore.modules.storage.drivers.pg_sidecars.registry.SidecarRegistry") as mock:
         yield mock
 
 

@@ -28,7 +28,7 @@ This module is extracted to avoid circular dependencies between:
 from typing import List, Optional, Dict, Literal, Any
 from enum import Enum
 from pydantic import BaseModel, Field, model_validator
-from dynastore.modules.catalog.sidecars.base import SidecarConfig, SidecarConfigRegistry
+from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarConfig, SidecarConfigRegistry
 
 # ============================================================================
 # ENUMS

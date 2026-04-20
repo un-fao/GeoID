@@ -25,7 +25,7 @@ Computes geospatial statistics from Shapely geometries based on configuration.
 import math
 from typing import Dict, Any
 
-from dynastore.modules.catalog.sidecars.geometries_config import (
+from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
     GeometriesStatisticsConfig,
     MorphologicalIndex,
     StatisticStorageMode,

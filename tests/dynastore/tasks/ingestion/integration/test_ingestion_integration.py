@@ -350,11 +350,11 @@ async def test_csv_pointz_ingestion(task_app_state, test_data_loader, data_id):
         SpatialExtent,
         TemporalExtent,
     )
-    from dynastore.modules.catalog.sidecars.geometries_config import (
+    from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
         GeometriesSidecarConfig,
         TargetDimension,
     )
-    from dynastore.modules.catalog.sidecars.attributes_config import (
+    from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
         FeatureAttributeSidecarConfig,
     )
 

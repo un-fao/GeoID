@@ -32,7 +32,7 @@ import uuid
 from typing import List, Optional, Any, Dict, Union, Set, Callable, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from dynastore.modules.catalog.sidecars.base import ConsumerType
+    from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
     from dynastore.modules.db_config.query_executor import DDLBatch
 from dynastore.tools.cache import cached
 from dynastore.models.driver_context import DriverContext
@@ -1442,7 +1442,7 @@ class CatalogService(CatalogsProtocol):
         consumer: "Optional[ConsumerType]" = None,
     ) -> QueryResponse:
         """Stream search results using an async iterator."""
-        from dynastore.modules.catalog.sidecars.base import ConsumerType as _CT
+        from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType as _CT
         return await self._item_svc.stream_items(
             catalog_id, collection_id, request,
             config=config, ctx=ctx,

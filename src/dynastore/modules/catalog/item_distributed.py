@@ -27,7 +27,7 @@ from dynastore.modules.storage.driver_config import (
 )
 from dynastore.modules.storage.errors import ConflictError, SidecarRejectedError
 from dynastore.models.protocols import ConfigsProtocol
-from dynastore.modules.catalog.sidecars.base import SidecarProtocol
+from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.catalog.query_optimizer import QueryOptimizer

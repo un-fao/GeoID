@@ -46,15 +46,15 @@ from dynastore.modules.storage.driver_config import (
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
 from dynastore.models.protocols.items import ItemsProtocol
-from dynastore.modules.catalog.sidecars.base import SidecarProtocol
+from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.tools.db import validate_sql_identifier
 from dynastore.tools.json import CustomJSONEncoder
 from dynastore.modules.db_config import shared_queries
 from dynastore.models.query_builder import QueryRequest, QueryResponse
 from dynastore.modules.catalog.query_optimizer import QueryOptimizer
-from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
-from dynastore.modules.catalog.sidecars.base import FeaturePipelineContext
+from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
+from dynastore.modules.storage.drivers.pg_sidecars.base import FeaturePipelineContext
 from dynastore.modules.catalog.item_query import ItemQueryMixin
 from dynastore.modules.catalog.item_distributed import ItemDistributedMixin
 
@@ -221,7 +221,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             context = FeaturePipelineContext(lang=lang)
 
         if col_config and col_config.sidecars:
-            from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+            from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
             # Gather all internal columns to prevent property leaking across sidecars
             all_internal = set()
             for sc_config in col_config.sidecars:
@@ -460,7 +460,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
             sidecars: List[Any] = []
             if col_config.sidecars:
-                from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+                from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
 
                 for sc_config in col_config.sidecars:
                     sidecars.append(SidecarRegistry.get_sidecar(sc_config))
@@ -969,7 +969,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         )
 
         fields = {}
-        from dynastore.modules.catalog.sidecars.base import (
+        from dynastore.modules.storage.drivers.pg_sidecars.base import (
             FieldDefinition,
             FieldCapability,
         )

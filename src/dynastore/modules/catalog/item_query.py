@@ -26,7 +26,7 @@ from dynastore.modules.storage.driver_config import (
 from dynastore.models.driver_context import DriverContext
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
-from dynastore.modules.catalog.sidecars.base import (
+from dynastore.modules.storage.drivers.pg_sidecars.base import (
     SidecarProtocol,
     FeaturePipelineContext,
     ConsumerType,
@@ -526,7 +526,7 @@ class ItemQueryMixin:
             # ID Resolution Logic: delete ALL active rows for this external_id
             rows = 0
             if col_config and col_config.sidecars:
-                from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+                from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
                 from sqlalchemy import text as sa_text
 
                 for sc in col_config.sidecars:
@@ -816,7 +816,7 @@ class ItemQueryMixin:
 
             columns_to_select = select_columns
             if not columns_to_select:
-                from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+                from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
 
                 all_fields = {"geoid", "deleted_at"}
                 if col_config.sidecars:

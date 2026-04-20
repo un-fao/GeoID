@@ -77,7 +77,7 @@ from dynastore.extensions.ogc_base import OGCServiceMixin, OGCTransactionMixin
 from datetime import datetime, timezone
 from dynastore.extensions.tools.url import get_url, get_parent_url, get_root_url
 from dynastore.tools.discovery import get_protocol, get_protocols
-from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
 
 logger = logging.getLogger(__name__)
 from dynastore.modules.db_config.exceptions import TableNotFoundError
@@ -126,7 +126,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
     def configure_app(self, app: FastAPI):
         """Early configuration for the STAC extension."""
         # Register sidecar in the registry (IoC)
-        from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+        from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
         from .stac_items_sidecar import StacItemsSidecar
 
         SidecarRegistry.register("stac_metadata", StacItemsSidecar)
@@ -649,7 +649,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         conn: Any,
     ) -> Tuple[Optional[Feature], Dict[str, Any]]:
         """Utility to get an item and its raw row via FeaturePipelineContext."""
-        from dynastore.modules.catalog.sidecars.base import FeaturePipelineContext
+        from dynastore.modules.storage.drivers.pg_sidecars.base import FeaturePipelineContext
 
         context = FeaturePipelineContext(lang=language)
         item = await items_svc.get_item(

@@ -19,11 +19,11 @@
 import pytest
 from sqlalchemy import text
 from dynastore.modules.storage.driver_config import CollectionPostgresqlDriverConfig
-from dynastore.modules.catalog.sidecars.geometries_config import (
+from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
     GeometriesSidecarConfig,
     TargetDimension,
 )
-from dynastore.modules.catalog.sidecars.attributes_config import (
+from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
     FeatureAttributeSidecarConfig,
     AttributeStorageMode,
     AttributeSchemaEntry,

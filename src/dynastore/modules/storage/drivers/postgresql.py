@@ -315,7 +315,7 @@ class CollectionPostgresqlDriver(ModuleProtocol):
             CollectionPostgresqlDriverConfig,
         )
         from dynastore.modules.catalog.catalog_service import generate_physical_name
-        from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+        from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
         from dynastore.models.protocols.assets import AssetsProtocol
 
         schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
@@ -376,7 +376,7 @@ class CollectionPostgresqlDriver(ModuleProtocol):
             from dynastore.modules.storage.driver_config import (
                 CollectionSchema,
             )
-            from dynastore.modules.catalog.sidecars.attributes_config import (
+            from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
                 FeatureAttributeSidecarConfig,
             )
             from dynastore.modules.storage.field_constraints import (
@@ -832,7 +832,7 @@ class CollectionPostgresqlDriver(ModuleProtocol):
             if col_config and col_config.sidecars:
                 try:
                     from dynastore.modules.catalog.query_optimizer import QueryOptimizer
-                    from dynastore.modules.catalog.sidecars.attributes_config import (
+                    from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
                         FeatureAttributeSidecarConfig,
                     )
 
@@ -972,10 +972,10 @@ class CollectionPostgresqlDriver(ModuleProtocol):
             joins = []
 
             if layer_config.sidecars:
-                from dynastore.modules.catalog.sidecars.geometries_config import (
+                from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
                     GeometriesSidecarConfig,
                 )
-                from dynastore.modules.catalog.sidecars.attributes_config import (
+                from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
                     FeatureAttributeSidecarConfig,
                 )
 
@@ -1147,7 +1147,7 @@ class CollectionPostgresqlDriver(ModuleProtocol):
                 geom_source = geom_alias
                 join_sql = geom_join
                 if layer_config and layer_config.sidecars:
-                    from dynastore.modules.catalog.sidecars.geometries_config import (
+                    from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
                         GeometriesSidecarConfig,
                     )
                     geom_sc = next(
