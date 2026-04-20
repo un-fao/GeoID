@@ -102,34 +102,39 @@ async def lifespan(app: FastAPI):
         logger.info("--- Phase 3: Mounting all extension routers ---")
 
         # Build the exposure matrix + custom route class.
+        # ConfigsProtocol is provided by the catalog module; services whose
+        # SCOPE excludes it (e.g. auth, tools) run without exposure gating.
         configs_svc = get_protocol(ConfigsProtocol)
-        if configs_svc is None:
-            raise RuntimeError(
-                "ConfigsProtocol not registered. Ensure the db_config module is enabled in Phase 2."
-            )
-        togglable = KNOWN_EXTENSION_IDS - ALWAYS_ON_EXTENSIONS
-        plugin_cls_by_ext: dict[str, type] = {}
-        for cls in list_registered_configs().values():
-            if not issubclass(cls, ExposableConfigMixin):
-                continue
-            parts = cls.__module__.split(".")
-            if len(parts) >= 3 and parts[1] in ("extensions", "modules"):
-                ext = parts[2]
-                if ext in togglable:
-                    plugin_cls_by_ext.setdefault(ext, cls)
+        matrix: ExposureMatrix | None = None
+        if configs_svc is not None:
+            togglable = KNOWN_EXTENSION_IDS - ALWAYS_ON_EXTENSIONS
+            plugin_cls_by_ext: dict[str, type] = {}
+            for cls in list_registered_configs().values():
+                if not issubclass(cls, ExposableConfigMixin):
+                    continue
+                parts = cls.__module__.split(".")
+                if len(parts) >= 3 and parts[1] in ("extensions", "modules"):
+                    ext = parts[2]
+                    if ext in togglable:
+                        plugin_cls_by_ext.setdefault(ext, cls)
 
-        matrix = ExposureMatrix(
-            configs_service=configs_svc,
-            togglable_extensions=togglable,
-            plugin_class_by_extension=plugin_cls_by_ext,
-            ttl_seconds=30.0,
-        )
-        app.state.exposure_matrix = matrix
-        install_filtered_openapi(app, matrix)
-        # Pre-warm the snapshot so the sync OpenAPI filter sees real state on
-        # the very first /openapi.json request (before any config write has
-        # triggered an invalidate).
-        await matrix.get()
+            matrix = ExposureMatrix(
+                configs_service=configs_svc,
+                togglable_extensions=togglable,
+                plugin_class_by_extension=plugin_cls_by_ext,
+                ttl_seconds=30.0,
+            )
+            app.state.exposure_matrix = matrix
+            install_filtered_openapi(app, matrix)
+            # Pre-warm the snapshot so the sync OpenAPI filter sees real state on
+            # the very first /openapi.json request (before any config write has
+            # triggered an invalidate).
+            await matrix.get()
+        else:
+            logger.info(
+                "ConfigsProtocol not registered (catalog module not in SCOPE); "
+                "skipping exposure matrix — all extensions mount unconditionally."
+            )
 
         for config in configs:
             if config.instance is None: continue
@@ -147,7 +152,8 @@ async def lifespan(app: FastAPI):
                 # also get a dependency that 503s when the matrix says so.
                 include_kwargs: dict = {"tags": [extension_name]}
                 if (
-                    extension_name in KNOWN_EXTENSION_IDS
+                    matrix is not None
+                    and extension_name in KNOWN_EXTENSION_IDS
                     and extension_name not in ALWAYS_ON_EXTENSIONS
                 ):
                     include_kwargs["dependencies"] = [
