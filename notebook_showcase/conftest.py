@@ -139,7 +139,15 @@ def _admin_headers(token: str):
 
 
 def _ensure_catalog(client: httpx.Client) -> bool:
-    """POST-first idempotent create. Returns True if this call created it."""
+    """POST-first idempotent create. Returns True if this call created it.
+
+    On 5xx (e.g. DB statement timeout under load) falls back to GET to check
+    whether the catalog was actually created before raising.
+    After marking ready, verifies the catalog is accessible (provisioning_status
+    may race with GCP async task setting it back to 'provisioning').
+    """
+    import time
+
     r = client.post("/stac/catalogs", json={
         "id": CATALOG_ID,
         "type": "Catalog",
@@ -147,15 +155,38 @@ def _ensure_catalog(client: httpx.Client) -> bool:
         "description": "Standard demo catalog for integration tests.",
         "stac_version": "1.0.0",
     })
+    created = None
     if r.status_code in (200, 201):
+        created = True
+    elif r.status_code == 409:
+        created = False
+    elif r.status_code >= 500:
+        chk = client.get(f"/stac/catalogs/{CATALOG_ID}")
+        if chk.status_code == 200:
+            created = False
+    if created is None:
+        raise RuntimeError(
+            f"Failed to create {CATALOG_ID}: {r.status_code} {r.text[:400]}"
+        )
+
+    # Mark ready and verify — GCP provisioning task can race and flip it back.
+    for attempt in range(1, 6):
         _mark_catalog_ready()
-        return True
-    if r.status_code == 409:
-        _mark_catalog_ready()
-        return False
-    raise RuntimeError(
-        f"Failed to create {CATALOG_ID}: {r.status_code} {r.text[:400]}"
+        chk = client.get(f"/stac/catalogs/{CATALOG_ID}")
+        if chk.status_code == 200:
+            return created
+        print(
+            f"[conftest] WARN catalog {CATALOG_ID} not accessible after mark_ready "
+            f"(attempt {attempt}/5, status={chk.status_code}) — retrying in 2s",
+            flush=True,
+        )
+        time.sleep(2)
+    print(
+        f"[conftest] WARN catalog {CATALOG_ID} still not accessible after 5 attempts; "
+        "continuing anyway — notebooks may fail with 404/400.",
+        flush=True,
     )
+    return created
 
 
 def _mark_catalog_ready() -> None:
@@ -190,7 +221,9 @@ def _mark_catalog_ready() -> None:
 
 
 def _ensure_collection(client: httpx.Client) -> bool:
-    r = client.post(f"/stac/catalogs/{CATALOG_ID}/collections", json={
+    import time
+
+    payload = {
         "id": COLLECTION_ID,
         "type": "Collection",
         "stac_version": "1.0.0",
@@ -202,11 +235,21 @@ def _ensure_collection(client: httpx.Client) -> bool:
             "temporal": {"interval": [["2024-01-01T00:00:00Z", None]]},
         },
         "links": [],
-    })
-    if r.status_code in (200, 201):
-        return True
-    if r.status_code == 409:
-        return False
+    }
+    for attempt in range(1, 4):
+        r = client.post(f"/stac/catalogs/{CATALOG_ID}/collections", json=payload)
+        if r.status_code in (200, 201):
+            return True
+        if r.status_code == 409:
+            return False
+        # 400/503 may mean routing config not yet propagated — retry with delay
+        print(
+            f"[conftest] WARN collection create returned {r.status_code} "
+            f"(attempt {attempt}/3): {r.text[:200]}",
+            flush=True,
+        )
+        if attempt < 3:
+            time.sleep(3)
     raise RuntimeError(
         f"Failed to create {COLLECTION_ID}: {r.status_code} {r.text[:400]}"
     )
@@ -225,17 +268,27 @@ def _apply_catalog_scope_driver_configs(client: httpx.Client):
     not an alias.
     """
     base = f"/configs/catalogs/{CATALOG_ID}"
-    client.put(f"{base}/configs/CollectionPostgresqlDriverConfig", json={
+    r1 = client.put(f"{base}/configs/CollectionPostgresqlDriverConfig", json={
         "enabled": True,
         "collection_type": "VECTOR",
     })
-    client.put(f"{base}/configs/CollectionRoutingConfig", json={
+    r2 = client.put(f"{base}/configs/CollectionRoutingConfig", json={
         "enabled": True,
         "operations": {
             "WRITE": [{"driver_id": "CollectionPostgresqlDriver", "hints": [], "on_failure": "fatal"}],
             "READ": [{"driver_id": "CollectionPostgresqlDriver", "hints": [], "on_failure": "fatal"}],
         },
     })
+    if r2.status_code not in (200, 201, 204):
+        print(
+            f"[conftest] WARN CollectionRoutingConfig PUT returned {r2.status_code}: {r2.text[:200]}",
+            flush=True,
+        )
+    # Remove any stale collection-scope RoutingConfig override left by previous
+    # runs (e.g. with an old driver_id). Collection-scope overrides shadow the
+    # catalog-scope config above and would cause "driver not registered" errors.
+    coll_base = f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}"
+    client.delete(f"{coll_base}/configs/CollectionRoutingConfig")
 
 
 def _delete_catalog(client: httpx.Client):
@@ -260,6 +313,21 @@ def _delete_catalog(client: httpx.Client):
 _SESSION_STATE: dict = {}
 
 
+def _wait_for_server(base_url: str, max_wait_s: float = 60.0) -> bool:
+    """Poll /health until the server responds 200 or timeout expires."""
+    import time
+    deadline = time.monotonic() + max_wait_s
+    while time.monotonic() < deadline:
+        try:
+            r = httpx.get(f"{base_url}/health", timeout=5.0)
+            if r.status_code == 200:
+                return True
+        except Exception:
+            pass
+        time.sleep(3)
+    return False
+
+
 def pytest_sessionstart(session):
     """Set up demo infrastructure at session start.
 
@@ -275,6 +343,15 @@ def pytest_sessionstart(session):
         "DATABASE_URL",
         "postgresql+psycopg2://testuser:testpassword@localhost:54320/gis_dev",
     )
+
+    if not _wait_for_server(BASE_URL):
+        print(
+            f"[notebook_showcase.conftest] WARN server not ready at {BASE_URL} "
+            "after 60s — notebooks will run without demo infrastructure.",
+            flush=True,
+        )
+        return
+
     token = _resolve_token()
     _SESSION_STATE["token"] = token
     if not token:

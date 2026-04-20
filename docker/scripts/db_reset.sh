@@ -139,15 +139,8 @@ case "$cmd" in
         run_psql "CREATE SCHEMA IF NOT EXISTS keycloak;"
 
         if [[ $wipe_keycloak -eq 1 ]]; then
-            echo "Truncating all tables in schema 'keycloak' (will force Liquibase + realm re-import)..."
-            run_psql "DO \$\$
-DECLARE r RECORD;
-BEGIN
-    FOR r IN SELECT tablename FROM pg_tables WHERE schemaname='keycloak'
-    LOOP
-        EXECUTE format('TRUNCATE TABLE keycloak.%I CASCADE', r.tablename);
-    END LOOP;
-END \$\$;"
+            echo "Dropping and recreating schema 'keycloak' (forces Liquibase fresh-init + realm re-import)..."
+            run_psql "DROP SCHEMA IF EXISTS keycloak CASCADE; CREATE SCHEMA keycloak;"
         else
             # Detect corrupt Liquibase state: tables exist but databasechangelog is missing.
             # This happens when databasechangelog was dropped manually while keycloak tables remain.

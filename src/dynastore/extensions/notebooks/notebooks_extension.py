@@ -7,6 +7,7 @@ from fastapi import Query
 
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.web import expose_static, expose_web_page
+from dynastore.modules.db_config.exceptions import ResourceNotFoundError
 from dynastore.modules.notebooks import notebooks_module as notebook_service
 from dynastore.modules.notebooks.models import NotebookCreate, Notebook, PlatformNotebookCreate, PlatformNotebook, OwnerType
 
@@ -14,6 +15,38 @@ import logging
 import os
 
 logger = logging.getLogger(__name__)
+
+
+async def _require_sysadmin(request: Request) -> None:
+    """Guard: platform-namespace writes/deletes are sysadmin-only.
+
+    Lazy imports avoid a circular import between notebooks and iam extensions.
+    When the IAM module isn't loaded, the call is skipped (dev/test permissive mode).
+    """
+    try:
+        from dynastore.extensions.iam.guards import security_context_from_request
+        from dynastore.modules.iam.authorization import require_permission
+        from dynastore.models.protocols.authorization import Permission
+    except Exception:
+        return
+    ctx = security_context_from_request(request)
+    try:
+        await require_permission(ctx, Permission.SYSADMIN)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="System Administrator privileges required.")
+
+
+def _coerce_localized(value: Any) -> Any:
+    """Accept a plain string title and wrap it into a LocalizedText-shaped dict.
+
+    The ``title`` field on ``NotebookBase`` is typed as ``LocalizedText`` (a
+    language-keyed dict, e.g. ``{"en": "..."}``). Historical seed payloads and
+    round-tripped notebooks may carry a plain string. Normalise here so callers
+    don't need to pre-wrap.
+    """
+    if isinstance(value, str):
+        return {"en": value}
+    return value
 
 
 class NotebooksExtension(ExtensionProtocol):
@@ -90,6 +123,7 @@ class NotebooksExtension(ExtensionProtocol):
             self.copy_platform_notebook,
             methods=["POST"],
             response_model=Notebook,
+            status_code=201,
             summary="Copy a platform notebook into a tenant catalog",
         )
         # Tenant CRUD
@@ -160,7 +194,10 @@ class NotebooksExtension(ExtensionProtocol):
 
     async def get_platform_notebook(self, notebook_id: str):
         """Get a platform notebook by ID (no auth required)."""
-        return await notebook_service.get_platform_notebook(notebook_id)
+        try:
+            return await notebook_service.get_platform_notebook(notebook_id)
+        except ResourceNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
 
     async def save_platform_notebook(
         self,
@@ -168,13 +205,15 @@ class NotebooksExtension(ExtensionProtocol):
         content: Dict[str, Any],
     ):
         """Create or update a platform notebook."""
-        title = content.get("metadata", {}).get("title", notebook_id)
+        meta = content.get("metadata", {})
+        title = _coerce_localized(meta.get("title", notebook_id))
         notebook_model = PlatformNotebookCreate(
             notebook_id=notebook_id,
             title=title,
-            description=content.get("metadata", {}).get("description"),
+            description=meta.get("description"),
+            tags=list(meta.get("tags", []) or []),
             content=content,
-            metadata=content.get("metadata", {}),
+            metadata=meta,
             registered_by="sysadmin",
             owner_type=OwnerType.SYSADMIN,
         )
@@ -186,7 +225,7 @@ class NotebooksExtension(ExtensionProtocol):
     ):
         """Soft-delete a platform notebook."""
         await notebook_service.delete_platform_notebook(notebook_id)
-        return {"status": "deleted", "notebook_id": notebook_id}
+        return Response(status_code=204)
 
     # ------------------------------------------------------------------
     # Copy platform -> tenant
@@ -240,12 +279,14 @@ class NotebooksExtension(ExtensionProtocol):
         request: Request,
     ):
         """Save a notebook."""
-        title = content.get("metadata", {}).get("title", notebook_code)
+        meta = content.get("metadata", {})
+        title = _coerce_localized(meta.get("title", notebook_code))
         notebook_model = NotebookCreate(
             notebook_id=notebook_code,
             title=title,
+            tags=list(meta.get("tags", []) or []),
             content=content,
-            metadata=content.get("metadata", {}),
+            metadata=meta,
         )
         principal = getattr(request.state, "principal", None)
         owner_id = str(principal.id) if principal and hasattr(principal, "id") else None
@@ -258,7 +299,7 @@ class NotebooksExtension(ExtensionProtocol):
     ):
         """Soft-delete a notebook from a catalog."""
         await notebook_service.delete_notebook(catalog_id, notebook_code)
-        return {"status": "deleted", "notebook_id": notebook_code}
+        return Response(status_code=204)
 
     # ------------------------------------------------------------------
     # Static file providers

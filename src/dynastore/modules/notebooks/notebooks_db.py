@@ -90,7 +90,7 @@ async def list_notebooks(
         params["q_pat"] = f"%{q}%"
 
     if tags:
-        where_clauses.append("tags @> :tags_json::jsonb")
+        where_clauses.append("tags @> CAST(:tags_json AS jsonb)")
         params["tags_json"] = json.dumps(tags)
 
     where_sql = " AND ".join(where_clauses)
@@ -150,7 +150,7 @@ async def save_notebook(
             (notebook_id, catalog_id, title, description, tags, content, metadata,
              owner_id, copied_from, updated_at)
         VALUES
-            (:notebook_id, :catalog_id, :title, :description, :tags::jsonb, :content,
+            (:notebook_id, :catalog_id, :title, :description, :tags, :content,
              :metadata, :owner_id, :copied_from, NOW())
         ON CONFLICT (notebook_id) DO UPDATE SET
             title = EXCLUDED.title,
@@ -189,7 +189,7 @@ async def copy_from_platform(
             (notebook_id, catalog_id, title, description, tags, content, metadata,
              owner_id, copied_from)
         VALUES
-            (:notebook_id, :catalog_id, :title, :description, :tags::jsonb, :content,
+            (:notebook_id, :catalog_id, :title, :description, :tags, :content,
              :metadata, :owner_id, :copied_from)
         ON CONFLICT (notebook_id) DO NOTHING
         RETURNING notebook_id, catalog_id, title, description, tags, content, metadata,

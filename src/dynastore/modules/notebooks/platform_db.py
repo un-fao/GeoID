@@ -188,8 +188,7 @@ async def save_platform_notebook(
         "owner_type": notebook.owner_type.value,
     }
     result = await DQLQuery(query, result_handler=ResultHandler.ONE_DICT).execute(conn, **params)
-    # Invalidate caches after write
-    list_platform_notebooks.cache_clear()
+    # Invalidate per-notebook cache after write. list_platform_notebooks is not cached.
     get_platform_notebook.cache_invalidate(conn, notebook.notebook_id)
     return result
 
@@ -207,6 +206,5 @@ async def soft_delete_platform_notebook(conn: DbResource, notebook_id: str) -> N
     ).execute(conn, notebook_id=notebook_id)
     if result is None:
         raise ResourceNotFoundError(f"Platform notebook '{notebook_id}' not found")
-    # Invalidate caches after delete
-    list_platform_notebooks.cache_clear()
+    # Invalidate per-notebook cache after delete. list_platform_notebooks is not cached.
     get_platform_notebook.cache_invalidate(conn, notebook_id)
