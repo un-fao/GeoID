@@ -233,6 +233,103 @@ class CollectionMetadataStore(Protocol):
 
 
 # ---------------------------------------------------------------------------
+# Helper mixin: default-raising stubs for TRANSFORM-only drivers
+# ---------------------------------------------------------------------------
+
+
+class TransformOnlyCollectionMetadataStoreMixin:
+    """Default stubs for drivers that only implement ``TRANSFORM``.
+
+    A TRANSFORM-only driver contributes a partial envelope via its
+    ``get_metadata`` method (returning e.g. ``{"bq_stats": ...}``) and
+    should never be routed as a ``READ`` / ``WRITE`` / ``SEARCH``
+    Primary.  Implementers subclass this mixin to get loud
+    ``NotImplementedError`` stubs for the non-TRANSFORM methods so a
+    routing misconfiguration is detectable at the first call rather
+    than producing silently wrong data.
+
+    Use:
+
+    .. code-block:: python
+
+        class MyTransformDriver(TransformOnlyCollectionMetadataStoreMixin):
+            capabilities: FrozenSet[str] = frozenset({MetadataCapability.TRANSFORM})
+            domain: ClassVar[MetadataDomain] = MetadataDomain.CORE
+            sla: ClassVar[DriverSla] = DriverSla(timeout_ms=2000, on_timeout="degrade")
+
+            async def get_metadata(self, catalog_id, collection_id, *, context=None, db_resource=None):
+                return {"my_partial": ...}
+
+    Structural-typing note: the driver still satisfies
+    :class:`CollectionMetadataStore` because every method exists
+    (either via the mixin's raising stubs or the subclass's own
+    implementation).  Callers check ``capabilities`` before invoking a
+    method; if they don't and the method is unimplemented, the raise
+    is intentional and informative.
+    """
+
+    async def upsert_metadata(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        metadata: Dict[str, Any],
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> None:
+        raise NotImplementedError(
+            f"{type(self).__name__} is TRANSFORM-only; route writes to a Primary driver."
+        )
+
+    async def delete_metadata(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        soft: bool = False,
+        db_resource: Optional[Any] = None,
+    ) -> None:
+        raise NotImplementedError(
+            f"{type(self).__name__} is TRANSFORM-only; route deletes to a Primary driver."
+        )
+
+    async def search_metadata(
+        self,
+        catalog_id: str,
+        *,
+        q: Optional[str] = None,
+        bbox: Optional[List[float]] = None,
+        datetime_range: Optional[str] = None,
+        filter_cql: Optional[Dict[str, Any]] = None,
+        limit: int = 100,
+        offset: int = 0,
+        context: Optional[Dict[str, Any]] = None,
+        db_resource: Optional[Any] = None,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        raise NotImplementedError(
+            f"{type(self).__name__} is TRANSFORM-only; route searches to an Indexer "
+            f"or Primary with SEARCH capability."
+        )
+
+    async def get_driver_config(
+        self,
+        catalog_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> Any:
+        """TRANSFORM drivers typically have no driver-specific config waterfall entry."""
+        return None
+
+    async def location(
+        self,
+        catalog_id: str,
+        collection_id: str,
+    ) -> "StorageLocation":
+        raise NotImplementedError(
+            f"{type(self).__name__} does not declare PHYSICAL_ADDRESSING."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Catalog-tier metadata protocol — mirror of CollectionMetadataStore
 # ---------------------------------------------------------------------------
 
@@ -240,6 +337,12 @@ class CollectionMetadataStore(Protocol):
 @runtime_checkable
 class CatalogMetadataStore(Protocol):
     """Pluggable storage abstraction for catalog-level metadata.
+
+    **Status**: vocabulary introduced by M1a, no concrete implementer yet.
+    First consumers land in M2 (``CatalogMetadataCorePostgresDriver``,
+    ``CatalogMetadataStacPostgresDriver``) — see plan §M2.  Introduced
+    early so ``CatalogRoutingConfig`` can reference it at its apply
+    handler without a forward declaration.
 
     Mirrors :class:`CollectionMetadataStore` but scoped to the catalog tier.
     Drivers own a ``domain`` (CORE / STAC / future) and stamp ``updated_at``

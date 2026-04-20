@@ -35,31 +35,32 @@ the partial entirely.
 """
 
 import logging
-from typing import Any, ClassVar, Dict, FrozenSet, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, ClassVar, Dict, FrozenSet, Optional
 
 from dynastore.models.protocols.driver_roles import DriverSla, MetadataDomain
-from dynastore.models.protocols.metadata_driver import MetadataCapability
+from dynastore.models.protocols.metadata_driver import (
+    MetadataCapability,
+    TransformOnlyCollectionMetadataStoreMixin,
+)
 from dynastore.tools.discovery import get_protocol
-
-if TYPE_CHECKING:
-    from dynastore.modules.storage.storage_location import StorageLocation
 
 logger = logging.getLogger(__name__)
 
 BQ_STATS_CONFIG_ID = "bq_stats"
 
 
-class BigQueryMetadataTransformDriver:
+class BigQueryMetadataTransformDriver(TransformOnlyCollectionMetadataStoreMixin):
     """TRANSFORM driver backed by BigQuery, returning ``bq_stats`` partials.
 
-    Structurally satisfies :class:`CollectionMetadataStore` (@runtime_checkable)
-    but only declares the ``TRANSFORM`` capability — the router never picks
-    this driver as a Primary for READ / WRITE / SEARCH.  Non-transform methods
-    raise ``NotImplementedError`` to make any accidental invocation loud.
+    Structurally satisfies :class:`CollectionMetadataStore` via the
+    :class:`TransformOnlyCollectionMetadataStoreMixin` — which provides
+    default-raising stubs for the non-TRANSFORM methods — plus this
+    class's own ``get_metadata`` / ``is_available`` implementations.
 
     Role-based driver attributes (plan §Driver roles):
     - ``domain``       — ``CORE`` (the ``bq_stats`` key is core-supplementary).
-    - ``capabilities`` — ``{TRANSFORM}``.
+    - ``capabilities`` — ``{TRANSFORM}`` — router never picks this as a
+                          Primary for READ / WRITE / SEARCH.
     - ``sla``          — 2 s timeout, ``degrade`` on timeout (BigQuery is
                           high-variance; never block the hot path for it).
     """
@@ -132,85 +133,10 @@ class BigQueryMetadataTransformDriver:
             return None
         return {"bq_stats": records[0]}
 
-    # --- CollectionMetadataStore protocol stubs -----------------------------
-    # TRANSFORM-only driver — these must exist for structural-typing checks
-    # (@runtime_checkable), but must never be invoked.  A loud error makes
-    # misrouting detectable in tests and staging.
-
-    async def upsert_metadata(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        metadata: Dict[str, Any],
-        *,
-        db_resource: Optional[Any] = None,
-    ) -> None:
-        raise NotImplementedError(
-            "BigQueryMetadataTransformDriver is TRANSFORM-only; "
-            "route writes to a Primary driver."
-        )
-
-    async def delete_metadata(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        *,
-        soft: bool = False,
-        db_resource: Optional[Any] = None,
-    ) -> None:
-        raise NotImplementedError(
-            "BigQueryMetadataTransformDriver is TRANSFORM-only; "
-            "route deletes to a Primary driver."
-        )
-
-    async def search_metadata(
-        self,
-        catalog_id: str,
-        *,
-        q: Optional[str] = None,
-        bbox: Optional[List[float]] = None,
-        datetime_range: Optional[str] = None,
-        filter_cql: Optional[Dict[str, Any]] = None,
-        limit: int = 100,
-        offset: int = 0,
-        context: Optional[Dict[str, Any]] = None,
-        db_resource: Optional[Any] = None,
-    ) -> Tuple[List[Dict[str, Any]], int]:
-        raise NotImplementedError(
-            "BigQueryMetadataTransformDriver is TRANSFORM-only; "
-            "route searches to an Indexer or Primary with SEARCH capability."
-        )
-
-    async def get_driver_config(
-        self,
-        catalog_id: str,
-        *,
-        db_resource: Optional[Any] = None,
-    ) -> Any:
-        """TRANSFORM driver has no driver-specific config waterfall entry."""
-        return None
+    # --- Health check override (TransformOnly mixin doesn't implement this) --
 
     async def is_available(self) -> bool:
-        """Health check — available iff the BigQueryProtocol plugin is registered."""
+        """Available iff the BigQueryProtocol plugin is registered."""
         from dynastore.models.protocols import BigQueryProtocol
 
         return get_protocol(BigQueryProtocol) is not None
-
-    async def location(
-        self,
-        catalog_id: str,
-        collection_id: str,
-    ) -> "StorageLocation":
-        raise NotImplementedError(
-            "BigQueryMetadataTransformDriver does not declare PHYSICAL_ADDRESSING."
-        )
-
-
-# ---------------------------------------------------------------------------
-# Back-compat shim — the old symbol name is still imported by gcp_module and
-# by at least one notebook.  Keep it as a direct alias of the new class until
-# M3 lands the async reindex pipeline and downstream renames settle.  Remove
-# this alias in a follow-up PR once all call sites are updated.
-# ---------------------------------------------------------------------------
-
-BigQueryCollectionEnricher = BigQueryMetadataTransformDriver

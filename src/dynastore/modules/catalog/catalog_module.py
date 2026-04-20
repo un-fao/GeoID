@@ -193,8 +193,11 @@ class CatalogModule(ModuleProtocol):
         from dynastore.modules.storage.drivers.postgresql import CollectionPostgresqlDriver
         self.pg_storage_driver = CollectionPostgresqlDriver()  # type: ignore[abstract]
 
-        from dynastore.modules.storage.entity_transform_pipeline import EntityTransformPipeline
-        self.driver_metadata_enricher = EntityTransformPipeline()
+        # EntityTransformPipeline used to be registered here as a discovery
+        # plugin for CollectionMetadataEnricherProtocol.  That protocol was
+        # deleted in the role-based driver refactor; the class survives as
+        # library code for M3's ReindexWorker to invoke directly.  Not
+        # registered as a plugin (no discoverable protocol anyway).
 
         from contextlib import AsyncExitStack
         async with AsyncExitStack() as stack:
@@ -207,7 +210,6 @@ class CatalogModule(ModuleProtocol):
                 self.asset_service,
                 self.pg_asset_driver,
                 self.pg_storage_driver,
-                self.driver_metadata_enricher,
                 self.properties_service,
                 self.localization_service,
                 self.event_service,

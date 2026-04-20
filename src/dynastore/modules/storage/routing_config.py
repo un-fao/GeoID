@@ -336,6 +336,13 @@ class AssetRoutingConfig(PluginConfig):
 class CatalogRoutingConfig(PluginConfig):
     """Operation-based routing for catalog-level metadata drivers.
 
+    **Status**: vocabulary introduced by M1a, no concrete driver registered
+    yet.  First consumers land in M2 (``CatalogMetadataCorePostgresDriver``,
+    ``CatalogMetadataStacPostgresDriver``).  The ``default_factory`` on
+    ``operations`` currently references ``CatalogMetadataCorePostgresDriver``
+    by string; attempting to apply this config before M2 ships that class
+    will fail validation — which is intentional (no silent fallback).
+
     Parallels :class:`CollectionRoutingConfig` but scoped to catalog-tier
     drivers (``CatalogMetadataStore`` implementations).  Introduced by the
     role-based driver refactor so catalogs follow the same Primary /

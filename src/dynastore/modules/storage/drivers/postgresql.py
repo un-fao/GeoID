@@ -1309,3 +1309,119 @@ class CollectionPostgresqlDriver(ModuleProtocol):
         if not svc:
             raise RuntimeError("ItemQueryProtocol not available")
         return svc
+
+
+# ---------------------------------------------------------------------------
+# PG-driver init_collection hook (M1b.3)
+# ---------------------------------------------------------------------------
+#
+# Registered on import of this module (same pattern as other sidecar/driver
+# hooks across the codebase).  Consumes the ``layer_config`` kwarg that
+# CollectionService.create_collection passes through to
+# lifecycle_registry.init_collection, types/validates it as a PG driver
+# config, and persists via the configs waterfall **only when the caller
+# explicitly supplied PG-specific fields**.  A default-body
+# POST /collections/{id} carries no layer_config → this hook is a no-op →
+# zero rows written to collection_configs (plan §Principle — default-fast
+# invariant).
+#
+# Priority 5 matches _pg_asset_driver_init_tenant so the hook runs early
+# relative to optional-extension hooks but doesn't race the raw schema
+# initialisation.
+
+
+from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry  # noqa: E402
+
+
+@lifecycle_registry.sync_collection_initializer(priority=5)
+async def _pg_driver_init_collection(
+    conn: Any,
+    schema: str,
+    catalog_id: str,
+    collection_id: str,
+    **kwargs: Any,
+) -> None:
+    """Persist a caller-supplied PG driver config — if (and only if) one was given.
+
+    Accepts ``layer_config`` via kwargs (matches the signature
+    CollectionService passes).  Shape:
+
+    - ``None`` / absent → no-op.  Default-body collection creation lands
+      here; the collection_configs table gets zero rows from this hook.
+    - ``dict`` → validated against ``CollectionPostgresqlDriverConfig``.
+      If validation succeeds **and** the dump under
+      ``exclude_unset=True`` is non-empty, persist via ``configs.set_config``.
+      An empty dict is treated as "nothing to persist" — same as absent.
+    - ``CollectionPostgresqlDriverConfig`` instance → same as the dict
+      path; persist iff ``exclude_unset=True`` dump is non-empty.
+    - Any other type → ignored with a debug log.  Other drivers
+      register their own hooks.
+
+    When persisted, ``physical_table`` is deliberately **not** set here —
+    that's the responsibility of ``ensure_storage()`` (which is invoked
+    by the collection-activation path after the first write).  The
+    ``WriteOnce[Optional[str]]`` guard on ``physical_table`` admits a
+    transition from ``None`` → real value exactly once.
+    """
+    layer_config = kwargs.get("layer_config")
+    if layer_config is None:
+        return
+
+    # Shape-check + coerce to a typed PG config instance.
+    from dynastore.modules.storage.driver_config import CollectionPostgresqlDriverConfig
+
+    if isinstance(layer_config, dict):
+        if not layer_config:
+            return  # empty dict == nothing to persist
+        try:
+            pg_config = CollectionPostgresqlDriverConfig.model_validate(layer_config)
+        except Exception as exc:
+            logger.debug(
+                "PG init_collection: layer_config dict rejected by validation "
+                "for %s/%s: %s",
+                catalog_id, collection_id, exc,
+            )
+            return
+    elif isinstance(layer_config, CollectionPostgresqlDriverConfig):
+        pg_config = layer_config
+    else:
+        # Layer config was intended for a different driver (DuckDB, Iceberg,
+        # a future Primary, …) or is an unrecognised type.  Let the other
+        # driver's hook handle it.
+        logger.debug(
+            "PG init_collection: layer_config of type %s ignored — not PG-shaped "
+            "(for %s/%s)",
+            type(layer_config).__name__, catalog_id, collection_id,
+        )
+        return
+
+    # The default-fast guard: persist only when the caller supplied at
+    # least one PG-specific field explicitly.  A bare
+    # `CollectionPostgresqlDriverConfig()` dumps to `{}` under
+    # exclude_unset=True (M1b.1 discriminator fix keeps sidecar_type in
+    # entries, but the outer config has no explicitly-set fields).
+    explicit_fields = pg_config.model_dump(exclude_unset=True)
+    if not explicit_fields:
+        return
+
+    from dynastore.models.protocols.configs import ConfigsProtocol
+    from dynastore.tools.discovery import get_protocol
+
+    configs = get_protocol(ConfigsProtocol)
+    if configs is None:
+        # No configs service registered (test env without PluginConfig setup).
+        # Silently skip — matches pre-refactor behaviour in CollectionService.
+        return
+
+    await configs.set_config(
+        CollectionPostgresqlDriverConfig,
+        pg_config,
+        catalog_id=catalog_id,
+        collection_id=collection_id,
+        ctx=DriverContext(db_resource=conn),
+    )
+    logger.debug(
+        "PG init_collection: persisted caller-supplied layer_config for %s/%s "
+        "(fields: %s)",
+        catalog_id, collection_id, sorted(explicit_fields),
+    )
