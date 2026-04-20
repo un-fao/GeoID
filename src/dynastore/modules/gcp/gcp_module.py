@@ -523,11 +523,17 @@ class GCPModule(
                                             task_types_found.add(task_type)
                                 break
 
-                # Strategy 2: Infer task type from job name (fallback if no SCOPE)
-                # Job names like "gdal", "export-features" map to task types
-                if not task_types_found:
-                    inferred_task = job_name.replace("-", "_")
-                    task_types_found.add(inferred_task)
+                # Strategy 2: Infer task key from job name (fallback if no SCOPE)
+                # Only process jobs named with the "dynastore-" prefix — this is the
+                # implicit marker that a Cloud Run job belongs to this deployment.
+                # Strip prefix + optional "-job" suffix; hyphens preserved so
+                # try_load_process_definition can handle both hyphenated and underscored forms.
+                if not task_types_found and job_name.startswith("dynastore-"):
+                    inferred = job_name[len("dynastore-"):]
+                    if inferred.endswith("-job"):
+                        inferred = inferred[: -len("-job")]
+                    if inferred:
+                        task_types_found.add(inferred)
 
                 # Add to job_map; will be validated when Process definitions are loaded
                 for task_type in task_types_found:
@@ -571,9 +577,8 @@ class GCPModule(
                 result.append(defn)
                 seen_ids.add(defn.id)
             else:
-                # No definition found; create synthetic Process for this Cloud Run job
-                # so it's still discoverable and executable as an external service
-                process_id = task_type.replace("_", "-")
+                # No definition found; use task_type (already in hyphenated form) as process id
+                process_id = task_type
                 if process_id not in seen_ids:
                     synthetic = Process(
                         id=process_id,
