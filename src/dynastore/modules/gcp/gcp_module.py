@@ -500,7 +500,7 @@ class GCPModule(
             request = run_v2.ListJobsRequest(parent=parent)
 
             logger.info(f"Discovering GCP jobs in {parent}...")
-            async for job in client.list_jobs(request=request):
+            async for job in await client.list_jobs(request=request):
                 job_name = job.name.split("/")[-1]
                 task_types_found = set()
 
