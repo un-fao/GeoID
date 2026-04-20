@@ -26,6 +26,7 @@ from dynastore.modules.gcp.tools.jobs import run_cloud_run_job_async
 from dynastore.modules.gcp.tools.jobs import load_job_config
 from dynastore.modules.tasks.models import (Task, TaskCreate, TaskUpdate, TaskExecutionMode, RunnerContext)
 from dynastore.tasks import discover_tasks, get_all_task_configs
+from dynastore.tools.identifiers import generate_id_hex
 
 logger = logging.getLogger(__name__)
 
@@ -90,17 +91,19 @@ class GcpCloudRunRunner(RunnerProtocol, ProtocolPlugin[Any]):
         # CRITICAL FIX for Distributed Execution: Prevents local worker from stealing the task before Cloud Run boots
         from datetime import datetime, timezone, timedelta
         locked_time = datetime.now(timezone.utc) + timedelta(minutes=5)
-        
-        # We must cast the string to TaskStatusEnum 
+
+        execution_id = generate_id_hex()
+
+        # We must cast the string to TaskStatusEnum
         from dynastore.models.tasks import TaskStatusEnum
         update_data = TaskUpdate(
-            status=TaskStatusEnum.ACTIVE, 
-            owner_id="gcp_cloud_run", 
+            status=TaskStatusEnum.ACTIVE,
+            owner_id=f"gcp_cloud_run_{execution_id}",
             locked_until=locked_time
         )
         await tasks_module.update_task(context.engine, new_task.task_id, update_data, schema=context.db_schema)
 
-        logger.info(f"Created and locked task '{new_task.task_id}' for GCP Cloud Run job '{job_name}'.")
+        logger.info(f"Created and locked task '{new_task.task_id}' for GCP Cloud Run job '{job_name}' (execution_id={execution_id}).")
 
         all_configs = get_all_task_configs()
         task_config = all_configs.get(context.task_type)
@@ -133,7 +136,11 @@ class GcpCloudRunRunner(RunnerProtocol, ProtocolPlugin[Any]):
 
         args = [context.task_type, payload.model_dump_json(), "--schema", context.db_schema]
         try:
-            await run_cloud_run_job_async(job_name=job_name, args=args)
+            await run_cloud_run_job_async(
+                job_name=job_name,
+                args=args,
+                env_vars={"DYNASTORE_EXECUTION_ID": execution_id},
+            )
         except Exception as e:
             logger.error(f"Failed to trigger Cloud Run job '{job_name}' for task '{new_task.task_id}': {e}", exc_info=True)
             await tasks_module.update_task(conn=context.engine, task_id=new_task.task_id,
