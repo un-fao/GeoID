@@ -13,11 +13,7 @@ from dynastore.models.driver_context import DriverContext
 @pytest.fixture(autouse=True)
 def setup_proxy_env(monkeypatch):
     """Ensure proxy module is enabled for these tests."""
-    
-    # Also need extensions. In tests usually extensions are loaded if modules are present or via separate env var
-    # checking conftest/fixtures, usually DYNASTORE_MODULES is enough for modules. 
-    # But ProxyService is an extension.
-    monkeypatch.setenv("DYNASTORE_EXTENSION_MODULES", "proxy")
+    monkeypatch.setenv("SCOPE", "proxy")
 
 @pytest.mark.enable_modules("db_config", "db", "catalog", "proxy", "stats", "metadata_postgresql")
 @pytest.mark.enable_extensions("proxy")

@@ -65,7 +65,7 @@ flowchart TD
 ```
 
 ### Specialized Independent Workers
-In high-throughput environments, deploying distinct decoupled units ensures API latency isn't starved by compute-heavy logic. By configuring `DYNASTORE_TASK_MODULES` correctly on boot, different deployments act divergently over the identical code.
+In high-throughput environments, deploying distinct decoupled units ensures API latency isn't starved by compute-heavy logic. By configuring `SCOPE` correctly on boot, different deployments act divergently over the identical code.
 
 ```mermaid
 flowchart TD

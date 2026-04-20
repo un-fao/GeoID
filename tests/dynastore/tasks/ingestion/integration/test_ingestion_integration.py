@@ -32,14 +32,14 @@ from dynastore.models.driver_context import DriverContext
 @pytest.fixture(autouse=True)
 def setup_ingestion_env(monkeypatch):
     """Ensure proxy module is enabled for ingestion tests."""
-    monkeypatch.setenv("DYNASTORE_MODULES", "db_config,db,catalog,gcp,stats,tasks")
+    monkeypatch.setenv("SCOPE", "db_config,db,catalog,gcp,stats,tasks")
     monkeypatch.setenv("DYNASTORE_TESTING", "true")
 
 
 @pytest.mark.asyncio
 async def test_tiles_module_not_loaded(task_app_state):
     """
-    Verifies that TilesModule is NOT instantiated when not in DYNASTORE_MODULES.
+    Verifies that TilesModule is NOT instantiated when not in SCOPE.
     """
     from typing import Protocol
     from dynastore.tools.discovery import get_protocol

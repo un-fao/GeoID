@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 @pytest.fixture(autouse=True)
 def setup_ingestion_env(monkeypatch):
     """Ensure proxy module is enabled for ingestion tests."""
-    monkeypatch.setenv("DYNASTORE_MODULES", "db_config,db,catalog,gcp,stats,proxy")
+    monkeypatch.setenv("SCOPE", "db_config,db,catalog,gcp,stats,proxy")
 
 @pytest.mark.asyncio
 async def test_operation_sequential_execution(task_app_state, test_data_loader, data_id):

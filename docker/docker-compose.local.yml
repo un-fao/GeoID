@@ -10,9 +10,9 @@
 #    - Sets DEFAULT_MAX_RETRIES for the task dispatcher
 #
 #  Module/extension selection is handled entirely by the SCOPE variable
-#  (configured in .env via WORKER_SCOPE, API_SCOPE). Do NOT hardcode
+#  (configured in .env via WORKER_SCOPE, API_SCOPE). The legacy
 #  DYNASTORE_MODULES / DYNASTORE_EXTENSION_MODULES / DYNASTORE_TASK_MODULES
-#  here — they override SCOPE-based discovery and go stale quickly.
+#  env vars are no longer read — do not reintroduce them.
 # -----------------------------------------------------------------------------
 
 services:

@@ -314,7 +314,7 @@ class Web(ExtensionProtocol):
         # capability protocols — no reflective class-walking here.
 
         # Add root redirect if no other root endpoint exists.
-        # This assumes the 'web' extension is loaded LAST in DYNASTORE_EXTENSION_MODULES
+        # This assumes the 'web' extension is loaded LAST (configured via SCOPE)
         # to correctly detect if other extensions (like 'features') have already claimed the root path.
         # has_root_endpoint = any(
         #     r.path == "/" for r in app.routes if isinstance(r, APIRoute)

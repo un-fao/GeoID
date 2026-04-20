@@ -30,7 +30,7 @@ async def main():
     logger.info("--- [main_worker.py] Initializing application context for worker... ---")
     
     app_state = AppState()
-    # 1. Discover all modules based on DYNASTORE_MODULES environment variable.
+    # 1. Discover all modules based on the SCOPE environment variable.
     #    This populates the internal module registry.
     modules.discover_modules() # Populates the registry with module classes.
 

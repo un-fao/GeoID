@@ -210,4 +210,4 @@ Tasks use a Strategy Pattern to handle complex reporting without polluting inges
 
 ## Generic Execution via `main_task.py`
 A generic worker. It boots up looking for command line constants `task_name` and `payload`.
-It initiates required system constants by iterating the `DYNASTORE_MODULES` config, mapping the required dependencies, bridging synchronous databases, and dynamically invoking mapped functions based on the payload string cleanly avoiding rewriting infrastructure for every new async script operation.
+It initiates required system constants by iterating the `SCOPE`-filtered module registry, mapping the required dependencies, bridging synchronous databases, and dynamically invoking mapped functions based on the payload string cleanly avoiding rewriting infrastructure for every new async script operation.

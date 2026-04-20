@@ -5,7 +5,7 @@ Provides a STAC API Item Search-compliant `GET /search` and `POST /search`
 endpoint backed by Elasticsearch. The implementation detail (ES) is hidden
 from the API surface – the extension is named 'search'.
 
-Enable by adding 'search' to DYNASTORE_EXTENSION_MODULES.
+Enable by adding 'search' to SCOPE.
 """
 from __future__ import annotations
 
