@@ -28,6 +28,7 @@ class DBConfig:
     pool_max_queries: int = int(os.getenv("DB_POOL_MAX_QUERIES", "50000"))
     pool_max_inactive_connection_lifetime: int = int(os.getenv("DB_POOL_MAX_INACTIVE_CONNECTION_LIFETIME", "30"))
     pool_command_timeout: int = int(os.getenv("DB_POOL_COMMAND_TIMEOUT", "60"))
+    connect_timeout: int = int(os.getenv("DB_CONNECT_TIMEOUT", "30"))
     
     def __repr__(self) -> str:
         return class_tools.__repr__(self, sensitive_attrs=["database_url"])

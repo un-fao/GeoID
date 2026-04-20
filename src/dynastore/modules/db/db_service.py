@@ -129,7 +129,7 @@ class DBService(ModuleProtocol, DatabaseProtocol):
                     pool_timeout=db_config.pool_command_timeout,
                     pool_pre_ping=True,
                     pool_recycle=1800,
-                    connect_args={"timeout": 10},
+                    connect_args={"timeout": db_config.connect_timeout},
                 )
                 engine_created_by_service = True
                 logger.info(

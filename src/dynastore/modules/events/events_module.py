@@ -663,7 +663,16 @@ class EventsModule(ModuleProtocol):
             yield False
             return
         lock_id = _get_stable_lock_id(key)
-        async with engine.connect() as conn:
+        conn_ctx = engine.connect()
+        try:
+            conn = await conn_ctx.__aenter__()
+        except Exception as exc:
+            logger.debug(
+                "EventsModule: acquire_consumer_lock connect failed (%s); yielding non-leader.", exc
+            )
+            yield False
+            return
+        try:
             conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
             acquired = await DQLQuery(
                 "SELECT pg_try_advisory_lock(:id)",
@@ -682,6 +691,11 @@ class EventsModule(ModuleProtocol):
                     ).execute(conn, id=lock_id)
                 except Exception:
                     pass  # connection drop releases lock automatically
+        finally:
+            try:
+                await conn_ctx.__aexit__(None, None, None)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Backlog monitor (leader-elected)

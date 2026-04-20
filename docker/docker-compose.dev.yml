@@ -12,7 +12,7 @@ services:
       - ./scripts:/scripts:ro # docker/scripts mount (relative to compose file dir)
     entrypoint: ["bash", "/scripts/db_entrypoint_dev.sh"]
     command: >-
-      postgres -c max_connections=200 -c max_locks_per_transaction=256
+      postgres -c max_connections=500 -c max_locks_per_transaction=256
       -c shared_preload_libraries=pg_cron
       -c cron.database_name=${POSTGRES_DB:-gis_dev}
     healthcheck:
@@ -52,6 +52,8 @@ services:
         condition: service_healthy
     environment:
       UVICORN_WORKERS: 1
+      DB_POOL_MIN_SIZE: "20"
+      DB_CONNECT_TIMEOUT: "30"
       LOG_LEVEL: DEBUG
       ACCESS_LOG: "-"
       ERROR_LOG: "-"

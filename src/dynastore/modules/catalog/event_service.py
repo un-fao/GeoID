@@ -456,6 +456,8 @@ class EventService(EventBusProtocol):
         scope: str,
     ) -> None:
         """One consumer task per shard — own connection, own SKIP LOCKED scan."""
+        if shard_id > 0:
+            await asyncio.sleep(shard_id * 0.25)
         logger.info(
             "EventService: shard consumer started (shard=%d, scope=%s).", shard_id, scope
         )
