@@ -55,7 +55,7 @@ def test_no_extension_redeclares_enabled_field():
     for cls in list_registered_configs().values():
         if not issubclass(cls, ExposableConfigMixin):
             continue
-        own_fields = set(cls.__annotations__ or {})
+        own_fields = set(cls.__dict__.get("__annotations__", {}))
         assert "enabled" not in own_fields, (
             f"{cls.__name__} shadows ExposableConfigMixin.enabled — remove the local field."
         )

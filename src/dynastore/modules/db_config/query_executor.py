@@ -747,6 +747,17 @@ class DDLExecutor(BaseExecutor):
                         pass  # SAVEPOINT was rolled back cleanly; outer tx remains healthy
                 else:
                     res = await self._call_existence_check(conn, params)
+                    # The SELECT in the existence check triggers SQLAlchemy autobegin.
+                    # Reset it now so managed_transaction below starts a proper top-level
+                    # transaction; if it sees in_transaction()=True it uses begin_nested()
+                    # (SAVEPOINT) whose outer autobegin _execute_async_workflow later rolls
+                    # back, silently discarding the DDL.
+                    if isinstance(conn, (AsyncConnection, AsyncSession)):
+                        try:
+                            if conn.in_transaction():
+                                await conn.rollback()
+                        except Exception:
+                            pass
                     if res:
                         return await self._apply_post_processing_async(None)
             except Exception:
