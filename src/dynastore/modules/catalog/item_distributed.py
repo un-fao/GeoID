@@ -339,6 +339,10 @@ class ItemDistributedMixin(_Host):
                 sc_payload, hub_data, processing_context or {}
             )
 
+            full_payload = self._strip_undeclared_columns(
+                sidecar, full_payload, col_config
+            )
+
             await self._upsert_sidecar_table_raw(
                 conn, schema, sc_table, full_payload, conflict_cols=conflict_cols
             )
@@ -419,6 +423,10 @@ class ItemDistributedMixin(_Host):
                 sc_payload, hub_data, processing_context or {}
             )
 
+            full_payload = self._strip_undeclared_columns(
+                sidecar, full_payload, col_config
+            )
+
             await self._upsert_sidecar_table_raw(
                 conn, schema, sc_table, full_payload, conflict_cols=conflict_cols
             )
@@ -456,6 +464,40 @@ class ItemDistributedMixin(_Host):
         return await DQLQuery(sql, result_handler=ResultHandler.ONE).execute(
             conn, **params
         )
+
+    @staticmethod
+    def _strip_undeclared_columns(
+        sidecar: SidecarProtocol,
+        payload: Dict[str, Any],
+        col_config: Any,
+    ) -> Dict[str, Any]:
+        """Strip payload keys that the sidecar's DDL does not declare.
+
+        Protocol-level guard against DDL/payload drift. Today the only
+        optional schema axis on SidecarProtocol is ``validity`` — its column
+        exists iff ``sidecar.has_validity()`` or ``"validity"`` is a global
+        partition key (see each sidecar's ``get_ddl`` gate). Without this,
+        sidecars that unconditionally inject ``validity`` from context/hub
+        into their payload will trip UndefinedColumnError (42703) whenever
+        they were provisioned without the column.
+
+        New axes with the same DDL/payload-optionality shape should be
+        added here rather than duplicated across every sidecar's
+        ``finalize_upsert_payload``.
+        """
+        partition_keys: List[str] = []
+        if (
+            getattr(col_config, "partitioning", None) is not None
+            and getattr(col_config.partitioning, "enabled", False)
+        ):
+            partition_keys = list(col_config.partitioning.partition_keys or [])
+
+        if "validity" in payload and not (
+            sidecar.has_validity() or "validity" in partition_keys
+        ):
+            payload = {k: v for k, v in payload.items() if k != "validity"}
+
+        return payload
 
     async def _upsert_sidecar_table_raw(
         self, conn, schema, table, data, conflict_cols: List[str] = ["geoid"]
