@@ -208,9 +208,10 @@ def _build_tasks_ddl_batch(schema: str) -> DDLBatch:
 from dynastore.modules import ModuleProtocol
 from dynastore.models.protocols import TasksProtocol
 from dynastore.models.protocols.task_queue import TaskQueueProtocol
+from dynastore.modules.processes.protocols import ProcessRegistryProtocol
 
 
-class TasksModule(TaskQueueProtocol, ModuleProtocol):
+class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
     priority: int = 15  # Must start before CatalogModule (20) to create global tables
 
     # --- TasksProtocol CRUD (backward compat) ---
@@ -329,6 +330,28 @@ class TasksModule(TaskQueueProtocol, ModuleProtocol):
             "ASYNCHRONOUS": capability_map.async_types,
             "SYNCHRONOUS": capability_map.sync_types,
         }
+
+    # --- ProcessRegistryProtocol ---
+
+    async def list_processes(self, tenant: Optional[str] = None) -> List[Any]:
+        """Return all Process definitions from locally-installed tasks."""
+        from dynastore.tasks import get_loaded_task_types, discover_tasks
+        from dynastore.modules.gcp.tools.jobs import try_load_process_definition
+
+        discover_tasks()
+        result = []
+        for task_type in get_loaded_task_types():
+            defn = try_load_process_definition(task_type)
+            if defn is not None:
+                result.append(defn)
+        return result
+
+    async def get_process(self, process_id: str, tenant: Optional[str] = None) -> Optional[Any]:
+        for process in await self.list_processes(tenant):
+            if process.id == process_id:
+                return process
+        return None
+
     @asynccontextmanager
     async def lifespan(self, app_state: object) -> AsyncGenerator[None, None]:
         """
@@ -361,17 +384,6 @@ class TasksModule(TaskQueueProtocol, ModuleProtocol):
             engine = None
 
         async with manage_tasks(app_state):
-            # Import optional runner packages for side-effect registration. Each package
-            # calls `register_plugin(...)` at import time; guard with ImportError so
-            # scopes that exclude the runner's dependencies don't crash startup.
-            from dynastore.tools.discovery import get_protocol
-            from dynastore.models.protocols import JobExecutionProtocol
-            if get_protocol(JobExecutionProtocol) is not None:
-                try:
-                    import dynastore.tasks.gcp_cloud_runner  # noqa: F401
-                except ImportError as e:
-                    logger.info(f"TasksModule: gcp_cloud_runner not importable ({e}); skipping.")
-
             from dynastore.modules.tasks.runners import get_all_runners_with_setup
             for _prio, runner in sorted(get_all_runners_with_setup(), key=lambda x: -x[0]):
                 try:
