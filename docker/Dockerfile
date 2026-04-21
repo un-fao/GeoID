@@ -76,10 +76,12 @@ COPY pyproject.toml .en[v]* ./src/
 COPY src ./src
 COPY tests ./tests
 
-# Copy startup scripts early so they are available in all stages
-COPY docker/scripts/start.sh /usr/local/bin/start.sh
-COPY docker/scripts/start-task.sh /usr/local/bin/start-task.sh
-RUN chmod +x /usr/local/bin/start.sh /usr/local/bin/start-task.sh
+# Startup scripts ship as package data at src/dynastore/scripts/ (SSOT), so the
+# deployment wrappers (dynastore, fao-aip-catalog) can pull them from site-packages
+# after `pip install dynastore[...] @ git+...`. Here in geoid we install them from
+# the already-COPYed source tree.
+RUN install -m 755 ${APP_DIR}/src/dynastore/scripts/start.sh /usr/local/bin/start.sh && \
+    install -m 755 ${APP_DIR}/src/dynastore/scripts/start-task.sh /usr/local/bin/start-task.sh
 # SCOPE selects which pyproject.toml extras to install.
 # Set per-service via docker-compose.yml build args (from .env) or CI.
 ARG SCOPE=all

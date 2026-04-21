@@ -13,4 +13,5 @@ recursive-include src *.sql
 recursive-include src *.txt
 recursive-include src *.jinja2
 recursive-include src *.qml
+recursive-include src *.sh
 recursive-include src/dynastore/extensions/static *

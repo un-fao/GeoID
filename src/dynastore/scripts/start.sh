@@ -85,7 +85,7 @@ case "$MODE" in
         exec gunicorn \
           --worker-class "uvicorn.workers.UvicornWorker" \
           "${APP}.main:app" \
-          --bind "0.0.0.0:${TCP_PORT:-80}" \
+          --bind "0.0.0.0:${PORT:-${TCP_PORT:-80}}" \
           --workers "${GUNICORN_WORKERS}" \
           --threads "${GUNICORN_THREADS}" \
           --timeout "${GUNICORN_TIMEOUT}" \
