@@ -176,6 +176,28 @@ class CatalogEventType(EventType):
         "after_item_hard_deletion", EventScope.COLLECTION
     )
 
+    # M3.0 — metadata-changed events (role-based driver plan §Events).
+    #
+    # Emitted by ``catalog_metadata_router.upsert_catalog_metadata`` and
+    # ``delete_catalog_metadata`` on every Primary WRITE/DELETE so INDEX
+    # (ReindexWorker) and BACKUP (export-endpoint) consumers see a
+    # single signal per change.  Payload shape:
+    #
+    #   {"catalog_id": "<id>", "domain": "CORE" | "STAC",
+    #    "updated_at": "<ISO-8601 UTC>",
+    #    "operation": "upsert" | "delete"}
+    #
+    # Scope = PLATFORM because catalog-tier metadata lives in the global
+    # ``catalog.catalog_metadata_*`` tables (not per-tenant schemas).
+    # COLLECTION_METADATA_CHANGED scope = CATALOG because it references
+    # a per-tenant ``{schema}.collection_metadata_*`` row.
+    CATALOG_METADATA_CHANGED = define_event(
+        "catalog_metadata_changed", EventScope.PLATFORM
+    )
+    COLLECTION_METADATA_CHANGED = define_event(
+        "collection_metadata_changed", EventScope.CATALOG
+    )
+
     # Bulk Event Lifecycle
     BEFORE_BULK_ITEM_CREATION = define_event(
         "before_bulk_item_creation", EventScope.COLLECTION

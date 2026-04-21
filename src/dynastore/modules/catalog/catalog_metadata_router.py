@@ -160,12 +160,36 @@ async def upsert_catalog_metadata(
     in parallel over the same connection would cause race conditions
     on the underlying asyncpg cursor.  If a future backend genuinely
     supports per-driver connections, parallelisation can be opt-in.
+
+    M3.0 — ``catalog_metadata_changed`` event emission
+    --------------------------------------------------
+
+    After the driver fan-out completes, emit one
+    ``catalog_metadata_changed`` event per driver-domain touched.  The
+    event is the single signal INDEX / BACKUP consumers
+    (``ReindexWorker`` + future export endpoint) listen for to pick
+    up mutations on the canonical store.  Emission shares the caller's
+    ``db_resource`` so the event write lives in the same transaction
+    as the metadata write — transactional-outbox semantics: if the
+    enclosing transaction rolls back, the event disappears with it,
+    and no consumer wastes work on a never-committed mutation.
+
+    Best-effort: an emission failure is logged but does NOT roll back
+    the successful driver writes (the authoritative store already
+    has the update; a missing event just means slower propagation
+    until the consumer's backfill catches up).
     """
     drivers = drivers if drivers is not None else _resolve_catalog_metadata_drivers()
     for driver in drivers:
         await driver.upsert_catalog_metadata(
             catalog_id, metadata, db_resource=db_resource,
         )
+    await _emit_catalog_metadata_changed(
+        catalog_id=catalog_id,
+        drivers=drivers,
+        operation="upsert",
+        db_resource=db_resource,
+    )
 
 
 async def delete_catalog_metadata(
@@ -190,3 +214,70 @@ async def delete_catalog_metadata(
         await driver.delete_catalog_metadata(
             catalog_id, soft=soft, db_resource=db_resource,
         )
+    await _emit_catalog_metadata_changed(
+        catalog_id=catalog_id,
+        drivers=drivers,
+        operation="soft_delete" if soft else "delete",
+        db_resource=db_resource,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Event-emission helper (M3.0)
+# ---------------------------------------------------------------------------
+
+
+async def _emit_catalog_metadata_changed(
+    *,
+    catalog_id: str,
+    drivers: List[CatalogMetadataStore],
+    operation: str,
+    db_resource: Optional[Any],
+) -> None:
+    """Emit one ``catalog_metadata_changed`` event per driver-domain touched.
+
+    One event per domain rather than one per mutation because the
+    ReindexWorker shards on ``(catalog_id, domain)`` — issuing a
+    dedicated row per domain keeps each consumer's claim surface
+    tight (no N-way contention over a single PLATFORM event).
+
+    Domain is read from the driver's ``domain`` ClassVar
+    (``MetadataDomain.CORE`` / ``STAC``).  Drivers without a
+    ``domain`` attribute (future 3rd-party) default to ``CORE`` so
+    the event still lands.
+
+    Errors here are logged, not raised — the metadata write already
+    succeeded and the caller's mutation intent is satisfied.  A
+    missing event means INDEX/BACKUP propagation lags until the
+    consumer runs its own catch-up pass.
+    """
+    from dynastore.modules.catalog.event_service import (
+        CatalogEventType, emit_event,
+    )
+
+    emitted_domains: set[str] = set()
+    for driver in drivers:
+        domain_value = getattr(
+            getattr(driver, "domain", None), "value", "CORE",
+        )
+        if domain_value in emitted_domains:
+            continue  # de-dup within this call
+        emitted_domains.add(domain_value)
+        try:
+            await emit_event(
+                CatalogEventType.CATALOG_METADATA_CHANGED,
+                catalog_id=catalog_id,
+                db_resource=db_resource,
+                payload={
+                    "catalog_id": catalog_id,
+                    "domain": domain_value,
+                    "operation": operation,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "catalog_metadata_changed event emission failed for "
+                "%s / %s: %s — INDEX / BACKUP consumers will pick "
+                "this up via their backfill pass",
+                catalog_id, domain_value, exc,
+            )

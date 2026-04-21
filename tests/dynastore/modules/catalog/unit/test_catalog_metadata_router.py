@@ -23,6 +23,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _silence_event_emission(monkeypatch):
+    """Stub ``emit_event`` on the router.
+
+    The tests in this file focus on driver fan-out semantics, not on
+    event plumbing (which has its own suite below).  Stubbing emit
+    here keeps the existing assertions unchanged after the M3.0
+    emission wiring landed on the router.
+    """
+    monkeypatch.setattr(
+        "dynastore.modules.catalog.event_service.emit_event",
+        AsyncMock(return_value=None),
+    )
+
+
 # ---------------------------------------------------------------------------
 # READ fan-out + merge
 # ---------------------------------------------------------------------------
@@ -252,6 +267,139 @@ def test_resolve_catalog_metadata_drivers_goes_through_get_protocols():
 # ---------------------------------------------------------------------------
 # CatalogRoutingConfig defaults (partner commit)
 # ---------------------------------------------------------------------------
+
+
+class TestMetadataChangedEventEmission:
+    """M3.0 — the router emits catalog_metadata_changed on every mutation.
+
+    These tests override the autouse emit stub so they can assert the
+    exact calls made.  One event per domain is expected; duplicate
+    driver domains (e.g. two STAC drivers registered concurrently) must
+    de-dup to a single event per domain per call.
+    """
+
+    @pytest.mark.asyncio
+    async def test_upsert_emits_per_domain_event(self, monkeypatch):
+        from dynastore.models.protocols.driver_roles import MetadataDomain
+        from dynastore.modules.catalog.catalog_metadata_router import (
+            upsert_catalog_metadata,
+        )
+
+        core = MagicMock()
+        core.domain = MetadataDomain.CORE
+        core.upsert_catalog_metadata = AsyncMock()
+        stac = MagicMock()
+        stac.domain = MetadataDomain.STAC
+        stac.upsert_catalog_metadata = AsyncMock()
+
+        emit = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            "dynastore.modules.catalog.event_service.emit_event", emit,
+        )
+
+        await upsert_catalog_metadata(
+            "cat-42", {"title": {"en": "T"}}, drivers=[core, stac],
+        )
+        # One event per domain — two drivers → two events.
+        assert emit.await_count == 2
+        domains = [call.kwargs["payload"]["domain"] for call in emit.call_args_list]
+        assert set(domains) == {"core", "stac"}
+        # Every event carries ``operation`` and ``catalog_id``.
+        for call in emit.call_args_list:
+            payload = call.kwargs["payload"]
+            assert payload["catalog_id"] == "cat-42"
+            assert payload["operation"] == "upsert"
+
+    @pytest.mark.asyncio
+    async def test_delete_emits_delete_operation(self, monkeypatch):
+        from dynastore.models.protocols.driver_roles import MetadataDomain
+        from dynastore.modules.catalog.catalog_metadata_router import (
+            delete_catalog_metadata,
+        )
+
+        core = MagicMock()
+        core.domain = MetadataDomain.CORE
+        core.delete_catalog_metadata = AsyncMock()
+
+        emit = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            "dynastore.modules.catalog.event_service.emit_event", emit,
+        )
+
+        await delete_catalog_metadata("cat", soft=False, drivers=[core])
+        emit.assert_awaited_once()
+        assert emit.call_args.kwargs["payload"]["operation"] == "delete"
+
+    @pytest.mark.asyncio
+    async def test_soft_delete_emits_soft_delete_operation(self, monkeypatch):
+        from dynastore.models.protocols.driver_roles import MetadataDomain
+        from dynastore.modules.catalog.catalog_metadata_router import (
+            delete_catalog_metadata,
+        )
+
+        core = MagicMock()
+        core.domain = MetadataDomain.CORE
+        core.delete_catalog_metadata = AsyncMock()
+        emit = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            "dynastore.modules.catalog.event_service.emit_event", emit,
+        )
+
+        await delete_catalog_metadata("cat", soft=True, drivers=[core])
+        assert emit.call_args.kwargs["payload"]["operation"] == "soft_delete"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_domain_drivers_dedup_to_one_event(self, monkeypatch):
+        """Two drivers on the same domain → one event per domain, not two."""
+        from dynastore.models.protocols.driver_roles import MetadataDomain
+        from dynastore.modules.catalog.catalog_metadata_router import (
+            upsert_catalog_metadata,
+        )
+
+        pg_core = MagicMock()
+        pg_core.domain = MetadataDomain.CORE
+        pg_core.upsert_catalog_metadata = AsyncMock()
+        es_core = MagicMock()
+        es_core.domain = MetadataDomain.CORE   # second CORE driver
+        es_core.upsert_catalog_metadata = AsyncMock()
+
+        emit = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            "dynastore.modules.catalog.event_service.emit_event", emit,
+        )
+
+        await upsert_catalog_metadata("cat", {}, drivers=[pg_core, es_core])
+        assert emit.await_count == 1   # one CORE event, not two
+        assert emit.call_args.kwargs["payload"]["domain"] == "core"
+
+    @pytest.mark.asyncio
+    async def test_emit_failure_logs_but_does_not_raise(self, monkeypatch, caplog):
+        """A broken emit_event must not turn a successful write into a 5xx."""
+        from dynastore.models.protocols.driver_roles import MetadataDomain
+        from dynastore.modules.catalog import catalog_metadata_router as mod
+        from dynastore.modules.catalog.catalog_metadata_router import (
+            upsert_catalog_metadata,
+        )
+
+        core = MagicMock()
+        core.domain = MetadataDomain.CORE
+        core.upsert_catalog_metadata = AsyncMock()
+
+        async def _boom(*args, **kwargs):
+            raise RuntimeError("outbox unavailable")
+
+        monkeypatch.setattr(
+            "dynastore.modules.catalog.event_service.emit_event", _boom,
+        )
+
+        with caplog.at_level(logging.WARNING, logger=mod.__name__):
+            # Must not raise.
+            await upsert_catalog_metadata("cat", {}, drivers=[core])
+
+        core.upsert_catalog_metadata.assert_awaited_once()
+        assert any(
+            "event emission failed" in r.message for r in caplog.records
+        )
 
 
 def test_catalog_routing_config_defaults_use_canonical_names():
