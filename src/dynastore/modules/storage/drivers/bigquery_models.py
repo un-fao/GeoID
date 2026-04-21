@@ -1,13 +1,27 @@
-"""BigQuery driver DTOs (Phase 4a — READ path only).
+"""BigQuery driver DTOs (Phase 4a — READ path; Phase 3/WRITE — reporter path).
 
 Per-request credential overrides + Secret-wrapped credentials land in
 Phase 4b/4e. This phase uses CloudIdentityProtocol for all auth, so the
 driver config only carries target identity.
+
+Phase 3 of the naming-harmonisation plan adds a reporter-mode WRITE path:
+BigQuery acts as an async ingestion-mirror sink under ``Operation.WRITE``
+fan-out (on_failure=warn) without pretending to be the source of truth.
+Three reporter modes are supported:
+
+- ``off``           — default; WRITE is a no-op, preserving the Phase 4a
+                      semantics (READ-only driver).
+- ``flat``          — one BQ row per feature: primary key + optional
+                      payload + ingestion timestamp.
+- ``batch_summary`` — one BQ row per ``write_entities`` call: collection
+                      id, row count, min/max timestamps.  Best fit for
+                      data-engineering pipelines that just need to know
+                      "how many rows landed, when".
 """
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -72,7 +86,7 @@ class BigQueryCredentials(BaseModel):
         return self.service_account_json is None and self.api_key is None
 
 
-class CollectionBigQueryDriverConfig(CollectionDriverConfig):
+class ItemsBigQueryDriverConfig(CollectionDriverConfig):
     """Registered per-collection config for the BigQuery driver.
 
     Phase 4a: READ-only, credentials via CloudIdentityProtocol.
@@ -87,3 +101,58 @@ class CollectionBigQueryDriverConfig(CollectionDriverConfig):
     location: str = "EU"
     page_size: int = Field(default=1000, ge=1, le=50000)
     query_timeout_s: int = Field(default=60, ge=1, le=600)
+
+    # ---- Reporter-mode WRITE path (Phase 3) ------------------------------
+    # All four fields are inert when ``reporter_mode == "off"`` so the
+    # default-fast invariant holds: CollectionPostgresqlDriverConfig() has
+    # an empty model_dump(exclude_unset=True) and WRITE is a no-op.
+    reporter_mode: Literal["off", "flat", "batch_summary"] = Field(
+        default="off",
+        description=(
+            "BigQuery WRITE-path behaviour: 'off' disables WRITE, 'flat' "
+            "streams one row per feature, 'batch_summary' streams one row "
+            "per write_entities call."
+        ),
+    )
+    report_target: Optional[BigQueryTarget] = Field(
+        default=None,
+        description=(
+            "Destination table for reporter rows.  When None, falls back "
+            "to ``target`` (read and report share the same table — fine "
+            "for append-only DWH mirrors; insufficient when reports need "
+            "their own schema, which the schema for flat / batch_summary "
+            "implies)."
+        ),
+    )
+    include_payload: bool = Field(
+        default=False,
+        description=(
+            "In ``flat`` mode, include the full feature.properties JSON "
+            "as a ``payload`` column.  Leave False for PII-sensitive "
+            "collections where only counts / IDs should leave the tenant."
+        ),
+    )
+    exclude_fields: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Property names stripped from each feature before streaming to "
+            "BigQuery.  Applied only to ``flat`` mode payloads; "
+            "batch_summary never emits properties so this is ignored."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Back-compat aliases — legacy Collection*DriverConfig names remain importable, and
+# registry lookups (driver_index / TypedModelRegistry) go through the
+# config_rewriter so persisted routing entries and config rows still resolve.
+# Remove once telemetry shows zero hits on the rewriter.  See
+# dynastore.tools.config_rewriter.
+# ---------------------------------------------------------------------------
+from dynastore.tools.config_rewriter import register_config_class_key_rename  # noqa: E402
+
+CollectionBigQueryDriverConfig = ItemsBigQueryDriverConfig  # noqa: E305 — back-compat alias, see config_rewriter
+register_config_class_key_rename(
+    legacy="CollectionBigQueryDriverConfig",
+    canonical="ItemsBigQueryDriverConfig",
+)

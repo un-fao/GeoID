@@ -1,7 +1,7 @@
 """Guiding principle #1: every non-exceptional ``PluginConfig`` subclass must
 instantiate with no args so the waterfall always has a code-level floor.
 
-Documented exception: ``CollectionIcebergDriverConfig`` has mandatory fields
+Documented exception: ``ItemsIcebergDriverConfig`` has mandatory fields
 (``warehouse``/namespace/table_name) — when the waterfall cannot supply those,
 the expected outcome is ``ConfigResolutionError`` at request time.
 """
@@ -40,7 +40,7 @@ class TestCollectionRoutingConfigDefaults:
     def test_write_default_is_pg(self):
         cfg = CollectionRoutingConfig()
         ids = [e.driver_id for e in cfg.operations[Operation.WRITE]]
-        assert "CollectionPostgresqlDriver" in ids
+        assert "ItemsPostgresqlDriver" in ids
 
 
 class TestCollectionWritePolicyDefaults:
@@ -79,10 +79,10 @@ class TestIcebergZeroArgInstantiation:
     def test_zero_arg_instantiation(self):
         try:
             from dynastore.modules.storage.driver_config import (
-                CollectionIcebergDriverConfig,
+                ItemsIcebergDriverConfig,
             )
         except ImportError:
             pytest.skip("Iceberg driver config not available in this build")
 
-        cfg = CollectionIcebergDriverConfig()
+        cfg = ItemsIcebergDriverConfig()
         assert cfg is not None

@@ -24,10 +24,11 @@ Owns the DDL and all SQL operations for:
 - ``{schema}.asset_references`` — cascade-delete coordination table
 
 Also implements ``get_collection_metadata()`` / ``set_collection_metadata()``
-by reading/upserting ``{schema}.metadata`` — the same table used
-by ``CollectionPostgresqlDriver`` — enabling ``CollectionMetadataEnricherProtocol``
-to enrich collection descriptors with asset-derived statistics (counts, last
-ingestion timestamp, coverage bounds).
+by reading/upserting ``{schema}.collection_metadata`` — the same table used
+by ``ItemsPostgresqlDriver``.  TRANSFORM drivers (role-based driver
+plan §Protocols) use this to enrich collection descriptors with
+asset-derived statistics (counts, last ingestion timestamp, coverage
+bounds).
 
 Lifecycle
 ~~~~~~~~~
@@ -653,7 +654,7 @@ class AssetPostgresqlDriver:
     ) -> Optional[Dict[str, Any]]:
         """Read collection metadata from ``metadata``.
 
-        The same table is used by ``CollectionPostgresqlDriver`` for feature
+        The same table is used by ``ItemsPostgresqlDriver`` for feature
         collection metadata — scoped to ``collection_id``.
         """
         schema = await self._resolve_schema(catalog_id, db_resource)
@@ -662,7 +663,7 @@ class AssetPostgresqlDriver:
 
         sql = f"""
             SELECT *
-            FROM "{schema}".metadata
+            FROM "{schema}".collection_metadata
             WHERE collection_id = :collection_id
         """
         async with managed_transaction(db_resource or self.engine) as conn:
@@ -705,7 +706,7 @@ class AssetPostgresqlDriver:
         update_list = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in columns)
 
         sql = text(f"""
-            INSERT INTO "{schema}".metadata (collection_id, {col_list})
+            INSERT INTO "{schema}".collection_metadata (collection_id, {col_list})
             VALUES (:collection_id, {val_list})
             ON CONFLICT (collection_id) DO UPDATE SET {update_list}
         """)

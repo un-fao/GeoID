@@ -26,7 +26,7 @@ Provides enhanced configuration for attribute storage, including storage modes
 from typing import List, Optional, Dict, Any, Union, Literal
 from enum import Enum
 from pydantic import BaseModel, Field, model_validator
-from dynastore.modules.catalog.sidecars.base import SidecarConfig, SidecarConfigRegistry
+from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarConfig, SidecarConfigRegistry
 
 
 class AttributePartitionStrategyPreset(str, Enum):

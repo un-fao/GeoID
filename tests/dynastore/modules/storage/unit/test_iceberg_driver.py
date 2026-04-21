@@ -14,9 +14,9 @@ from unittest.mock import AsyncMock, patch
 from datetime import datetime, timezone
 
 from dynastore.models.protocols.storage_driver import Capability
-from dynastore.modules.storage.driver_config import CollectionIcebergDriverConfig, IcebergConfig
+from dynastore.modules.storage.driver_config import ItemsIcebergDriverConfig, IcebergConfig
 from dynastore.modules.storage.drivers.iceberg import (
-    CollectionIcebergDriver,
+    ItemsIcebergDriver,
     _resolve_iceberg_type,
 )
 
@@ -37,7 +37,7 @@ def _make_loc(table_name="test_tbl", namespace="test_ns", **overrides):
     # (IcebergConfig), not per-collection.  Only table-location fields belong here.
     defaults = dict(namespace=namespace, table_name=table_name)
     defaults.update(overrides)
-    return CollectionIcebergDriverConfig(**defaults)
+    return ItemsIcebergDriverConfig(**defaults)
 
 
 @pytest.fixture
@@ -124,19 +124,19 @@ def iceberg_table(iceberg_catalog, ns_name, request):
 
 @pytest.fixture
 def test_loc(iceberg_table, ns_name):
-    """CollectionIcebergDriverConfig pointing to the test's unique table."""
+    """ItemsIcebergDriverConfig pointing to the test's unique table."""
     return _make_loc(table_name=iceberg_table.name()[-1], namespace=ns_name)
 
 
 @pytest.fixture
 def driver_with_catalog(iceberg_catalog, iceberg_table):
-    """CollectionIcebergDriver pre-loaded with the real test catalog.
+    """ItemsIcebergDriver pre-loaded with the real test catalog.
 
     Pre-populates ``_catalog_cache`` with the key the driver computes from
     ``IcebergConfig``, bypassing the ``_load_catalog_sync`` call so tests do
     not need a live PG connection in ``_load_catalog_sync``.
     """
-    driver = CollectionIcebergDriver()
+    driver = ItemsIcebergDriver()
     loc_key = (
         f"{IcebergConfig.catalog_name}:{IcebergConfig.catalog_uri}"
         f":{IcebergConfig.catalog_type}"
@@ -174,13 +174,13 @@ def _write_rows(table, rows):
 
 class TestIcebergDriverMeta:
     def test_driver_class_name(self):
-        assert type(CollectionIcebergDriver()).__name__ == "CollectionIcebergDriver"
+        assert type(ItemsIcebergDriver()).__name__ == "ItemsIcebergDriver"
 
     def test_priority(self):
-        assert CollectionIcebergDriver().priority == 20
+        assert ItemsIcebergDriver().priority == 20
 
     def test_capabilities(self):
-        caps = CollectionIcebergDriver().capabilities
+        caps = ItemsIcebergDriver().capabilities
         assert Capability.STREAMING in caps
         assert Capability.SPATIAL_FILTER in caps
         assert Capability.EXPORT in caps
@@ -192,14 +192,14 @@ class TestIcebergDriverMeta:
         assert Capability.READ_ONLY not in caps
 
     def test_is_available_true(self):
-        assert CollectionIcebergDriver().is_available() is True
+        assert ItemsIcebergDriver().is_available() is True
 
     def test_is_available_without_pyiceberg(self):
         with patch(
             "dynastore.modules.storage.drivers.iceberg._pyiceberg_available",
             return_value=False,
         ):
-            assert CollectionIcebergDriver().is_available() is False
+            assert ItemsIcebergDriver().is_available() is False
 
 
 # ---------------------------------------------------------------------------
@@ -209,12 +209,12 @@ class TestIcebergDriverMeta:
 
 class TestIcebergTableIdentifier:
     def test_default_mapping(self):
-        driver = CollectionIcebergDriver()
-        loc = CollectionIcebergDriverConfig()
+        driver = ItemsIcebergDriver()
+        loc = ItemsIcebergDriverConfig()
         assert driver._table_identifier(loc, "cat", "col") == ("cat", "col")
 
     def test_explicit_namespace_and_table(self):
-        driver = CollectionIcebergDriver()
+        driver = ItemsIcebergDriver()
         loc = _make_loc(namespace="ns", table_name="tbl")
         assert driver._table_identifier(loc, "cat", "col") == ("ns", "tbl")
 
@@ -259,7 +259,7 @@ class TestIcebergCatalogConfig:
 class TestIcebergWriteEntities:
     @pytest.mark.asyncio
     async def test_write_raises_without_location(self):
-        driver = CollectionIcebergDriver()
+        driver = ItemsIcebergDriver()
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=None):
             with pytest.raises(RuntimeError, match="no OTF location config"):
                 await driver.write_entities("cat1", "col1", {"id": "1"})
@@ -451,7 +451,7 @@ class TestIcebergDropStorage:
         )
         iceberg_catalog.create_table((ns_name, tbl_name), schema=schema)
 
-        driver = CollectionIcebergDriver()
+        driver = ItemsIcebergDriver()
         loc_key = f"{IcebergConfig.catalog_name}:{IcebergConfig.catalog_uri}:{IcebergConfig.catalog_type}"
         driver._catalog_cache[loc_key] = iceberg_catalog
 
@@ -482,7 +482,7 @@ class TestIcebergEnsureStorage:
         except Exception:
             pass
 
-        driver = CollectionIcebergDriver()
+        driver = ItemsIcebergDriver()
         loc_key = f"{IcebergConfig.catalog_name}:{IcebergConfig.catalog_uri}:{IcebergConfig.catalog_type}"
         driver._catalog_cache[loc_key] = iceberg_catalog
 
@@ -548,10 +548,10 @@ class TestIcebergExportEntities:
 class TestIcebergResolveLocation:
     @pytest.mark.asyncio
     async def test_returns_default_when_no_config(self):
-        driver = CollectionIcebergDriver()
+        driver = ItemsIcebergDriver()
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=None):
             loc = await driver.resolve_storage_location("cat1")
-            assert isinstance(loc, CollectionIcebergDriverConfig)
+            assert isinstance(loc, ItemsIcebergDriverConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -700,38 +700,38 @@ class TestIcebergSchemaEvolution:
 class TestIcebergBboxFilter:
     def test_point_inside_bbox(self):
         geom = {"type": "Point", "coordinates": [10, 20]}
-        assert CollectionIcebergDriver._bbox_matches(geom, [0, 0, 50, 50]) is True
+        assert ItemsIcebergDriver._bbox_matches(geom, [0, 0, 50, 50]) is True
 
     def test_point_outside_bbox(self):
         geom = {"type": "Point", "coordinates": [100, 100]}
-        assert CollectionIcebergDriver._bbox_matches(geom, [0, 0, 50, 50]) is False
+        assert ItemsIcebergDriver._bbox_matches(geom, [0, 0, 50, 50]) is False
 
     def test_polygon_partially_inside(self):
         geom = {"type": "Polygon", "coordinates": [[[10, 10], [60, 10], [60, 60], [10, 60], [10, 10]]]}
-        assert CollectionIcebergDriver._bbox_matches(geom, [0, 0, 50, 50]) is True
+        assert ItemsIcebergDriver._bbox_matches(geom, [0, 0, 50, 50]) is True
 
     def test_none_geometry(self):
-        assert CollectionIcebergDriver._bbox_matches(None, [0, 0, 50, 50]) is False
+        assert ItemsIcebergDriver._bbox_matches(None, [0, 0, 50, 50]) is False
 
     def test_empty_bbox(self):
         geom = {"type": "Point", "coordinates": [10, 20]}
-        assert CollectionIcebergDriver._bbox_matches(geom, []) is False
+        assert ItemsIcebergDriver._bbox_matches(geom, []) is False
 
     def test_json_string_geometry(self):
         geom = json.dumps({"type": "Point", "coordinates": [10, 20]})
-        assert CollectionIcebergDriver._bbox_matches(geom, [0, 0, 50, 50]) is True
+        assert ItemsIcebergDriver._bbox_matches(geom, [0, 0, 50, 50]) is True
 
     def test_linestring(self):
         geom = {"type": "LineString", "coordinates": [[5, 5], [15, 15]]}
-        assert CollectionIcebergDriver._bbox_matches(geom, [0, 0, 10, 10]) is True
+        assert ItemsIcebergDriver._bbox_matches(geom, [0, 0, 10, 10]) is True
 
     def test_multipoint_none_inside(self):
         geom = {"type": "MultiPoint", "coordinates": [[100, 100], [200, 200]]}
-        assert CollectionIcebergDriver._bbox_matches(geom, [0, 0, 50, 50]) is False
+        assert ItemsIcebergDriver._bbox_matches(geom, [0, 0, 50, 50]) is False
 
     def test_point_on_bbox_edge(self):
         geom = {"type": "Point", "coordinates": [50, 50]}
-        assert CollectionIcebergDriver._bbox_matches(geom, [0, 0, 50, 50]) is True
+        assert ItemsIcebergDriver._bbox_matches(geom, [0, 0, 50, 50]) is True
 
 
 # ---------------------------------------------------------------------------
@@ -773,7 +773,7 @@ class TestIcebergTypeResolution:
 class TestIcebergLifespan:
     @pytest.mark.asyncio
     async def test_lifespan_clears_catalog(self):
-        driver = CollectionIcebergDriver()
+        driver = ItemsIcebergDriver()
         driver._catalog_cache["test_key"] = "something"
         async with driver.lifespan(object()):
             pass

@@ -218,7 +218,7 @@ async def get_write_drivers(
 
     Always returns ≥1 entry in a correctly bootstrapped deploy. The waterfall
     has a code-level default (``CollectionRoutingConfig.operations[WRITE] =
-    [CollectionPostgresqlDriver]``), so an empty result indicates a deploy/ops
+    [ItemsPostgresqlDriver]``), so an empty result indicates a deploy/ops
     misconfiguration and is raised as :class:`ConfigResolutionError`.
     """
     from dynastore.models.protocols.storage_driver import CollectionItemsStore as _CSDP
@@ -240,7 +240,7 @@ async def get_write_drivers(
             scope_tried=["collection", "catalog", "platform", "code_default"],
             hint=(
                 "Register a CollectionItemsStore driver (e.g. "
-                "CollectionPostgresqlDriver) or set "
+                "ItemsPostgresqlDriver) or set "
                 "CollectionRoutingConfig.operations[WRITE] at platform scope."
             ),
         )

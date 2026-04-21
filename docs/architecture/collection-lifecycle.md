@@ -61,10 +61,10 @@ Content-Type: application/json
 
 {
   "operations": {
-    "WRITE":    [{"driver_id": "CollectionElasticsearchObfuscatedDriver"}],
-    "READ":     [{"driver_id": "CollectionElasticsearchObfuscatedDriver"}],
-    "SEARCH":   [{"driver_id": "CollectionElasticsearchObfuscatedDriver"}],
-    "METADATA": [{"driver_id": "CollectionPostgresqlDriver"}]
+    "WRITE":    [{"driver_id": "ItemsElasticsearchObfuscatedDriver"}],
+    "READ":     [{"driver_id": "ItemsElasticsearchObfuscatedDriver"}],
+    "SEARCH":   [{"driver_id": "ItemsElasticsearchObfuscatedDriver"}],
+    "METADATA": [{"driver_id": "ItemsPostgresqlDriver"}]
   }
 }
 ```
@@ -74,7 +74,7 @@ activation. Call it (zero, one, or many times, for any pinnable
 collection-scope config) to override defaults before the first insert.
 
 Call as many different configs as you need — `CollectionRoutingConfig`,
-`CollectionWritePolicy`, `CollectionSchema`, `CollectionPostgresqlDriverConfig`,
+`CollectionWritePolicy`, `CollectionSchema`, `ItemsPostgresqlDriverConfig`,
 etc. All accept a first-write while the collection is pending.
 
 This endpoint is **not** OGC-standard — it is an internal API. Clients
@@ -148,7 +148,7 @@ driver.
   special endpoint needed.
 - **To check activation state**, call
   `CollectionService.is_active(catalog_id, collection_id)` — derived
-  from `CollectionPostgresqlDriverConfig.physical_table`. No extra table,
+  from `ItemsPostgresqlDriverConfig.physical_table`. No extra table,
   no new column on `collections`.
 - **Driver swap on an already-active collection is still forbidden** —
   `CollectionRoutingConfig.operations` remains `Immutable` once pinned.

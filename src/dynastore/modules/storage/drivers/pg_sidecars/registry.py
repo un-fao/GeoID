@@ -18,7 +18,7 @@
 
 from typing import Any, Dict, Mapping, Optional, Type, Union
 
-from dynastore.modules.catalog.sidecars.base import (
+from dynastore.modules.storage.drivers.pg_sidecars.base import (
     SidecarConfig,
     SidecarConfigRegistry,
     SidecarProtocol,
@@ -44,17 +44,17 @@ class SidecarRegistry:
 
         # Check if core sidecars are already registered to avoid wiping external ones
         if "geometries" not in cls._registry:
-            from dynastore.modules.catalog.sidecars.geometries import GeometriesSidecar
+            from dynastore.modules.storage.drivers.pg_sidecars.geometries import GeometriesSidecar
             cls._registry["geometries"] = GeometriesSidecar
             
         if "attributes" not in cls._registry:
-            from dynastore.modules.catalog.sidecars.attributes import (
+            from dynastore.modules.storage.drivers.pg_sidecars.attributes import (
                 FeatureAttributeSidecar,
             )
             cls._registry["attributes"] = FeatureAttributeSidecar
             
         if "item_metadata" not in cls._registry:
-            from dynastore.modules.catalog.sidecars.item_metadata import (
+            from dynastore.modules.storage.drivers.pg_sidecars.item_metadata import (
                 ItemMetadataSidecar,
             )
             cls._registry["item_metadata"] = ItemMetadataSidecar

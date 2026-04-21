@@ -27,8 +27,8 @@ from dynastore.modules.db_config.platform_config_service import (
 )
 from typing import ClassVar, List, Optional
 
-from dynastore.modules.catalog.sidecars.base import SidecarConfig
-from dynastore.modules.catalog.sidecars.geometries_config import GeometriesSidecarConfig
+from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarConfig
+from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import GeometriesSidecarConfig
 
 
 class CollectionTypeEnum(str, Enum):
@@ -73,8 +73,8 @@ class CollectionPluginConfig(PluginConfig):
     """Collection configuration — structural only.
 
     PG-specific fields (``sidecars``, ``partitioning``, ``collection_type``)
-    have moved to ``CollectionPostgresqlDriverConfig``
-    (``plugin_id = "CollectionPostgresqlDriverConfig"``).
+    have moved to ``ItemsPostgresqlDriverConfig``
+    (``plugin_id = "ItemsPostgresqlDriverConfig"``).
 
     Storage routing is handled by ``CollectionRoutingConfig``
     (``plugin_id = "CollectionRoutingConfig"``).

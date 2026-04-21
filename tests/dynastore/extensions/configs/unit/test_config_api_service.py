@@ -102,7 +102,7 @@ async def test_resolve_driver_configs_embeds_driver_config(mock_config_service):
         "operations": {
             "WRITE": [
                 {
-                    "driver_id": "CollectionPostgresqlDriver",
+                    "driver_id": "ItemsPostgresqlDriver",
                     "on_failure": "fatal",
                     "write_mode": "sync",
                     "hints": [],
@@ -110,7 +110,7 @@ async def test_resolve_driver_configs_embeds_driver_config(mock_config_service):
             ],
             "READ": [
                 {
-                    "driver_id": "CollectionPostgresqlDriver",
+                    "driver_id": "ItemsPostgresqlDriver",
                     "on_failure": "fatal",
                     "write_mode": "sync",
                     "hints": [],
@@ -123,13 +123,13 @@ async def test_resolve_driver_configs_embeds_driver_config(mock_config_service):
     class _FakeDriver:
         pass
 
-    _FakeDriver.__name__ = "CollectionPostgresqlDriver"
+    _FakeDriver.__name__ = "ItemsPostgresqlDriver"
     fake_instance = _FakeDriver()
 
     class _FakeCfg:
         @classmethod
         def class_key(cls):
-            return "CollectionPostgresqlDriverConfig"
+            return "ItemsPostgresqlDriverConfig"
 
         def model_dump(self):
             return {"enabled": True}
@@ -141,7 +141,7 @@ async def test_resolve_driver_configs_embeds_driver_config(mock_config_service):
         return_value=_FakeCfg,
     ):
         mock_registry.collection_index.return_value = {
-            "CollectionPostgresqlDriver": fake_instance
+            "ItemsPostgresqlDriver": fake_instance
         }
         mock_config_service.get_config = AsyncMock(return_value=_FakeCfg())
 
@@ -153,10 +153,10 @@ async def test_resolve_driver_configs_embeds_driver_config(mock_config_service):
         )
 
     assert "WRITE" in result
-    assert result["WRITE"][0].driver_id == "CollectionPostgresqlDriver"
+    assert result["WRITE"][0].driver_id == "ItemsPostgresqlDriver"
     assert result["WRITE"][0].on_failure == "fatal"
     assert result["WRITE"][0].config == {"enabled": True}
-    assert result["WRITE"][0].config_class_key == "CollectionPostgresqlDriverConfig"
+    assert result["WRITE"][0].config_class_key == "ItemsPostgresqlDriverConfig"
 
 
 @pytest.mark.asyncio

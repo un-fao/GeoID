@@ -4,7 +4,10 @@ services:
       file: ./compose.db.dev.yml
       service: db
     container_name: geoid_db
-    env_file: .env
+    env_file:
+      - .env
+      - path: .env.local
+        required: false
     environment:
       RESET_MODE: default
     networks:
@@ -23,7 +26,10 @@ services:
         BUILD_JUPYTERLITE: "true"
     volumes:
       - ../../../src:/dynastore/src # Hot reload mount
-    env_file: .env
+    env_file:
+      - .env
+      - path: .env.local
+        required: false
     depends_on:
       db:
         condition: service_healthy
@@ -79,7 +85,10 @@ services:
       args:
         SCOPE: ${WORKER_SCOPE:-scope_worker}
         BUILD_JUPYTERLITE: "false"
-    env_file: .env
+    env_file:
+      - .env
+      - path: .env.local
+        required: false
     depends_on:
       db:
         condition: service_healthy
@@ -111,7 +120,10 @@ services:
         BUILD_JUPYTERLITE: "true"
     volumes:
       - ../../../src:/dynastore/src
-    env_file: .env
+    env_file:
+      - .env
+      - path: .env.local
+        required: false
     depends_on:
       db:
         condition: service_healthy
@@ -137,7 +149,10 @@ services:
         BUILD_JUPYTERLITE: "true"
     volumes:
       - ../../../src:/dynastore/src
-    env_file: .env
+    env_file:
+      - .env
+      - path: .env.local
+        required: false
     depends_on:
       db:
         condition: service_healthy

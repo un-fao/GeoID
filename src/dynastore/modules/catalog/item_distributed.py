@@ -20,14 +20,14 @@ from dynastore.modules.db_config.query_executor import (
     ResultHandler,
 )
 from dynastore.modules.storage.driver_config import (
-    CollectionPostgresqlDriverConfig,
+    ItemsPostgresqlDriverConfig,
     CollectionWritePolicy,
     WriteConflictPolicy,
     IdentityMatcher,
 )
 from dynastore.modules.storage.errors import ConflictError, SidecarRejectedError
 from dynastore.models.protocols import ConfigsProtocol
-from dynastore.modules.catalog.sidecars.base import SidecarProtocol
+from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.catalog.query_optimizer import QueryOptimizer
@@ -59,7 +59,7 @@ class ItemDistributedMixin(_Host):
         collection_id: str,
         hub_payload: Dict[str, Any],
         sidecar_payloads: Dict[str, Dict[str, Any]],
-        col_config: CollectionPostgresqlDriverConfig,
+        col_config: ItemsPostgresqlDriverConfig,
         sidecars: List[SidecarProtocol],
         processing_context: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:

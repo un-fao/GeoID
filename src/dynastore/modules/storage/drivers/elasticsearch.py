@@ -25,11 +25,11 @@ can read data written by these drivers transparently.
 
 Three drivers:
 
-* ``CollectionElasticsearchDriver``  (driver_id ``"elasticsearch"``)
+* ``ItemsElasticsearchDriver``  (driver_id ``"elasticsearch"``)
   Full STAC indexing via SFEOS ``DatabaseLogic`` for items, collections, and
   catalogs.  Supports ``stac-fastapi-core[catalogs]``.
 
-* ``CollectionElasticsearchObfuscatedDriver``  (driver_id ``"elasticsearch_obfuscated"``)
+* ``ItemsElasticsearchObfuscatedDriver``  (driver_id ``"elasticsearch_obfuscated"``)
   Stores full entity data but only allows search by geoid (``dynamic: false``).
   Manages DENY access policies in its own lifecycle.
 
@@ -105,19 +105,19 @@ class _ElasticsearchBase:
     ) -> Any:
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.tools.discovery import get_protocol
-        from dynastore.modules.storage.driver_config import CollectionElasticsearchDriverConfig
+        from dynastore.modules.storage.driver_config import ItemsElasticsearchDriverConfig
 
         configs = get_protocol(ConfigsProtocol)
         if configs is None:
-            return CollectionElasticsearchDriverConfig()
+            return ItemsElasticsearchDriverConfig()
         config = await configs.get_config(
-            CollectionElasticsearchDriverConfig,
+            ItemsElasticsearchDriverConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
             ctx=DriverContext(db_resource=db_resource),
         )
         if config is None:
-            return CollectionElasticsearchDriverConfig()
+            return ItemsElasticsearchDriverConfig()
         return config
 
     @staticmethod
@@ -230,10 +230,10 @@ class _ElasticsearchBase:
 
 
 # ---------------------------------------------------------------------------
-# CollectionElasticsearchDriver — SFEOS-backed full STAC
+# ItemsElasticsearchDriver — SFEOS-backed full STAC
 # ---------------------------------------------------------------------------
 
-class CollectionElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
+class ItemsElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
     """SFEOS-compatible Elasticsearch storage driver.
 
     Delegates all ES operations to ``stac-fastapi-elasticsearch``'s
@@ -290,7 +290,7 @@ class CollectionElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
                 decorator = events.async_event_listener(etype)
                 if decorator:
                     decorator(handler)
-            logger.info("CollectionElasticsearchDriver: event listeners registered.")
+            logger.info("ItemsElasticsearchDriver: event listeners registered.")
         yield
 
     # ------------------------------------------------------------------
@@ -644,7 +644,7 @@ class CollectionElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
                         pass
             except Exception as e:
                 logger.warning(
-                    "CollectionElasticsearchDriver: search failed for %s/%s: %s",
+                    "ItemsElasticsearchDriver: search failed for %s/%s: %s",
                     catalog_id, collection_id, e,
                 )
 
@@ -693,7 +693,7 @@ class CollectionElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
         if not _templates_created:
             await create_index_templates()
             _templates_created = True
-            logger.debug("CollectionElasticsearchDriver: global index templates created.")
+            logger.debug("ItemsElasticsearchDriver: global index templates created.")
 
         # Always ensure the collections meta-index.
         await create_collection_index()
@@ -710,12 +710,12 @@ class CollectionElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
                         ignore=400,  # 400 = index already exists — safe to ignore
                     )
                     logger.info(
-                        "CollectionElasticsearchDriver: created items index '%s'.",
+                        "ItemsElasticsearchDriver: created items index '%s'.",
                         index_name,
                     )
             except Exception as e:
                 logger.warning(
-                    "CollectionElasticsearchDriver: ensure_storage collection index "
+                    "ItemsElasticsearchDriver: ensure_storage collection index "
                     "creation failed for '%s': %s",
                     collection_id, e,
                 )
@@ -749,7 +749,7 @@ class CollectionElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> str:
         raise NotImplementedError(
-            "CollectionElasticsearchDriver.export_entities: not supported. "
+            "ItemsElasticsearchDriver.export_entities: not supported. "
             "Export from the primary driver instead."
         )
 
@@ -1098,10 +1098,10 @@ class CollectionElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
 
 
 # ---------------------------------------------------------------------------
-# CollectionElasticsearchObfuscatedDriver — geoid-only, DENY-protected
+# ItemsElasticsearchObfuscatedDriver — geoid-only, DENY-protected
 # ---------------------------------------------------------------------------
 
-class CollectionElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
+class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
     """Tenant-scoped Elasticsearch storage driver (a.k.a. "obfuscated").
 
     Writes the full feature (geometry + properties + external_id) into a
@@ -1165,7 +1165,7 @@ class CollectionElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol
                 decorator = events.async_event_listener(etype)
                 if decorator:
                     decorator(handler)
-            logger.info("CollectionElasticsearchObfuscatedDriver: event listeners registered.")
+            logger.info("ItemsElasticsearchObfuscatedDriver: event listeners registered.")
         yield
 
     # ------------------------------------------------------------------
@@ -1277,7 +1277,7 @@ class CollectionElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol
     ) -> int:
         if soft:
             raise SoftDeleteNotSupportedError(
-                "CollectionElasticsearchObfuscatedDriver does not support soft delete."
+                "ItemsElasticsearchObfuscatedDriver does not support soft delete."
             )
         from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
@@ -1327,7 +1327,7 @@ class CollectionElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol
     ) -> None:
         if soft:
             raise SoftDeleteNotSupportedError(
-                "CollectionElasticsearchObfuscatedDriver does not support soft drop."
+                "ItemsElasticsearchObfuscatedDriver does not support soft drop."
             )
         from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
@@ -1347,7 +1347,7 @@ class CollectionElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol
         db_resource: Optional[Any] = None,
     ) -> str:
         raise NotImplementedError(
-            "CollectionElasticsearchObfuscatedDriver.export_entities: not supported."
+            "ItemsElasticsearchObfuscatedDriver.export_entities: not supported."
         )
 
     # Obfuscated driver stores geoid tokens only — not a metadata driver.
@@ -2082,3 +2082,24 @@ class AssetElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
             identifiers={"index": index_name, "prefix": prefix, "catalog_id": catalog_id},
             display_label=index_name,
         )
+
+
+# ---------------------------------------------------------------------------
+# Back-compat aliases — legacy Collection*Driver names remain importable, and
+# registry lookups (driver_index / TypedModelRegistry) go through the
+# config_rewriter so persisted routing entries and config rows still resolve.
+# Remove once telemetry shows zero hits on the rewriter.  See
+# dynastore.tools.config_rewriter.
+# ---------------------------------------------------------------------------
+from dynastore.tools.config_rewriter import register_driver_id_rename  # noqa: E402
+
+CollectionElasticsearchDriver = ItemsElasticsearchDriver  # noqa: E305 — back-compat alias, see config_rewriter
+register_driver_id_rename(
+    legacy="CollectionElasticsearchDriver",
+    canonical="ItemsElasticsearchDriver",
+)
+CollectionElasticsearchObfuscatedDriver = ItemsElasticsearchObfuscatedDriver  # noqa: E305 — back-compat alias, see config_rewriter
+register_driver_id_rename(
+    legacy="CollectionElasticsearchObfuscatedDriver",
+    canonical="ItemsElasticsearchObfuscatedDriver",
+)

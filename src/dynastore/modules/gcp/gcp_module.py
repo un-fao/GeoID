@@ -333,13 +333,20 @@ class GCPModule(
                 self._on_async_destroy_collection
             )
 
-            # Register BigQueryService and BigQueryCollectionEnricher
+            # Register BigQueryService and the BQ metadata TRANSFORM driver.
+            # Role-based driver refactor: the old CollectionMetadataEnricherProtocol-based
+            # BigQueryCollectionEnricher is now a CollectionMetadataStore with
+            # the TRANSFORM capability (plan §Protocols).  The attribute name
+            # and plugin registration are preserved for now so downstream
+            # lifespan teardown paths don't need changes in this PR.
             from dynastore.modules.gcp.bigquery_service import BigQueryService
-            from dynastore.modules.gcp.bq_collection_enricher import BigQueryCollectionEnricher
+            from dynastore.modules.gcp.bq_collection_enricher import (
+                BigQueryMetadataTransformDriver,
+            )
             from dynastore.tools.discovery import register_plugin
 
             self._bq_service = BigQueryService()
-            self._bq_collection_enricher = BigQueryCollectionEnricher()
+            self._bq_collection_enricher = BigQueryMetadataTransformDriver()
             register_plugin(self._bq_service)
             register_plugin(self._bq_collection_enricher)
 

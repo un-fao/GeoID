@@ -2,13 +2,13 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
-from dynastore.modules.storage.drivers.postgresql import CollectionPostgresqlDriver
+from dynastore.modules.storage.drivers.postgresql import ItemsPostgresqlDriver
 
 
 class TestUnifiedSoftDeletePg:
     @pytest.mark.asyncio
     async def test_hard_delete_entities(self):
-        driver = CollectionPostgresqlDriver()
+        driver = ItemsPostgresqlDriver()
         mock_crud = AsyncMock()
         mock_crud.delete_item = AsyncMock(return_value=1)
 
@@ -18,13 +18,13 @@ class TestUnifiedSoftDeletePg:
 
     @pytest.mark.asyncio
     async def test_soft_delete_entities_raises(self):
-        driver = CollectionPostgresqlDriver()
+        driver = ItemsPostgresqlDriver()
         with pytest.raises(SoftDeleteNotSupportedError):
             await driver.delete_entities("cat1", "col1", ["id1"], soft=True)
 
     @pytest.mark.asyncio
     async def test_hard_drop_storage(self):
-        driver = CollectionPostgresqlDriver()
+        driver = ItemsPostgresqlDriver()
         with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
             mock_catalogs = AsyncMock()
             mock_gp.return_value = mock_catalogs
@@ -33,7 +33,7 @@ class TestUnifiedSoftDeletePg:
 
     @pytest.mark.asyncio
     async def test_soft_drop_storage_logs_and_proceeds(self):
-        driver = CollectionPostgresqlDriver()
+        driver = ItemsPostgresqlDriver()
         with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
             mock_catalogs = AsyncMock()
             mock_gp.return_value = mock_catalogs

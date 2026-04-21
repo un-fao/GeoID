@@ -35,7 +35,7 @@ from shapely.geometry import shape, mapping
 
 from . import ogc_models
 from dynastore.tools.geospatial import calculate_spatial_indices
-from dynastore.modules.storage.driver_config import CollectionPostgresqlDriverConfig
+from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
 from dynastore.modules.catalog.models import (
     Collection as CoreCollection,
 )  # Import CoreCollection for type hinting
@@ -125,7 +125,7 @@ def _db_row_to_ogc_feature(
     catalog_id: str,
     collection_id: str,
     root_url: str,
-    layer_config: Optional[CollectionPostgresqlDriverConfig] = None,
+    layer_config: Optional[ItemsPostgresqlDriverConfig] = None,
 ) -> ogc_models.Feature:
     """
     Converts a database row or an already-mapped Feature into an OGC Feature.
@@ -294,7 +294,7 @@ async def create_queryables_response(
 
 
 def _process_feature_for_db(
-    feature: ogc_models.FeatureDefinition, layer_config: CollectionPostgresqlDriverConfig
+    feature: ogc_models.FeatureDefinition, layer_config: ItemsPostgresqlDriverConfig
 ) -> Dict[str, Any]:
     """
     Validates and prepares a feature for database insertion, raising

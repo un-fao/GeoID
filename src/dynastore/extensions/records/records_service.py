@@ -38,7 +38,7 @@ from dynastore.extensions.tools.language_utils import get_language
 from dynastore.extensions.tools.url import get_root_url
 from dynastore.models.protocols import CatalogsProtocol, ItemsProtocol
 from dynastore.models.shared_models import Link
-from dynastore.modules.catalog.sidecars.base import ConsumerType
+from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
 
 from . import records_generator as gen
 from . import records_models as rm

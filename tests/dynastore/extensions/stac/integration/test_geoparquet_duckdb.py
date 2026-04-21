@@ -150,7 +150,7 @@ async def test_geoparquet_duckdb_pipeline(
         "format": "parquet",
     }
     r = await in_process_client.put(
-        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/configs/CollectionDuckdbDriverConfig",
+        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/configs/ItemsDuckdbDriverConfig",
         json=duckdb_config,
     )
     assert r.status_code in (200, 201), f"DuckDB config failed: {r.text}"
@@ -160,8 +160,8 @@ async def test_geoparquet_duckdb_pipeline(
     # ------------------------------------------------------------------
     routing_config = {
         "operations": {
-            "WRITE": [{"driver_id": "CollectionPostgresqlDriver", "hints": [], "on_failure": "fatal"}],
-            "READ": [{"driver_id": "CollectionDuckdbDriver", "hints": [], "on_failure": "fatal"}],
+            "WRITE": [{"driver_id": "ItemsPostgresqlDriver", "hints": [], "on_failure": "fatal"}],
+            "READ": [{"driver_id": "ItemsDuckdbDriver", "hints": [], "on_failure": "fatal"}],
         }
     }
     r = await in_process_client.put(
@@ -270,8 +270,8 @@ async def test_geoparquet_duckdb_pipeline(
     from dynastore.modules.storage import get_driver, Operation
 
     driver = await get_driver(Operation.READ, catalog_id, collection_id)
-    assert type(driver).__name__ == "CollectionDuckdbDriver", (
-        f"Expected CollectionDuckdbDriver via routing, got '{type(driver).__name__}'"
+    assert type(driver).__name__ == "ItemsDuckdbDriver", (
+        f"Expected ItemsDuckdbDriver via routing, got '{type(driver).__name__}'"
     )
 
     features_from_duckdb = []

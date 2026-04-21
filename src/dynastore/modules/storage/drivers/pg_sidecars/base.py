@@ -321,7 +321,7 @@ class SidecarConfig(BaseModel):
     Base configuration model for sidecars.
     """
 
-    sidecar_type: str  # Discriminator field
+    sidecar_type: str  # Discriminator field — subclasses override with Literal[...]
     enabled: bool = True
 
     # Per-sidecar indexing configuration
@@ -331,11 +331,29 @@ class SidecarConfig(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _pin_discriminator_as_set(self):
-        # The discriminator is load-bearing metadata, not an "unset" default.
-        # Without this, default-constructed subclasses (e.g. GeometriesSidecarConfig())
-        # serialize to `{}` under model_dump(exclude_unset=True) — the shape that
-        # produced the ingestion Cloud Run crash when tier-merged + re-validated.
+    def _retain_sidecar_type_on_dump(self) -> "SidecarConfig":
+        """Mark ``sidecar_type`` as explicitly set so ``exclude_unset=True`` keeps it.
+
+        Concrete subclasses declare ``sidecar_type: Literal["..."] = "..."``; when
+        a caller builds one via ``SomeConfig()`` with no arguments, Pydantic treats
+        the default as not-explicitly-set, and ``model_dump(exclude_unset=True)``
+        drops the discriminator.  That makes the dump non-roundtrippable via
+        ``model_validate`` on the Union — the very point of the discriminator.
+
+        This validator runs once after construction and adds ``"sidecar_type"``
+        to ``__pydantic_fields_set__``, making the dump lossless regardless of
+        how the instance was built.  See role-based driver plan §M1b.1.
+
+        Rebase note: ``main`` shipped the same fix under the name
+        ``_pin_discriminator_as_set`` (commit ``96fbf8c``).  The two
+        implementations are semantically identical (same
+        ``__pydantic_fields_set__.add("sidecar_type")`` body); we keep the
+        branch's more-descriptive name + docstring here.  The failure
+        mode ``main``'s commit message mentions — "default-constructed
+        ``GeometriesSidecarConfig()`` serialises to ``{}`` under
+        ``exclude_unset=True`` → Cloud Run ingestion crash on
+        re-validate" — is the exact case this validator closes.
+        """
         self.__pydantic_fields_set__.add("sidecar_type")
         return self
 

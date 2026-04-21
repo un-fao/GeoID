@@ -1,8 +1,8 @@
 import pytest
 from sqlalchemy import text
-from dynastore.modules.storage.driver_config import CollectionPostgresqlDriverConfig
-from dynastore.modules.catalog.sidecars.geometries_config import GeometriesSidecarConfig
-from dynastore.modules.catalog.sidecars.attributes_config import (
+from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
+from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import GeometriesSidecarConfig
+from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
     FeatureAttributeSidecarConfig,
     AttributeStorageMode,
     AttributeSchemaEntry,
@@ -44,7 +44,7 @@ async def test_attribute_defaults_columnar(app_lifespan, catalog_id, collection_
         ],
     )
 
-    col_config = CollectionPostgresqlDriverConfig(
+    col_config = ItemsPostgresqlDriverConfig(
         sidecars=[GeometriesSidecarConfig(), attr_sidecar]
     )
 
@@ -115,7 +115,7 @@ async def test_attribute_defaults_jsonb(app_lifespan, catalog_id, collection_id)
         ],
     )
 
-    col_config = CollectionPostgresqlDriverConfig(
+    col_config = ItemsPostgresqlDriverConfig(
         sidecars=[GeometriesSidecarConfig(), attr_sidecar]
     )
 

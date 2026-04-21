@@ -51,7 +51,7 @@ from dynastore.modules.storage.driver_config import (
     WritePolicyDefaults,
     DriverCapability,
     DriverPluginConfig,
-    CollectionPostgresqlDriverConfig,
+    ItemsPostgresqlDriverConfig,
     WriteConflictPolicy,
 )
 from dynastore.modules.storage.schema_types import (
@@ -84,6 +84,7 @@ from dynastore.modules.storage.config_cache import (
 )
 from dynastore.modules.storage.routing_config import (
     AssetRoutingConfig,
+    CatalogRoutingConfig,
     FailurePolicy,
     MetadataRoutingConfig,
     Operation,
@@ -126,6 +127,7 @@ __all__ = [
     # Routing configs
     "CollectionRoutingConfig",
     "AssetRoutingConfig",
+    "CatalogRoutingConfig",
     "MetadataRoutingConfig",
     "OperationDriverEntry",
     "FailurePolicy",

@@ -1,13 +1,25 @@
-"""Fix 2: CollectionPostgresqlDriverConfig.validate_sidecars_polymorphic must
-fail loud on malformed entries instead of silently passing dicts through. This
-surfaces data-corruption bugs at hydration time — the ingestion Cloud Run
-regression was masked for months by the silent else-branch.
+"""Fix 2: Sidecar validation must fail loud on malformed entries.
+
+Post-rebase note (M1b.1): the branch replaced the hand-rolled
+``validate_sidecars_polymorphic`` field-validator with Pydantic's
+native ``Annotated[Union[...], Discriminator("sidecar_type")]`` on the
+``sidecars`` field of ``ItemsPostgresqlDriverConfig``
+(``CollectionPostgresqlDriverConfig`` is the legacy alias).  Pydantic
+emits its own error shape for discriminator failures / wrong types,
+which this test file pins against the native Pydantic messages
+rather than the pre-rebase hand-rolled strings.
+
+The fail-loud guarantee is strictly tighter than before:
+``aa6b8e7``'s hand-rolled loop silently fell back to the base
+``SidecarConfig`` for unknown ``sidecar_type`` values; Pydantic's
+discriminated union raises ``union_tag_invalid`` on those, closing
+the silent-failure window the original commit was worried about.
 """
 
 import pytest
 
-from dynastore.modules.catalog.sidecars.base import SidecarConfig
-from dynastore.modules.catalog.sidecars.geometries_config import (
+from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarConfig
+from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
     GeometriesSidecarConfig,
 )
 from dynastore.modules.storage.driver_config import (
@@ -45,21 +57,33 @@ class TestSidecarsValidatorHappyPaths:
 
 class TestSidecarsValidatorFailsLoud:
     def test_dict_without_sidecar_type_raises(self):
+        # Pydantic discriminated-union error: "Unable to extract tag using
+        # discriminator 'sidecar_type'"
         with pytest.raises(ValueError, match="sidecar_type"):
             CollectionPostgresqlDriverConfig(sidecars=[{"enabled": True}])
 
     def test_dict_with_empty_sidecar_type_raises(self):
+        # Empty-string tag: Pydantic fails to match any union member →
+        # ``union_tag_invalid``; the ``'sidecar_type'`` string still
+        # appears in the error message.
         with pytest.raises(ValueError, match="sidecar_type"):
             CollectionPostgresqlDriverConfig(
                 sidecars=[{"sidecar_type": "", "enabled": True}]
             )
 
     def test_non_dict_non_sidecarconfig_raises(self):
-        with pytest.raises(ValueError, match="expected SidecarConfig or dict"):
+        # Pydantic's native message for a non-object, non-SidecarConfig
+        # input to a discriminated-union field is
+        # ``Input should be a valid dictionary or object to extract
+        # fields from``.  Match the stable substring.
+        with pytest.raises(ValueError, match="valid dictionary or object"):
             CollectionPostgresqlDriverConfig(sidecars=["not-a-config"])
 
     def test_error_message_includes_index_for_multi_item_list(self):
-        with pytest.raises(ValueError, match=r"sidecars\[1\]"):
+        # Pydantic surfaces list indices as ``sidecars.1`` (dot-separated
+        # loc path), not ``sidecars[1]``.  Pin the dot form so regressions
+        # in Pydantic's loc formatting are visible.
+        with pytest.raises(ValueError, match=r"sidecars\.1"):
             CollectionPostgresqlDriverConfig(
                 sidecars=[
                     GeometriesSidecarConfig(),

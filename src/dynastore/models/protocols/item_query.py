@@ -41,7 +41,7 @@ from dynastore.models.query_builder import QueryRequest, QueryResponse
 from dynastore.models.protocols.configs import ConfigsProtocol
 
 if TYPE_CHECKING:
-    from dynastore.modules.catalog.sidecars.base import ConsumerType
+    from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
     from dynastore.models.driver_context import DriverContext  # noqa: F401
 
 

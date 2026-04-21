@@ -18,7 +18,9 @@
 
 """Configuration for the generic Item Metadata sidecar."""
 
-from dynastore.modules.catalog.sidecars.base import SidecarConfig, SidecarConfigRegistry
+from typing import Literal
+
+from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarConfig, SidecarConfigRegistry
 
 
 class ItemMetadataSidecarConfig(SidecarConfig):
@@ -29,7 +31,10 @@ class ItemMetadataSidecarConfig(SidecarConfig):
     that may be consumed by downstream sidecars (e.g. STAC overlay).
     """
 
-    sidecar_type: str = "item_metadata"
+    # Literal-typed discriminator — required by Pydantic for the
+    # Annotated[Union[...], Discriminator("sidecar_type")] dispatch on
+    # ItemsPostgresqlDriverConfig.sidecars.
+    sidecar_type: Literal["item_metadata"] = "item_metadata"
 
 
 SidecarConfigRegistry.register("item_metadata", ItemMetadataSidecarConfig)

@@ -3,7 +3,7 @@
 Driver-agnostic: the executor takes a primary-stream callable and an
 already-materialized secondary lookup dict, so callers can wire in any
 data source (DynaStore items via ItemsProtocol, BigQuery via Phase 4a's
-CollectionBigQueryDriver, ad-hoc test fixtures, etc.).
+ItemsBigQueryDriver, ad-hoc test fixtures, etc.).
 """
 
 from __future__ import annotations

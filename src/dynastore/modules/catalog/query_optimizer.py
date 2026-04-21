@@ -18,8 +18,8 @@
 
 import logging
 from typing import Dict, List, Any, Tuple, Set, Optional
-from dynastore.modules.storage.driver_config import CollectionPostgresqlDriverConfig
-from dynastore.modules.catalog.sidecars.base import (
+from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
+from dynastore.modules.storage.drivers.pg_sidecars.base import (
     SidecarProtocol,
     FieldDefinition,
     FieldCapability,
@@ -53,14 +53,14 @@ class QueryOptimizer:
     requested in ``QueryRequest``, avoiding unnecessary table JOINs.
     """
 
-    def __init__(self, col_config: CollectionPostgresqlDriverConfig):
+    def __init__(self, col_config: ItemsPostgresqlDriverConfig):
         self.col_config = col_config
         self.field_index: Dict[str, Tuple[SidecarProtocol, FieldDefinition]] = {}
         self._build_capability_index()
 
     def _build_capability_index(self):
         """Build index of all available fields and their capabilities from active sidecars."""
-        from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+        from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
 
         for sc_config in self.col_config.sidecars:
             sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
@@ -80,7 +80,7 @@ class QueryOptimizer:
     def map_row_to_feature(
         self,
         row: Dict[str, Any],
-        col_config: CollectionPostgresqlDriverConfig,
+        col_config: ItemsPostgresqlDriverConfig,
         lang: str = "en",
     ) -> Feature:
         """
@@ -104,7 +104,7 @@ class QueryOptimizer:
         """
         errors = []
 
-        from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+        from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
 
         # Validate SELECT fields
         for sel in query.select:
@@ -249,7 +249,7 @@ class QueryOptimizer:
         - 'geometry' from sidecars that provide it
         - 'properties' contributions from all sidecars
         """
-        from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+        from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
 
         properties = {}
         geometry_schema = None
@@ -335,7 +335,7 @@ class QueryOptimizer:
         # Without this, queries that only filter by non-spatial fields (e.g.
         # asset_id) would produce features without geometry.
         if require_geometry:
-            from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+            from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
             for sc_config in self.col_config.sidecars:
                 sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
                 if sidecar and sidecar.get_main_geometry_field() is not None:
@@ -359,7 +359,7 @@ class QueryOptimizer:
         Returns:
             (sql_string, parameters)
         """
-        from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+        from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
 
         # Validate first
         errors = self.validate_query(query)

@@ -4,7 +4,10 @@ services:
       file: ./compose.db.dev.yml
       service: db
     container_name: geoid_db_test
-    env_file: .env
+    env_file:
+      - .env
+      - path: .env.local
+        required: false
     environment:
       RESET_MODE: keycloak
     networks:
@@ -35,7 +38,10 @@ services:
       args:
         SCOPE: ${CATALOG_SCOPE:-all}
     container_name: geoid_catalog_test
-    env_file: .env
+    env_file:
+      - .env
+      - path: .env.local
+        required: false
     depends_on:
       db:
         condition: service_healthy
@@ -68,7 +74,10 @@ services:
       args:
         SCOPE: ${WORKER_SCOPE:-all}
     container_name: geoid_worker_test
-    env_file: .env
+    env_file:
+      - .env
+      - path: .env.local
+        required: false
     depends_on:
       db:
         condition: service_healthy
@@ -95,7 +104,10 @@ services:
       args:
         SCOPE: ${TEST_SCOPE:-all}
     container_name: geoid_test_runner
-    env_file: .env
+    env_file:
+      - .env
+      - path: .env.local
+        required: false
     environment:
       - LOG_LEVEL=INFO
       - PYTEST_CURRENT_TEST=true

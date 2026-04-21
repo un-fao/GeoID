@@ -32,7 +32,7 @@ import uuid
 from typing import List, Optional, Any, Dict, Union, Set, Callable, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from dynastore.modules.catalog.sidecars.base import ConsumerType
+    from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
     from dynastore.modules.db_config.query_executor import DDLBatch
 from dynastore.tools.cache import cached
 from dynastore.models.driver_context import DriverContext
@@ -90,9 +90,13 @@ CREATE TABLE IF NOT EXISTS {schema}.collections (
 );
 """
 
-# metadata: stores all descriptive metadata for collections.
+# collection_metadata: stores all descriptive metadata for collections.
+# Renamed from {schema}.metadata in Phase 2 of the naming harmonisation
+# (items / collection / catalog / asset tier prefixes).  See
+# db_init/metadata_domain_split.rename_legacy_metadata_tables for the
+# idempotent migration that runs ahead of this CREATE TABLE.
 METADATA_DDL = """
-CREATE TABLE IF NOT EXISTS {schema}.metadata (
+CREATE TABLE IF NOT EXISTS {schema}.collection_metadata (
     collection_id VARCHAR NOT NULL PRIMARY KEY,
     title JSONB,
     description JSONB,
@@ -152,16 +156,32 @@ async def initialize_core_tenant_tables(conn: DbResource, schema: str, catalog_i
     # 1. Create Schema
     await ensure_schema_exists(conn, schema)
 
-    # 2. Core Tables (collections + metadata + tenant configs) under a single
-    # batch sentinel — warm path skips the whole thing in one round-trip.
+    # 2. Phase 2 rename — move any existing {schema}.metadata* tables to
+    # their {schema}.collection_metadata* counterparts BEFORE the CREATE
+    # TABLE IF NOT EXISTS statements run.  Idempotent and a no-op on
+    # fresh schemas (DO block finds both source and target missing).
+    # Running the rename first guarantees that an existing tenant's data
+    # lands in the canonical table; a follow-up CREATE TABLE IF NOT EXISTS
+    # then observes the canonical table already present and does nothing.
+    from dynastore.modules.catalog.db_init.metadata_domain_split import (
+        ensure_tenant_metadata_domain_tables,
+        rename_legacy_metadata_tables,
+    )
+    await rename_legacy_metadata_tables(conn, schema)
+
+    # 3. Core Tables (collections + collection_metadata + tenant configs) under
+    # a single batch sentinel — warm path skips the whole thing in one
+    # round-trip.
     await _build_tenant_core_ddl_batch(schema).execute(conn, schema=schema)
-    logger.info(f"Core tenant tables (collections, configs, metadata) initialized for {schema}.")
+    logger.info(f"Core tenant tables (collections, configs, collection_metadata) initialized for {schema}.")
 
-from dynastore.tools.discovery import get_protocol
-from dynastore.models.query_builder import QueryRequest, QueryResponse
-from dynastore.modules.catalog.event_service import CatalogEventType, emit_event
+    # 4. M2.0 — per-tenant metadata-domain split tables
+    # (collection_metadata_core + collection_metadata_stac).  Additive:
+    # coexists with the legacy {schema}.collection_metadata table; no
+    # reads / writes change in M2.0.  Idempotent.
+    await ensure_tenant_metadata_domain_tables(conn, schema)
+    logger.info(f"M2 metadata-domain split tables initialized for {schema}.")
 
-logger = logging.getLogger(__name__)
 
 # --- Helpers ---
 
@@ -209,11 +229,141 @@ def get_catalog_engine(db_resource: Optional[DbResource] = None) -> DbResource:
     return get_engine()  # type: ignore[return-value]
 
 
+def _build_catalog_metadata_payload(catalog_model: Catalog) -> Dict[str, Any]:
+    """Flatten the Catalog model into a dict keyed by domain-metadata columns.
+
+    Keys align with the column tuples in
+    ``modules/storage/drivers/metadata_domain_postgresql.py`` so every
+    registered ``sync_catalog_metadata_initializer`` hook can
+    ``_filter_payload`` down to its own domain's columns without
+    additional routing logic here.
+
+    Absent fields are omitted (not set to ``None``) so the hook-level
+    default-fast check (``if not catalog_metadata: return``) still
+    fires when the caller passed an empty-body catalog create.
+
+    This helper stays in the service layer because it knows the
+    public Catalog model's shape.  The drivers read an opaque dict and
+    are not coupled to the Catalog class.
+    """
+    out: Dict[str, Any] = {}
+
+    # CORE domain fields
+    if catalog_model.title is not None:
+        out["title"] = catalog_model.title.model_dump(exclude_none=True) \
+            if hasattr(catalog_model.title, "model_dump") else catalog_model.title
+    if catalog_model.description is not None:
+        out["description"] = catalog_model.description.model_dump(exclude_none=True) \
+            if hasattr(catalog_model.description, "model_dump") else catalog_model.description
+    if catalog_model.keywords is not None:
+        out["keywords"] = catalog_model.keywords.model_dump(exclude_none=True) \
+            if hasattr(catalog_model.keywords, "model_dump") else catalog_model.keywords
+    if catalog_model.license is not None:
+        out["license"] = catalog_model.license.model_dump(exclude_none=True) \
+            if hasattr(catalog_model.license, "model_dump") else catalog_model.license
+    if catalog_model.extra_metadata is not None:
+        out["extra_metadata"] = catalog_model.extra_metadata.model_dump(exclude_none=True) \
+            if hasattr(catalog_model.extra_metadata, "model_dump") else catalog_model.extra_metadata
+
+    # STAC domain fields (catalog-tier subset — no extent / providers / summaries here)
+    if catalog_model.stac_version:
+        out["stac_version"] = catalog_model.stac_version
+    if catalog_model.stac_extensions:
+        out["stac_extensions"] = list(catalog_model.stac_extensions)
+    conforms_to = getattr(catalog_model, "conformsTo", None)
+    if conforms_to:
+        out["conforms_to"] = list(conforms_to)
+    if catalog_model.links:
+        out["links"] = [
+            link.model_dump(exclude_none=True) if hasattr(link, "model_dump") else link
+            for link in catalog_model.links
+        ]
+    # ``assets`` on the Catalog envelope — catalog-level assets (not item assets).
+    catalog_assets = getattr(catalog_model, "assets", None)
+    if catalog_assets:
+        out["assets"] = catalog_assets
+
+    return out
+
+
+def _extract_update_payload(
+    catalog_model: Catalog,
+    updated_fields: set[str],
+) -> Dict[str, Any]:
+    """Partial-update variant of :func:`_build_catalog_metadata_payload`.
+
+    Unlike the full-envelope flattener, this helper emits ONLY the
+    keys the caller listed in ``updated_fields`` (the set of fields the
+    update request carried) and that have a non-None value on
+    ``catalog_model``.  A PATCH that sets ``title`` alone yields a
+    payload of exactly ``{"title": {"en": "..."}}`` — downstream
+    Primary drivers' ``_filter_payload`` + PATCH-semantic UPSERT then
+    touch nothing else in the split tables.
+
+    The ``updated_fields`` set uses the public Catalog-model attribute
+    names (``title``, ``description``, ``keywords``, ``license``,
+    ``extra_metadata``, ``stac_version``, ``stac_extensions``,
+    ``conformsTo`` / ``conforms_to``, ``links``, ``assets``).  The
+    output dict uses snake_case keys matching the split-table column
+    names — the drivers' ``_*_COLUMNS`` tuples consume that shape.
+    """
+    out: Dict[str, Any] = {}
+
+    def _dump(value: Any) -> Any:
+        if value is None:
+            return None
+        if hasattr(value, "model_dump"):
+            return value.model_dump(exclude_none=True)
+        return value
+
+    # CORE + catalog-STAC field-name ↔ split-column mapping.  The
+    # ``conformsTo`` alias is explicit here because the client-facing
+    # field name is camelCase but the split column is snake_case.
+    candidates = [
+        ("title",            "title"),
+        ("description",      "description"),
+        ("keywords",         "keywords"),
+        ("license",          "license"),
+        ("extra_metadata",   "extra_metadata"),
+        ("stac_version",     "stac_version"),
+        ("stac_extensions",  "stac_extensions"),
+        ("conformsTo",       "conforms_to"),
+        ("conforms_to",      "conforms_to"),
+        ("links",            "links"),
+        ("assets",           "assets"),
+    ]
+    for src_field, out_key in candidates:
+        if src_field not in updated_fields:
+            continue
+        value = getattr(catalog_model, src_field, None)
+        if value is None:
+            continue
+        dumped = _dump(value)
+        if dumped is None:
+            continue
+        if src_field in ("stac_extensions", "conformsTo", "conforms_to"):
+            dumped = list(dumped) if hasattr(dumped, "__iter__") else dumped
+        elif src_field == "links":
+            dumped = [
+                _dump(link) if hasattr(link, "model_dump") else link
+                for link in value
+            ]
+        out[out_key] = dumped
+
+    return out
+
+
 # --- Queries ---
 
+# M2.5a — the catalog.catalogs INSERT carries only the technical
+# registry columns.  Metadata lands in catalog.catalog_metadata_core /
+# _stac via the M2.2 lifecycle hooks (``init_catalog_metadata``).  The
+# legacy metadata columns are kept in the DDL for rollback / visual
+# inspection until M2.5b's DROP COLUMN; they remain NULL for every
+# post-M2.5a catalog.
 _create_catalog_strict_query = DQLQuery(
-    "INSERT INTO catalog.catalogs (id, physical_schema, title, description, keywords, license, conforms_to, links, assets, extra_metadata, provisioning_status, stac_version, stac_extensions) "
-    "VALUES (:id, :physical_schema, :title, :description, :keywords, :license, :conforms_to, :links, :assets, :extra_metadata, :provisioning_status, :stac_version, :stac_extensions) "
+    "INSERT INTO catalog.catalogs (id, physical_schema, provisioning_status) "
+    "VALUES (:id, :physical_schema, :provisioning_status) "
     "ON CONFLICT (id) DO NOTHING;",
     result_handler=ResultHandler.ROWCOUNT,
 )
@@ -227,6 +377,12 @@ _list_catalogs_query = DQLQuery(
     "SELECT * FROM catalog.catalogs WHERE deleted_at IS NULL ORDER BY id LIMIT :limit OFFSET :offset;",
     result_handler=ResultHandler.ALL_DICTS,
 )
+
+# Threshold above which ``list_catalogs`` warns about sequential router
+# round-trips.  ~200 RTTs (e.g. a 100-row page × 2 domain drivers) is
+# the point at which p95 latency for a paged listing becomes noticeable
+# under the current non-batched router read path.
+_LIST_CATALOGS_ROUNDTRIP_WARN_THRESHOLD = 200
 
 _soft_delete_catalog_query = DQLQuery(
     "UPDATE catalog.catalogs SET deleted_at = NOW() WHERE id = :id AND deleted_at IS NULL;",
@@ -581,51 +737,41 @@ class CatalogService(CatalogsProtocol):
                 conn, physical_schema, catalog_id=catalog_model.id
             )
 
-            # Store only user-provided extra_metadata content (no envelope)
-            user_extra_metadata = (
-                json.dumps(
-                    catalog_model.extra_metadata.model_dump(exclude_none=True),
-                    cls=CustomJSONEncoder,
-                )
-                if catalog_model.extra_metadata
-                else None
-            )
-
+            # M2.5a — the registry INSERT carries only technical columns.
+            # Catalog metadata (title, description, …, stac_extensions,
+            # conforms_to, links, assets) flows into the split tables
+            # via the M2.2 ``init_catalog_metadata`` lifecycle phase
+            # below.  The legacy metadata columns on ``catalog.catalogs``
+            # remain in the DDL as vestigial NULLs until M2.5b's
+            # ``DROP COLUMN``; nothing reads them post-M2.4 overlay
+            # flip, and no code writes them post-this commit.
             await _create_catalog_strict_query.execute(
                 conn,
                 id=catalog_model.id,
                 physical_schema=physical_schema,
-                title=json.dumps(
-                    catalog_model.title.model_dump(exclude_none=True),
-                    cls=CustomJSONEncoder,
-                )
-                if catalog_model.title
-                else None,
-                description=json.dumps(
-                    catalog_model.description.model_dump(exclude_none=True),
-                    cls=CustomJSONEncoder,
-                )
-                if catalog_model.description
-                else None,
-                keywords=json.dumps(
-                    catalog_model.keywords.model_dump(exclude_none=True),
-                    cls=CustomJSONEncoder,
-                )
-                if catalog_model.keywords
-                else None,
-                license=json.dumps(
-                    catalog_model.license.model_dump(exclude_none=True),
-                    cls=CustomJSONEncoder,
-                )
-                if catalog_model.license
-                else None,
-                conforms_to=json.dumps(catalog_model.conformsTo, cls=CustomJSONEncoder) if catalog_model.conformsTo else None,
-                links=json.dumps([l.model_dump() for l in catalog_model.links], cls=CustomJSONEncoder) if catalog_model.links else None,
-                assets=None, # Assets are not part of core Catalog model yet, or are managed separately
-                extra_metadata=user_extra_metadata,
                 provisioning_status=catalog_model.provisioning_status,
-                stac_version=catalog_model.stac_version,
-                stac_extensions=json.dumps(catalog_model.stac_extensions, cls=CustomJSONEncoder) if catalog_model.stac_extensions else None,
+            )
+
+            # M2.2 — catalog-metadata lifecycle phase.
+            #
+            # At this point the catalog.catalogs registry row is committed
+            # (the INSERT above), so FK references from
+            # catalog.catalog_metadata_core / _stac into catalog.catalogs(id)
+            # are satisfied.  Dispatch the lifecycle phase so any registered
+            # PG / STAC / future driver hooks can persist catalog-tier
+            # metadata into their domain-scoped tables.  Default-fast: a
+            # caller that supplies no metadata fields (title=None, etc.)
+            # yields an empty dict here and every hook no-ops.
+            #
+            # The service stays driver-agnostic: the dict is built from the
+            # public Catalog model; the lifecycle_registry decides which
+            # hooks consume it (PG Primary today, ES Indexer later, etc.).
+            catalog_metadata = _build_catalog_metadata_payload(catalog_model)
+            await lifecycle_registry.init_catalog_metadata(
+                conn,
+                physical_schema,
+                catalog_id=catalog_model.id,
+                catalog_metadata=catalog_metadata,
             )
 
             # Lifecycle Phase 2: EVENT (Now after schema is ready AND record exists)
@@ -667,9 +813,9 @@ class CatalogService(CatalogsProtocol):
             )
         )
 
-        # Invalidate caches BEFORE emitting signal to prevent visibility gap race conditions
-        self._get_catalog_model_cached.cache_invalidate(catalog_model.id)
-        # Cache invalidation for catalog model (physical_schema is part of catalog model)
+        # Invalidate caches BEFORE emitting signal to prevent visibility gap race conditions.
+        # (The in-transaction invalidate above already covered the happy path; this second
+        # call guards against readers between the transaction commit and the signal below.)
         self._get_catalog_model_cached.cache_invalidate(catalog_model.id)
 
         # Emit signal to wake up background tasks (Visibility Gap fix)
@@ -682,12 +828,36 @@ class CatalogService(CatalogsProtocol):
         )
         return Catalog.model_validate(result)
 
-    def _unpack_catalog_row(self, row: Any) -> Optional[Catalog]:
+    def _unpack_catalog_row(
+        self,
+        row: Any,
+        *,
+        router_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Catalog]:
         """Unpacks a database row into a Catalog model.
 
         The extra_metadata column now stores only the user-provided extra metadata
         (a localized JSONB dict), not an envelope with type/conformsTo/links.
         Those fields come from the Catalog model defaults.
+
+        M2.4 — router overlay
+        ---------------------
+
+        When ``router_metadata`` is supplied, its keys overwrite the
+        corresponding legacy columns on the row dict before
+        model-validation.  Post-M2.2 catalog writes land in
+        ``catalog.catalog_metadata_core`` / ``_stac`` via the
+        lifecycle hooks; M2.3a backfilled pre-existing rows into the
+        same tables.  Reading through the router therefore returns
+        the canonical post-refactor envelope even while the legacy
+        columns on ``catalog.catalogs`` remain populated by the
+        pre-M2.5 service code.  A catalog with router data takes
+        priority over the legacy SELECT.
+
+        When ``router_metadata`` is ``None`` (default) the behaviour
+        is identical to the pre-M2.4 unpack — legacy columns are
+        returned as-is.  Call sites that haven't migrated to the
+        router-aware overlay therefore stay correct.
         """
         if not row:
             return None
@@ -698,7 +868,7 @@ class CatalogService(CatalogsProtocol):
         # Unpack STAC dedicated columns if present
         if "conforms_to" in data and data["conforms_to"]:
             data["conformsTo"] = data["conforms_to"]
-        
+
         # Ensure jsonb fields are loaded correctly if driver doesn't cast automatically
         for key in ["conformsTo", "links", "assets", "extra_metadata", "stac_extensions"]:
             dict_val = data.get(key)
@@ -708,13 +878,78 @@ class CatalogService(CatalogsProtocol):
                 except Exception:
                     data[key] = None
 
+        # M2.4: router overlay.  Router-supplied keys win over legacy
+        # columns.  Special-case ``conforms_to`` which in the router
+        # envelope carries its snake-case form, but Catalog consumes
+        # ``conformsTo`` via Pydantic alias — we fill both so either
+        # spelling resolves after validation.
+        if router_metadata:
+            for key, value in router_metadata.items():
+                data[key] = value
+            if router_metadata.get("conforms_to"):
+                data["conformsTo"] = router_metadata["conforms_to"]
+
         return Catalog.model_validate(data)
+
+    def _list_catalog_metadata_driver_types(self) -> List[type]:
+        """Return the ``CatalogMetadataStore`` classes currently registered.
+
+        Used by :meth:`list_catalogs` to compute the expected per-row
+        round-trip count for the threshold-warn log.  Kept as a
+        lightweight helper (no I/O) so the hot path doesn't pay for
+        anything beyond a single ``get_protocols`` lookup.
+
+        Returns an empty list if the discovery layer throws — listing
+        degradation-warn accuracy is not worth propagating an exception
+        through the happy path.
+        """
+        try:
+            from dynastore.models.protocols.metadata_driver import (
+                CatalogMetadataStore,
+            )
+            from dynastore.tools.discovery import get_protocols
+
+            return [type(d) for d in get_protocols(CatalogMetadataStore)]
+        except Exception:  # noqa: BLE001 — diagnostic only
+            return []
+
+    async def _resolve_catalog_router_metadata(
+        self, catalog_id: str, *, db_resource: Optional[Any] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Best-effort fetch of router-supplied catalog metadata.
+
+        Degrades to ``None`` on any router error so the call site can
+        fall back to the legacy SELECT's columns instead of 5xx'ing
+        a catalog read.  The router itself already swallows per-driver
+        exceptions (partial-envelope semantics), so this guard is
+        belt-and-braces against a total-outage scenario where the
+        router's driver resolution itself raises.
+        """
+        try:
+            from dynastore.modules.catalog.catalog_metadata_router import (
+                get_catalog_metadata,
+            )
+            return await get_catalog_metadata(
+                catalog_id, db_resource=db_resource,
+            )
+        except Exception as exc:  # noqa: BLE001 — degrade to legacy SELECT
+            logger.warning(
+                "Catalog-metadata router failed for %s: %s — falling back "
+                "to legacy catalog.catalogs columns",
+                catalog_id, exc,
+            )
+            return None
 
     async def _get_catalog_model_db(self, catalog_id: str) -> Optional[Catalog]:
         """Get catalog model from database."""
         async with managed_transaction(self.engine) as conn:
             result = await _get_catalog_query.execute(conn, id=catalog_id)
-            return self._unpack_catalog_row(result)
+            router_metadata = await self._resolve_catalog_router_metadata(
+                catalog_id, db_resource=conn,
+            )
+            return self._unpack_catalog_row(
+                result, router_metadata=router_metadata,
+            )
 
     async def get_catalog_model(
         self, catalog_id: str, ctx: Optional["DriverContext"] = None
@@ -724,7 +959,12 @@ class CatalogService(CatalogsProtocol):
         if db_resource:
             async with managed_transaction(db_resource) as conn:
                 result = await _get_catalog_query.execute(conn, id=catalog_id)
-                catalog = self._unpack_catalog_row(result)
+                router_metadata = await self._resolve_catalog_router_metadata(
+                    catalog_id, db_resource=conn,
+                )
+                catalog = self._unpack_catalog_row(
+                    result, router_metadata=router_metadata,
+                )
         else:
             catalog = await self._get_catalog_model_cached(catalog_id)
 
@@ -811,66 +1051,47 @@ class CatalogService(CatalogsProtocol):
                 CatalogEventType.CATALOG_UPDATE, catalog_id=catalog_id, db_resource=conn
             )
 
-            set_clauses: List[str] = []
-            params: Dict[str, Any] = {"id": catalog_id}
-
-            # Identify which fields were actually requested for update
-            update_fields = (
+            # Identify which fields the PATCH actually carried so the
+            # router-fanned UPSERT only touches those columns.
+            update_fields = set(
                 updates.keys()
                 if isinstance(updates, dict)
                 else updates.model_dump(exclude_unset=True).keys()
             )
 
-            if "title" in update_fields:
-                set_clauses.append("title = :title")
-                params["title"] = (
-                    json.dumps(
-                        merged_model.title.model_dump(exclude_none=True),
-                        cls=CustomJSONEncoder,
-                    )
-                    if merged_model.title
-                    else None
+            # M2.5a — writes go directly to the split tables via the
+            # catalog-metadata router.  The legacy ``catalog.catalogs``
+            # columns are no longer written; the M2.4 overlay reads
+            # exclusively from the split tables on the hot path and
+            # the backfill (M2.3a) already populated rows for every
+            # pre-M2.5 catalog.  PATCH semantics via
+            # ``_extract_update_payload`` + ``_filter_payload`` inside
+            # each Primary driver ensure only the supplied columns
+            # are touched — absent fields keep their existing values.
+            updated_payload = _extract_update_payload(
+                merged_model, update_fields,
+            )
+            if not updated_payload:
+                # No column-level changes — still emit
+                # AFTER_CATALOG_UPDATE for consumers that react to
+                # mutation intent regardless of payload shape.
+                await emit_event(
+                    CatalogEventType.AFTER_CATALOG_UPDATE,
+                    catalog_id=catalog_id,
+                    db_resource=conn,
                 )
-
-            if "description" in update_fields:
-                set_clauses.append("description = :description")
-                params["description"] = (
-                    json.dumps(
-                        merged_model.description.model_dump(exclude_none=True),
-                        cls=CustomJSONEncoder,
-                    )
-                    if merged_model.description
-                    else None
-                )
-
-            if "keywords" in update_fields:
-                set_clauses.append("keywords = :keywords")
-                params["keywords"] = (
-                    json.dumps(
-                        merged_model.keywords.model_dump(exclude_none=True),
-                        cls=CustomJSONEncoder,
-                    )
-                    if merged_model.keywords
-                    else None
-                )
-
-            if "license" in update_fields:
-                set_clauses.append("license = :license")
-                params["license"] = (
-                    json.dumps(
-                        merged_model.license.model_dump(exclude_none=True),
-                        cls=CustomJSONEncoder,
-                    )
-                    if merged_model.license
-                    else None
-                )
-
-            if not set_clauses:
+                self._get_catalog_model_cached.cache_invalidate(catalog_id)
                 return merged_model
 
-            sql = f"UPDATE catalog.catalogs SET {', '.join(set_clauses)} WHERE id = :id AND deleted_at IS NULL;"
-            await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
-                conn, **params
+            from dynastore.modules.catalog.catalog_metadata_router import (
+                upsert_catalog_metadata,
+            )
+            # Router exceptions bubble — an UPDATE that fails to
+            # persist is a caller-visible failure; the legacy
+            # ``catalog.catalogs`` no longer backs the data so we
+            # cannot fall back silently.
+            await upsert_catalog_metadata(
+                catalog_id, updated_payload, db_resource=conn,
             )
 
             await emit_event(
@@ -900,7 +1121,11 @@ class CatalogService(CatalogsProtocol):
             from dynastore.models.localization import Language
 
             can_delete = False
-            fields_to_update = {}
+            fields_to_update: Dict[str, str] = {}
+            # Python-native parallel of ``fields_to_update`` used to
+            # propagate the delete into the split tables via the router
+            # post-M2.4 read flip.  See the propagation block below.
+            router_fields_to_update: Dict[str, Any] = {}
 
             for field in [
                 "title",
@@ -929,22 +1154,32 @@ class CatalogService(CatalogsProtocol):
                             fields_to_update[field] = json.dumps(
                                 data, cls=CustomJSONEncoder
                             )
+                            # Parallel Python-native dict for the M2.4
+                            # split-table propagation below (the legacy
+                            # fields_to_update holds JSON-string values
+                            # ready for the UPDATE; the router path
+                            # wants the un-serialised shape).
+                            router_fields_to_update[field] = data
                             can_delete = True
 
             if not can_delete:
                 return False
 
-            set_clauses = [f"{k} = :{k}" for k in fields_to_update.keys()]
-            params = {"id": catalog_id, **fields_to_update}
-
-            sql = f"UPDATE catalog.catalogs SET {', '.join(set_clauses)} WHERE id = :id AND deleted_at IS NULL;"
-            await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
-                conn, **params
-            )
-
-            # Special case for extra_metadata inner extra_metadata (legacy blob)
-            # Actually our CatalogsProtocol/model handling for extra_metadata is a bit mixed.
-            # extra_metadata in DB is a JSONB blob containing conformsto, links, AND localized extra_metadata.
+            # M2.5a — route the language removal through the catalog-
+            # metadata router.  The legacy ``UPDATE catalog.catalogs``
+            # is gone; the split-table rows are the only source post-
+            # M2.4 overlay flip.  Router exceptions bubble: a failed
+            # per-domain UPSERT means the caller's delete didn't
+            # actually land and must know.
+            if router_fields_to_update:
+                from dynastore.modules.catalog.catalog_metadata_router import (
+                    upsert_catalog_metadata,
+                )
+                await upsert_catalog_metadata(
+                    catalog_id,
+                    router_fields_to_update,
+                    db_resource=conn,
+                )
 
             self._get_catalog_model_cached.cache_invalidate(catalog_id)
             return True
@@ -965,14 +1200,78 @@ class CatalogService(CatalogsProtocol):
                     conn, limit=limit, offset=offset
                 )
             else:
-                sql = "SELECT * FROM catalog.catalogs WHERE deleted_at IS NULL AND (id ILIKE :q OR title->>'en' ILIKE :q OR description->>'en' ILIKE :q) ORDER BY id LIMIT :limit OFFSET :offset;"
+                # M2.5b — the legacy ``title`` / ``description`` columns
+                # are gone from ``catalog.catalogs``.  Search now joins
+                # through ``catalog.catalog_metadata_core`` (the only
+                # place those fields live post-M2.5) and applies the
+                # same ILIKE pattern to the JSONB ``en`` field.  Left
+                # join so catalogs with no metadata row still match on
+                # ``id ILIKE``.
+                sql = (
+                    "SELECT c.* FROM catalog.catalogs c "
+                    "LEFT JOIN catalog.catalog_metadata_core m "
+                    "  ON m.catalog_id = c.id "
+                    "WHERE c.deleted_at IS NULL AND ("
+                    "  c.id ILIKE :q "
+                    "  OR m.title->>'en' ILIKE :q "
+                    "  OR m.description->>'en' ILIKE :q"
+                    ") ORDER BY c.id LIMIT :limit OFFSET :offset;"
+                )
                 query = DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS)
                 results = await query.execute(conn, limit=limit, offset=offset, q=f"%{q}%")
                 
-            # Use unpacker to handle legacy JSON packing for list results too
-            # Filter out Nones in case unpacking fails for some rows
-            models = [self._unpack_catalog_row(r) for r in results]
-            return [m for m in models if m is not None]
+            # M2.4 — overlay router-supplied metadata per-row.  Each row
+            # carries a catalog_id we look up through the router; the
+            # merged envelope wins over the legacy catalog.catalogs
+            # columns.
+            #
+            # Why a sequential loop and not ``asyncio.gather``: the
+            # router's per-driver reads share ``conn`` (we pass
+            # ``db_resource=conn`` so reads see the caller's transaction
+            # snapshot).  asyncpg enforces one in-flight statement per
+            # connection — concurrent statements on the same connection
+            # raise ``InterfaceError: another operation is in progress``.
+            # A ``gather`` that *looks* parallel is actually either
+            # (a) racy on the shared cursor, or (b) silently serialised
+            # by the wire lock.  Explicit sequential iteration documents
+            # the real execution shape.
+            #
+            # For a list of N catalogs × M domain drivers that's still
+            # N×M sequential round-trips.  Batch-friendly refactoring
+            # (single SELECT joining the split tables) is a latency
+            # optimisation deferred to M3+.  Until then, log a warning
+            # when the page × driver product gets large enough that
+            # operators will notice the latency — makes the degradation
+            # observable instead of silent.
+            router_drivers_count = len(self._list_catalog_metadata_driver_types())
+            expected_roundtrips = len(results) * max(router_drivers_count, 1)
+            if expected_roundtrips >= _LIST_CATALOGS_ROUNDTRIP_WARN_THRESHOLD:
+                logger.warning(
+                    "list_catalogs will issue ~%d sequential SQL "
+                    "round-trips (%d rows × %d domain drivers). "
+                    "Consider reducing ``limit`` or adopting the "
+                    "batched JOIN query planned for M3+.",
+                    expected_roundtrips, len(results), router_drivers_count,
+                )
+
+            models: List[Catalog] = []
+            for r in results:
+                row_id = (
+                    r._mapping["id"] if hasattr(r, "_mapping") else r["id"]
+                ) if r else None
+                router_metadata = (
+                    await self._resolve_catalog_router_metadata(
+                        row_id, db_resource=conn,
+                    )
+                    if row_id is not None
+                    else None
+                )
+                model = self._unpack_catalog_row(
+                    r, router_metadata=router_metadata,
+                )
+                if model is not None:
+                    models.append(model)
+            return models
 
     async def search_catalogs(
         self,
@@ -1442,7 +1741,7 @@ class CatalogService(CatalogsProtocol):
         consumer: "Optional[ConsumerType]" = None,
     ) -> QueryResponse:
         """Stream search results using an async iterator."""
-        from dynastore.modules.catalog.sidecars.base import ConsumerType as _CT
+        from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType as _CT
         return await self._item_svc.stream_items(
             catalog_id, collection_id, request,
             config=config, ctx=ctx,

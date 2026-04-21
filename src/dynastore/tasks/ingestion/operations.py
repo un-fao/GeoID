@@ -37,7 +37,7 @@ class IngestionOperationInterface(Generic[T_CONFIG], ABC):
         :param engine: The database engine for any DB operations.
         :param task_id: The unique ID of the running task.
         :param task_request: The full request model for the ingestion task (TaskIngestionRequest).
-        :param catalog_config: The physical configuration for the collection (CollectionPostgresqlDriverConfig).
+        :param catalog_config: The physical configuration for the collection (ItemsPostgresqlDriverConfig).
         :param ingestion_config: The ingestion logic configuration (IngestionPluginConfig).
         :param config: The validated Pydantic model for this operation's specific configuration.
         """

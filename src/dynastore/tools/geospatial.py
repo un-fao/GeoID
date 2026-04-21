@@ -58,7 +58,7 @@ from .geospatial_exceptions import (
 
 logger = logging.getLogger(__name__)
 
-from dynastore.modules.catalog.sidecars.geometries_config import (
+from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
     GeometriesSidecarConfig,
     TargetDimension,
     SridMismatchPolicy,

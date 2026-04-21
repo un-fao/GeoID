@@ -264,19 +264,19 @@ def _apply_catalog_scope_driver_configs(client: httpx.Client):
     exists. CollectionRoutingConfig.operations is Immutable, so it must be in
     place before the collection is created.
 
-    driver_id references the implementation class name (``CollectionPostgresqlDriver``),
+    driver_id references the implementation class name (``ItemsPostgresqlDriver``),
     not an alias.
     """
     base = f"/configs/catalogs/{CATALOG_ID}"
-    r1 = client.put(f"{base}/configs/CollectionPostgresqlDriverConfig", json={
+    r1 = client.put(f"{base}/configs/ItemsPostgresqlDriverConfig", json={
         "enabled": True,
         "collection_type": "VECTOR",
     })
     r2 = client.put(f"{base}/configs/CollectionRoutingConfig", json={
         "enabled": True,
         "operations": {
-            "WRITE": [{"driver_id": "CollectionPostgresqlDriver", "hints": [], "on_failure": "fatal"}],
-            "READ": [{"driver_id": "CollectionPostgresqlDriver", "hints": [], "on_failure": "fatal"}],
+            "WRITE": [{"driver_id": "ItemsPostgresqlDriver", "hints": [], "on_failure": "fatal"}],
+            "READ": [{"driver_id": "ItemsPostgresqlDriver", "hints": [], "on_failure": "fatal"}],
         },
     })
     if r2.status_code not in (200, 201, 204):

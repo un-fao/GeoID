@@ -37,9 +37,9 @@ etc.), not *what operation* it performs.  Operations are defined in
 import json
 import os
 from enum import StrEnum
-from typing import Any, ClassVar, Dict, FrozenSet, List, Optional
+from typing import Annotated, Any, ClassVar, Dict, FrozenSet, List, Optional, Union
 
-from pydantic import ConfigDict, Field, SerializeAsAny, field_validator, model_validator
+from pydantic import ConfigDict, Discriminator, Field, field_validator, model_validator
 
 from dynastore.tools.secrets import Secret
 from dynastore.tools.ui_hints import ui
@@ -49,6 +49,33 @@ from dynastore.modules.db_config.platform_config_service import (
     PluginConfig,
     WriteOnce,
 )
+
+# PG sidecar configs — colocated with the PG driver (storage/drivers/pg_sidecars)
+# since M1b.0.  They are imported eagerly here so the discriminated-union field
+# type on ItemsPostgresqlDriverConfig.sidecars can reference them directly
+# without string forward refs.  No cycle: pg_sidecars doesn't import driver_config.
+from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+    FeatureAttributeSidecarConfig,
+)
+from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
+    GeometriesSidecarConfig,
+)
+from dynastore.modules.storage.drivers.pg_sidecars.item_metadata_config import (
+    ItemMetadataSidecarConfig,
+)
+
+# Discriminated union of all concrete PG sidecar configs.  The ``sidecar_type``
+# discriminator + the base-class validator that pins ``sidecar_type`` in
+# ``__pydantic_fields_set__`` (see pg_sidecars/base.py) makes
+# ``model_dump(exclude_unset=True)`` → ``model_validate`` lossless.
+_PgSidecarConfig = Annotated[
+    Union[
+        GeometriesSidecarConfig,
+        FeatureAttributeSidecarConfig,
+        ItemMetadataSidecarConfig,
+    ],
+    Discriminator("sidecar_type"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +90,7 @@ class DuckDBConfig:
     the DuckDB storage driver.  Follows the same pattern as
     ``DBConfig`` (``DB_POOL_*``) and Elasticsearch (``ES_*``).
 
-    Per-collection configs (``CollectionDuckdbDriverConfig``) hold only file
+    Per-collection configs (``ItemsDuckdbDriverConfig``) hold only file
     paths and format overrides; they should be relative to ``data_root``.
     """
 
@@ -85,7 +112,7 @@ class IcebergConfig:
 
     Controls catalog connection, pool sizing, and timeouts for the Iceberg
     storage driver.  All connection-level settings live here; per-collection
-    configs (``CollectionIcebergDriverConfig``) hold only table identifiers
+    configs (``ItemsIcebergDriverConfig``) hold only table identifiers
     (``namespace``, ``table_name``, ``partition_spec``, etc.).
     """
 
@@ -380,7 +407,7 @@ class AssetDriverConfig(DriverPluginConfig):
 # ---------------------------------------------------------------------------
 
 
-class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
+class ItemsPostgresqlDriverConfig(CollectionDriverConfig):
     """PostgreSQL collection driver config.
 
     Absorbs fields previously in ``PostgresStorageLocationConfig`` and
@@ -406,10 +433,21 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
         default=None, description="Override auto-resolved table. Set once by ensure_storage()."
     )
 
-    # From CollectionPluginConfig — PG-specific structural fields
-    sidecars: Immutable[List[SerializeAsAny[Any]]] = Field(
-        default_factory=lambda: _default_sidecars(),
-        description="Sidecar table configs (GeometriesSidecarConfig, FeatureAttributeSidecarConfig, etc.)",
+    # From CollectionPluginConfig — PG-specific structural fields.
+    # Discriminated union via `sidecar_type`; default is EMPTY (M1b.2).
+    # The old eager `[geometries, attributes]` default is gone — the PG
+    # driver resolves sidecar defaults lazily at DDL / read / write time
+    # via ``storage.drivers.pg_sidecars.resolver._effective_sidecars(...)``.
+    # A default-body ``POST /collections/{id}`` therefore persists zero
+    # ``collection_configs`` rows (plan §Principle — default-fast).
+    sidecars: Immutable[List[_PgSidecarConfig]] = Field(
+        default_factory=list,
+        description=(
+            "Sidecar table configs — discriminated union on `sidecar_type`. "
+            "Empty → PG driver resolves defaults lazily from "
+            "``pg_sidecars._effective_sidecars(...)`` (core defaults + "
+            "registry injections) at first use."
+        ),
     )
     partitioning: Immutable[Any] = Field(
         default_factory=lambda: _default_partitioning(),
@@ -424,43 +462,15 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
     # Validators (moved from CollectionPluginConfig)
     # ------------------------------------------------------------------
 
-    @field_validator("sidecars", mode="before")
-    @classmethod
-    def validate_sidecars_polymorphic(cls, v: Any) -> Any:
-        """Instantiate sidecar configs as their specialized subclasses.
-
-        Each item must be either a typed ``SidecarConfig`` instance or a mapping
-        carrying a ``sidecar_type`` discriminator. Malformed entries raise
-        immediately so data-corruption bugs surface at hydration time instead of
-        crashing downstream consumers (e.g. ``SidecarRegistry.get_sidecar``).
-        """
-        if not isinstance(v, list):
-            return v
-
-        from dynastore.modules.catalog.sidecars.base import (
-            SidecarConfig,
-            SidecarConfigRegistry,
-        )
-
-        processed = []
-        for idx, item in enumerate(v):
-            if isinstance(item, SidecarConfig):
-                processed.append(item)
-            elif isinstance(item, dict):
-                sidecar_type = item.get("sidecar_type")
-                if not sidecar_type:
-                    raise ValueError(
-                        f"sidecars[{idx}]: dict is missing required "
-                        f"'sidecar_type' discriminator. Keys: {sorted(item.keys())}"
-                    )
-                config_cls = SidecarConfigRegistry.resolve_config_class(sidecar_type)
-                processed.append(config_cls.model_validate(item))
-            else:
-                raise ValueError(
-                    f"sidecars[{idx}]: expected SidecarConfig or dict, "
-                    f"got {type(item).__name__}"
-                )
-        return processed
+    # Note: the former ``validate_sidecars_polymorphic`` field-validator is
+    # deleted here (M1b.1) — superseded by the ``_PgSidecarConfig``
+    # discriminated union declared above, which does the same dispatch
+    # natively via Pydantic's ``Discriminator("sidecar_type")``.  Main's
+    # ``aa6b8e7`` fix (robust error messages on malformed inputs) is
+    # subsumed by Pydantic's own ``ValidationError`` — which also fails
+    # loudly on missing discriminators or unknown ``sidecar_type`` values
+    # (strictly a tightening: main's version silently fell back to the
+    # base ``SidecarConfig`` on unknown types).
 
     @field_validator("partitioning", mode="before")
     @classmethod
@@ -483,7 +493,7 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
         if isinstance(data, dict) and data.get("collection_type") == "RECORDS":
             sidecars = data.get("sidecars")
             if sidecars and isinstance(sidecars, list):
-                from dynastore.modules.catalog.sidecars.geometries_config import (
+                from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
                     GeometriesSidecarConfig,
                 )
                 data["sidecars"] = [
@@ -495,7 +505,7 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
         return data
 
     @model_validator(mode="after")
-    def validate_composite_partitioning(self) -> "CollectionPostgresqlDriverConfig":
+    def validate_composite_partitioning(self) -> "ItemsPostgresqlDriverConfig":
         """Validate partition keys are provided by configured sidecars."""
         if not self.partitioning.enabled:
             return self
@@ -515,7 +525,7 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_sidecar_partition_mirroring(self) -> "CollectionPostgresqlDriverConfig":
+    def validate_sidecar_partition_mirroring(self) -> "ItemsPostgresqlDriverConfig":
         """Ensure all sidecars mirror the Hub's partition strategy."""
         if self.sidecars and self.partitioning.enabled:
             pass  # Enforced at sidecar DDL generation level
@@ -533,7 +543,7 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
     def get_all_field_definitions(self) -> Dict[str, Any]:
         """Aggregate field definitions from all enabled sidecars."""
         all_fields: Dict[str, Any] = {}
-        from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+        from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
 
         for sc_config in self.sidecars:
             if not sc_config.enabled:
@@ -545,18 +555,6 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
         return all_fields
 
 
-def _default_sidecars() -> list:
-    """Lazy import to avoid circular dependency with sidecar configs."""
-    from dynastore.modules.catalog.sidecars.geometries_config import (
-        GeometriesSidecarConfig,
-    )
-    from dynastore.modules.catalog.sidecars.attributes_config import (
-        FeatureAttributeSidecarConfig,
-    )
-
-    return [GeometriesSidecarConfig(), FeatureAttributeSidecarConfig()]
-
-
 def _default_partitioning() -> Any:
     """Lazy import to avoid circular dependency with catalog_config."""
     from dynastore.modules.catalog.catalog_config import CompositePartitionConfig
@@ -564,7 +562,7 @@ def _default_partitioning() -> Any:
     return CompositePartitionConfig()
 
 
-class CollectionElasticsearchDriverConfig(CollectionDriverConfig):
+class ItemsElasticsearchDriverConfig(CollectionDriverConfig):
     """Elasticsearch collection driver config.
 
     Uses the stac-fastapi-elasticsearch-opensearch (SFEOS) library by
@@ -593,7 +591,7 @@ class CollectionElasticsearchDriverConfig(CollectionDriverConfig):
     )
 
 
-class CollectionDuckdbDriverConfig(CollectionDriverConfig):
+class ItemsDuckdbDriverConfig(CollectionDriverConfig):
     """DuckDB collection driver config.
 
     Absorbs fields previously in ``FileStorageLocationConfig``.
@@ -616,7 +614,7 @@ _ICEBERG_CONNECTION_FIELDS: frozenset[str] = frozenset({
 })
 
 
-class CollectionIcebergDriverConfig(CollectionDriverConfig):
+class ItemsIcebergDriverConfig(CollectionDriverConfig):
     """Iceberg per-collection config — table location and DDL hints only.
 
     Connection-level settings (catalog type, URI, warehouse) must be configured
@@ -988,3 +986,34 @@ async def _on_apply_collection_schema(
 
 
 CollectionSchema.register_apply_handler(_on_apply_collection_schema)
+
+
+# ---------------------------------------------------------------------------
+# Back-compat aliases — legacy Collection*DriverConfig names remain importable, and
+# registry lookups (driver_index / TypedModelRegistry) go through the
+# config_rewriter so persisted routing entries and config rows still resolve.
+# Remove once telemetry shows zero hits on the rewriter.  See
+# dynastore.tools.config_rewriter.
+# ---------------------------------------------------------------------------
+from dynastore.tools.config_rewriter import register_config_class_key_rename  # noqa: E402
+
+CollectionPostgresqlDriverConfig = ItemsPostgresqlDriverConfig  # noqa: E305 — back-compat alias, see config_rewriter
+register_config_class_key_rename(
+    legacy="CollectionPostgresqlDriverConfig",
+    canonical="ItemsPostgresqlDriverConfig",
+)
+CollectionElasticsearchDriverConfig = ItemsElasticsearchDriverConfig  # noqa: E305 — back-compat alias, see config_rewriter
+register_config_class_key_rename(
+    legacy="CollectionElasticsearchDriverConfig",
+    canonical="ItemsElasticsearchDriverConfig",
+)
+CollectionDuckdbDriverConfig = ItemsDuckdbDriverConfig  # noqa: E305 — back-compat alias, see config_rewriter
+register_config_class_key_rename(
+    legacy="CollectionDuckdbDriverConfig",
+    canonical="ItemsDuckdbDriverConfig",
+)
+CollectionIcebergDriverConfig = ItemsIcebergDriverConfig  # noqa: E305 — back-compat alias, see config_rewriter
+register_config_class_key_rename(
+    legacy="CollectionIcebergDriverConfig",
+    canonical="ItemsIcebergDriverConfig",
+)

@@ -107,20 +107,21 @@ async def _asset_event_bridge(event_type: AssetEventType, data: dict) -> None:
 
 # --- Legacy Constants and DDL (Shared by Module Initialization) ---
 
+# M2.5b — post-refactor ``catalog.catalogs`` shape: technical registry
+# columns only.  All descriptive metadata (title, description, keywords,
+# license, conforms_to, links, assets, stac_*, extra_metadata) lives in
+# ``catalog.catalog_metadata_core`` / ``_stac`` and is accessed through
+# the catalog-metadata router (:mod:`catalog_metadata_router`).
+#
+# Fresh deployments get this trim shape directly from the CREATE TABLE
+# below.  Existing deployments had those columns populated pre-M2.0;
+# :func:`drop_legacy_catalog_metadata_columns` drops them idempotently
+# during CatalogModule init after :func:`backfill_catalog_metadata_from_legacy`
+# has copied their contents into the split tables.
 CATALOGS_TABLE_DDL = """
 CREATE TABLE IF NOT EXISTS catalog.catalogs (
     id VARCHAR PRIMARY KEY,
     physical_schema VARCHAR NOT NULL UNIQUE,
-    title JSONB,
-    description JSONB,
-    keywords JSONB,
-    license JSONB,
-    conforms_to JSONB,
-    links JSONB,
-    assets JSONB,
-    stac_version VARCHAR(20) DEFAULT '1.0.0',
-    stac_extensions JSONB DEFAULT '[]'::jsonb,
-    extra_metadata JSONB,
     provisioning_status VARCHAR(50) NOT NULL DEFAULT 'ready',
     deleted_at TIMESTAMPTZ DEFAULT NULL
 );
@@ -190,11 +191,14 @@ class CatalogModule(ModuleProtocol):
         from dynastore.modules.catalog.drivers.pg_asset_driver import AssetPostgresqlDriver
         self.pg_asset_driver = AssetPostgresqlDriver(engine=engine)
 
-        from dynastore.modules.storage.drivers.postgresql import CollectionPostgresqlDriver
-        self.pg_storage_driver = CollectionPostgresqlDriver()  # type: ignore[abstract]
+        from dynastore.modules.storage.drivers.postgresql import ItemsPostgresqlDriver
+        self.pg_storage_driver = ItemsPostgresqlDriver()  # type: ignore[abstract]
 
-        from dynastore.modules.storage.entity_transform_pipeline import EntityTransformPipeline
-        self.driver_metadata_enricher = EntityTransformPipeline()
+        # EntityTransformPipeline used to be registered here as a discovery
+        # plugin for CollectionMetadataEnricherProtocol.  That protocol was
+        # deleted in the role-based driver refactor; the class survives as
+        # library code for M3's ReindexWorker to invoke directly.  Not
+        # registered as a plugin (no discoverable protocol anyway).
 
         from contextlib import AsyncExitStack
         async with AsyncExitStack() as stack:
@@ -207,7 +211,6 @@ class CatalogModule(ModuleProtocol):
                 self.asset_service,
                 self.pg_asset_driver,
                 self.pg_storage_driver,
-                self.driver_metadata_enricher,
                 self.properties_service,
                 self.localization_service,
                 self.event_service,
@@ -222,7 +225,7 @@ class CatalogModule(ModuleProtocol):
             logger.info("Initialized CatalogModule services.")
 
             # 4. Initialize Storage & Schemas
-            # Hub/sidecar creation is handled by CollectionPostgresqlDriver.ensure_storage()
+            # Hub/sidecar creation is handled by ItemsPostgresqlDriver.ensure_storage()
             # which is called from _create_collection_internal(). No lifecycle hook needed.
 
             async with managed_transaction(engine) as conn:
@@ -235,6 +238,36 @@ class CatalogModule(ModuleProtocol):
                 await ensure_global_cron_cleanup(conn)
 
                 await DDLQuery(CATALOGS_TABLE_DDL + SHARED_PROPERTIES_SCHEMA).execute(conn)
+
+                # M2.0 — metadata-domain split (role-based driver refactor).
+                # Additive: creates catalog.catalog_metadata_core, catalog.
+                # catalog_metadata_stac, and the created_at/updated_at columns
+                # on catalog.catalogs alongside the legacy metadata columns.
+                # Idempotent; no reads / writes change in M2.0 — the legacy
+                # columns on catalog.catalogs still drive everything.  The
+                # concrete Primary drivers that consume these tables land
+                # in M2.1; the read/write flip happens in M2.3 / M2.4.
+                from dynastore.modules.catalog.db_init.metadata_domain_split import (
+                    backfill_catalog_metadata_from_legacy,
+                    drop_legacy_catalog_metadata_columns,
+                    ensure_global_metadata_domain_tables,
+                )
+                await ensure_global_metadata_domain_tables(conn)
+
+                # M2.3a — one-shot backfill from legacy catalog.catalogs
+                # metadata columns into the split tables.  Idempotent: a
+                # second run sees every row already present (via the
+                # unique-key check on catalog_id) and issues zero INSERTs.
+                # Self-skips on post-M2.5b deployments (legacy columns
+                # already dropped — nothing to copy).
+                await backfill_catalog_metadata_from_legacy(conn)
+
+                # M2.5b — drop the legacy metadata columns from
+                # catalog.catalogs.  Runs AFTER the backfill so existing
+                # data has been copied into the split tables.
+                # Idempotent via ``DROP COLUMN IF EXISTS``; a second
+                # run finds no legacy columns and issues a no-op ALTER.
+                await drop_legacy_catalog_metadata_columns(conn)
 
                 # Ensure stored procedures (replacing init.sql)
                 from dynastore.modules.catalog.db_init.stored_procedures import (
@@ -278,6 +311,21 @@ class CatalogModule(ModuleProtocol):
             @async_event_listener("task.failed")
             async def _on_task_failed_impl(**kwargs):
                 await self._on_task_failed(**kwargs)
+
+            # M3.1b — register the catalog_metadata_changed → ReindexWorker
+            # listener so mutations emitted by ``catalog_metadata_router``
+            # propagate to every configured INDEX driver.  Uses the shared
+            # ``_consume_shard`` machinery started below (step 6); see
+            # ``reindex_listener.py`` for the rationale on listener-over-
+            # standalone-consumer.  This registration itself is what causes
+            # ``event_service.has_listeners()`` to return True for catalog
+            # builds that don't otherwise register async listeners —
+            # so wiring the reindex path automatically turns on the durable
+            # consumer.
+            from dynastore.modules.catalog.reindex_listener import (
+                register_reindex_listener,
+            )
+            register_reindex_listener(self.event_service)
 
 
             # 6. Start Background Event Consumer (automatic)

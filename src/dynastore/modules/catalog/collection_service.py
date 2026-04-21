@@ -120,7 +120,7 @@ class CollectionService:
         """Store physical table in PG driver config."""
         pg_driver = await self._get_pg_driver()
         if not pg_driver:
-            raise RuntimeError("CollectionPostgresqlDriver not available")
+            raise RuntimeError("ItemsPostgresqlDriver not available")
         await pg_driver.set_physical_table(  # type: ignore[attr-defined]
             catalog_id, collection_id, physical_table, db_resource=db_resource
         )
@@ -278,7 +278,7 @@ class CollectionService:
 
         if meta_dict is None:
             # PG metadata fallback (always available)
-            meta_sql = f'SELECT * FROM "{phys_schema}".metadata WHERE collection_id = :id;'
+            meta_sql = f'SELECT * FROM "{phys_schema}".collection_metadata WHERE collection_id = :id;'
             meta_dict = await DQLQuery(
                 meta_sql, result_handler=ResultHandler.ONE_DICT
             ).execute(conn, id=collection_id) or {}
@@ -309,31 +309,13 @@ class CollectionService:
             "extra_metadata": meta_dict.get("extra_metadata"),
         }
 
-        # 3. CollectionMetadataEnricherProtocol pipeline (optional, priority-ordered).
-        #    Each enricher can augment, filter, or transform the metadata dict.
-        #    Enrichers are registered via register_plugin(); an empty registry is safe.
-        try:
-            from dynastore.tools.discovery import get_protocols
-            from dynastore.models.protocols.enrichment import CollectionMetadataEnricherProtocol
-
-            enrichers = sorted(
-                get_protocols(CollectionMetadataEnricherProtocol),
-                key=lambda e: e.priority,
-            )
-            for enricher in enrichers:
-                try:
-                    if enricher.can_enrich(catalog_id, collection_id):
-                        data = await enricher.enrich(catalog_id, collection_id, data, context={})
-                except Exception as _enrich_err:
-                    logger.warning(
-                        "CollectionMetadataEnricher '%s' failed for %s/%s: %s",
-                        getattr(enricher, "enricher_id", repr(enricher)),
-                        catalog_id,
-                        collection_id,
-                        _enrich_err,
-                    )
-        except Exception:
-            pass  # discovery failure must not break the read path
+        # 3. CollectionMetadataEnricherProtocol pipeline removed in the
+        #    role-based driver refactor (plan §Protocols — deleted).  Any
+        #    in-process hook that used to enrich the metadata dict here is
+        #    now a TRANSFORM driver routed through MetadataRoutingConfig —
+        #    invoked lazily when an endpoint opts in or when the async
+        #    reindex pipeline is preparing a transformed INDEX/BACKUP
+        #    envelope.  Default read path is deliberately transform-free.
 
         return Collection.model_validate(data)
 
@@ -504,69 +486,21 @@ class CollectionService:
                     # We wrap it in a dict to be compatible with CollectionPluginConfig input
                     layer_config_override = {"sidecars": getattr(collection_definition, "sidecars")}
 
-            # Layer config override from input
-            if layer_config_override and isinstance(layer_config_override, dict):
-                from dynastore.modules.storage.driver_config import (
-                    CollectionPostgresqlDriverConfig,
-                )
+            # M1b.3: blocks that used to (a) coerce layer_config_override from
+            # dict → ItemsPostgresqlDriverConfig and (b) iterate
+            # SidecarRegistry.get_injected_sidecar_configs to mutate the
+            # override are both deleted.  Driver-specific typing + defaults
+            # now live inside the PG driver's init_collection hook (see
+            # `_pg_driver_init_collection` in
+            # modules/storage/drivers/postgresql.py) and inside
+            # `_effective_sidecars` at DDL/read/write time.  The generic
+            # service hands `layer_config` down to lifecycle_registry as an
+            # opaque payload.
 
-                layer_config_override = CollectionPostgresqlDriverConfig.model_validate(
-                    layer_config_override
-                )
-
-            # Registry-Based Auto-Injection
-            from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
-
-            # Aggregate context for injection (including kwargs like stac_context)
-            injection_context = dict(kwargs)
-            # Resolve effective collection_type (override takes precedence)
-            effective_config = layer_config_override or collection_config
-            injection_context.update(
-                {
-                    "catalog_id": catalog_id,
-                    "collection_id": collection_model.id,
-                    "schema": phys_schema,
-                    "collection_type": getattr(effective_config, "collection_type", "VECTOR"),
-                }
-            )
-
-            injected_configs = SidecarRegistry.get_injected_sidecar_configs(
-                injection_context
-            )
-            if injected_configs:
-                from typing import cast as _cast
-                from dynastore.modules.storage.driver_config import (
-                    CollectionPostgresqlDriverConfig,
-                )
-                if layer_config_override is None:
-                    if hasattr(collection_config, "sidecars"):
-                        layer_config_override = collection_config.model_copy()
-                    else:
-                        layer_config_override = CollectionPostgresqlDriverConfig()
-
-                pg_override = _cast(CollectionPostgresqlDriverConfig, layer_config_override)
-                current_sidecars: List[Any] = list(pg_override.sidecars or [])
-                current_types = {s.sidecar_type for s in current_sidecars}
-
-                modified = False
-                for sc in injected_configs:
-                    if sc.sidecar_type not in current_types:
-                        # Append so injected sidecars run after core geometry/attributes sidecars.
-                        # Registration order in SidecarRegistry determines relative order of
-                        # injected sidecars: item_metadata is registered before stac_metadata,
-                        # ensuring item_metadata publishes to context first.
-                        current_sidecars.append(sc)
-                        current_types.add(sc.sidecar_type)
-                        modified = True
-
-                if modified:
-                    pg_override = pg_override.model_copy(update={"sidecars": current_sidecars})
-                    layer_config_override = pg_override
-                    logger.info(
-                        f"Registry: Injected sidecars for {catalog_id}:{collection_model.id}: {list(current_types)}"
-                    )
-
-            # Resolved config for this collection creation
+            # Resolved config for this collection creation — caller-supplied
+            # override if any, else the plugin default (unused by the PG
+            # driver post-refactor; still passed through for non-PG drivers
+            # that may consume it via their own init_collection hook).
             init_config = layer_config_override or collection_config
 
             # Clean kwargs to avoid multiple values for arguments already passed positionally or explicitly
@@ -595,22 +529,14 @@ class CollectionService:
                 **init_kwargs,
             )
 
-            # 5. Persist initial driver config (sidecars etc.) BEFORE ensure_storage.
-            #    ensure_storage later saves the same config with physical_table set
-            #    (check_immutability=False), which is allowed because WriteOnce starts
-            #    at None here and is updated to a real value there.
-            if layer_config_override:
-                from dynastore.modules.db_config.platform_config_service import PluginConfig as _PluginConfig
-                if isinstance(layer_config_override, _PluginConfig):
-                    configs = get_protocol(ConfigsProtocol)
-                    assert configs is not None, "ConfigsProtocol not registered"
-                    await configs.set_config(
-                        type(layer_config_override),
-                        layer_config_override,
-                        catalog_id=catalog_id,
-                        collection_id=collection_model.id,
-                        ctx=DriverContext(db_resource=conn),
-                    )
+            # M1b.3: the unconditional `configs.set_config` that used to
+            # persist layer_config_override on EVERY collection create is
+            # deleted.  Persistence of PG-driver-specific config now runs
+            # inside the PG init_collection hook registered in
+            # postgresql.py — and only when the caller actually supplied
+            # PG-specific fields (default-fast invariant).  Other driver
+            # modules register their own hooks for their own config
+            # shapes.
 
             # 5b. Persist write_policy + schema (CollectionSchema, if provided) BEFORE
             #     ensure_storage so the driver can materialise required/unique
@@ -783,7 +709,7 @@ class CollectionService:
                     f'm.links, m.assets, m.extent, m.providers, m.summaries, '
                     f'm.item_assets, m.extra_metadata '
                     f'FROM "{phys_schema}".collections c '
-                    f'LEFT JOIN "{phys_schema}".metadata m ON m.collection_id = c.id '
+                    f'LEFT JOIN "{phys_schema}".collection_metadata m ON m.collection_id = c.id '
                     f'WHERE c.deleted_at IS NULL '
                     f'ORDER BY c.created_at DESC LIMIT :limit OFFSET :offset;'
                 )
@@ -796,7 +722,7 @@ class CollectionService:
                     f'm.links, m.assets, m.extent, m.providers, m.summaries, '
                     f'm.item_assets, m.extra_metadata '
                     f'FROM "{phys_schema}".collections c '
-                    f'LEFT JOIN "{phys_schema}".metadata m ON m.collection_id = c.id '
+                    f'LEFT JOIN "{phys_schema}".collection_metadata m ON m.collection_id = c.id '
                     f'WHERE c.deleted_at IS NULL '
                     f"AND (c.id ILIKE :q OR m.title->>'en' ILIKE :q OR m.description->>'en' ILIKE :q) "
                     f'ORDER BY c.created_at DESC LIMIT :limit OFFSET :offset;'
@@ -1084,7 +1010,7 @@ class CollectionService:
                 return False
 
             set_clauses = [f"{k} = :{k}" for k in fields_to_update.keys()]
-            sql = f'UPDATE "{phys_schema}".metadata SET {", ".join(set_clauses)} WHERE collection_id = :id;'
+            sql = f'UPDATE "{phys_schema}".collection_metadata SET {", ".join(set_clauses)} WHERE collection_id = :id;'
             await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
                 conn, **params
             )

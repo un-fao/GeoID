@@ -37,7 +37,7 @@ from geojson_pydantic import Feature
 from geojson_pydantic.geometries import Geometry
 from dynastore.models.query_builder import QueryRequest
 
-from dynastore.modules.catalog.sidecars.base import (
+from dynastore.modules.storage.drivers.pg_sidecars.base import (
     SidecarProtocol,
     SidecarConfig,
     FeaturePipelineContext,
@@ -46,7 +46,7 @@ from dynastore.modules.catalog.sidecars.base import (
     FieldCapability,
 )
 from dynastore.modules.catalog.models import LocalizedText
-from dynastore.modules.catalog.sidecars.geometries_config import (
+from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
     GeometriesSidecarConfig,
     TargetDimension,
     InvalidGeometryPolicy,

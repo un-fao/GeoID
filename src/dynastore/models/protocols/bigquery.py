@@ -26,15 +26,17 @@ to decouple BigQuery access from the ``google.cloud.bigquery`` library.
 Typical implementation: ``BigQueryService`` in ``modules/gcp/bigquery_service.py``.
 """
 
-from typing import Any, Dict, List, Protocol, runtime_checkable
+from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 
 @runtime_checkable
 class BigQueryProtocol(Protocol):
-    """Execute SQL queries against Google BigQuery.
+    """Execute SQL queries / streaming inserts against Google BigQuery.
 
     Implementations handle credential resolution, client lifecycle, and
-    query execution.  Results are returned as a list of row dicts.
+    query execution.  Read results are returned as a list of row dicts;
+    writes use the BQ streaming insert API (``insertAll``) with partial
+    failure surfaced via the returned error list.
     """
 
     async def execute_query(
@@ -51,5 +53,43 @@ class BigQueryProtocol(Protocol):
 
         Raises:
             RuntimeError: If credentials or client are unavailable.
+        """
+        ...
+
+    async def insert_rows_json(
+        self,
+        table_fqn: str,
+        rows: List[Dict[str, Any]],
+        *,
+        project_id: str,
+        row_ids: Optional[List[Optional[str]]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Stream rows into a BigQuery table via ``insertAll``.
+
+        Best-effort write path used by the role-based driver refactor's
+        WRITE / BACKUP / INDEX roles on BigQuery.  Individual row failures
+        are returned in the result list rather than raised, so callers
+        running under ``on_failure=warn`` can log and continue.
+
+        Args:
+            table_fqn:  Fully-qualified ``project.dataset.table`` name.
+            rows:       List of row dicts whose keys match the table schema.
+                        Empty list is a no-op returning ``[]``.
+            project_id: GCP project for billing / quota (may differ from
+                        ``table_fqn``'s project in cross-project writes).
+            row_ids:    Optional per-row ``insertId`` values for
+                        best-effort deduplication within the BQ streaming
+                        buffer (24-hour window).  ``None`` per row means
+                        BQ assigns a UUID.  Length must match ``rows``
+                        when supplied.
+
+        Returns:
+            The BQ-returned error list — empty on full success; otherwise
+            one dict per failing row with ``index`` and ``errors`` keys.
+            Caller decides how to surface partial failures to the user.
+
+        Raises:
+            RuntimeError: If credentials / client are unavailable.
+            ValueError:   If ``row_ids`` is supplied with a mismatched length.
         """
         ...

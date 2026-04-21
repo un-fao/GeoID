@@ -553,7 +553,7 @@ async def reset_dynastore_state(engine=None):
         config.instance = None
 
     # 10.1 Clear Sidecar Registry (CRITICAL for extension isolation)
-    from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+    from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
     SidecarRegistry.clear_registry()
 
     # 11. Clear Caches safely

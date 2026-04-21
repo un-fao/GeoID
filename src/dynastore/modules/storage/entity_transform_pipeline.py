@@ -17,20 +17,26 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-EntityTransformPipeline — metadata enrichment via the TRANSFORM operation chain.
+EntityTransformPipeline — TRANSFORM-chain envelope merger (library code).
 
-Implements ``CollectionMetadataEnricherProtocol``.  When a collection has
-``metadata.operations[TRANSFORM]`` drivers configured in
-``CollectionRoutingConfig``, this pipeline calls
-``driver.get_collection_metadata()`` on each in declared order and merges
-supplementary fields (summaries, providers, item_assets, assets,
-extra_metadata) into the collection metadata dict.
+**Status**: no call sites today.  The function ``enrich()`` on this class
+is preserved for M3's ``ReindexWorker`` to invoke directly when it
+hydrates transformed envelopes for INDEX / BACKUP propagation.  The
+enricher-protocol discovery path this used to serve was removed by the
+role-based driver refactor (plan §Protocols).
 
-If any configured storage driver declares ``Capability.AGGREGATION``, the
-pipeline additionally calls ``driver.compute_extents()`` to fill
-spatial/temporal extent when not already present.
+What ``enrich()`` does: reads
+``CollectionRoutingConfig.metadata.operations[TRANSFORM]`` to find
+configured ``CollectionItemsStore`` drivers, calls
+``driver.get_collection_metadata()`` on each in declared order, and
+merges supplementary fields (summaries, providers, item_assets, assets,
+extra_metadata) without overwriting existing fields.  Drivers declaring
+``Capability.AGGREGATION`` also contribute ``extent`` via
+``compute_extents()`` when not already present.
 
-Registered via ``register_plugin()`` during ``CatalogModule`` lifespan.
+All discovery shims (``enricher_id``, ``priority``, ``can_enrich``) were
+deleted during M1b \u2014 M3 will call ``enrich()`` deliberately, not via the
+plugin registry.
 """
 
 import logging
@@ -40,18 +46,12 @@ logger = logging.getLogger(__name__)
 
 
 class EntityTransformPipeline:
-    """CollectionMetadataEnricherProtocol implementation using the TRANSFORM chain.
+    """Library helper — merges TRANSFORM driver output into a metadata envelope.
 
-    Runs at priority 200 (after core enrichers).  Activates when
-    ``metadata.operations[TRANSFORM]`` entries are configured for the collection.
+    Instantiate and call :meth:`enrich` directly.  Not registered as a
+    plugin; no protocol discovery.  M3's ``ReindexWorker`` is the
+    intended caller.
     """
-
-    enricher_id: str = "entity_transform_pipeline"
-    priority: int = 200
-
-    def can_enrich(self, catalog_id: str, collection_id: str = "") -> bool:
-        """Returns True only for collection-level enrichment (requires collection_id)."""
-        return bool(collection_id)
 
     async def enrich(
         self,
@@ -69,6 +69,11 @@ class EntityTransformPipeline:
         If any driver supports ``Capability.AGGREGATION`` and the metadata
         has no ``extent``, also calls ``compute_extents()``.
         """
+        # TRANSFORM-merge is a collection-scoped operation — no
+        # collection_id means nothing to merge, return unchanged.
+        if not collection_id:
+            return metadata
+
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.models.protocols.storage_driver import (
             Capability,

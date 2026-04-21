@@ -502,8 +502,8 @@ class CollectionItemsStore(Protocol):
     ) -> Any:
         """Fetch this driver's typed config from the config waterfall.
 
-        Each driver resolves its own class_key (e.g. ``CollectionPostgresqlDriverConfig``,
-        ``CollectionElasticsearchDriverConfig``) and returns the matching
+        Each driver resolves its own class_key (e.g. ``ItemsPostgresqlDriverConfig``,
+        ``ItemsElasticsearchDriverConfig``) and returns the matching
         ``CollectionDriverConfig`` subclass.  Returns code defaults when no
         config has been stored.
 
@@ -521,7 +521,7 @@ class CollectionItemsStore(Protocol):
         """Return the typed physical storage coordinates for this collection.
 
         Replaces the old ``StorageLocationResolver.resolve_storage_location()``
-        (which returned ``Any``) and all ``isinstance(driver, CollectionPostgresqlDriver)``
+        (which returned ``Any``) and all ``isinstance(driver, ItemsPostgresqlDriver)``
         patterns that read ``physical_schema``/``physical_table`` directly.
 
         Drivers that advertise ``Capability.PHYSICAL_ADDRESSING`` MUST implement

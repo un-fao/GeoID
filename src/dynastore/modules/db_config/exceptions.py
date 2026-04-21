@@ -64,7 +64,7 @@ class ConfigResolutionError(DatabaseError):
        (code default, platform, catalog, or collection). A genuine bootstrap
        omission — register a platform default or ship a code default.
     2. A default exists but requires mandatory fields no scope has supplied
-       (e.g. ``CollectionIcebergDriverConfig`` needs ``warehouse``). Set the
+       (e.g. ``ItemsIcebergDriverConfig`` needs ``warehouse``). Set the
        fields at platform / catalog / collection scope.
 
     The instance carries structured fields so API handlers can emit

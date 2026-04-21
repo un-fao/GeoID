@@ -25,15 +25,15 @@ async def test_read_entities_from_public_dataset(monkeypatch):
     from unittest.mock import AsyncMock
 
     from dynastore.modules.storage.drivers.bigquery import (
-        CollectionBigQueryDriver,
+        ItemsBigQueryDriver,
     )
     from dynastore.modules.storage.drivers.bigquery_models import (
         BigQueryTarget,
-        CollectionBigQueryDriverConfig,
+        ItemsBigQueryDriverConfig,
     )
 
-    d = CollectionBigQueryDriver()
-    cfg = CollectionBigQueryDriverConfig(
+    d = ItemsBigQueryDriver()
+    cfg = ItemsBigQueryDriverConfig(
         target=BigQueryTarget(
             project_id="bigquery-public-data",
             dataset_id="usa_names",
@@ -60,15 +60,15 @@ async def test_count_entities_on_public_dataset(monkeypatch):
     from unittest.mock import AsyncMock
 
     from dynastore.modules.storage.drivers.bigquery import (
-        CollectionBigQueryDriver,
+        ItemsBigQueryDriver,
     )
     from dynastore.modules.storage.drivers.bigquery_models import (
         BigQueryTarget,
-        CollectionBigQueryDriverConfig,
+        ItemsBigQueryDriverConfig,
     )
 
-    d = CollectionBigQueryDriver()
-    cfg = CollectionBigQueryDriverConfig(
+    d = ItemsBigQueryDriver()
+    cfg = ItemsBigQueryDriverConfig(
         target=BigQueryTarget(
             project_id="bigquery-public-data",
             dataset_id="usa_names",

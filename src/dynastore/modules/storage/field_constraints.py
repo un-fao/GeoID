@@ -26,7 +26,7 @@ from dynastore.modules.storage.errors import (
 )
 
 if TYPE_CHECKING:
-    from dynastore.modules.catalog.sidecars.attributes_config import (
+    from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
         FeatureAttributeSidecarConfig,
     )
     from dynastore.modules.storage.driver_config import CollectionSchema
@@ -76,7 +76,7 @@ def bridge_schema_to_attribute_sidecar(
     if schema is None or not getattr(schema, "fields", None):
         return sidecar
 
-    from dynastore.modules.catalog.sidecars.attributes_config import (
+    from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
         AttributeSchemaEntry,
         PostgresType,
     )

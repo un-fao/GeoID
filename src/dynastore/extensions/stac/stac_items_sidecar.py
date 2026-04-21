@@ -15,8 +15,8 @@ from datetime import datetime
 
 from geojson_pydantic import Feature
 
-from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
-from dynastore.modules.catalog.sidecars.base import (
+from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
+from dynastore.modules.storage.drivers.pg_sidecars.base import (
     SidecarProtocol,
     SidecarConfig,
     SidecarConfigRegistry,

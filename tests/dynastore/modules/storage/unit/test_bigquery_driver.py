@@ -3,46 +3,51 @@ import pytest
 
 class TestDriverMeta:
     def test_class_name_matches_routing_contract(self):
-        from dynastore.modules.storage.drivers.bigquery import CollectionBigQueryDriver
-        assert CollectionBigQueryDriver.__name__ == "CollectionBigQueryDriver"
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
+        assert ItemsBigQueryDriver.__name__ == "ItemsBigQueryDriver"
 
-    def test_capabilities_phase4a_set(self):
-        from dynastore.modules.storage.drivers.bigquery import CollectionBigQueryDriver
-        d = CollectionBigQueryDriver()
+    def test_capabilities_set(self):
+        """Phase 3 adds WRITE (reporter-mode, opt-in via reporter_mode config)."""
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
+        d = ItemsBigQueryDriver()
         caps = d.capabilities
         assert "READ" in caps
         assert "STREAMING" in caps
         assert "INTROSPECTION" in caps
         assert "COUNT" in caps
         assert "AGGREGATION" in caps
-        assert "WRITE" not in caps
+        # Phase 3: WRITE capability is declared at the class level so the
+        # driver can participate in routing-config WRITE fan-outs.  Actual
+        # write behaviour is gated by reporter_mode on the per-collection
+        # config — default "off" means WRITE is a no-op.
+        assert "WRITE" in caps
 
     def test_preferred_for_features(self):
-        from dynastore.modules.storage.drivers.bigquery import CollectionBigQueryDriver
-        d = CollectionBigQueryDriver()
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
+        d = ItemsBigQueryDriver()
         assert "features" in d.preferred_for
 
     def test_is_available_false_when_no_bq_service(self, monkeypatch):
-        from dynastore.modules.storage.drivers.bigquery import CollectionBigQueryDriver
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
         import dynastore.modules.storage.drivers.bigquery as mod
         monkeypatch.setattr(mod, "_get_bq_service", lambda: None)
-        d = CollectionBigQueryDriver()
+        d = ItemsBigQueryDriver()
         assert d.is_available() is False
 
 
 class TestReadEntities:
     @pytest.mark.asyncio
     async def test_read_entities_requires_fully_qualified_target(self, monkeypatch):
-        from dynastore.modules.storage.drivers.bigquery import CollectionBigQueryDriver
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
         from dynastore.modules.storage.drivers.bigquery_models import (
-            BigQueryTarget, CollectionBigQueryDriverConfig,
+            BigQueryTarget, ItemsBigQueryDriverConfig,
         )
         from unittest.mock import AsyncMock
 
-        d = CollectionBigQueryDriver()
+        d = ItemsBigQueryDriver()
         monkeypatch.setattr(
             d, "get_driver_config",
-            AsyncMock(return_value=CollectionBigQueryDriverConfig(
+            AsyncMock(return_value=ItemsBigQueryDriverConfig(
                 target=BigQueryTarget(project_id="p"),
             )),
         )
@@ -52,9 +57,9 @@ class TestReadEntities:
 
     @pytest.mark.asyncio
     async def test_read_entities_streams_via_bq_service(self, monkeypatch):
-        from dynastore.modules.storage.drivers.bigquery import CollectionBigQueryDriver
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
         from dynastore.modules.storage.drivers.bigquery_models import (
-            BigQueryTarget, CollectionBigQueryDriverConfig,
+            BigQueryTarget, ItemsBigQueryDriverConfig,
         )
         from unittest.mock import AsyncMock
         import dynastore.modules.storage.drivers.bigquery as mod
@@ -66,10 +71,10 @@ class TestReadEntities:
         ])
         monkeypatch.setattr(mod, "_get_bq_service", lambda: fake_service)
 
-        d = CollectionBigQueryDriver()
+        d = ItemsBigQueryDriver()
         monkeypatch.setattr(
             d, "get_driver_config",
-            AsyncMock(return_value=CollectionBigQueryDriverConfig(
+            AsyncMock(return_value=ItemsBigQueryDriverConfig(
                 target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
                 page_size=10,
             )),
@@ -83,9 +88,9 @@ class TestReadEntities:
 class TestCountAndAggregate:
     @pytest.mark.asyncio
     async def test_count_entities_runs_count_star(self, monkeypatch):
-        from dynastore.modules.storage.drivers.bigquery import CollectionBigQueryDriver
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
         from dynastore.modules.storage.drivers.bigquery_models import (
-            BigQueryTarget, CollectionBigQueryDriverConfig,
+            BigQueryTarget, ItemsBigQueryDriverConfig,
         )
         from unittest.mock import AsyncMock
         import dynastore.modules.storage.drivers.bigquery as mod
@@ -94,10 +99,10 @@ class TestCountAndAggregate:
         fake.execute_query = AsyncMock(return_value=[{"f0_": 42}])
         monkeypatch.setattr(mod, "_get_bq_service", lambda: fake)
 
-        d = CollectionBigQueryDriver()
+        d = ItemsBigQueryDriver()
         monkeypatch.setattr(
             d, "get_driver_config",
-            AsyncMock(return_value=CollectionBigQueryDriverConfig(
+            AsyncMock(return_value=ItemsBigQueryDriverConfig(
                 target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
             )),
         )
@@ -107,9 +112,9 @@ class TestCountAndAggregate:
 
     @pytest.mark.asyncio
     async def test_aggregate_sum(self, monkeypatch):
-        from dynastore.modules.storage.drivers.bigquery import CollectionBigQueryDriver
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
         from dynastore.modules.storage.drivers.bigquery_models import (
-            BigQueryTarget, CollectionBigQueryDriverConfig,
+            BigQueryTarget, ItemsBigQueryDriverConfig,
         )
         from unittest.mock import AsyncMock
         import dynastore.modules.storage.drivers.bigquery as mod
@@ -118,10 +123,10 @@ class TestCountAndAggregate:
         fake.execute_query = AsyncMock(return_value=[{"f0_": 100.0}])
         monkeypatch.setattr(mod, "_get_bq_service", lambda: fake)
 
-        d = CollectionBigQueryDriver()
+        d = ItemsBigQueryDriver()
         monkeypatch.setattr(
             d, "get_driver_config",
-            AsyncMock(return_value=CollectionBigQueryDriverConfig(
+            AsyncMock(return_value=ItemsBigQueryDriverConfig(
                 target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
             )),
         )
@@ -130,9 +135,9 @@ class TestCountAndAggregate:
 
     @pytest.mark.asyncio
     async def test_aggregate_rejects_unsafe_field(self, monkeypatch):
-        from dynastore.modules.storage.drivers.bigquery import CollectionBigQueryDriver
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
         from dynastore.modules.storage.drivers.bigquery_models import (
-            BigQueryTarget, CollectionBigQueryDriverConfig,
+            BigQueryTarget, ItemsBigQueryDriverConfig,
         )
         from unittest.mock import AsyncMock
         import dynastore.modules.storage.drivers.bigquery as mod
@@ -141,10 +146,10 @@ class TestCountAndAggregate:
         fake.execute_query = AsyncMock(return_value=[{"f0_": 0}])
         monkeypatch.setattr(mod, "_get_bq_service", lambda: fake)
 
-        d = CollectionBigQueryDriver()
+        d = ItemsBigQueryDriver()
         monkeypatch.setattr(
             d, "get_driver_config",
-            AsyncMock(return_value=CollectionBigQueryDriverConfig(
+            AsyncMock(return_value=ItemsBigQueryDriverConfig(
                 target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
             )),
         )
@@ -157,9 +162,9 @@ class TestIntrospect:
     async def test_introspect_schema_translates_bq_fields_to_field_definitions(
         self, monkeypatch,
     ):
-        from dynastore.modules.storage.drivers.bigquery import CollectionBigQueryDriver
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
         from dynastore.modules.storage.drivers.bigquery_models import (
-            BigQueryTarget, CollectionBigQueryDriverConfig,
+            BigQueryTarget, ItemsBigQueryDriverConfig,
         )
         from unittest.mock import AsyncMock, MagicMock
         import dynastore.modules.storage.drivers.bigquery as mod
@@ -184,10 +189,10 @@ class TestIntrospect:
             return c
         monkeypatch.setattr(mod, "_make_bq_client", fake_client_factory)
 
-        d = CollectionBigQueryDriver()
+        d = ItemsBigQueryDriver()
         monkeypatch.setattr(
             d, "get_driver_config",
-            AsyncMock(return_value=CollectionBigQueryDriverConfig(
+            AsyncMock(return_value=ItemsBigQueryDriverConfig(
                 target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
             )),
         )
@@ -288,4 +293,300 @@ def test_driver_discovered_via_entry_point():
     from importlib.metadata import entry_points
     eps = [ep for ep in entry_points(group="dynastore.modules") if ep.name == "storage_bigquery"]
     assert len(eps) == 1
-    assert "CollectionBigQueryDriver" in eps[0].value
+    assert "ItemsBigQueryDriver" in eps[0].value
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — reporter-mode WRITE path
+# ---------------------------------------------------------------------------
+
+
+class TestReporterShape:
+    """Row-shape helpers are pure — no BQ client needed."""
+
+    def _features(self):
+        from dynastore.models.ogc import Feature
+        return [
+            Feature.model_validate({
+                "type": "Feature",
+                "id": "a",
+                "geometry": None,
+                "properties": {"name": "Alice", "ssn": "123-45-6789", "tier": 1},
+            }),
+            Feature.model_validate({
+                "type": "Feature",
+                "id": "b",
+                "geometry": None,
+                "properties": {"name": "Bob", "tier": 2},
+            }),
+        ]
+
+    def test_rows_flat_default_excludes_payload(self):
+        from dynastore.modules.storage.drivers.bigquery import _rows_flat
+
+        rows = _rows_flat(
+            self._features(),
+            catalog_id="cat", collection_id="col",
+            include_payload=False, exclude_fields=[],
+        )
+        assert len(rows) == 2
+        assert {r["entity_id"] for r in rows} == {"a", "b"}
+        for r in rows:
+            assert r["catalog_id"] == "cat"
+            assert r["collection_id"] == "col"
+            assert "payload" not in r
+            assert "ingested_at" in r
+
+    def test_rows_flat_include_payload_strips_excluded(self):
+        import json
+        from dynastore.modules.storage.drivers.bigquery import _rows_flat
+
+        rows = _rows_flat(
+            self._features(),
+            catalog_id="cat", collection_id="col",
+            include_payload=True, exclude_fields=["ssn"],
+        )
+        assert len(rows) == 2
+        # Alice's payload must not contain 'ssn' but must retain 'name'/'tier'
+        alice = next(r for r in rows if r["entity_id"] == "a")
+        payload = json.loads(alice["payload"])
+        assert "ssn" not in payload
+        assert payload == {"name": "Alice", "tier": 1}
+
+    def test_rows_batch_summary_counts_and_bounds(self):
+        from dynastore.modules.storage.drivers.bigquery import _rows_batch_summary
+
+        rows = _rows_batch_summary(
+            self._features(),
+            catalog_id="cat", collection_id="col",
+        )
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["row_count"] == 2
+        assert row["first_entity"] == "a"
+        assert row["last_entity"] == "b"
+        assert row["catalog_id"] == "cat"
+
+    def test_rows_batch_summary_handles_empty_input(self):
+        from dynastore.modules.storage.drivers.bigquery import _rows_batch_summary
+
+        rows = _rows_batch_summary(
+            [], catalog_id="cat", collection_id="col",
+        )
+        assert len(rows) == 1
+        assert rows[0]["row_count"] == 0
+        assert rows[0]["first_entity"] is None
+        assert rows[0]["last_entity"] is None
+
+
+class TestReporterWriteEntities:
+    """Integration of reporter-mode + fake BigQueryService."""
+
+    @pytest.mark.asyncio
+    async def test_reporter_off_is_noop(self, monkeypatch):
+        """Default reporter_mode='off' must NOT call BigQueryService."""
+        from unittest.mock import AsyncMock
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
+        import dynastore.modules.storage.drivers.bigquery as mod
+        from dynastore.modules.storage.drivers.bigquery_models import (
+            BigQueryTarget, ItemsBigQueryDriverConfig,
+        )
+        from dynastore.models.ogc import Feature
+
+        fake_service = AsyncMock()
+        fake_service.insert_rows_json = AsyncMock(return_value=[])
+        monkeypatch.setattr(mod, "_get_bq_service", lambda: fake_service)
+
+        d = ItemsBigQueryDriver()
+        monkeypatch.setattr(
+            d, "get_driver_config",
+            AsyncMock(return_value=ItemsBigQueryDriverConfig(
+                target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
+                # reporter_mode defaults to "off"
+            )),
+        )
+        feat = Feature.model_validate({
+            "type": "Feature", "id": "x", "geometry": None, "properties": {},
+        })
+        result = await d.write_entities("cat", "col", [feat])
+        assert result == [feat]
+        fake_service.insert_rows_json.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reporter_flat_calls_insert_rows_json(self, monkeypatch):
+        from unittest.mock import AsyncMock
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
+        import dynastore.modules.storage.drivers.bigquery as mod
+        from dynastore.modules.storage.drivers.bigquery_models import (
+            BigQueryTarget, ItemsBigQueryDriverConfig,
+        )
+        from dynastore.models.ogc import Feature
+
+        fake_service = AsyncMock()
+        fake_service.insert_rows_json = AsyncMock(return_value=[])
+        monkeypatch.setattr(mod, "_get_bq_service", lambda: fake_service)
+
+        d = ItemsBigQueryDriver()
+        monkeypatch.setattr(
+            d, "get_driver_config",
+            AsyncMock(return_value=ItemsBigQueryDriverConfig(
+                target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
+                reporter_mode="flat",
+            )),
+        )
+        features = [
+            Feature.model_validate({
+                "type": "Feature", "id": str(i), "geometry": None, "properties": {"k": i},
+            })
+            for i in range(3)
+        ]
+        result = await d.write_entities("cat", "col", features)
+        assert result == features
+
+        fake_service.insert_rows_json.assert_called_once()
+        args, kwargs = fake_service.insert_rows_json.call_args
+        assert args[0] == "p.d.t"  # report_target.fqn()
+        rows = args[1]
+        assert len(rows) == 3
+        assert {r["entity_id"] for r in rows} == {"0", "1", "2"}
+        assert kwargs["project_id"] == "p"
+
+    @pytest.mark.asyncio
+    async def test_reporter_batch_summary_one_row(self, monkeypatch):
+        from unittest.mock import AsyncMock
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
+        import dynastore.modules.storage.drivers.bigquery as mod
+        from dynastore.modules.storage.drivers.bigquery_models import (
+            BigQueryTarget, ItemsBigQueryDriverConfig,
+        )
+        from dynastore.models.ogc import Feature
+
+        fake_service = AsyncMock()
+        fake_service.insert_rows_json = AsyncMock(return_value=[])
+        monkeypatch.setattr(mod, "_get_bq_service", lambda: fake_service)
+
+        d = ItemsBigQueryDriver()
+        monkeypatch.setattr(
+            d, "get_driver_config",
+            AsyncMock(return_value=ItemsBigQueryDriverConfig(
+                target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
+                reporter_mode="batch_summary",
+            )),
+        )
+        features = [
+            Feature.model_validate({
+                "type": "Feature", "id": f"item-{i}", "geometry": None, "properties": {},
+            })
+            for i in range(5)
+        ]
+        await d.write_entities("cat", "col", features)
+
+        fake_service.insert_rows_json.assert_called_once()
+        rows = fake_service.insert_rows_json.call_args.args[1]
+        assert len(rows) == 1
+        assert rows[0]["row_count"] == 5
+        assert rows[0]["first_entity"] == "item-0"
+        assert rows[0]["last_entity"] == "item-4"
+
+    @pytest.mark.asyncio
+    async def test_reporter_bq_exception_is_warning_not_fatal(self, monkeypatch, caplog):
+        """BQ streaming failures must surface as warnings and not raise."""
+        import logging
+        from unittest.mock import AsyncMock
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
+        import dynastore.modules.storage.drivers.bigquery as mod
+        from dynastore.modules.storage.drivers.bigquery_models import (
+            BigQueryTarget, ItemsBigQueryDriverConfig,
+        )
+        from dynastore.models.ogc import Feature
+
+        fake_service = AsyncMock()
+        fake_service.insert_rows_json = AsyncMock(
+            side_effect=RuntimeError("BQ quota exceeded"),
+        )
+        monkeypatch.setattr(mod, "_get_bq_service", lambda: fake_service)
+
+        d = ItemsBigQueryDriver()
+        monkeypatch.setattr(
+            d, "get_driver_config",
+            AsyncMock(return_value=ItemsBigQueryDriverConfig(
+                target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
+                reporter_mode="flat",
+            )),
+        )
+        feat = Feature.model_validate({
+            "type": "Feature", "id": "x", "geometry": None, "properties": {},
+        })
+        with caplog.at_level(logging.WARNING, logger=mod.__name__):
+            result = await d.write_entities("cat", "col", [feat])
+        # Input features returned unchanged (contract preservation)
+        assert result == [feat]
+        assert any("BQ reporter WRITE failed" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_reporter_requires_report_target_fqn(self, monkeypatch, caplog):
+        """Reporter mode without fully-qualified report_target logs a warning and skips."""
+        import logging
+        from unittest.mock import AsyncMock
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
+        import dynastore.modules.storage.drivers.bigquery as mod
+        from dynastore.modules.storage.drivers.bigquery_models import (
+            BigQueryTarget, ItemsBigQueryDriverConfig,
+        )
+        from dynastore.models.ogc import Feature
+
+        fake_service = AsyncMock()
+        fake_service.insert_rows_json = AsyncMock(return_value=[])
+        monkeypatch.setattr(mod, "_get_bq_service", lambda: fake_service)
+
+        d = ItemsBigQueryDriver()
+        monkeypatch.setattr(
+            d, "get_driver_config",
+            AsyncMock(return_value=ItemsBigQueryDriverConfig(
+                target=BigQueryTarget(project_id="p"),  # only project, not FQN
+                reporter_mode="flat",
+            )),
+        )
+        feat = Feature.model_validate({
+            "type": "Feature", "id": "x", "geometry": None, "properties": {},
+        })
+        with caplog.at_level(logging.WARNING, logger=mod.__name__):
+            await d.write_entities("cat", "col", [feat])
+        fake_service.insert_rows_json.assert_not_called()
+        assert any("not fully qualified" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_reporter_partial_failure_logged(self, monkeypatch, caplog):
+        """BQ partial-failure list is logged as a warning, not raised."""
+        import logging
+        from unittest.mock import AsyncMock
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
+        import dynastore.modules.storage.drivers.bigquery as mod
+        from dynastore.modules.storage.drivers.bigquery_models import (
+            BigQueryTarget, ItemsBigQueryDriverConfig,
+        )
+        from dynastore.models.ogc import Feature
+
+        fake_service = AsyncMock()
+        fake_service.insert_rows_json = AsyncMock(
+            return_value=[{"index": 1, "errors": [{"reason": "invalid"}]}],
+        )
+        monkeypatch.setattr(mod, "_get_bq_service", lambda: fake_service)
+
+        d = ItemsBigQueryDriver()
+        monkeypatch.setattr(
+            d, "get_driver_config",
+            AsyncMock(return_value=ItemsBigQueryDriverConfig(
+                target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
+                reporter_mode="flat",
+            )),
+        )
+        features = [
+            Feature.model_validate({
+                "type": "Feature", "id": str(i), "geometry": None, "properties": {},
+            })
+            for i in range(2)
+        ]
+        with caplog.at_level(logging.WARNING, logger=mod.__name__):
+            await d.write_entities("cat", "col", features)
+        assert any("partial failure" in r.message for r in caplog.records)

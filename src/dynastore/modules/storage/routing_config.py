@@ -43,6 +43,8 @@ from typing import Any, Callable, ClassVar, Dict, FrozenSet, List, Optional, Set
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from dynastore.models.protocols.driver_roles import DriverSla
+from dynastore.tools.config_rewriter import normalise_driver_id
 from dynastore.modules.db_config.platform_config_service import (
     Immutable,
     PluginConfig,
@@ -72,12 +74,22 @@ class Operation(StrEnum):
     - READ      : first-match metadata driver (CollectionMetadataStore)
     - TRANSFORM : ordered transform chain — storage drivers that enrich metadata
                   at READ time (replaces ``MetadataOperationConfig.storage``)
+    - INDEX     : async post-write propagation to search-capable sinks (ES,
+                  vector DB, …).  Entries declare ``transformed: bool``; the
+                  ReindexWorker feeds raw or transformed envelopes accordingly.
+                  See role-based driver plan §Routing.
+    - BACKUP    : async post-write propagation to export-capable sinks (Parquet
+                  via DuckDB, NDJSON, …).  Entries declare ``transformed: bool``
+                  and ``fmt``.  Serves ``GET .../backup`` endpoints.
+                  See role-based driver plan §Routing.
     """
 
     WRITE = "WRITE"
     READ = "READ"
     SEARCH = "SEARCH"
     TRANSFORM = "TRANSFORM"
+    INDEX = "INDEX"
+    BACKUP = "BACKUP"
 
 
 class WriteMode(StrEnum):
@@ -116,15 +128,22 @@ def derive_supported_operations(capabilities: FrozenSet[str]) -> FrozenSet[str]:
     Uses :data:`_CAPABILITY_TO_OPERATIONS` to map driver capabilities to the
     operations they can handle.  This is used by apply-handler validation and
     the driver discovery endpoint.
+
+    Role-based driver plan additions (new ops): any driver with ``WRITE`` can
+    participate in ``INDEX`` or ``BACKUP`` as an async propagation sink — the
+    role is a config assignment, not a driver-internal contract.  Drivers with
+    ``ENTITY_TRANSFORM`` can participate in ``TRANSFORM``.
     """
     from dynastore.models.protocols.storage_driver import Capability
 
     mapping: Dict[str, Set[str]] = {
-        Capability.WRITE: {Operation.WRITE},
+        Capability.WRITE: {Operation.WRITE, Operation.INDEX, Operation.BACKUP},
         Capability.READ: {Operation.READ},
         Capability.FULLTEXT: {Operation.SEARCH},
         Capability.ATTRIBUTE_FILTER: {Operation.SEARCH},
         Capability.SPATIAL_FILTER: {Operation.SEARCH},
+        Capability.ENTITY_TRANSFORM: {Operation.TRANSFORM},
+        Capability.EXPORT: {Operation.BACKUP},
     }
     ops: Set[str] = set()
     for cap in capabilities:
@@ -144,6 +163,21 @@ class OperationDriverEntry(BaseModel):
     ``driver_id`` is immutable — changing which drivers participate in an
     operation is a structural decision.  ``hints`` and ``on_failure`` are
     mutable preferences that can evolve without structural impact.
+
+    Role-based driver plan additions (optional, default-inert):
+
+    - ``sla``         — per-entry SLA override.  When ``None``, the driver's
+                         class-level ``sla`` ClassVar (if any) is used.  On
+                         TRANSFORM entries, either the entry or the class
+                         must provide one; CI guard enforces.
+    - ``transformed`` — for INDEX / BACKUP entries: ``True`` means the
+                         ReindexWorker feeds this sink the transformed envelope
+                         (TRANSFORM chain applied); ``False`` means the raw
+                         Primary envelope.  Ignored on other operations.
+    - ``fmt``         — BACKUP only: container format the driver should emit
+                         (``parquet``, ``ndjson``, …).  A backup driver that
+                         supports multiple formats picks the entry matching
+                         the request's ``?format=`` query param.
     """
 
     driver_id: Immutable[str] = Field(
@@ -166,26 +200,64 @@ class OperationDriverEntry(BaseModel):
             "'async' = fire-and-forget after sync phase succeeds."
         ),
     )
+    sla: Optional[DriverSla] = Field(
+        default=None,
+        description=(
+            "Per-entry SLA override.  When None, falls back to the driver's "
+            "class-level SLA (if declared).  Mandatory on TRANSFORM entries "
+            "— without an SLA, a transform can quietly tax the hot path."
+        ),
+    )
+    transformed: bool = Field(
+        default=False,
+        description=(
+            "For INDEX / BACKUP entries only: True → ReindexWorker feeds the "
+            "transformed envelope (TRANSFORM chain applied); False → raw "
+            "Primary envelope.  Ignored on other operations."
+        ),
+    )
+    fmt: Optional[str] = Field(
+        default=None,
+        description=(
+            "BACKUP entries only: container format the driver emits "
+            "(e.g. 'parquet', 'ndjson').  The export endpoint picks the entry "
+            "whose ``fmt`` matches the request's ``?format=`` query param."
+        ),
+    )
 
 
 class MetadataRoutingConfig(BaseModel):
     """Metadata routing sub-configuration within ``CollectionRoutingConfig``.
 
-    Uses the same ``operations`` dict shape as collection routing, with two
-    standard operations:
+    Uses the same ``operations`` dict shape as collection routing.  Standard
+    operation keys:
 
     ``READ`` (``write_mode=first``):
         ``CollectionMetadataStore`` backends for metadata persistence
         and search.  First available driver wins.
         Empty → auto-discovery fallback (ES if registered, otherwise PG).
-        Replaces the former ``override`` list.
 
-    ``TRANSFORM`` (``write_mode=chain``):
-        ``CollectionItemsStore`` backends that enrich collection
-        metadata at READ time (e.g. Iceberg table properties, DuckDB sidecar
-        JSON).  Drivers are called in declared order; non-fatal failures are
-        logged and skipped.
-        Replaces the former ``storage`` list.
+    ``WRITE`` (``write_mode=sync``):
+        Primary metadata driver(s) committing in-transaction.  Empty →
+        defaults to the Primary PG driver.
+
+    ``TRANSFORM`` (``write_mode=chain``, **lazy**):
+        Drivers that enrich collection metadata.  **Not** invoked on default
+        read paths — only when an endpoint opts in (e.g. STAC derived fields)
+        or when the async reindex pipeline is preparing an envelope for an
+        INDEX / BACKUP entry marked ``transformed=true``.  Each entry should
+        carry an SLA; see role-based driver plan §Routing.
+
+    ``INDEX`` (optional, async):
+        Post-write propagation targets for search-capable sinks (ES, Vertex AI,
+        vector DBs).  Each entry declares ``transformed: bool`` to pick raw
+        vs transformed envelopes.  When absent, search falls through to the
+        Primary's ``SEARCH`` capability.
+
+    ``BACKUP`` (optional, async):
+        Post-write propagation targets for export sinks (Parquet via DuckDB,
+        NDJSON, …).  Each entry declares ``transformed: bool`` and ``fmt``.
+        Serves ``GET .../backup?format=<fmt>`` endpoints.
     """
 
     operations: Dict[str, List[OperationDriverEntry]] = Field(
@@ -193,7 +265,9 @@ class MetadataRoutingConfig(BaseModel):
         description=(
             "Operation → ordered driver list for metadata routing.  "
             "READ  = first-match metadata drivers (CollectionMetadataStore).  "
-            "TRANSFORM = ordered storage drivers that enrich metadata at READ time."
+            "TRANSFORM = lazy enrichers.  "
+            "INDEX = async search-sink propagation.  "
+            "BACKUP = async export-sink propagation."
         ),
     )
 
@@ -216,8 +290,8 @@ class CollectionRoutingConfig(PluginConfig):
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
-            Operation.WRITE: [OperationDriverEntry(driver_id="CollectionPostgresqlDriver")],
-            Operation.READ: [OperationDriverEntry(driver_id="CollectionPostgresqlDriver")],
+            Operation.WRITE: [OperationDriverEntry(driver_id="ItemsPostgresqlDriver")],
+            Operation.READ: [OperationDriverEntry(driver_id="ItemsPostgresqlDriver")],
         },
         description=(
             "Operation → ordered driver list.  "
@@ -260,13 +334,61 @@ class AssetRoutingConfig(PluginConfig):
     )
 
 
+class CatalogRoutingConfig(PluginConfig):
+    """Operation-based routing for catalog-level metadata drivers.
+
+    Parallels :class:`CollectionRoutingConfig` but scoped to catalog-tier
+    drivers (``CatalogMetadataStore`` implementations).  Introduced by the
+    role-based driver refactor so catalogs follow the same Primary /
+    Transformer / Indexer / Backup pattern as collections.
+
+    M2.1 ships the first two concrete drivers
+    (``CatalogCorePostgresqlDriver`` / ``CatalogStacPostgresqlDriver``);
+    the defaults below pin both under WRITE and READ so a deployment
+    with a catalog containing both CORE and STAC envelopes resolves
+    correctly without explicit platform config.
+
+    ``operations`` supports the same keys as collection metadata routing:
+    ``WRITE``, ``READ``, ``SEARCH``, ``TRANSFORM``, ``INDEX``, ``BACKUP``.
+    See :class:`MetadataRoutingConfig` for per-key semantics.
+
+    Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
+    """
+
+    enabled: bool = Field(default=True, description="Enable this routing configuration.")
+
+    operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
+        default_factory=lambda: {
+            # M2.3b: fan-out across the domain-scoped Primary drivers.
+            # CORE is first (matches ``_sort_hooks`` priority: required
+            # registry data lands before the optional STAC row).  The
+            # catalog-metadata router merges both results on READ and
+            # parallelises the upsert on WRITE.
+            Operation.WRITE: [
+                OperationDriverEntry(driver_id="CatalogCorePostgresqlDriver"),
+                OperationDriverEntry(driver_id="CatalogStacPostgresqlDriver"),
+            ],
+            Operation.READ: [
+                OperationDriverEntry(driver_id="CatalogCorePostgresqlDriver"),
+                OperationDriverEntry(driver_id="CatalogStacPostgresqlDriver"),
+            ],
+        },
+        description=(
+            "Operation → ordered driver list for catalog-tier metadata drivers. "
+            "Supports WRITE, READ, SEARCH, TRANSFORM, INDEX, BACKUP. "
+            "Default fans out to the CORE + STAC PG Primaries; additional "
+            "roles opt in via config."
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # on_apply handlers
 # ---------------------------------------------------------------------------
 
 
 def _validate_routing_entries(
-    config: "CollectionRoutingConfig | AssetRoutingConfig",
+    config: "CollectionRoutingConfig | AssetRoutingConfig | CatalogRoutingConfig",
     driver_index: Dict[str, Any],
     label: str,
 ) -> None:
@@ -282,8 +404,9 @@ def _validate_routing_entries(
 
     for operation, entries in config.operations.items():
         for entry in entries:
-            # 1. Unknown driver
-            driver = driver_index.get(entry.driver_id)
+            # 1. Unknown driver (legacy driver_id strings normalised to canonical
+            #    via config_rewriter — see db_config.config_rewriter).
+            driver = driver_index.get(normalise_driver_id(entry.driver_id))
             if driver is None:
                 raise ValueError(
                     f"{label}: driver '{entry.driver_id}' for operation "
@@ -350,7 +473,7 @@ def _validate_routing_entries(
         if not entries:
             continue
         primary_id = entries[0].driver_id
-        primary_driver = driver_index.get(primary_id)
+        primary_driver = driver_index.get(normalise_driver_id(primary_id))
         if primary_driver is None:
             continue
         required_cap = _op_required_cap.get(operation)
@@ -386,7 +509,7 @@ async def _on_apply_routing_config(
     # Validate metadata.operations[READ] entries (CollectionMetadataStore drivers)
     metadata_driver_index = {type(d).__name__: d for d in get_protocols(CollectionMetadataStore)}
     for entry in config.metadata.operations.get(Operation.READ, []):
-        if entry.driver_id not in metadata_driver_index:
+        if normalise_driver_id(entry.driver_id) not in metadata_driver_index:
             raise ValueError(
                 f"Collection routing config: metadata.operations[READ] driver "
                 f"'{entry.driver_id}' is not registered. "
@@ -395,12 +518,34 @@ async def _on_apply_routing_config(
 
     # Validate metadata.operations[TRANSFORM] entries (CollectionItemsStore drivers)
     for entry in config.metadata.operations.get(Operation.TRANSFORM, []):
-        if entry.driver_id not in driver_index:
+        if normalise_driver_id(entry.driver_id) not in driver_index:
             raise ValueError(
                 f"Collection routing config: metadata.operations[TRANSFORM] driver "
                 f"'{entry.driver_id}' is not registered. "
                 f"Available: {sorted(driver_index)}"
             )
+
+    # Validate metadata.operations[INDEX] and [BACKUP] entries.
+    # Indexers and Backup drivers are metadata-domain drivers (CollectionMetadataStore
+    # implementations); search-only sinks (ES, Vertex, vector DBs) and export sinks
+    # (Parquet via DuckDB) both register there.  See role-based driver plan §Routing.
+    for op in (Operation.INDEX, Operation.BACKUP):
+        for entry in config.metadata.operations.get(op, []):
+            if normalise_driver_id(entry.driver_id) not in metadata_driver_index:
+                raise ValueError(
+                    f"Collection routing config: metadata.operations[{op}] driver "
+                    f"'{entry.driver_id}' is not registered. "
+                    f"Available: {sorted(metadata_driver_index)}"
+                )
+            # BACKUP-specific: entry.fmt should be declared; a Backup driver
+            # without fmt can't be matched to a ?format= query.  Non-fatal —
+            # a driver may legitimately emit a single implicit format.
+            if op == Operation.BACKUP and not entry.fmt:
+                logger.info(
+                    "Collection routing config: BACKUP entry '%s' has no fmt; "
+                    "endpoint ?format= query will not be able to target it.",
+                    entry.driver_id,
+                )
 
     # Invalidate router cache
     try:
@@ -421,7 +566,7 @@ async def _on_apply_routing_config(
     # Call ensure_storage() on metadata READ drivers (idempotent, catalog-scoped).
     if catalog_id:
         for entry in config.metadata.operations.get(Operation.READ, []):
-            driver = metadata_driver_index.get(entry.driver_id)
+            driver = metadata_driver_index.get(normalise_driver_id(entry.driver_id))
             ensure_fn = getattr(driver, "ensure_storage", None) if driver else None
             if ensure_fn is not None:
                 try:
@@ -435,7 +580,7 @@ async def _on_apply_routing_config(
     # NOTE: ensure_storage() for collection WRITE/READ drivers is intentionally
     # NOT called here. It is invoked by the collection-creation flow
     # (CollectionService._create_collection_internal step 6) on the write driver,
-    # which is the only correct point because the CollectionPostgresqlDriverConfig
+    # which is the only correct point because the ItemsPostgresqlDriverConfig
     # (physical_table, sidecars) must be fully resolved before storage is
     # provisioned.  Calling ensure_storage() here — potentially before the
     # collection row exists — causes ImmutableConfigError for WriteOnce /
@@ -471,7 +616,7 @@ async def _on_apply_asset_routing_config(
             for entry in entries:
                 seen_ids.add(entry.driver_id)
         for did in seen_ids:
-            driver = driver_index.get(did)
+            driver = driver_index.get(normalise_driver_id(did))
             ensure_fn = getattr(driver, "ensure_storage", None) if driver else None
             if ensure_fn is not None:
                 try:
@@ -483,7 +628,35 @@ async def _on_apply_asset_routing_config(
                     )
 
 
+async def _on_apply_catalog_routing_config(
+    config: CatalogRoutingConfig,
+    catalog_id: Optional[str],
+    collection_id: Optional[str],
+    db_resource: Optional[Any],
+) -> None:
+    """Called after catalog routing config is written.
+
+    Validates ``driver_id``, hints, and operation capability for every entry in
+    ``config.operations`` against the ``CatalogMetadataStore`` driver registry.
+    Mirrors :func:`_on_apply_routing_config` for the catalog tier.
+
+    INDEX / BACKUP entries are validated against the same registry — role is a
+    config assignment, not a driver-internal contract (see role-based driver
+    plan §Routing).
+    """
+    from dynastore.models.protocols.metadata_driver import CatalogMetadataStore
+    from dynastore.tools.discovery import get_protocols
+
+    driver_index = {type(d).__name__: d for d in get_protocols(CatalogMetadataStore)}
+    _validate_routing_entries(config, driver_index, "Catalog routing config")
+
+    # Catalog router cache invalidation is wired in M2 when `catalog_router.py`
+    # lands.  Until then, config changes are picked up on the next resolution
+    # because there's no catalog-tier router to cache.
+
+
 # Register handlers on the config classes themselves.
 _HandlerSig = Callable[[PluginConfig, Optional[str], Optional[str], Optional[Any]], Any]
 CollectionRoutingConfig.register_apply_handler(cast(_HandlerSig, _on_apply_routing_config))
 AssetRoutingConfig.register_apply_handler(cast(_HandlerSig, _on_apply_asset_routing_config))
+CatalogRoutingConfig.register_apply_handler(cast(_HandlerSig, _on_apply_catalog_routing_config))

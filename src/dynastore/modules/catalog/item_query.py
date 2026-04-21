@@ -21,12 +21,12 @@ from dynastore.modules.db_config.query_executor import (
 )
 from dynastore.modules.catalog.models import Collection
 from dynastore.modules.storage.driver_config import (
-    CollectionPostgresqlDriverConfig,
+    ItemsPostgresqlDriverConfig,
 )
 from dynastore.models.driver_context import DriverContext
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
-from dynastore.modules.catalog.sidecars.base import (
+from dynastore.modules.storage.drivers.pg_sidecars.base import (
     SidecarProtocol,
     FeaturePipelineContext,
     ConsumerType,
@@ -222,7 +222,7 @@ class ItemQueryMixin:
         conn: DbResource,
         catalog_id: str,
         collection_id: str,
-        col_config: Optional[CollectionPostgresqlDriverConfig] = None,
+        col_config: Optional[ItemsPostgresqlDriverConfig] = None,
         item_ids: Optional[List[str]] = None,
         request: Optional[QueryRequest] = None,
         **kwargs,
@@ -260,7 +260,7 @@ class ItemQueryMixin:
         conn: DbResource,
         catalog_id: str,
         collection_id: str,
-        col_config: CollectionPostgresqlDriverConfig,
+        col_config: ItemsPostgresqlDriverConfig,
         params: Dict[str, Any],
         param_suffix: str = "",
     ) -> Tuple[str, Dict[str, Any]]:
@@ -289,7 +289,7 @@ class ItemQueryMixin:
         return sql, bind_params
 
     def _build_base_query_request(
-        self, params: Dict[str, Any], col_config: CollectionPostgresqlDriverConfig
+        self, params: Dict[str, Any], col_config: ItemsPostgresqlDriverConfig
     ) -> QueryRequest:
         """Build base QueryRequest from params before transformations"""
         from dynastore.models.query_builder import QueryRequest, FieldSelection
@@ -336,7 +336,7 @@ class ItemQueryMixin:
         context: Dict[str, Any],
         catalog_id: str,
         collection_id: str,
-        col_config: CollectionPostgresqlDriverConfig,
+        col_config: ItemsPostgresqlDriverConfig,
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Applies registered query transformations and generates optimized SQL.
@@ -526,7 +526,7 @@ class ItemQueryMixin:
             # ID Resolution Logic: delete ALL active rows for this external_id
             rows = 0
             if col_config and col_config.sidecars:
-                from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+                from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
                 from sqlalchemy import text as sa_text
 
                 for sc in col_config.sidecars:
@@ -816,7 +816,7 @@ class ItemQueryMixin:
 
             columns_to_select = select_columns
             if not columns_to_select:
-                from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+                from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
 
                 all_fields = {"geoid", "deleted_at"}
                 if col_config.sidecars:

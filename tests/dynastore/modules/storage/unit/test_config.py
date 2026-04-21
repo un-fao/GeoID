@@ -7,9 +7,9 @@ from dynastore.modules.catalog.catalog_config import (
     CompositePartitionConfig,
 )
 from dynastore.modules.storage.driver_config import (
-    CollectionDuckdbDriverConfig,
-    CollectionIcebergDriverConfig,
-    CollectionPostgresqlDriverConfig,
+    ItemsDuckdbDriverConfig,
+    ItemsIcebergDriverConfig,
+    ItemsPostgresqlDriverConfig,
     DuckDBConfig,
     IcebergConfig,
 )
@@ -39,31 +39,178 @@ class TestCollectionPluginConfigDefaults:
 
 
 # ---------------------------------------------------------------------------
-# CollectionPostgresqlDriverConfig (sidecars, partitioning, collection_type)
+# ItemsPostgresqlDriverConfig (sidecars, partitioning, collection_type)
 # ---------------------------------------------------------------------------
 
 
 class TestCollectionPostgresqlDriverConfigDefaults:
     def test_class_key(self):
-        assert CollectionPostgresqlDriverConfig.class_key() == "CollectionPostgresqlDriverConfig"
+        assert ItemsPostgresqlDriverConfig.class_key() == "ItemsPostgresqlDriverConfig"
 
-    def test_default_sidecars(self):
-        cfg = CollectionPostgresqlDriverConfig()
-        assert len(cfg.sidecars) == 2
+    def test_default_sidecars_is_empty(self):
+        """Default is empty as of M1b.2.
+
+        The old eager ``[geometries, attributes]`` default was the
+        anti-pattern the role-based driver refactor evicts: every
+        default-body POST /collections used to persist those two
+        sidecar entries via ``configs.set_config``.  In M1b.2 the PG
+        driver resolves sidecar defaults lazily at DDL / read / write
+        time via ``pg_sidecars._effective_sidecars(...)`` — so a
+        default-body config persists zero ``collection_configs`` rows
+        (plan §Principle — default-fast invariant), and the first
+        real DDL/ingest call materialises ``[geometries, attributes]``
+        (+ registry injections like ``item_metadata``) on demand.
+        """
+        cfg = ItemsPostgresqlDriverConfig()
+        assert cfg.sidecars == []
+
+    def test_effective_sidecars_vector_default(self):
+        """Empty VECTOR config resolves to [geometries, attributes]+injections."""
+        from dynastore.modules.storage.drivers.pg_sidecars import (
+            _effective_sidecars,
+            FeatureAttributeSidecarConfig,
+            GeometriesSidecarConfig,
+        )
+        cfg = ItemsPostgresqlDriverConfig()
+        resolved = _effective_sidecars(cfg, catalog_id="cat", collection_id="col")
+        types = [s.sidecar_type for s in resolved]
+        assert "geometries" in types
+        assert "attributes" in types
+        assert any(isinstance(s, GeometriesSidecarConfig) for s in resolved)
+        assert any(isinstance(s, FeatureAttributeSidecarConfig) for s in resolved)
+
+    def test_effective_sidecars_records_drops_geometry(self):
+        """RECORDS collections have no spatial component → geometry omitted."""
+        from dynastore.modules.storage.drivers.pg_sidecars import _effective_sidecars
+        cfg = ItemsPostgresqlDriverConfig(collection_type="RECORDS")
+        resolved = _effective_sidecars(cfg, catalog_id="cat", collection_id="col")
+        types = [s.sidecar_type for s in resolved]
+        assert "geometries" not in types
+        assert "attributes" in types
+
+    def test_effective_sidecars_explicit_config_preserved_and_supplemented(self):
+        """Caller-explicit sidecars are preserved; registry fills missing types.
+
+        Matches the pre-M1b.2 inline-injection semantics in
+        collection_service.py: the registry is additive over whatever
+        the caller supplied.  A caller that passes ``[attributes]`` for
+        a VECTOR collection still gets ``geometries`` appended by the
+        registry (since VECTOR collections always need it), mirroring
+        the old behaviour where the eager default was
+        ``[geometries, attributes]``.
+
+        A caller who wants ONLY attributes (no geometry) uses a
+        non-VECTOR ``collection_type`` — see
+        ``test_effective_sidecars_records_drops_geometry``.
+        """
+        from dynastore.modules.storage.drivers.pg_sidecars import (
+            _effective_sidecars,
+            FeatureAttributeSidecarConfig,
+        )
+        cfg = ItemsPostgresqlDriverConfig(
+            sidecars=[FeatureAttributeSidecarConfig()],
+        )
+        resolved = _effective_sidecars(cfg, catalog_id="cat", collection_id="col")
+        types = [s.sidecar_type for s in resolved]
+        # attributes is explicit → preserved; geometries is registry-supplemented.
+        assert "attributes" in types
+        assert "geometries" in types
+        # Explicit entry appears before registry-supplemented ones.
+        assert types.index("attributes") < types.index("geometries")
 
     def test_default_partitioning_disabled(self):
-        cfg = CollectionPostgresqlDriverConfig()
+        cfg = ItemsPostgresqlDriverConfig()
         assert cfg.partitioning.enabled is False
 
     def test_default_collection_type(self):
-        cfg = CollectionPostgresqlDriverConfig()
+        cfg = ItemsPostgresqlDriverConfig()
         assert cfg.collection_type == "VECTOR"
 
     def test_column_definitions(self):
-        cfg = CollectionPostgresqlDriverConfig()
+        cfg = ItemsPostgresqlDriverConfig()
         cols = cfg.get_column_definitions()
         assert "geoid" in cols
         assert "transaction_time" in cols
+
+
+class TestSidecarConfigDiscriminatorRoundTrip:
+    """Round-trip tests for the M1b.1 discriminator-retention fix.
+
+    Before M1b.1, ``SidecarConfig.sidecar_type`` was declared in the base
+    class with no default; concrete subclasses supplied a
+    ``Literal[...] = "..."`` default.  Pydantic treated that subclass
+    default as not-explicitly-set on a default-constructed instance, so
+    ``model_dump(exclude_unset=True)`` dropped the discriminator — making
+    a round-trip through the ``Annotated[Union[...], Discriminator(...)]``
+    on ``ItemsPostgresqlDriverConfig.sidecars`` fail.
+
+    The fix is a ``@model_validator(mode="after")`` on ``SidecarConfig``
+    that adds ``"sidecar_type"`` to ``__pydantic_fields_set__`` on every
+    instance, regardless of how it was constructed.
+    """
+
+    def test_default_constructed_sidecar_dumps_keep_sidecar_type(self):
+        from dynastore.modules.storage.drivers.pg_sidecars import (
+            GeometriesSidecarConfig,
+            FeatureAttributeSidecarConfig,
+            ItemMetadataSidecarConfig,
+        )
+        for cls, expected in [
+            (GeometriesSidecarConfig, "geometries"),
+            (FeatureAttributeSidecarConfig, "attributes"),
+            (ItemMetadataSidecarConfig, "item_metadata"),
+        ]:
+            dumped = cls().model_dump(exclude_unset=True)
+            assert dumped.get("sidecar_type") == expected, (
+                f"{cls.__name__} lost its sidecar_type under exclude_unset=True"
+            )
+
+    def test_round_trip_exclude_unset_preserves_discriminator(self):
+        """model_dump(exclude_unset=True) → model_validate round-trips cleanly."""
+        from dynastore.modules.storage.drivers.pg_sidecars import (
+            GeometriesSidecarConfig,
+            FeatureAttributeSidecarConfig,
+            ItemMetadataSidecarConfig,
+        )
+        for cls in (GeometriesSidecarConfig, FeatureAttributeSidecarConfig, ItemMetadataSidecarConfig):
+            original = cls()
+            dumped = original.model_dump(exclude_unset=True)
+            reloaded = cls.model_validate(dumped)
+            assert reloaded.sidecar_type == original.sidecar_type
+            assert type(reloaded) is cls
+
+    def test_discriminated_union_dispatches_to_correct_subclass(self):
+        """Explicit-sidecars config dumps + reloads with discriminator-based dispatch.
+
+        Default ``ItemsPostgresqlDriverConfig()`` has empty sidecars
+        post-M1b.2 (see ``test_default_sidecars_is_empty``), so we supply
+        explicit sidecars here to exercise the
+        ``Annotated[Union[...], Discriminator("sidecar_type")]`` dispatch
+        on a realistic persisted payload.
+        """
+        from dynastore.modules.storage.drivers.pg_sidecars import (
+            GeometriesSidecarConfig,
+            FeatureAttributeSidecarConfig,
+            ItemMetadataSidecarConfig,
+        )
+        cfg = ItemsPostgresqlDriverConfig(
+            sidecars=[
+                GeometriesSidecarConfig(),
+                FeatureAttributeSidecarConfig(),
+                ItemMetadataSidecarConfig(),
+            ],
+        )
+        dumped = cfg.model_dump(exclude_unset=False)  # full dump — simulates DB persistence
+        reloaded = ItemsPostgresqlDriverConfig.model_validate(dumped)
+        types_out = [s.sidecar_type for s in reloaded.sidecars]
+        assert "geometries" in types_out
+        assert "attributes" in types_out
+        assert "item_metadata" in types_out
+        # Every reloaded entry is the specialised subclass (Union dispatched on sidecar_type)
+        subclass_map = {s.sidecar_type: type(s) for s in reloaded.sidecars}
+        assert subclass_map.get("geometries") is GeometriesSidecarConfig
+        assert subclass_map.get("attributes") is FeatureAttributeSidecarConfig
+        assert subclass_map.get("item_metadata") is ItemMetadataSidecarConfig
 
 
 class TestCompositePartitionConfig:
@@ -94,16 +241,16 @@ class TestCollectionRoutingConfig:
         cfg = CollectionRoutingConfig()
         assert Operation.WRITE in cfg.operations
         assert Operation.READ in cfg.operations
-        assert cfg.operations[Operation.WRITE][0].driver_id == "CollectionPostgresqlDriver"
+        assert cfg.operations[Operation.WRITE][0].driver_id == "ItemsPostgresqlDriver"
 
     def test_custom_operations(self):
         cfg = CollectionRoutingConfig(operations={
-            Operation.WRITE: [OperationDriverEntry(driver_id="CollectionPostgresqlDriver")],
-            Operation.READ: [OperationDriverEntry(driver_id="CollectionElasticsearchDriver", hints={"search"})],
-            Operation.SEARCH: [OperationDriverEntry(driver_id="CollectionElasticsearchDriver", hints={"search"})],
+            Operation.WRITE: [OperationDriverEntry(driver_id="ItemsPostgresqlDriver")],
+            Operation.READ: [OperationDriverEntry(driver_id="ItemsElasticsearchDriver", hints={"search"})],
+            Operation.SEARCH: [OperationDriverEntry(driver_id="ItemsElasticsearchDriver", hints={"search"})],
         })
         assert len(cfg.operations) == 3
-        assert cfg.operations[Operation.SEARCH][0].driver_id == "CollectionElasticsearchDriver"
+        assert cfg.operations[Operation.SEARCH][0].driver_id == "ItemsElasticsearchDriver"
 
     def test_failure_policy(self):
         entry = OperationDriverEntry(driver_id="es", on_failure=FailurePolicy.WARN)
@@ -152,20 +299,20 @@ class TestMetadataRoutingConfig:
     def test_transform_operation(self):
         cfg = MetadataRoutingConfig(operations={
             Operation.TRANSFORM: [OperationDriverEntry(
-                driver_id="CollectionIcebergDriver",
+                driver_id="ItemsIcebergDriver",
                 write_mode=WriteMode.CHAIN,
                 on_failure=FailurePolicy.WARN,
             )],
         })
         entry = cfg.operations[Operation.TRANSFORM][0]
-        assert entry.driver_id == "CollectionIcebergDriver"
+        assert entry.driver_id == "ItemsIcebergDriver"
         assert entry.write_mode == WriteMode.CHAIN
         assert entry.on_failure == FailurePolicy.WARN
 
     def test_read_and_transform_together(self):
         cfg = MetadataRoutingConfig(operations={
             Operation.READ: [OperationDriverEntry(driver_id="MetadataPostgresqlDriver")],
-            Operation.TRANSFORM: [OperationDriverEntry(driver_id="CollectionIcebergDriver")],
+            Operation.TRANSFORM: [OperationDriverEntry(driver_id="ItemsIcebergDriver")],
         })
         assert Operation.READ in cfg.operations
         assert Operation.TRANSFORM in cfg.operations
@@ -202,7 +349,7 @@ class TestMetadataRoutingSnapshot:
         return CollectionRoutingConfig(
             metadata=MetadataRoutingConfig(operations={
                 Operation.TRANSFORM: [OperationDriverEntry(
-                    driver_id="CollectionIcebergDriver",
+                    driver_id="ItemsIcebergDriver",
                     write_mode=WriteMode.CHAIN,
                     on_failure=FailurePolicy.WARN,
                 )],
@@ -217,7 +364,7 @@ class TestMetadataRoutingSnapshot:
                     driver_id="MetadataElasticsearchDriver",
                 )],
                 Operation.TRANSFORM: [OperationDriverEntry(
-                    driver_id="CollectionIcebergDriver",
+                    driver_id="ItemsIcebergDriver",
                     on_failure=FailurePolicy.WARN,
                 )],
             })
@@ -233,7 +380,7 @@ class TestMetadataRoutingSnapshot:
         cfg = self._make_iceberg_storage_routing()
         transform_entries = cfg.metadata.operations.get(Operation.TRANSFORM, [])
         assert len(transform_entries) == 1
-        assert transform_entries[0].driver_id == "CollectionIcebergDriver"
+        assert transform_entries[0].driver_id == "ItemsIcebergDriver"
 
     def test_empty_read_returns_empty_list(self):
         cfg = self._make_iceberg_storage_routing()
@@ -290,15 +437,15 @@ class TestIcebergConfigEnvLevel:
 
 
 class TestCollectionIcebergDriverConfigValidator:
-    """CollectionIcebergDriverConfig rejects connection-level fields."""
+    """ItemsIcebergDriverConfig rejects connection-level fields."""
 
     def test_valid_construction_no_fields(self):
-        cfg = CollectionIcebergDriverConfig()
+        cfg = ItemsIcebergDriverConfig()
         assert cfg.namespace is None
         assert cfg.table_name is None
 
     def test_valid_construction_table_fields(self):
-        cfg = CollectionIcebergDriverConfig(
+        cfg = ItemsIcebergDriverConfig(
             namespace="my_ns",
             table_name="my_table",
             table_properties={"write.format.default": "parquet"},
@@ -309,47 +456,47 @@ class TestCollectionIcebergDriverConfigValidator:
 
     def test_valid_construction_partition_spec(self):
         spec = [{"name": "year", "transform": "year", "source": "event_date"}]
-        cfg = CollectionIcebergDriverConfig(partition_spec=spec)
+        cfg = ItemsIcebergDriverConfig(partition_spec=spec)
         assert cfg.partition_spec == spec
 
     def test_valid_construction_sort_order(self):
         order = [{"name": "id", "direction": "asc", "null_order": "nulls-last"}]
-        cfg = CollectionIcebergDriverConfig(sort_order=order)
+        cfg = ItemsIcebergDriverConfig(sort_order=order)
         assert cfg.sort_order == order
 
     def test_rejects_catalog_name(self):
         with pytest.raises(ValidationError, match="catalog_name"):
-            CollectionIcebergDriverConfig(catalog_name="glue")
+            ItemsIcebergDriverConfig(catalog_name="glue")
 
     def test_rejects_catalog_uri(self):
         with pytest.raises(ValidationError, match="catalog_uri"):
-            CollectionIcebergDriverConfig(catalog_uri="http://catalog:8181")
+            ItemsIcebergDriverConfig(catalog_uri="http://catalog:8181")
 
     def test_rejects_catalog_type(self):
         with pytest.raises(ValidationError, match="catalog_type"):
-            CollectionIcebergDriverConfig(catalog_type="rest")
+            ItemsIcebergDriverConfig(catalog_type="rest")
 
     def test_rejects_catalog_properties(self):
         with pytest.raises(ValidationError, match="catalog_properties"):
-            CollectionIcebergDriverConfig(catalog_properties={"key": "value"})
+            ItemsIcebergDriverConfig(catalog_properties={"key": "value"})
 
     def test_rejects_warehouse_uri(self):
         with pytest.raises(ValidationError, match="warehouse_uri"):
-            CollectionIcebergDriverConfig(warehouse_uri="gs://my-bucket/iceberg/")
+            ItemsIcebergDriverConfig(warehouse_uri="gs://my-bucket/iceberg/")
 
     def test_rejects_warehouse_scheme(self):
         with pytest.raises(ValidationError, match="warehouse_scheme"):
-            CollectionIcebergDriverConfig(warehouse_scheme="gs")
+            ItemsIcebergDriverConfig(warehouse_scheme="gs")
 
     def test_rejects_multiple_connection_fields(self):
         with pytest.raises(ValidationError):
-            CollectionIcebergDriverConfig(
+            ItemsIcebergDriverConfig(
                 catalog_name="glue",
                 warehouse_uri="s3://bucket/wh",
             )
 
     def test_class_key(self):
-        assert CollectionIcebergDriverConfig.class_key() == "CollectionIcebergDriverConfig"
+        assert ItemsIcebergDriverConfig.class_key() == "ItemsIcebergDriverConfig"
 
 
 class TestDuckDBConfigEnvLevel:
@@ -364,13 +511,13 @@ class TestDuckDBConfigEnvLevel:
 
 class TestCollectionDuckdbDriverConfigDefaults:
     def test_class_key(self):
-        assert CollectionDuckdbDriverConfig.class_key() == "CollectionDuckdbDriverConfig"
+        assert ItemsDuckdbDriverConfig.class_key() == "ItemsDuckdbDriverConfig"
 
     def test_default_format(self):
-        cfg = CollectionDuckdbDriverConfig()
+        cfg = ItemsDuckdbDriverConfig()
         assert cfg.format == "parquet"
 
     def test_path_fields_default_none(self):
-        cfg = CollectionDuckdbDriverConfig()
+        cfg = ItemsDuckdbDriverConfig()
         assert cfg.path is None
         assert cfg.write_path is None

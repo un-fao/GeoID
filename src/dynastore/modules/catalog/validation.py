@@ -37,7 +37,7 @@ async def get_valid_properties(conn: DbResource, catalog_id: str, collection_id:
 
         # 2b. Sidecar Fields
         if config.sidecars:
-            from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+            from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
             for sc_config in config.sidecars:
                 if not sc_config.enabled:
                     continue

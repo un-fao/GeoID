@@ -39,10 +39,15 @@ CREATE TABLE IF NOT EXISTS {schema}.collections (
 
 ## Layer 2: Metadata Table
 
-All descriptive metadata lives here. Renamed from `pg_collection_metadata` to `metadata` in v1.0.
+All descriptive metadata lives here.  Renamed from `pg_collection_metadata`
+→ `metadata` in v1.0, then from `metadata` → `collection_metadata` in the
+M1/M2 naming harmonisation (four-tier prefix scheme: Items / Collection /
+Catalog / Asset).  Existing deployments are migrated by
+`rename_legacy_metadata_tables` — idempotent DO block in
+`modules/catalog/db_init/metadata_domain_split.py`.
 
 ```sql
-CREATE TABLE IF NOT EXISTS {schema}.metadata (
+CREATE TABLE IF NOT EXISTS {schema}.collection_metadata (
     collection_id VARCHAR NOT NULL PRIMARY KEY,
     title JSONB,
     description JSONB,
