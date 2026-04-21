@@ -76,12 +76,6 @@ COPY pyproject.toml .en[v]* ./src/
 COPY src ./src
 COPY tests ./tests
 
-# Startup scripts ship as package data at src/dynastore/scripts/ (SSOT), so the
-# deployment wrappers (dynastore, fao-aip-catalog) can pull them from site-packages
-# after `pip install dynastore[...] @ git+...`. Here in geoid we install them from
-# the already-COPYed source tree.
-RUN install -m 755 ${APP_DIR}/src/dynastore/scripts/start.sh /usr/local/bin/start.sh && \
-    install -m 755 ${APP_DIR}/src/dynastore/scripts/start-task.sh /usr/local/bin/start-task.sh
 # SCOPE selects which pyproject.toml extras to install.
 # Set per-service via docker-compose.yml build args (from .env) or CI.
 ARG SCOPE=all
@@ -91,6 +85,13 @@ ARG BUILD_JUPYTERLITE=false
 RUN --mount=type=cache,target=/root/.cache/pip \
     ${VENV_PATH}/bin/pip install --upgrade pip setuptools wheel && \
     ${VENV_PATH}/bin/pip install ".[${SCOPE}]" uvicorn gunicorn
+
+# Startup scripts ship as package data under dynastore/scripts/ (SSOT). Copy
+# from site-packages so this step is identical across every Dockerfile that
+# installs dynastore — local source build (this file) or pip install from git
+# ref (dynastore/docker/Dockerfile). Single canonical path.
+RUN install -m 755 ${VENV_PATH}/lib/python3.12/site-packages/dynastore/scripts/start.sh /usr/local/bin/start.sh && \
+    install -m 755 ${VENV_PATH}/lib/python3.12/site-packages/dynastore/scripts/start-task.sh /usr/local/bin/start-task.sh
 
 # Overlay JupyterLite assets when scope includes notebooks; bridge.js (committed) is preserved.
 # After copy, inject bridge.js into lab/index.html so the host can postMessage
