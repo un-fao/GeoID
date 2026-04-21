@@ -378,6 +378,12 @@ _list_catalogs_query = DQLQuery(
     result_handler=ResultHandler.ALL_DICTS,
 )
 
+# Threshold above which ``list_catalogs`` warns about sequential router
+# round-trips.  ~200 RTTs (e.g. a 100-row page × 2 domain drivers) is
+# the point at which p95 latency for a paged listing becomes noticeable
+# under the current non-batched router read path.
+_LIST_CATALOGS_ROUNDTRIP_WARN_THRESHOLD = 200
+
 _soft_delete_catalog_query = DQLQuery(
     "UPDATE catalog.catalogs SET deleted_at = NOW() WHERE id = :id AND deleted_at IS NULL;",
     result_handler=ResultHandler.ROWCOUNT,
@@ -885,6 +891,28 @@ class CatalogService(CatalogsProtocol):
 
         return Catalog.model_validate(data)
 
+    def _list_catalog_metadata_driver_types(self) -> List[type]:
+        """Return the ``CatalogMetadataStore`` classes currently registered.
+
+        Used by :meth:`list_catalogs` to compute the expected per-row
+        round-trip count for the threshold-warn log.  Kept as a
+        lightweight helper (no I/O) so the hot path doesn't pay for
+        anything beyond a single ``get_protocols`` lookup.
+
+        Returns an empty list if the discovery layer throws — listing
+        degradation-warn accuracy is not worth propagating an exception
+        through the happy path.
+        """
+        try:
+            from dynastore.models.protocols.metadata_driver import (
+                CatalogMetadataStore,
+            )
+            from dynastore.tools.discovery import get_protocols
+
+            return [type(d) for d in get_protocols(CatalogMetadataStore)]
+        except Exception:  # noqa: BLE001 — diagnostic only
+            return []
+
     async def _resolve_catalog_router_metadata(
         self, catalog_id: str, *, db_resource: Optional[Any] = None,
     ) -> Optional[Dict[str, Any]]:
@@ -1195,17 +1223,39 @@ class CatalogService(CatalogsProtocol):
             # M2.4 — overlay router-supplied metadata per-row.  Each row
             # carries a catalog_id we look up through the router; the
             # merged envelope wins over the legacy catalog.catalogs
-            # columns.  ``asyncio.gather`` here is structural (keeps the
-            # per-row work composable); the actual SQL calls still
-            # serialise through the shared connection's wire lock —
-            # asyncpg enforces one in-flight statement per connection.
-            # For a list of N catalogs × M domain drivers that's N×M
-            # sequential round-trips.  Batch-friendly refactoring
-            # (single SELECT JOINing the split tables) is a latency
-            # optimisation for M3+ once the read path is stable.
-            import asyncio as _asyncio
+            # columns.
+            #
+            # Why a sequential loop and not ``asyncio.gather``: the
+            # router's per-driver reads share ``conn`` (we pass
+            # ``db_resource=conn`` so reads see the caller's transaction
+            # snapshot).  asyncpg enforces one in-flight statement per
+            # connection — concurrent statements on the same connection
+            # raise ``InterfaceError: another operation is in progress``.
+            # A ``gather`` that *looks* parallel is actually either
+            # (a) racy on the shared cursor, or (b) silently serialised
+            # by the wire lock.  Explicit sequential iteration documents
+            # the real execution shape.
+            #
+            # For a list of N catalogs × M domain drivers that's still
+            # N×M sequential round-trips.  Batch-friendly refactoring
+            # (single SELECT joining the split tables) is a latency
+            # optimisation deferred to M3+.  Until then, log a warning
+            # when the page × driver product gets large enough that
+            # operators will notice the latency — makes the degradation
+            # observable instead of silent.
+            router_drivers_count = len(self._list_catalog_metadata_driver_types())
+            expected_roundtrips = len(results) * max(router_drivers_count, 1)
+            if expected_roundtrips >= _LIST_CATALOGS_ROUNDTRIP_WARN_THRESHOLD:
+                logger.warning(
+                    "list_catalogs will issue ~%d sequential SQL "
+                    "round-trips (%d rows × %d domain drivers). "
+                    "Consider reducing ``limit`` or adopting the "
+                    "batched JOIN query planned for M3+.",
+                    expected_roundtrips, len(results), router_drivers_count,
+                )
 
-            async def _unpack_one(r):
+            models: List[Catalog] = []
+            for r in results:
                 row_id = (
                     r._mapping["id"] if hasattr(r, "_mapping") else r["id"]
                 ) if r else None
@@ -1216,16 +1266,12 @@ class CatalogService(CatalogsProtocol):
                     if row_id is not None
                     else None
                 )
-                return self._unpack_catalog_row(
+                model = self._unpack_catalog_row(
                     r, router_metadata=router_metadata,
                 )
-
-            # Use unpacker to handle legacy JSON packing for list results too
-            # Filter out Nones in case unpacking fails for some rows
-            models = await _asyncio.gather(
-                *[_unpack_one(r) for r in results]
-            )
-            return [m for m in models if m is not None]
+                if model is not None:
+                    models.append(model)
+            return models
 
     async def search_catalogs(
         self,
