@@ -43,7 +43,7 @@ class TestCollectionPluginConfigDefaults:
 # ---------------------------------------------------------------------------
 
 
-class TestCollectionPostgresqlDriverConfigDefaults:
+class TestItemsPostgresqlDriverConfigDefaults:
     def test_class_key(self):
         assert ItemsPostgresqlDriverConfig.class_key() == "ItemsPostgresqlDriverConfig"
 
@@ -311,7 +311,7 @@ class TestMetadataRoutingConfig:
 
     def test_read_and_transform_together(self):
         cfg = MetadataRoutingConfig(operations={
-            Operation.READ: [OperationDriverEntry(driver_id="MetadataPostgresqlDriver")],
+            Operation.READ: [OperationDriverEntry(driver_id="CollectionCorePostgresqlDriver")],
             Operation.TRANSFORM: [OperationDriverEntry(driver_id="ItemsIcebergDriver")],
         })
         assert Operation.READ in cfg.operations
@@ -320,9 +320,9 @@ class TestMetadataRoutingConfig:
     def test_embedded_in_collection_routing_config(self):
         """CollectionRoutingConfig.metadata must accept MetadataRoutingConfig."""
         cfg = CollectionRoutingConfig(metadata=MetadataRoutingConfig(operations={
-            Operation.READ: [OperationDriverEntry(driver_id="MetadataPostgresqlDriver")],
+            Operation.READ: [OperationDriverEntry(driver_id="CollectionCorePostgresqlDriver")],
         }))
-        assert cfg.metadata.operations[Operation.READ][0].driver_id == "MetadataPostgresqlDriver"
+        assert cfg.metadata.operations[Operation.READ][0].driver_id == "CollectionCorePostgresqlDriver"
 
     def test_default_embedded_metadata_is_empty(self):
         cfg = CollectionRoutingConfig()
@@ -436,7 +436,7 @@ class TestIcebergConfigEnvLevel:
         assert hasattr(IcebergConfig, "warehouse_scheme")
 
 
-class TestCollectionIcebergDriverConfigValidator:
+class TestItemsIcebergDriverConfigValidator:
     """ItemsIcebergDriverConfig rejects connection-level fields."""
 
     def test_valid_construction_no_fields(self):
@@ -509,7 +509,7 @@ class TestDuckDBConfigEnvLevel:
         assert isinstance(DuckDBConfig.data_root, str)
 
 
-class TestCollectionDuckdbDriverConfigDefaults:
+class TestItemsDuckdbDriverConfigDefaults:
     def test_class_key(self):
         assert ItemsDuckdbDriverConfig.class_key() == "ItemsDuckdbDriverConfig"
 

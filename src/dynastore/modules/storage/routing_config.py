@@ -44,7 +44,6 @@ from typing import Any, Callable, ClassVar, Dict, FrozenSet, List, Optional, Set
 from pydantic import BaseModel, ConfigDict, Field
 
 from dynastore.models.protocols.driver_roles import DriverSla
-from dynastore.tools.config_rewriter import normalise_driver_id
 from dynastore.modules.db_config.platform_config_service import (
     Immutable,
     PluginConfig,
@@ -404,9 +403,8 @@ def _validate_routing_entries(
 
     for operation, entries in config.operations.items():
         for entry in entries:
-            # 1. Unknown driver (legacy driver_id strings normalised to canonical
-            #    via config_rewriter — see db_config.config_rewriter).
-            driver = driver_index.get(normalise_driver_id(entry.driver_id))
+            # 1. Unknown driver.
+            driver = driver_index.get(entry.driver_id)
             if driver is None:
                 raise ValueError(
                     f"{label}: driver '{entry.driver_id}' for operation "
@@ -473,7 +471,7 @@ def _validate_routing_entries(
         if not entries:
             continue
         primary_id = entries[0].driver_id
-        primary_driver = driver_index.get(normalise_driver_id(primary_id))
+        primary_driver = driver_index.get(primary_id)
         if primary_driver is None:
             continue
         required_cap = _op_required_cap.get(operation)
@@ -509,7 +507,7 @@ async def _on_apply_routing_config(
     # Validate metadata.operations[READ] entries (CollectionMetadataStore drivers)
     metadata_driver_index = {type(d).__name__: d for d in get_protocols(CollectionMetadataStore)}
     for entry in config.metadata.operations.get(Operation.READ, []):
-        if normalise_driver_id(entry.driver_id) not in metadata_driver_index:
+        if entry.driver_id not in metadata_driver_index:
             raise ValueError(
                 f"Collection routing config: metadata.operations[READ] driver "
                 f"'{entry.driver_id}' is not registered. "
@@ -518,7 +516,7 @@ async def _on_apply_routing_config(
 
     # Validate metadata.operations[TRANSFORM] entries (CollectionItemsStore drivers)
     for entry in config.metadata.operations.get(Operation.TRANSFORM, []):
-        if normalise_driver_id(entry.driver_id) not in driver_index:
+        if entry.driver_id not in driver_index:
             raise ValueError(
                 f"Collection routing config: metadata.operations[TRANSFORM] driver "
                 f"'{entry.driver_id}' is not registered. "
@@ -531,7 +529,7 @@ async def _on_apply_routing_config(
     # (Parquet via DuckDB) both register there.  See role-based driver plan §Routing.
     for op in (Operation.INDEX, Operation.BACKUP):
         for entry in config.metadata.operations.get(op, []):
-            if normalise_driver_id(entry.driver_id) not in metadata_driver_index:
+            if entry.driver_id not in metadata_driver_index:
                 raise ValueError(
                     f"Collection routing config: metadata.operations[{op}] driver "
                     f"'{entry.driver_id}' is not registered. "
@@ -555,18 +553,13 @@ async def _on_apply_routing_config(
     except Exception:
         pass
 
-    # Invalidate metadata router cache
-    try:
-        from dynastore.modules.catalog.metadata_router import invalidate_metadata_router_cache
-
-        invalidate_metadata_router_cache(catalog_id)
-    except Exception:
-        pass
+    # The collection-metadata router is cache-free (pure discovery fan-out);
+    # nothing to invalidate after a routing-config apply.
 
     # Call ensure_storage() on metadata READ drivers (idempotent, catalog-scoped).
     if catalog_id:
         for entry in config.metadata.operations.get(Operation.READ, []):
-            driver = metadata_driver_index.get(normalise_driver_id(entry.driver_id))
+            driver = metadata_driver_index.get(entry.driver_id)
             ensure_fn = getattr(driver, "ensure_storage", None) if driver else None
             if ensure_fn is not None:
                 try:
@@ -616,7 +609,7 @@ async def _on_apply_asset_routing_config(
             for entry in entries:
                 seen_ids.add(entry.driver_id)
         for did in seen_ids:
-            driver = driver_index.get(normalise_driver_id(did))
+            driver = driver_index.get(did)
             ensure_fn = getattr(driver, "ensure_storage", None) if driver else None
             if ensure_fn is not None:
                 try:

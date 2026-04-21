@@ -68,13 +68,7 @@ class InMemoryTypedStore:
             key=lambda item: (item[0] == exact_key, item[1][2]), reverse=True
         )
         class_key, (schema_id, payload, _ts) = candidates[0]
-        # Legacy class_keys resolve via the config rewriter when a rename
-        # has been registered (passthrough otherwise).
-        from dynastore.tools.config_rewriter import (
-            normalise_class_key,
-        )
-
-        cls = TypedModelRegistry.get(normalise_class_key(class_key))
+        cls = TypedModelRegistry.get(class_key)
         if cls is None:
             return None
         data = dict(payload)
@@ -111,12 +105,8 @@ class InMemoryTypedStore:
             reverse=True,
         )
         out: List[PersistentModel] = []
-        from dynastore.tools.config_rewriter import (
-            normalise_class_key,
-        )
-
         for class_key, (schema_id, payload, _ts) in matches[offset : offset + limit]:
-            cls = TypedModelRegistry.get(normalise_class_key(class_key))
+            cls = TypedModelRegistry.get(class_key)
             if cls is None:
                 continue
             data = dict(payload)

@@ -128,7 +128,7 @@ class TestIsSecondaryFor:
             assert result is False
 
 
-class TestCollectionElasticsearchDriverMeta:
+class TestItemsElasticsearchDriverMeta:
     def test_driver_class_name(self):
         driver = ItemsElasticsearchDriver()
         assert type(driver).__name__ == "ItemsElasticsearchDriver"
@@ -151,7 +151,7 @@ class TestCollectionElasticsearchDriverMeta:
             await driver.export_entities("cat1", "col1")
 
 
-class TestCollectionElasticsearchObfuscatedDriverMeta:
+class TestItemsElasticsearchObfuscatedDriverMeta:
     def test_driver_class_name(self):
         driver = ItemsElasticsearchObfuscatedDriver()
         assert type(driver).__name__ == "ItemsElasticsearchObfuscatedDriver"

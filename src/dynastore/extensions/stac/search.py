@@ -840,12 +840,12 @@ async def search_collections(
         params["ids"] = search_request.ids
 
     if search_request.keywords:
-        where_clauses.append("m.keywords @> CAST(:keywords AS jsonb)")
+        where_clauses.append("mc.keywords @> CAST(:keywords AS jsonb)")
         params["keywords"] = str(search_request.keywords).replace("'", '"')
 
     if search_request.bbox:
         where_clauses.append(
-            """EXISTS (SELECT 1 FROM jsonb_array_elements(m.extent->'spatial'->'bbox') AS bbox WHERE ST_Intersects(ST_MakeEnvelope((bbox->>0)::float, (bbox->>1)::float, (bbox->>2)::float, (bbox->>3)::float, 4326), ST_MakeEnvelope(:xmin, :ymin, :xmax, :ymax, 4326)))"""
+            """EXISTS (SELECT 1 FROM jsonb_array_elements(ms.extent->'spatial'->'bbox') AS bbox WHERE ST_Intersects(ST_MakeEnvelope((bbox->>0)::float, (bbox->>1)::float, (bbox->>2)::float, (bbox->>3)::float, 4326), ST_MakeEnvelope(:xmin, :ymin, :xmax, :ymax, 4326)))"""
         )
         params.update(
             {
@@ -858,30 +858,26 @@ async def search_collections(
 
     where_sql = " AND ".join(where_clauses)
 
-    # Each subquery JOINs the separate metadata table (collections has no metadata column).
-    #
-    # M2.0 note — load-bearing for the collection-tier split (future M2.2+):
-    # this query reads from ``{schema}.collection_metadata`` (the legacy
-    # monolithic table) which is still the canonical write target for
-    # collection metadata on this branch.  When collection-tier M2.2–M2.5
-    # ships (parallel to the catalog-tier work in M2.2-M2.5 on this
-    # branch), the JOIN must be replaced with a two-way LEFT JOIN against
-    # ``collection_metadata_core`` (title, description, keywords, license,
-    # extra_metadata) + ``collection_metadata_stac`` (links, assets,
-    # extent, providers, summaries, item_assets).  Until that happens
-    # the legacy table remains authoritative and this query is correct.
+    # Each subquery JOINs both domain-scoped metadata tables (CORE + STAC).
+    # The collection-tier M2.5 hard cut replaced the legacy monolithic
+    # ``{schema}.collection_metadata`` with ``collection_metadata_core``
+    # (title / description / keywords / license / extra_metadata) and
+    # ``collection_metadata_stac`` (links / assets / extent / providers /
+    # summaries / item_assets).  Text-match filters land on the CORE
+    # alias (``mc``), spatial filters on the STAC alias (``ms``).
     _meta_cols = (
         "c.id, c.catalog_id, "
-        "m.title, m.description, m.keywords, m.license, "
-        "m.links, m.assets, m.extent, m.providers, m.summaries, "
-        "m.item_assets, m.extra_metadata"
+        "mc.title, mc.description, mc.keywords, mc.license, "
+        "ms.links, ms.assets, ms.extent, ms.providers, ms.summaries, "
+        "ms.item_assets, mc.extra_metadata"
     )
     union_queries = []
     for schema in target_schemas:
         union_queries.append(
             f'SELECT {_meta_cols} '
             f'FROM "{schema}".collections c '
-            f'LEFT JOIN "{schema}".collection_metadata m ON m.collection_id = c.id '
+            f'LEFT JOIN "{schema}".collection_metadata_core mc ON mc.collection_id = c.id '
+            f'LEFT JOIN "{schema}".collection_metadata_stac ms ON ms.collection_id = c.id '
             f'WHERE {where_sql}'
         )
 

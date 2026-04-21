@@ -19,24 +19,23 @@
 """
 EntityTransformPipeline — TRANSFORM-chain envelope merger (library code).
 
-**Status**: no call sites today.  The function ``enrich()`` on this class
-is preserved for M3's ``ReindexWorker`` to invoke directly when it
-hydrates transformed envelopes for INDEX / BACKUP propagation.  The
-enricher-protocol discovery path this used to serve was removed by the
-role-based driver refactor (plan §Protocols).
+**Status**: no call sites today.  ``enrich()`` is preserved for M3's
+``ReindexWorker`` to invoke directly when it hydrates transformed
+envelopes for INDEX / BACKUP propagation.
 
-What ``enrich()`` does: reads
+What ``enrich()`` does today: reads
 ``CollectionRoutingConfig.metadata.operations[TRANSFORM]`` to find
-configured ``CollectionItemsStore`` drivers, calls
-``driver.get_collection_metadata()`` on each in declared order, and
-merges supplementary fields (summaries, providers, item_assets, assets,
-extra_metadata) without overwriting existing fields.  Drivers declaring
-``Capability.AGGREGATION`` also contribute ``extent`` via
-``compute_extents()`` when not already present.
+configured ``CollectionItemsStore`` drivers and, for any driver
+declaring ``Capability.AGGREGATION``, invokes ``compute_extents()`` to
+fill in a missing ``extent`` field.
 
-All discovery shims (``enricher_id``, ``priority``, ``can_enrich``) were
-deleted during M1b \u2014 M3 will call ``enrich()`` deliberately, not via the
-plugin registry.
+Historical note: this pipeline used to also fan out
+``driver.get_collection_metadata()`` across TRANSFORM drivers.  That
+protocol surface was removed in M2.5 — collection metadata now lives
+exclusively on ``CollectionMetadataStore`` drivers and is read via
+``collection_metadata_router.get_collection_metadata()``.  M3 will
+decide whether the TRANSFORM merge still makes sense as a concept or
+whether the router slice-merge is enough on its own.
 """
 
 import logging
@@ -46,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 
 class EntityTransformPipeline:
-    """Library helper — merges TRANSFORM driver output into a metadata envelope.
+    """Library helper — merges driver-sourced extents into a metadata envelope.
 
     Instantiate and call :meth:`enrich` directly.  Not registered as a
     plugin; no protocol discovery.  M3's ``ReindexWorker`` is the
@@ -60,17 +59,14 @@ class EntityTransformPipeline:
         metadata: Dict[str, Any],
         context: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Merge driver-sourced metadata into the collection metadata dict.
+        """Supplement the metadata envelope with driver-computed extents.
 
-        Reads ``CollectionRoutingConfig.metadata.operations[TRANSFORM]`` to find
-        configured storage drivers, then calls ``get_collection_metadata()`` on each
-        in declared order, supplementing (not overwriting) existing fields.
-
-        If any driver supports ``Capability.AGGREGATION`` and the metadata
-        has no ``extent``, also calls ``compute_extents()``.
+        Reads ``CollectionRoutingConfig.metadata.operations[TRANSFORM]``
+        to find configured storage drivers.  For each driver that
+        declares ``Capability.AGGREGATION``, calls ``compute_extents()``
+        and fills ``extent`` when absent from the envelope.  Never
+        overwrites existing fields.
         """
-        # TRANSFORM-merge is a collection-scoped operation — no
-        # collection_id means nothing to merge, return unchanged.
         if not collection_id:
             return metadata
 
@@ -79,10 +75,12 @@ class EntityTransformPipeline:
             Capability,
             CollectionItemsStore,
         )
-        from dynastore.modules.storage.routing_config import CollectionRoutingConfig, Operation
+        from dynastore.modules.storage.routing_config import (
+            CollectionRoutingConfig,
+            Operation,
+        )
         from dynastore.tools.discovery import get_protocol, get_protocols
 
-        # Resolve metadata.operations[TRANSFORM] entries from the routing config
         try:
             configs = get_protocol(ConfigsProtocol)
             if not configs:
@@ -115,33 +113,10 @@ class EntityTransformPipeline:
                 )
                 continue
 
-            # Fetch driver-managed metadata (supplement only — never overwrite)
-            try:
-                driver_meta = await driver.get_collection_metadata(
-                    catalog_id, collection_id,
-                )
-            except Exception as exc:
-                logger.debug(
-                    "EntityTransformPipeline: get_collection_metadata failed for "
-                    "driver '%s' on %s/%s: %s",
-                    entry.driver_id, catalog_id, collection_id, exc,
-                )
-                continue
-
-            if not driver_meta:
-                continue
-
-            for key in (
-                "summaries", "providers", "item_assets", "assets",
-                "extra_metadata", "links",
-            ):
-                if key in driver_meta and key not in merged:
-                    merged[key] = driver_meta[key]
-
-            # Extents from driver if it supports AGGREGATION and no extent yet
             if (
                 "extent" not in merged
-                and Capability.AGGREGATION in getattr(driver, "capabilities", frozenset())
+                and Capability.AGGREGATION
+                in getattr(driver, "capabilities", frozenset())
             ):
                 try:
                     extents = await driver.compute_extents(catalog_id, collection_id)

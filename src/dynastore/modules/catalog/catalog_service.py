@@ -90,39 +90,17 @@ CREATE TABLE IF NOT EXISTS {schema}.collections (
 );
 """
 
-# collection_metadata: stores all descriptive metadata for collections.
-# Renamed from {schema}.metadata in Phase 2 of the naming harmonisation
-# (items / collection / catalog / asset tier prefixes).  See
-# db_init/metadata_domain_split.rename_legacy_metadata_tables for the
-# idempotent migration that runs ahead of this CREATE TABLE.
-METADATA_DDL = """
-CREATE TABLE IF NOT EXISTS {schema}.collection_metadata (
-    collection_id VARCHAR NOT NULL PRIMARY KEY,
-    title JSONB,
-    description JSONB,
-    keywords JSONB,
-    license JSONB,
-    extent JSONB,
-    providers JSONB,
-    summaries JSONB,
-    links JSONB,
-    assets JSONB,
-    item_assets JSONB,
-    stac_version VARCHAR(20) DEFAULT '1.1.0',
-    stac_extensions JSONB DEFAULT '[]'::jsonb,
-    extra_metadata JSONB
-);
-"""
-
-
 def _build_tenant_core_ddl_batch(schema: str) -> "DDLBatch":
     """Build the per-tenant core DDL batch.
 
     Warm path: ``collection_configs`` (the last table created by
     ``tenant_configs_ddl``) acts as the sentinel. If it exists, the
-    collections + metadata + config tables are all skipped in a single
-    round-trip. Cold path runs all three DDLs under one conn with nested
-    savepoints.
+    collections + config tables are skipped in one round-trip.  Cold
+    path runs all DDLs under a single connection with nested savepoints.
+
+    The domain-scoped metadata tables (``collection_metadata_core`` +
+    ``collection_metadata_stac``) are created by
+    :func:`ensure_tenant_metadata_domain_tables` — not in this batch.
     """
     from dynastore.modules.db_config.query_executor import DDLBatch
     from dynastore.modules.db_config.locking_tools import check_table_exists
@@ -134,53 +112,10 @@ def _build_tenant_core_ddl_batch(schema: str) -> "DDLBatch":
     return DDLBatch(
         sentinel=DDLQuery(tenant_configs_sql, check_query=_check_sentinel),
         steps=[
-            DDLQuery(TENANT_COLLECTIONS_DDL + METADATA_DDL),
+            DDLQuery(TENANT_COLLECTIONS_DDL),
             DDLQuery(tenant_configs_sql, check_query=_check_sentinel),
         ],
     )
-
-
-async def initialize_core_tenant_tables(conn: DbResource, schema: str, catalog_id: str):
-    """
-    Creates the complete isolated table set for a new tenant (Catalog).
-
-    NOTE: Called DIRECTLY from `create_catalog` in the outer transaction, NOT via
-    `lifecycle_registry.init_catalog`, to avoid SAVEPOINT (begin_nested) wrapping
-    which prevents DDL from being visible to subsequent lifecycle hooks.
-    Do NOT re-register this as a `sync_catalog_initializer`.
-    """
-    logger.info(f"Initializing core tenant tables for schema: {schema} (Catalog: {catalog_id})")
-
-    schema = schema.strip('\'\'" ')
-
-    # 1. Create Schema
-    await ensure_schema_exists(conn, schema)
-
-    # 2. Phase 2 rename — move any existing {schema}.metadata* tables to
-    # their {schema}.collection_metadata* counterparts BEFORE the CREATE
-    # TABLE IF NOT EXISTS statements run.  Idempotent and a no-op on
-    # fresh schemas (DO block finds both source and target missing).
-    # Running the rename first guarantees that an existing tenant's data
-    # lands in the canonical table; a follow-up CREATE TABLE IF NOT EXISTS
-    # then observes the canonical table already present and does nothing.
-    from dynastore.modules.catalog.db_init.metadata_domain_split import (
-        ensure_tenant_metadata_domain_tables,
-        rename_legacy_metadata_tables,
-    )
-    await rename_legacy_metadata_tables(conn, schema)
-
-    # 3. Core Tables (collections + collection_metadata + tenant configs) under
-    # a single batch sentinel — warm path skips the whole thing in one
-    # round-trip.
-    await _build_tenant_core_ddl_batch(schema).execute(conn, schema=schema)
-    logger.info(f"Core tenant tables (collections, configs, collection_metadata) initialized for {schema}.")
-
-    # 4. M2.0 — per-tenant metadata-domain split tables
-    # (collection_metadata_core + collection_metadata_stac).  Additive:
-    # coexists with the legacy {schema}.collection_metadata table; no
-    # reads / writes change in M2.0.  Idempotent.
-    await ensure_tenant_metadata_domain_tables(conn, schema)
-    logger.info(f"M2 metadata-domain split tables initialized for {schema}.")
 
 
 # --- Helpers ---
@@ -233,18 +168,16 @@ def _build_catalog_metadata_payload(catalog_model: Catalog) -> Dict[str, Any]:
     """Flatten the Catalog model into a dict keyed by domain-metadata columns.
 
     Keys align with the column tuples in
-    ``modules/storage/drivers/metadata_domain_postgresql.py`` so every
-    registered ``sync_catalog_metadata_initializer`` hook can
-    ``_filter_payload`` down to its own domain's columns without
-    additional routing logic here.
+    :mod:`dynastore.modules.storage.drivers.metadata_domain_postgresql` so
+    the ``catalog_metadata_router`` can fan the payload out to every
+    registered driver and let each driver ``_filter_payload`` down to
+    its own domain's columns.  Absent fields are omitted (not set to
+    ``None``) so drivers skip the write entirely when their filtered
+    slice is empty (default-fast invariant).
 
-    Absent fields are omitted (not set to ``None``) so the hook-level
-    default-fast check (``if not catalog_metadata: return``) still
-    fires when the caller passed an empty-body catalog create.
-
-    This helper stays in the service layer because it knows the
-    public Catalog model's shape.  The drivers read an opaque dict and
-    are not coupled to the Catalog class.
+    This helper stays in the service layer because it knows the public
+    Catalog model's shape.  The drivers read an opaque dict and are not
+    coupled to the Catalog class.
     """
     out: Dict[str, Any] = {}
 
@@ -355,12 +288,10 @@ def _extract_update_payload(
 
 # --- Queries ---
 
-# M2.5a — the catalog.catalogs INSERT carries only the technical
-# registry columns.  Metadata lands in catalog.catalog_metadata_core /
-# _stac via the M2.2 lifecycle hooks (``init_catalog_metadata``).  The
-# legacy metadata columns are kept in the DDL for rollback / visual
-# inspection until M2.5b's DROP COLUMN; they remain NULL for every
-# post-M2.5a catalog.
+# The catalog.catalogs INSERT carries only the technical registry
+# columns.  Metadata lands in catalog.catalog_metadata_core / _stac via
+# a router-direct upsert from ``create_catalog``; no legacy metadata
+# columns remain on ``catalog.catalogs`` after the M2.5 hard cut.
 _create_catalog_strict_query = DQLQuery(
     "INSERT INTO catalog.catalogs (id, physical_schema, provisioning_status) "
     "VALUES (:id, :physical_schema, :provisioning_status) "
@@ -721,7 +652,7 @@ class CatalogService(CatalogsProtocol):
             await DDLQuery(PLATFORM_SCHEMAS_DDL).execute(conn)
             await ensure_schema_exists(conn, physical_schema)
 
-            # 2. Core Tables (collections, metadata, catalog_configs, collection_configs)
+            # 2. Core Tables (collections, catalog_configs, collection_configs)
             # Single module-level batch — warm path skips everything in one
             # round-trip once collection_configs (the last table) exists.
             logger.info(
@@ -731,20 +662,28 @@ class CatalogService(CatalogsProtocol):
                 conn, schema=physical_schema
             )
 
-            # 3. Module-specific lifecycle hooks (stats, tiles, …) all run AFTER
+            # 3. Domain-scoped collection-metadata tables
+            # (``collection_metadata_core`` + ``collection_metadata_stac``)
+            # — the sole collection-metadata storage path after the M2.5
+            # hard cut.  MUST precede lifecycle hooks because downstream
+            # drivers may write metadata immediately.
+            from dynastore.modules.catalog.db_init.metadata_domain_split import (
+                ensure_tenant_metadata_domain_tables,
+            )
+            await ensure_tenant_metadata_domain_tables(conn, physical_schema)
+
+            # 4. Module-specific lifecycle hooks (stats, tiles, …) all run AFTER
             #    the schema and core tables exist, inside their own SAVEPOINTs.
             await lifecycle_registry.init_catalog(
                 conn, physical_schema, catalog_id=catalog_model.id
             )
 
-            # M2.5a — the registry INSERT carries only technical columns.
-            # Catalog metadata (title, description, …, stac_extensions,
-            # conforms_to, links, assets) flows into the split tables
-            # via the M2.2 ``init_catalog_metadata`` lifecycle phase
-            # below.  The legacy metadata columns on ``catalog.catalogs``
-            # remain in the DDL as vestigial NULLs until M2.5b's
-            # ``DROP COLUMN``; nothing reads them post-M2.4 overlay
-            # flip, and no code writes them post-this commit.
+            # The registry INSERT carries only technical columns.  Catalog
+            # metadata (title, description, …, stac_extensions,
+            # conforms_to, links, assets) flows into the domain-scoped
+            # split tables via the router-direct upsert below.  The
+            # legacy metadata columns on ``catalog.catalogs`` were
+            # retired by the M2.5b DROP COLUMN; they are not touched here.
             await _create_catalog_strict_query.execute(
                 conn,
                 id=catalog_model.id,
@@ -752,27 +691,27 @@ class CatalogService(CatalogsProtocol):
                 provisioning_status=catalog_model.provisioning_status,
             )
 
-            # M2.2 — catalog-metadata lifecycle phase.
+            # Catalog metadata persistence — router-direct.
             #
-            # At this point the catalog.catalogs registry row is committed
-            # (the INSERT above), so FK references from
-            # catalog.catalog_metadata_core / _stac into catalog.catalogs(id)
-            # are satisfied.  Dispatch the lifecycle phase so any registered
-            # PG / STAC / future driver hooks can persist catalog-tier
-            # metadata into their domain-scoped tables.  Default-fast: a
-            # caller that supplies no metadata fields (title=None, etc.)
-            # yields an empty dict here and every hook no-ops.
-            #
-            # The service stays driver-agnostic: the dict is built from the
-            # public Catalog model; the lifecycle_registry decides which
-            # hooks consume it (PG Primary today, ES Indexer later, etc.).
+            # The catalog.catalogs registry row is committed (INSERT above),
+            # so the FK into catalog.catalogs(id) from the domain-scoped
+            # metadata tables is satisfied.  The router fans out the
+            # payload across every registered CatalogMetadataStore driver
+            # (PG Core / PG Stac today; ES indexers, etc. in the future).
+            # Each driver filters down to its own domain's columns and
+            # skips the write when the filtered payload is empty — so a
+            # caller who supplied no metadata produces zero rows, and a
+            # STAC-only payload writes only to the STAC driver.
             catalog_metadata = _build_catalog_metadata_payload(catalog_model)
-            await lifecycle_registry.init_catalog_metadata(
-                conn,
-                physical_schema,
-                catalog_id=catalog_model.id,
-                catalog_metadata=catalog_metadata,
-            )
+            if catalog_metadata:
+                from dynastore.modules.catalog.catalog_metadata_router import (
+                    upsert_catalog_metadata,
+                )
+                await upsert_catalog_metadata(
+                    catalog_model.id,
+                    catalog_metadata,
+                    db_resource=conn,
+                )
 
             # Lifecycle Phase 2: EVENT (Now after schema is ready AND record exists)
             await emit_event(
@@ -836,28 +775,21 @@ class CatalogService(CatalogsProtocol):
     ) -> Optional[Catalog]:
         """Unpacks a database row into a Catalog model.
 
-        The extra_metadata column now stores only the user-provided extra metadata
+        The extra_metadata column stores only user-provided extra metadata
         (a localized JSONB dict), not an envelope with type/conformsTo/links.
         Those fields come from the Catalog model defaults.
 
-        M2.4 — router overlay
-        ---------------------
+        Router overlay
+        --------------
 
-        When ``router_metadata`` is supplied, its keys overwrite the
-        corresponding legacy columns on the row dict before
-        model-validation.  Post-M2.2 catalog writes land in
-        ``catalog.catalog_metadata_core`` / ``_stac`` via the
-        lifecycle hooks; M2.3a backfilled pre-existing rows into the
-        same tables.  Reading through the router therefore returns
-        the canonical post-refactor envelope even while the legacy
-        columns on ``catalog.catalogs`` remain populated by the
-        pre-M2.5 service code.  A catalog with router data takes
-        priority over the legacy SELECT.
-
-        When ``router_metadata`` is ``None`` (default) the behaviour
-        is identical to the pre-M2.4 unpack — legacy columns are
-        returned as-is.  Call sites that haven't migrated to the
-        router-aware overlay therefore stay correct.
+        When ``router_metadata`` is supplied, its keys overwrite any
+        corresponding columns on the row dict before model-validation.
+        Catalog writes land in ``catalog.catalog_metadata_core`` /
+        ``_stac`` via the router-direct upsert in ``create_catalog``;
+        reads hydrate via the catalog-metadata router and pass the
+        result here as ``router_metadata``.  Absence of router data
+        (e.g. a router-less call path) yields a Catalog built from the
+        technical registry row alone.
         """
         if not row:
             return None
@@ -878,11 +810,11 @@ class CatalogService(CatalogsProtocol):
                 except Exception:
                     data[key] = None
 
-        # M2.4: router overlay.  Router-supplied keys win over legacy
-        # columns.  Special-case ``conforms_to`` which in the router
-        # envelope carries its snake-case form, but Catalog consumes
-        # ``conformsTo`` via Pydantic alias — we fill both so either
-        # spelling resolves after validation.
+        # Router overlay.  Router-supplied keys overwrite any columns
+        # left on the row dict.  Special-case ``conforms_to`` which in
+        # the router envelope carries its snake-case form, but Catalog
+        # consumes ``conformsTo`` via Pydantic alias — we fill both so
+        # either spelling resolves after validation.
         if router_metadata:
             for key, value in router_metadata.items():
                 data[key] = value
@@ -1059,15 +991,11 @@ class CatalogService(CatalogsProtocol):
                 else updates.model_dump(exclude_unset=True).keys()
             )
 
-            # M2.5a — writes go directly to the split tables via the
-            # catalog-metadata router.  The legacy ``catalog.catalogs``
-            # columns are no longer written; the M2.4 overlay reads
-            # exclusively from the split tables on the hot path and
-            # the backfill (M2.3a) already populated rows for every
-            # pre-M2.5 catalog.  PATCH semantics via
+            # Writes go directly to the split tables via the catalog-
+            # metadata router.  PATCH semantics via
             # ``_extract_update_payload`` + ``_filter_payload`` inside
-            # each Primary driver ensure only the supplied columns
-            # are touched — absent fields keep their existing values.
+            # each Primary driver ensure only the supplied columns are
+            # touched — absent fields keep their existing values.
             updated_payload = _extract_update_payload(
                 merged_model, update_fields,
             )

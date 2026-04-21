@@ -10,7 +10,7 @@ from dynastore.modules.db_config.query_executor import managed_transaction
 from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
 from dynastore.models.driver_context import DriverContext
 
-@pytest.mark.enable_modules("db_config", "db", "catalog", "httpx", "proxy", "stats", "metadata_postgresql")
+@pytest.mark.enable_modules("db_config", "db", "catalog", "httpx", "proxy", "stats", "metadata_collection_core_postgresql", "metadata_collection_stac_postgresql", "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql")
 @pytest.mark.enable_extensions("proxy")
 @pytest.mark.asyncio
 async def test_proxy_ownership_and_cleanup(app_lifespan, catalog_obj, collection_obj):

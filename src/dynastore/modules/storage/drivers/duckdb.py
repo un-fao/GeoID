@@ -835,57 +835,6 @@ class ItemsDuckdbDriver(ModuleProtocol):
             display_label=path or collection_id,
         )
 
-    # ------------------------------------------------------------------
-    # Collection metadata (sidecar JSON file alongside the parquet)
-    # ------------------------------------------------------------------
-
-    async def get_collection_metadata(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        *,
-        db_resource=None,
-    ) -> Optional[Dict[str, Any]]:
-        import json
-        import os
-
-        loc = await self._get_location_async(catalog_id, collection_id)
-        if not loc or not loc.path:
-            return None
-
-        sidecar = os.path.join(
-            os.path.dirname(loc.path),
-            f".dynastore_meta_{collection_id}.json",
-        )
-        if not os.path.exists(sidecar):
-            return None
-        try:
-            with open(sidecar, "r") as f:
-                return json.load(f)
-        except Exception:
-            return None
-
-    async def set_collection_metadata(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        metadata: Dict[str, Any],
-        *,
-        db_resource=None,
-    ) -> None:
-        import json
-        import os
-
-        loc = await self._get_location_async(catalog_id, collection_id)
-        if not loc or not loc.path:
-            return
-
-        base_dir = os.path.dirname(loc.path)
-        os.makedirs(base_dir, exist_ok=True)
-        sidecar = os.path.join(base_dir, f".dynastore_meta_{collection_id}.json")
-        with open(sidecar, "w") as f:
-            json.dump(metadata, f, default=str)
-
     async def get_entity_fields(
         self,
         catalog_id: str,
@@ -1073,17 +1022,3 @@ class ItemsDuckdbDriver(ModuleProtocol):
         )
 
 
-# ---------------------------------------------------------------------------
-# Back-compat aliases — legacy Collection*Driver names remain importable, and
-# registry lookups (driver_index / TypedModelRegistry) go through the
-# config_rewriter so persisted routing entries and config rows still resolve.
-# Remove once telemetry shows zero hits on the rewriter.  See
-# dynastore.tools.config_rewriter.
-# ---------------------------------------------------------------------------
-from dynastore.tools.config_rewriter import register_driver_id_rename  # noqa: E402
-
-CollectionDuckdbDriver = ItemsDuckdbDriver  # noqa: E305 — back-compat alias, see config_rewriter
-register_driver_id_rename(
-    legacy="CollectionDuckdbDriver",
-    canonical="ItemsDuckdbDriver",
-)

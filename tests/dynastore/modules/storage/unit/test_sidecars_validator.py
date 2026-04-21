@@ -4,7 +4,7 @@ Post-rebase note (M1b.1): the branch replaced the hand-rolled
 ``validate_sidecars_polymorphic`` field-validator with Pydantic's
 native ``Annotated[Union[...], Discriminator("sidecar_type")]`` on the
 ``sidecars`` field of ``ItemsPostgresqlDriverConfig``
-(``CollectionPostgresqlDriverConfig`` is the legacy alias).  Pydantic
+(``ItemsPostgresqlDriverConfig`` is the legacy alias).  Pydantic
 emits its own error shape for discriminator failures / wrong types,
 which this test file pins against the native Pydantic messages
 rather than the pre-rebase hand-rolled strings.
@@ -23,20 +23,20 @@ from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
     GeometriesSidecarConfig,
 )
 from dynastore.modules.storage.driver_config import (
-    CollectionPostgresqlDriverConfig,
+    ItemsPostgresqlDriverConfig,
 )
 
 
 class TestSidecarsValidatorHappyPaths:
     def test_typed_instances_pass_through(self):
-        cfg = CollectionPostgresqlDriverConfig(
+        cfg = ItemsPostgresqlDriverConfig(
             sidecars=[GeometriesSidecarConfig()],
         )
         assert len(cfg.sidecars) == 1
         assert isinstance(cfg.sidecars[0], GeometriesSidecarConfig)
 
     def test_dict_with_discriminator_coerces_to_subclass(self):
-        cfg = CollectionPostgresqlDriverConfig(
+        cfg = ItemsPostgresqlDriverConfig(
             sidecars=[{"sidecar_type": "geometries"}],
         )
         assert len(cfg.sidecars) == 1
@@ -44,7 +44,7 @@ class TestSidecarsValidatorHappyPaths:
         assert cfg.sidecars[0].sidecar_type == "geometries"
 
     def test_mixed_list_resolves_correctly(self):
-        cfg = CollectionPostgresqlDriverConfig(
+        cfg = ItemsPostgresqlDriverConfig(
             sidecars=[
                 GeometriesSidecarConfig(),
                 {"sidecar_type": "attributes"},
@@ -60,14 +60,14 @@ class TestSidecarsValidatorFailsLoud:
         # Pydantic discriminated-union error: "Unable to extract tag using
         # discriminator 'sidecar_type'"
         with pytest.raises(ValueError, match="sidecar_type"):
-            CollectionPostgresqlDriverConfig(sidecars=[{"enabled": True}])
+            ItemsPostgresqlDriverConfig(sidecars=[{"enabled": True}])
 
     def test_dict_with_empty_sidecar_type_raises(self):
         # Empty-string tag: Pydantic fails to match any union member →
         # ``union_tag_invalid``; the ``'sidecar_type'`` string still
         # appears in the error message.
         with pytest.raises(ValueError, match="sidecar_type"):
-            CollectionPostgresqlDriverConfig(
+            ItemsPostgresqlDriverConfig(
                 sidecars=[{"sidecar_type": "", "enabled": True}]
             )
 
@@ -77,14 +77,14 @@ class TestSidecarsValidatorFailsLoud:
         # ``Input should be a valid dictionary or object to extract
         # fields from``.  Match the stable substring.
         with pytest.raises(ValueError, match="valid dictionary or object"):
-            CollectionPostgresqlDriverConfig(sidecars=["not-a-config"])
+            ItemsPostgresqlDriverConfig(sidecars=["not-a-config"])
 
     def test_error_message_includes_index_for_multi_item_list(self):
         # Pydantic surfaces list indices as ``sidecars.1`` (dot-separated
         # loc path), not ``sidecars[1]``.  Pin the dot form so regressions
         # in Pydantic's loc formatting are visible.
         with pytest.raises(ValueError, match=r"sidecars\.1"):
-            CollectionPostgresqlDriverConfig(
+            ItemsPostgresqlDriverConfig(
                 sidecars=[
                     GeometriesSidecarConfig(),
                     {"enabled": True},  # bad item at idx 1
@@ -97,20 +97,20 @@ class TestSidecarsValidatorRoundTrip:
         """Round-trip via model_dump (mode=python) + model_validate is the path
         exercised by ConfigService.get_config tier-merge at config_service.py:299.
         """
-        original = CollectionPostgresqlDriverConfig(
+        original = ItemsPostgresqlDriverConfig(
             sidecars=[GeometriesSidecarConfig()],
         )
         dumped = original.model_dump(mode="python")
-        restored = CollectionPostgresqlDriverConfig.model_validate(dumped)
+        restored = ItemsPostgresqlDriverConfig.model_validate(dumped)
         assert isinstance(restored.sidecars[0], GeometriesSidecarConfig)
         assert restored.sidecars[0].sidecar_type == "geometries"
 
     def test_model_dump_json_then_validate_preserves_subclass(self):
-        original = CollectionPostgresqlDriverConfig(
+        original = ItemsPostgresqlDriverConfig(
             sidecars=[GeometriesSidecarConfig()],
         )
         payload = original.model_dump_json()
-        restored = CollectionPostgresqlDriverConfig.model_validate_json(payload)
+        restored = ItemsPostgresqlDriverConfig.model_validate_json(payload)
         assert isinstance(restored.sidecars[0], SidecarConfig)
         assert restored.sidecars[0].sidecar_type == "geometries"
 
@@ -122,7 +122,7 @@ class TestSidecarsValidatorRoundTrip:
         them on read. The discriminator must survive exclude_unset=True even
         when the caller never explicitly passed it.
         """
-        original = CollectionPostgresqlDriverConfig(
+        original = ItemsPostgresqlDriverConfig(
             sidecars=[GeometriesSidecarConfig()],
         )
         dumped = original.sidecars[0].model_dump(mode="python", exclude_unset=True)
@@ -135,7 +135,7 @@ class TestSidecarsValidatorRoundTrip:
         config with exclude_unset=True (the shape written to the DB) and
         verify each sidecar still carries its discriminator.
         """
-        original = CollectionPostgresqlDriverConfig(
+        original = ItemsPostgresqlDriverConfig(
             sidecars=[GeometriesSidecarConfig()],
         )
         dumped = original.model_dump(mode="json", exclude_unset=True)
@@ -144,5 +144,5 @@ class TestSidecarsValidatorRoundTrip:
                 f"sidecars[{idx}] lost discriminator under exclude_unset: {sc}"
             )
         # And the round-trip back through the validator must succeed.
-        restored = CollectionPostgresqlDriverConfig.model_validate(dumped)
+        restored = ItemsPostgresqlDriverConfig.model_validate(dumped)
         assert restored.sidecars[0].sidecar_type == "geometries"

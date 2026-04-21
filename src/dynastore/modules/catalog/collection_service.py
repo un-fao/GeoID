@@ -263,25 +263,17 @@ class CollectionService:
         if not exists:
             return None
 
-        # 2. Read metadata via the metadata driver (ES preferred, PG fallback).
-        meta_dict = None
-        try:
-            from dynastore.modules.catalog.metadata_router import get_metadata_driver
+        # 2. Read metadata via the router — fan-out across every registered
+        # CollectionMetadataStore driver (PG Core + PG Stac by default;
+        # ES joins in when the elasticsearch scope is installed).  The
+        # router merges the per-domain slices into one dict.
+        from dynastore.modules.catalog.collection_metadata_router import (
+            get_collection_metadata as _route_get_metadata,
+        )
 
-            meta_driver = await get_metadata_driver(catalog_id)
-            if meta_driver is not None:
-                meta_dict = await meta_driver.get_metadata(
-                    catalog_id, collection_id, db_resource=conn,
-                )
-        except Exception:
-            pass  # driver error — fall through to PG direct
-
-        if meta_dict is None:
-            # PG metadata fallback (always available)
-            meta_sql = f'SELECT * FROM "{phys_schema}".collection_metadata WHERE collection_id = :id;'
-            meta_dict = await DQLQuery(
-                meta_sql, result_handler=ResultHandler.ONE_DICT
-            ).execute(conn, id=collection_id) or {}
+        meta_dict = await _route_get_metadata(
+            catalog_id, collection_id, db_resource=conn,
+        ) or {}
 
         # Deserialize JSONB columns
         for key in ["title", "description", "keywords", "license", "links", "assets",
@@ -599,23 +591,21 @@ class CollectionService:
             #    (and any other collection-scope config) can be freely set —
             #    the Immutable guard short-circuits while `current=None`.
 
-            # 7. Store collection metadata — fan out to every driver resolved
-            #    by MetadataRoutingConfig.operations[WRITE]. Default waterfall:
-            #    [MetadataPostgresqlDriver]. No hardcoded driver classes here —
-            #    swap by setting MetadataRoutingConfig at platform/catalog scope.
+            # 7. Store collection metadata via the router — fan-out across
+            # every registered CollectionMetadataStore driver.  Each driver
+            # filters the unified payload to its own domain's columns and
+            # no-ops on an empty filtered slice.
+            from dynastore.modules.catalog.collection_metadata_router import (
+                upsert_collection_metadata as _route_upsert_metadata,
+            )
+
             metadata_payload = collection_model.model_dump(
                 by_alias=True, exclude_none=True
             )
-            from dynastore.modules.catalog.metadata_router import resolve_metadata_drivers
-            from dynastore.modules.storage.routing_config import Operation
-
-            write_drivers = await resolve_metadata_drivers(
-                catalog_id, operation=Operation.WRITE,
+            await _route_upsert_metadata(
+                catalog_id, collection_model.id, metadata_payload,
+                db_resource=conn,
             )
-            for driver in write_drivers:
-                await driver.upsert_metadata(
-                    catalog_id, collection_model.id, metadata_payload, db_resource=conn,
-                )
 
             # Steps 8 & 9 (write_policy + schema persistence) moved to
             # step 5b above so ensure_storage can honour constraints.
@@ -675,25 +665,27 @@ class CollectionService:
         q: Optional[str] = None,
     ) -> List[Collection]:
         db_resource = ctx.db_resource if ctx else None
-        # Delegate to metadata driver (ES preferred, PG fallback)
-        from dynastore.modules.catalog.metadata_router import get_metadata_driver
+        # Delegate to the router — it picks the most capable registered
+        # driver (CORE has SEARCH capability; ES contributes FULLTEXT when
+        # present) and falls back to the direct-PG path below if nothing
+        # matches the query shape.
+        from dynastore.modules.catalog.collection_metadata_router import (
+            search_collection_metadata as _route_search,
+        )
 
-        meta_driver = await get_metadata_driver(catalog_id)
-        if meta_driver is not None:
-            try:
-                rows, _total = await meta_driver.search_metadata(
-                    catalog_id,
-                    q=q,
-                    limit=limit,
-                    offset=offset,
-                    db_resource=db_resource,
-                )
+        try:
+            rows, _total = await _route_search(
+                catalog_id, q=q, limit=limit, offset=offset,
+                db_resource=db_resource,
+            )
+            if rows:
                 return [Collection.model_validate(row) for row in rows]
-            except Exception as e:
-                logger.warning(
-                    "Metadata driver search failed for %s, falling back to PG: %s",
-                    catalog_id, e,
-                )
+        except Exception as e:
+            logger.warning(
+                "Collection-metadata router search failed for %s, "
+                "falling back to PG: %s",
+                catalog_id, e,
+            )
 
         # PG direct fallback
         async with managed_transaction(db_resource or self.engine) as conn:
@@ -705,11 +697,12 @@ class CollectionService:
 
             if not q:
                 query_sql = (
-                    f'SELECT c.id, m.title, m.description, m.keywords, m.license, '
-                    f'm.links, m.assets, m.extent, m.providers, m.summaries, '
-                    f'm.item_assets, m.extra_metadata '
+                    f'SELECT c.id, mc.title, mc.description, mc.keywords, mc.license, '
+                    f'ms.links, ms.assets, ms.extent, ms.providers, ms.summaries, '
+                    f'ms.item_assets, mc.extra_metadata '
                     f'FROM "{phys_schema}".collections c '
-                    f'LEFT JOIN "{phys_schema}".collection_metadata m ON m.collection_id = c.id '
+                    f'LEFT JOIN "{phys_schema}".collection_metadata_core mc ON mc.collection_id = c.id '
+                    f'LEFT JOIN "{phys_schema}".collection_metadata_stac ms ON ms.collection_id = c.id '
                     f'WHERE c.deleted_at IS NULL '
                     f'ORDER BY c.created_at DESC LIMIT :limit OFFSET :offset;'
                 )
@@ -718,13 +711,14 @@ class CollectionService:
                 ).execute(conn, limit=limit, offset=offset)
             else:
                 query_sql = (
-                    f'SELECT c.id, m.title, m.description, m.keywords, m.license, '
-                    f'm.links, m.assets, m.extent, m.providers, m.summaries, '
-                    f'm.item_assets, m.extra_metadata '
+                    f'SELECT c.id, mc.title, mc.description, mc.keywords, mc.license, '
+                    f'ms.links, ms.assets, ms.extent, ms.providers, ms.summaries, '
+                    f'ms.item_assets, mc.extra_metadata '
                     f'FROM "{phys_schema}".collections c '
-                    f'LEFT JOIN "{phys_schema}".collection_metadata m ON m.collection_id = c.id '
+                    f'LEFT JOIN "{phys_schema}".collection_metadata_core mc ON mc.collection_id = c.id '
+                    f'LEFT JOIN "{phys_schema}".collection_metadata_stac ms ON ms.collection_id = c.id '
                     f'WHERE c.deleted_at IS NULL '
-                    f"AND (c.id ILIKE :q OR m.title->>'en' ILIKE :q OR m.description->>'en' ILIKE :q) "
+                    f"AND (c.id ILIKE :q OR mc.title->>'en' ILIKE :q OR mc.description->>'en' ILIKE :q) "
                     f'ORDER BY c.created_at DESC LIMIT :limit OFFSET :offset;'
                 )
                 result_rows = await DQLQuery(
@@ -808,21 +802,18 @@ class CollectionService:
             if not exists:
                 return None
 
-            # Fan-out metadata writes to every driver resolved by
-            # MetadataRoutingConfig.operations[WRITE].
-            from dynastore.modules.catalog.metadata_router import resolve_metadata_drivers
-            from dynastore.modules.storage.routing_config import Operation
+            # Fan-out metadata writes via the collection-metadata router.
+            from dynastore.modules.catalog.collection_metadata_router import (
+                upsert_collection_metadata as _route_upsert_metadata,
+            )
 
             metadata_payload = merged_model.model_dump(
                 by_alias=True, exclude_none=True
             )
-            write_drivers = await resolve_metadata_drivers(
-                catalog_id, operation=Operation.WRITE,
+            await _route_upsert_metadata(
+                catalog_id, collection_id, metadata_payload,
+                db_resource=conn,
             )
-            for driver in write_drivers:
-                await driver.upsert_metadata(
-                    catalog_id, collection_id, metadata_payload, db_resource=conn,
-                )
 
             self._get_collection_model_cached.cache_invalidate(
                 catalog_id, collection_id
@@ -913,19 +904,14 @@ class CollectionService:
                     f'DELETE FROM "{phys_schema}".collections WHERE id = :id;'
                 )
                 await DDLQuery(hard_delete_sql).execute(conn, id=collection_id)
-                # Fan-out metadata deletion via MetadataRoutingConfig.operations[WRITE].
-                # Failure here is fatal: if a configured writer can't delete, the
-                # waterfall resolver raises ConfigResolutionError.
-                from dynastore.modules.catalog.metadata_router import resolve_metadata_drivers
-                from dynastore.modules.storage.routing_config import Operation
-
-                write_drivers = await resolve_metadata_drivers(
-                    catalog_id, operation=Operation.WRITE,
+                # Fan-out metadata deletion via the router.
+                from dynastore.modules.catalog.collection_metadata_router import (
+                    delete_collection_metadata as _route_delete_metadata,
                 )
-                for driver in write_drivers:
-                    await driver.delete_metadata(
-                        catalog_id, collection_id, db_resource=conn,
-                    )
+
+                await _route_delete_metadata(
+                    catalog_id, collection_id, db_resource=conn,
+                )
                 # Soft-delete already cleared collection_configs; hard-delete
                 # runs after soft-delete in the same txn, so no second DELETE
                 # is needed here.
@@ -977,9 +963,9 @@ class CollectionService:
                 )
 
             can_delete = False
-            fields_to_update = {}
+            fields_to_update: Dict[str, Any] = {}
 
-            # Localizable fields in collections table are similar to catalogs
+            # Localizable fields — all belong to the CORE domain.
             for field in [
                 "title",
                 "description",
@@ -999,20 +985,21 @@ class CollectionService:
                         data = val.model_dump(exclude_none=True)
                         if lang in data:
                             del data[lang]
-                            fields_to_update[field] = json.dumps(
-                                data, cls=CustomJSONEncoder
-                            )
+                            # Router-direct upsert takes raw dicts; each
+                            # driver encodes JSONB itself via _to_json().
+                            fields_to_update[field] = data
                             can_delete = True
-
-            params = {"id": collection_id, **fields_to_update}
 
             if not can_delete:
                 return False
 
-            set_clauses = [f"{k} = :{k}" for k in fields_to_update.keys()]
-            sql = f'UPDATE "{phys_schema}".collection_metadata SET {", ".join(set_clauses)} WHERE collection_id = :id;'
-            await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
-                conn, **params
+            from dynastore.modules.catalog.collection_metadata_router import (
+                upsert_collection_metadata as _route_upsert_metadata,
+            )
+
+            await _route_upsert_metadata(
+                catalog_id, collection_id, fields_to_update,
+                db_resource=conn,
             )
 
             self._get_collection_model_cached.cache_invalidate(

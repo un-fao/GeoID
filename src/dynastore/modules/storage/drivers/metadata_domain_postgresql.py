@@ -28,10 +28,9 @@ Four drivers backed by the M2.0 DDL split:
 
 Each driver owns only its **domain's** columns.  Callers that need the full
 envelope run both Primary drivers (CORE + STAC) through the metadata router
-and merge the results.  Wiring the router to fan out to these drivers
-lands in M2.3 — this module is additive and does not change current
-behaviour.  The legacy :class:`MetadataPostgresqlDriver` remains the
-production source of truth until M2.5 deletes it.
+(:mod:`~dynastore.modules.catalog.catalog_metadata_router` for catalogs,
+:mod:`~dynastore.modules.catalog.collection_metadata_router` for collections)
+which fans out the payload on WRITE and merges the slices on READ.
 
 Naming convention (Phase 1 of the naming harmonisation):
 
@@ -57,7 +56,7 @@ Configs
 Each driver has an empty-default ``PluginConfig`` subclass so the waterfall
 can still dispatch to them without any explicit per-collection config.
 No fields are declared — they exist purely as Pydantic identity markers
-for the ``config_rewriter`` / ``ConfigsProtocol`` plumbing.
+for the ``ConfigsProtocol`` plumbing.
 """
 
 from __future__ import annotations
@@ -431,28 +430,11 @@ class CollectionCorePostgresqlDriver(_CollectionMetadataDomainBase):
 
     Backs ``{schema}.collection_metadata_core``.  Declares ``SEARCH`` because
     CORE fields carry the human-readable text the ``/search?q=…`` endpoint
-    matches against.
-
-    .. warning::
-
-        **Not active in the default write / read path.**  The collection
-        tier equivalent of the catalog-tier M2.2–M2.5 work (lifecycle
-        hooks, one-shot backfill, router read-flip, legacy column drop)
-        was NOT delivered on this branch.  The default
-        :class:`CollectionRoutingConfig.metadata.operations[WRITE]` still
-        routes to :class:`MetadataPostgresqlDriver` → ``{schema}.collection_metadata``.
-
-        This driver and its ``{schema}.collection_metadata_core`` table
-        are infrastructure-only: the class + DDL exist so the tier's
-        future activation is a config flip rather than a code change,
-        but enabling them today (by overriding the routing config) will
-        leave new writes in the split tables while reads still consume
-        the legacy monolithic table — a mixed state that silently returns
-        stale data.
-
-        Do NOT override the collection-tier routing config to point here
-        until the collection-tier M2.2–M2.5 milestones ship.  See the
-        scope-cut tracker issue (TODO: reference) for the follow-up plan.
+    matches against.  Active path — :mod:`~dynastore.modules.catalog.
+    collection_metadata_router` fans out WRITEs across this driver plus
+    :class:`CollectionStacPostgresqlDriver` and merges both slices on
+    READ.  Each driver filters the unified payload to its own domain's
+    columns and no-ops when its filtered slice is empty.
     """
 
     _table: ClassVar[str] = "collection_metadata_core"
@@ -527,15 +509,8 @@ class CollectionStacPostgresqlDriver(_CollectionMetadataDomainBase):
 
     Backs ``{schema}.collection_metadata_stac``.  Declares ``SPATIAL_FILTER``
     because the ``extent`` column carries the STAC bbox the spatial-filter
-    endpoints match against.
-
-    .. warning::
-
-        **Not active in the default write / read path** — see the
-        analogous warning on :class:`CollectionCorePostgresqlDriver`.
-        The collection-tier M2.2–M2.5 milestones that would activate
-        this driver were NOT delivered on this branch; do not enable
-        via routing-config override until they ship.
+    endpoints match against.  Active via the collection-metadata router
+    alongside :class:`CollectionCorePostgresqlDriver`.
     """
 
     _table: ClassVar[str] = "collection_metadata_stac"
@@ -603,16 +578,19 @@ class _CatalogMetadataDomainBase:
         Absent keys are never stamped as ``NULL``; partial updates
         preserve previously-populated columns.
 
-        ``catalog_metadata`` that filters down to an empty payload
-        becomes a pure ``updated_at = NOW()`` bump on the existing
-        row (or a near-empty row on fresh insert) so consumers that
-        read the freshness token (INDEX / BACKUP propagation) still
-        see activity.
+        Default-fast invariant: when ``metadata`` filters down to zero
+        domain-relevant columns, the driver no-ops — it does NOT land
+        an empty row or bump ``updated_at`` for a domain that has no
+        content.  A STAC-only payload reaching the CORE driver, for
+        instance, skips entirely.  Freshness bumps happen when real
+        content changes, not on cross-domain noise.
         """
+        payload = _filter_payload(metadata, self._columns)
+        if not payload:
+            return
         engine = db_resource or _get_engine()
         if not engine:
             raise RuntimeError("DatabaseProtocol not available")
-        payload = _filter_payload(metadata, self._columns)
         async with managed_transaction(engine) as conn:
             await self._upsert_catalog_row(conn, catalog_id, payload)
 
@@ -729,92 +707,11 @@ class CatalogStacPostgresqlDriver(_CatalogMetadataDomainBase):
     })
 
 
-# ---------------------------------------------------------------------------
-# M2.2 — catalog-metadata lifecycle hooks
-# ---------------------------------------------------------------------------
-#
-# Registered on the lifecycle registry at module-import time.  Fire from
-# ``init_catalog_metadata`` — the phase invoked by
-# ``CatalogService.create_catalog`` AFTER the ``catalog.catalogs`` registry
-# row has been committed (so FK references into catalog.catalogs(id) from
-# the per-domain metadata tables are satisfied).
-#
-# Default-fast invariant: a hook is a no-op when the caller didn't supply
-# a ``catalog_metadata`` kwarg.  Empty / missing → zero writes.
-#
-# The STAC hook is kept in this file for M2.2 simplicity.  A follow-up
-# sub-PR can move it to the STAC extension so the STAC-specific table
-# (``catalog.catalog_metadata_stac``) is owned end-to-end by the
-# extension's lifecycle.
-
-
-from dynastore.modules.catalog.lifecycle_manager import (  # noqa: E402
-    sync_catalog_metadata_initializer,
-)
-
-
-@sync_catalog_metadata_initializer(priority=5)
-async def _pg_catalog_core_init(
-    conn: DbResource,
-    schema: str,
-    catalog_id: str,
-    *,
-    catalog_metadata: Optional[Dict[str, Any]] = None,
-    **_ignored: Any,
-) -> None:
-    """Persist CORE catalog metadata into ``catalog.catalog_metadata_core``.
-
-    Idempotent via ``ON CONFLICT (catalog_id) DO UPDATE`` inside
-    :meth:`CatalogCorePostgresqlDriver.upsert_catalog_metadata`.  Falls
-    back to a silent no-op when the caller supplies nothing to persist
-    (default-fast invariant: empty-body catalog creation writes zero
-    catalog_metadata_core rows).
-
-    Symmetric gate to the STAC hook: a STAC-only payload (e.g.
-    ``{"stac_version": "1.1.0"}``) must NOT fire this hook with an
-    empty CORE subset — otherwise the upsert would land a row whose
-    every CORE column is NULL (even with the _filter_payload fix,
-    the 'pure updated_at bump' path still creates a row on fresh
-    insert, marking the catalog as having CORE metadata when it
-    doesn't).  Requires at least one CORE-column key with a non-None
-    value before running the driver.
-    """
-    if not catalog_metadata:
-        return
-    if not any(
-        catalog_metadata.get(k) is not None for k in _CATALOG_CORE_COLUMNS
-    ):
-        return
-    driver = CatalogCorePostgresqlDriver()
-    await driver.upsert_catalog_metadata(
-        catalog_id, catalog_metadata, db_resource=conn,
-    )
-
-
-@sync_catalog_metadata_initializer(priority=10)
-async def _pg_catalog_stac_init(
-    conn: DbResource,
-    schema: str,
-    catalog_id: str,
-    *,
-    catalog_metadata: Optional[Dict[str, Any]] = None,
-    **_ignored: Any,
-) -> None:
-    """Persist STAC catalog metadata into ``catalog.catalog_metadata_stac``.
-
-    Gated on the presence of at least one STAC-relevant key in the
-    supplied ``catalog_metadata`` — absence means "this catalog has no
-    STAC envelope" and we skip the write entirely.  Priority 10 keeps
-    it ordered after CORE (priority 5) so a future STAC hook reading
-    the CORE row finds it already in place.
-    """
-    if not catalog_metadata:
-        return
-    if not any(
-        catalog_metadata.get(k) is not None for k in _CATALOG_STAC_COLUMNS
-    ):
-        return
-    driver = CatalogStacPostgresqlDriver()
-    await driver.upsert_catalog_metadata(
-        catalog_id, catalog_metadata, db_resource=conn,
-    )
+# Catalog-tier metadata persistence is invoked directly by
+# ``CatalogService.create_catalog`` through ``catalog_metadata_router.
+# upsert_catalog_metadata`` — no lifecycle-decorator indirection.  Each
+# driver enforces its own default-fast skip inside
+# ``upsert_catalog_metadata`` (empty filtered payload → no write), so
+# a STAC-only payload reaching the CORE driver is a no-op and
+# vice-versa.  See the router in
+# :mod:`dynastore.modules.catalog.catalog_metadata_router`.

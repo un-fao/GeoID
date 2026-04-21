@@ -36,7 +36,7 @@ _EXPECTED_ISO = {"FJI", "TZA", "ESH", "CAN", "USA"}
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.enable_modules(
-        "db_config", "db", "catalog", "stats", "storage_duckdb", "iam", "metadata_postgresql"
+        "db_config", "db", "catalog", "stats", "storage_duckdb", "iam", "metadata_collection_core_postgresql", "metadata_collection_stac_postgresql", "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql"
     ),
     pytest.mark.enable_extensions("stac", "features", "assets", "configs"),
 ]

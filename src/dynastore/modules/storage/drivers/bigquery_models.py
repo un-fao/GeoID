@@ -80,8 +80,7 @@ class BigQueryCredentials(BaseModel):
         """True iff no credential material supplied.
 
         Drivers fall back to CloudIdentityProtocol (Phase 4a path) when
-        ``is_empty()`` — preserves back-compat for deployments that never
-        migrate to Secret-wrapped credentials.
+        ``is_empty()``.
         """
         return self.service_account_json is None and self.api_key is None
 
@@ -104,8 +103,8 @@ class ItemsBigQueryDriverConfig(CollectionDriverConfig):
 
     # ---- Reporter-mode WRITE path (Phase 3) ------------------------------
     # All four fields are inert when ``reporter_mode == "off"`` so the
-    # default-fast invariant holds: CollectionPostgresqlDriverConfig() has
-    # an empty model_dump(exclude_unset=True) and WRITE is a no-op.
+    # default-fast invariant holds: a bare ``ItemsBigQueryDriverConfig()``
+    # has an empty ``model_dump(exclude_unset=True)`` and WRITE is a no-op.
     reporter_mode: Literal["off", "flat", "batch_summary"] = Field(
         default="off",
         description=(
@@ -142,17 +141,3 @@ class ItemsBigQueryDriverConfig(CollectionDriverConfig):
     )
 
 
-# ---------------------------------------------------------------------------
-# Back-compat aliases — legacy Collection*DriverConfig names remain importable, and
-# registry lookups (driver_index / TypedModelRegistry) go through the
-# config_rewriter so persisted routing entries and config rows still resolve.
-# Remove once telemetry shows zero hits on the rewriter.  See
-# dynastore.tools.config_rewriter.
-# ---------------------------------------------------------------------------
-from dynastore.tools.config_rewriter import register_config_class_key_rename  # noqa: E402
-
-CollectionBigQueryDriverConfig = ItemsBigQueryDriverConfig  # noqa: E305 — back-compat alias, see config_rewriter
-register_config_class_key_rename(
-    legacy="CollectionBigQueryDriverConfig",
-    canonical="ItemsBigQueryDriverConfig",
-)

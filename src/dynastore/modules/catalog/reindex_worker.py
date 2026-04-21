@@ -129,9 +129,11 @@ class ReindexWorker:
     callable, which defaults to the production catalog-tier router's
     function but can be swapped for tests.
 
-    Parallel shape for ``COLLECTION_METADATA_CHANGED`` will land with
-    the collection-tier equivalent of M2.4 (deferred).  Today only the
-    catalog-tier event flows through this worker.
+    Today only the catalog-tier ``catalog_metadata_changed`` event flows
+    through this worker.  A parallel collection-tier event can be wired
+    up by adding a ``COLLECTION_METADATA_CHANGED`` emission in
+    :mod:`~dynastore.modules.catalog.collection_metadata_router` when
+    INDEX propagation is needed there too.
     """
 
     def __init__(
@@ -464,7 +466,7 @@ async def _resolve_catalog_indexers(
     """Return the (entry, driver) pairs configured under INDEX for catalogs.
 
     Resolution order mirrors the collection-tier router
-    (:mod:`dynastore.modules.catalog.metadata_router._resolve_metadata_driver_ids`):
+    (:mod:`dynastore.modules.catalog.collection_metadata_router`):
 
     1. If ``ConfigsProtocol`` is registered, read
        ``CatalogRoutingConfig`` for the given ``catalog_id`` through the

@@ -17,10 +17,10 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-Catalog-tier metadata router (M2.3b of the role-based driver refactor).
+Catalog-tier metadata router.
 
-Parallels :mod:`dynastore.modules.catalog.metadata_router` (collection
-tier) but scoped to :class:`CatalogMetadataStore` implementations.
+Parallels :mod:`dynastore.modules.catalog.collection_metadata_router`
+but scoped to :class:`CatalogMetadataStore` implementations.
 Three operations:
 
 - :func:`get_catalog_metadata`      — fan-out READ that merges CORE +
@@ -102,6 +102,12 @@ from dynastore.models.protocols.metadata_driver import CatalogMetadataStore
 
 logger = logging.getLogger(__name__)
 
+# Per-process latch so the "no drivers registered" ERROR fires once,
+# not on every request.  A deployment that resolves this condition by
+# registering a driver later (entry-point reload, dynamic plugin) will
+# get subsequent successful resolutions without the log re-firing.
+_MISSING_DRIVERS_LOGGED: Dict[str, bool] = {"catalog": False}
+
 
 def _resolve_catalog_metadata_drivers() -> List[CatalogMetadataStore]:
     """Return the live :class:`CatalogMetadataStore` drivers registered via entry-points.
@@ -116,12 +122,20 @@ def _resolve_catalog_metadata_drivers() -> List[CatalogMetadataStore]:
     from dynastore.tools.discovery import get_protocols
 
     drivers = list(get_protocols(CatalogMetadataStore))
-    if not drivers:
-        logger.warning(
+    if not drivers and not _MISSING_DRIVERS_LOGGED["catalog"]:
+        # Log once per process rather than per request to avoid spamming
+        # when a deployment legitimately starts up without PG metadata
+        # drivers (e.g. ES-only).  A router invocation is proof that a
+        # caller expected at least one driver, so ERROR is appropriate —
+        # but one ERROR is enough.
+        logger.error(
             "No CatalogMetadataStore drivers registered; catalog-metadata "
-            "router will no-op all operations.  Did the scope include "
-            "module_metadata_postgresql?"
+            "router will no-op all operations.  Entry-point discovery did "
+            "not surface any dynastore.modules entry-point implementing "
+            "CatalogMetadataStore — check installed package metadata and "
+            "that metadata_domain_postgresql imports cleanly in this env."
         )
+        _MISSING_DRIVERS_LOGGED["catalog"] = True
     return drivers
 
 

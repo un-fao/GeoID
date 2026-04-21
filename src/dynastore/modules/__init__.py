@@ -67,26 +67,19 @@ def _register_module(cls: Type[T_Module], registration_name: Optional[str] = Non
     return cls
 
 
-def discover_modules(include_only: Optional[List[str]] = None):
-    """
-    Discovers all foundational modules dynamically using PEP-517 entry points
-    under the 'dynastore.modules' group.
-    """
-    if include_only is None:
-        scope = os.getenv("SCOPE")
-        if scope:
-            include_only = [s.strip() for s in scope.split(",")]
+def discover_modules():
+    """Discover every ``dynastore.modules`` entry-point from installed packages.
 
+    Identity is package metadata.  Entry-points whose module imports fail
+    (because their optional deps weren't selected at ``pip install`` time)
+    are gracefully skipped by :func:`discover_and_load_plugins`.
+    """
     logger.info("--- [modules] Discovering components via entry points... ---")
     from dynastore.tools.discovery import discover_and_load_plugins
-    
-    # Discovery now returns uninstantiated classes based purely on entry points
-    classes = discover_and_load_plugins("dynastore.modules", include_only=include_only)
-    
-    # Populate _DYNASTORE_MODULES with the discovered classes
-    for name, cls in classes.items():
+
+    for name, cls in discover_and_load_plugins("dynastore.modules").items():
         _DYNASTORE_MODULES[name] = ModuleConfig(cls=cls)
-            
+
     logger.info(f"--- DISCOVERED MODULES: {list(_DYNASTORE_MODULES.keys())} ---")
 
 

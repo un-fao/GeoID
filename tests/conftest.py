@@ -199,7 +199,7 @@ def dynastore_modules(request):
     # on every catalog operation, adding ~30 s per test.
     # Tests that require GCP behaviour must opt in explicitly:
     #   @pytest.mark.enable_modules("db_config", "db", "catalog", "gcp", ...)
-    return ["db_config", "db", "catalog", "stats", "iam", "metadata_postgresql"]
+    return ["db_config", "db", "catalog", "stats", "iam", "metadata_collection_core_postgresql", "metadata_collection_stac_postgresql", "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql"]
 
 
 @pytest.fixture
@@ -715,12 +715,16 @@ async def app_lifespan(
     if "processes" in extensions_list and "processes" not in modules_list:
         modules_list.append("processes")
 
-    # Bootstrap using the explicit lists if provided (or fallback to env)
+    # Bootstrap using the explicit lists if provided (or fallback to env).
+    # Discovery loads every installed entry-point; these lists narrow
+    # *instantiation* only (test isolation).  Tasks have no instantiate step,
+    # so ``tasks_list`` is collected above for future test-side isolation
+    # helpers but is NOT passed here.
+    _ = tasks_list  # intentionally unused post SCOPE-filter removal
     bootstrap_app(
         app,
         include_modules=modules_list,
         include_extensions=extensions_list,
-        include_tasks=tasks_list
     )
 
     # Ensure db_config has the engine attached if it was created by bootstrap
@@ -830,15 +834,15 @@ async def app_lifespan_module(request):
     modules_marker = request.module.__dict__.get("pytestmark", [])
 
     # Default module list (mirrors the function-scoped fixture)
-    modules_list = ["db_config", "db", "catalog", "stats", "iam", "metadata_postgresql"]
+    modules_list = ["db_config", "db", "catalog", "stats", "iam", "metadata_collection_core_postgresql", "metadata_collection_stac_postgresql", "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql"]
     extensions_list = ["features", "web"]
     tasks_list: list = []
 
+    _ = tasks_list  # reserved for future test-side task-isolation helper
     bootstrap_app(
         app,
         include_modules=modules_list,
         include_extensions=extensions_list,
-        include_tasks=tasks_list,
     )
 
     if hasattr(app.state, "db_config"):
@@ -909,12 +913,11 @@ async def task_app_state(db_url, db_engine, dynastore_modules, dynastore_tasks):
     DBConfig.database_url = db_url
     app_state.db_config = DBConfig()
 
-    # 3. Bootstrap with specific filters
-    bootstrap_task_env(
-        app_state,
-        include_modules=dynastore_modules,
-        include_tasks=dynastore_tasks,
-    )
+    # 3. Bootstrap: discovery loads everything installed; ``include_modules``
+    # narrows instantiation only.  Task isolation happens post-discovery if
+    # needed.
+    _ = dynastore_tasks
+    bootstrap_task_env(app_state, include_modules=dynastore_modules)
 
     # 4. Orchestrate Lifespans
     async with AsyncExitStack() as stack:

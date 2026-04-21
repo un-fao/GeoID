@@ -62,37 +62,25 @@ def get_task_definitions() -> List[Any]:
     """Returns all task definitions."""
     return [config.definition for config in _DYNASTORE_TASKS.values() if config.definition]
 
-def discover_tasks(include_only: Optional[List[str]] = None):
-    """
-    Discovers tasks using PEP-517 entry points defined in pyproject.toml
-    under the "dynastore.tasks" group.
+def discover_tasks():
+    """Discover every ``dynastore.tasks`` entry-point from installed packages.
 
-    Clean Discovery Protocol
-    ------------------------
-    When a task's strict dependencies are missing (the entry point fails to
-    import), we still try to surface its Process definition via a lightweight
-    ``<task_package>.definition`` sibling module. Any ``Process`` instance found
-    at module scope is registered under a placeholder class. This lets the
-    catalog service expose OGC Process metadata for tasks that actually execute
-    on remote workers (Cloud Run Jobs).
+    Identity is package metadata + protocol shape: every entry-point whose
+    module imports successfully is registered; entry-points whose heavy deps
+    are missing fall back to definition-only placeholders (Process metadata
+    without a runnable class) so remote runners (Cloud Run Jobs) can still
+    surface OGC Process schemas via the catalog service.
     """
-    if include_only is None:
-        scope = os.getenv("SCOPE")
-        if scope:
-            include_only = [s.strip() for s in scope.split(",")]
-
     logger.info("--- [tasks] Discovering components via entry points... ---")
 
-    # Discovery returns uninstantiated classes
     from dynastore.tools.discovery import discover_and_load_plugins
-    classes = discover_and_load_plugins("dynastore.tasks", include_only=include_only)
+    classes = discover_and_load_plugins("dynastore.tasks")
 
     for name, cls in classes.items():
         # Use the task_type class attribute as key when available so the
         # registry key matches the value stored in the DB task_type column.
         key = getattr(cls, "task_type", None) or name
 
-        # Extract some metadata from the class if possible
         definition = None
         if hasattr(cls, "get_definition"):
             definition = cls.get_definition()
@@ -109,16 +97,12 @@ def discover_tasks(include_only: Optional[List[str]] = None):
             definition=definition
         )
 
-    _register_definition_only_placeholders(
-        include_only, already_loaded=set(classes.keys())
-    )
+    _register_definition_only_placeholders(already_loaded=set(classes.keys()))
 
     logger.info(f"--- DISCOVERED TASKS: {list(_DYNASTORE_TASKS.keys())} ---")
 
 
-def _register_definition_only_placeholders(
-    include_only: Optional[List[str]], already_loaded: set
-) -> None:
+def _register_definition_only_placeholders(already_loaded: set) -> None:
     """Fallback for tasks whose heavy deps are missing.
 
     Iterate entry points in ``dynastore.tasks`` that aren't already loaded,
@@ -131,16 +115,9 @@ def _register_definition_only_placeholders(
     import importlib
 
     from dynastore.modules.processes.models import Process
-    from dynastore.tools.discovery import _normalize, resolve_scope
-
-    target_names: Optional[set] = None
-    if include_only is not None:
-        target_names = resolve_scope(",".join(include_only))
 
     for ep in importlib.metadata.entry_points(group="dynastore.tasks"):
         if ep.name in already_loaded:
-            continue
-        if target_names is not None and _normalize(ep.name) not in target_names:
             continue
         module_path = ep.value.split(":")[0]
         pkg_path = module_path.rsplit(".", 1)[0]

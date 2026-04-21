@@ -188,14 +188,7 @@ class PostgresTypedStore:
             if not row:
                 return None
 
-            # Legacy class_keys persisted before a rename resolve to the
-            # renamed class via the config rewriter.  Unknown keys still
-            # fall through to the warning below.
-            from dynastore.tools.config_rewriter import (
-                normalise_class_key,
-            )
-
-            cls = TypedModelRegistry.get(normalise_class_key(row["class_key"]))
+            cls = TypedModelRegistry.get(row["class_key"])
             if cls is None:
                 logger.warning(
                     "PostgresTypedStore.get: stored class_key %r not in registry",
@@ -306,12 +299,8 @@ class PostgresTypedStore:
             )
 
             out: List[PersistentModel] = []
-            from dynastore.tools.config_rewriter import (
-                normalise_class_key,
-            )
-
             for row in rows:
-                cls = TypedModelRegistry.get(normalise_class_key(row["class_key"]))
+                cls = TypedModelRegistry.get(row["class_key"])
                 if cls is None:
                     continue
                 data = row["config_data"]

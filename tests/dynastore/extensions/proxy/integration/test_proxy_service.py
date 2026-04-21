@@ -15,7 +15,7 @@ def setup_proxy_env(monkeypatch):
     """Ensure proxy module is enabled for these tests."""
     monkeypatch.setenv("SCOPE", "proxy")
 
-@pytest.mark.enable_modules("db_config", "db", "catalog", "proxy", "stats", "metadata_postgresql")
+@pytest.mark.enable_modules("db_config", "db", "catalog", "proxy", "stats", "metadata_collection_core_postgresql", "metadata_collection_stac_postgresql", "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql")
 @pytest.mark.enable_extensions("proxy")
 @pytest.mark.asyncio
 async def test_proxy_service_flow(app_lifespan, catalog_obj):

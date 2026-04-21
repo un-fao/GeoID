@@ -39,12 +39,12 @@ CREATE TABLE IF NOT EXISTS {schema}.collections (
 
 ## Layer 2: Metadata Table
 
-All descriptive metadata lives here.  Renamed from `pg_collection_metadata`
-→ `metadata` in v1.0, then from `metadata` → `collection_metadata` in the
-M1/M2 naming harmonisation (four-tier prefix scheme: Items / Collection /
-Catalog / Asset).  Existing deployments are migrated by
-`rename_legacy_metadata_tables` — idempotent DO block in
-`modules/catalog/db_init/metadata_domain_split.py`.
+All descriptive metadata lives here.  The M2.5 hard cut split the single
+`collection_metadata` table into two domain-scoped tables —
+`collection_metadata_core` and `collection_metadata_stac` — see
+`modules/catalog/db_init/metadata_domain_split.py`.  The deployment
+policy for the cut is delete-and-rebuild; no in-place migration is
+carried.
 
 ```sql
 CREATE TABLE IF NOT EXISTS {schema}.collection_metadata (
