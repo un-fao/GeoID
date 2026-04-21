@@ -88,11 +88,6 @@ class ConfigsService(ExtensionProtocol):
         logger.info("ConfigsService: Policies registered.")
         yield
 
-    # Deprecated: the legacy configurations.html editor has been superseded by
-    # the schema-driven Configuration Hub at /web/pages/configuration. The old
-    # HTML file is kept on disk for one release as a fallback but is no longer
-    # linked from the admin sidebar.
-
     def _setup_routes(self):
         self.router.add_api_route(
             "/schemas",

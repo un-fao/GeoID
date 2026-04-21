@@ -837,10 +837,9 @@ async function demoAction(action) {
     async def configuration_page(self, request: Request):
         """Serve the schema-driven Configuration Hub HTML page.
 
-        Replaces the older ``configs_editor`` / json-editor flow with a
-        single unified page that lists every Pydantic-backed plugin config
-        (routing, drivers, anything else that registers a schema) and
-        renders its form from the ``/configs/schemas`` response.
+        Lists every Pydantic-backed plugin config (routing, drivers,
+        anything else that registers a schema) and renders its form
+        from the ``/configs/schemas`` response.
         """
         static_dir = os.path.join(os.path.dirname(__file__), "static", "admin")
         html_path = os.path.join(static_dir, "configuration.html")
