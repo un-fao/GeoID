@@ -22,7 +22,7 @@
 services:
   db:
     extends:
-      file: ../src/dynastore/docker/compose.db.yml
+      file: ./compose.db.yml
       service: db
     container_name: geoid_db
     env_file: .env
@@ -31,7 +31,7 @@ services:
 
   catalog:
     build:
-      context: ..
+      context: ../../..
       dockerfile: src/dynastore/docker/Dockerfile
       args:
         SCOPE: ${CATALOG_SCOPE:-scope_catalog}
@@ -50,7 +50,7 @@ services:
     ports:
       - "${HOST_PORT_CATALOG:-80}:80"
     volumes:
-      - ../logs/catalog:/dynastore/logs
+      - ../../../logs/catalog:/dynastore/logs
     depends_on:
       db:
         condition: service_healthy
@@ -59,7 +59,7 @@ services:
 
   geoid:
     build:
-      context: ..
+      context: ../../..
       dockerfile: src/dynastore/docker/Dockerfile
       args:
         SCOPE: ${GEOID_SCOPE:-scope_geoid}
@@ -84,7 +84,7 @@ services:
     ports:
       - "8080:80"
     volumes:
-      - ../logs/geoid:/dynastore/logs
+      - ../../../logs/geoid:/dynastore/logs
     depends_on:
       db:
         condition: service_healthy
@@ -93,7 +93,7 @@ services:
 
   worker:
     build:
-      context: ..
+      context: ../../..
       dockerfile: src/dynastore/docker/Dockerfile
       args:
         SCOPE: ${WORKER_SCOPE:-scope_worker}
@@ -112,7 +112,7 @@ services:
     ports:
       - "${HOST_PORT_WORKER:-81}:81"
     volumes:
-      - ../logs/worker:/dynastore/logs
+      - ../../../logs/worker:/dynastore/logs
     depends_on:
       db:
         condition: service_healthy
@@ -121,7 +121,7 @@ services:
 
   tools:
     build:
-      context: ..
+      context: ../../..
       dockerfile: src/dynastore/docker/Dockerfile
       args:
         SCOPE: ${TOOLS_SCOPE:-scope_tools}
@@ -139,7 +139,7 @@ services:
     ports:
       - "${HOST_PORT_TOOLS:-8082}:8082"
     volumes:
-      - ../logs/tools:/dynastore/logs
+      - ../../../logs/tools:/dynastore/logs
     depends_on:
       db:
         condition: service_healthy
@@ -148,7 +148,7 @@ services:
 
   maps:
     build:
-      context: ..
+      context: ../../..
       dockerfile: src/dynastore/docker/Dockerfile
       args:
         SCOPE: ${MAPS_SCOPE:-scope_maps}
@@ -166,7 +166,7 @@ services:
     ports:
       - "${HOST_PORT_MAPS:-8083}:8083"
     volumes:
-      - ../logs/maps:/dynastore/logs
+      - ../../../logs/maps:/dynastore/logs
     depends_on:
       db:
         condition: service_healthy
@@ -175,17 +175,21 @@ services:
 
   elasticsearch:
     extends:
-      file: ../src/dynastore/docker/compose.es.dev.yml
+      file: ./compose.es.yml
       service: elasticsearch
     container_name: geoid_elasticsearch
+    ports:
+      - "9200:9200"
     networks:
       - dynastore_net
 
   kibana:
     extends:
-      file: ../src/dynastore/docker/compose.kibana.dev.yml
+      file: ./compose.kibana.yml
       service: kibana
     container_name: geoid_kibana
+    ports:
+      - "5601:5601"
     depends_on:
       - elasticsearch
     networks:
@@ -193,9 +197,11 @@ services:
 
   keycloak:
     extends:
-      file: ../src/dynastore/docker/compose.keycloak.dev.yml
+      file: ./compose.keycloak.yml
       service: keycloak
     container_name: geoid_keycloak
+    ports:
+      - "${HOST_PORT_KEYCLOAK:-8181}:8080"
     volumes:
       - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
     depends_on:

@@ -13,7 +13,7 @@
 #
 # Repo root: resolved from (first match wins)
 #   1. $REPO_ROOT env var
-#   2. $PWD if it contains a `docker/docker-compose.${env}.yml`
+#   2. $PWD if it contains a `src/dynastore/docker/docker-compose.${env}.yml`
 #   3. error
 #
 # Project name: `${PROJECT_PREFIX}_${env}`. PROJECT_PREFIX defaults to the
@@ -49,25 +49,26 @@ if [[ -n "${COMPOSE_FILE:-}" ]]; then
     exit 2
 fi
 
-# Resolve repo root: env override, else CWD if it has docker/docker-compose.<env>.yml.
+# Resolve repo root: env override, else CWD if it has src/dynastore/docker/docker-compose.<env>.yml.
+COMPOSE_SUBDIR="src/dynastore/docker"
 if [[ -n "${REPO_ROOT:-}" ]]; then
     DIR="$REPO_ROOT"
-elif [[ -f "${PWD}/docker/docker-compose.${env}.yml" ]]; then
+elif [[ -f "${PWD}/${COMPOSE_SUBDIR}/docker-compose.${env}.yml" ]]; then
     DIR="$PWD"
 else
-    echo "Cannot locate repo root. Run from a repo containing docker/docker-compose.${env}.yml,"
+    echo "Cannot locate repo root. Run from a repo containing ${COMPOSE_SUBDIR}/docker-compose.${env}.yml,"
     echo "or set REPO_ROOT=/path/to/repo."
     exit 1
 fi
 
-compose_file="${DIR}/docker/docker-compose.${env}.yml"
+compose_file="${DIR}/${COMPOSE_SUBDIR}/docker-compose.${env}.yml"
 project="${PROJECT_PREFIX:-$(basename "$DIR")}_${env}"
 
 if [[ ! -f "$compose_file" ]]; then
     echo "Compose file not found: $compose_file"; exit 1
 fi
 
-cd "$DIR/docker"
+cd "${DIR}/${COMPOSE_SUBDIR}"
 
 echo "Environment: $env"
 echo "Compose file: $compose_file"

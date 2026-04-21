@@ -1,9 +1,0 @@
-# Dev override for elasticsearch: expose 9200 for host curl/OpenSearch Dashboards.
-
-services:
-  elasticsearch:
-    extends:
-      file: compose.es.yml
-      service: elasticsearch
-    ports:
-      - "9200:9200"

@@ -1,16 +1,18 @@
 services:
   db:
     extends:
-      file: ../src/dynastore/docker/compose.db.test.yml
+      file: ./compose.db.dev.yml
       service: db
     container_name: geoid_db_test
     env_file: .env
+    environment:
+      RESET_MODE: keycloak
     networks:
       - dynastore_net
 
   keycloak:
     extends:
-      file: ../src/dynastore/docker/compose.keycloak.yml
+      file: ./compose.keycloak.yml
       service: keycloak
     container_name: geoid_keycloak_test
     volumes:
@@ -27,7 +29,7 @@ services:
       service: catalog
     restart: "no"
     build:
-      context: ..
+      context: ../../..
       dockerfile: src/dynastore/docker/Dockerfile
       target: builder
       args:
@@ -60,7 +62,7 @@ services:
       service: worker
     restart: "no"
     build:
-      context: ..
+      context: ../../..
       dockerfile: src/dynastore/docker/Dockerfile
       target: builder
       args:
@@ -87,7 +89,7 @@ services:
 
   test-runner:
     build:
-      context: ..
+      context: ../../..
       dockerfile: src/dynastore/docker/Dockerfile
       target: tester
       args:
@@ -102,10 +104,10 @@ services:
       - DYNASTORE_WORKER_URL=http://worker:81
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-gis_dev}
     volumes:
-      - ../tests:/dynastore/tests
-      - ../src:/dynastore/src
-      - ..:/dynastore/workspace
-      - ../pytest.ini:/dynastore/pytest.ini
+      - ../../../tests:/dynastore/tests
+      - ../../../src:/dynastore/src
+      - ../../..:/dynastore/workspace
+      - ../../../pytest.ini:/dynastore/pytest.ini
     depends_on:
       db:
         condition: service_healthy

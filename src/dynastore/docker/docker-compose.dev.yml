@@ -1,26 +1,12 @@
 services:
   db:
     extends:
-      file: ../src/dynastore/docker/compose.db.dev.yml
+      file: ./compose.db.dev.yml
       service: db
     container_name: geoid_db
     env_file: .env
-    networks:
-      - dynastore_net
-
-  keycloak:
-    extends:
-      file: ../src/dynastore/docker/compose.keycloak.dev.yml
-      service: keycloak
-    container_name: geoid_keycloak
-    # Preserve the realm import (fragment deliberately omits this so each
-    # consumer picks its own realm JSON); geoid's dev stack uses the
-    # in-repo realm export.
-    volumes:
-      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
-    depends_on:
-      db:
-        condition: service_healthy
+    environment:
+      RESET_MODE: default
     networks:
       - dynastore_net
 
@@ -29,14 +15,14 @@ services:
       file: docker-compose.yml
       service: catalog
     build:
-      context: ..
+      context: ../../..
       dockerfile: src/dynastore/docker/Dockerfile
       target: development
       args:
         SCOPE: ${CATALOG_SCOPE:-scope_catalog}
         BUILD_JUPYTERLITE: "true"
     volumes:
-      - ../src:/dynastore/src # Hot reload mount
+      - ../../../src:/dynastore/src # Hot reload mount
     env_file: .env
     depends_on:
       db:
@@ -63,13 +49,13 @@ services:
       file: docker-compose.yml
       service: geoid
     build:
-      context: ..
+      context: ../../..
       dockerfile: src/dynastore/docker/Dockerfile
       target: development
       args:
         BUILD_JUPYTERLITE: "true"
     volumes:
-      - ../src:/dynastore/src
+      - ../../../src:/dynastore/src
     depends_on:
       db:
         condition: service_healthy
@@ -87,7 +73,7 @@ services:
       file: docker-compose.yml
       service: worker
     build:
-      context: ..
+      context: ../../..
       dockerfile: src/dynastore/docker/Dockerfile
       target: development
       args:
@@ -100,7 +86,7 @@ services:
       elasticsearch:
         condition: service_healthy
     volumes:
-      - ../src:/dynastore/src
+      - ../../../src:/dynastore/src
     environment:
       UVICORN_WORKERS: 1
       LOG_LEVEL: DEBUG
@@ -117,14 +103,14 @@ services:
       file: docker-compose.yml
       service: tools
     build:
-      context: ..
+      context: ../../..
       dockerfile: src/dynastore/docker/Dockerfile
       target: development
       args:
         SCOPE: ${TOOLS_SCOPE:-scope_tools}
         BUILD_JUPYTERLITE: "true"
     volumes:
-      - ../src:/dynastore/src
+      - ../../../src:/dynastore/src
     env_file: .env
     depends_on:
       db:
@@ -143,14 +129,14 @@ services:
       file: docker-compose.yml
       service: maps
     build:
-      context: ..
+      context: ../../..
       dockerfile: src/dynastore/docker/Dockerfile
       target: development
       args:
         SCOPE: ${MAPS_SCOPE:-scope_maps}
         BUILD_JUPYTERLITE: "true"
     volumes:
-      - ../src:/dynastore/src
+      - ../../../src:/dynastore/src
     env_file: .env
     depends_on:
       db:
@@ -170,19 +156,38 @@ services:
 
   elasticsearch:
     extends:
-      file: ../src/dynastore/docker/compose.es.dev.yml
+      file: ./compose.es.yml
       service: elasticsearch
     container_name: geoid_elasticsearch
+    ports:
+      - "9200:9200"
     networks:
       - dynastore_net
 
   kibana:
     extends:
-      file: ../src/dynastore/docker/compose.kibana.dev.yml
+      file: ./compose.kibana.yml
       service: kibana
     container_name: geoid_kibana
+    ports:
+      - "5601:5601"
     depends_on:
       - elasticsearch
+    networks:
+      - dynastore_net
+
+  keycloak:
+    extends:
+      file: ./compose.keycloak.yml
+      service: keycloak
+    container_name: geoid_keycloak
+    ports:
+      - "${HOST_PORT_KEYCLOAK:-8181}:8080"
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
     networks:
       - dynastore_net
 

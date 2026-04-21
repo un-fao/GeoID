@@ -1,61 +1,35 @@
-# Docker Setup
+# Docker Setup — moved
+
+The docker compose stack now lives under [`src/dynastore/docker/`](../src/dynastore/docker/)
+so it ships as pip package data and can be consumed by downstream wrappers
+(e.g. [fao-aip-catalog](https://github.com/un-fao/fao-aip-catalog)).
 
 ## Quick Start
 
 ```bash
-# Local development (exposes DB port, adds healthchecks)
-docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
-
-# Production-like
-docker compose up -d
+cd src/dynastore/docker
+cp .env.example .env              # first time only; edit secrets + SCOPE
+docker compose up -d              # production-like
+# or
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d  # local overlay
 ```
 
-## Services & Ports
+See [`src/dynastore/docker/.env.example`](../src/dynastore/docker/.env.example)
+for the user-facing knobs (SCOPE selectors, host ports, IdP, DB creds).
 
-| Service       | Container          | Host Port | Internal Port |
-|---------------|--------------------|-----------|---------------|
-| Catalog API   | geoid_catalog      | 80        | 80            |
-| GeoID Web     | geoid_web          | 8080      | 80            |
-| Worker        | geoid_worker       | 81        | 81            |
-| Tools         | geoid_tools        | 8082      | 8082          |
-| Maps          | geoid_maps         | 8083      | 8083          |
-| Keycloak      | geoid_keycloak     | 8180      | 8080          |
-| OpenSearch     | geoid_elasticsearch| 9200      | 9200          |
-| OS Dashboards | geoid_kibana       | 5601      | 5601          |
-| PostgreSQL    | geoid_db           | 54320*    | 5432          |
+## What stayed here
 
-\* DB port only exposed with `docker-compose.local.yml` overlay.
+- `scripts/` — geoid-maintainer dev tooling (bump-version, build-jupyterlite,
+  vendor-web-fonts, `db.sh` thin delegator, Windows entrypoints).
 
-## Authentication
+## Rebuild script
 
-### Keycloak Admin Console
+`src/dynastore/scripts/rebuild.sh` is the shared dev/test rebuild script and
+picks up the composes from their new location automatically. Run it from the
+repo root:
 
-URL: `http://localhost:8180/`
-
-| Username | Password | Source |
-|----------|----------|--------|
-| `admin`  | `admin`  | `KEYCLOAK_ADMIN_PASSWORD` in `.env` |
-
-### Test Users
-
-Provisioned via `keycloak/realm-export.json`. All use password `testpassword`.
-
-| Username     | Realm Roles      | Client Roles (`geoid-api`) |
-|--------------|------------------|----------------------------|
-| `testadmin`  | admin            | catalog_admin              |
-| `testuser`   | user             | -                          |
-| `testviewer` | viewer           | -                          |
-
-### Environment Variables
-
-| Variable              | Purpose                                              |
-|-----------------------|------------------------------------------------------|
-| `KEYCLOAK_ISSUER_URL` | Internal URL for JWT validation / JWKS (Docker-internal) |
-| `KEYCLOAK_PUBLIC_URL` | Browser-facing URL for OAuth redirects               |
-| `KEYCLOAK_CLIENT_ID`  | OAuth2 client ID                                     |
-| `KEYCLOAK_CLIENT_SECRET` | OAuth2 client secret (confidential client)        |
-
-## Configuration
-
-All build/runtime configuration is in `.env`. See comments there for details.
-SCOPE variables control which modules each service loads (see `pyproject.toml` optional-dependencies).
+```bash
+src/dynastore/scripts/rebuild.sh dev           # wipe + rebuild + up
+src/dynastore/scripts/rebuild.sh test          # same for test stack
+src/dynastore/scripts/rebuild.sh dev --no-wipe # rebuild images only
+```

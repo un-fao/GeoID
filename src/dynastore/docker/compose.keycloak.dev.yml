@@ -1,9 +1,0 @@
-# Dev override for keycloak: expose 8181 for the admin UI.
-
-services:
-  keycloak:
-    extends:
-      file: compose.keycloak.yml
-      service: keycloak
-    ports:
-      - "${HOST_PORT_KEYCLOAK:-8181}:8080"

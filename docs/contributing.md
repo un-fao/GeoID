@@ -285,10 +285,10 @@ The workflow:
 
 ```bash
 # Full Docker-based test run (mirrors CI)
-docker compose -f docker/docker-compose.test.yml run --rm test-runner
+docker compose -f src/dynastore/docker/docker-compose.test.yml run --rm test-runner
 
 # Unit tests only
-docker compose -f docker/docker-compose.test.yml run --rm test-runner \
+docker compose -f src/dynastore/docker/docker-compose.test.yml run --rm test-runner \
   /opt/venv/bin/pytest tests/ --ignore-glob="**/integration/*"
 
 # Direct pytest (requires local DB on port 54320)

@@ -1,5 +1,6 @@
-# Dev override for db: exposes 54320 for host psql, mounts the SSOT scripts
-# directory, runs db_entrypoint_dev.sh to apply RESET_MODE=default on boot.
+# Dev-mode db fragment: exposes 54320 for host psql, mounts the SSOT scripts
+# directory, runs db_entrypoint_dev.sh to apply RESET_MODE on boot.
+# Consumer sets RESET_MODE in their overlay (default for dev, keycloak for test).
 # The reset-done healthcheck waits for /tmp/reset_done before reporting healthy.
 #
 # `../scripts:/scripts:ro` resolves relative to THIS file's directory per
@@ -12,8 +13,6 @@ services:
       service: db
     ports:
       - "54320:5432"
-    environment:
-      RESET_MODE: default
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ../scripts:/scripts:ro

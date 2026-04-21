@@ -84,7 +84,7 @@ curl -sL -o examples/geoparquet-duckdb-opensearch/data/countries.parquet \
 ### 2. Start the services
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d db catalog worker elasticsearch
+docker compose -f src/dynastore/docker/docker-compose.yml up -d db catalog worker elasticsearch
 ```
 
 ### 3. Copy parquet into containers (or add a bind-mount)
