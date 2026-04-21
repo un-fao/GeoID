@@ -372,6 +372,12 @@ metadata_collection_core_postgresql = "dynastore.modules.storage.drivers.metadat
 metadata_collection_stac_postgresql = "dynastore.modules.storage.drivers.metadata_domain_postgresql:CollectionStacPostgresqlDriver"
 metadata_catalog_core_postgresql = "dynastore.modules.storage.drivers.metadata_domain_postgresql:CatalogCorePostgresqlDriver"
 metadata_catalog_stac_postgresql = "dynastore.modules.storage.drivers.metadata_domain_postgresql:CatalogStacPostgresqlDriver"
+# M3.2 — first concrete INDEX-role driver for the catalog tier.
+# Diagnostic-only (logs every dispatch); NOT in the default
+# CatalogRoutingConfig.operations[INDEX] list — opt-in via platform
+# override.  See src/dynastore/modules/storage/drivers/catalog_log_indexer.py
+# for rationale + future real-indexer reference-implementation notes.
+metadata_catalog_log_indexer = "dynastore.modules.storage.drivers.catalog_log_indexer:LogCatalogIndexer"
 
 [project.entry-points."dynastore.extensions"]
 maps = "dynastore.extensions.maps.maps_service:MapsService"
