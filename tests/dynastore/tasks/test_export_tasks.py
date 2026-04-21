@@ -9,50 +9,34 @@ from dynastore.modules.processes.models import ExecuteRequest
 
 @pytest.mark.asyncio
 async def test_export_features_task_run():
-    # Mock App State and Engine
+    """The task is a thin wrapper that delegates to
+    ``modules.features_exporter.export_features``.  A previous
+    implementation interleaved ``stream_features`` /
+    ``get_features_as_byte_stream`` / ``upload_stream_to_gcs`` inside
+    the task; a refactor moved that pipeline into the module.  This
+    test patches the ``export_features`` symbol the task module
+    imports and verifies the task forwards engine + request + task_id
+    correctly.
+    """
     mock_app_state = MagicMock()
     mock_engine = AsyncMock()
 
-    # Mock stream_features (async generator)
-    async def mock_stream_features(*args, **kwargs):
-        yield {
-            "id": 1,
-            "properties": {"some": "attr"},
-            "geometry": {"type": "Point", "coordinates": [0, 0]},
-        }
-        yield {
-            "id": 2,
-            "properties": {"some": "other"},
-            "geometry": {"type": "Point", "coordinates": [1, 1]},
-        }
-
-    # Mock dependencies
-    # We patch where they are used in the task module
     with (
         patch(
             "dynastore.tasks.export_features.export_features_task.get_engine",
             return_value=mock_engine,
         ),
         patch(
-            "dynastore.tasks.export_features.export_features_task.stream_features",
-            side_effect=mock_stream_features,
-        ) as mock_stream_fn,
-        patch(
-            "dynastore.tasks.export_features.export_features_task.get_features_as_byte_stream",
-            return_value=[b"chunk1", b"chunk2"],
-        ) as mock_get_stream,
-        patch(
-            "dynastore.tasks.export_features.export_features_task.upload_stream_to_gcs"
-        ) as mock_upload,
+            "dynastore.tasks.export_features.export_features_task.export_features",
+            new_callable=AsyncMock,
+        ) as mock_export,
         patch(
             "dynastore.tasks.export_features.export_features_task.initialize_reporters",
             return_value=[],
         ),
     ):
-        # Instantiate Task
         task = ExportFeaturesTask(mock_app_state)
 
-        # Payload
         payload = TaskPayload(
             task_id="123e4567-e89b-12d3-a456-426614174000",
             caller_id="tester",
@@ -66,23 +50,20 @@ async def test_export_features_task_run():
             ),
         )
 
-        # Run Task
         result = await task.run(payload)
 
-        # Assertions
         assert result.status == TaskStatusEnum.COMPLETED
 
-        # Verify stream_features called (verifies import of new module works)
-        assert mock_stream_fn.called
-
-        # Verify get_features_as_byte_stream was called
-        assert mock_get_stream.called
-
-        # Verify Upload to GCS was called
-        assert mock_upload.called
-        assert mock_upload.call_count == 1
-        call_args = mock_upload.call_args[1]
-        assert call_args["destination_uri"] == "gs://test-bucket/output.geojson"
+        # Task delegates to the consolidated ``export_features`` call
+        # in ``modules.features_exporter``.  Verify it fires once with
+        # engine + a materialised ``ExportFeaturesRequest`` + task_id.
+        assert mock_export.await_count == 1
+        call_engine, call_request = mock_export.await_args.args
+        assert call_engine is mock_engine
+        assert call_request.destination_uri == "gs://test-bucket/output.geojson"
+        assert mock_export.await_args.kwargs["task_id"] == (
+            "123e4567-e89b-12d3-a456-426614174000"
+        )
 
 
 @pytest.mark.asyncio
