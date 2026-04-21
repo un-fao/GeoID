@@ -50,5 +50,8 @@ else
 fi
 
 # --- Execute One-off Task ---
+# Invoke as a module so it works whether the source is mounted under
+# ${APP_DIR}/src (dev image COPYs src/) or only installed into site-packages
+# (deployment image installs via pip + git ref).
 echo "Starting one-off task (Cloud Run Job)..."
-exec python "${APP_DIR}/src/${APP}/main_task.py" "$@"
+exec python -m "${APP}.main_task" "$@"

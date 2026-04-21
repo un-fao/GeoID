@@ -47,6 +47,7 @@ source "${VENV_PATH}/bin/activate"
 
 # The 'exec' command ensures the Python process replaces this script,
 # allowing Cloud Run to manage its lifecycle and signals correctly.
-# It directly calls main_task.py, passing along any arguments ($@)
-# received by this script (which will be the payload from the gcloud command).
-exec python /${APP}/src/dynastore/main_task.py "$@"
+# Invoke as a module so we work whether the source is mounted under
+# /${APP}/src (geoid dev image COPYs src/) or only installed into
+# site-packages (dynastore deployment image installs via pip + git ref).
+exec python -m "${APP}.main_task" "$@"
