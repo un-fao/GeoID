@@ -59,9 +59,28 @@ METADATA_DRIVER_CONFIG_ID = "driver:collection:metadata:postgresql"
 
 
 class MetadataPostgresqlDriver:
-    """PostgreSQL implementation of CollectionMetadataStore.
+    """PostgreSQL implementation of CollectionMetadataStore (LEGACY — scheduled for removal).
 
     Uses the existing ``{schema}.collection_metadata`` table for CRUD + search.
+
+    Deprecation status
+    ------------------
+
+    This driver is the **collection-tier** legacy path, analogous to the
+    ``catalog.catalogs`` metadata columns that M2.5a/b already retired.
+    It remains operational today because the collection-tier read flip
+    (equivalent of M2.4 for ``CollectionMetadataStore``) has not shipped
+    yet; splitting ``{schema}.collection_metadata`` into
+    ``collection_metadata_core`` + ``collection_metadata_stac`` and
+    wiring ``CollectionCorePostgresqlDriver`` /
+    ``CollectionStacPostgresqlDriver`` through the collection-tier
+    metadata router is tracked under M3/M4 of the role-based-drivers
+    plan.  Once that flip lands, this driver is deleted wholesale (plan
+    M2 bullet "Remove MetadataPostgresqlDriver wholesale").
+
+    Do NOT add new call sites or features here.  New work goes through
+    the domain-scoped drivers in
+    :mod:`dynastore.modules.storage.drivers.metadata_domain_postgresql`.
     """
 
     capabilities: FrozenSet[str] = frozenset({
