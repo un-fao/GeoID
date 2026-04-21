@@ -355,9 +355,15 @@ def _extract_update_payload(
 
 # --- Queries ---
 
+# M2.5a — the catalog.catalogs INSERT carries only the technical
+# registry columns.  Metadata lands in catalog.catalog_metadata_core /
+# _stac via the M2.2 lifecycle hooks (``init_catalog_metadata``).  The
+# legacy metadata columns are kept in the DDL for rollback / visual
+# inspection until M2.5b's DROP COLUMN; they remain NULL for every
+# post-M2.5a catalog.
 _create_catalog_strict_query = DQLQuery(
-    "INSERT INTO catalog.catalogs (id, physical_schema, title, description, keywords, license, conforms_to, links, assets, extra_metadata, provisioning_status, stac_version, stac_extensions) "
-    "VALUES (:id, :physical_schema, :title, :description, :keywords, :license, :conforms_to, :links, :assets, :extra_metadata, :provisioning_status, :stac_version, :stac_extensions) "
+    "INSERT INTO catalog.catalogs (id, physical_schema, provisioning_status) "
+    "VALUES (:id, :physical_schema, :provisioning_status) "
     "ON CONFLICT (id) DO NOTHING;",
     result_handler=ResultHandler.ROWCOUNT,
 )
@@ -725,51 +731,19 @@ class CatalogService(CatalogsProtocol):
                 conn, physical_schema, catalog_id=catalog_model.id
             )
 
-            # Store only user-provided extra_metadata content (no envelope)
-            user_extra_metadata = (
-                json.dumps(
-                    catalog_model.extra_metadata.model_dump(exclude_none=True),
-                    cls=CustomJSONEncoder,
-                )
-                if catalog_model.extra_metadata
-                else None
-            )
-
+            # M2.5a — the registry INSERT carries only technical columns.
+            # Catalog metadata (title, description, …, stac_extensions,
+            # conforms_to, links, assets) flows into the split tables
+            # via the M2.2 ``init_catalog_metadata`` lifecycle phase
+            # below.  The legacy metadata columns on ``catalog.catalogs``
+            # remain in the DDL as vestigial NULLs until M2.5b's
+            # ``DROP COLUMN``; nothing reads them post-M2.4 overlay
+            # flip, and no code writes them post-this commit.
             await _create_catalog_strict_query.execute(
                 conn,
                 id=catalog_model.id,
                 physical_schema=physical_schema,
-                title=json.dumps(
-                    catalog_model.title.model_dump(exclude_none=True),
-                    cls=CustomJSONEncoder,
-                )
-                if catalog_model.title
-                else None,
-                description=json.dumps(
-                    catalog_model.description.model_dump(exclude_none=True),
-                    cls=CustomJSONEncoder,
-                )
-                if catalog_model.description
-                else None,
-                keywords=json.dumps(
-                    catalog_model.keywords.model_dump(exclude_none=True),
-                    cls=CustomJSONEncoder,
-                )
-                if catalog_model.keywords
-                else None,
-                license=json.dumps(
-                    catalog_model.license.model_dump(exclude_none=True),
-                    cls=CustomJSONEncoder,
-                )
-                if catalog_model.license
-                else None,
-                conforms_to=json.dumps(catalog_model.conformsTo, cls=CustomJSONEncoder) if catalog_model.conformsTo else None,
-                links=json.dumps([l.model_dump() for l in catalog_model.links], cls=CustomJSONEncoder) if catalog_model.links else None,
-                assets=None, # Assets are not part of core Catalog model yet, or are managed separately
-                extra_metadata=user_extra_metadata,
                 provisioning_status=catalog_model.provisioning_status,
-                stac_version=catalog_model.stac_version,
-                stac_extensions=json.dumps(catalog_model.stac_extensions, cls=CustomJSONEncoder) if catalog_model.stac_extensions else None,
             )
 
             # M2.2 — catalog-metadata lifecycle phase.
@@ -1049,108 +1023,48 @@ class CatalogService(CatalogsProtocol):
                 CatalogEventType.CATALOG_UPDATE, catalog_id=catalog_id, db_resource=conn
             )
 
-            set_clauses: List[str] = []
-            params: Dict[str, Any] = {"id": catalog_id}
-
-            # Identify which fields were actually requested for update
-            update_fields = (
+            # Identify which fields the PATCH actually carried so the
+            # router-fanned UPSERT only touches those columns.
+            update_fields = set(
                 updates.keys()
                 if isinstance(updates, dict)
                 else updates.model_dump(exclude_unset=True).keys()
             )
 
-            if "title" in update_fields:
-                set_clauses.append("title = :title")
-                params["title"] = (
-                    json.dumps(
-                        merged_model.title.model_dump(exclude_none=True),
-                        cls=CustomJSONEncoder,
-                    )
-                    if merged_model.title
-                    else None
+            # M2.5a — writes go directly to the split tables via the
+            # catalog-metadata router.  The legacy ``catalog.catalogs``
+            # columns are no longer written; the M2.4 overlay reads
+            # exclusively from the split tables on the hot path and
+            # the backfill (M2.3a) already populated rows for every
+            # pre-M2.5 catalog.  PATCH semantics via
+            # ``_extract_update_payload`` + ``_filter_payload`` inside
+            # each Primary driver ensure only the supplied columns
+            # are touched — absent fields keep their existing values.
+            updated_payload = _extract_update_payload(
+                merged_model, update_fields,
+            )
+            if not updated_payload:
+                # No column-level changes — still emit
+                # AFTER_CATALOG_UPDATE for consumers that react to
+                # mutation intent regardless of payload shape.
+                await emit_event(
+                    CatalogEventType.AFTER_CATALOG_UPDATE,
+                    catalog_id=catalog_id,
+                    db_resource=conn,
                 )
-
-            if "description" in update_fields:
-                set_clauses.append("description = :description")
-                params["description"] = (
-                    json.dumps(
-                        merged_model.description.model_dump(exclude_none=True),
-                        cls=CustomJSONEncoder,
-                    )
-                    if merged_model.description
-                    else None
-                )
-
-            if "keywords" in update_fields:
-                set_clauses.append("keywords = :keywords")
-                params["keywords"] = (
-                    json.dumps(
-                        merged_model.keywords.model_dump(exclude_none=True),
-                        cls=CustomJSONEncoder,
-                    )
-                    if merged_model.keywords
-                    else None
-                )
-
-            if "license" in update_fields:
-                set_clauses.append("license = :license")
-                params["license"] = (
-                    json.dumps(
-                        merged_model.license.model_dump(exclude_none=True),
-                        cls=CustomJSONEncoder,
-                    )
-                    if merged_model.license
-                    else None
-                )
-
-            if not set_clauses:
+                self._get_catalog_model_cached.cache_invalidate(catalog_id)
                 return merged_model
 
-            sql = f"UPDATE catalog.catalogs SET {', '.join(set_clauses)} WHERE id = :id AND deleted_at IS NULL;"
-            await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
-                conn, **params
+            from dynastore.modules.catalog.catalog_metadata_router import (
+                upsert_catalog_metadata,
             )
-
-            # M2.4 — propagate the same updates into the split-table
-            # Primary drivers so the router-overlaid read path sees
-            # fresh data.  Without this, ``get_catalog_model`` would
-            # overlay the pre-update split-table rows on top of the
-            # just-updated legacy columns and return stale values
-            # indefinitely (the router always wins — by design).
-            #
-            # Build a dict of the canonical Python values (not the
-            # JSON-encoded strings in ``params``) so each Primary
-            # driver's ``_to_json`` / ``_filter_payload`` do their own
-            # serialisation.  PATCH semantics (see M2.1 C1 fix) mean
-            # only the supplied columns are touched in the split
-            # tables — absent fields stay at their current value.
-            updated_payload: Dict[str, Any] = _extract_update_payload(
-                merged_model, set(update_fields),
+            # Router exceptions bubble — an UPDATE that fails to
+            # persist is a caller-visible failure; the legacy
+            # ``catalog.catalogs`` no longer backs the data so we
+            # cannot fall back silently.
+            await upsert_catalog_metadata(
+                catalog_id, updated_payload, db_resource=conn,
             )
-            if updated_payload:
-                from dynastore.modules.catalog.catalog_metadata_router import (
-                    upsert_catalog_metadata,
-                )
-                try:
-                    await upsert_catalog_metadata(
-                        catalog_id, updated_payload, db_resource=conn,
-                    )
-                except Exception as exc:  # noqa: BLE001 — degrade
-                    # A split-table write failure after the legacy
-                    # UPDATE succeeded is a genuine problem (split
-                    # tables will drift), but we do not roll the
-                    # legacy UPDATE back — the caller's intent was to
-                    # update the catalog, and the legacy path is still
-                    # the authoritative store until M2.5 drops it.
-                    # Log LOUD so ops can catch this during the
-                    # dual-write window.
-                    logger.error(
-                        "update_catalog: split-table propagation "
-                        "failed for %s (legacy UPDATE succeeded, "
-                        "split tables now diverge): %s",
-                        catalog_id, exc,
-                        exc_info=True,
-                    )
 
             await emit_event(
                 CatalogEventType.AFTER_CATALOG_UPDATE,
@@ -1223,43 +1137,21 @@ class CatalogService(CatalogsProtocol):
             if not can_delete:
                 return False
 
-            set_clauses = [f"{k} = :{k}" for k in fields_to_update.keys()]
-            params = {"id": catalog_id, **fields_to_update}
-
-            sql = f"UPDATE catalog.catalogs SET {', '.join(set_clauses)} WHERE id = :id AND deleted_at IS NULL;"
-            await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
-                conn, **params
-            )
-
-            # M2.4 — same split-table propagation as ``update_catalog``.
-            # Without this the router-overlaid read returns the
-            # pre-deletion localized values (the split-table row still
-            # carries the language slot that was just removed from the
-            # legacy column).  Best-effort: a split-table failure is
-            # logged but does not roll the legacy UPDATE back.
+            # M2.5a — route the language removal through the catalog-
+            # metadata router.  The legacy ``UPDATE catalog.catalogs``
+            # is gone; the split-table rows are the only source post-
+            # M2.4 overlay flip.  Router exceptions bubble: a failed
+            # per-domain UPSERT means the caller's delete didn't
+            # actually land and must know.
             if router_fields_to_update:
                 from dynastore.modules.catalog.catalog_metadata_router import (
                     upsert_catalog_metadata,
                 )
-                try:
-                    await upsert_catalog_metadata(
-                        catalog_id,
-                        router_fields_to_update,
-                        db_resource=conn,
-                    )
-                except Exception as exc:  # noqa: BLE001 — degrade
-                    logger.error(
-                        "delete_catalog_language: split-table "
-                        "propagation failed for %s / lang=%s "
-                        "(legacy UPDATE succeeded; split tables now "
-                        "diverge): %s",
-                        catalog_id, lang, exc,
-                        exc_info=True,
-                    )
-
-            # Special case for extra_metadata inner extra_metadata (legacy blob)
-            # Actually our CatalogsProtocol/model handling for extra_metadata is a bit mixed.
-            # extra_metadata in DB is a JSONB blob containing conformsto, links, AND localized extra_metadata.
+                await upsert_catalog_metadata(
+                    catalog_id,
+                    router_fields_to_update,
+                    db_resource=conn,
+                )
 
             self._get_catalog_model_cached.cache_invalidate(catalog_id)
             return True
