@@ -13,8 +13,12 @@
 #
 # Repo root: resolved from (first match wins)
 #   1. $REPO_ROOT env var
-#   2. $PWD if it contains a `src/dynastore/docker/docker-compose.${env}.yml`
+#   2. $PWD if it contains a `${COMPOSE_SUBDIR}/docker-compose.${env}.yml`
 #   3. error
+#
+# Compose subdir: `${COMPOSE_SUBDIR}` env var overrides the default
+# `src/dynastore/docker`. Downstream wrappers (e.g. fao-aip-catalog whose
+# composes live at `docker/`) export `COMPOSE_SUBDIR=docker` before delegating.
 #
 # Project name: `${PROJECT_PREFIX}_${env}`. PROJECT_PREFIX defaults to the
 # basename of the repo root (keeps volumes isolated per-repo without forking).
@@ -49,8 +53,8 @@ if [[ -n "${COMPOSE_FILE:-}" ]]; then
     exit 2
 fi
 
-# Resolve repo root: env override, else CWD if it has src/dynastore/docker/docker-compose.<env>.yml.
-COMPOSE_SUBDIR="src/dynastore/docker"
+# Resolve repo root: env override, else CWD if it has ${COMPOSE_SUBDIR}/docker-compose.<env>.yml.
+COMPOSE_SUBDIR="${COMPOSE_SUBDIR:-src/dynastore/docker}"
 if [[ -n "${REPO_ROOT:-}" ]]; then
     DIR="$REPO_ROOT"
 elif [[ -f "${PWD}/${COMPOSE_SUBDIR}/docker-compose.${env}.yml" ]]; then
