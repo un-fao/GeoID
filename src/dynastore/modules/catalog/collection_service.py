@@ -278,7 +278,7 @@ class CollectionService:
 
         if meta_dict is None:
             # PG metadata fallback (always available)
-            meta_sql = f'SELECT * FROM "{phys_schema}".metadata WHERE collection_id = :id;'
+            meta_sql = f'SELECT * FROM "{phys_schema}".collection_metadata WHERE collection_id = :id;'
             meta_dict = await DQLQuery(
                 meta_sql, result_handler=ResultHandler.ONE_DICT
             ).execute(conn, id=collection_id) or {}
@@ -709,7 +709,7 @@ class CollectionService:
                     f'm.links, m.assets, m.extent, m.providers, m.summaries, '
                     f'm.item_assets, m.extra_metadata '
                     f'FROM "{phys_schema}".collections c '
-                    f'LEFT JOIN "{phys_schema}".metadata m ON m.collection_id = c.id '
+                    f'LEFT JOIN "{phys_schema}".collection_metadata m ON m.collection_id = c.id '
                     f'WHERE c.deleted_at IS NULL '
                     f'ORDER BY c.created_at DESC LIMIT :limit OFFSET :offset;'
                 )
@@ -722,7 +722,7 @@ class CollectionService:
                     f'm.links, m.assets, m.extent, m.providers, m.summaries, '
                     f'm.item_assets, m.extra_metadata '
                     f'FROM "{phys_schema}".collections c '
-                    f'LEFT JOIN "{phys_schema}".metadata m ON m.collection_id = c.id '
+                    f'LEFT JOIN "{phys_schema}".collection_metadata m ON m.collection_id = c.id '
                     f'WHERE c.deleted_at IS NULL '
                     f"AND (c.id ILIKE :q OR m.title->>'en' ILIKE :q OR m.description->>'en' ILIKE :q) "
                     f'ORDER BY c.created_at DESC LIMIT :limit OFFSET :offset;'
@@ -1010,7 +1010,7 @@ class CollectionService:
                 return False
 
             set_clauses = [f"{k} = :{k}" for k in fields_to_update.keys()]
-            sql = f'UPDATE "{phys_schema}".metadata SET {", ".join(set_clauses)} WHERE collection_id = :id;'
+            sql = f'UPDATE "{phys_schema}".collection_metadata SET {", ".join(set_clauses)} WHERE collection_id = :id;'
             await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
                 conn, **params
             )

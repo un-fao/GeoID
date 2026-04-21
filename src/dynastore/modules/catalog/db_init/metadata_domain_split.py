@@ -11,8 +11,15 @@ Metadata-domain DDL split (M2.0 of the role-based driver refactor).
 
 Additive, idempotent. Creates the per-domain metadata tables alongside the
 existing ``catalog.catalogs`` legacy columns and the per-tenant
-``{schema}.metadata`` table. **Does not migrate, read from, or drop the
-legacy locations** — those flips happen in M2.3 / M2.4 / M2.5.
+``{schema}.collection_metadata`` table.  **Does not migrate, read from, or
+drop legacy data** — dual-write / read-flip happen in M2.3 / M2.4 / M2.5.
+
+Phase 2 (naming harmonisation) renamed the per-tenant metadata tables
+from ``{schema}.metadata*`` to ``{schema}.collection_metadata*`` to
+clarify the tier (counterpart to ``{schema}.assets`` / ``{schema}.collections``).
+:func:`rename_legacy_metadata_tables` performs the idempotent rename for
+existing deployments; fresh deployments get the new names directly from
+the ``CREATE TABLE IF NOT EXISTS`` statements below.
 
 Global (under ``catalog.`` schema):
 
@@ -31,11 +38,11 @@ Global (under ``catalog.`` schema):
 
 Per-tenant (under each ``{schema}``):
 
-- ``{schema}.metadata_core`` — CORE collection metadata (title,
-  description, keywords, license, extra_metadata).
-- ``{schema}.metadata_stac`` — STAC collection metadata (extent,
-  providers, summaries, assets, item_assets, links, stac_version,
-  stac_extensions).
+- ``{schema}.collection_metadata_core`` — CORE collection metadata
+  (title, description, keywords, license, extra_metadata).
+- ``{schema}.collection_metadata_stac`` — STAC collection metadata
+  (extent, providers, summaries, assets, item_assets, links,
+  stac_version, stac_extensions).
 
 ``{schema}.collections`` already has ``created_at`` / ``updated_at`` (see
 ``TENANT_COLLECTIONS_DDL`` in ``catalog_service.py``), so no ALTER needed.
@@ -97,7 +104,7 @@ ALTER TABLE catalog.catalogs
 # ---------------------------------------------------------------------------
 
 TENANT_METADATA_CORE_DDL = """
-CREATE TABLE IF NOT EXISTS {schema}.metadata_core (
+CREATE TABLE IF NOT EXISTS {schema}.collection_metadata_core (
     collection_id  VARCHAR PRIMARY KEY,
     title          JSONB,
     description    JSONB,
@@ -110,7 +117,7 @@ CREATE TABLE IF NOT EXISTS {schema}.metadata_core (
 """
 
 TENANT_METADATA_STAC_DDL = """
-CREATE TABLE IF NOT EXISTS {schema}.metadata_stac (
+CREATE TABLE IF NOT EXISTS {schema}.collection_metadata_stac (
     collection_id   VARCHAR PRIMARY KEY,
     stac_version    VARCHAR(20),
     stac_extensions JSONB,
@@ -123,6 +130,54 @@ CREATE TABLE IF NOT EXISTS {schema}.metadata_stac (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+"""
+
+
+# ---------------------------------------------------------------------------
+# Legacy → canonical table rename (Phase 2 of the naming harmonisation)
+# ---------------------------------------------------------------------------
+
+# Renames three tables inside one tenant schema:
+#   {schema}.metadata       → {schema}.collection_metadata
+#   {schema}.metadata_core  → {schema}.collection_metadata_core
+#   {schema}.metadata_stac  → {schema}.collection_metadata_stac
+#
+# Idempotent: each rename runs only when the source table exists AND the
+# target does not — on re-run (or fresh deployment) every IF branch is false
+# and the block is a no-op.
+#
+# Runs as a single anonymous PL/pgSQL block so all three renames share the
+# same transaction scope — if any fail, all fail, leaving the schema in
+# its pre-rename state.  A partial rename cannot leave the system in a
+# mixed mode because the CREATE TABLE statements above reference only the
+# canonical names.
+TENANT_LEGACY_METADATA_RENAME_DDL = """
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables
+               WHERE table_schema = '{schema}' AND table_name = 'metadata')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.tables
+                       WHERE table_schema = '{schema}' AND table_name = 'collection_metadata')
+    THEN
+        ALTER TABLE {schema}.metadata RENAME TO collection_metadata;
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM information_schema.tables
+               WHERE table_schema = '{schema}' AND table_name = 'metadata_core')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.tables
+                       WHERE table_schema = '{schema}' AND table_name = 'collection_metadata_core')
+    THEN
+        ALTER TABLE {schema}.metadata_core RENAME TO collection_metadata_core;
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM information_schema.tables
+               WHERE table_schema = '{schema}' AND table_name = 'metadata_stac')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.tables
+                       WHERE table_schema = '{schema}' AND table_name = 'collection_metadata_stac')
+    THEN
+        ALTER TABLE {schema}.metadata_stac RENAME TO collection_metadata_stac;
+    END IF;
+END $$;
 """
 
 
@@ -150,11 +205,33 @@ async def ensure_global_metadata_domain_tables(conn: DbResource) -> None:
     ).execute(conn)
 
 
+async def rename_legacy_metadata_tables(conn: DbResource, schema: str) -> None:
+    """Rename ``{schema}.metadata*`` to ``{schema}.collection_metadata*``.
+
+    Runs BEFORE the ``CREATE TABLE IF NOT EXISTS`` statements (both the
+    legacy ``METADATA_DDL`` in ``catalog_service.py`` and the M2.0 DDLs
+    above) so that:
+
+    - Existing tenants get their tables renamed once; subsequent
+      ``CREATE TABLE IF NOT EXISTS collection_metadata*`` statements find
+      the table already present and are a no-op.
+    - Fresh tenants have no legacy tables; the DO block sees both source
+      and target missing and is a no-op.  The ``CREATE TABLE`` statements
+      then create the canonical names directly.
+
+    Idempotent, atomic (single transaction block), and safe to call on
+    every ``initialize_core_tenant_tables`` invocation.
+    """
+    await DDLQuery(TENANT_LEGACY_METADATA_RENAME_DDL).execute(
+        conn, schema=schema
+    )
+
+
 async def ensure_tenant_metadata_domain_tables(conn: DbResource, schema: str) -> None:
-    """Apply the per-tenant DDL (``{schema}.metadata_core`` + ``_stac``).
+    """Apply the per-tenant DDL (``{schema}.collection_metadata_core`` + ``_stac``).
 
     Idempotent.  Called from ``initialize_core_tenant_tables`` after the
-    legacy ``{schema}.metadata`` table is created.
+    legacy ``{schema}.collection_metadata`` table is created.
 
     Both tables share ``collection_id`` as PK.  FK to
     ``{schema}.collections(id)`` is intentionally omitted because the

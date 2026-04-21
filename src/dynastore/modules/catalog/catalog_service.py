@@ -90,9 +90,13 @@ CREATE TABLE IF NOT EXISTS {schema}.collections (
 );
 """
 
-# metadata: stores all descriptive metadata for collections.
+# collection_metadata: stores all descriptive metadata for collections.
+# Renamed from {schema}.metadata in Phase 2 of the naming harmonisation
+# (items / collection / catalog / asset tier prefixes).  See
+# db_init/metadata_domain_split.rename_legacy_metadata_tables for the
+# idempotent migration that runs ahead of this CREATE TABLE.
 METADATA_DDL = """
-CREATE TABLE IF NOT EXISTS {schema}.metadata (
+CREATE TABLE IF NOT EXISTS {schema}.collection_metadata (
     collection_id VARCHAR NOT NULL PRIMARY KEY,
     title JSONB,
     description JSONB,
@@ -152,17 +156,29 @@ async def initialize_core_tenant_tables(conn: DbResource, schema: str, catalog_i
     # 1. Create Schema
     await ensure_schema_exists(conn, schema)
 
-    # 2. Core Tables (collections + metadata + tenant configs) under a single
-    # batch sentinel — warm path skips the whole thing in one round-trip.
-    await _build_tenant_core_ddl_batch(schema).execute(conn, schema=schema)
-    logger.info(f"Core tenant tables (collections, configs, metadata) initialized for {schema}.")
-
-    # 3. M2.0 — per-tenant metadata-domain split tables (metadata_core +
-    # metadata_stac).  Additive: coexists with the legacy {schema}.metadata
-    # table; no reads / writes change in M2.0.  Idempotent.
+    # 2. Phase 2 rename — move any existing {schema}.metadata* tables to
+    # their {schema}.collection_metadata* counterparts BEFORE the CREATE
+    # TABLE IF NOT EXISTS statements run.  Idempotent and a no-op on
+    # fresh schemas (DO block finds both source and target missing).
+    # Running the rename first guarantees that an existing tenant's data
+    # lands in the canonical table; a follow-up CREATE TABLE IF NOT EXISTS
+    # then observes the canonical table already present and does nothing.
     from dynastore.modules.catalog.db_init.metadata_domain_split import (
         ensure_tenant_metadata_domain_tables,
+        rename_legacy_metadata_tables,
     )
+    await rename_legacy_metadata_tables(conn, schema)
+
+    # 3. Core Tables (collections + collection_metadata + tenant configs) under
+    # a single batch sentinel — warm path skips the whole thing in one
+    # round-trip.
+    await _build_tenant_core_ddl_batch(schema).execute(conn, schema=schema)
+    logger.info(f"Core tenant tables (collections, configs, collection_metadata) initialized for {schema}.")
+
+    # 4. M2.0 — per-tenant metadata-domain split tables
+    # (collection_metadata_core + collection_metadata_stac).  Additive:
+    # coexists with the legacy {schema}.collection_metadata table; no
+    # reads / writes change in M2.0.  Idempotent.
     await ensure_tenant_metadata_domain_tables(conn, schema)
     logger.info(f"M2 metadata-domain split tables initialized for {schema}.")
 

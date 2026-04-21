@@ -551,7 +551,7 @@ class ItemsPostgresqlDriver(ModuleProtocol):
         import json
 
         schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
-        query_sql = f'SELECT * FROM "{schema}".metadata WHERE collection_id = :collection_id;'
+        query_sql = f'SELECT * FROM "{schema}".collection_metadata WHERE collection_id = :collection_id;'
 
         async def _query(conn):
             row = await DQLQuery(
@@ -606,7 +606,7 @@ class ItemsPostgresqlDriver(ModuleProtocol):
             return json.dumps(val, default=str)
 
         upsert_sql = f"""
-            INSERT INTO "{schema}".metadata
+            INSERT INTO "{schema}".collection_metadata
                 (collection_id, title, description, keywords, license,
                  extent, providers, summaries, links, assets, item_assets,
                  extra_metadata)

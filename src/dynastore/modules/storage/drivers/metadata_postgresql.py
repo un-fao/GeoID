@@ -61,7 +61,7 @@ METADATA_DRIVER_CONFIG_ID = "driver:collection:metadata:postgresql"
 class MetadataPostgresqlDriver:
     """PostgreSQL implementation of CollectionMetadataStore.
 
-    Uses the existing ``{schema}.metadata`` table for CRUD + search.
+    Uses the existing ``{schema}.collection_metadata`` table for CRUD + search.
     """
 
     capabilities: FrozenSet[str] = frozenset({
@@ -123,7 +123,7 @@ class MetadataPostgresqlDriver:
             if not phys_schema:
                 return None
 
-            sql = f'SELECT * FROM "{phys_schema}".metadata WHERE collection_id = :id;'
+            sql = f'SELECT * FROM "{phys_schema}".collection_metadata WHERE collection_id = :id;'
             row = await DQLQuery(
                 sql, result_handler=ResultHandler.ONE_DICT
             ).execute(conn, id=collection_id)
@@ -153,7 +153,7 @@ class MetadataPostgresqlDriver:
                 raise RuntimeError(f"No physical schema for catalog '{catalog_id}'")
 
             sql = f"""
-                INSERT INTO "{phys_schema}".metadata
+                INSERT INTO "{phys_schema}".collection_metadata
                     (collection_id, title, description, keywords, license,
                      links, assets, extent, providers, summaries, item_assets,
                      extra_metadata)
@@ -213,7 +213,7 @@ class MetadataPostgresqlDriver:
             if soft:
                 # Soft delete: set a deleted_at timestamp on the metadata row
                 sql = f"""
-                    UPDATE "{phys_schema}".metadata
+                    UPDATE "{phys_schema}".collection_metadata
                     SET extra_metadata = jsonb_set(
                         COALESCE(extra_metadata, '{{}}'::jsonb),
                         '{{_deleted_at}}',
@@ -222,7 +222,7 @@ class MetadataPostgresqlDriver:
                     WHERE collection_id = :id;
                 """
             else:
-                sql = f'DELETE FROM "{phys_schema}".metadata WHERE collection_id = :id;'
+                sql = f'DELETE FROM "{phys_schema}".collection_metadata WHERE collection_id = :id;'
 
             await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
                 conn, id=collection_id
@@ -266,7 +266,7 @@ class MetadataPostgresqlDriver:
             # Count query
             count_sql = (
                 f'SELECT COUNT(*) FROM "{phys_schema}".collections c '
-                f'LEFT JOIN "{phys_schema}".metadata m ON m.collection_id = c.id '
+                f'LEFT JOIN "{phys_schema}".collection_metadata m ON m.collection_id = c.id '
                 f'WHERE {where_sql};'
             )
             total = await DQLQuery(
@@ -279,7 +279,7 @@ class MetadataPostgresqlDriver:
                 f'm.links, m.assets, m.extent, m.providers, m.summaries, '
                 f'm.item_assets, m.extra_metadata '
                 f'FROM "{phys_schema}".collections c '
-                f'LEFT JOIN "{phys_schema}".metadata m ON m.collection_id = c.id '
+                f'LEFT JOIN "{phys_schema}".collection_metadata m ON m.collection_id = c.id '
                 f'WHERE {where_sql} '
                 f'ORDER BY c.created_at DESC LIMIT :limit OFFSET :offset;'
             )
@@ -326,9 +326,9 @@ class MetadataPostgresqlDriver:
         schema_name = schema or catalog_id
         return StorageLocation(
             backend="postgresql",
-            canonical_uri=f"postgresql://{schema_name}.metadata",
+            canonical_uri=f"postgresql://{schema_name}.collection_metadata",
             identifiers={"schema": schema_name, "table": "metadata"},
-            display_label=f"{schema_name}.metadata",
+            display_label=f"{schema_name}.collection_metadata",
         )
 
     @staticmethod

@@ -870,7 +870,7 @@ async def search_collections(
         union_queries.append(
             f'SELECT {_meta_cols} '
             f'FROM "{schema}".collections c '
-            f'LEFT JOIN "{schema}".metadata m ON m.collection_id = c.id '
+            f'LEFT JOIN "{schema}".collection_metadata m ON m.collection_id = c.id '
             f'WHERE {where_sql}'
         )
 

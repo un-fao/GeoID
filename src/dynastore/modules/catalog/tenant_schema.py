@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS {schema}.collections (
 """
 
 METADATA_DDL = """
-CREATE TABLE IF NOT EXISTS {schema}.metadata (
+CREATE TABLE IF NOT EXISTS {schema}.collection_metadata (
     collection_id VARCHAR NOT NULL PRIMARY KEY,
     title JSONB,
     description JSONB,
