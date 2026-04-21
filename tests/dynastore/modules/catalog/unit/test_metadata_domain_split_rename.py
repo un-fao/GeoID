@@ -148,50 +148,86 @@ def test_ddl_template_still_carries_placeholder_for_substitution():
 
 
 @pytest.mark.asyncio
-async def test_backfill_executes_two_insert_statements():
-    """One DDLQuery carries both CORE and STAC INSERT…SELECT statements."""
+async def test_backfill_ships_single_atomic_do_block():
+    """Backfill ships one PL/pgSQL DO block containing probe + both INSERTs.
+
+    Contract the DO block has to satisfy (verified structurally):
+
+    - A single ``DDLQuery`` / ``execute`` pair — probe and INSERTs no
+      longer cross a Python boundary, eliminating the probe-then-act
+      race the previous DQLQuery-then-DDLQuery shape allowed.
+    - ``LOCK TABLE catalog.catalogs IN ACCESS SHARE MODE`` at block
+      entry — blocks concurrent ``ALTER TABLE DROP COLUMN`` (which
+      requires ACCESS EXCLUSIVE) so M2.5b's drop serialises against
+      this backfill under multi-pod startup.
+    - ``IF EXISTS (… information_schema.columns …)`` guard keyed on
+      ``column_name = 'title'`` — no-op on post-M2.5b deployments.
+    - Both CORE and STAC INSERT-SELECTs wrapped in ``EXECUTE`` so PL/
+      pgSQL defers parsing until the IF branch runs — avoids
+      UndefinedColumn at DO-block entry when the columns are gone.
+    - Each INSERT carries ``ON CONFLICT (catalog_id) DO NOTHING`` so
+      repeat runs are idempotent and M2.2 post-backfill writes are
+      preserved.
+    """
     from dynastore.modules.catalog.db_init import metadata_domain_split as mod
 
     fake_ddl = AsyncMock()
     fake_ddl.execute = AsyncMock()
-    # The backfill first probes information_schema to see if the legacy
-    # columns still exist (M2.5b guard).  Return True → backfill proceeds.
-    probe_execute = AsyncMock(return_value=True)
-    with patch.object(mod, "DDLQuery", return_value=fake_ddl) as ddl_cls, \
-            patch.object(
-                mod._LEGACY_CATALOG_METADATA_COLUMN_PROBE, "execute", probe_execute,
-            ):
+    with patch.object(mod, "DDLQuery", return_value=fake_ddl) as ddl_cls:
         await mod.backfill_catalog_metadata_from_legacy(conn=AsyncMock())
 
     ddl_cls.assert_called_once()
     sql = ddl_cls.call_args.args[0]
-    # Both domain tables addressed in one statement bundle — single txn scope.
+
+    # One atomic DO block rather than separate probe + DDL round-trips.
+    assert sql.count("DO $backfill$") == 1
+    assert "LOCK TABLE catalog.catalogs IN ACCESS SHARE MODE" in sql
+
+    # Probe runs inside the block — no separate DQLQuery round-trip.
+    assert "information_schema.columns" in sql
+    assert "column_name  = 'title'" in sql or "column_name = 'title'" in sql
+
+    # Dynamic EXECUTE defers INSERT parsing until the column-existence
+    # check passes; two INSERTs, one per domain.
+    assert sql.count("EXECUTE $q$") == 2
     assert "catalog.catalog_metadata_core" in sql
     assert "catalog.catalog_metadata_stac" in sql
-    # Each INSERT guarded against overwriting existing rows (M2.2 post-backfill
-    # writes must not be clobbered by stale legacy data).
+
+    # Idempotency clauses on both INSERTs.
     assert sql.count("ON CONFLICT (catalog_id) DO NOTHING") == 2
-    # SELECT targets legacy columns on catalog.catalogs for both domains.
+
+    # SELECT targets the legacy columns on catalog.catalogs.
     assert "FROM catalog.catalogs" in sql
 
 
 @pytest.mark.asyncio
-async def test_backfill_skips_on_post_m2_5b_deployment():
-    """After M2.5b drops the legacy columns, the probe returns False → no-op backfill."""
+async def test_backfill_noop_on_post_m2_5b_is_db_side():
+    """Post-M2.5b the no-op behaviour moves INTO the DO block.
+
+    Previously the probe was a Python-side DQLQuery that short-circuited
+    the DDLQuery call — which we could assert by patching the probe's
+    ``execute`` to return False.  With the atomic DO block, there is no
+    Python-side branch to assert; the IF EXISTS check lives in PL/pgSQL
+    and the outer call always issues exactly one DDLQuery.  What we
+    CAN still assert is that the SQL contains the guard so the skip
+    happens on the DB side — and that the outer function path is
+    unconditional (one DDLQuery per invocation, no probe query).
+    """
     from dynastore.modules.catalog.db_init import metadata_domain_split as mod
 
-    probe_execute = AsyncMock(return_value=False)
     fake_ddl = AsyncMock()
     fake_ddl.execute = AsyncMock()
-
-    with patch.object(mod, "DDLQuery", return_value=fake_ddl) as ddl_cls, \
-            patch.object(
-                mod._LEGACY_CATALOG_METADATA_COLUMN_PROBE, "execute", probe_execute,
-            ):
+    with patch.object(mod, "DDLQuery", return_value=fake_ddl) as ddl_cls:
         await mod.backfill_catalog_metadata_from_legacy(conn=AsyncMock())
 
-    probe_execute.assert_awaited_once()
-    ddl_cls.assert_not_called()  # no INSERT-SELECT issued post-drop
+    ddl_cls.assert_called_once()
+    sql = ddl_cls.call_args.args[0]
+    # The guard IS the skip mechanism — present in every invocation.
+    assert "IF EXISTS" in sql
+    assert "information_schema.columns" in sql
+    # No Python-side probe module member — the atomic refactor removed
+    # the separate DQLQuery.
+    assert not hasattr(mod, "_LEGACY_CATALOG_METADATA_COLUMN_PROBE")
 
 
 @pytest.mark.asyncio
@@ -217,25 +253,29 @@ async def test_drop_legacy_catalog_metadata_columns_issues_alter():
         )
 
 
-@pytest.mark.asyncio
-async def test_backfill_select_filters_rows_lacking_all_columns():
-    """CORE backfill must skip catalogs with no CORE metadata at all.
+def test_backfill_select_filters_rows_lacking_all_columns():
+    """Backfill must skip catalogs with no metadata at all, per domain.
 
-    Without the WHERE filter, every catalog would receive a row of NULLs
-    in ``catalog_metadata_core`` — logically correct but bloats the table
-    and hides the "genuinely empty" vs "migrated empty" distinction.
+    Without a WHERE filter, every catalog would receive a row of NULLs
+    in ``catalog_metadata_core`` / ``_stac`` — logically correct but
+    bloats the table and hides the "genuinely empty" vs "migrated
+    empty" distinction.
+
+    Both INSERTs now live inside a single DO block
+    (``_BACKFILL_CATALOG_METADATA_DDL``); we assert the expected
+    ``{col} IS NOT NULL`` guards are present in the block.
     """
     from dynastore.modules.catalog.db_init.metadata_domain_split import (
-        _BACKFILL_CATALOG_CORE_DDL, _BACKFILL_CATALOG_STAC_DDL,
+        _BACKFILL_CATALOG_METADATA_DDL,
     )
 
-    for label, sql, columns in [
-        ("CORE", _BACKFILL_CATALOG_CORE_DDL,
+    sql = _BACKFILL_CATALOG_METADATA_DDL
+    for label, columns in [
+        ("CORE",
          ("title", "description", "keywords", "license", "extra_metadata")),
-        ("STAC", _BACKFILL_CATALOG_STAC_DDL,
+        ("STAC",
          ("stac_version", "stac_extensions", "conforms_to", "links", "assets")),
     ]:
-        assert "WHERE" in sql, f"{label} backfill lacks a WHERE filter"
         for col in columns:
             assert f"{col} IS NOT NULL" in sql, (
                 f"{label} backfill doesn't guard on {col!r}; every legacy "
@@ -253,15 +293,15 @@ def test_backfill_columns_align_with_split_ddl():
     """
     from dynastore.modules.catalog.db_init.metadata_domain_split import (
         CATALOG_METADATA_CORE_DDL, CATALOG_METADATA_STAC_DDL,
-        _BACKFILL_CATALOG_CORE_DDL, _BACKFILL_CATALOG_STAC_DDL,
+        _BACKFILL_CATALOG_METADATA_DDL,
     )
 
-    for ddl, backfill, non_id in [
-        (CATALOG_METADATA_CORE_DDL, _BACKFILL_CATALOG_CORE_DDL,
+    for ddl, non_id in [
+        (CATALOG_METADATA_CORE_DDL,
          ("title", "description", "keywords", "license", "extra_metadata")),
-        (CATALOG_METADATA_STAC_DDL, _BACKFILL_CATALOG_STAC_DDL,
+        (CATALOG_METADATA_STAC_DDL,
          ("stac_version", "stac_extensions", "conforms_to", "links", "assets")),
     ]:
         for col in non_id:
             assert col in ddl
-            assert col in backfill
+            assert col in _BACKFILL_CATALOG_METADATA_DDL

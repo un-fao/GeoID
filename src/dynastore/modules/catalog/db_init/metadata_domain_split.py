@@ -56,29 +56,11 @@ import logging
 
 from dynastore.modules.db_config.query_executor import (
     DDLQuery,
-    DQLQuery,
     DbResource,
-    ResultHandler,
 )
 from dynastore.tools.db import validate_sql_identifier
 
 logger = logging.getLogger(__name__)
-
-
-# Used by :func:`backfill_catalog_metadata_from_legacy` to detect whether
-# the legacy metadata columns are still present on ``catalog.catalogs``.
-# After M2.5b's drop, the backfill's INSERT-SELECT would raise
-# UndefinedColumn; checking with ``information_schema.columns`` first
-# keeps the call a no-op on post-M2.5b deployments.
-_LEGACY_CATALOG_METADATA_COLUMN_PROBE = DQLQuery(
-    "SELECT EXISTS("
-    "  SELECT 1 FROM information_schema.columns "
-    "  WHERE table_schema = 'catalog' "
-    "    AND table_name = 'catalogs' "
-    "    AND column_name = 'title'"
-    ");",
-    result_handler=ResultHandler.SCALAR,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -235,46 +217,76 @@ async def ensure_global_metadata_domain_tables(conn: DbResource) -> None:
 # One-shot backfill: legacy catalog.catalogs columns → split tables (M2.3a)
 # ---------------------------------------------------------------------------
 
-# INSERT ... SELECT that copies CORE metadata from catalog.catalogs into
-# catalog.catalog_metadata_core for every catalog that has at least one
-# CORE column set.  ``ON CONFLICT (catalog_id) DO NOTHING`` ensures:
+# Atomic probe-and-backfill inside a single PL/pgSQL DO block.
 #
-# - Idempotency: repeat runs are no-ops (rows already present).
-# - Safety against clobbering: if M2.2's ``_pg_catalog_core_init`` already
-#   populated a row for a catalog created after M2.2 landed, the backfill
-#   must not overwrite that (newer) data with the legacy row.
+# Why the DO block: the previous two-step form (DQLQuery probe followed
+# by DDLQuery INSERT-SELECT) had a probe-then-act race under multi-pod
+# startup — during the M2.5b rollout, pod-A could observe the legacy
+# columns as present, pod-B could drop them, then pod-A's INSERT-SELECT
+# would fail with ``UndefinedColumn`` mid-run.  Collapsing probe + write
+# into one DO block makes the operation a single transaction: pod-A
+# holds the ACCESS SHARE lock on catalog.catalogs for the duration, so
+# pod-B's ALTER TABLE DROP COLUMN (which needs ACCESS EXCLUSIVE) waits
+# until pod-A commits.
 #
-# Runs inside the same transaction as ``ensure_global_metadata_domain_tables``
-# — a failure rolls the entire M2.0 DDL application back, leaving the
-# deployment at its pre-M2 shape.
-_BACKFILL_CATALOG_CORE_DDL = """
-INSERT INTO catalog.catalog_metadata_core
-    (catalog_id, title, description, keywords, license, extra_metadata)
-SELECT
-    id, title, description, keywords, license, extra_metadata
-FROM catalog.catalogs
-WHERE
-    title IS NOT NULL
-    OR description IS NOT NULL
-    OR keywords IS NOT NULL
-    OR license IS NOT NULL
-    OR extra_metadata IS NOT NULL
-ON CONFLICT (catalog_id) DO NOTHING;
-"""
+# Why dynamic ``EXECUTE`` around each INSERT: PL/pgSQL parses every
+# static SQL statement inside a DO block at block-entry time.  If the
+# legacy columns (``title`` etc.) are already dropped, a static
+# ``INSERT … SELECT title …`` would fail with ``UndefinedColumn``
+# BEFORE the ``IF EXISTS`` check runs — defeating the point of the
+# probe.  ``EXECUTE`` with a dollar-quoted literal defers parsing to
+# the moment the IF branch actually runs; if the columns are absent we
+# never execute the string, so we never parse it.
+#
+# ``ON CONFLICT (catalog_id) DO NOTHING`` guarantees idempotency:
+# repeat runs are no-ops (rows already present); post-M2.2 rows written
+# by the lifecycle hooks are not clobbered by stale legacy data.
+_BACKFILL_CATALOG_METADATA_DDL = """
+DO $backfill$
+BEGIN
+    -- ACCESS SHARE conflicts with ACCESS EXCLUSIVE (held by ALTER TABLE
+    -- DROP COLUMN) but not with other readers.  If M2.5b's drop is in
+    -- flight on another pod, one side waits for the other to commit.
+    LOCK TABLE catalog.catalogs IN ACCESS SHARE MODE;
 
-_BACKFILL_CATALOG_STAC_DDL = """
-INSERT INTO catalog.catalog_metadata_stac
-    (catalog_id, stac_version, stac_extensions, conforms_to, links, assets)
-SELECT
-    id, stac_version, stac_extensions, conforms_to, links, assets
-FROM catalog.catalogs
-WHERE
-    stac_version IS NOT NULL
-    OR stac_extensions IS NOT NULL
-    OR conforms_to IS NOT NULL
-    OR links IS NOT NULL
-    OR assets IS NOT NULL
-ON CONFLICT (catalog_id) DO NOTHING;
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'catalog'
+          AND table_name   = 'catalogs'
+          AND column_name  = 'title'
+    ) THEN
+        EXECUTE $q$
+            INSERT INTO catalog.catalog_metadata_core
+                (catalog_id, title, description, keywords, license, extra_metadata)
+            SELECT
+                id, title, description, keywords, license, extra_metadata
+            FROM catalog.catalogs
+            WHERE
+                title IS NOT NULL
+                OR description IS NOT NULL
+                OR keywords IS NOT NULL
+                OR license IS NOT NULL
+                OR extra_metadata IS NOT NULL
+            ON CONFLICT (catalog_id) DO NOTHING
+        $q$;
+
+        EXECUTE $q$
+            INSERT INTO catalog.catalog_metadata_stac
+                (catalog_id, stac_version, stac_extensions, conforms_to, links, assets)
+            SELECT
+                id, stac_version, stac_extensions, conforms_to, links, assets
+            FROM catalog.catalogs
+            WHERE
+                stac_version IS NOT NULL
+                OR stac_extensions IS NOT NULL
+                OR conforms_to IS NOT NULL
+                OR links IS NOT NULL
+                OR assets IS NOT NULL
+            ON CONFLICT (catalog_id) DO NOTHING
+        $q$;
+    END IF;
+END
+$backfill$;
 """
 
 
@@ -332,42 +344,30 @@ async def backfill_catalog_metadata_from_legacy(conn: DbResource) -> None:
     One-shot migration for deployments that predate M2.0.  After this
     runs once, subsequent catalog writes land in the split tables via
     the M2.2 ``init_catalog_metadata`` lifecycle hooks; readers in M2.4+
-    will pull from the split tables first.
+    pull from the split tables first.
 
-    Both INSERTs use ``ON CONFLICT (catalog_id) DO NOTHING`` so:
+    The call ships a single ``DO $$ … $$`` PL/pgSQL block that:
 
-    - Re-running the backfill is free — already-migrated rows are
-      skipped in the unique-key check; no UPDATE runs.
-    - Rows that M2.2 wrote post-backfill are preserved; the backfill
-      will not clobber newer writes with stale legacy data.
+    1. Takes ``ACCESS SHARE`` on ``catalog.catalogs`` for the duration
+       of the transaction.  M2.5b's ``DROP COLUMN`` needs ``ACCESS
+       EXCLUSIVE`` and therefore waits for this block to commit — no
+       race between probe and INSERT under multi-pod startup.
+    2. Probes ``information_schema.columns`` for the ``title`` column
+       (canary for the full legacy column set).  If absent (post-M2.5b
+       deployment), the INSERTs are skipped — this function is safe to
+       call on every boot.
+    3. Runs two ``INSERT … SELECT … ON CONFLICT DO NOTHING`` statements
+       inside the IF branch via ``EXECUTE`` so the parser only touches
+       legacy column names when they are actually there.  Both INSERTs
+       share the DO block's transaction scope — partial backfills are
+       impossible.
 
-    The two INSERTs share a single ``DDLQuery`` call so they run under
-    the same transaction scope — either both land or neither does.
-    This matters because a partial backfill would leave a catalog with
-    CORE migrated but STAC missing (or vice-versa), and the router's
-    M2.4 read flip would return incoherent envelopes.
-
-    Post-M2.5b guard
-    ----------------
-    :func:`drop_legacy_catalog_metadata_columns` removes the legacy
-    metadata columns from ``catalog.catalogs`` once the data has been
-    copied.  After that drop, the INSERT-SELECT below would fail with
-    ``UndefinedColumn`` — so we probe ``information_schema`` first and
-    skip when ``title`` (canary for the full legacy column set) is
-    absent.  Net effect: the backfill is a no-op on any post-M2.5b
-    deployment, letting this function stay in the boot sequence
-    without special-casing.
+    Idempotency: re-runs after a successful backfill find the target
+    rows already present and the ``ON CONFLICT DO NOTHING`` turns each
+    statement into a no-op.  Re-runs after M2.5b's column drop skip
+    the INSERTs entirely via the ``IF EXISTS`` check.
     """
-    legacy_columns_exist = await _LEGACY_CATALOG_METADATA_COLUMN_PROBE.execute(conn)
-    if not legacy_columns_exist:
-        logger.debug(
-            "Skipping catalog.catalogs → split-table backfill: legacy "
-            "metadata columns have already been dropped (M2.5b)."
-        )
-        return
-    await DDLQuery(
-        _BACKFILL_CATALOG_CORE_DDL + _BACKFILL_CATALOG_STAC_DDL
-    ).execute(conn)
+    await DDLQuery(_BACKFILL_CATALOG_METADATA_DDL).execute(conn)
 
 
 async def rename_legacy_metadata_tables(conn: DbResource, schema: str) -> None:
