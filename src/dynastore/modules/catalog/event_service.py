@@ -194,6 +194,16 @@ class CatalogEventType(EventType):
     CATALOG_METADATA_CHANGED = define_event(
         "catalog_metadata_changed", EventScope.PLATFORM
     )
+    # ⚠ Forward declaration — NO emitter on this branch.
+    # COLLECTION_METADATA_CHANGED is registered here so
+    # ``CatalogRoutingConfig`` + ``ReindexWorker`` can reference it
+    # without a circular-import workaround, but no code path currently
+    # emits it.  The collection-tier equivalent of the catalog-tier
+    # M3.0 work (event emission from the split-table router) was NOT
+    # delivered on this branch — see the CollectionCorePostgresqlDriver
+    # docstring warnings + the scope-cut tracker for the follow-up.
+    # Until an emitter exists, listeners registered against this event
+    # will never fire — they are not an accidental production coupling.
     COLLECTION_METADATA_CHANGED = define_event(
         "collection_metadata_changed", EventScope.CATALOG
     )

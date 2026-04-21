@@ -35,12 +35,21 @@ Resolution policy
 -----------------
 
 Resolves drivers by scanning every registered
-:class:`CatalogMetadataStore` via ``get_protocols()``.  Routing-
-config-driven resolution (per-catalog overrides) will land when the
-``CatalogRoutingConfig`` apply-handler tests settle in M2.4+; for now
-the router uses the discovered driver set directly, which matches the
-M2.3a backfill's assumption that both CORE and STAC tables are always
-populated for catalogs that need them.
+:class:`CatalogMetadataStore` via ``get_protocols()``.  This discovery-
+only path is deliberate for the WRITE / READ / DELETE operations
+exposed here: the M2.3a backfill assumes both CORE and STAC tables
+are always populated for catalogs that need them, and fan-out across
+every discovered driver satisfies that assumption regardless of
+per-catalog routing config.  Callers that need a filtered subset
+(e.g. dry-run tooling) inject ``drivers=`` explicitly.
+
+Per-catalog routing-config overrides live on a different code path:
+:func:`dynastore.modules.catalog.reindex_worker._resolve_catalog_indexers`
+queries ``CatalogRoutingConfig`` through the ``ConfigsProtocol`` 4-tier
+waterfall for INDEX entries.  The WRITE / READ / DELETE router
+deliberately does NOT honour per-catalog overrides — routing-config
+overrides of the canonical Primary store would split writes across
+drivers with inconsistent schemas, which is explicitly not supported.
 
 Failure policy
 --------------

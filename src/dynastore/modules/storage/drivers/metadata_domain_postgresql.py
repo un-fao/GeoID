@@ -432,6 +432,27 @@ class CollectionCorePostgresqlDriver(_CollectionMetadataDomainBase):
     Backs ``{schema}.collection_metadata_core``.  Declares ``SEARCH`` because
     CORE fields carry the human-readable text the ``/search?q=…`` endpoint
     matches against.
+
+    .. warning::
+
+        **Not active in the default write / read path.**  The collection
+        tier equivalent of the catalog-tier M2.2–M2.5 work (lifecycle
+        hooks, one-shot backfill, router read-flip, legacy column drop)
+        was NOT delivered on this branch.  The default
+        :class:`CollectionRoutingConfig.metadata.operations[WRITE]` still
+        routes to :class:`MetadataPostgresqlDriver` → ``{schema}.collection_metadata``.
+
+        This driver and its ``{schema}.collection_metadata_core`` table
+        are infrastructure-only: the class + DDL exist so the tier's
+        future activation is a config flip rather than a code change,
+        but enabling them today (by overriding the routing config) will
+        leave new writes in the split tables while reads still consume
+        the legacy monolithic table — a mixed state that silently returns
+        stale data.
+
+        Do NOT override the collection-tier routing config to point here
+        until the collection-tier M2.2–M2.5 milestones ship.  See the
+        scope-cut tracker issue (TODO: reference) for the follow-up plan.
     """
 
     _table: ClassVar[str] = "collection_metadata_core"
@@ -507,6 +528,14 @@ class CollectionStacPostgresqlDriver(_CollectionMetadataDomainBase):
     Backs ``{schema}.collection_metadata_stac``.  Declares ``SPATIAL_FILTER``
     because the ``extent`` column carries the STAC bbox the spatial-filter
     endpoints match against.
+
+    .. warning::
+
+        **Not active in the default write / read path** — see the
+        analogous warning on :class:`CollectionCorePostgresqlDriver`.
+        The collection-tier M2.2–M2.5 milestones that would activate
+        this driver were NOT delivered on this branch; do not enable
+        via routing-config override until they ship.
     """
 
     _table: ClassVar[str] = "collection_metadata_stac"

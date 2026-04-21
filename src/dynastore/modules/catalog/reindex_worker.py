@@ -137,19 +137,25 @@ class ReindexWorker:
     def __init__(
         self,
         *,
-        resolve_indexers: Optional[Callable[[], List[Tuple[OperationDriverEntry, CatalogMetadataStore]]]] = None,
+        resolve_indexers: Optional[Callable[..., Any]] = None,
         get_catalog_metadata: Optional[Callable[..., Any]] = None,
     ) -> None:
         """
         Args:
             resolve_indexers: Callable returning
-                ``List[Tuple[OperationDriverEntry, CatalogMetadataStore]]``
-                — the (entry, driver) pairs configured for
-                ``CatalogRoutingConfig.metadata.operations[INDEX]``.
-                Defaults to :func:`_resolve_catalog_indexers` which
-                reads from the live CatalogRoutingConfig + registered
-                drivers.  Tests inject a canned list to bypass
-                discovery.
+                ``List[Tuple[OperationDriverEntry, CatalogMetadataStore]]``.
+
+                May be either SYNC (``() -> List[...]``) or ASYNC
+                (``async def resolve(*, catalog_id=None) -> List[...]``).
+                :func:`_resolve_catalog_indexers` — the production
+                default — is async because it queries
+                ``ConfigsProtocol`` through the 4-tier waterfall and
+                honours per-catalog INDEX overrides.  Tests that don't
+                need the waterfall can inject a simple synchronous
+                lambda returning a canned list.
+
+                :meth:`_handle_one` detects the shape via
+                ``inspect.iscoroutinefunction`` and awaits when needed.
             get_catalog_metadata: Hydration callable used to fetch the
                 current envelope for a mutated catalog.  Defaults to
                 the catalog-tier router's ``get_catalog_metadata``.
@@ -230,8 +236,23 @@ class ReindexWorker:
                 errors=["missing catalog_id"],
             )
 
+        indexers: List[Tuple[OperationDriverEntry, CatalogMetadataStore]]
         try:
-            indexers = self._resolve_indexers()
+            # ``resolve_indexers`` may be sync (test-injected callable)
+            # or async (production — ``_resolve_catalog_indexers`` awaits
+            # ``ConfigsProtocol.get_config`` for per-catalog overrides).
+            # ``inspect.iscoroutinefunction`` distinguishes the two
+            # without requiring callers to always pass coroutines.
+            import inspect
+
+            if inspect.iscoroutinefunction(self._resolve_indexers):
+                indexers = await self._resolve_indexers(catalog_id=catalog_id)
+            else:
+                raw = self._resolve_indexers()
+                # Sync path returns the list directly; the type-checker
+                # can't narrow the Callable[..., Any] in __init__, so
+                # cast here.
+                indexers = raw  # type: ignore[assignment]
         except Exception as exc:  # noqa: BLE001 — surface as per-event NACK
             logger.warning(
                 "ReindexWorker: Indexer resolution failed for %s: %s",
@@ -276,6 +297,25 @@ class ReindexWorker:
         fatal_errors: List[str] = []
         degraded_errors: List[str] = []
         for entry, driver in indexers:
+            # F3 — surface the transformed=True gap: M3.1 does not
+            # implement the TRANSFORM chain.  An entry that asks for
+            # the transformed envelope silently gets the raw one,
+            # which could look correct at unit-test time and then
+            # diverge in production.  Log a WARNING per-event so the
+            # gap is visible; feeding raw instead of transformed is
+            # still the best-available behaviour (ACK the event so
+            # the outbox doesn't stall), but the operator needs to
+            # know their routing-config directive is not honoured.
+            if getattr(entry, "transformed", False):
+                logger.warning(
+                    "ReindexWorker: CatalogRoutingConfig INDEX entry %r "
+                    "requested transformed=True but the TRANSFORM chain "
+                    "is not implemented yet (M3.1 only supports raw "
+                    "envelopes) — dispatching the raw envelope for "
+                    "catalog_id=%s.  Remove ``transformed=True`` from "
+                    "the routing config or wait for a future milestone.",
+                    entry.driver_id, catalog_id,
+                )
             outcome = await self._dispatch_one(
                 entry=entry,
                 driver=driver,
@@ -417,24 +457,54 @@ def _apply_sla_policy(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_catalog_indexers() -> List[
-    Tuple[OperationDriverEntry, CatalogMetadataStore]
-]:
+async def _resolve_catalog_indexers(
+    *,
+    catalog_id: Optional[str] = None,
+) -> List[Tuple[OperationDriverEntry, CatalogMetadataStore]]:
     """Return the (entry, driver) pairs configured under INDEX for catalogs.
 
-    Reads the live ``CatalogRoutingConfig`` default (no platform
-    override support in M3.1 — that's straightforward to add later by
-    threading ``catalog_id`` + ``ConfigsProtocol.get_config`` here).
+    Resolution order mirrors the collection-tier router
+    (:mod:`dynastore.modules.catalog.metadata_router._resolve_metadata_driver_ids`):
+
+    1. If ``ConfigsProtocol`` is registered, read
+       ``CatalogRoutingConfig`` for the given ``catalog_id`` through the
+       4-tier waterfall (collection > catalog > platform > code).  This
+       is the path operators use to add / override INDEX entries at
+       runtime.
+    2. On lookup failure (``ConfigsProtocol`` unavailable, config-service
+       down, catalog_id absent), fall back to the code-level default
+       :class:`CatalogRoutingConfig()` — which today carries no INDEX
+       entries, so the worker becomes a no-op rather than crashing.
+
     Filters to driver_ids that are actually registered via
     ``get_protocols(CatalogMetadataStore)``; unregistered entries are
     logged and dropped.
     """
-    from dynastore.tools.discovery import get_protocols
+    from dynastore.tools.discovery import get_protocol, get_protocols
 
-    cfg = CatalogRoutingConfig()
-    entries: List[OperationDriverEntry] = list(
-        cfg.operations.get(Operation.INDEX, [])
-    )
+    entries: List[OperationDriverEntry] = []
+    try:
+        from dynastore.models.protocols.configs import ConfigsProtocol
+
+        configs = get_protocol(ConfigsProtocol)
+        if configs is not None:
+            routing_config = await configs.get_config(
+                CatalogRoutingConfig, catalog_id=catalog_id,
+            )
+            entries = list(
+                routing_config.operations.get(Operation.INDEX, [])
+            )
+    except Exception as exc:  # noqa: BLE001 — diagnostic fallback
+        logger.debug(
+            "CatalogRoutingConfig platform-override lookup failed for "
+            "catalog_id=%r: %s — falling back to code-level default",
+            catalog_id, exc,
+        )
+
+    if not entries:
+        # Fall back to the code-level default — currently empty for INDEX.
+        cfg = CatalogRoutingConfig()
+        entries = list(cfg.operations.get(Operation.INDEX, []))
     if not entries:
         return []
 

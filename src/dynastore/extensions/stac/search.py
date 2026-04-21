@@ -859,6 +859,17 @@ async def search_collections(
     where_sql = " AND ".join(where_clauses)
 
     # Each subquery JOINs the separate metadata table (collections has no metadata column).
+    #
+    # M2.0 note — load-bearing for the collection-tier split (future M2.2+):
+    # this query reads from ``{schema}.collection_metadata`` (the legacy
+    # monolithic table) which is still the canonical write target for
+    # collection metadata on this branch.  When collection-tier M2.2–M2.5
+    # ships (parallel to the catalog-tier work in M2.2-M2.5 on this
+    # branch), the JOIN must be replaced with a two-way LEFT JOIN against
+    # ``collection_metadata_core`` (title, description, keywords, license,
+    # extra_metadata) + ``collection_metadata_stac`` (links, assets,
+    # extent, providers, summaries, item_assets).  Until that happens
+    # the legacy table remains authoritative and this query is correct.
     _meta_cols = (
         "c.id, c.catalog_id, "
         "m.title, m.description, m.keywords, m.license, "
