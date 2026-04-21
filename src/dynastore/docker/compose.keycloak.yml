@@ -1,0 +1,35 @@
+# Base keycloak service fragment. Does NOT include the realm-export bind
+# mount — that is repo-specific (each consumer picks its own realm JSON).
+# Downstream compose files add:
+#   volumes:
+#     - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+# if they want the --import-realm behaviour.
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.6
+    restart: always
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:-gis_dev}
+      KC_DB_USERNAME: ${POSTGRES_USER:-postgres}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      KC_DB_SCHEMA: keycloak
+      KC_DB_POOL_INITIAL_SIZE: "5"
+      KC_DB_POOL_MIN_SIZE: "5"
+      KC_DB_POOL_MAX_SIZE: "15"
+      KC_DB_POOL_ACQUIRE_TIMEOUT_MILLIS: "30000"
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+    command: start-dev --import-realm --health-enabled=true
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080 && echo -e 'GET /realms/master HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q '200'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 90s

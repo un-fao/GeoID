@@ -23,7 +23,7 @@ services:
   db:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.db
+      dockerfile: src/dynastore/docker/Dockerfile.db
     container_name: geoid_db
     restart: always
     env_file: .env

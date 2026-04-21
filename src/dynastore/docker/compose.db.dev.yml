@@ -1,0 +1,26 @@
+# Dev override for db: exposes 54320 for host psql, mounts the SSOT scripts
+# directory, runs db_entrypoint_dev.sh to apply RESET_MODE=default on boot.
+# The reset-done healthcheck waits for /tmp/reset_done before reporting healthy.
+#
+# `../scripts:/scripts:ro` resolves relative to THIS file's directory per
+# Compose's extends rules → src/dynastore/scripts/ (the SSOT scripts dir).
+
+services:
+  db:
+    extends:
+      file: compose.db.yml
+      service: db
+    ports:
+      - "54320:5432"
+    environment:
+      RESET_MODE: default
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../scripts:/scripts:ro
+    entrypoint: ["bash", "/scripts/db_entrypoint_dev.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/reset_done && psql -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-gis_dev} -c 'SELECT 1' -q --no-align --tuples-only"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s

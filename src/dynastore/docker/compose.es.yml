@@ -1,0 +1,21 @@
+# Base elasticsearch (OpenSearch) service fragment.
+# OpenSearch 2.x is Apache 2.0 — drop-in replacement for the ES REST API,
+# avoiding Elastic's SSPL/ELv2 licensing.
+
+services:
+  elasticsearch:
+    image: opensearchproject/opensearch:2.17.0
+    restart: always
+    environment:
+      - discovery.type=single-node
+      - DISABLE_SECURITY_PLUGIN=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s

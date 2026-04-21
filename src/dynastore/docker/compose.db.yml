@@ -1,0 +1,31 @@
+# Base db service fragment — consumed via `extends:` by downstream composes.
+# Ships as package data so downstream wrappers can resolve it from either a
+# sibling-repo checkout or a pip install (site-packages/dynastore/docker/).
+#
+# Build context is the fragment's own directory, so Dockerfile.db (a sibling
+# of this file) resolves the same way in either location.
+#
+# The consumer is expected to supply: .env, postgres_data named volume,
+# top-level network. The fragment deliberately omits container_name so each
+# consumer can set its own (catalog_db, geoid_db, ...).
+
+services:
+  db:
+    build:
+      context: .
+      dockerfile: Dockerfile.db
+    restart: always
+    env_file: .env
+    command: >-
+      postgres -c max_connections=500 -c max_locks_per_transaction=256
+      -c shared_preload_libraries=pg_cron
+      -c cron.database_name=${POSTGRES_DB:-gis_dev}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-gis_dev}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
