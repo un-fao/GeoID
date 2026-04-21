@@ -1,31 +1,25 @@
 services:
   db:
     extends:
-      file: docker-compose.yml
+      file: ../src/dynastore/docker/compose.db.test.yml
       service: db
-    ports:
-      - "54320:5432"
-    environment:
-      RESET_MODE: keycloak # test tier: truncate keycloak tables so each stack gets a fresh realm/users import
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ../src/dynastore/scripts:/scripts:ro # SSOT: package-data scripts travel with the pip install
-    entrypoint: ["bash", "/scripts/db_entrypoint_dev.sh"]
-    command: >-
-      postgres -c max_connections=200 -c max_locks_per_transaction=256
-      -c shared_preload_libraries=pg_cron
-      -c cron.database_name=${POSTGRES_DB:-gis_dev}
-    healthcheck:
-      test: [ "CMD-SHELL", "test -f /tmp/reset_done && psql -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-gis_dev} -c 'SELECT 1' -q --no-align --tuples-only" ]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-      start_period: 15s
+    container_name: geoid_db_test
+    env_file: .env
+    networks:
+      - dynastore_net
 
   keycloak:
     extends:
-      file: docker-compose.yml
+      file: ../src/dynastore/docker/compose.keycloak.yml
       service: keycloak
+    container_name: geoid_keycloak_test
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - dynastore_net
 
   catalog:
     extends:

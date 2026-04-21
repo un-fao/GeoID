@@ -1,33 +1,28 @@
 services:
   db:
     extends:
-      file: docker-compose.yml
+      file: ../src/dynastore/docker/compose.db.dev.yml
       service: db
-    ports:
-      - "54320:5432" # Expose DB locally for dev tools
-    environment:
-      RESET_MODE: default # boot-tier reset; preserves keycloak tables between dev restarts
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ../src/dynastore/scripts:/scripts:ro # SSOT: package-data scripts travel with the pip install
-    entrypoint: ["bash", "/scripts/db_entrypoint_dev.sh"]
-    command: >-
-      postgres -c max_connections=500 -c max_locks_per_transaction=256
-      -c shared_preload_libraries=pg_cron
-      -c cron.database_name=${POSTGRES_DB:-gis_dev}
-    healthcheck:
-      test: [ "CMD-SHELL", "test -f /tmp/reset_done && psql -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-gis_dev} -c 'SELECT 1' -q --no-align --tuples-only" ]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-      start_period: 15s
+    container_name: geoid_db
+    env_file: .env
+    networks:
+      - dynastore_net
 
   keycloak:
     extends:
-      file: docker-compose.yml
+      file: ../src/dynastore/docker/compose.keycloak.dev.yml
       service: keycloak
-    environment:
-      KC_PROXY_HEADERS: xforwarded
+    container_name: geoid_keycloak
+    # Preserve the realm import (fragment deliberately omits this so each
+    # consumer picks its own realm JSON); geoid's dev stack uses the
+    # in-repo realm export.
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - dynastore_net
 
   catalog:
     extends:
@@ -175,17 +170,21 @@ services:
 
   elasticsearch:
     extends:
-      file: docker-compose.yml
+      file: ../src/dynastore/docker/compose.es.dev.yml
       service: elasticsearch
-    ports:
-      - "9200:9200"
+    container_name: geoid_elasticsearch
+    networks:
+      - dynastore_net
 
   kibana:
     extends:
-      file: docker-compose.yml
+      file: ../src/dynastore/docker/compose.kibana.dev.yml
       service: kibana
-    ports:
-      - "5601:5601"
+    container_name: geoid_kibana
+    depends_on:
+      - elasticsearch
+    networks:
+      - dynastore_net
 
 volumes:
   postgres_data:

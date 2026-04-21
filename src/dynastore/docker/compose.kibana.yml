@@ -1,0 +1,15 @@
+# Base kibana (OpenSearch Dashboards) service fragment.
+# SERVER_BASEPATH=/dashboards is set so the geoid reverse-proxy
+# (extensions/logs/dashboards_proxy.py) can mount same-origin on the
+# geoid ingress without path rewriting.
+
+services:
+  kibana:
+    image: opensearchproject/opensearch-dashboards:2.17.0
+    restart: always
+    environment:
+      - OPENSEARCH_HOSTS=http://elasticsearch:9200
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+      - SERVER_BASEPATH=/dashboards
+      - SERVER_REWRITEBASEPATH=true
+    stop_grace_period: 30s

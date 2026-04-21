@@ -21,24 +21,13 @@
 
 services:
   db:
-    build:
-      context: ..
-      dockerfile: src/dynastore/docker/Dockerfile.db
+    extends:
+      file: ../src/dynastore/docker/compose.db.yml
+      service: db
     container_name: geoid_db
-    restart: always
     env_file: .env
-    command: postgres -c max_connections=500 -c max_locks_per_transaction=256 -c shared_preload_libraries='pg_cron' -c cron.database_name='${POSTGRES_DB:-gis_dev}'
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
     networks:
       - dynastore_net
-    stop_grace_period: 30s
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-gis_dev}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 15s
 
   catalog:
     build:
@@ -185,89 +174,35 @@ services:
       - dynastore_net
 
   elasticsearch:
-    # OpenSearch 2.x (Apache 2.0) — drop-in replacement for Elasticsearch REST API.
-    # Elasticsearch >=7.11 uses SSPL/ELv2, incompatible with this project's Apache 2.0 license.
-    image: opensearchproject/opensearch:2.17.0
+    extends:
+      file: ../src/dynastore/docker/compose.es.dev.yml
+      service: elasticsearch
     container_name: geoid_elasticsearch
-    restart: always
-    environment:
-      - discovery.type=single-node
-      - DISABLE_SECURITY_PLUGIN=true
-      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
-    ports:
-      - "9200:9200"
-    volumes:
-      - elasticsearch_data:/usr/share/elasticsearch/data
     networks:
       - dynastore_net
-    stop_grace_period: 30s
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 30s
 
   kibana:
-    # OpenSearch Dashboards (Apache 2.0) — replaces Kibana (SSPL/ELv2).
-    image: opensearchproject/opensearch-dashboards:2.17.0
+    extends:
+      file: ../src/dynastore/docker/compose.kibana.dev.yml
+      service: kibana
     container_name: geoid_kibana
-    restart: always
-    environment:
-      - OPENSEARCH_HOSTS=http://elasticsearch:9200
-      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
-      # Serve Dashboards under /dashboards so the geoid reverse-proxy
-      # (see extensions/logs/dashboards_proxy.py) can mount same-origin on
-      # the geoid ingress without path rewriting. Rendered URLs in
-      # responses are prefixed with /dashboards, which matches the proxy
-      # mount path.
-      - SERVER_BASEPATH=/dashboards
-      - SERVER_REWRITEBASEPATH=true
-    ports:
-      - "5601:5601"
     depends_on:
       - elasticsearch
     networks:
       - dynastore_net
-    stop_grace_period: 30s
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.0.6
+    extends:
+      file: ../src/dynastore/docker/compose.keycloak.dev.yml
+      service: keycloak
     container_name: geoid_keycloak
-    restart: always
-    environment:
-      KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:-gis_dev}
-      KC_DB_USERNAME: ${POSTGRES_USER:-postgres}
-      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      KC_DB_SCHEMA: keycloak
-      KC_DB_POOL_INITIAL_SIZE: "5"
-      KC_DB_POOL_MIN_SIZE: "5"
-      KC_DB_POOL_MAX_SIZE: "15"
-      KC_DB_POOL_ACQUIRE_TIMEOUT_MILLIS: "30000"
-      KC_BOOTSTRAP_ADMIN_USERNAME: admin
-      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
-      KC_HOSTNAME_STRICT: "false"
-      KC_HTTP_ENABLED: "true"
-      KC_PROXY_HEADERS: xforwarded
-      KC_HEALTH_ENABLED: "true"
-    command: start-dev --import-realm --health-enabled=true
     volumes:
       - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
-    ports:
-      - "${HOST_PORT_KEYCLOAK:-8181}:8080"
     depends_on:
       db:
         condition: service_healthy
     networks:
       - dynastore_net
-    stop_grace_period: 30s
-    healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080 && echo -e 'GET /realms/master HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q '200'"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
-      start_period: 90s
 
 volumes:
   postgres_data:

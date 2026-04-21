@@ -5,9 +5,10 @@
 # Build context is the fragment's own directory, so Dockerfile.db (a sibling
 # of this file) resolves the same way in either location.
 #
-# The consumer is expected to supply: .env, postgres_data named volume,
-# top-level network. The fragment deliberately omits container_name so each
-# consumer can set its own (catalog_db, geoid_db, ...).
+# The consumer is expected to supply: env_file, postgres_data named volume,
+# top-level network, container_name. The fragment omits `env_file:` because
+# Compose resolves it relative to the fragment file's directory, not the
+# consumer's — consumer adds `env_file: .env` in their own service block.
 
 services:
   db:
@@ -15,7 +16,6 @@ services:
       context: .
       dockerfile: Dockerfile.db
     restart: always
-    env_file: .env
     command: >-
       postgres -c max_connections=500 -c max_locks_per_transaction=256
       -c shared_preload_libraries=pg_cron
