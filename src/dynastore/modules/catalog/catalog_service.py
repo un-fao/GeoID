@@ -1172,7 +1172,23 @@ class CatalogService(CatalogsProtocol):
                     conn, limit=limit, offset=offset
                 )
             else:
-                sql = "SELECT * FROM catalog.catalogs WHERE deleted_at IS NULL AND (id ILIKE :q OR title->>'en' ILIKE :q OR description->>'en' ILIKE :q) ORDER BY id LIMIT :limit OFFSET :offset;"
+                # M2.5b — the legacy ``title`` / ``description`` columns
+                # are gone from ``catalog.catalogs``.  Search now joins
+                # through ``catalog.catalog_metadata_core`` (the only
+                # place those fields live post-M2.5) and applies the
+                # same ILIKE pattern to the JSONB ``en`` field.  Left
+                # join so catalogs with no metadata row still match on
+                # ``id ILIKE``.
+                sql = (
+                    "SELECT c.* FROM catalog.catalogs c "
+                    "LEFT JOIN catalog.catalog_metadata_core m "
+                    "  ON m.catalog_id = c.id "
+                    "WHERE c.deleted_at IS NULL AND ("
+                    "  c.id ILIKE :q "
+                    "  OR m.title->>'en' ILIKE :q "
+                    "  OR m.description->>'en' ILIKE :q"
+                    ") ORDER BY c.id LIMIT :limit OFFSET :offset;"
+                )
                 query = DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS)
                 results = await query.execute(conn, limit=limit, offset=offset, q=f"%{q}%")
                 

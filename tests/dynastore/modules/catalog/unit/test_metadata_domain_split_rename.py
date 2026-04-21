@@ -154,7 +154,13 @@ async def test_backfill_executes_two_insert_statements():
 
     fake_ddl = AsyncMock()
     fake_ddl.execute = AsyncMock()
-    with patch.object(mod, "DDLQuery", return_value=fake_ddl) as ddl_cls:
+    # The backfill first probes information_schema to see if the legacy
+    # columns still exist (M2.5b guard).  Return True → backfill proceeds.
+    probe_execute = AsyncMock(return_value=True)
+    with patch.object(mod, "DDLQuery", return_value=fake_ddl) as ddl_cls, \
+            patch.object(
+                mod._LEGACY_CATALOG_METADATA_COLUMN_PROBE, "execute", probe_execute,
+            ):
         await mod.backfill_catalog_metadata_from_legacy(conn=AsyncMock())
 
     ddl_cls.assert_called_once()
@@ -167,6 +173,48 @@ async def test_backfill_executes_two_insert_statements():
     assert sql.count("ON CONFLICT (catalog_id) DO NOTHING") == 2
     # SELECT targets legacy columns on catalog.catalogs for both domains.
     assert "FROM catalog.catalogs" in sql
+
+
+@pytest.mark.asyncio
+async def test_backfill_skips_on_post_m2_5b_deployment():
+    """After M2.5b drops the legacy columns, the probe returns False → no-op backfill."""
+    from dynastore.modules.catalog.db_init import metadata_domain_split as mod
+
+    probe_execute = AsyncMock(return_value=False)
+    fake_ddl = AsyncMock()
+    fake_ddl.execute = AsyncMock()
+
+    with patch.object(mod, "DDLQuery", return_value=fake_ddl) as ddl_cls, \
+            patch.object(
+                mod._LEGACY_CATALOG_METADATA_COLUMN_PROBE, "execute", probe_execute,
+            ):
+        await mod.backfill_catalog_metadata_from_legacy(conn=AsyncMock())
+
+    probe_execute.assert_awaited_once()
+    ddl_cls.assert_not_called()  # no INSERT-SELECT issued post-drop
+
+
+@pytest.mark.asyncio
+async def test_drop_legacy_catalog_metadata_columns_issues_alter():
+    """M2.5b drop issues a single ALTER TABLE with all column drops bundled."""
+    from dynastore.modules.catalog.db_init import metadata_domain_split as mod
+
+    fake_ddl = AsyncMock()
+    fake_ddl.execute = AsyncMock()
+    with patch.object(mod, "DDLQuery", return_value=fake_ddl) as ddl_cls:
+        await mod.drop_legacy_catalog_metadata_columns(conn=AsyncMock())
+
+    ddl_cls.assert_called_once()
+    sql = ddl_cls.call_args.args[0]
+    assert "ALTER TABLE catalog.catalogs" in sql
+    for col in (
+        "title", "description", "keywords", "license",
+        "conforms_to", "links", "assets",
+        "stac_version", "stac_extensions", "extra_metadata",
+    ):
+        assert f"DROP COLUMN IF EXISTS {col}" in sql, (
+            f"drop SQL missing column {col}"
+        )
 
 
 @pytest.mark.asyncio

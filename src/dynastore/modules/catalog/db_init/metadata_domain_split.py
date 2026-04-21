@@ -52,8 +52,33 @@ Applied globally at ``CatalogModule`` init and per-tenant from
 ``initialize_core_tenant_tables``.
 """
 
-from dynastore.modules.db_config.query_executor import DDLQuery, DbResource
+import logging
+
+from dynastore.modules.db_config.query_executor import (
+    DDLQuery,
+    DQLQuery,
+    DbResource,
+    ResultHandler,
+)
 from dynastore.tools.db import validate_sql_identifier
+
+logger = logging.getLogger(__name__)
+
+
+# Used by :func:`backfill_catalog_metadata_from_legacy` to detect whether
+# the legacy metadata columns are still present on ``catalog.catalogs``.
+# After M2.5b's drop, the backfill's INSERT-SELECT would raise
+# UndefinedColumn; checking with ``information_schema.columns`` first
+# keeps the call a no-op on post-M2.5b deployments.
+_LEGACY_CATALOG_METADATA_COLUMN_PROBE = DQLQuery(
+    "SELECT EXISTS("
+    "  SELECT 1 FROM information_schema.columns "
+    "  WHERE table_schema = 'catalog' "
+    "    AND table_name = 'catalogs' "
+    "    AND column_name = 'title'"
+    ");",
+    result_handler=ResultHandler.SCALAR,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +278,54 @@ ON CONFLICT (catalog_id) DO NOTHING;
 """
 
 
+# ---------------------------------------------------------------------------
+# Legacy column drop (M2.5b — post-backfill, post-read-flip)
+# ---------------------------------------------------------------------------
+
+# Removes the legacy metadata columns from ``catalog.catalogs`` once the
+# split tables are the canonical source.  Runs AFTER
+# :func:`backfill_catalog_metadata_from_legacy` in the CatalogModule init
+# sequence so existing tenants keep their data (in the split tables) when
+# the columns disappear.
+#
+# ``DROP COLUMN IF EXISTS`` is idempotent per column — a second run on an
+# already-migrated DB observes nothing to drop and is a no-op.  Bundled
+# in one DDLQuery so the drops share a transaction scope: a partial drop
+# would leave the DDL in an inconsistent shape relative to
+# ``CATALOGS_TABLE_DDL``.
+_DROP_LEGACY_CATALOG_METADATA_DDL = """
+ALTER TABLE catalog.catalogs
+    DROP COLUMN IF EXISTS title,
+    DROP COLUMN IF EXISTS description,
+    DROP COLUMN IF EXISTS keywords,
+    DROP COLUMN IF EXISTS license,
+    DROP COLUMN IF EXISTS conforms_to,
+    DROP COLUMN IF EXISTS links,
+    DROP COLUMN IF EXISTS assets,
+    DROP COLUMN IF EXISTS stac_version,
+    DROP COLUMN IF EXISTS stac_extensions,
+    DROP COLUMN IF EXISTS extra_metadata;
+"""
+
+
+async def drop_legacy_catalog_metadata_columns(conn: DbResource) -> None:
+    """Idempotently drop the legacy metadata columns from ``catalog.catalogs``.
+
+    Pre-conditions:
+
+    - :func:`backfill_catalog_metadata_from_legacy` has copied the
+      legacy column values into ``catalog.catalog_metadata_core`` /
+      ``_stac``.  Running this drop without the backfill would orphan
+      every pre-M2.0 catalog's metadata.
+    - No code path writes to the legacy columns (M2.5a).
+    - No code path reads from the legacy columns (M2.4 read flip).
+
+    Idempotent: re-runs after the first successful drop find nothing
+    to drop and issue a no-op ALTER.  Safe to call on every boot.
+    """
+    await DDLQuery(_DROP_LEGACY_CATALOG_METADATA_DDL).execute(conn)
+
+
 async def backfill_catalog_metadata_from_legacy(conn: DbResource) -> None:
     """Copy legacy ``catalog.catalogs`` metadata columns into the split tables.
 
@@ -273,7 +346,25 @@ async def backfill_catalog_metadata_from_legacy(conn: DbResource) -> None:
     This matters because a partial backfill would leave a catalog with
     CORE migrated but STAC missing (or vice-versa), and the router's
     M2.4 read flip would return incoherent envelopes.
+
+    Post-M2.5b guard
+    ----------------
+    :func:`drop_legacy_catalog_metadata_columns` removes the legacy
+    metadata columns from ``catalog.catalogs`` once the data has been
+    copied.  After that drop, the INSERT-SELECT below would fail with
+    ``UndefinedColumn`` — so we probe ``information_schema`` first and
+    skip when ``title`` (canary for the full legacy column set) is
+    absent.  Net effect: the backfill is a no-op on any post-M2.5b
+    deployment, letting this function stay in the boot sequence
+    without special-casing.
     """
+    legacy_columns_exist = await _LEGACY_CATALOG_METADATA_COLUMN_PROBE.execute(conn)
+    if not legacy_columns_exist:
+        logger.debug(
+            "Skipping catalog.catalogs → split-table backfill: legacy "
+            "metadata columns have already been dropped (M2.5b)."
+        )
+        return
     await DDLQuery(
         _BACKFILL_CATALOG_CORE_DDL + _BACKFILL_CATALOG_STAC_DDL
     ).execute(conn)
