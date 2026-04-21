@@ -781,12 +781,36 @@ class CatalogService(CatalogsProtocol):
         )
         return Catalog.model_validate(result)
 
-    def _unpack_catalog_row(self, row: Any) -> Optional[Catalog]:
+    def _unpack_catalog_row(
+        self,
+        row: Any,
+        *,
+        router_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Catalog]:
         """Unpacks a database row into a Catalog model.
 
         The extra_metadata column now stores only the user-provided extra metadata
         (a localized JSONB dict), not an envelope with type/conformsTo/links.
         Those fields come from the Catalog model defaults.
+
+        M2.4 — router overlay
+        ---------------------
+
+        When ``router_metadata`` is supplied, its keys overwrite the
+        corresponding legacy columns on the row dict before
+        model-validation.  Post-M2.2 catalog writes land in
+        ``catalog.catalog_metadata_core`` / ``_stac`` via the
+        lifecycle hooks; M2.3a backfilled pre-existing rows into the
+        same tables.  Reading through the router therefore returns
+        the canonical post-refactor envelope even while the legacy
+        columns on ``catalog.catalogs`` remain populated by the
+        pre-M2.5 service code.  A catalog with router data takes
+        priority over the legacy SELECT.
+
+        When ``router_metadata`` is ``None`` (default) the behaviour
+        is identical to the pre-M2.4 unpack — legacy columns are
+        returned as-is.  Call sites that haven't migrated to the
+        router-aware overlay therefore stay correct.
         """
         if not row:
             return None
@@ -797,7 +821,7 @@ class CatalogService(CatalogsProtocol):
         # Unpack STAC dedicated columns if present
         if "conforms_to" in data and data["conforms_to"]:
             data["conformsTo"] = data["conforms_to"]
-        
+
         # Ensure jsonb fields are loaded correctly if driver doesn't cast automatically
         for key in ["conformsTo", "links", "assets", "extra_metadata", "stac_extensions"]:
             dict_val = data.get(key)
@@ -807,13 +831,56 @@ class CatalogService(CatalogsProtocol):
                 except Exception:
                     data[key] = None
 
+        # M2.4: router overlay.  Router-supplied keys win over legacy
+        # columns.  Special-case ``conforms_to`` which in the router
+        # envelope carries its snake-case form, but Catalog consumes
+        # ``conformsTo`` via Pydantic alias — we fill both so either
+        # spelling resolves after validation.
+        if router_metadata:
+            for key, value in router_metadata.items():
+                data[key] = value
+            if router_metadata.get("conforms_to"):
+                data["conformsTo"] = router_metadata["conforms_to"]
+
         return Catalog.model_validate(data)
+
+    async def _resolve_catalog_router_metadata(
+        self, catalog_id: str, *, db_resource: Optional[Any] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Best-effort fetch of router-supplied catalog metadata.
+
+        Degrades to ``None`` on any router error so the call site can
+        fall back to the legacy SELECT's columns instead of 5xx'ing
+        a catalog read.  The router itself already swallows per-driver
+        exceptions (partial-envelope semantics), so this guard is
+        belt-and-braces against a total-outage scenario where the
+        router's driver resolution itself raises.
+        """
+        try:
+            from dynastore.modules.catalog.catalog_metadata_router import (
+                get_catalog_metadata,
+            )
+            return await get_catalog_metadata(
+                catalog_id, db_resource=db_resource,
+            )
+        except Exception as exc:  # noqa: BLE001 — degrade to legacy SELECT
+            logger.warning(
+                "Catalog-metadata router failed for %s: %s — falling back "
+                "to legacy catalog.catalogs columns",
+                catalog_id, exc,
+            )
+            return None
 
     async def _get_catalog_model_db(self, catalog_id: str) -> Optional[Catalog]:
         """Get catalog model from database."""
         async with managed_transaction(self.engine) as conn:
             result = await _get_catalog_query.execute(conn, id=catalog_id)
-            return self._unpack_catalog_row(result)
+            router_metadata = await self._resolve_catalog_router_metadata(
+                catalog_id, db_resource=conn,
+            )
+            return self._unpack_catalog_row(
+                result, router_metadata=router_metadata,
+            )
 
     async def get_catalog_model(
         self, catalog_id: str, ctx: Optional["DriverContext"] = None
@@ -823,7 +890,12 @@ class CatalogService(CatalogsProtocol):
         if db_resource:
             async with managed_transaction(db_resource) as conn:
                 result = await _get_catalog_query.execute(conn, id=catalog_id)
-                catalog = self._unpack_catalog_row(result)
+                router_metadata = await self._resolve_catalog_router_metadata(
+                    catalog_id, db_resource=conn,
+                )
+                catalog = self._unpack_catalog_row(
+                    result, router_metadata=router_metadata,
+                )
         else:
             catalog = await self._get_catalog_model_cached(catalog_id)
 
@@ -1068,9 +1140,34 @@ class CatalogService(CatalogsProtocol):
                 query = DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS)
                 results = await query.execute(conn, limit=limit, offset=offset, q=f"%{q}%")
                 
+            # M2.4 — overlay router-supplied metadata per-row.  Each row
+            # carries a catalog_id we look up through the router; the
+            # merged envelope wins over the legacy catalog.catalogs
+            # columns.  Router resolution is concurrent across rows so a
+            # list of N catalogs pays one gather round-trip, not N
+            # sequential ones.
+            import asyncio as _asyncio
+
+            async def _unpack_one(r):
+                row_id = (
+                    r._mapping["id"] if hasattr(r, "_mapping") else r["id"]
+                ) if r else None
+                router_metadata = (
+                    await self._resolve_catalog_router_metadata(
+                        row_id, db_resource=conn,
+                    )
+                    if row_id is not None
+                    else None
+                )
+                return self._unpack_catalog_row(
+                    r, router_metadata=router_metadata,
+                )
+
             # Use unpacker to handle legacy JSON packing for list results too
             # Filter out Nones in case unpacking fails for some rows
-            models = [self._unpack_catalog_row(r) for r in results]
+            models = await _asyncio.gather(
+                *[_unpack_one(r) for r in results]
+            )
             return [m for m in models if m is not None]
 
     async def search_catalogs(
