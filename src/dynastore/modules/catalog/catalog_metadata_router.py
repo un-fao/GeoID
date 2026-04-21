@@ -53,6 +53,34 @@ logged at WARNING and omitted from the merge; the caller sees a
 partial envelope rather than a 5xx.  This matches the pre-refactor
 behaviour where a legacy catalog with NULL STAC columns produced an
 envelope missing those keys.
+
+Transaction-scope contract (load-bearing)
+-----------------------------------------
+
+When a caller passes ``db_resource`` (an already-acquired live
+``AsyncConnection``), **every** driver call in this module and every
+downstream event emission must observe that same connection — no
+driver may silently acquire a fresh pooled connection.  Correctness
+hinges on the router's write + ``catalog_metadata_changed`` event
+write landing inside the caller's transaction so the transactional-
+outbox guarantee holds: if the outer transaction rolls back, the
+events disappear with it.
+
+The re-entrancy that makes this work lives in
+:func:`dynastore.modules.db_config.query_executor.managed_transaction`:
+when handed a live connection already ``in_transaction()``, it opens a
+``SAVEPOINT`` via ``begin_nested()`` instead of a new ``BEGIN``.  The
+per-domain Primary drivers follow the canonical pattern
+``engine = db_resource or _get_engine()`` → ``managed_transaction(engine)``;
+passing the caller's connection as ``engine`` takes the SAVEPOINT
+branch.  Regressing any of those two invariants — drivers resolving
+``_get_engine()`` when they shouldn't, or ``managed_transaction``
+losing re-entrancy — silently detaches router writes from the caller's
+transaction and breaks the outbox contract.  The router tests pin the
+connection-identity propagation
+(see ``test_catalog_metadata_router.py`` —
+``test_upsert_fan_out_shares_db_resource`` and siblings) as the
+fuse against that regression.
 """
 
 from __future__ import annotations

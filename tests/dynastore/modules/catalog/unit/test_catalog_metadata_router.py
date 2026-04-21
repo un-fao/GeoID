@@ -373,6 +373,63 @@ class TestMetadataChangedEventEmission:
         assert emit.call_args.kwargs["payload"]["domain"] == "core"
 
     @pytest.mark.asyncio
+    async def test_upsert_emit_receives_same_db_resource_as_drivers(
+        self, monkeypatch,
+    ):
+        """Transactional-outbox contract pin: driver writes + the
+        ``catalog_metadata_changed`` emission must land on the IDENTICAL
+        connection object the caller passed in.
+
+        If the router (or any downstream helper) ever acquires a fresh
+        pooled connection instead of threading ``db_resource`` through,
+        the emitted event would be committed independently of the
+        driver write — breaking the outbox guarantee that an event
+        disappears with its transaction on rollback.
+
+        The router docstring's "Transaction-scope contract (load-
+        bearing)" section depends on this identity propagation; this
+        test is the regression fuse against silent breakage of it.
+        """
+        from dynastore.models.protocols.driver_roles import MetadataDomain
+        from dynastore.modules.catalog.catalog_metadata_router import (
+            upsert_catalog_metadata,
+        )
+
+        core = MagicMock()
+        core.domain = MetadataDomain.CORE
+        core.upsert_catalog_metadata = AsyncMock()
+        stac = MagicMock()
+        stac.domain = MetadataDomain.STAC
+        stac.upsert_catalog_metadata = AsyncMock()
+
+        emit = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            "dynastore.modules.catalog.event_service.emit_event", emit,
+        )
+
+        # Sentinel used as the caller's ``db_resource``.  Identity
+        # (``is``) checks below pin that NONE of the router's call
+        # sites substitute a different object.
+        live_conn = MagicMock(name="live_AsyncConnection")
+
+        await upsert_catalog_metadata(
+            "cat-42", {"title": {"en": "T"}, "stac_version": "1.1.0"},
+            db_resource=live_conn, drivers=[core, stac],
+        )
+
+        # Driver writes see the same connection.
+        assert core.upsert_catalog_metadata.await_args.kwargs["db_resource"] is live_conn
+        assert stac.upsert_catalog_metadata.await_args.kwargs["db_resource"] is live_conn
+        # Emits see the same connection (one per domain, two total).
+        assert emit.await_count == 2
+        for call in emit.call_args_list:
+            assert call.kwargs["db_resource"] is live_conn, (
+                "catalog_metadata_changed event emitted with a different "
+                "db_resource than the driver writes — transactional-outbox "
+                "contract violated"
+            )
+
+    @pytest.mark.asyncio
     async def test_emit_failure_logs_but_does_not_raise(self, monkeypatch, caplog):
         """A broken emit_event must not turn a successful write into a 5xx."""
         from dynastore.models.protocols.driver_roles import MetadataDomain
