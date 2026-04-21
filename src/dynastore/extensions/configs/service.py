@@ -17,12 +17,11 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Path, Query, status, Request, FastAPI
-from fastapi.responses import Response, HTMLResponse
+from fastapi.responses import Response
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 
 from dynastore.extensions.protocols import ExtensionProtocol
@@ -30,9 +29,7 @@ from dynastore.extensions.tools.conflict_handler import conflict_to_409
 from dynastore.extensions.tools.exception_handlers import handle_exception
 import dynastore.modules.catalog.catalog_module as catalog_manager
 from dynastore.modules import get_protocol
-from dynastore.extensions.web.decorators import expose_web_page
 from dynastore.models.protocols import WebModuleProtocol, ConfigsProtocol
-from dynastore.models.protocols.authorization import DefaultRole
 from dynastore.modules.db_config.platform_config_service import (
     enforce_config_immutability,
     require_config_class,
@@ -91,23 +88,10 @@ class ConfigsService(ExtensionProtocol):
         logger.info("ConfigsService: Policies registered.")
         yield
 
-    @expose_web_page(
-        page_id="configs_editor",
-        title="Configurations",
-        icon="fa-sliders",
-        description="Dynamic platform configuration management.",
-        required_roles=[DefaultRole.SYSADMIN.value],
-        section="admin",
-        priority=30,
-    )
-    async def provide_configs_editor(self, request: Request):
-        """Serve the configurations editor HTML page."""
-        static_dir = os.path.join(os.path.dirname(__file__), "static")
-        html_path = os.path.join(static_dir, "configurations.html")
-        if not os.path.exists(html_path):
-             raise HTTPException(status_code=404, detail="Configuration editor template not found.")
-        with open(html_path, "r") as f:
-            return HTMLResponse(f.read())
+    # Deprecated: the legacy configurations.html editor has been superseded by
+    # the schema-driven Configuration Hub at /web/pages/configuration. The old
+    # HTML file is kept on disk for one release as a fallback but is no longer
+    # linked from the admin sidebar.
 
     def _setup_routes(self):
         self.router.add_api_route(

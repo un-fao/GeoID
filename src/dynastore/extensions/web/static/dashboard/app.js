@@ -76,17 +76,15 @@ const app = {
             const collectionId = this.state.collectionId;
             let url = `stats?catalog_id=${catalogId}`;
             if (collectionId) url += `&collection_id=${collectionId}`;
-            
+
             const res = await fetch(url);
             const data = await res.json();
-            
-            // Populate Cards
-            document.getElementById('stat-catalogs').innerText = data.total_catalogs || 0;
-            document.getElementById('stat-assets').innerText = (data.total_collections || 0) * 150; // Mock estimate
-            document.getElementById('stat-req').innerText = (data.average_latency_ms ? (1000/data.average_latency_ms).toFixed(1) : "0.0");
 
-            // Charts
-            this.renderCharts(data);
+            document.getElementById('stat-catalogs').innerText = data.total_catalogs ?? 0;
+            const assets = (data.total_assets ?? data.asset_count);
+            document.getElementById('stat-assets').innerText = assets == null ? '—' : assets;
+            document.getElementById('stat-req').innerText =
+                data.average_latency_ms ? (1000 / data.average_latency_ms).toFixed(1) : '—';
         } catch (e) {
             console.error("Failed to load stats", e);
         }
@@ -169,28 +167,6 @@ const app = {
         }
     },
 
-    // --- Charts ---
-    renderCharts(stats) {
-        const ctx = document.getElementById('trafficChart');
-        if(!ctx) return;
-        
-        // Mock data for demo purposes if not available
-        if (window.trafficChartInstance) window.trafficChartInstance.destroy();
-        
-        window.trafficChartInstance = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00'],
-                datasets: [{
-                    label: 'Requests',
-                    data: [12, 19, 3, 5, 2, 30], // Connect to real historic stats if available
-                    borderColor: '#2563eb',
-                    tension: 0.4
-                }]
-            },
-            options: { responsive: true, maintainAspectRatio: false }
-        });
-    }
 };
 
 // Start

@@ -106,7 +106,7 @@ def register_iam_service_policies():
             id="self_service_authorization_api",
             description="Allows authenticated users to view their own roles and catalog access",
             actions=["GET"],
-            resources=["/me/roles/.*", "/me/catalogs.*"],
+            resources=["/me", "/me/available-roles", "/me/roles/.*", "/me/catalogs.*"],
             effect="ALLOW",
             partition_key="global",
         )

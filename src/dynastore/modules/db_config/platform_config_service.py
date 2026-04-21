@@ -85,9 +85,20 @@ T = TypeVar("T")
 
 
 class ImmutableMarker:
-    """Internal marker for immutability."""
+    """Internal marker for immutability.
 
-    pass
+    When present in ``Annotated[T, ImmutableMarker]``, Pydantic v2 walks the
+    metadata during schema generation and invokes ``__get_pydantic_json_schema__``
+    on the class — we use that hook to advertise the field as read-only to
+    the schema-driven admin UI via the shared ``x-ui`` convention.
+    """
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, schema, handler):
+        from dynastore.tools.ui_hints import merge_ui
+
+        out = handler(schema)
+        return merge_ui(out, readonly=True)
 
 
 if TYPE_CHECKING:
@@ -108,9 +119,20 @@ else:
 
 
 class WriteOnceMarker:
-    """Internal marker for write-once fields (None → value allowed, value → anything rejected)."""
+    """Internal marker for write-once fields (None → value allowed, value → anything rejected).
 
-    pass
+    The schema-driven admin UI treats WriteOnce fields as read-only too:
+    the server rejects mutations once the value is set, so an editable
+    input would only create failing requests. The ``x-ui.readonly`` hint
+    is advisory — the real enforcement is in ``enforce_config_immutability``.
+    """
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, schema, handler):
+        from dynastore.tools.ui_hints import merge_ui
+
+        out = handler(schema)
+        return merge_ui(out, readonly=True)
 
 
 if TYPE_CHECKING:

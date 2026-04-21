@@ -41,12 +41,13 @@ import logging
 from enum import StrEnum
 from typing import Any, Callable, ClassVar, Dict, FrozenSet, List, Optional, Set, cast
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from dynastore.modules.db_config.platform_config_service import (
     Immutable,
     PluginConfig,
 )
+from dynastore.tools.ui_hints import ui
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +210,8 @@ class CollectionRoutingConfig(PluginConfig):
     Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
     """
 
+    model_config = ConfigDict(json_schema_extra=ui(category="routing"))
+
     enabled: bool = Field(default=True, description="Enable this routing configuration.")
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
@@ -243,6 +246,8 @@ class AssetRoutingConfig(PluginConfig):
 
     Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
     """
+
+    model_config = ConfigDict(json_schema_extra=ui(category="routing"))
 
     enabled: bool = Field(default=True, description="Enable this routing configuration.")
 

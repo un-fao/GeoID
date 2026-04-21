@@ -42,6 +42,7 @@ from typing import Any, ClassVar, Dict, FrozenSet, List, Optional
 from pydantic import ConfigDict, Field, SerializeAsAny, field_validator, model_validator
 
 from dynastore.tools.secrets import Secret
+from dynastore.tools.ui_hints import ui
 
 from dynastore.modules.db_config.platform_config_service import (
     Immutable,
@@ -355,15 +356,23 @@ class DriverPluginConfig(PluginConfig):
 
 
 class CollectionDriverConfig(DriverPluginConfig):
-    """Base for collection-domain driver configs."""
+    """Base for collection-domain driver configs.
 
-    pass
+    ``x-ui.category`` is inherited by subclasses and lets the admin
+    Configuration Hub group every concrete collection driver under a single
+    "Storage Drivers" section in the left rail.
+    """
+
+    model_config = ConfigDict(json_schema_extra=ui(category="storage-drivers"))
 
 
 class AssetDriverConfig(DriverPluginConfig):
-    """Base for asset-domain driver configs."""
+    """Base for asset-domain driver configs.
 
-    pass
+    Grouped under "Asset Drivers" in the admin Configuration Hub.
+    """
+
+    model_config = ConfigDict(json_schema_extra=ui(category="asset-drivers"))
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DynaStore | SysAdmin Dashboard</title>
     <link rel="stylesheet" href="styles.css">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="../website/context-selector.js"></script>
     <script src="app.js" defer></script>
 </head>
@@ -25,9 +24,6 @@
                 </a>
                 <a href="#" class="nav-item" data-tab="tasks">
                     <span class="icon">🔄</span> Task Monitor
-                </a>
-                <a href="#" class="nav-item" data-tab="resources">
-                    <span class="icon">🗄️</span> Resources
                 </a>
                 <a href="processes/" class="nav-item">
                     <span class="icon">⚙️</span> Process Executor
@@ -82,16 +78,6 @@
                         </div>
                     </div>
 
-                    <div class="charts-row">
-                        <div class="chart-container">
-                            <h4>Request Traffic (24h)</h4>
-                            <canvas id="trafficChart"></canvas>
-                        </div>
-                        <div class="chart-container">
-                            <h4>Task Distribution</h4>
-                            <canvas id="tasksChart"></canvas>
-                        </div>
-                    </div>
                 </div>
 
                 <!-- 2. Logs Tab -->

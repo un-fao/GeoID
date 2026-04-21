@@ -178,7 +178,12 @@ class Secret:
         OpenAPI schema. Clients PUT the plaintext once; everything after is
         masked on the read path. The alternate ``{__secret__: ...}`` envelope
         is a server-internal encoding and intentionally omitted from the
-        public contract."""
+        public contract.
+
+        The ``x-ui`` extension tells the schema-driven admin UI to render a
+        password input and treat the value as sensitive (no echo on reload
+        unless the user edited the field in the current session).
+        """
         return {
             "type": "string",
             "format": "password",
@@ -186,6 +191,7 @@ class Secret:
                 "Secret value — persisted encrypted, never returned in full. "
                 "GET responses mask it as '***'."
             ),
+            "x-ui": {"widget": "password", "sensitive": True},
         }
 
 

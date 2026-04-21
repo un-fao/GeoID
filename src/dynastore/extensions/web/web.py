@@ -94,8 +94,9 @@ def register_web_policies():
             "/web/admin",
             "/web/admin/",
             "/web/admin/.*",
-            "/web/pages/demo_manager",  # expose_web_page route
-            "/web/pages/exposure",      # Service Exposure admin page
+            "/web/pages/demo_manager",     # expose_web_page route
+            "/web/pages/exposure",         # Service Exposure admin page
+            "/web/pages/configuration",    # Configuration Hub admin page
         ],
         effect="ALLOW",
     )
@@ -821,6 +822,30 @@ async function demoAction(action) {
         html_path = os.path.join(static_dir, "exposure.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Service exposure panel template not found.")
+        with open(html_path, "r") as f:
+            return HTMLResponse(f.read())
+
+    @expose_web_page(
+        page_id="configuration",
+        title="Configuration Hub",
+        icon="fa-sliders",
+        description="Schema-driven editor for every registered plugin configuration.",
+        required_roles=[DefaultRole.SYSADMIN.value],
+        section="admin",
+        priority=10,
+    )
+    async def configuration_page(self, request: Request):
+        """Serve the schema-driven Configuration Hub HTML page.
+
+        Replaces the older ``configs_editor`` / json-editor flow with a
+        single unified page that lists every Pydantic-backed plugin config
+        (routing, drivers, anything else that registers a schema) and
+        renders its form from the ``/configs/schemas`` response.
+        """
+        static_dir = os.path.join(os.path.dirname(__file__), "static", "admin")
+        html_path = os.path.join(static_dir, "configuration.html")
+        if not os.path.exists(html_path):
+            raise HTTPException(status_code=404, detail="Configuration Hub template not found.")
         with open(html_path, "r") as f:
             return HTMLResponse(f.read())
 

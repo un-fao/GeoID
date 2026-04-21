@@ -136,6 +136,42 @@ async def resolve_catalog_schema(catalog_id: str) -> str:
 # --- Self-Service Endpoints ---
 
 
+@me_router.get("")
+async def get_me(request: Request):
+    """Return the current principal along with their global roles.
+
+    A single call the admin UI uses to decide which pages to show — avoids
+    round-tripping ``/me/available-roles`` and ``/me/roles/global`` on every
+    navigation. Returns 401 when unauthenticated so the client can redirect
+    to login.
+    """
+    identity = await get_current_identity(request)
+    provider = identity.get("provider")
+    subject_id = identity.get("sub")
+    email = identity.get("email")
+
+    roles: List[str] = []
+    try:
+        storage = await get_storage()
+        roles = await storage.get_identity_roles(provider, subject_id, schema="iam")
+    except HTTPException:
+        # get_storage() raises 500 if authenticator not wired — degrade to
+        # empty roles rather than breaking the endpoint. The principal
+        # stanza is still useful for display.
+        roles = []
+    except Exception:
+        roles = []
+
+    return {
+        "principal": {
+            "provider": provider,
+            "sub": subject_id,
+            "email": email,
+        },
+        "roles": list(roles or []),
+    }
+
+
 @me_router.get("/available-roles")
 async def get_available_roles(
     request: Request,
