@@ -116,3 +116,80 @@ def test_ddl_template_still_carries_placeholder_for_substitution():
     # resolved by the Python-side format step in the function body.
     assert "{schema}.metadata" in TENANT_LEGACY_METADATA_RENAME_DDL
     assert "table_schema = '{schema}'" in TENANT_LEGACY_METADATA_RENAME_DDL
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the M2.3a legacy → split-table backfill
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_backfill_executes_two_insert_statements():
+    """One DDLQuery carries both CORE and STAC INSERT…SELECT statements."""
+    from dynastore.modules.catalog.db_init import metadata_domain_split as mod
+
+    fake_ddl = AsyncMock()
+    fake_ddl.execute = AsyncMock()
+    with patch.object(mod, "DDLQuery", return_value=fake_ddl) as ddl_cls:
+        await mod.backfill_catalog_metadata_from_legacy(conn=AsyncMock())
+
+    ddl_cls.assert_called_once()
+    sql = ddl_cls.call_args.args[0]
+    # Both domain tables addressed in one statement bundle — single txn scope.
+    assert "catalog.catalog_metadata_core" in sql
+    assert "catalog.catalog_metadata_stac" in sql
+    # Each INSERT guarded against overwriting existing rows (M2.2 post-backfill
+    # writes must not be clobbered by stale legacy data).
+    assert sql.count("ON CONFLICT (catalog_id) DO NOTHING") == 2
+    # SELECT targets legacy columns on catalog.catalogs for both domains.
+    assert "FROM catalog.catalogs" in sql
+
+
+@pytest.mark.asyncio
+async def test_backfill_select_filters_rows_lacking_all_columns():
+    """CORE backfill must skip catalogs with no CORE metadata at all.
+
+    Without the WHERE filter, every catalog would receive a row of NULLs
+    in ``catalog_metadata_core`` — logically correct but bloats the table
+    and hides the "genuinely empty" vs "migrated empty" distinction.
+    """
+    from dynastore.modules.catalog.db_init.metadata_domain_split import (
+        _BACKFILL_CATALOG_CORE_DDL, _BACKFILL_CATALOG_STAC_DDL,
+    )
+
+    for label, sql, columns in [
+        ("CORE", _BACKFILL_CATALOG_CORE_DDL,
+         ("title", "description", "keywords", "license", "extra_metadata")),
+        ("STAC", _BACKFILL_CATALOG_STAC_DDL,
+         ("stac_version", "stac_extensions", "conforms_to", "links", "assets")),
+    ]:
+        assert "WHERE" in sql, f"{label} backfill lacks a WHERE filter"
+        for col in columns:
+            assert f"{col} IS NOT NULL" in sql, (
+                f"{label} backfill doesn't guard on {col!r}; every legacy "
+                f"catalog with NULL-only metadata would receive an empty row"
+            )
+
+
+def test_backfill_columns_align_with_split_ddl():
+    """INSERT column list must match the CREATE TABLE column list.
+
+    Drift between the two — e.g. adding a column to the DDL but
+    forgetting the backfill — would leave newly-added columns NULL for
+    every pre-existing catalog post-migration.  Pin the alignment here
+    so a future column addition fails loudly at unit-test time.
+    """
+    from dynastore.modules.catalog.db_init.metadata_domain_split import (
+        CATALOG_METADATA_CORE_DDL, CATALOG_METADATA_STAC_DDL,
+        _BACKFILL_CATALOG_CORE_DDL, _BACKFILL_CATALOG_STAC_DDL,
+    )
+
+    for ddl, backfill, non_id in [
+        (CATALOG_METADATA_CORE_DDL, _BACKFILL_CATALOG_CORE_DDL,
+         ("title", "description", "keywords", "license", "extra_metadata")),
+        (CATALOG_METADATA_STAC_DDL, _BACKFILL_CATALOG_STAC_DDL,
+         ("stac_version", "stac_extensions", "conforms_to", "links", "assets")),
+    ]:
+        for col in non_id:
+            assert col in ddl
+            assert col in backfill

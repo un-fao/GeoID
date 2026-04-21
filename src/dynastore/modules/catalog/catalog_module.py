@@ -247,9 +247,18 @@ class CatalogModule(ModuleProtocol):
                 # concrete Primary drivers that consume these tables land
                 # in M2.1; the read/write flip happens in M2.3 / M2.4.
                 from dynastore.modules.catalog.db_init.metadata_domain_split import (
+                    backfill_catalog_metadata_from_legacy,
                     ensure_global_metadata_domain_tables,
                 )
                 await ensure_global_metadata_domain_tables(conn)
+
+                # M2.3a — one-shot backfill from legacy catalog.catalogs
+                # metadata columns into the split tables.  Idempotent: a
+                # second run sees every row already present (via the
+                # unique-key check on catalog_id) and issues zero INSERTs.
+                # Safe to call on every boot — it is effectively a no-op
+                # once all legacy rows have been migrated.
+                await backfill_catalog_metadata_from_legacy(conn)
 
                 # Ensure stored procedures (replacing init.sql)
                 from dynastore.modules.catalog.db_init.stored_procedures import (

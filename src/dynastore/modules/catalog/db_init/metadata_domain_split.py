@@ -206,6 +206,79 @@ async def ensure_global_metadata_domain_tables(conn: DbResource) -> None:
     ).execute(conn)
 
 
+# ---------------------------------------------------------------------------
+# One-shot backfill: legacy catalog.catalogs columns → split tables (M2.3a)
+# ---------------------------------------------------------------------------
+
+# INSERT ... SELECT that copies CORE metadata from catalog.catalogs into
+# catalog.catalog_metadata_core for every catalog that has at least one
+# CORE column set.  ``ON CONFLICT (catalog_id) DO NOTHING`` ensures:
+#
+# - Idempotency: repeat runs are no-ops (rows already present).
+# - Safety against clobbering: if M2.2's ``_pg_catalog_core_init`` already
+#   populated a row for a catalog created after M2.2 landed, the backfill
+#   must not overwrite that (newer) data with the legacy row.
+#
+# Runs inside the same transaction as ``ensure_global_metadata_domain_tables``
+# — a failure rolls the entire M2.0 DDL application back, leaving the
+# deployment at its pre-M2 shape.
+_BACKFILL_CATALOG_CORE_DDL = """
+INSERT INTO catalog.catalog_metadata_core
+    (catalog_id, title, description, keywords, license, extra_metadata)
+SELECT
+    id, title, description, keywords, license, extra_metadata
+FROM catalog.catalogs
+WHERE
+    title IS NOT NULL
+    OR description IS NOT NULL
+    OR keywords IS NOT NULL
+    OR license IS NOT NULL
+    OR extra_metadata IS NOT NULL
+ON CONFLICT (catalog_id) DO NOTHING;
+"""
+
+_BACKFILL_CATALOG_STAC_DDL = """
+INSERT INTO catalog.catalog_metadata_stac
+    (catalog_id, stac_version, stac_extensions, conforms_to, links, assets)
+SELECT
+    id, stac_version, stac_extensions, conforms_to, links, assets
+FROM catalog.catalogs
+WHERE
+    stac_version IS NOT NULL
+    OR stac_extensions IS NOT NULL
+    OR conforms_to IS NOT NULL
+    OR links IS NOT NULL
+    OR assets IS NOT NULL
+ON CONFLICT (catalog_id) DO NOTHING;
+"""
+
+
+async def backfill_catalog_metadata_from_legacy(conn: DbResource) -> None:
+    """Copy legacy ``catalog.catalogs`` metadata columns into the split tables.
+
+    One-shot migration for deployments that predate M2.0.  After this
+    runs once, subsequent catalog writes land in the split tables via
+    the M2.2 ``init_catalog_metadata`` lifecycle hooks; readers in M2.4+
+    will pull from the split tables first.
+
+    Both INSERTs use ``ON CONFLICT (catalog_id) DO NOTHING`` so:
+
+    - Re-running the backfill is free — already-migrated rows are
+      skipped in the unique-key check; no UPDATE runs.
+    - Rows that M2.2 wrote post-backfill are preserved; the backfill
+      will not clobber newer writes with stale legacy data.
+
+    The two INSERTs share a single ``DDLQuery`` call so they run under
+    the same transaction scope — either both land or neither does.
+    This matters because a partial backfill would leave a catalog with
+    CORE migrated but STAC missing (or vice-versa), and the router's
+    M2.4 read flip would return incoherent envelopes.
+    """
+    await DDLQuery(
+        _BACKFILL_CATALOG_CORE_DDL + _BACKFILL_CATALOG_STAC_DDL
+    ).execute(conn)
+
+
 async def rename_legacy_metadata_tables(conn: DbResource, schema: str) -> None:
     """Rename ``{schema}.metadata*`` to ``{schema}.collection_metadata*``.
 
