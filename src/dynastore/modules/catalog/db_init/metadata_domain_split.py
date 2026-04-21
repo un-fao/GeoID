@@ -52,17 +52,7 @@ Applied globally at ``CatalogModule`` init and per-tenant from
 ``initialize_core_tenant_tables``.
 """
 
-import logging
-
-from dynastore.modules.db_config.query_executor import (
-    DDLQuery,
-    DQLQuery,
-    DbResource,
-    ResultHandler,
-)
-from dynastore.tools.db import validate_sql_identifier
-
-logger = logging.getLogger(__name__)
+from dynastore.modules.db_config.query_executor import DDLQuery, DbResource
 
 
 # ---------------------------------------------------------------------------
@@ -152,43 +142,43 @@ CREATE TABLE IF NOT EXISTS {schema}.collection_metadata_stac (
 #   {schema}.metadata_core  → {schema}.collection_metadata_core
 #   {schema}.metadata_stac  → {schema}.collection_metadata_stac
 #
-# Implementation note
-# -------------------
-# The previous revision used a single PL/pgSQL DO block with
-# ``WHERE table_schema = '{schema}'`` literals.  That did not work against
-# :class:`TemplateQueryBuilder`, which regex-finds every ``{schema}``
-# placeholder — including inside string literals — and replaces each with
-# the dialect-quoted identifier form (``"myschema"``).  The resulting
-# predicate ``WHERE table_schema = '"myschema"'`` never matched the
-# unquoted ``information_schema`` value, so the IF-EXISTS check was
-# always false and the rename silently no-op'd.  Existing tenants kept
-# their data in ``{schema}.metadata`` while the CREATE TABLE DDL below
-# created a fresh empty ``{schema}.collection_metadata`` alongside.
+# Idempotent: each rename runs only when the source table exists AND the
+# target does not — on re-run (or fresh deployment) every IF branch is false
+# and the block is a no-op.
 #
-# The replacement uses a parameterised DQL probe (binds schema + table
-# name) and a targeted DDL rename per pair.  The schema name is also
-# validated through ``validate_sql_identifier`` before use so a crafted
-# schema value can't smuggle SQL.  Each ALTER TABLE is a standalone
-# DDLQuery whose ``{schema}`` placeholder is the sole occurrence of the
-# pattern, correctly handled as an identifier by TemplateQueryBuilder.
-_TABLE_EXISTS_QUERY = DQLQuery(
-    "SELECT EXISTS("
-    "  SELECT 1 FROM information_schema.tables "
-    "  WHERE table_schema = :schema AND table_name = :table_name"
-    ");",
-    result_handler=ResultHandler.SCALAR,
-)
+# Runs as a single anonymous PL/pgSQL block so all three renames share the
+# same transaction scope — if any fail, all fail, leaving the schema in
+# its pre-rename state.  A partial rename cannot leave the system in a
+# mixed mode because the CREATE TABLE statements above reference only the
+# canonical names.
+TENANT_LEGACY_METADATA_RENAME_DDL = """
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables
+               WHERE table_schema = '{schema}' AND table_name = 'metadata')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.tables
+                       WHERE table_schema = '{schema}' AND table_name = 'collection_metadata')
+    THEN
+        ALTER TABLE {schema}.metadata RENAME TO collection_metadata;
+    END IF;
 
+    IF EXISTS (SELECT 1 FROM information_schema.tables
+               WHERE table_schema = '{schema}' AND table_name = 'metadata_core')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.tables
+                       WHERE table_schema = '{schema}' AND table_name = 'collection_metadata_core')
+    THEN
+        ALTER TABLE {schema}.metadata_core RENAME TO collection_metadata_core;
+    END IF;
 
-# ``legacy → canonical`` rename pairs applied in a fixed order.  The
-# order is not semantically meaningful (each pair is independent and
-# only runs when its own legacy table exists) — the tuple is stable for
-# reproducibility in logs.
-_LEGACY_METADATA_RENAMES = (
-    ("metadata", "collection_metadata"),
-    ("metadata_core", "collection_metadata_core"),
-    ("metadata_stac", "collection_metadata_stac"),
-)
+    IF EXISTS (SELECT 1 FROM information_schema.tables
+               WHERE table_schema = '{schema}' AND table_name = 'metadata_stac')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.tables
+                       WHERE table_schema = '{schema}' AND table_name = 'collection_metadata_stac')
+    THEN
+        ALTER TABLE {schema}.metadata_stac RENAME TO collection_metadata_stac;
+    END IF;
+END $$;
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -225,59 +215,16 @@ async def rename_legacy_metadata_tables(conn: DbResource, schema: str) -> None:
     - Existing tenants get their tables renamed once; subsequent
       ``CREATE TABLE IF NOT EXISTS collection_metadata*`` statements find
       the table already present and are a no-op.
-    - Fresh tenants have no legacy tables; the probe returns False for
-      every pair and no rename runs.  The ``CREATE TABLE`` statements
+    - Fresh tenants have no legacy tables; the DO block sees both source
+      and target missing and is a no-op.  The ``CREATE TABLE`` statements
       then create the canonical names directly.
 
-    Each (legacy, canonical) pair is handled independently:
-
-      1. Validate the schema identifier (rejects reserved words / bad
-         characters before they reach the SQL path).
-      2. Probe ``information_schema.tables`` with bind parameters for
-         both source and target existence.
-      3. Run ``ALTER TABLE {schema}.<legacy> RENAME TO <canonical>``
-         only when the legacy table exists AND the canonical one does
-         not — guaranteeing idempotency.
-
-    Idempotent and safe to call on every
-    ``initialize_core_tenant_tables`` invocation.  Partial runs that
-    fail mid-pair leave earlier pairs renamed (they become no-ops on
-    re-run); the caller wraps this function in the same transaction as
-    the subsequent DDL, so a rollback undoes everything atomically.
+    Idempotent, atomic (single transaction block), and safe to call on
+    every ``initialize_core_tenant_tables`` invocation.
     """
-    validate_sql_identifier(schema)
-    for legacy, canonical in _LEGACY_METADATA_RENAMES:
-        legacy_exists = await _TABLE_EXISTS_QUERY.execute(
-            conn, schema=schema, table_name=legacy,
-        )
-        if not legacy_exists:
-            continue
-        canonical_exists = await _TABLE_EXISTS_QUERY.execute(
-            conn, schema=schema, table_name=canonical,
-        )
-        if canonical_exists:
-            # Both exist — a previous run raced with this one, or the
-            # operator manually created the canonical table.  Skip
-            # rather than risk data loss.
-            logger.info(
-                "Skipping rename of %s.%s -> %s: both tables present.",
-                schema, legacy, canonical,
-            )
-            continue
-        # SAFETY: ``schema`` has been validated above; the source /
-        # target table names are module-level constants (literals), so
-        # the TemplateQueryBuilder identifier quoting only needs to
-        # handle ``{schema}`` — the one and only placeholder in the
-        # template.  ALTER TABLE … RENAME TO does not support bind
-        # parameters for identifiers, which is why this is a DDLQuery
-        # rather than a DQLQuery.
-        rename_sql = (
-            f"ALTER TABLE {{schema}}.{legacy} RENAME TO {canonical};"
-        )
-        await DDLQuery(rename_sql).execute(conn, schema=schema)
-        logger.info(
-            "Renamed %s.%s -> %s.%s", schema, legacy, schema, canonical,
-        )
+    await DDLQuery(TENANT_LEGACY_METADATA_RENAME_DDL).execute(
+        conn, schema=schema
+    )
 
 
 async def ensure_tenant_metadata_domain_tables(conn: DbResource, schema: str) -> None:

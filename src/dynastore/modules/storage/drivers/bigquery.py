@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict, FrozenSet, Iterable, List, Optional, Union
@@ -135,25 +134,11 @@ class ItemsBigQueryDriver:
         project_id = report_target.project_id
         assert project_id is not None  # is_fully_qualified() guarantee
 
-        # Thread per-feature entity IDs through as BigQuery ``insertId``
-        # values so upstream retries (client timeout → re-POST) don't
-        # produce duplicate rows within the 24-hour streaming-buffer
-        # dedup window.  ``batch_summary`` mode emits a single row with
-        # no natural primary key, so its row_ids are left None — BQ
-        # assigns a UUID and retries will legitimately produce two
-        # summary rows (one per retry; expected).
-        row_ids: Optional[List[Optional[str]]]
-        if cfg.reporter_mode == "flat":
-            row_ids = [_feature_primary_id(f) for f in features]
-        else:
-            row_ids = None
-
         try:
             errors = await service.insert_rows_json(
                 report_target.fqn(),
                 rows,
                 project_id=project_id,
-                row_ids=row_ids,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort reporter sink
             logger.warning(
@@ -466,6 +451,7 @@ def _rows_flat(
             # Store as a JSON STRING column — works with both JSON and
             # STRING BigQuery column types and avoids a nested-schema
             # contract this early in the reporter lifecycle.
+            import json
             row["payload"] = json.dumps(props, default=str)
         rows.append(row)
     return rows

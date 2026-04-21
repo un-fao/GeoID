@@ -21,23 +21,8 @@ Legacy-name → canonical-name rewriter for driver and config renames.
 
 When a driver class or its :class:`PluginConfig` subclass is renamed, any
 persisted rows / YAML configs / routing entries keyed on the old name must
-still resolve. The rewriter keeps a legacy → canonical map and normalises
-at lookup time only.
-
-Concurrency model
------------------
-All *mutations* (register, reset, restore) acquire ``_LOCK`` — under
-CPython this is enough to keep the map in a self-consistent state during
-the mutation itself.  Readers (``normalise_driver_id``,
-``normalise_class_key``) are lock-free; they rely on ``dict.get`` being
-atomic under the GIL.  That guarantee holds for CPython up to 3.13 and
-for 3.14+ only when the GIL is enabled (``python --enable-gil``).  If a
-caller deploys dynastore on a no-GIL interpreter or PyPy and intends to
-register renames concurrently with reads, wrap read sites in ``_LOCK``
-or register all renames before any concurrent reader starts.  The
-current usage — registrations happen at module-import time (effectively
-serialised) and reads happen afterwards at request time — is safe
-everywhere.
+still resolve. The rewriter keeps a thread-safe map of legacy → canonical
+names and normalises at lookup time only.
 
 Two separate maps because they live in distinct namespaces:
 
@@ -188,41 +173,7 @@ def _reset_for_tests() -> None:
 
     Production code should never call this. Tests use it via fixtures
     to isolate rename registrations between test cases.
-
-    WARNING: Calling this without :func:`_snapshot_for_tests` /
-    :func:`_restore_for_tests` pairing is destructive beyond the test
-    that called it — module-level driver registrations
-    (``register_driver_id_rename`` at import time) cannot be
-    re-registered because Python caches imports.  Downstream tests in
-    the same pytest session that depend on production renames (e.g. a
-    persisted routing config with ``driver_id="CollectionPostgresqlDriver"``)
-    will then see passthrough rather than the canonical name.  Always
-    pair with the snapshot helpers below.
     """
     with _LOCK:
         _DRIVER_ID_RENAMES.clear()
         _CONFIG_CLASS_KEY_RENAMES.clear()
-
-
-def _snapshot_for_tests() -> "tuple[Dict[str, str], Dict[str, str]]":
-    """Test-only: return a deep copy of both rename maps.
-
-    Use with :func:`_restore_for_tests` in a ``pytest.fixture`` teardown
-    to isolate test-level registrations without destroying the
-    production registrations that loaded at import time.
-    """
-    with _LOCK:
-        return (dict(_DRIVER_ID_RENAMES), dict(_CONFIG_CLASS_KEY_RENAMES))
-
-
-def _restore_for_tests(snapshot: "tuple[Dict[str, str], Dict[str, str]]") -> None:
-    """Test-only: replace both rename maps with ``snapshot``.
-
-    Complement to :func:`_snapshot_for_tests`.
-    """
-    driver_snap, config_snap = snapshot
-    with _LOCK:
-        _DRIVER_ID_RENAMES.clear()
-        _DRIVER_ID_RENAMES.update(driver_snap)
-        _CONFIG_CLASS_KEY_RENAMES.clear()
-        _CONFIG_CLASS_KEY_RENAMES.update(config_snap)

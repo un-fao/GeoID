@@ -19,8 +19,6 @@ import pytest
 
 from dynastore.modules.db_config.config_rewriter import (
     _reset_for_tests,
-    _restore_for_tests,
-    _snapshot_for_tests,
     list_class_key_renames,
     list_driver_id_renames,
     normalise_class_key,
@@ -32,26 +30,10 @@ from dynastore.modules.db_config.config_rewriter import (
 
 @pytest.fixture(autouse=True)
 def _clean_rewriter():
-    """Isolate rewriter state per-test without destroying production registrations.
-
-    Driver / config modules register their legacy → canonical renames at
-    *import time* (see the "Back-compat aliases" block at the bottom of
-    each driver module).  Python caches those imports, so once cleared
-    they cannot be re-registered without re-importing the module.
-
-    Using a straight ``_reset_for_tests()`` teardown would therefore wipe
-    every production rename registration for the remainder of the pytest
-    session — silently breaking any downstream test that relied on a
-    persisted legacy class-key resolving via the rewriter.  Snapshot and
-    restore instead, so each test gets a clean slate AND the
-    post-teardown state is identical to the pre-test state.
-    """
-    snapshot = _snapshot_for_tests()
+    """Wipe rewriter state between tests so registrations don't leak."""
     _reset_for_tests()
-    try:
-        yield
-    finally:
-        _restore_for_tests(snapshot)
+    yield
+    _reset_for_tests()
 
 
 # ---------------------------------------------------------------------------
@@ -222,72 +204,3 @@ def test_validate_routing_entries_rejects_unknown_driver_id():
 
     with pytest.raises(ValueError, match="not registered"):
         _validate_routing_entries(config, {}, "test label")
-
-
-# ---------------------------------------------------------------------------
-# Snapshot / restore — regression for Critical #2 on the code review.
-# ---------------------------------------------------------------------------
-
-
-def test_snapshot_restore_round_trips_both_maps():
-    """snapshot() captures current state; restore() replays it exactly."""
-    register_driver_id_rename(legacy="OldD", canonical="NewD")
-    register_config_class_key_rename(legacy="OldCfg", canonical="NewCfg")
-
-    snap = _snapshot_for_tests()
-    # Mutate state between snapshot and restore
-    _reset_for_tests()
-    register_driver_id_rename(legacy="Transient", canonical="Other")
-    assert normalise_driver_id("OldD") == "OldD"           # state wiped
-    assert normalise_driver_id("Transient") == "Other"
-
-    _restore_for_tests(snap)
-
-    assert normalise_driver_id("OldD") == "NewD"           # restored
-    assert normalise_class_key("OldCfg") == "NewCfg"
-    assert normalise_driver_id("Transient") == "Transient" # transient dropped
-
-
-def test_snapshot_is_a_copy_not_a_reference():
-    """Mutating the map after snapshot() must not mutate the snapshot."""
-    register_driver_id_rename(legacy="A", canonical="B")
-    snap = _snapshot_for_tests()
-    register_driver_id_rename(legacy="C", canonical="D")
-    # Restore the original snapshot — 'C' must go away.
-    _restore_for_tests(snap)
-    assert normalise_driver_id("A") == "B"
-    assert normalise_driver_id("C") == "C"  # passthrough
-
-
-def test_fixture_preserves_production_registrations_across_tests(monkeypatch):
-    """The autouse fixture must not wipe production module-level registrations.
-
-    Simulates the production scenario: a driver module registered a rename
-    at import time (e.g. Collection*Driver → Items*Driver).  The fixture
-    snapshots before each test and restores after — so subsequent tests
-    in the same pytest session still see the production rename.
-    """
-    # Fixture setup has already wiped + yielded; we're mid-test here.
-    # Register something that simulates a driver module's import-time call.
-    register_driver_id_rename(
-        legacy="SimulatedProductionLegacy",
-        canonical="SimulatedProductionCanonical",
-    )
-    assert normalise_driver_id("SimulatedProductionLegacy") == "SimulatedProductionCanonical"
-
-    # When the fixture's teardown runs after this test, it restores the
-    # snapshot taken BEFORE this test.  That snapshot pre-dates the
-    # registration above, so the registration will be dropped — which is
-    # the correct behaviour: test-level state should not leak forward.
-    # This assertion validates the intra-test visibility only.
-
-
-def test_reset_for_tests_without_restore_is_destructive_in_docs():
-    """Ensure _reset_for_tests continues to advertise that it should be paired."""
-    from dynastore.modules.db_config.config_rewriter import _reset_for_tests as r
-
-    doc = r.__doc__ or ""
-    assert "snapshot" in doc.lower() or "restore" in doc.lower(), (
-        "_reset_for_tests docstring must warn callers about the production "
-        "registration wipe so that pairing with _snapshot/_restore is obvious."
-    )
