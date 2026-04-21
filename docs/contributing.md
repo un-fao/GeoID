@@ -29,7 +29,7 @@ Be respectful, inclusive, and professional in all interactions.
 
 4. **Start the development environment**
    ```bash
-   ./manage.sh dev
+   src/dynastore/scripts/rebuild.sh dev
    ```
 
 ## Development Workflow

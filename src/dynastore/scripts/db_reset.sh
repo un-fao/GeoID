@@ -5,8 +5,8 @@
 # Cleanup tiers (see plan synchronous-enchanting-hearth):
 #   * Boot tier (THIS SCRIPT) — Postgres-level; drops user schemas, wipes
 #     orphan cron jobs, preserves/truncates the `keycloak` schema. Invoked by
-#     docker/scripts/db_entrypoint_dev.sh at dev/test container start, or
-#     directly via docker/scripts/db.sh.
+#     src/dynastore/scripts/db_entrypoint_dev.sh at dev/test container start,
+#     or directly via `src/dynastore/scripts/db_reset.sh`.
 #   * Test tier — application-aware Python cleanup driven by
 #     tests/dynastore/test_utils/cleanup_db.py (CleanupRegistry). Does NOT
 #     drop schemas; operates on known table/schema patterns only.
@@ -15,13 +15,13 @@
 # A clean DB means next startup rebuilds every schema from current DDL — useful
 # for verifying migrations, events rewrites, or catching stale-schema drift.
 #
-# System/preserved schemas are sourced from docker/scripts/reset_policy.env
+# System/preserved schemas are sourced from src/dynastore/scripts/reset_policy.env
 # ($PRESERVED_SCHEMAS); system cron jobs likewise ($SYSTEM_CRON_JOBS).
 #
 # Usage:
-#   ./docker/scripts/db_reset.sh check                 # list non-system schemas + sizes
-#   ./docker/scripts/db_reset.sh drop SCHEMA           # drop a specific schema
-#   ./docker/scripts/db_reset.sh reset [--yes]         # drop user schemas (confirm unless --yes)
+#   ./src/dynastore/scripts/db_reset.sh check                 # list non-system schemas + sizes
+#   ./src/dynastore/scripts/db_reset.sh drop SCHEMA           # drop a specific schema
+#   ./src/dynastore/scripts/db_reset.sh reset [--yes]         # drop user schemas (confirm unless --yes)
 #                                      [--keycloak]    # also TRUNCATE tables in keycloak schema
 #                                                      # (forces realm re-import on next keycloak start)
 #                                      [--keep-cron]   # do NOT wipe cron.job rows
