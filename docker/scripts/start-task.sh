@@ -53,5 +53,8 @@ else
 fi
 
 # --- Execute One-off Task ---
+# Invoke as a module so we work whether the source is mounted at
+# ${APP_DIR}/src/${APP} (geoid dev image COPYs src/) or installed only
+# into site-packages (dynastore deployment image installs via pip + git ref).
 echo "Starting one-off task (Cloud Run Job)..."
-exec python "${APP_DIR}/src/${APP}/main_task.py" "$@"
+exec python -m "${APP}.main_task" "$@"
