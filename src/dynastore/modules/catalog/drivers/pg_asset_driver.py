@@ -23,12 +23,12 @@ Owns the DDL and all SQL operations for:
 - ``{schema}.assets``   — partitioned by ``collection_id``
 - ``{schema}.asset_references`` — cascade-delete coordination table
 
-Also implements ``get_collection_metadata()`` / ``set_collection_metadata()``
-by reading/upserting ``{schema}.collection_metadata`` — the same table used
-by ``ItemsPostgresqlDriver``.  TRANSFORM drivers (role-based driver
-plan §Protocols) use this to enrich collection descriptors with
-asset-derived statistics (counts, last ingestion timestamp, coverage
-bounds).
+Collection-level metadata is no longer this driver's responsibility.
+Callers go through :mod:`dynastore.modules.catalog.collection_metadata_router`
+which fans out across registered ``CollectionMetadataStore`` drivers
+(``CollectionCorePostgresqlDriver`` + ``CollectionStacPostgresqlDriver``
+in the default deployment).  The asset driver handles asset-level CRUD
+only.
 
 Lifecycle
 ~~~~~~~~~
@@ -641,80 +641,12 @@ class AssetPostgresqlDriver:
             ).execute(conn, catalog_id=catalog_id, asset_id=asset_id)
             return rows or []
 
-    # ------------------------------------------------------------------
-    # Collection metadata (reuses metadata)
-    # ------------------------------------------------------------------
-
-    async def get_collection_metadata(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        *,
-        db_resource: Optional[Any] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Read collection metadata from ``metadata``.
-
-        The same table is used by ``ItemsPostgresqlDriver`` for feature
-        collection metadata — scoped to ``collection_id``.
-        """
-        schema = await self._resolve_schema(catalog_id, db_resource)
-        if not schema:
-            return None
-
-        sql = f"""
-            SELECT *
-            FROM "{schema}".collection_metadata
-            WHERE collection_id = :collection_id
-        """
-        async with managed_transaction(db_resource or self.engine) as conn:
-            return await DQLQuery(
-                sql, result_handler=ResultHandler.ONE_DICT
-            ).execute(conn, collection_id=collection_id)
-
-    async def set_collection_metadata(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        metadata: Dict[str, Any],
-        *,
-        db_resource: Optional[Any] = None,
-    ) -> None:
-        """Upsert collection metadata into ``metadata``."""
-        schema = await self._resolve_schema(catalog_id, db_resource)
-        if not schema:
-            return
-
-        # Build SET clause for all known JSONB columns
-        known = {
-            "title", "description", "keywords", "license", "extent",
-            "providers", "summaries", "links", "assets", "item_assets",
-            "stac_extensions", "extra_metadata",
-        }
-        columns = []
-        params: Dict[str, Any] = {"collection_id": collection_id}
-        for col in known:
-            val = metadata.get(col)
-            if val is not None:
-                columns.append(col)
-                params[col] = json.dumps(val, cls=CustomJSONEncoder)
-
-        if not columns:
-            return
-
-        col_list = ", ".join(f'"{c}"' for c in columns)
-        val_list = ", ".join(f":{c}::jsonb" for c in columns)
-        update_list = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in columns)
-
-        sql = text(f"""
-            INSERT INTO "{schema}".collection_metadata (collection_id, {col_list})
-            VALUES (:collection_id, {val_list})
-            ON CONFLICT (collection_id) DO UPDATE SET {update_list}
-        """)
-
-        async with managed_transaction(db_resource or self.engine) as conn:
-            await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
-                conn, **params
-            )
+    # Collection-metadata CRUD has moved to the domain-scoped drivers +
+    # :mod:`dynastore.modules.catalog.collection_metadata_router`.  The
+    # asset driver no longer owns collection metadata — callers invoke
+    # the router, which fans out across CollectionMetadataStore
+    # implementers (CollectionCorePostgresqlDriver +
+    # CollectionStacPostgresqlDriver by default).
 
 
 # ==============================================================================
@@ -733,7 +665,7 @@ async def _pg_asset_driver_init_tenant(
 
     Priority 5 runs before module-specific hooks (stats, tiles at priority 50).
     This is the sole DDL path for asset tables — ``TENANT_ASSETS_DDL`` has been
-    removed from ``catalog_service.py`` and ``tenant_schema.py``.
+    removed from ``catalog_service.py``.
     """
     driver = AssetPostgresqlDriver()
     driver.engine = conn  # use the in-transaction connection directly

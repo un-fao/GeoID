@@ -89,26 +89,18 @@ def get_extension_instance_by_class(cls: Type[T_Extension]) -> T_Extension | Non
             return cast(T_Extension, config.instance)
     return None
 
-def discover_extensions(include_only: Optional[List[str]] = None):
-    """
-    Discovers extensions using PEP-517 entry points defined in pyproject.toml
-    under the "dynastore.extensions" group.
-    """
-    if include_only is None:
-        import os
-        scope = os.getenv("SCOPE")
-        if scope:
-            include_only = [s.strip() for s in scope.split(",")]
+def discover_extensions():
+    """Discover every ``dynastore.extensions`` entry-point from installed packages.
 
+    Identity is package metadata.  Entry-points whose module imports fail
+    (optional deps not installed) are gracefully skipped.
+    """
     logger.info("--- [extensions] Discovering components via entry points... ---")
-    # Discovery returns uninstantiated classes based purely on entry points
     from dynastore.tools.discovery import discover_and_load_plugins
-    classes = discover_and_load_plugins("dynastore.extensions", include_only=include_only)
-    
-    # Populate _DYNASTORE_EXTENSIONS directly from discovered classes
-    for name, cls in classes.items():
+
+    for name, cls in discover_and_load_plugins("dynastore.extensions").items():
         _DYNASTORE_EXTENSIONS[name] = ExtensionConfig(cls=cls)
- 
+
     logger.info(f"--- DISCOVERED EXTENSIONS: {list(_DYNASTORE_EXTENSIONS.keys())} ---")
 
 def instantiate_extensions(app: Any, include_only: Optional[List[str]] = None):

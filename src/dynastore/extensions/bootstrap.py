@@ -28,26 +28,25 @@ def bootstrap_app(
     app: Any,
     include_modules: Optional[List[str]] = None,
     include_extensions: Optional[List[str]] = None,
-    include_tasks: Optional[List[str]] = None,
 ):
-    """
-    Bootstraps the FastAPI application by discovering and instantiating 
-    extensions and modules based on installed entry points.
+    """Bootstrap the FastAPI application.
+
+    Discovery of modules/extensions/tasks is driven entirely by installed
+    package metadata.  ``include_modules`` / ``include_extensions`` narrow
+    INSTANTIATION for test isolation only — they do not filter discovery.
     """
     from fastapi import FastAPI, Request
     from dynastore.extensions.tools.fast_api import ORJSONResponse
-    
+
     app = cast(FastAPI, app)
-    
-    # 1. Discover and instantiate foundation
-    bootstrap_foundation(include_only=include_modules)
+
+    bootstrap_foundation()
     instantiate_foundation(app.state, include_only=include_modules)
 
-    # 2. Discover and instantiate extensions
     logger.info("--- [extensions/bootstrap.py] Discovering extensions and tasks ---")
-    tasks.discover_tasks(include_only=include_tasks)
-    extensions.discover_extensions(include_only=include_extensions)
-    
+    tasks.discover_tasks()
+    extensions.discover_extensions()
+
     extensions.instantiate_extensions(app, include_only=include_extensions)
     extensions.apply_app_configurations(app)
 

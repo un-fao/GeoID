@@ -361,7 +361,6 @@ storage_elasticsearch_assets = "dynastore.modules.storage.drivers.elasticsearch:
 storage_duckdb = "dynastore.modules.storage.drivers.duckdb:ItemsDuckdbDriver"
 storage_iceberg = "dynastore.modules.storage.drivers.iceberg:ItemsIcebergDriver"
 storage_bigquery = "dynastore.modules.storage.drivers.bigquery:ItemsBigQueryDriver"
-metadata_postgresql = "dynastore.modules.storage.drivers.metadata_postgresql:MetadataPostgresqlDriver"
 metadata_elasticsearch = "dynastore.modules.elasticsearch.es_metadata_driver:MetadataElasticsearchDriver"
 # M2.1 — domain-scoped Primary metadata drivers (additive; legacy
 # metadata_postgresql stays until M2.5).  One entry-point per concrete

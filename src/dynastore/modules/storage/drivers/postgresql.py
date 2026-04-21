@@ -537,120 +537,11 @@ class ItemsPostgresqlDriver(ModuleProtocol):
             physical_table, catalog_id, collection_id,
         )
 
-    async def get_collection_metadata(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        *,
-        db_resource=None,
-    ) -> Optional[Dict[str, Any]]:
-        """Read collection metadata from metadata."""
-        from dynastore.modules.db_config.query_executor import (
-            DQLQuery, ResultHandler, managed_transaction,
-        )
-        import json
-
-        schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
-        query_sql = f'SELECT * FROM "{schema}".collection_metadata WHERE collection_id = :collection_id;'
-
-        async def _query(conn):
-            row = await DQLQuery(
-                query_sql, result_handler=ResultHandler.ONE_DICT
-            ).execute(conn, collection_id=collection_id)
-            if not row:
-                return None
-            # Deserialize JSONB columns stored as strings
-            for key in ["title", "description", "keywords", "license", "extent",
-                        "providers", "summaries", "links", "assets", "item_assets",
-                        "extra_metadata", "stac_extensions"]:
-                val = row.get(key)
-                if isinstance(val, str):
-                    try:
-                        row[key] = json.loads(val)
-                    except Exception:
-                        row[key] = None
-            row.pop("collection_id", None)
-            return row
-
-        if db_resource is not None:
-            return await _query(db_resource)
-        from dynastore.tools.discovery import get_protocol
-        from dynastore.models.protocols.database import DatabaseProtocol
-        db_proto = get_protocol(DatabaseProtocol)
-        if not db_proto:
-            raise RuntimeError("DatabaseProtocol not available")
-        async with managed_transaction(db_proto.engine) as conn:
-            return await _query(conn)
-
-    async def set_collection_metadata(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        metadata: Dict[str, Any],
-        *,
-        db_resource=None,
-    ) -> None:
-        """Upsert collection metadata into metadata."""
-        from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
-        import json
-
-        if db_resource is None:
-            raise ValueError("set_collection_metadata requires db_resource")
-        schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
-
-        def _serialize(val) -> Optional[str]:
-            if val is None:
-                return None
-            if isinstance(val, str):
-                return val
-            return json.dumps(val, default=str)
-
-        upsert_sql = f"""
-            INSERT INTO "{schema}".collection_metadata
-                (collection_id, title, description, keywords, license,
-                 extent, providers, summaries, links, assets, item_assets,
-                 extra_metadata)
-            VALUES
-                (:collection_id, :title, :description, :keywords, :license,
-                 :extent, :providers, :summaries, :links, :assets, :item_assets,
-                 :extra_metadata)
-            ON CONFLICT (collection_id) DO UPDATE SET
-                title        = EXCLUDED.title,
-                description  = EXCLUDED.description,
-                keywords     = EXCLUDED.keywords,
-                license      = EXCLUDED.license,
-                extent       = EXCLUDED.extent,
-                providers    = EXCLUDED.providers,
-                summaries    = EXCLUDED.summaries,
-                links        = EXCLUDED.links,
-                assets       = EXCLUDED.assets,
-                item_assets  = EXCLUDED.item_assets,
-                extra_metadata = EXCLUDED.extra_metadata;
-        """
-        from dynastore.tools.json import CustomJSONEncoder
-
-        def _to_json(val) -> Optional[str]:
-            if val is None:
-                return None
-            if isinstance(val, str):
-                return val
-            return json.dumps(val, cls=CustomJSONEncoder)
-
-        await DQLQuery(upsert_sql, result_handler=ResultHandler.NONE).execute(
-            db_resource,
-            collection_id=collection_id,
-            title=_to_json(metadata.get("title")),
-            description=_to_json(metadata.get("description")),
-            keywords=_to_json(metadata.get("keywords")),
-            license=_to_json(metadata.get("license")),
-            extent=_to_json(metadata.get("extent")),
-            providers=_to_json(metadata.get("providers")),
-            summaries=_to_json(metadata.get("summaries")),
-            links=_to_json(metadata.get("links")),
-            assets=_to_json(metadata.get("assets")),
-            item_assets=_to_json(metadata.get("item_assets")),
-            extra_metadata=_to_json(metadata.get("extra_metadata")),
-        )
+    # Collection-metadata CRUD has moved to the domain-scoped drivers +
+    # :mod:`dynastore.modules.catalog.collection_metadata_router`.  The
+    # items driver no longer touches the legacy ``{schema}.collection_metadata``
+    # table (dropped by the M2.5 migration) — callers route through the
+    # split-domain drivers instead.
 
     async def drop_storage(
         self,
@@ -1427,17 +1318,3 @@ async def _pg_driver_init_collection(
     )
 
 
-# ---------------------------------------------------------------------------
-# Back-compat aliases — legacy Collection*Driver names remain importable, and
-# registry lookups (driver_index / TypedModelRegistry) go through the
-# config_rewriter so persisted routing entries and config rows still resolve.
-# Remove once telemetry shows zero hits on the rewriter.  See
-# dynastore.tools.config_rewriter.
-# ---------------------------------------------------------------------------
-from dynastore.tools.config_rewriter import register_driver_id_rename  # noqa: E402
-
-CollectionPostgresqlDriver = ItemsPostgresqlDriver  # noqa: E305 — back-compat alias, see config_rewriter
-register_driver_id_rename(
-    legacy="CollectionPostgresqlDriver",
-    canonical="ItemsPostgresqlDriver",
-)

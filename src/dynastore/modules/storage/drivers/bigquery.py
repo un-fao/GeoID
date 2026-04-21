@@ -308,8 +308,8 @@ def _make_bq_client(
     2. ``credentials.api_key`` -- Secret-wrapped API key (future, External
        Connections). Not wired to bigquery.Client() yet -- logged as a
        warning until BigQuery API-key auth lands upstream.
-    3. Fallback to CloudIdentityProtocol (Phase 4a path) -- keeps
-       back-compat for deployments that haven't migrated.
+    3. Fallback to CloudIdentityProtocol (Phase 4a path) when no
+       Secret-wrapped credentials are supplied.
     """
     from google.cloud import bigquery
 
@@ -488,17 +488,3 @@ def _rows_batch_summary(
     }]
 
 
-# ---------------------------------------------------------------------------
-# Back-compat aliases — legacy Collection*Driver names remain importable, and
-# registry lookups (driver_index / TypedModelRegistry) go through the
-# config_rewriter so persisted routing entries and config rows still resolve.
-# Remove once telemetry shows zero hits on the rewriter.  See
-# dynastore.tools.config_rewriter.
-# ---------------------------------------------------------------------------
-from dynastore.tools.config_rewriter import register_driver_id_rename  # noqa: E402
-
-CollectionBigQueryDriver = ItemsBigQueryDriver  # noqa: E305 — back-compat alias, see config_rewriter
-register_driver_id_rename(
-    legacy="CollectionBigQueryDriver",
-    canonical="ItemsBigQueryDriver",
-)

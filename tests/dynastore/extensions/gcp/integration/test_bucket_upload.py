@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 @pytest.mark.gcp
 @pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "gcp", "tasks", "iam", "metadata_postgresql")
+@pytest.mark.enable_modules("db_config", "db", "catalog", "gcp", "tasks", "iam", "metadata_collection_core_postgresql", "metadata_collection_stac_postgresql", "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql")
 @pytest.mark.enable_extensions("gcp_bucket", "stac")
 async def test_init_upload_acl_enum(sysadmin_in_process_client, app_lifespan, catalog_id, catalog_cleaner, test_data_loader, caplog, base_url):
     """
@@ -174,7 +174,7 @@ async def test_init_upload_acl_enum(sysadmin_in_process_client, app_lifespan, ca
 
 @pytest.mark.gcp
 @pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "gcp", "tasks", "iam", "metadata_postgresql")
+@pytest.mark.enable_modules("db_config", "db", "catalog", "gcp", "tasks", "iam", "metadata_collection_core_postgresql", "metadata_collection_stac_postgresql", "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql")
 @pytest.mark.enable_extensions("gcp_bucket", "stac")
 async def test_init_upload_precondition_failed(
     sysadmin_in_process_client, app_lifespan, catalog_id, catalog_cleaner, test_data_loader, caplog, base_url

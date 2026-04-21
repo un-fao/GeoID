@@ -26,15 +26,14 @@ logger = logging.getLogger(__name__)
 def bootstrap_task_env(
     app_state: object,
     include_modules: Optional[List[str]] = None,
-    include_tasks: Optional[List[str]] = None,
 ):
+    """Bootstrap the task-worker environment.
+
+    Module/task discovery is driven by installed package metadata.
+    ``include_modules`` narrows module *instantiation* for test isolation only.
     """
-    Bootstraps the generic task environment for background workers.
-    """
-    # 1. Discover and instantiate foundation
-    bootstrap_foundation(include_only=include_modules)
+    bootstrap_foundation()
     instantiate_foundation(app_state, include_only=include_modules)
 
-    # 2. Discover tasks
     logger.info("--- [tasks/bootstrap.py] Discovering background tasks ---")
-    tasks.discover_tasks(include_only=include_tasks)
+    tasks.discover_tasks()

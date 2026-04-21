@@ -188,7 +188,10 @@ No application table may reside in the `public` schema. All objects are organize
 ### Schema Bootstrap
 
 Tenant tables are created idempotently on first access by
-`tenant_schema.initialize_tenant_shell` and the
-`@lifecycle_registry.sync_catalog_initializer` hooks. DDL is authored with
+`catalog_service.create_catalog` (inline DDL for schema, `collections`,
+`catalog_configs`, `collection_configs`, `collection_metadata_core`,
+`collection_metadata_stac`, plus the legacy-metadata backfill) and the
+`@lifecycle_registry.sync_catalog_initializer` hooks (module-specific
+tables — assets, tiles, proxy, IAM, log_manager, …). DDL is authored with
 `CREATE TABLE IF NOT EXISTS`/`ALTER TABLE ... IF NOT EXISTS` so concurrent
 workers converge on the same target state without a versioned migration runner.

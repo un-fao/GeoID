@@ -71,7 +71,7 @@ def _stac_data_loader(filename: str):
 @pytest.mark.asyncio
 @pytest.mark.enable_modules(
     "db_config", "db", "catalog", "stac", "processes", "tasks",
-    "proxy", "gcp", "iam", "metadata_postgresql",
+    "proxy", "gcp", "iam", "metadata_collection_core_postgresql", "metadata_collection_stac_postgresql", "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql",
 )
 @pytest.mark.enable_extensions(
     "stac", "assets", "features", "configs", "processes", "web",

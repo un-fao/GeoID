@@ -9,7 +9,7 @@ from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
 from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
 
 
-class TestCollectionPostgresqlDriverMeta:
+class TestItemsPostgresqlDriverMeta:
     def test_driver_class_name(self):
         driver = ItemsPostgresqlDriver()
         assert type(driver).__name__ == "ItemsPostgresqlDriver"

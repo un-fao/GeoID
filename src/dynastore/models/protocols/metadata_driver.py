@@ -121,8 +121,7 @@ class CollectionMetadataStore(Protocol):
     """
 
     capabilities: FrozenSet[str]
-    # domain: ClassVar[MetadataDomain]     — declared in each concrete driver class;
-    #                                         absent → treated as CORE for back-compat.
+    # domain: ClassVar[MetadataDomain]     — declared in each concrete driver class.
     # sla: ClassVar[Optional[DriverSla]]   — mandatory when TRANSFORM is declared.
     # description: ClassVar[LocalizedText] — declared in each concrete driver class.
 

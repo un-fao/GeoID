@@ -7,7 +7,7 @@ from tests.dynastore.test_utils import generate_test_id
     "stac", "assets", "features", "configs", "processes", "web"
 )
 @pytest.mark.enable_modules(
-    "db_config", "db", "catalog", "stac", "processes", "tasks", "proxy", "gcp", "iam", "metadata_postgresql"
+    "db_config", "db", "catalog", "stac", "processes", "tasks", "proxy", "gcp", "iam", "metadata_collection_core_postgresql", "metadata_collection_stac_postgresql", "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql"
 )
 @pytest.mark.enable_tasks("ingestion")
 async def test_virtual_stac_endpoints(sysadmin_in_process_client, in_process_client, test_data_loader, base_url):

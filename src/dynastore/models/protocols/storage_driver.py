@@ -317,40 +317,13 @@ class CollectionItemsStore(Protocol):
         """
         ...
 
-    async def get_collection_metadata(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        *,
-        db_resource: Optional[Any] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Return collection metadata managed by this driver.
-
-        Returns a dict with fields like title, description, extent, keywords,
-        license, providers, summaries, links, assets, item_assets, stac_version,
-        stac_extensions, extra_metadata — or any subset thereof.
-
-        Returns None if no metadata is stored for this collection.
-        """
-        ...
-
-    async def set_collection_metadata(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        metadata: Dict[str, Any],
-        *,
-        db_resource: Optional[Any] = None,
-    ) -> None:
-        """Store collection metadata in this driver's storage.
-
-        Each driver persists in its own format:
-        - PG: ``metadata`` table (UPSERT)
-        - Iceberg: table properties via ``table.transaction().set_properties()``
-        - DuckDB: sidecar JSON file or parquet metadata
-        - ES: index settings/mappings or ``_meta`` field
-        """
-        ...
+    # Collection-metadata CRUD is no longer part of the
+    # CollectionItemsStore protocol.  The M2.5 hard cut moved ownership
+    # of collection metadata to the domain-scoped CollectionMetadataStore
+    # drivers (CollectionCorePostgresqlDriver +
+    # CollectionStacPostgresqlDriver) via
+    # :mod:`dynastore.modules.catalog.collection_metadata_router`.
+    # Storage drivers now handle items-only; metadata is out-of-band.
 
     async def count_entities(
         self,

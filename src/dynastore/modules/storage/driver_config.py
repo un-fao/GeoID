@@ -986,34 +986,3 @@ async def _on_apply_collection_schema(
 
 
 CollectionSchema.register_apply_handler(_on_apply_collection_schema)
-
-
-# ---------------------------------------------------------------------------
-# Back-compat aliases — legacy Collection*DriverConfig names remain importable, and
-# registry lookups (driver_index / TypedModelRegistry) go through the
-# config_rewriter so persisted routing entries and config rows still resolve.
-# Remove once telemetry shows zero hits on the rewriter.  See
-# dynastore.tools.config_rewriter.
-# ---------------------------------------------------------------------------
-from dynastore.tools.config_rewriter import register_config_class_key_rename  # noqa: E402
-
-CollectionPostgresqlDriverConfig = ItemsPostgresqlDriverConfig  # noqa: E305 — back-compat alias, see config_rewriter
-register_config_class_key_rename(
-    legacy="CollectionPostgresqlDriverConfig",
-    canonical="ItemsPostgresqlDriverConfig",
-)
-CollectionElasticsearchDriverConfig = ItemsElasticsearchDriverConfig  # noqa: E305 — back-compat alias, see config_rewriter
-register_config_class_key_rename(
-    legacy="CollectionElasticsearchDriverConfig",
-    canonical="ItemsElasticsearchDriverConfig",
-)
-CollectionDuckdbDriverConfig = ItemsDuckdbDriverConfig  # noqa: E305 — back-compat alias, see config_rewriter
-register_config_class_key_rename(
-    legacy="CollectionDuckdbDriverConfig",
-    canonical="ItemsDuckdbDriverConfig",
-)
-CollectionIcebergDriverConfig = ItemsIcebergDriverConfig  # noqa: E305 — back-compat alias, see config_rewriter
-register_config_class_key_rename(
-    legacy="CollectionIcebergDriverConfig",
-    canonical="ItemsIcebergDriverConfig",
-)

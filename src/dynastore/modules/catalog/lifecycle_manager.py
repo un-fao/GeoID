@@ -54,15 +54,6 @@ SyncCatalogDestroyer = Union[
     Callable[[DbResource, str, str], Awaitable[None]],
     Callable[[DbResource, str, str], None],
 ]
-# Metadata-phase catalog hook (M2.2): fires AFTER the catalog.catalogs
-# registry row is committed, so FK references into catalog.catalogs(id)
-# from per-domain metadata tables are satisfied.  Accepts ``**kwargs`` so
-# callers can thread domain-specific payloads (``catalog_metadata`` dict,
-# STAC context, …) without changing the signature.
-SyncCatalogMetadataInitializer = Union[
-    Callable[..., Awaitable[None]],
-    Callable[..., None],
-]
 SyncCollectionInitializer = Union[
     Callable[[DbResource, str, str, str], Awaitable[None]],
     Callable[[DbResource, str, str, str], None],
@@ -133,10 +124,6 @@ class LifecycleRegistry:
         # Synchronous transactional hooks (tables)
         self._sync_catalog_initializers: List[HookWithPriority] = []
         self._sync_catalog_destroyers: List[HookWithPriority] = []
-        # M2.2 — catalog-metadata phase.  Fires from CatalogService.create_catalog
-        # AFTER the catalog.catalogs registry row has been committed so FK
-        # references from catalog.catalog_metadata_core / _stac are satisfied.
-        self._sync_catalog_metadata_initializers: List[HookWithPriority] = []
         self._sync_collection_initializers: List[HookWithPriority] = []
         self._sync_collection_destroyers: List[HookWithPriority] = []
         # Hard-delete-only hooks: fired only when a collection is permanently removed
@@ -168,7 +155,6 @@ class LifecycleRegistry:
         """
         self._sync_catalog_initializers.clear()
         self._sync_catalog_destroyers.clear()
-        self._sync_catalog_metadata_initializers.clear()
         self._sync_collection_initializers.clear()
         self._sync_collection_destroyers.clear()
         self._sync_collection_hard_destroyers.clear()
@@ -197,7 +183,6 @@ class LifecycleRegistry:
         lists_to_process = [
             self._sync_catalog_initializers,
             self._sync_catalog_destroyers,
-            self._sync_catalog_metadata_initializers,
             self._sync_collection_initializers,
             self._sync_collection_destroyers,
             self._sync_collection_hard_destroyers,
@@ -330,36 +315,6 @@ class LifecycleRegistry:
     ) -> Callable[[SyncCatalogDestroyer], SyncCatalogDestroyer]:
         def decorator(func: SyncCatalogDestroyer) -> SyncCatalogDestroyer:
             return self._register_hook(self._sync_catalog_destroyers, priority, func)
-
-        if callable(priority):
-            func = priority
-            priority = 0
-            return decorator(func)  # type: ignore[return-value]
-        return decorator
-
-    def sync_catalog_metadata_initializer(
-        self, priority: int = 0
-    ) -> Callable[[SyncCatalogMetadataInitializer], SyncCatalogMetadataInitializer]:
-        """Decorator registering a catalog-METADATA initialization hook.
-
-        Fires from ``init_catalog_metadata`` — the lifecycle phase invoked
-        after the ``catalog.catalogs`` registry row has been committed
-        (so the FK from ``catalog.catalog_metadata_core`` /
-        ``catalog.catalog_metadata_stac`` is satisfied).  Hooks receive
-        ``(conn, schema, catalog_id, **kwargs)`` — the kwargs carry
-        domain-specific payload (``catalog_metadata`` dict, etc.) and
-        make the hook a no-op when the caller has nothing to persist
-        (default-fast invariant).
-
-        Introduced by M2.2 of the role-based driver refactor.  The PG
-        Primary catalog-metadata drivers register here; the STAC
-        extension adds its own catalog-tier hook analogously.
-        """
-
-        def decorator(func: SyncCatalogMetadataInitializer) -> SyncCatalogMetadataInitializer:
-            return self._register_hook(
-                self._sync_catalog_metadata_initializers, priority, func
-            )
 
         if callable(priority):
             func = priority
@@ -583,56 +538,6 @@ class LifecycleRegistry:
                 logger.error(
                     f"Outer transaction aborted during catalog initialization for '{catalog_id}'. "
                     "Aborting remaining initializers."
-                )
-                raise
-
-    async def init_catalog_metadata(
-        self,
-        conn: DbResource,
-        schema: str,
-        catalog_id: str,
-        **kwargs: Any,
-    ) -> None:
-        """Execute all registered catalog-METADATA initializers (transactional).
-
-        Called from ``CatalogService.create_catalog`` after the
-        ``catalog.catalogs`` registry row has been committed, so the FK
-        references from ``catalog.catalog_metadata_core`` /
-        ``catalog.catalog_metadata_stac`` into ``catalog.catalogs(id)``
-        are satisfied.
-
-        ``kwargs`` carries domain-specific payload forwarded to every
-        hook.  Hooks that don't recognise a given kwarg simply ignore
-        it, so adding a new payload field (e.g. a STAC-extension-only
-        kwarg) does NOT require updates to existing hooks.
-
-        Each hook runs in its own SAVEPOINT — same contract as
-        :meth:`init_catalog` — so a failing metadata hook cannot poison
-        the outer transaction's registry write.
-        """
-        if not self._sync_catalog_metadata_initializers:
-            return
-
-        logger.info(
-            f"Initializing catalog metadata for '{catalog_id}' (schema: {schema})"
-        )
-        for initializer in self._sort_hooks(self._sync_catalog_metadata_initializers):
-            label = (
-                f"Sync catalog-metadata initializer {initializer.__module__}."
-                f"{initializer.__name__} for '{catalog_id}'"
-            )
-            coro = (
-                initializer(conn, schema, catalog_id, **kwargs)
-                if inspect.iscoroutinefunction(initializer)
-                else initializer(conn, schema, catalog_id, **kwargs)
-            )
-            try:
-                await self._run_initializer_isolated(conn, label, coro)
-            except Exception:
-                logger.error(
-                    f"Outer transaction aborted during catalog-metadata "
-                    f"initialization for '{catalog_id}'. Aborting "
-                    f"remaining initializers."
                 )
                 raise
 
@@ -1144,7 +1049,6 @@ lifecycle_registry = LifecycleRegistry()
 # Convenience decorator exports (using registry methods as decorators)
 sync_catalog_initializer = lifecycle_registry.sync_catalog_initializer
 sync_catalog_destroyer = lifecycle_registry.sync_catalog_destroyer
-sync_catalog_metadata_initializer = lifecycle_registry.sync_catalog_metadata_initializer
 sync_collection_initializer = lifecycle_registry.sync_collection_initializer
 sync_collection_destroyer = lifecycle_registry.sync_collection_destroyer
 sync_collection_hard_destroyer = lifecycle_registry.sync_collection_hard_destroyer

@@ -148,40 +148,13 @@ class AssetStore(Protocol):
         """
         ...
 
-    # ------------------------------------------------------------------
-    # Collection metadata (separated from asset data — enables enrichment)
-    #
-    # These methods store collection-level descriptors (title, extent,
-    # keywords, etc.) independently of the asset documents.  A TRANSFORM
-    # driver (role-based driver plan §Protocols) can therefore use
-    # AssetStore.get_collection_metadata() as a hydration source when
-    # producing asset-derived collection-level contributions (asset
-    # counts, ingestion timestamps, coverage).
-    # ------------------------------------------------------------------
-
-    async def get_collection_metadata(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        *,
-        db_resource: Optional[Any] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Return collection metadata stored by this driver.
-
-        Returns None if no metadata has been stored.
-        """
-        ...
-
-    async def set_collection_metadata(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        metadata: Dict[str, Any],
-        *,
-        db_resource: Optional[Any] = None,
-    ) -> None:
-        """Store collection metadata in this driver's backing store."""
-        ...
+    # Collection-metadata CRUD is no longer part of the AssetStore
+    # protocol.  The M2.5 hard cut moved ownership of collection
+    # metadata to :mod:`dynastore.modules.catalog.collection_metadata_router`
+    # which fans out across CollectionMetadataStore implementers.
+    # Asset drivers handle asset-level CRUD only; a TRANSFORM driver
+    # that needs to enrich collection metadata should go through the
+    # router, not through the asset store.
 
     async def location(
         self,

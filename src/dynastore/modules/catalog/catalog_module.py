@@ -113,11 +113,9 @@ async def _asset_event_bridge(event_type: AssetEventType, data: dict) -> None:
 # ``catalog.catalog_metadata_core`` / ``_stac`` and is accessed through
 # the catalog-metadata router (:mod:`catalog_metadata_router`).
 #
-# Fresh deployments get this trim shape directly from the CREATE TABLE
-# below.  Existing deployments had those columns populated pre-M2.0;
-# :func:`drop_legacy_catalog_metadata_columns` drops them idempotently
-# during CatalogModule init after :func:`backfill_catalog_metadata_from_legacy`
-# has copied their contents into the split tables.
+# Delete-and-rebuild policy: no legacy columns carried over.  Fresh
+# deployments get this canonical shape directly from the CREATE TABLE
+# below.
 CATALOGS_TABLE_DDL = """
 CREATE TABLE IF NOT EXISTS catalog.catalogs (
     id VARCHAR PRIMARY KEY,
@@ -239,35 +237,13 @@ class CatalogModule(ModuleProtocol):
 
                 await DDLQuery(CATALOGS_TABLE_DDL + SHARED_PROPERTIES_SCHEMA).execute(conn)
 
-                # M2.0 — metadata-domain split (role-based driver refactor).
-                # Additive: creates catalog.catalog_metadata_core, catalog.
-                # catalog_metadata_stac, and the created_at/updated_at columns
-                # on catalog.catalogs alongside the legacy metadata columns.
-                # Idempotent; no reads / writes change in M2.0 — the legacy
-                # columns on catalog.catalogs still drive everything.  The
-                # concrete Primary drivers that consume these tables land
-                # in M2.1; the read/write flip happens in M2.3 / M2.4.
+                # Metadata-domain tables: catalog.catalog_metadata_core +
+                # catalog.catalog_metadata_stac.  The only collection- and
+                # catalog-metadata storage path after the M2.5 hard cut.
                 from dynastore.modules.catalog.db_init.metadata_domain_split import (
-                    backfill_catalog_metadata_from_legacy,
-                    drop_legacy_catalog_metadata_columns,
                     ensure_global_metadata_domain_tables,
                 )
                 await ensure_global_metadata_domain_tables(conn)
-
-                # M2.3a — one-shot backfill from legacy catalog.catalogs
-                # metadata columns into the split tables.  Idempotent: a
-                # second run sees every row already present (via the
-                # unique-key check on catalog_id) and issues zero INSERTs.
-                # Self-skips on post-M2.5b deployments (legacy columns
-                # already dropped — nothing to copy).
-                await backfill_catalog_metadata_from_legacy(conn)
-
-                # M2.5b — drop the legacy metadata columns from
-                # catalog.catalogs.  Runs AFTER the backfill so existing
-                # data has been copied into the split tables.
-                # Idempotent via ``DROP COLUMN IF EXISTS``; a second
-                # run finds no legacy columns and issues a no-op ALTER.
-                await drop_legacy_catalog_metadata_columns(conn)
 
                 # Ensure stored procedures (replacing init.sql)
                 from dynastore.modules.catalog.db_init.stored_procedures import (

@@ -799,41 +799,6 @@ class ItemsElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
             logger.debug("delete_collection_doc: %s", e)
 
     # ------------------------------------------------------------------
-    # Collection metadata (stored as STAC Collection doc in ES)
-    # ------------------------------------------------------------------
-
-    async def get_collection_metadata(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        *,
-        db_resource=None,
-    ) -> Optional[Dict[str, Any]]:
-        """Read collection metadata from the ES collection index via SFEOS."""
-        db = self._get_db_logic()
-        try:
-            doc = await db.find_collection(collection_id)
-            if doc:
-                doc.pop("type", None)
-                doc.pop("id", None)
-                return doc
-        except Exception:
-            pass
-        return None
-
-    async def set_collection_metadata(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        metadata: Dict[str, Any],
-        *,
-        db_resource=None,
-    ) -> None:
-        """Upsert collection metadata as a STAC Collection doc in ES."""
-        doc = dict(metadata)
-        await self.write_collection(catalog_id, collection_id, doc)
-
-    # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
 
@@ -1349,26 +1314,6 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
         raise NotImplementedError(
             "ItemsElasticsearchObfuscatedDriver.export_entities: not supported."
         )
-
-    # Obfuscated driver stores geoid tokens only — not a metadata driver.
-    async def get_collection_metadata(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        *,
-        db_resource=None,
-    ) -> Optional[Dict[str, Any]]:
-        return None
-
-    async def set_collection_metadata(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        metadata: Dict[str, Any],
-        *,
-        db_resource=None,
-    ) -> None:
-        pass
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -1918,49 +1863,6 @@ class AssetElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
             )
 
     # ------------------------------------------------------------------
-    # Collection metadata (via SFEOS DatabaseLogic — same as full ES driver)
-    # ------------------------------------------------------------------
-
-    async def get_collection_metadata(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        *,
-        db_resource=None,
-    ) -> Optional[Dict[str, Any]]:
-        """Read collection metadata from the ES collection index via SFEOS."""
-        db = self._get_db_logic()
-        try:
-            doc = await db.find_collection(collection_id)
-            if doc:
-                doc.pop("type", None)
-                doc.pop("id", None)
-                return doc
-        except Exception:
-            pass
-        return None
-
-    async def set_collection_metadata(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        metadata: Dict[str, Any],
-        *,
-        db_resource=None,
-    ) -> None:
-        """Upsert collection metadata as a STAC Collection doc in ES via SFEOS."""
-        db = self._get_db_logic()
-        doc = dict(metadata)
-        doc.setdefault("id", collection_id)
-        doc.setdefault("type", "Collection")
-        try:
-            await db.create_collection(doc, refresh=False)
-        except Exception:
-            await db.find_collection(collection_id)
-            from stac_fastapi.sfeos_helpers.database import update_catalog_in_index_shared  # type: ignore[import-not-found]
-            await update_catalog_in_index_shared(db.client, collection_id, doc)
-
-    # ------------------------------------------------------------------
     # AssetStore read methods
     # ------------------------------------------------------------------
 
@@ -2084,22 +1986,3 @@ class AssetElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
         )
 
 
-# ---------------------------------------------------------------------------
-# Back-compat aliases — legacy Collection*Driver names remain importable, and
-# registry lookups (driver_index / TypedModelRegistry) go through the
-# config_rewriter so persisted routing entries and config rows still resolve.
-# Remove once telemetry shows zero hits on the rewriter.  See
-# dynastore.tools.config_rewriter.
-# ---------------------------------------------------------------------------
-from dynastore.tools.config_rewriter import register_driver_id_rename  # noqa: E402
-
-CollectionElasticsearchDriver = ItemsElasticsearchDriver  # noqa: E305 — back-compat alias, see config_rewriter
-register_driver_id_rename(
-    legacy="CollectionElasticsearchDriver",
-    canonical="ItemsElasticsearchDriver",
-)
-CollectionElasticsearchObfuscatedDriver = ItemsElasticsearchObfuscatedDriver  # noqa: E305 — back-compat alias, see config_rewriter
-register_driver_id_rename(
-    legacy="CollectionElasticsearchObfuscatedDriver",
-    canonical="ItemsElasticsearchObfuscatedDriver",
-)

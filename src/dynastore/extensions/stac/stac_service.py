@@ -87,6 +87,63 @@ from dynastore.models.protocols.web import StaticFilesProtocol
 import os
 from .stac_virtual import StacVirtualMixin
 
+def _assert_stac_capable_metadata_stack() -> None:
+    """Verify the catalog-tier can persist a STAC envelope; warn on the
+    collection tier.
+
+    The catalog tier is a **hard requirement** — the ``stac_version``,
+    ``stac_extensions``, ``conforms_to``, ``links``, and ``assets`` of
+    the catalog itself must land somewhere, or the STAC catalog is
+    meaningless.  Fail with HTTPException(422) if no registered
+    ``CatalogMetadataStore`` declares ``domain == MetadataDomain.STAC``.
+
+    The collection tier is a **soft requirement**: a STAC catalog can
+    legitimately exist with zero STAC collections at create time
+    (collections added later, possibly on a different driver config).
+    When the collection tier has no STAC-capable driver at catalog
+    creation, log a WARNING rather than refusing — operators can
+    register a collection-tier STAC driver before adding STAC
+    collections, or accept that STAC collections cannot be persisted
+    under this catalog's configured backing.
+
+    Default PG config satisfies both checks via
+    ``CatalogStacPostgresqlDriver`` + ``CollectionStacPostgresqlDriver``.
+    """
+    from dynastore.models.protocols.driver_roles import MetadataDomain
+    from dynastore.models.protocols.metadata_driver import (
+        CatalogMetadataStore,
+        CollectionMetadataStore,
+    )
+
+    def _has_stac(proto_cls: type) -> bool:
+        for driver in get_protocols(proto_cls):
+            domain = getattr(driver, "domain", None)
+            if domain == MetadataDomain.STAC:
+                return True
+        return False
+
+    if not _has_stac(CatalogMetadataStore):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "STAC catalog creation requires a registered "
+                "CatalogMetadataStore driver declaring "
+                "domain=MetadataDomain.STAC (e.g. "
+                "CatalogStacPostgresqlDriver).  Current deployment has "
+                "no STAC-capable catalog-metadata driver registered — "
+                "the catalog's STAC envelope cannot be persisted."
+            ),
+        )
+    if not _has_stac(CollectionMetadataStore):
+        logger.warning(
+            "STAC catalog creation proceeding without a registered "
+            "CollectionMetadataStore STAC driver.  Adding a STAC "
+            "collection under this catalog will drop the STAC slice on "
+            "write.  Register CollectionStacPostgresqlDriver (or an "
+            "equivalent) before creating STAC collections."
+        )
+
+
 STAC_API_URIS = [
     "https://api.stacspec.org/v1.0.0/core",
     "https://api.stacspec.org/v1.0.0/item-search",
@@ -392,6 +449,16 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         language: str = Depends(get_language),
     ):
         try:
+            # STAC precondition: at least one registered driver must declare
+            # the STAC metadata domain, so a STAC envelope (stac_version,
+            # stac_extensions, conforms_to, links, assets) actually lands
+            # somewhere.  Default PG config satisfies this via
+            # CatalogStacPostgresqlDriver + CollectionStacPostgresqlDriver.
+            # Deployments pointing routing configs at STAC-blind drivers
+            # (e.g. ES-only without the STAC sidecar) fail loudly here
+            # rather than silently dropping the STAC slice on write.
+            _assert_stac_capable_metadata_stack()
+
             # We use STACCatalog (DTO) for validation but the catalogs_svc expects the structure to be merged
             # The definition is a Pydantic model with localized fields. model_dump() handles serialization.
             # Auto-detect if multi-language input is used
