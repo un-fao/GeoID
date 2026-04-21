@@ -189,18 +189,31 @@ class GCPModule(
         super().__init__()
         logger.info("Attempting to identify active GCP credentials...")
 
+        # Stage 1: credentials. If ADC is genuinely unavailable the module
+        # stays disabled and every getter raises a clear RuntimeError.
         try:
-            from google.auth.exceptions import DefaultCredentialsError
-
             self._credentials, self._identity = get_credentials()
             logger.info(f"GCP identity found: {self.get_account_email()}")
-            self.reinitialize_clients()
         except Exception as e:
             logger.warning(
-                f"GCP Module: Failed to initialize clients due to missing or invalid credentials: {e}. Module will be partially functional."
+                f"GCP Module: No usable GCP credentials ({e}). Module disabled; "
+                "clients will remain unavailable until credentials are provided."
             )
             self._credentials = None
             self._identity = None
+            return
+
+        # Stage 2: clients. A failure here is recoverable — keep the valid
+        # credentials so get_jobs_client() / get_run_client() can lazily retry
+        # on first use instead of raising an opaque "not available" error.
+        try:
+            self.reinitialize_clients()
+        except Exception as e:
+            logger.error(
+                f"GCP Module: Credentials loaded but client construction failed ({e}). "
+                "Will retry lazily on first use.",
+                exc_info=True,
+            )
 
     def reinitialize_clients(self) -> None:
         """
@@ -431,11 +444,23 @@ class GCPModule(
     def get_jobs_client(self) -> "run_v2.JobsAsyncClient":
         """
         Returns the shared, thread-safe Google Cloud Run Jobs client instance.
+
+        If the client is missing but credentials exist (e.g., client construction
+        failed during __init__, or close() ran during a shutdown race), attempt
+        a one-shot re-init before raising — avoids opaque "not available"
+        failures on the first dispatch after a transient startup issue.
         """
         # Google Cloud client libraries automatically handle token refresh.
+        if not self._jobs_client and self._credentials:
+            logger.warning("GCP jobs client missing; attempting lazy reinitialization.")
+            try:
+                self.reinitialize_clients()
+            except Exception as e:
+                logger.error(f"Lazy GCP client reinit failed: {e}", exc_info=True)
         if not self._jobs_client:
             raise RuntimeError(
-                "GCPModule has not been initialized or failed to create a jobs client."
+                "GCPModule jobs client unavailable: "
+                + ("credentials missing" if not self._credentials else "client construction failed")
             )
         return self._jobs_client
 
@@ -450,9 +475,6 @@ class GCPModule(
         """
         JobExecutionProtocol: Triggers a serverless job (Cloud Run job) asynchronously.
         """
-        if not self._jobs_client:
-            raise RuntimeError("GCP Project or Jobs client not available.")
-
         project_id = self.get_project_id()
         region = self.get_region()
         client = self.get_jobs_client()
@@ -592,11 +614,21 @@ class GCPModule(
     def get_run_client(self) -> "run_v2.ServicesAsyncClient":
         """
         Returns the shared, thread-safe Google Cloud Run client instance.
+
+        Lazily reinitializes clients if credentials exist but the client is None
+        (e.g. partial __init__ failure or shutdown race).
         """
         # Google Cloud client libraries automatically handle token refresh.
+        if not self._run_client and self._credentials:
+            logger.warning("GCP run client missing; attempting lazy reinitialization.")
+            try:
+                self.reinitialize_clients()
+            except Exception as e:
+                logger.error(f"Lazy GCP client reinit failed: {e}", exc_info=True)
         if not self._run_client:
             raise RuntimeError(
-                "GCPModule has not been initialized or failed to create a run client."
+                "GCPModule run client unavailable: "
+                + ("credentials missing" if not self._credentials else "client construction failed")
             )
         return self._run_client
 
