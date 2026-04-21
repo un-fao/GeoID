@@ -363,6 +363,15 @@ storage_iceberg = "dynastore.modules.storage.drivers.iceberg:ItemsIcebergDriver"
 storage_bigquery = "dynastore.modules.storage.drivers.bigquery:ItemsBigQueryDriver"
 metadata_postgresql = "dynastore.modules.storage.drivers.metadata_postgresql:MetadataPostgresqlDriver"
 metadata_elasticsearch = "dynastore.modules.elasticsearch.es_metadata_driver:MetadataElasticsearchDriver"
+# M2.1 — domain-scoped Primary metadata drivers (additive; legacy
+# metadata_postgresql stays until M2.5).  One entry-point per concrete
+# driver class; the routing layer picks the right (tier, domain) pair
+# based on the CollectionRoutingConfig / CatalogRoutingConfig metadata
+# operations.
+metadata_collection_core_postgresql = "dynastore.modules.storage.drivers.metadata_domain_postgresql:CollectionCorePostgresqlDriver"
+metadata_collection_stac_postgresql = "dynastore.modules.storage.drivers.metadata_domain_postgresql:CollectionStacPostgresqlDriver"
+metadata_catalog_core_postgresql = "dynastore.modules.storage.drivers.metadata_domain_postgresql:CatalogCorePostgresqlDriver"
+metadata_catalog_stac_postgresql = "dynastore.modules.storage.drivers.metadata_domain_postgresql:CatalogStacPostgresqlDriver"
 
 [project.entry-points."dynastore.extensions"]
 maps = "dynastore.extensions.maps.maps_service:MapsService"
