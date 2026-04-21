@@ -74,32 +74,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class _IndexerResolution:
-    """Cached result of :func:`_resolve_catalog_indexers` for one batch.
-
-    Either the resolution succeeded and ``indexers`` holds the
-    (entry, driver) pairs while ``error`` is ``None``, or it failed and
-    ``indexers`` is empty while ``error`` carries the message that
-    every in-scope event's ``_DispatchResult`` will inherit.
-
-    Sharing the resolution across a batch avoids the N× rebuild of
-    ``CatalogRoutingConfig`` + ``get_protocols(CatalogMetadataStore)``
-    that the M3.1 scaffold paid per event; see
-    :meth:`ReindexWorker.handle_batch` for the batch-caching rationale.
-    """
-
-    __slots__ = ("indexers", "error")
-
-    def __init__(
-        self,
-        *,
-        indexers: List[Tuple[OperationDriverEntry, CatalogMetadataStore]],
-        error: Optional[str],
-    ) -> None:
-        self.indexers = indexers
-        self.error = error
-
-
 class _DispatchResult:
     """Per-event outcome returned by :meth:`ReindexWorker.handle_batch`.
 
@@ -208,25 +182,7 @@ class ReindexWorker:
         Events of other types are skipped with a log entry — they're
         not in this worker's scope.  A future per-event-type router
         can dispatch to different workers.
-
-        Indexer-resolution caching
-        --------------------------
-        ``_resolve_indexers`` is called ONCE per batch rather than once
-        per event.  The resolution walks ``CatalogRoutingConfig()`` +
-        ``get_protocols(CatalogMetadataStore)``, both non-trivial under
-        repeated invocation; a 100-event batch used to redo the work
-        100 times.  Caching at the batch boundary keeps the config
-        read close enough to realtime (next batch picks up any
-        routing-config change) without paying per-event cost.
-
-        A resolution failure is shared across the batch: every in-
-        scope event returns ``succeeded=False, should_retry=True``
-        with the same error.  The caller NACKs them all; a future
-        delivery retries with a freshly-read config.
         """
-        # Resolve once per batch — see docstring above.
-        indexer_resolution: _IndexerResolution = self._resolve_indexers_once()
-
         results: List[_DispatchResult] = []
         for event in events:
             event_type = event.get("event_type")
@@ -246,36 +202,9 @@ class ReindexWorker:
                 ))
                 continue
             results.append(
-                await self._handle_one(
-                    event,
-                    db_resource=db_resource,
-                    indexer_resolution=indexer_resolution,
-                )
+                await self._handle_one(event, db_resource=db_resource)
             )
         return results
-
-    def _resolve_indexers_once(self) -> "_IndexerResolution":
-        """Invoke ``_resolve_indexers`` with shared-error semantics.
-
-        Wraps the per-batch resolution call so a failure becomes a
-        structured result that ``_handle_one`` can turn into per-event
-        NACKs — rather than letting the exception kill the whole
-        batch.  Success returns the ``indexers`` list and ``error=None``.
-        """
-        try:
-            return _IndexerResolution(
-                indexers=self._resolve_indexers(),
-                error=None,
-            )
-        except Exception as exc:  # noqa: BLE001 — surface as per-event NACK
-            logger.warning(
-                "ReindexWorker: Indexer resolution failed for batch: %s",
-                exc,
-            )
-            return _IndexerResolution(
-                indexers=[],
-                error=f"indexer resolution failed: {exc}",
-            )
 
     # -- Internals ----------------------------------------------------------
 
@@ -284,16 +213,8 @@ class ReindexWorker:
         event: Dict[str, Any],
         *,
         db_resource: Optional[Any],
-        indexer_resolution: Optional[_IndexerResolution] = None,
     ) -> _DispatchResult:
-        """Process a single ``catalog_metadata_changed`` event.
-
-        ``indexer_resolution`` is supplied by :meth:`handle_batch` so
-        the resolution runs once per batch rather than once per event.
-        When omitted (direct call from a test or a future single-event
-        code path), the method falls back to resolving indexers
-        itself — preserving the previous standalone contract.
-        """
+        """Process a single ``catalog_metadata_changed`` event."""
         event_id = event.get("event_id")
         payload = event.get("payload") or {}
         catalog_id = payload.get("catalog_id")
@@ -309,19 +230,18 @@ class ReindexWorker:
                 errors=["missing catalog_id"],
             )
 
-        if indexer_resolution is None:
-            indexer_resolution = self._resolve_indexers_once()
-
-        if indexer_resolution.error is not None:
-            # Shared resolution failure across the batch — every event
-            # gets the same NACK + error.  A future delivery retries
-            # with a freshly-read CatalogRoutingConfig.
+        try:
+            indexers = self._resolve_indexers()
+        except Exception as exc:  # noqa: BLE001 — surface as per-event NACK
+            logger.warning(
+                "ReindexWorker: Indexer resolution failed for %s: %s",
+                catalog_id, exc,
+            )
             return _DispatchResult(
                 event_id=event_id, succeeded=False, should_retry=True,
-                errors=[indexer_resolution.error],
+                errors=[f"indexer resolution failed: {exc}"],
             )
 
-        indexers = indexer_resolution.indexers
         if not indexers:
             # No INDEX-role drivers configured — the event still
             # deserves an ACK so the outbox doesn't accumulate.  A

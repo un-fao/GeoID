@@ -19,27 +19,22 @@
 """
 Async-event-listener adapter for :class:`ReindexWorker` (M3.1b production wiring).
 
-Why a listener instead of the standalone :class:`ReindexConsumer`
----------------------------------------------------------------
+Registers :func:`handle_catalog_metadata_changed` via
+``@async_event_listener("catalog_metadata_changed")`` so
+:class:`event_service.EventService._consume_shard` — the 16-shard
+consumer CatalogModule starts automatically whenever any async
+listener is registered — invokes it per event.  The listener's
+raise-or-return signals NACK-or-ACK back to the shared outbox
+claim machinery: raise → NACK + re-deliver, return → ACK.
 
-:mod:`reindex_consumer` builds a dedicated outbox loop with its own
-leader lock.  Running it alongside
-``event_service.EventService._consume_shard`` (the 16-shard consumer
-CatalogModule already starts when any async listener is registered)
-would cause both to SKIP-LOCKED-claim from the same
-``catalog_metadata_changed`` rows — a race we do not want.
+Why reuse the shared consumer instead of building a dedicated loop
+------------------------------------------------------------------
 
-This module reuses the existing sharded consumer instead: by
-registering :func:`handle_catalog_metadata_changed` via
-``@async_event_listener("catalog_metadata_changed")``,
-``_consume_shard`` invokes it per event, and the listener's
-raise-or-return signals NACK-or-ACK back to the shared outbox claim
-machinery.  We trade ``ReindexWorker.handle_batch``'s per-batch
-indexer-resolution caching (Important #6 fix) for zero-race
-integration — the caching only matters when many events arrive
-inside a single claim anyway, and :class:`ReindexConsumer` remains
-available for the dedicated-worker-pod topology where its standalone
-loop wins back both properties.
+A second consumer running on the same ``PLATFORM`` scope would
+``SKIP LOCKED``-claim from the same ``catalog_metadata_changed``
+rows — two consumers interleaving against one outbox is a race we
+do not want and have no use for at this scale.  Reusing the 16-shard
+consumer sidesteps it entirely.
 
 Wire-up (in :meth:`CatalogModule.__aenter__`)::
 
