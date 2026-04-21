@@ -89,3 +89,36 @@ class TestSidecarsValidatorRoundTrip:
         restored = CollectionPostgresqlDriverConfig.model_validate_json(payload)
         assert isinstance(restored.sidecars[0], SidecarConfig)
         assert restored.sidecars[0].sidecar_type == "geometries"
+
+    def test_exclude_unset_preserves_discriminator(self):
+        """Regression: the Cloud Run ingestion crash was caused by this exact
+        round-trip. Default-constructed sidecars were dumped with
+        ``exclude_unset=True`` at config_service.py:515-519 and landed in the
+        DB as ``[{}, {}, {}, {}]`` — the fail-loud validator then rejected
+        them on read. The discriminator must survive exclude_unset=True even
+        when the caller never explicitly passed it.
+        """
+        original = CollectionPostgresqlDriverConfig(
+            sidecars=[GeometriesSidecarConfig()],
+        )
+        dumped = original.sidecars[0].model_dump(mode="python", exclude_unset=True)
+        assert dumped.get("sidecar_type") == "geometries", (
+            f"exclude_unset stripped the discriminator — dumped={dumped}"
+        )
+
+    def test_exclude_unset_round_trip_through_driver_config(self):
+        """End-to-end version of the previous test: dump the whole driver
+        config with exclude_unset=True (the shape written to the DB) and
+        verify each sidecar still carries its discriminator.
+        """
+        original = CollectionPostgresqlDriverConfig(
+            sidecars=[GeometriesSidecarConfig()],
+        )
+        dumped = original.model_dump(mode="json", exclude_unset=True)
+        for idx, sc in enumerate(dumped.get("sidecars", [])):
+            assert sc.get("sidecar_type"), (
+                f"sidecars[{idx}] lost discriminator under exclude_unset: {sc}"
+            )
+        # And the round-trip back through the validator must succeed.
+        restored = CollectionPostgresqlDriverConfig.model_validate(dumped)
+        assert restored.sidecars[0].sidecar_type == "geometries"

@@ -37,7 +37,7 @@ from typing import (
     Protocol,
     runtime_checkable,
 )
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from enum import Enum
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.query_builder import QueryRequest
@@ -329,6 +329,15 @@ class SidecarConfig(BaseModel):
     indexing: Optional[Dict[str, Any]] = Field(
         default=None, description="Sidecar-specific indexing configuration"
     )
+
+    @model_validator(mode="after")
+    def _pin_discriminator_as_set(self):
+        # The discriminator is load-bearing metadata, not an "unset" default.
+        # Without this, default-constructed subclasses (e.g. GeometriesSidecarConfig())
+        # serialize to `{}` under model_dump(exclude_unset=True) — the shape that
+        # produced the ingestion Cloud Run crash when tier-merged + re-validated.
+        self.__pydantic_fields_set__.add("sidecar_type")
+        return self
 
     @property
     def partition_key_contributions(self) -> Dict[str, str]:
