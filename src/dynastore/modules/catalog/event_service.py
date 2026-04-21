@@ -433,10 +433,21 @@ class EventService(EventBusProtocol):
 
     async def consume_batch(
         self,
-        engine: Any,
         batch_size: int = 100,
     ) -> List[Dict[str, Any]]:
-        """Claim and return a batch of pending events. Delegates to EventDriverProtocol."""
+        """Claim and return a batch of pending events.
+
+        Delegates to :class:`EventDriverProtocol`.  The driver owns its
+        own connection pool — no ``engine``/``db_resource`` parameter
+        here because consume-side operations do NOT participate in the
+        caller's transaction: events have already committed at publish
+        time, and the claim → ACK cycle is a separate transaction the
+        driver manages internally.  Transaction-scoped ACK (e.g. "ACK
+        only if my downstream write committed") belongs in a future
+        ``consume_scoped`` / ``ack_scoped`` pair with an explicit
+        ``db_resource`` contract; adding an unused parameter here would
+        mislead callers into assuming one existed.
+        """
         driver = get_protocol(EventDriverProtocol)
         if not driver:
             logger.warning("EventDriverProtocol not available for consume_batch")
@@ -445,10 +456,14 @@ class EventService(EventBusProtocol):
 
     async def ack(
         self,
-        engine: Any,
         event_ids: List[str],
     ) -> None:
-        """Acknowledge consumed events. Delegates to EventDriverProtocol."""
+        """Acknowledge consumed events.
+
+        See :meth:`consume_batch` for the no-``engine`` rationale — ACK
+        runs on the driver's own connection, separately from any
+        caller transaction.
+        """
         if not event_ids:
             return
         driver = get_protocol(EventDriverProtocol)
@@ -457,11 +472,13 @@ class EventService(EventBusProtocol):
 
     async def nack(
         self,
-        engine: Any,
         event_id: str,
         error: str,
     ) -> None:
-        """Negative-acknowledge a consumed event. Delegates to EventDriverProtocol."""
+        """Negative-acknowledge a consumed event.
+
+        See :meth:`consume_batch` for the no-``engine`` rationale.
+        """
         driver = get_protocol(EventDriverProtocol)
         if driver:
             await driver.nack(event_id=event_id, error=error)
@@ -575,6 +592,14 @@ class EventService(EventBusProtocol):
             logger.warning("EventService: Consumer already running.")
             return
 
+        # Review #5 regression-fuse: the flag flip lives next to the
+        # ``executor.submit`` call (not at the top of ``_leader_loop``)
+        # so that a synchronous failure inside ``submit`` — e.g. the
+        # background executor has been shut down — rolls the flag back
+        # to ``False``.  Without the try/except below, the flag would
+        # stay ``True`` forever and every subsequent ``start_consumer``
+        # call would short-circuit at the guard above, bricking the
+        # consumer across the pod's lifetime.
         self._consumer_running = True
         self._consumer_task = None
 
@@ -614,9 +639,19 @@ class EventService(EventBusProtocol):
             logger.info("EventService: leader loop stopped (key=%s).", leader_key)
 
         executor = get_background_executor()
-        self._consumer_task = executor.submit(
-            _leader_loop(), task_name=f"EventServiceLeader:{leader_key}"
-        )
+        try:
+            self._consumer_task = executor.submit(
+                _leader_loop(), task_name=f"EventServiceLeader:{leader_key}"
+            )
+        except BaseException:
+            # ``submit`` failed synchronously — the coroutine never ran,
+            # so the ``_consumer_running = False`` reset inside
+            # ``_leader_loop`` will never execute.  Roll the flag back
+            # ourselves so a later ``start_consumer`` retry isn't
+            # blocked by the already-running guard.
+            self._consumer_running = False
+            self._consumer_task = None
+            raise
         logger.info(
             "EventService: leader-elected consumer started (key=%s, scope=%s).",
             leader_key,
