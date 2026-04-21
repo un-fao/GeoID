@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, AsyncIterator, Dict, FrozenSet, List, Optional
+from datetime import datetime, timezone
+from typing import Any, AsyncIterator, Dict, FrozenSet, Iterable, List, Optional, Union
 
-from dynastore.models.ogc import Feature
+from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols import (
     BigQueryProtocol,
     CloudIdentityProtocol,
@@ -14,6 +15,7 @@ from dynastore.models.protocols import (
 from dynastore.models.protocols.field_definition import FieldDefinition
 from dynastore.modules.storage.drivers.bigquery_models import (
     BigQueryCredentials,
+    BigQueryTarget,
     ItemsBigQueryDriverConfig,
 )
 from dynastore.modules.storage.drivers.bigquery_stream import (
@@ -29,13 +31,28 @@ def _get_bq_service() -> Optional[BigQueryProtocol]:
 
 
 class ItemsBigQueryDriver:
-    """BigQuery read driver (Phase 4a — READ + STREAMING capabilities)."""
+    """BigQuery driver — READ + STREAMING (Phase 4a) + reporter-mode WRITE (Phase 3).
+
+    WRITE is gated by ``ItemsBigQueryDriverConfig.reporter_mode``:
+
+    - ``off`` (default): ``write_entities`` returns ``[]`` without touching
+      BigQuery.  The driver can still be listed in a routing config's
+      ``Operation.WRITE`` list — useful for configs that pre-wire BigQuery
+      but haven't turned on reporting yet.
+    - ``flat``: one BQ row per feature ({entity_id, ingested_at, …}).
+    - ``batch_summary``: one BQ row per write_entities call
+      ({collection_id, row_count, first_seen, last_seen}).
+
+    WRITE failures are surfaced as warnings (BQ's partial-failure dict) and
+    do NOT raise, so this driver is safe to pin as ``on_failure=warn`` in
+    a multi-driver WRITE fan-out (see role-based driver plan §Routing).
+    """
 
     priority: int = 50
     preferred_chunk_size: int = 500
 
     capabilities: FrozenSet[str] = frozenset({
-        "READ", "STREAMING", "INTROSPECTION", "COUNT", "AGGREGATION",
+        "READ", "WRITE", "STREAMING", "INTROSPECTION", "COUNT", "AGGREGATION",
     })
     preferred_for: FrozenSet[str] = frozenset({"features"})
     supported_hints: FrozenSet[str] = frozenset({"features", "bigquery"})
@@ -58,6 +75,114 @@ class ItemsBigQueryDriver:
             catalog_id=catalog_id,
             collection_id=collection_id,
         )
+
+    async def write_entities(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        entities: Union[Feature, FeatureCollection, Dict[str, Any], List[Dict[str, Any]], List[Feature]],
+        *,
+        context: Optional[Dict[str, Any]] = None,
+        db_resource: Optional[Any] = None,
+    ) -> List[Feature]:
+        """Reporter-mode streaming write into BigQuery.
+
+        Gated by ``ItemsBigQueryDriverConfig.reporter_mode``:
+
+        - ``off``           — returns ``[]`` without touching BQ.
+        - ``flat``          — one row per feature, shaped by
+                              ``_rows_flat`` (honours ``include_payload``
+                              and ``exclude_fields``).
+        - ``batch_summary`` — one row per call, shaped by ``_rows_batch_summary``.
+
+        BQ partial failures are swallowed with a warning log; the method
+        returns the canonicalised input feature list so the routing layer
+        can still include this driver in a WRITE fan-out without blocking
+        downstream on BQ quota hiccups.  See role-based driver plan
+        §Routing — ``on_failure=warn`` is the recommended failure policy
+        for this driver.
+        """
+        cfg = await self.get_driver_config(catalog_id, collection_id)
+        features = _canonicalise_features(entities)
+        if cfg is None or cfg.reporter_mode == "off":
+            return features
+        if not features:
+            return features
+
+        report_target = cfg.report_target or cfg.target
+        if not report_target.is_fully_qualified():
+            logger.warning(
+                "BQ reporter mode %r configured for %s/%s but report_target "
+                "is not fully qualified; skipping write.",
+                cfg.reporter_mode, catalog_id, collection_id,
+            )
+            return features
+
+        service = _get_bq_service()
+        if service is None:
+            logger.warning(
+                "BQ reporter WRITE attempted but BigQueryService not "
+                "registered; skipping (%s/%s).",
+                catalog_id, collection_id,
+            )
+            return features
+
+        rows = self._shape_rows(cfg, catalog_id, collection_id, features)
+        if not rows:
+            return features
+
+        project_id = report_target.project_id
+        assert project_id is not None  # is_fully_qualified() guarantee
+
+        try:
+            errors = await service.insert_rows_json(
+                report_target.fqn(),
+                rows,
+                project_id=project_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort reporter sink
+            logger.warning(
+                "BQ reporter WRITE failed for %s/%s (mode=%s): %s",
+                catalog_id, collection_id, cfg.reporter_mode, exc,
+            )
+            return features
+
+        if errors:
+            # Partial failure — BQ returns per-row error dicts with
+            # indices pointing into the submitted rows list.
+            logger.warning(
+                "BQ reporter WRITE partial failure for %s/%s (mode=%s): "
+                "%d/%d rows rejected",
+                catalog_id, collection_id, cfg.reporter_mode,
+                len(errors), len(rows),
+            )
+
+        return features
+
+    def _shape_rows(
+        self,
+        cfg: ItemsBigQueryDriverConfig,
+        catalog_id: str,
+        collection_id: str,
+        features: List[Feature],
+    ) -> List[Dict[str, Any]]:
+        """Dispatch to the row shaper for the active reporter mode."""
+        if cfg.reporter_mode == "flat":
+            return _rows_flat(
+                features,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                include_payload=cfg.include_payload,
+                exclude_fields=cfg.exclude_fields,
+            )
+        if cfg.reporter_mode == "batch_summary":
+            return _rows_batch_summary(
+                features,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+            )
+        # "off" handled by caller; any unknown value is a bug.
+        raise ValueError(f"Unknown reporter_mode: {cfg.reporter_mode!r}")
 
     async def read_entities(
         self,
@@ -223,6 +348,144 @@ def _bq_field_to_field_definition(f) -> FieldDefinition:
         data_type=dtype,
         required=(f.mode == "REQUIRED"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Reporter-mode helpers (Phase 3 WRITE path)
+# ---------------------------------------------------------------------------
+
+
+def _canonicalise_features(
+    entities: Union[Feature, FeatureCollection, Dict[str, Any], List[Dict[str, Any]], List[Feature]],
+) -> List[Feature]:
+    """Normalise the :meth:`CollectionItemsStore.write_entities` input.
+
+    The WRITE contract accepts six input shapes; the driver needs a flat
+    ``List[Feature]`` for both the reporter rows and the return value.
+    Dict inputs are validated as Features here so the shaper never has
+    to branch on payload shape.
+    """
+    if entities is None:
+        return []
+    if isinstance(entities, Feature):
+        return [entities]
+    if isinstance(entities, FeatureCollection):
+        return list(entities.features) if entities.features else []
+    if isinstance(entities, dict):
+        # GeoJSON FeatureCollection or a single Feature dict
+        if entities.get("type") == "FeatureCollection":
+            fc = FeatureCollection.model_validate(entities)
+            return list(fc.features) if fc.features else []
+        return [Feature.model_validate(entities)]
+    if isinstance(entities, list):
+        out: List[Feature] = []
+        for item in entities:
+            if isinstance(item, Feature):
+                out.append(item)
+            elif isinstance(item, dict):
+                out.append(Feature.model_validate(item))
+            else:
+                raise TypeError(
+                    f"Unsupported list item for write_entities: {type(item).__name__}"
+                )
+        return out
+    raise TypeError(
+        f"Unsupported entities type for write_entities: {type(entities).__name__}"
+    )
+
+
+def _feature_primary_id(feat: Feature) -> Optional[str]:
+    """Best-effort primary-key extraction from a Feature for BQ row_ids.
+
+    Checks ``.id`` first, then ``properties.external_id``, then
+    ``properties.id``.  Returns None when nothing usable is found — BQ
+    then assigns its own insertId (best-effort dedup within the 24h
+    streaming-buffer window is lost, but the write still succeeds).
+    """
+    fid = getattr(feat, "id", None)
+    if fid:
+        return str(fid)
+    props = getattr(feat, "properties", None) or {}
+    if isinstance(props, dict):
+        for key in ("external_id", "id"):
+            value = props.get(key)
+            if value:
+                return str(value)
+    return None
+
+
+def _rows_flat(
+    features: Iterable[Feature],
+    *,
+    catalog_id: str,
+    collection_id: str,
+    include_payload: bool,
+    exclude_fields: List[str],
+) -> List[Dict[str, Any]]:
+    """One BQ row per feature: PK + optional payload + timestamp.
+
+    Row schema (writer-side contract; target table must match):
+
+    - ``catalog_id``    STRING   tenant / catalog identifier
+    - ``collection_id`` STRING   collection within the catalog
+    - ``entity_id``     STRING   feature id / external_id, nullable
+    - ``payload``       JSON     full feature.properties when
+                                 ``include_payload=True`` and PII-safe
+    - ``ingested_at``   TIMESTAMP UTC at shape time (not write time —
+                                 close enough for reporter usage)
+    """
+    ingested_at = datetime.now(timezone.utc).isoformat()
+    exclude = set(exclude_fields or ())
+    rows: List[Dict[str, Any]] = []
+    for feat in features:
+        row: Dict[str, Any] = {
+            "catalog_id": catalog_id,
+            "collection_id": collection_id,
+            "entity_id": _feature_primary_id(feat),
+            "ingested_at": ingested_at,
+        }
+        if include_payload:
+            props = dict(getattr(feat, "properties", None) or {})
+            for key in exclude:
+                props.pop(key, None)
+            # Store as a JSON STRING column — works with both JSON and
+            # STRING BigQuery column types and avoids a nested-schema
+            # contract this early in the reporter lifecycle.
+            import json
+            row["payload"] = json.dumps(props, default=str)
+        rows.append(row)
+    return rows
+
+
+def _rows_batch_summary(
+    features: Iterable[Feature],
+    *,
+    catalog_id: str,
+    collection_id: str,
+) -> List[Dict[str, Any]]:
+    """One BQ row per ``write_entities`` call: counts + timestamps.
+
+    Row schema:
+
+    - ``catalog_id``    STRING
+    - ``collection_id`` STRING
+    - ``row_count``     INTEGER  number of features in the batch
+    - ``first_entity``  STRING   smallest PK seen, nullable
+    - ``last_entity``   STRING   largest PK seen, nullable
+    - ``ingested_at``   TIMESTAMP UTC at shape time
+    """
+    ingested_at = datetime.now(timezone.utc).isoformat()
+    feature_list = list(features)
+    ids = [_feature_primary_id(f) for f in feature_list]
+    known_ids = sorted(i for i in ids if i)
+    return [{
+        "catalog_id": catalog_id,
+        "collection_id": collection_id,
+        "row_count": len(feature_list),
+        "first_entity": known_ids[0] if known_ids else None,
+        "last_entity": known_ids[-1] if known_ids else None,
+        "ingested_at": ingested_at,
+    }]
 
 
 # ---------------------------------------------------------------------------

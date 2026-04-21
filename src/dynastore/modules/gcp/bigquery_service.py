@@ -24,7 +24,7 @@ Credentials are resolved through ``CloudIdentityProtocol``.
 """
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from dynastore.tools.discovery import get_protocol
 
@@ -73,5 +73,69 @@ class BigQueryService:
             logger.info("Executing BQ query (via BigQueryService): %s...", query[:200])
             df = client.query(query).to_dataframe()
             return df.to_dict("records")
+        finally:
+            client.close()
+
+    async def insert_rows_json(
+        self,
+        table_fqn: str,
+        rows: List[Dict[str, Any]],
+        *,
+        project_id: str,
+        row_ids: Optional[List[Optional[str]]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Stream ``rows`` into ``table_fqn`` via BQ's ``insertAll`` API.
+
+        Empty input is a fast no-op (no client created).  Partial failures
+        are returned rather than raised — callers under ``on_failure=warn``
+        log them and continue.
+        """
+        if not rows:
+            return []
+        if row_ids is not None and len(row_ids) != len(rows):
+            raise ValueError(
+                f"insert_rows_json: row_ids length ({len(row_ids)}) "
+                f"must match rows length ({len(rows)})."
+            )
+        if not project_id:
+            raise ValueError("BigQuery project_id is required for insert_rows_json")
+
+        from dynastore.models.protocols import CloudIdentityProtocol
+
+        identity = get_protocol(CloudIdentityProtocol)
+        if not identity:
+            raise RuntimeError(
+                "CloudIdentityProtocol not available — cannot stream BigQuery rows"
+            )
+
+        credentials = identity.get_credentials_object()
+
+        from google.cloud import bigquery
+
+        client = bigquery.Client(project=project_id, credentials=credentials)
+        try:
+            table_ref = bigquery.TableReference.from_string(
+                table_fqn, default_project=project_id
+            )
+            errors = client.insert_rows_json(
+                table_ref,
+                rows,
+                row_ids=row_ids,
+            )
+            # google-cloud-bigquery returns a Sequence[dict] (no specific
+            # dict[str, Any] parameterisation in its stubs).  Materialise
+            # as a typed list so the protocol contract holds.
+            result: List[Dict[str, Any]] = list(errors)
+            if result:
+                logger.warning(
+                    "BQ streaming insert partial failure: %d/%d rows failed to "
+                    "insert into %s",
+                    len(result), len(rows), table_fqn,
+                )
+            else:
+                logger.debug(
+                    "BQ streaming insert OK: %d rows into %s", len(rows), table_fqn
+                )
+            return result
         finally:
             client.close()
