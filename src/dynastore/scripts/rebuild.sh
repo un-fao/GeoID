@@ -2,33 +2,27 @@
 #
 # rebuild.sh — wipe volumes + rebuild + start a dev/test docker composition.
 #
-# SAFETY: this script is hard-wired to `docker-compose.dev.yml` and
-# `docker-compose.test.yml` only. It will NEVER touch:
-#   - `docker-compose.yml`         (production base)
-#   - `docker-compose.local.yml`   (local / on-premise override)
-# because it never invokes compose without an explicit `-f <dev|test>` file,
-# and the arg parser explicitly rejects `local` and `prod`.
+# Shared across geoid / dynastore / fao-aip-catalog — shipped as package data at
+# `dynastore/scripts/rebuild.sh`. Downstream wrappers may invoke this from the
+# pip-installed path:
 #
-# Running `docker compose up` or `docker compose -f docker-compose.local.yml up`
-# directly bypasses this script — volumes are preserved, no wipe happens.
+#   exec "$(python -c 'import dynastore,os;print(os.path.join(os.path.dirname(dynastore.__file__),"scripts/rebuild.sh"))')" "$@"
+#
+# SAFETY: hard-wired to `docker-compose.dev.yml` / `docker-compose.test.yml`.
+# Refuses local/prod/on-prem; refuses if COMPOSE_FILE is pre-set.
+#
+# Repo root: resolved from (first match wins)
+#   1. $REPO_ROOT env var
+#   2. $PWD if it contains a `docker/docker-compose.${env}.yml`
+#   3. error
+#
+# Project name: `${PROJECT_PREFIX}_${env}`. PROJECT_PREFIX defaults to the
+# basename of the repo root (keeps volumes isolated per-repo without forking).
 #
 # Usage:
-#   ./docker/scripts/rebuild.sh dev            # wipe + rebuild + up dev stack
-#   ./docker/scripts/rebuild.sh test           # wipe + rebuild + up test stack
-#   ./docker/scripts/rebuild.sh dev --no-wipe  # rebuild images only, keep volumes
-#
-#   (or via the unified CLI:  ./docker/scripts/db.sh rebuild dev)
-#
-# What it does (for dev/test only):
-#   1. docker compose -f docker/docker-compose.<env>.yml down -v --remove-orphans
-#      (volumes wiped → totally fresh DB on next start)
-#   2. docker compose -f docker/docker-compose.<env>.yml build
-#   3. docker compose -f docker/docker-compose.<env>.yml up -d
-#
-# Guard rails:
-#   - Refuses any env other than "dev" or "test".
-#   - Refuses if COMPOSE_FILE env var is pre-set (prevents user override to prod).
-#   - Uses --project-name to keep dev/test volumes isolated from each other.
+#   cd <repo> && .../rebuild.sh dev            # wipe + rebuild + up dev stack
+#   cd <repo> && .../rebuild.sh test           # wipe + rebuild + up test stack
+#   cd <repo> && .../rebuild.sh dev --no-wipe  # rebuild images only, keep volumes
 
 set -euo pipefail
 
@@ -55,9 +49,19 @@ if [[ -n "${COMPOSE_FILE:-}" ]]; then
     exit 2
 fi
 
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/../.." >/dev/null 2>&1 && pwd )"
+# Resolve repo root: env override, else CWD if it has docker/docker-compose.<env>.yml.
+if [[ -n "${REPO_ROOT:-}" ]]; then
+    DIR="$REPO_ROOT"
+elif [[ -f "${PWD}/docker/docker-compose.${env}.yml" ]]; then
+    DIR="$PWD"
+else
+    echo "Cannot locate repo root. Run from a repo containing docker/docker-compose.${env}.yml,"
+    echo "or set REPO_ROOT=/path/to/repo."
+    exit 1
+fi
+
 compose_file="${DIR}/docker/docker-compose.${env}.yml"
-project="geoid_${env}"
+project="${PROJECT_PREFIX:-$(basename "$DIR")}_${env}"
 
 if [[ ! -f "$compose_file" ]]; then
     echo "Compose file not found: $compose_file"; exit 1

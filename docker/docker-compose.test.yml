@@ -9,7 +9,7 @@ services:
       RESET_MODE: keycloak # test tier: truncate keycloak tables so each stack gets a fresh realm/users import
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./scripts:/scripts:ro # docker/scripts mount (relative to compose file dir)
+      - ../src/dynastore/scripts:/scripts:ro # SSOT: package-data scripts travel with the pip install
     entrypoint: ["bash", "/scripts/db_entrypoint_dev.sh"]
     command: >-
       postgres -c max_connections=200 -c max_locks_per_transaction=256

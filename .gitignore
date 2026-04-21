@@ -107,7 +107,7 @@ data/
 # Secrets and Credentials
 # policy config (non-secret), sourced by db_reset.sh — must stay tracked
 *.env
-!docker/scripts/reset_policy.env
+!src/dynastore/scripts/reset_policy.env
 src/dynastore/modules/gcp/*.json
 
 # Orphaned / Temporary Files

@@ -11,20 +11,26 @@
 #                                          --keep-cron do NOT wipe cron.job rows
 #   db.sh rebuild dev|test [--no-wipe]     stop + (wipe) + build + up
 #
-# See also docker/scripts/reset_policy.env for preserved-schemas / system-cron-jobs policy.
+# See also src/dynastore/scripts/reset_policy.env for preserved-schemas / system-cron-jobs policy.
+#
+# db_reset.sh / rebuild.sh live under src/dynastore/scripts/ (SSOT — shipped as
+# package data so downstream wrappers can reuse them). This thin delegator
+# resolves them by walking up to the repo root.
 
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$here/../.." && pwd)"
+scripts="$repo_root/src/dynastore/scripts"
 cmd="${1:-}"
 shift || true
 
 case "$cmd" in
     check|drop|reset)
-        exec "$here/db_reset.sh" "$cmd" "$@"
+        exec "$scripts/db_reset.sh" "$cmd" "$@"
         ;;
     rebuild)
-        exec "$here/rebuild.sh" "$@"
+        exec "$scripts/rebuild.sh" "$@"
         ;;
     ""|-h|--help)
         sed -n '2,15p' "$0"
