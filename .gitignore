@@ -51,7 +51,17 @@ coverage.xml
 .pytest_cache/
 
 Environments
+# ``.env`` is gitignored globally — any local ``.env`` that a developer
+# creates for local overrides stays out of the repo.  The one exception
+# is ``src/dynastore/docker/.env``, which is force-added
+# (``git add -f``) and tracked on purpose: docker-compose fragments
+# declare ``env_file: .env`` + ``.env.local``, so CI needs the tracked
+# baseline.  Developers editing the baseline see their changes in
+# ``git status`` (intentional — the baseline IS versioned); developers
+# wanting local-only overrides create ``.env.local`` (always
+# gitignored, loaded second by compose, ``required: false``).
 .env
+.env.local
 .venv
 env/
 venv/
