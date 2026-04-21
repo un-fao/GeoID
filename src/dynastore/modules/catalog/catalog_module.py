@@ -312,6 +312,21 @@ class CatalogModule(ModuleProtocol):
             async def _on_task_failed_impl(**kwargs):
                 await self._on_task_failed(**kwargs)
 
+            # M3.1b — register the catalog_metadata_changed → ReindexWorker
+            # listener so mutations emitted by ``catalog_metadata_router``
+            # propagate to every configured INDEX driver.  Uses the shared
+            # ``_consume_shard`` machinery started below (step 6); see
+            # ``reindex_listener.py`` for the rationale on listener-over-
+            # standalone-consumer.  This registration itself is what causes
+            # ``event_service.has_listeners()`` to return True for catalog
+            # builds that don't otherwise register async listeners —
+            # so wiring the reindex path automatically turns on the durable
+            # consumer.
+            from dynastore.modules.catalog.reindex_listener import (
+                register_reindex_listener,
+            )
+            register_reindex_listener(self.event_service)
+
 
             # 6. Start Background Event Consumer (automatic)
             # If any module registered async event listeners, start the
