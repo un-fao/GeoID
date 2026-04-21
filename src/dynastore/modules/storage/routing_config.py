@@ -337,24 +337,20 @@ class AssetRoutingConfig(PluginConfig):
 class CatalogRoutingConfig(PluginConfig):
     """Operation-based routing for catalog-level metadata drivers.
 
-    **Status**: vocabulary introduced by M1a, no concrete driver registered
-    yet.  First consumers land in M2 (``CatalogMetadataCorePostgresDriver``,
-    ``CatalogMetadataStacPostgresDriver``).  The ``default_factory`` on
-    ``operations`` currently references ``CatalogMetadataCorePostgresDriver``
-    by string; attempting to apply this config before M2 ships that class
-    will fail validation — which is intentional (no silent fallback).
-
     Parallels :class:`CollectionRoutingConfig` but scoped to catalog-tier
     drivers (``CatalogMetadataStore`` implementations).  Introduced by the
     role-based driver refactor so catalogs follow the same Primary /
     Transformer / Indexer / Backup pattern as collections.
 
+    M2.1 ships the first two concrete drivers
+    (``CatalogCorePostgresqlDriver`` / ``CatalogStacPostgresqlDriver``);
+    the defaults below pin both under WRITE and READ so a deployment
+    with a catalog containing both CORE and STAC envelopes resolves
+    correctly without explicit platform config.
+
     ``operations`` supports the same keys as collection metadata routing:
     ``WRITE``, ``READ``, ``SEARCH``, ``TRANSFORM``, ``INDEX``, ``BACKUP``.
     See :class:`MetadataRoutingConfig` for per-key semantics.
-
-    Default: Primary PG driver for WRITE + READ, no Transformer / Indexer /
-    Backup — zero extra round-trips on hot paths vs the pre-refactor shape.
 
     Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
     """
@@ -363,13 +359,25 @@ class CatalogRoutingConfig(PluginConfig):
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
-            Operation.WRITE: [OperationDriverEntry(driver_id="CatalogMetadataCorePostgresDriver")],
-            Operation.READ: [OperationDriverEntry(driver_id="CatalogMetadataCorePostgresDriver")],
+            # M2.3b: fan-out across the domain-scoped Primary drivers.
+            # CORE is first (matches ``_sort_hooks`` priority: required
+            # registry data lands before the optional STAC row).  The
+            # catalog-metadata router merges both results on READ and
+            # parallelises the upsert on WRITE.
+            Operation.WRITE: [
+                OperationDriverEntry(driver_id="CatalogCorePostgresqlDriver"),
+                OperationDriverEntry(driver_id="CatalogStacPostgresqlDriver"),
+            ],
+            Operation.READ: [
+                OperationDriverEntry(driver_id="CatalogCorePostgresqlDriver"),
+                OperationDriverEntry(driver_id="CatalogStacPostgresqlDriver"),
+            ],
         },
         description=(
             "Operation → ordered driver list for catalog-tier metadata drivers. "
             "Supports WRITE, READ, SEARCH, TRANSFORM, INDEX, BACKUP. "
-            "Default points at the PG Primary; additional roles opt in via config."
+            "Default fans out to the CORE + STAC PG Primaries; additional "
+            "roles opt in via config."
         ),
     )
 
