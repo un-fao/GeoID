@@ -190,8 +190,8 @@ class CatalogModule(ModuleProtocol):
         from dynastore.modules.catalog.drivers.pg_asset_driver import AssetPostgresqlDriver
         self.pg_asset_driver = AssetPostgresqlDriver(engine=engine)
 
-        from dynastore.modules.storage.drivers.postgresql import CollectionPostgresqlDriver
-        self.pg_storage_driver = CollectionPostgresqlDriver()  # type: ignore[abstract]
+        from dynastore.modules.storage.drivers.postgresql import ItemsPostgresqlDriver
+        self.pg_storage_driver = ItemsPostgresqlDriver()  # type: ignore[abstract]
 
         # EntityTransformPipeline used to be registered here as a discovery
         # plugin for CollectionMetadataEnricherProtocol.  That protocol was
@@ -224,7 +224,7 @@ class CatalogModule(ModuleProtocol):
             logger.info("Initialized CatalogModule services.")
 
             # 4. Initialize Storage & Schemas
-            # Hub/sidecar creation is handled by CollectionPostgresqlDriver.ensure_storage()
+            # Hub/sidecar creation is handled by ItemsPostgresqlDriver.ensure_storage()
             # which is called from _create_collection_internal(). No lifecycle hook needed.
 
             async with managed_transaction(engine) as conn:

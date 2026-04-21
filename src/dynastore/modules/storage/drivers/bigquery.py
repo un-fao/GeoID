@@ -1,4 +1,4 @@
-"""CollectionBigQueryDriver — Phase 4a READ + STREAMING implementation."""
+"""ItemsBigQueryDriver — Phase 4a READ + STREAMING implementation."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from dynastore.models.protocols import (
 from dynastore.models.protocols.field_definition import FieldDefinition
 from dynastore.modules.storage.drivers.bigquery_models import (
     BigQueryCredentials,
-    CollectionBigQueryDriverConfig,
+    ItemsBigQueryDriverConfig,
 )
 from dynastore.modules.storage.drivers.bigquery_stream import (
     paged_feature_stream,
@@ -28,7 +28,7 @@ def _get_bq_service() -> Optional[BigQueryProtocol]:
     return get_protocol(BigQueryProtocol)
 
 
-class CollectionBigQueryDriver:
+class ItemsBigQueryDriver:
     """BigQuery read driver (Phase 4a — READ + STREAMING capabilities)."""
 
     priority: int = 50
@@ -49,12 +49,12 @@ class CollectionBigQueryDriver:
     async def get_driver_config(
         self, catalog_id: str, collection_id: Optional[str] = None,
         *, db_resource: Optional[Any] = None,
-    ) -> Optional[CollectionBigQueryDriverConfig]:
+    ) -> Optional[ItemsBigQueryDriverConfig]:
         configs = get_protocol(ConfigsProtocol)
         if configs is None:
             return None
         return await configs.get_config(
-            CollectionBigQueryDriverConfig,
+            ItemsBigQueryDriverConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
         )
@@ -223,3 +223,19 @@ def _bq_field_to_field_definition(f) -> FieldDefinition:
         data_type=dtype,
         required=(f.mode == "REQUIRED"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Back-compat aliases — legacy Collection*Driver names remain importable, and
+# registry lookups (driver_index / TypedModelRegistry) go through the
+# config_rewriter so persisted routing entries and config rows still resolve.
+# Remove once telemetry shows zero hits on the rewriter.  See
+# dynastore.modules.db_config.config_rewriter.
+# ---------------------------------------------------------------------------
+from dynastore.modules.db_config.config_rewriter import register_driver_id_rename  # noqa: E402
+
+CollectionBigQueryDriver = ItemsBigQueryDriver  # noqa: E305 — back-compat alias, see config_rewriter
+register_driver_id_rename(
+    legacy="CollectionBigQueryDriver",
+    canonical="ItemsBigQueryDriver",
+)

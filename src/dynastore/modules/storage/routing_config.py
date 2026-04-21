@@ -290,8 +290,8 @@ class CollectionRoutingConfig(PluginConfig):
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
-            Operation.WRITE: [OperationDriverEntry(driver_id="CollectionPostgresqlDriver")],
-            Operation.READ: [OperationDriverEntry(driver_id="CollectionPostgresqlDriver")],
+            Operation.WRITE: [OperationDriverEntry(driver_id="ItemsPostgresqlDriver")],
+            Operation.READ: [OperationDriverEntry(driver_id="ItemsPostgresqlDriver")],
         },
         description=(
             "Operation → ordered driver list.  "
@@ -572,7 +572,7 @@ async def _on_apply_routing_config(
     # NOTE: ensure_storage() for collection WRITE/READ drivers is intentionally
     # NOT called here. It is invoked by the collection-creation flow
     # (CollectionService._create_collection_internal step 6) on the write driver,
-    # which is the only correct point because the CollectionPostgresqlDriverConfig
+    # which is the only correct point because the ItemsPostgresqlDriverConfig
     # (physical_table, sidecars) must be fully resolved before storage is
     # provisioned.  Calling ensure_storage() here — potentially before the
     # collection row exists — causes ImmutableConfigError for WriteOnce /

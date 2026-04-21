@@ -52,7 +52,7 @@ from dynastore.modules.db_config.platform_config_service import (
 
 # PG sidecar configs — colocated with the PG driver (storage/drivers/pg_sidecars)
 # since M1b.0.  They are imported eagerly here so the discriminated-union field
-# type on CollectionPostgresqlDriverConfig.sidecars can reference them directly
+# type on ItemsPostgresqlDriverConfig.sidecars can reference them directly
 # without string forward refs.  No cycle: pg_sidecars doesn't import driver_config.
 from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
     FeatureAttributeSidecarConfig,
@@ -90,7 +90,7 @@ class DuckDBConfig:
     the DuckDB storage driver.  Follows the same pattern as
     ``DBConfig`` (``DB_POOL_*``) and Elasticsearch (``ES_*``).
 
-    Per-collection configs (``CollectionDuckdbDriverConfig``) hold only file
+    Per-collection configs (``ItemsDuckdbDriverConfig``) hold only file
     paths and format overrides; they should be relative to ``data_root``.
     """
 
@@ -112,7 +112,7 @@ class IcebergConfig:
 
     Controls catalog connection, pool sizing, and timeouts for the Iceberg
     storage driver.  All connection-level settings live here; per-collection
-    configs (``CollectionIcebergDriverConfig``) hold only table identifiers
+    configs (``ItemsIcebergDriverConfig``) hold only table identifiers
     (``namespace``, ``table_name``, ``partition_spec``, etc.).
     """
 
@@ -407,7 +407,7 @@ class AssetDriverConfig(DriverPluginConfig):
 # ---------------------------------------------------------------------------
 
 
-class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
+class ItemsPostgresqlDriverConfig(CollectionDriverConfig):
     """PostgreSQL collection driver config.
 
     Absorbs fields previously in ``PostgresStorageLocationConfig`` and
@@ -505,7 +505,7 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
         return data
 
     @model_validator(mode="after")
-    def validate_composite_partitioning(self) -> "CollectionPostgresqlDriverConfig":
+    def validate_composite_partitioning(self) -> "ItemsPostgresqlDriverConfig":
         """Validate partition keys are provided by configured sidecars."""
         if not self.partitioning.enabled:
             return self
@@ -525,7 +525,7 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_sidecar_partition_mirroring(self) -> "CollectionPostgresqlDriverConfig":
+    def validate_sidecar_partition_mirroring(self) -> "ItemsPostgresqlDriverConfig":
         """Ensure all sidecars mirror the Hub's partition strategy."""
         if self.sidecars and self.partitioning.enabled:
             pass  # Enforced at sidecar DDL generation level
@@ -562,7 +562,7 @@ def _default_partitioning() -> Any:
     return CompositePartitionConfig()
 
 
-class CollectionElasticsearchDriverConfig(CollectionDriverConfig):
+class ItemsElasticsearchDriverConfig(CollectionDriverConfig):
     """Elasticsearch collection driver config.
 
     Uses the stac-fastapi-elasticsearch-opensearch (SFEOS) library by
@@ -591,7 +591,7 @@ class CollectionElasticsearchDriverConfig(CollectionDriverConfig):
     )
 
 
-class CollectionDuckdbDriverConfig(CollectionDriverConfig):
+class ItemsDuckdbDriverConfig(CollectionDriverConfig):
     """DuckDB collection driver config.
 
     Absorbs fields previously in ``FileStorageLocationConfig``.
@@ -614,7 +614,7 @@ _ICEBERG_CONNECTION_FIELDS: frozenset[str] = frozenset({
 })
 
 
-class CollectionIcebergDriverConfig(CollectionDriverConfig):
+class ItemsIcebergDriverConfig(CollectionDriverConfig):
     """Iceberg per-collection config — table location and DDL hints only.
 
     Connection-level settings (catalog type, URI, warehouse) must be configured
@@ -986,3 +986,34 @@ async def _on_apply_collection_schema(
 
 
 CollectionSchema.register_apply_handler(_on_apply_collection_schema)
+
+
+# ---------------------------------------------------------------------------
+# Back-compat aliases — legacy Collection*DriverConfig names remain importable, and
+# registry lookups (driver_index / TypedModelRegistry) go through the
+# config_rewriter so persisted routing entries and config rows still resolve.
+# Remove once telemetry shows zero hits on the rewriter.  See
+# dynastore.modules.db_config.config_rewriter.
+# ---------------------------------------------------------------------------
+from dynastore.modules.db_config.config_rewriter import register_config_class_key_rename  # noqa: E402
+
+CollectionPostgresqlDriverConfig = ItemsPostgresqlDriverConfig  # noqa: E305 — back-compat alias, see config_rewriter
+register_config_class_key_rename(
+    legacy="CollectionPostgresqlDriverConfig",
+    canonical="ItemsPostgresqlDriverConfig",
+)
+CollectionElasticsearchDriverConfig = ItemsElasticsearchDriverConfig  # noqa: E305 — back-compat alias, see config_rewriter
+register_config_class_key_rename(
+    legacy="CollectionElasticsearchDriverConfig",
+    canonical="ItemsElasticsearchDriverConfig",
+)
+CollectionDuckdbDriverConfig = ItemsDuckdbDriverConfig  # noqa: E305 — back-compat alias, see config_rewriter
+register_config_class_key_rename(
+    legacy="CollectionDuckdbDriverConfig",
+    canonical="ItemsDuckdbDriverConfig",
+)
+CollectionIcebergDriverConfig = ItemsIcebergDriverConfig  # noqa: E305 — back-compat alias, see config_rewriter
+register_config_class_key_rename(
+    legacy="CollectionIcebergDriverConfig",
+    canonical="ItemsIcebergDriverConfig",
+)

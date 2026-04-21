@@ -51,7 +51,7 @@ from dynastore.modules.storage.driver_config import (
     WritePolicyDefaults,
     DriverCapability,
     DriverPluginConfig,
-    CollectionPostgresqlDriverConfig,
+    ItemsPostgresqlDriverConfig,
     WriteConflictPolicy,
 )
 from dynastore.modules.storage.schema_types import (

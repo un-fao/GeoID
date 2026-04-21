@@ -26,7 +26,7 @@ import it without reaching into another module's internals.
 
 Role in the role-based driver refactor (plan §M1b):
 
-- M1b.1 retyped ``CollectionPostgresqlDriverConfig.sidecars`` as a
+- M1b.1 retyped ``ItemsPostgresqlDriverConfig.sidecars`` as a
   discriminated union and kept an eager ``[geometries, attributes]``
   default for backwards-compat.
 - M1b.2 (this module) supplies the **lazy** resolution path the driver
@@ -79,7 +79,7 @@ def _effective_sidecars(
        ``collection_configs`` (plan §Principle — default-fast).
 
     Args:
-        col_config: A ``CollectionPostgresqlDriverConfig`` (or ``None``
+        col_config: A ``ItemsPostgresqlDriverConfig`` (or ``None``
             when the driver couldn't load one — fallback path).  Only
             ``.sidecars`` and ``.collection_type`` are read; typed as
             ``Any`` to avoid a circular import with

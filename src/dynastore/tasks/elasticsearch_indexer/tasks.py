@@ -116,7 +116,7 @@ async def _reindex_collection(
                     collection_id=collection_id,
                 )
                 es_active = any(
-                    entry.driver_id == "CollectionElasticsearchDriver"
+                    entry.driver_id == "ItemsElasticsearchDriver"
                     for entries in routing.operations.values()
                     for entry in entries
                 )

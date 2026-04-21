@@ -18,7 +18,7 @@
 
 import logging
 from typing import Dict, List, Any, Tuple, Set, Optional
-from dynastore.modules.storage.driver_config import CollectionPostgresqlDriverConfig
+from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
 from dynastore.modules.storage.drivers.pg_sidecars.base import (
     SidecarProtocol,
     FieldDefinition,
@@ -53,7 +53,7 @@ class QueryOptimizer:
     requested in ``QueryRequest``, avoiding unnecessary table JOINs.
     """
 
-    def __init__(self, col_config: CollectionPostgresqlDriverConfig):
+    def __init__(self, col_config: ItemsPostgresqlDriverConfig):
         self.col_config = col_config
         self.field_index: Dict[str, Tuple[SidecarProtocol, FieldDefinition]] = {}
         self._build_capability_index()
@@ -80,7 +80,7 @@ class QueryOptimizer:
     def map_row_to_feature(
         self,
         row: Dict[str, Any],
-        col_config: CollectionPostgresqlDriverConfig,
+        col_config: ItemsPostgresqlDriverConfig,
         lang: str = "en",
     ) -> Feature:
         """

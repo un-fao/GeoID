@@ -25,7 +25,7 @@ Owns the DDL and all SQL operations for:
 
 Also implements ``get_collection_metadata()`` / ``set_collection_metadata()``
 by reading/upserting ``{schema}.metadata`` — the same table used
-by ``CollectionPostgresqlDriver``.  TRANSFORM drivers (role-based driver
+by ``ItemsPostgresqlDriver``.  TRANSFORM drivers (role-based driver
 plan §Protocols) use this to enrich collection descriptors with
 asset-derived statistics (counts, last ingestion timestamp, coverage
 bounds).
@@ -654,7 +654,7 @@ class AssetPostgresqlDriver:
     ) -> Optional[Dict[str, Any]]:
         """Read collection metadata from ``metadata``.
 
-        The same table is used by ``CollectionPostgresqlDriver`` for feature
+        The same table is used by ``ItemsPostgresqlDriver`` for feature
         collection metadata — scoped to ``collection_id``.
         """
         schema = await self._resolve_schema(catalog_id, db_resource)

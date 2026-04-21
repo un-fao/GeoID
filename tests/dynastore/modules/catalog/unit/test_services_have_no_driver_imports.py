@@ -38,7 +38,7 @@ _GUARDED_SERVICES = [
 # if the forbidden token only appears after a `#` character).
 _FORBIDDEN_TOKENS = [
     "SidecarRegistry",
-    "CollectionPostgresqlDriverConfig",
+    "ItemsPostgresqlDriverConfig",
     "AssetPostgresqlDriverConfig",
 ]
 

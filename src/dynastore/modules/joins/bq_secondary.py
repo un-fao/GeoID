@@ -1,6 +1,6 @@
 """BigQuery secondary stream adapter for /join.
 
-Wraps Phase 4a's CollectionBigQueryDriver to expose a per-request
+Wraps Phase 4a's ItemsBigQueryDriver to expose a per-request
 target (BigQuerySecondarySpec.target) as a Feature stream, indexable
 by the join executor's ``index_secondary``.
 
@@ -15,9 +15,9 @@ from unittest.mock import AsyncMock
 
 from dynastore.models.ogc import Feature
 from dynastore.modules.joins.models import BigQuerySecondarySpec
-from dynastore.modules.storage.drivers.bigquery import CollectionBigQueryDriver
+from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
 from dynastore.modules.storage.drivers.bigquery_models import (
-    CollectionBigQueryDriverConfig,
+    ItemsBigQueryDriverConfig,
 )
 
 
@@ -27,7 +27,7 @@ async def stream_bigquery_secondary(
     secondary_column: str,
     page_size: int = 1000,
     limit: int = 100_000,
-    driver_factory=CollectionBigQueryDriver,
+    driver_factory=ItemsBigQueryDriver,
 ) -> AsyncIterator[Feature]:
     """Yield Features from a per-request BigQuery target.
 
@@ -41,7 +41,7 @@ async def stream_bigquery_secondary(
         )
 
     driver = driver_factory()
-    cfg = CollectionBigQueryDriverConfig(target=spec.target, page_size=page_size)
+    cfg = ItemsBigQueryDriverConfig(target=spec.target, page_size=page_size)
     # Bypass the platform's config waterfall: this driver instance only
     # serves THIS request, so we monkey-patch its config resolver to
     # return the inline cfg. Phase 4a's read_entities then streams as

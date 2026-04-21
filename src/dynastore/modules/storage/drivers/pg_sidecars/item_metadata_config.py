@@ -33,7 +33,7 @@ class ItemMetadataSidecarConfig(SidecarConfig):
 
     # Literal-typed discriminator — required by Pydantic for the
     # Annotated[Union[...], Discriminator("sidecar_type")] dispatch on
-    # CollectionPostgresqlDriverConfig.sidecars.
+    # ItemsPostgresqlDriverConfig.sidecars.
     sidecar_type: Literal["item_metadata"] = "item_metadata"
 
 

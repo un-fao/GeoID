@@ -34,10 +34,10 @@ def test_config_entry_source_values():
 
 def test_config_entry_with_resolved_drivers():
     driver = ResolvedDriverEntry(
-        driver_id="CollectionPostgresqlDriver",
+        driver_id="ItemsPostgresqlDriver",
         on_failure="fatal",
         write_mode="sync",
-        config_class_key="CollectionPostgresqlDriverConfig",
+        config_class_key="ItemsPostgresqlDriverConfig",
         config={"enabled": True},
     )
     entry = ConfigEntry(
@@ -47,7 +47,7 @@ def test_config_entry_with_resolved_drivers():
         resolved_drivers={"WRITE": [driver]},
     )
     assert entry.resolved_drivers is not None
-    assert entry.resolved_drivers["WRITE"][0].driver_id == "CollectionPostgresqlDriver"
+    assert entry.resolved_drivers["WRITE"][0].driver_id == "ItemsPostgresqlDriver"
 
 
 def test_collection_config_response_structure():

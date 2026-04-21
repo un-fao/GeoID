@@ -18,7 +18,7 @@
 
 import pytest
 from sqlalchemy import text
-from dynastore.modules.storage.driver_config import CollectionPostgresqlDriverConfig
+from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
 from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
     GeometriesSidecarConfig,
     TargetDimension,
@@ -73,7 +73,7 @@ async def test_columnar_attributes_sidecar(app_lifespan, catalog_id, collection_
 
     # 1. Setup Config
     geo_config = GeometriesSidecarConfig(target_srid=3857)
-    col_config = CollectionPostgresqlDriverConfig(
+    col_config = ItemsPostgresqlDriverConfig(
         sidecars=[geo_config, attr_sidecar]
     )
 
@@ -168,7 +168,7 @@ async def test_partial_retrieval_optimization(app_lifespan, catalog_id, collecti
     await catalogs.ensure_catalog_exists(catalog_id)
 
     # Standard JSONB config
-    col_config = CollectionPostgresqlDriverConfig(
+    col_config = ItemsPostgresqlDriverConfig(
         sidecars=[
             GeometriesSidecarConfig(),
             FeatureAttributeSidecarConfig(storage_mode=AttributeStorageMode.JSONB),

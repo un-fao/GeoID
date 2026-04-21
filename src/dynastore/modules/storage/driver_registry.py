@@ -28,7 +28,7 @@ Usage::
 
     from dynastore.modules.storage.driver_registry import DriverRegistry
 
-    driver = DriverRegistry.get_collection("CollectionPostgresqlDriver")
+    driver = DriverRegistry.get_collection("ItemsPostgresqlDriver")
     asset  = DriverRegistry.get_asset("AssetPostgresqlDriver")
 
 Cache invalidation::

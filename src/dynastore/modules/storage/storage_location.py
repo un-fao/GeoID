@@ -20,7 +20,7 @@ to expose its physical coordinates without callers having to dispatch on driver
 class or know driver-specific config fields.
 
 This replaces the old ``StorageLocationResolver`` Protocol (which returned ``Any``)
-and the pattern of ``isinstance(driver, CollectionPostgresqlDriver)`` + reading
+and the pattern of ``isinstance(driver, ItemsPostgresqlDriver)`` + reading
 ``physical_schema``/``physical_table`` directly.
 
 Callers that need "where does this live" use ``driver.location(...)`` and read

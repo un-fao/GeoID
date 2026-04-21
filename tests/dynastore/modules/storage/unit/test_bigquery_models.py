@@ -3,7 +3,7 @@ from pydantic import ValidationError
 
 from dynastore.modules.storage.drivers.bigquery_models import (
     BigQueryTarget,
-    CollectionBigQueryDriverConfig,
+    ItemsBigQueryDriverConfig,
 )
 
 
@@ -32,7 +32,7 @@ def test_target_fqn():
 
 
 def test_driver_config_defaults():
-    cfg = CollectionBigQueryDriverConfig()
+    cfg = ItemsBigQueryDriverConfig()
     assert cfg.target.project_id is None
     assert cfg.location == "EU"
     assert cfg.page_size == 1000
@@ -42,11 +42,11 @@ def test_driver_config_defaults():
 def test_credentials_default_is_empty():
     from dynastore.modules.storage.drivers.bigquery_models import (
         BigQueryCredentials,
-        CollectionBigQueryDriverConfig,
+        ItemsBigQueryDriverConfig,
     )
     creds = BigQueryCredentials()
     assert creds.is_empty()
-    cfg = CollectionBigQueryDriverConfig()
+    cfg = ItemsBigQueryDriverConfig()
     assert cfg.credentials.is_empty()
 
 
@@ -92,11 +92,11 @@ def test_credentials_are_masked_in_model_dump_default():
     """
     from dynastore.modules.storage.drivers.bigquery_models import (
         BigQueryCredentials,
-        CollectionBigQueryDriverConfig,
+        ItemsBigQueryDriverConfig,
     )
     from dynastore.tools.secrets import Secret
 
-    cfg = CollectionBigQueryDriverConfig(
+    cfg = ItemsBigQueryDriverConfig(
         credentials=BigQueryCredentials(
             service_account_json=Secret("SENSITIVE-PLAINTEXT-XYZ"),
         ),

@@ -139,11 +139,19 @@ def test_no_plugin_infix_in_config_class_key():
 
 
 def test_driver_config_naming_convention():
-    """Concrete driver config classes must follow '<Role><Backend>DriverConfig' pattern.
+    """Concrete driver config classes must follow '<Tier><Backend>DriverConfig' pattern.
 
     Rules:
     - Must end in 'DriverConfig'
-    - Must start with a known role prefix: Collection, Asset, or Metadata
+    - Must start with a known tier prefix: Items, Collection, Catalog, Asset, or Metadata.
+      Post-rename:
+        * ``Items<Backend>DriverConfig`` — item-level drivers (the former
+          ``Collection<Backend>DriverConfig``); the ``Collection`` prefix
+          remains reserved for the collection-metadata tier created in M2.1+.
+        * ``Catalog<Backend>DriverConfig`` — catalog-metadata tier (M2.1).
+        * ``Asset<Backend>DriverConfig`` — asset-level drivers.
+        * ``Metadata<Backend>DriverConfig`` — legacy whole-envelope metadata
+          drivers (deleted in M2.5 once the split-domain drivers ship).
     - Base classes (DriverPluginConfig, CollectionDriverConfig, AssetDriverConfig) are excluded
     """
     _load_all_modules()
@@ -156,7 +164,7 @@ def test_driver_config_naming_convention():
     )
 
     _BASE_CLASSES = {DriverPluginConfig, CollectionDriverConfig, AssetDriverConfig}
-    _ROLE_PREFIXES = ("Collection", "Asset", "Metadata")
+    _ROLE_PREFIXES = ("Items", "Collection", "Catalog", "Asset", "Metadata")
 
     concrete_driver_configs = [
         cls for cls in TypedModelRegistry.subclasses_of(PluginConfig)

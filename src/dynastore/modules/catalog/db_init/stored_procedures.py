@@ -23,7 +23,7 @@ DECLARE
 BEGIN
     EXECUTE format(
         'SELECT collection_id FROM %I.collection_configs '
-        'WHERE class_key = ''CollectionPostgresqlDriverConfig'' '
+        'WHERE class_key = ''ItemsPostgresqlDriverConfig'' '
         'AND config_data->>''physical_table'' = $1 LIMIT 1',
         schema_name
     )
@@ -79,7 +79,7 @@ BEGIN
     -- The collection_configs table stores driver config with physical_table in JSONB.
     EXECUTE format(
         'SELECT collection_id FROM %I.collection_configs '
-        'WHERE class_key = ''CollectionPostgresqlDriverConfig'' '
+        'WHERE class_key = ''ItemsPostgresqlDriverConfig'' '
         'AND config_data->>''physical_table'' = $1 LIMIT 1',
         TG_TABLE_SCHEMA
     )

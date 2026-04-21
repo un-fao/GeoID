@@ -26,7 +26,7 @@ class BigQuerySecondarySpec(BaseModel):
     """Per-request BigQuery secondary — target identity supplied inline.
 
     Phase 4b PR-2: target only; auth still flows through CloudIdentityProtocol
-    (same as Phase 4a's ``CollectionBigQueryDriver``). Phase 4e adds
+    (same as Phase 4a's ``ItemsBigQueryDriver``). Phase 4e adds
     ``credentials: BigQueryCredentials`` for Secret-wrapped per-request
     credential overrides.
     """
@@ -89,7 +89,7 @@ class PrimaryFilterSpec(BaseModel):
     Forwarded to the primary driver via ``QueryRequest.cql_filter``.
     The driver is responsible for parsing CQL2 (platform standard —
     see ``modules/tools/cql.py:parse_cql_filter``). Drivers that don't
-    support CQL2 (e.g. the current ``CollectionBigQueryDriver`` Phase
+    support CQL2 (e.g. the current ``ItemsBigQueryDriver`` Phase
     4a impl) treat this as a no-op.
     """
     model_config = ConfigDict(extra="forbid")

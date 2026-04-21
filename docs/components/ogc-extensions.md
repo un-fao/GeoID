@@ -75,9 +75,9 @@ READ+STREAMING+INTROSPECTION+COUNT+AGGREGATION capabilities; wraps
 `BigQueryService` for query execution.
 
 **Credential resolution** (Phase 4e):
-1. `CollectionBigQueryDriverConfig.credentials.service_account_json` (Secret-wrapped)
+1. `ItemsBigQueryDriverConfig.credentials.service_account_json` (Secret-wrapped)
    — revealed only inside `_make_bq_client`, never logged or returned.
-2. `CollectionBigQueryDriverConfig.credentials.api_key` (Secret-wrapped) — logs
+2. `ItemsBigQueryDriverConfig.credentials.api_key` (Secret-wrapped) — logs
    a warning and falls back (google-cloud-bigquery doesn't support api-key auth
    directly yet).
 3. **Fallback:** `CloudIdentityProtocol.get_credentials_object()` — the Phase 4a

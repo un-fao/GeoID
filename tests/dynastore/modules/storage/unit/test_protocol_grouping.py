@@ -116,9 +116,9 @@ class TestDriverStructuralSubtyping:
 
     def test_postgresql_driver_satisfies_collection_items_store(self):
         from dynastore.models.protocols.storage_driver import CollectionItemsStore
-        from dynastore.modules.storage.drivers.postgresql import CollectionPostgresqlDriver
+        from dynastore.modules.storage.drivers.postgresql import ItemsPostgresqlDriver
         # @runtime_checkable allows isinstance with Protocol
-        assert isinstance(CollectionPostgresqlDriver(), CollectionItemsStore)
+        assert isinstance(ItemsPostgresqlDriver(), CollectionItemsStore)
 
     def test_pg_asset_driver_satisfies_asset_store(self):
         from dynastore.models.protocols.asset_driver import AssetStore

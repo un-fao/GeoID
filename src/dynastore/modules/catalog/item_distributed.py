@@ -20,7 +20,7 @@ from dynastore.modules.db_config.query_executor import (
     ResultHandler,
 )
 from dynastore.modules.storage.driver_config import (
-    CollectionPostgresqlDriverConfig,
+    ItemsPostgresqlDriverConfig,
     CollectionWritePolicy,
     WriteConflictPolicy,
     IdentityMatcher,
@@ -59,7 +59,7 @@ class ItemDistributedMixin(_Host):
         collection_id: str,
         hub_payload: Dict[str, Any],
         sidecar_payloads: Dict[str, Dict[str, Any]],
-        col_config: CollectionPostgresqlDriverConfig,
+        col_config: ItemsPostgresqlDriverConfig,
         sidecars: List[SidecarProtocol],
         processing_context: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:

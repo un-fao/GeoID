@@ -8,7 +8,7 @@ class ResolvedDriverEntry(BaseModel):
     """A driver resolved from a routing config entry, with its effective config."""
 
     driver_id: str = Field(
-        ..., description="Driver class name, e.g. 'CollectionPostgresqlDriver'."
+        ..., description="Driver class name, e.g. 'ItemsPostgresqlDriver'."
     )
     on_failure: str = Field(..., description="Failure policy: fatal | warn | ignore.")
     write_mode: str = Field(..., description="Write mode: sync | async.")

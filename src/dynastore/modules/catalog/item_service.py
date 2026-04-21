@@ -41,7 +41,7 @@ from dynastore.modules.db_config.query_executor import (
 from dynastore.modules.catalog.models import ItemDataForDB, Collection, Catalog
 from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
 from dynastore.modules.storage.driver_config import (
-    CollectionPostgresqlDriverConfig,
+    ItemsPostgresqlDriverConfig,
 )
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
@@ -55,9 +55,9 @@ from dynastore.models.query_builder import QueryRequest, QueryResponse
 from dynastore.modules.catalog.query_optimizer import QueryOptimizer
 from dynastore.modules.storage.drivers.pg_sidecars.base import FeaturePipelineContext
 # M1b.2: SidecarRegistry is now imported inline, next to each effective-
-# sidecars resolution site.  CollectionPostgresqlDriverConfig remains
+# sidecars resolution site.  ItemsPostgresqlDriverConfig remains
 # imported at module level for type annotations on the bulk-write path
-# (see `col_config: CollectionPostgresqlDriverConfig`) — that's a known
+# (see `col_config: ItemsPostgresqlDriverConfig`) — that's a known
 # carryover for a future cleanup pass; within M1b, the boundary guard
 # targets CollectionService / CatalogService / AssetService only.
 from dynastore.modules.catalog.item_query import ItemQueryMixin
@@ -150,7 +150,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
         Uses the READ driver first; falls back to the primary WRITE driver
         when READ is a non-PG driver (e.g. DuckDB) so that the PG path
-        receives a CollectionPostgresqlDriverConfig with valid sidecars.
+        receives a ItemsPostgresqlDriverConfig with valid sidecars.
         """
         from dynastore.modules.storage.router import get_driver, get_write_drivers
         from dynastore.modules.storage.routing_config import Operation
@@ -339,7 +339,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         # Post-commit fan-out and event emission still run after this branch.
         #
         # Trust the waterfall: CollectionRoutingConfig.operations[WRITE] has a
-        # code-level default of [CollectionPostgresqlDriver], so this list is
+        # code-level default of [ItemsPostgresqlDriver], so this list is
         # never empty in a correctly bootstrapped deploy. If it is empty, the
         # resolver surfaces ConfigResolutionError → HTTP 500 ops alert.
         from dynastore.modules.storage.router import get_write_drivers
@@ -886,7 +886,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         self,
         catalog_id: str,
         collection_id: str,
-        col_config: CollectionPostgresqlDriverConfig,
+        col_config: ItemsPostgresqlDriverConfig,
         db_resource: Optional[DbResource] = None,
     ):
         async with managed_transaction(db_resource or self.engine) as conn:
@@ -933,7 +933,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         self,
         catalog_id: str,
         collection_id: str,
-        col_config: CollectionPostgresqlDriverConfig,
+        col_config: ItemsPostgresqlDriverConfig,
         partition_value: Any,
         ctx: Optional[DriverContext] = None,
     ):

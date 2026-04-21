@@ -72,7 +72,7 @@ class BigQueryCredentials(BaseModel):
         return self.service_account_json is None and self.api_key is None
 
 
-class CollectionBigQueryDriverConfig(CollectionDriverConfig):
+class ItemsBigQueryDriverConfig(CollectionDriverConfig):
     """Registered per-collection config for the BigQuery driver.
 
     Phase 4a: READ-only, credentials via CloudIdentityProtocol.
@@ -87,3 +87,19 @@ class CollectionBigQueryDriverConfig(CollectionDriverConfig):
     location: str = "EU"
     page_size: int = Field(default=1000, ge=1, le=50000)
     query_timeout_s: int = Field(default=60, ge=1, le=600)
+
+
+# ---------------------------------------------------------------------------
+# Back-compat aliases — legacy Collection*DriverConfig names remain importable, and
+# registry lookups (driver_index / TypedModelRegistry) go through the
+# config_rewriter so persisted routing entries and config rows still resolve.
+# Remove once telemetry shows zero hits on the rewriter.  See
+# dynastore.modules.db_config.config_rewriter.
+# ---------------------------------------------------------------------------
+from dynastore.modules.db_config.config_rewriter import register_config_class_key_rename  # noqa: E402
+
+CollectionBigQueryDriverConfig = ItemsBigQueryDriverConfig  # noqa: E305 — back-compat alias, see config_rewriter
+register_config_class_key_rename(
+    legacy="CollectionBigQueryDriverConfig",
+    canonical="ItemsBigQueryDriverConfig",
+)

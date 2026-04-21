@@ -269,7 +269,7 @@ class QueryResponse(BaseModel):
     catalog_id: str
     collection_id: str
     collection_config: Optional[Any] = Field(
-        default=None, description="The resolved CollectionPostgresqlDriverConfig"
+        default=None, description="The resolved ItemsPostgresqlDriverConfig"
     )
 
     # Execution Metadata

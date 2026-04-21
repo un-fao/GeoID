@@ -120,7 +120,7 @@ class CollectionService:
         """Store physical table in PG driver config."""
         pg_driver = await self._get_pg_driver()
         if not pg_driver:
-            raise RuntimeError("CollectionPostgresqlDriver not available")
+            raise RuntimeError("ItemsPostgresqlDriver not available")
         await pg_driver.set_physical_table(  # type: ignore[attr-defined]
             catalog_id, collection_id, physical_table, db_resource=db_resource
         )
@@ -487,7 +487,7 @@ class CollectionService:
                     layer_config_override = {"sidecars": getattr(collection_definition, "sidecars")}
 
             # M1b.3: blocks that used to (a) coerce layer_config_override from
-            # dict → CollectionPostgresqlDriverConfig and (b) iterate
+            # dict → ItemsPostgresqlDriverConfig and (b) iterate
             # SidecarRegistry.get_injected_sidecar_configs to mutate the
             # override are both deleted.  Driver-specific typing + defaults
             # now live inside the PG driver's init_collection hook (see
