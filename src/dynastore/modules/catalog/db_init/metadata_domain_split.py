@@ -53,6 +53,7 @@ Applied globally at ``CatalogModule`` init and per-tenant from
 """
 
 from dynastore.modules.db_config.query_executor import DDLQuery, DbResource
+from dynastore.tools.db import validate_sql_identifier
 
 
 # ---------------------------------------------------------------------------
@@ -221,10 +222,35 @@ async def rename_legacy_metadata_tables(conn: DbResource, schema: str) -> None:
 
     Idempotent, atomic (single transaction block), and safe to call on
     every ``initialize_core_tenant_tables`` invocation.
+
+    Implementation note
+    -------------------
+    The DO block uses ``{schema}`` in two syntactic positions:
+
+    1. As a table qualifier (``ALTER TABLE {schema}.metadata …``) — an
+       SQL *identifier*, which needs the dialect's identifier quoting
+       (PostgreSQL: double-quoted).
+    2. Inside an ``information_schema`` predicate
+       (``WHERE table_schema = '{schema}'``) — an SQL *string literal*,
+       which needs the raw, unquoted schema name.
+
+    ``TemplateQueryBuilder`` in ``query_executor.py`` rewrites every
+    ``{schema}`` placeholder as an identifier, so handing the template
+    to ``DDLQuery(...).execute(conn, schema=schema)`` would substitute
+    ``'"myschema"'`` into the string-literal positions — the
+    ``information_schema.tables.table_schema`` column stores the
+    unquoted value ``myschema``, so the comparison would never match
+    and the rename would silently no-op, leaving legacy data orphaned.
+
+    Work-around: validate the schema name (rejects reserved words /
+    non-identifier characters), then format the DDL body in Python so
+    the identifier-vs-literal distinction is preserved.  ``DDLQuery``
+    is still used for execution — it just no longer has any template
+    placeholders to substitute.
     """
-    await DDLQuery(TENANT_LEGACY_METADATA_RENAME_DDL).execute(
-        conn, schema=schema
-    )
+    safe_schema = validate_sql_identifier(schema)
+    ddl = TENANT_LEGACY_METADATA_RENAME_DDL.format(schema=safe_schema)
+    await DDLQuery(ddl).execute(conn)
 
 
 async def ensure_tenant_metadata_domain_tables(conn: DbResource, schema: str) -> None:
