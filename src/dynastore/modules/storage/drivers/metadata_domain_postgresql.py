@@ -599,3 +599,79 @@ class CatalogStacPostgresqlDriver(_CatalogMetadataDomainBase):
         MetadataCapability.WRITE,
         MetadataCapability.SOFT_DELETE,
     })
+
+
+# ---------------------------------------------------------------------------
+# M2.2 — catalog-metadata lifecycle hooks
+# ---------------------------------------------------------------------------
+#
+# Registered on the lifecycle registry at module-import time.  Fire from
+# ``init_catalog_metadata`` — the phase invoked by
+# ``CatalogService.create_catalog`` AFTER the ``catalog.catalogs`` registry
+# row has been committed (so FK references into catalog.catalogs(id) from
+# the per-domain metadata tables are satisfied).
+#
+# Default-fast invariant: a hook is a no-op when the caller didn't supply
+# a ``catalog_metadata`` kwarg.  Empty / missing → zero writes.
+#
+# The STAC hook is kept in this file for M2.2 simplicity.  A follow-up
+# sub-PR can move it to the STAC extension so the STAC-specific table
+# (``catalog.catalog_metadata_stac``) is owned end-to-end by the
+# extension's lifecycle.
+
+
+from dynastore.modules.catalog.lifecycle_manager import (  # noqa: E402
+    sync_catalog_metadata_initializer,
+)
+
+
+@sync_catalog_metadata_initializer(priority=5)
+async def _pg_catalog_core_init(
+    conn: DbResource,
+    schema: str,
+    catalog_id: str,
+    *,
+    catalog_metadata: Optional[Dict[str, Any]] = None,
+    **_ignored: Any,
+) -> None:
+    """Persist CORE catalog metadata into ``catalog.catalog_metadata_core``.
+
+    Idempotent via ``ON CONFLICT (catalog_id) DO UPDATE`` inside
+    :meth:`CatalogCorePostgresqlDriver.upsert_catalog_metadata`.  Falls
+    back to a silent no-op when the caller supplies nothing to persist
+    (default-fast invariant: empty-body catalog creation writes zero
+    catalog_metadata_core rows).
+    """
+    if not catalog_metadata:
+        return
+    driver = CatalogCorePostgresqlDriver()
+    await driver.upsert_catalog_metadata(
+        catalog_id, catalog_metadata, db_resource=conn,
+    )
+
+
+@sync_catalog_metadata_initializer(priority=10)
+async def _pg_catalog_stac_init(
+    conn: DbResource,
+    schema: str,
+    catalog_id: str,
+    *,
+    catalog_metadata: Optional[Dict[str, Any]] = None,
+    **_ignored: Any,
+) -> None:
+    """Persist STAC catalog metadata into ``catalog.catalog_metadata_stac``.
+
+    Gated on the presence of at least one STAC-relevant key in the
+    supplied ``catalog_metadata`` — absence means "this catalog has no
+    STAC envelope" and we skip the write entirely.  Priority 10 keeps
+    it ordered after CORE (priority 5) so a future STAC hook reading
+    the CORE row finds it already in place.
+    """
+    if not catalog_metadata:
+        return
+    if not any(k in catalog_metadata for k in _CATALOG_STAC_COLUMNS):
+        return
+    driver = CatalogStacPostgresqlDriver()
+    await driver.upsert_catalog_metadata(
+        catalog_id, catalog_metadata, db_resource=conn,
+    )

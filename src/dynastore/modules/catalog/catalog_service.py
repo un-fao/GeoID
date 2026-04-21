@@ -234,6 +234,63 @@ def get_catalog_engine(db_resource: Optional[DbResource] = None) -> DbResource:
     return get_engine()  # type: ignore[return-value]
 
 
+def _build_catalog_metadata_payload(catalog_model: Catalog) -> Dict[str, Any]:
+    """Flatten the Catalog model into a dict keyed by domain-metadata columns.
+
+    Keys align with the column tuples in
+    ``modules/storage/drivers/metadata_domain_postgresql.py`` so every
+    registered ``sync_catalog_metadata_initializer`` hook can
+    ``_filter_payload`` down to its own domain's columns without
+    additional routing logic here.
+
+    Absent fields are omitted (not set to ``None``) so the hook-level
+    default-fast check (``if not catalog_metadata: return``) still
+    fires when the caller passed an empty-body catalog create.
+
+    This helper stays in the service layer because it knows the
+    public Catalog model's shape.  The drivers read an opaque dict and
+    are not coupled to the Catalog class.
+    """
+    out: Dict[str, Any] = {}
+
+    # CORE domain fields
+    if catalog_model.title is not None:
+        out["title"] = catalog_model.title.model_dump(exclude_none=True) \
+            if hasattr(catalog_model.title, "model_dump") else catalog_model.title
+    if catalog_model.description is not None:
+        out["description"] = catalog_model.description.model_dump(exclude_none=True) \
+            if hasattr(catalog_model.description, "model_dump") else catalog_model.description
+    if catalog_model.keywords is not None:
+        out["keywords"] = catalog_model.keywords.model_dump(exclude_none=True) \
+            if hasattr(catalog_model.keywords, "model_dump") else catalog_model.keywords
+    if catalog_model.license is not None:
+        out["license"] = catalog_model.license.model_dump(exclude_none=True) \
+            if hasattr(catalog_model.license, "model_dump") else catalog_model.license
+    if catalog_model.extra_metadata is not None:
+        out["extra_metadata"] = catalog_model.extra_metadata.model_dump(exclude_none=True) \
+            if hasattr(catalog_model.extra_metadata, "model_dump") else catalog_model.extra_metadata
+
+    # STAC domain fields (catalog-tier subset — no extent / providers / summaries here)
+    if catalog_model.stac_version:
+        out["stac_version"] = catalog_model.stac_version
+    if catalog_model.stac_extensions:
+        out["stac_extensions"] = list(catalog_model.stac_extensions)
+    conforms_to = getattr(catalog_model, "conformsTo", None)
+    if conforms_to:
+        out["conforms_to"] = list(conforms_to)
+    if catalog_model.links:
+        out["links"] = [
+            link.model_dump(exclude_none=True) if hasattr(link, "model_dump") else link
+            for link in catalog_model.links
+        ]
+    # ``assets`` on the Catalog envelope — catalog-level assets (not item assets).
+    catalog_assets = getattr(catalog_model, "assets", None)
+    if catalog_assets:
+        out["assets"] = catalog_assets
+
+    return out
+
+
 # --- Queries ---
 
 _create_catalog_strict_query = DQLQuery(
@@ -651,6 +708,28 @@ class CatalogService(CatalogsProtocol):
                 provisioning_status=catalog_model.provisioning_status,
                 stac_version=catalog_model.stac_version,
                 stac_extensions=json.dumps(catalog_model.stac_extensions, cls=CustomJSONEncoder) if catalog_model.stac_extensions else None,
+            )
+
+            # M2.2 — catalog-metadata lifecycle phase.
+            #
+            # At this point the catalog.catalogs registry row is committed
+            # (the INSERT above), so FK references from
+            # catalog.catalog_metadata_core / _stac into catalog.catalogs(id)
+            # are satisfied.  Dispatch the lifecycle phase so any registered
+            # PG / STAC / future driver hooks can persist catalog-tier
+            # metadata into their domain-scoped tables.  Default-fast: a
+            # caller that supplies no metadata fields (title=None, etc.)
+            # yields an empty dict here and every hook no-ops.
+            #
+            # The service stays driver-agnostic: the dict is built from the
+            # public Catalog model; the lifecycle_registry decides which
+            # hooks consume it (PG Primary today, ES Indexer later, etc.).
+            catalog_metadata = _build_catalog_metadata_payload(catalog_model)
+            await lifecycle_registry.init_catalog_metadata(
+                conn,
+                physical_schema,
+                catalog_id=catalog_model.id,
+                catalog_metadata=catalog_metadata,
             )
 
             # Lifecycle Phase 2: EVENT (Now after schema is ready AND record exists)
