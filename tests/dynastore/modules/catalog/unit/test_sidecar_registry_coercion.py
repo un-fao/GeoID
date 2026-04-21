@@ -6,11 +6,11 @@ longer crash the consumer.
 
 import pytest
 
-from dynastore.modules.catalog.sidecars.base import SidecarConfig
-from dynastore.modules.catalog.sidecars.geometries_config import (
+from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarConfig
+from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
     GeometriesSidecarConfig,
 )
-from dynastore.modules.catalog.sidecars.registry import SidecarRegistry
+from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
 
 
 class TestGetSidecarAcceptsTypedConfig:
