@@ -152,15 +152,35 @@ class TestPayloadFilter:
         assert "stac_version" not in filtered
         assert filtered["title"] == {"en": "T"}
 
-    def test_filter_payload_missing_keys_become_none(self):
+    def test_filter_payload_empty_input_yields_empty_dict(self):
+        """Partial-update semantics: absent keys are DROPPED, not set to None.
+
+        An empty input must yield an empty payload — the upsert path
+        then falls to the 'pure updated_at bump' branch and NEVER writes
+        SET col = NULL for columns the caller did not supply.  Without
+        this, a subsequent upsert with ``{"title": "T2"}`` on a row that
+        previously had description / keywords would overwrite both to
+        NULL (data loss).
+        """
         from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
             _COLLECTION_STAC_COLUMNS, _filter_payload,
         )
 
         filtered = _filter_payload({}, _COLLECTION_STAC_COLUMNS)
-        assert set(filtered) == set(_COLLECTION_STAC_COLUMNS)
-        for v in filtered.values():
-            assert v is None
+        assert filtered == {}
+
+    def test_filter_payload_drops_none_values(self):
+        """Explicit None values are dropped — same as absent keys."""
+        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+            _COLLECTION_CORE_COLUMNS, _filter_payload,
+        )
+
+        filtered = _filter_payload(
+            {"title": "T", "description": None, "keywords": ["k"]},
+            _COLLECTION_CORE_COLUMNS,
+        )
+        # Only the two keys with non-None values survive.
+        assert filtered == {"title": "T", "keywords": ["k"]}
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +229,7 @@ def fake_conn_with_dql():
 
 @pytest.mark.asyncio
 async def test_collection_core_upsert_uses_core_columns_only(fake_conn_with_dql):
+    """Full CORE payload → INSERT column list matches supplied CORE keys."""
     from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
         CollectionCorePostgresqlDriver,
     )
@@ -220,6 +241,9 @@ async def test_collection_core_upsert_uses_core_columns_only(fake_conn_with_dql)
         metadata={
             "title": {"en": "T"},
             "description": {"en": "D"},
+            "keywords": ["k"],
+            "license": "CC-BY-4.0",
+            "extra_metadata": {"foo": "bar"},
             "extent": "SHOULD BE IGNORED — STAC COLUMN",
             "providers": ["IGNORE"],
         },
@@ -228,18 +252,86 @@ async def test_collection_core_upsert_uses_core_columns_only(fake_conn_with_dql)
     dql_execute.assert_awaited_once()
     sql, params = dql_execute.call_args.args[0], dql_execute.call_args.kwargs
     assert '"t_alpha".collection_metadata_core' in sql
+    # STAC columns never appear in the SQL (domain filtered).
     assert "extent" not in sql
     assert "providers" not in sql
     # CORE columns appear in both the column list and the ON CONFLICT
     # UPDATE set — so "title" shows up twice.  Assert both directions.
     assert sql.count("title") >= 2
     assert "NOW()" in sql  # updated_at stamping
-    # Bind params cover all CORE columns plus :id — STAC leak would show here.
+    # Bind params cover only the five CORE keys the caller supplied (plus :id).
     assert set(params) == {"id", "title", "description", "keywords", "license", "extra_metadata"}
 
 
 @pytest.mark.asyncio
+async def test_collection_core_upsert_partial_update_preserves_other_columns(
+    fake_conn_with_dql,
+):
+    """PATCH semantics: supplying only ``title`` must NOT emit SET description=NULL.
+
+    Regression for C1 (2026-04-21 code review): a partial upsert that
+    previously wrote a full column list with None placeholders would
+    NULL-out the existing description/keywords/license/extra_metadata
+    on any follow-up write.  The post-fix SQL builder only references
+    the supplied columns, so the DO UPDATE SET clause leaves the
+    other columns untouched.
+    """
+    from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+        CollectionCorePostgresqlDriver,
+    )
+
+    _, dql_execute = fake_conn_with_dql
+    d = CollectionCorePostgresqlDriver()
+    await d.upsert_metadata(
+        "cat", "col", metadata={"title": {"en": "T2"}},
+    )
+    dql_execute.assert_awaited_once()
+    sql, params = dql_execute.call_args.args[0], dql_execute.call_args.kwargs
+    assert '"t_alpha".collection_metadata_core' in sql
+    # title appears (it was supplied) …
+    assert "title" in sql
+    # … but no other CORE column is referenced in the SQL.  A ``SET
+    # description = EXCLUDED.description`` would overwrite existing data.
+    for untouched in ("description", "keywords", "license", "extra_metadata"):
+        assert untouched not in sql, (
+            f"SQL still references {untouched!r} on partial update — "
+            f"this would NULL-out the existing column value.  Check "
+            f"_filter_payload / _upsert_collection_row."
+        )
+    # Bind params contain only :id + the one supplied column.
+    assert set(params) == {"id", "title"}
+
+
+@pytest.mark.asyncio
+async def test_collection_core_upsert_empty_payload_only_bumps_updated_at(
+    fake_conn_with_dql,
+):
+    """Empty filtered payload → INSERT ... (collection_id, updated_at) ONLY.
+
+    Without a payload, we still want the INSERT to fire because
+    INDEX / BACKUP propagation reads ``updated_at`` as the freshness
+    token — a silent no-op here would hide the activity.
+    """
+    from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+        CollectionCorePostgresqlDriver,
+    )
+
+    _, dql_execute = fake_conn_with_dql
+    d = CollectionCorePostgresqlDriver()
+    await d.upsert_metadata("cat", "col", metadata={})
+    dql_execute.assert_awaited_once()
+    sql, params = dql_execute.call_args.args[0], dql_execute.call_args.kwargs
+    assert sql.startswith(
+        'INSERT INTO "t_alpha".collection_metadata_core '
+        '(collection_id, updated_at)'
+    )
+    assert "ON CONFLICT (collection_id) DO UPDATE SET updated_at = NOW()" in sql
+    assert set(params) == {"id"}
+
+
+@pytest.mark.asyncio
 async def test_collection_stac_upsert_uses_stac_columns_only(fake_conn_with_dql):
+    """Full STAC payload → INSERT columns match the supplied STAC keys."""
     from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
         CollectionStacPostgresqlDriver,
     )
@@ -250,6 +342,13 @@ async def test_collection_stac_upsert_uses_stac_columns_only(fake_conn_with_dql)
         "cat", "col",
         metadata={
             "extent": {"spatial": {"bbox": [[0, 0, 1, 1]]}},
+            "providers": [{"name": "FAO"}],
+            "summaries": {"gsd": [10]},
+            "links": [],
+            "assets": {},
+            "item_assets": {},
+            "stac_version": "1.1.0",
+            "stac_extensions": ["https://…/datacube/v2"],
             "title": "SHOULD BE IGNORED — CORE COLUMN",
             "license": "IGNORE",
         },
@@ -262,7 +361,7 @@ async def test_collection_stac_upsert_uses_stac_columns_only(fake_conn_with_dql)
     assert "license" not in sql
     assert "extent" in sql
     assert "stac_version" in sql
-    # Params: :id + 8 STAC columns.
+    # Params: :id + all 8 STAC columns the caller supplied.
     assert set(params) == {
         "id", "stac_version", "stac_extensions", "extent", "providers",
         "summaries", "links", "assets", "item_assets",
@@ -292,6 +391,13 @@ async def test_catalog_core_upsert_targets_global_schema(fake_conn_with_dql):
 
 @pytest.mark.asyncio
 async def test_catalog_stac_upsert_carries_catalog_stac_columns(fake_conn_with_dql):
+    """Catalog STAC domain carries conforms_to but not item_assets.
+
+    Partial-update semantics: only supplied keys appear in the SQL.
+    ``stac_extensions`` / ``links`` / ``assets`` are absent from the
+    payload so the INSERT / ON CONFLICT UPDATE clauses do not touch
+    them — existing row values survive a partial write.
+    """
     from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
         CatalogStacPostgresqlDriver,
     )
@@ -312,14 +418,107 @@ async def test_catalog_stac_upsert_carries_catalog_stac_columns(fake_conn_with_d
     # Catalog STAC has conforms_to but NOT item_assets — sanity-check the leak.
     assert "conforms_to" in sql
     assert "item_assets" not in sql
-    assert set(params) == {
-        "id", "stac_version", "stac_extensions", "conforms_to", "links", "assets",
-    }
+    # Absent catalog-STAC columns should NOT appear in the SQL on a
+    # partial update — writing them would NULL-out existing data.
+    for untouched in ("stac_extensions", "links", "assets"):
+        assert untouched not in sql, (
+            f"SQL references {untouched!r} on partial update — would "
+            f"NULL-out existing column value (C1 regression)"
+        )
+    # Only :id + the two supplied STAC columns end up as bind params.
+    assert set(params) == {"id", "stac_version", "conforms_to"}
 
 
 # ---------------------------------------------------------------------------
 # Entry-point discovery
 # ---------------------------------------------------------------------------
+
+
+class TestColumnTupleAlignment:
+    """N2 regression: the ``_*_COLUMNS`` tuples must stay in lock-step with
+    the CREATE TABLE column lists in ``metadata_domain_split.py``.
+
+    Without this guard, a future DDL change that adds a column but
+    forgets to extend the tuple would have ``_filter_payload`` silently
+    drop that column on every upsert — a data-loss class bug that
+    would only manifest in production.
+    """
+
+    @staticmethod
+    def _parse_ddl_columns(ddl: str) -> set[str]:
+        """Best-effort column extraction from a CREATE TABLE statement.
+
+        Not a real SQL parser — just enough to pull ``name TYPE`` pairs
+        out of the known DDL shape.  Skips the PK column and bookkeeping
+        columns (``created_at`` / ``updated_at``).
+        """
+        import re
+
+        cols: set[str] = set()
+        for line in ddl.splitlines():
+            line = line.strip().rstrip(",")
+            # Skip CREATE, closing `);`, empty lines, and the first column (PK).
+            if not line or line.startswith(("CREATE", "/*", "--", ")", "(")):
+                continue
+            m = re.match(r"([a-z_]+)\s+[A-Z]", line)
+            if not m:
+                continue
+            name = m.group(1)
+            if name in {
+                "catalog_id", "collection_id",  # PKs — not in the tuple
+                "created_at", "updated_at",     # bookkeeping — not in the tuple
+            }:
+                continue
+            cols.add(name)
+        return cols
+
+    def test_collection_core_columns_match_ddl(self):
+        from dynastore.modules.catalog.db_init.metadata_domain_split import (
+            TENANT_METADATA_CORE_DDL,
+        )
+        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+            _COLLECTION_CORE_COLUMNS,
+        )
+
+        assert set(_COLLECTION_CORE_COLUMNS) == self._parse_ddl_columns(
+            TENANT_METADATA_CORE_DDL,
+        )
+
+    def test_collection_stac_columns_match_ddl(self):
+        from dynastore.modules.catalog.db_init.metadata_domain_split import (
+            TENANT_METADATA_STAC_DDL,
+        )
+        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+            _COLLECTION_STAC_COLUMNS,
+        )
+
+        assert set(_COLLECTION_STAC_COLUMNS) == self._parse_ddl_columns(
+            TENANT_METADATA_STAC_DDL,
+        )
+
+    def test_catalog_core_columns_match_ddl(self):
+        from dynastore.modules.catalog.db_init.metadata_domain_split import (
+            CATALOG_METADATA_CORE_DDL,
+        )
+        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+            _CATALOG_CORE_COLUMNS,
+        )
+
+        assert set(_CATALOG_CORE_COLUMNS) == self._parse_ddl_columns(
+            CATALOG_METADATA_CORE_DDL,
+        )
+
+    def test_catalog_stac_columns_match_ddl(self):
+        from dynastore.modules.catalog.db_init.metadata_domain_split import (
+            CATALOG_METADATA_STAC_DDL,
+        )
+        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+            _CATALOG_STAC_COLUMNS,
+        )
+
+        assert set(_CATALOG_STAC_COLUMNS) == self._parse_ddl_columns(
+            CATALOG_METADATA_STAC_DDL,
+        )
 
 
 class TestEntryPoints:

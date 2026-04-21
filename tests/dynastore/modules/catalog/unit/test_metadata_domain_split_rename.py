@@ -44,6 +44,30 @@ async def test_rename_validates_schema_identifier():
 
 
 @pytest.mark.asyncio
+async def test_rename_rejects_dotted_schema_name():
+    """W1 regression: validate_sql_identifier is too permissive for schemas.
+
+    The general-purpose validator in ``dynastore.tools.db`` accepts
+    ``.`` and ``-`` (its regex is ``[a-z_][a-z0-9_.>-]*``) because it
+    is reused for JSON-path identifiers like ``data.key`` and
+    ``data->key``.  For a PG schema name that permissiveness is
+    unsafe — ``my.schema`` would pass the generic check but produce
+    ``ALTER TABLE my.schema.metadata RENAME TO …`` which PG parses as
+    three dotted identifiers (catalog.schema.table) — unambiguously
+    the wrong rename target.  ``rename_legacy_metadata_tables`` layers
+    a stricter guard on top.
+    """
+    from dynastore.modules.catalog.db_init import metadata_domain_split as mod
+    from dynastore.tools.db import InvalidIdentifierError
+
+    for bad in ("my.schema", "my-schema", "a.b.c"):
+        with pytest.raises(InvalidIdentifierError):
+            await mod.rename_legacy_metadata_tables(
+                conn=AsyncMock(), schema=bad,
+            )
+
+
+@pytest.mark.asyncio
 async def test_rename_passes_resolved_sql_without_placeholder():
     """After Python-side substitution, the SQL must not contain ``{schema}``.
 

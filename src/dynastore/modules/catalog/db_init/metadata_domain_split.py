@@ -320,8 +320,28 @@ async def rename_legacy_metadata_tables(conn: DbResource, schema: str) -> None:
     the identifier-vs-literal distinction is preserved.  ``DDLQuery``
     is still used for execution — it just no longer has any template
     placeholders to substitute.
+
+    Schema-name guard
+    -----------------
+    :func:`dynastore.tools.db.validate_sql_identifier` is general-
+    purpose: it accepts ``[a-z0-9_.>-]`` because it also guards JSON
+    path expressions like ``data.key`` and ``data->key``.  That
+    permissiveness is unsafe for a PG schema name — a value like
+    ``my.schema`` would pass validation but produce
+    ``ALTER TABLE my.schema.metadata RENAME TO …`` which PG parses as
+    three dotted identifiers, unambiguously the WRONG target.  Add a
+    stricter guard here rejecting ``.`` and ``-`` for this specific
+    call site.  (Existing tenant schemas only use
+    ``[a-z0-9_]`` so this is a tightening, not a regression.)
     """
     safe_schema = validate_sql_identifier(schema)
+    if "." in safe_schema or "-" in safe_schema:
+        from dynastore.tools.db import InvalidIdentifierError
+
+        raise InvalidIdentifierError(
+            f"Schema name {schema!r} contains characters disallowed for a "
+            "PostgreSQL schema identifier in rename DDL ('.' or '-')."
+        )
     ddl = TENANT_LEGACY_METADATA_RENAME_DDL.format(schema=safe_schema)
     await DDLQuery(ddl).execute(conn)
 

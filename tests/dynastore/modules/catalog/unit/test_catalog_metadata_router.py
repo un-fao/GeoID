@@ -171,6 +171,35 @@ async def test_upsert_catalog_metadata_bubbles_driver_exceptions():
         await upsert_catalog_metadata("cat", {}, drivers=[core])
 
 
+@pytest.mark.asyncio
+async def test_upsert_catalog_metadata_second_driver_skipped_on_first_failure():
+    """W2 regression: first-driver exception must STOP the fan-out.
+
+    The drivers share one ``db_resource``; if driver 1's SAVEPOINT
+    rolls back and the router continued to driver 2, driver 2 would
+    run on a connection whose inner SAVEPOINT had aborted.  The router
+    must raise on first failure so the enclosing lifecycle-hook
+    SAVEPOINT catches the exception and rolls back cleanly.
+    """
+    from dynastore.modules.catalog.catalog_metadata_router import (
+        upsert_catalog_metadata,
+    )
+
+    core = MagicMock()
+    core.upsert_catalog_metadata = AsyncMock(
+        side_effect=RuntimeError("pg error on CORE"),
+    )
+    stac = MagicMock()
+    stac.upsert_catalog_metadata = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="pg error on CORE"):
+        await upsert_catalog_metadata("cat", {}, drivers=[core, stac])
+
+    # The key assertion: STAC driver must NOT have been invoked after
+    # CORE raised.  Any continuation would run on a poisoned connection.
+    stac.upsert_catalog_metadata.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # DELETE fan-out
 # ---------------------------------------------------------------------------

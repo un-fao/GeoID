@@ -164,13 +164,22 @@ def _deserialise_jsonb(row: Dict[str, Any], columns: Tuple[str, ...]) -> Dict[st
 def _filter_payload(
     metadata: Dict[str, Any], columns: Tuple[str, ...],
 ) -> Dict[str, Any]:
-    """Return the subset of ``metadata`` whose keys match ``columns``.
+    """Return the subset of ``metadata`` whose keys match ``columns`` AND are non-None.
 
     Callers pass the full envelope; each driver only persists the keys it
     owns.  Unknown keys are silently dropped — the other domain's driver
     will pick them up in its own upsert.
+
+    Critically, keys whose value is ``None`` are **also** dropped — the
+    upsert path must not issue ``SET col = NULL`` for absent fields on
+    partial updates, or it would clobber previously-populated columns
+    on the next write.  A partial update that only carries ``{"title":
+    "T2"}`` must leave existing ``description`` / ``keywords`` / … rows
+    untouched.  This is the "PATCH, not PUT" semantic the
+    :class:`CatalogMetadataStore.upsert_catalog_metadata` contract
+    assumes (the protocol doc calls it a "write or update").
     """
-    return {k: metadata.get(k) for k in columns}
+    return {k: metadata[k] for k in columns if metadata.get(k) is not None}
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +267,24 @@ class _CollectionMetadataDomainBase:
         *,
         db_resource: Optional[Any] = None,
     ) -> None:
+        """Partial-update UPSERT: only columns the caller explicitly set are touched.
+
+        The column list baked into the SQL is derived from the filtered
+        payload (``_filter_payload`` drops ``None`` keys).  Columns the
+        caller did not supply stay untouched in the DO UPDATE SET —
+        which means a caller that only carries ``{"title": "T2"}``
+        will not NULL-out ``description`` / ``keywords`` / … on a row
+        that previously had them.
+
+        Entirely-empty payloads become a ``{updated_at}``-only bump
+        rather than an INSERT-with-only-pk (which would run a NULL
+        UPSERT and defeat the purpose of the None filter).  The
+        absence of payload columns is still an explicit signal that
+        the row existed at least once; treating it as a no-op would
+        silently swallow "touch for freshness" semantics that INDEX
+        / BACKUP downstream consumers rely on via the ``updated_at``
+        token (see role-based driver plan §Freshness contract).
+        """
         engine = db_resource or _get_engine()
         if not engine:
             raise RuntimeError("DatabaseProtocol not available")
@@ -266,24 +293,61 @@ class _CollectionMetadataDomainBase:
             phys = await _resolve_physical_schema(catalog_id, db_resource=conn)
             if not phys:
                 raise RuntimeError(f"No physical schema for catalog '{catalog_id}'")
-            col_list = ", ".join(self._columns)
-            val_placeholders = ", ".join(f":{c}" for c in self._columns)
-            update_list = ", ".join(
-                f"{c} = EXCLUDED.{c}" for c in self._columns
+            await self._upsert_collection_row(
+                conn, phys, collection_id, payload,
             )
+
+    async def _upsert_collection_row(
+        self,
+        conn: Any,
+        phys_schema: str,
+        collection_id: str,
+        payload: Dict[str, Any],
+    ) -> None:
+        """Issue the ``{phys_schema}.{_table}`` partial UPSERT.
+
+        Split out from :meth:`upsert_metadata` so subclasses that add
+        domain-specific behaviour on top (e.g. a STAC driver that
+        also writes a derived extent index) can override it without
+        duplicating the engine / schema resolution boilerplate.
+        """
+        supplied_cols: Tuple[str, ...] = tuple(payload.keys())
+        params: Dict[str, Any] = {"id": collection_id}
+        for c in supplied_cols:
+            params[c] = _to_json(payload[c])
+
+        if not supplied_cols:
+            # Caller supplied no column values — only bump updated_at.
+            # INSERT … ON CONFLICT DO UPDATE SET updated_at = NOW()
+            # writes the minimal row (collection_id + default NULLs) on
+            # fresh insert, then subsequent upserts just tick the
+            # freshness token.
             sql = (
-                f'INSERT INTO "{phys}".{self._table} '
-                f'(collection_id, {col_list}, updated_at) '
-                f'VALUES (:id, {val_placeholders}, NOW()) '
+                f'INSERT INTO "{phys_schema}".{self._table} '
+                f'(collection_id, updated_at) VALUES (:id, NOW()) '
                 f'ON CONFLICT (collection_id) DO UPDATE SET '
-                f'{update_list}, updated_at = NOW();'
+                f'updated_at = NOW();'
             )
-            params: Dict[str, Any] = {"id": collection_id}
-            for c in self._columns:
-                params[c] = _to_json(payload.get(c))
             await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
-                conn, **params
+                conn, **params,
             )
+            return
+
+        col_list = ", ".join(supplied_cols)
+        val_placeholders = ", ".join(f":{c}" for c in supplied_cols)
+        update_list = ", ".join(
+            f"{c} = EXCLUDED.{c}" for c in supplied_cols
+        )
+        sql = (
+            f'INSERT INTO "{phys_schema}".{self._table} '
+            f'(collection_id, {col_list}, updated_at) '
+            f'VALUES (:id, {val_placeholders}, NOW()) '
+            f'ON CONFLICT (collection_id) DO UPDATE SET '
+            f'{update_list}, updated_at = NOW();'
+        )
+        await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
+            conn, **params,
+        )
 
     async def delete_metadata(
         self,
@@ -503,29 +567,64 @@ class _CatalogMetadataDomainBase:
         *,
         db_resource: Optional[Any] = None,
     ) -> None:
+        """Partial-update UPSERT — only columns the caller set are touched.
+
+        Same "PATCH, not PUT" semantics as the collection-tier driver
+        (see :meth:`_CollectionMetadataDomainBase.upsert_metadata`).
+        Absent keys are never stamped as ``NULL``; partial updates
+        preserve previously-populated columns.
+
+        ``catalog_metadata`` that filters down to an empty payload
+        becomes a pure ``updated_at = NOW()`` bump on the existing
+        row (or a near-empty row on fresh insert) so consumers that
+        read the freshness token (INDEX / BACKUP propagation) still
+        see activity.
+        """
         engine = db_resource or _get_engine()
         if not engine:
             raise RuntimeError("DatabaseProtocol not available")
         payload = _filter_payload(metadata, self._columns)
         async with managed_transaction(engine) as conn:
-            col_list = ", ".join(self._columns)
-            val_placeholders = ", ".join(f":{c}" for c in self._columns)
-            update_list = ", ".join(
-                f"{c} = EXCLUDED.{c}" for c in self._columns
-            )
+            await self._upsert_catalog_row(conn, catalog_id, payload)
+
+    async def _upsert_catalog_row(
+        self,
+        conn: Any,
+        catalog_id: str,
+        payload: Dict[str, Any],
+    ) -> None:
+        supplied_cols: Tuple[str, ...] = tuple(payload.keys())
+        params: Dict[str, Any] = {"id": catalog_id}
+        for c in supplied_cols:
+            params[c] = _to_json(payload[c])
+
+        if not supplied_cols:
             sql = (
                 f"INSERT INTO catalog.{self._table} "
-                f"(catalog_id, {col_list}, updated_at) "
-                f"VALUES (:id, {val_placeholders}, NOW()) "
+                f"(catalog_id, updated_at) VALUES (:id, NOW()) "
                 f"ON CONFLICT (catalog_id) DO UPDATE SET "
-                f"{update_list}, updated_at = NOW();"
+                f"updated_at = NOW();"
             )
-            params: Dict[str, Any] = {"id": catalog_id}
-            for c in self._columns:
-                params[c] = _to_json(payload.get(c))
             await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
-                conn, **params
+                conn, **params,
             )
+            return
+
+        col_list = ", ".join(supplied_cols)
+        val_placeholders = ", ".join(f":{c}" for c in supplied_cols)
+        update_list = ", ".join(
+            f"{c} = EXCLUDED.{c}" for c in supplied_cols
+        )
+        sql = (
+            f"INSERT INTO catalog.{self._table} "
+            f"(catalog_id, {col_list}, updated_at) "
+            f"VALUES (:id, {val_placeholders}, NOW()) "
+            f"ON CONFLICT (catalog_id) DO UPDATE SET "
+            f"{update_list}, updated_at = NOW();"
+        )
+        await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
+            conn, **params,
+        )
 
     async def delete_catalog_metadata(
         self,
@@ -641,8 +740,21 @@ async def _pg_catalog_core_init(
     back to a silent no-op when the caller supplies nothing to persist
     (default-fast invariant: empty-body catalog creation writes zero
     catalog_metadata_core rows).
+
+    Symmetric gate to the STAC hook: a STAC-only payload (e.g.
+    ``{"stac_version": "1.1.0"}``) must NOT fire this hook with an
+    empty CORE subset — otherwise the upsert would land a row whose
+    every CORE column is NULL (even with the _filter_payload fix,
+    the 'pure updated_at bump' path still creates a row on fresh
+    insert, marking the catalog as having CORE metadata when it
+    doesn't).  Requires at least one CORE-column key with a non-None
+    value before running the driver.
     """
     if not catalog_metadata:
+        return
+    if not any(
+        catalog_metadata.get(k) is not None for k in _CATALOG_CORE_COLUMNS
+    ):
         return
     driver = CatalogCorePostgresqlDriver()
     await driver.upsert_catalog_metadata(
@@ -669,7 +781,9 @@ async def _pg_catalog_stac_init(
     """
     if not catalog_metadata:
         return
-    if not any(k in catalog_metadata for k in _CATALOG_STAC_COLUMNS):
+    if not any(
+        catalog_metadata.get(k) is not None for k in _CATALOG_STAC_COLUMNS
+    ):
         return
     driver = CatalogStacPostgresqlDriver()
     await driver.upsert_catalog_metadata(

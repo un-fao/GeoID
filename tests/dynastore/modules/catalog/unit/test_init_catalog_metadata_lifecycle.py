@@ -224,6 +224,75 @@ async def test_pg_catalog_stac_init_skips_when_no_stac_keys(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_pg_catalog_core_init_skips_when_no_core_keys(monkeypatch):
+    """CORE hook must symmetrically skip STAC-only payloads (C2 regression).
+
+    Before the 2026-04-21 code-review fix, ``_pg_catalog_core_init``
+    only guarded on ``if not catalog_metadata:`` — a STAC-only payload
+    would slip through and insert an all-NULL CORE row into
+    ``catalog.catalog_metadata_core``.  The merged-read layer would
+    then treat the catalog as having CORE metadata (empty) and poison
+    the envelope.
+    """
+    from dynastore.modules.storage.drivers import metadata_domain_postgresql as mod
+
+    upsert_calls: list[tuple] = []
+
+    async def _fake_upsert(self, catalog_id, metadata, *, db_resource=None):
+        upsert_calls.append((catalog_id, metadata))
+
+    monkeypatch.setattr(
+        mod.CatalogCorePostgresqlDriver,
+        "upsert_catalog_metadata",
+        _fake_upsert,
+    )
+
+    # Only STAC fields — CORE hook must not fire.
+    await mod._pg_catalog_core_init(
+        conn=MagicMock(), schema="t_alpha", catalog_id="c",
+        catalog_metadata={
+            "stac_version": "1.1.0",
+            "stac_extensions": ["https://…/datacube/v2"],
+            "conforms_to": ["https://…/core"],
+        },
+    )
+    assert upsert_calls == []
+
+
+@pytest.mark.asyncio
+async def test_pg_catalog_core_init_skips_when_core_keys_are_all_none(monkeypatch):
+    """Payload with CORE keys present but all-None must not fire CORE hook.
+
+    A payload like ``{"title": None, "description": None}`` is the
+    equivalent of a STAC-only payload — there is nothing to persist.
+    The guard uses ``get(k) is not None`` specifically to catch this
+    case.
+    """
+    from dynastore.modules.storage.drivers import metadata_domain_postgresql as mod
+
+    upsert_calls: list[tuple] = []
+
+    async def _fake_upsert(self, catalog_id, metadata, *, db_resource=None):
+        upsert_calls.append((catalog_id, metadata))
+
+    monkeypatch.setattr(
+        mod.CatalogCorePostgresqlDriver,
+        "upsert_catalog_metadata",
+        _fake_upsert,
+    )
+
+    await mod._pg_catalog_core_init(
+        conn=MagicMock(), schema="t_alpha", catalog_id="c",
+        catalog_metadata={
+            "title": None,
+            "description": None,
+            "stac_version": "1.1.0",  # only non-None key — CORE domain should skip
+        },
+    )
+    assert upsert_calls == []
+
+
+@pytest.mark.asyncio
 async def test_pg_catalog_stac_init_upserts_when_stac_keys_present(monkeypatch):
     """STAC hook fires on a STAC-bearing payload."""
     from dynastore.modules.storage.drivers import metadata_domain_postgresql as mod

@@ -182,11 +182,6 @@ async def initialize_core_tenant_tables(conn: DbResource, schema: str, catalog_i
     await ensure_tenant_metadata_domain_tables(conn, schema)
     logger.info(f"M2 metadata-domain split tables initialized for {schema}.")
 
-from dynastore.tools.discovery import get_protocol
-from dynastore.models.query_builder import QueryRequest, QueryResponse
-from dynastore.modules.catalog.event_service import CatalogEventType, emit_event
-
-logger = logging.getLogger(__name__)
 
 # --- Helpers ---
 
@@ -771,9 +766,9 @@ class CatalogService(CatalogsProtocol):
             )
         )
 
-        # Invalidate caches BEFORE emitting signal to prevent visibility gap race conditions
-        self._get_catalog_model_cached.cache_invalidate(catalog_model.id)
-        # Cache invalidation for catalog model (physical_schema is part of catalog model)
+        # Invalidate caches BEFORE emitting signal to prevent visibility gap race conditions.
+        # (The in-transaction invalidate above already covered the happy path; this second
+        # call guards against readers between the transaction commit and the signal below.)
         self._get_catalog_model_cached.cache_invalidate(catalog_model.id)
 
         # Emit signal to wake up background tasks (Visibility Gap fix)
