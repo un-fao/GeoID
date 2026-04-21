@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from dynastore.modules.db_config.config_rewriter import (
+from dynastore.tools.config_rewriter import (
     _reset_for_tests,
     list_class_key_renames,
     list_driver_id_renames,

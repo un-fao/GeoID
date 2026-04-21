@@ -70,7 +70,7 @@ class InMemoryTypedStore:
         class_key, (schema_id, payload, _ts) = candidates[0]
         # Legacy class_keys resolve via the config rewriter when a rename
         # has been registered (passthrough otherwise).
-        from dynastore.modules.db_config.config_rewriter import (
+        from dynastore.tools.config_rewriter import (
             normalise_class_key,
         )
 
@@ -111,7 +111,7 @@ class InMemoryTypedStore:
             reverse=True,
         )
         out: List[PersistentModel] = []
-        from dynastore.modules.db_config.config_rewriter import (
+        from dynastore.tools.config_rewriter import (
             normalise_class_key,
         )
 

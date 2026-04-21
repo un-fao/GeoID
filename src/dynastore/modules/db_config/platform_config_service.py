@@ -334,13 +334,13 @@ def resolve_config_class(
     registered class.
 
     String identifiers go through the config rewriter (see
-    :mod:`dynastore.modules.db_config.config_rewriter`) so legacy class keys
+    :mod:`dynastore.tools.config_rewriter`) so legacy class keys
     persisted before a rename still resolve to the renamed class.  Unregistered
     keys pass through unchanged.
     """
     if isinstance(identifier, type):
         return identifier if issubclass(identifier, PluginConfig) else None
-    from dynastore.modules.db_config.config_rewriter import normalise_class_key
+    from dynastore.tools.config_rewriter import normalise_class_key
 
     cls = TypedModelRegistry.get(normalise_class_key(identifier))
     if cls is None or not issubclass(cls, PluginConfig):

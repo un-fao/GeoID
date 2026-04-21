@@ -191,7 +191,7 @@ class PostgresTypedStore:
             # Legacy class_keys persisted before a rename resolve to the
             # renamed class via the config rewriter.  Unknown keys still
             # fall through to the warning below.
-            from dynastore.modules.db_config.config_rewriter import (
+            from dynastore.tools.config_rewriter import (
                 normalise_class_key,
             )
 
@@ -306,7 +306,7 @@ class PostgresTypedStore:
             )
 
             out: List[PersistentModel] = []
-            from dynastore.modules.db_config.config_rewriter import (
+            from dynastore.tools.config_rewriter import (
                 normalise_class_key,
             )
 

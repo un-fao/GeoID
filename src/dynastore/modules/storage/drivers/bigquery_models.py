@@ -147,9 +147,9 @@ class ItemsBigQueryDriverConfig(CollectionDriverConfig):
 # registry lookups (driver_index / TypedModelRegistry) go through the
 # config_rewriter so persisted routing entries and config rows still resolve.
 # Remove once telemetry shows zero hits on the rewriter.  See
-# dynastore.modules.db_config.config_rewriter.
+# dynastore.tools.config_rewriter.
 # ---------------------------------------------------------------------------
-from dynastore.modules.db_config.config_rewriter import register_config_class_key_rename  # noqa: E402
+from dynastore.tools.config_rewriter import register_config_class_key_rename  # noqa: E402
 
 CollectionBigQueryDriverConfig = ItemsBigQueryDriverConfig  # noqa: E305 — back-compat alias, see config_rewriter
 register_config_class_key_rename(

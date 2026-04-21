@@ -2089,9 +2089,9 @@ class AssetElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
 # registry lookups (driver_index / TypedModelRegistry) go through the
 # config_rewriter so persisted routing entries and config rows still resolve.
 # Remove once telemetry shows zero hits on the rewriter.  See
-# dynastore.modules.db_config.config_rewriter.
+# dynastore.tools.config_rewriter.
 # ---------------------------------------------------------------------------
-from dynastore.modules.db_config.config_rewriter import register_driver_id_rename  # noqa: E402
+from dynastore.tools.config_rewriter import register_driver_id_rename  # noqa: E402
 
 CollectionElasticsearchDriver = ItemsElasticsearchDriver  # noqa: E305 — back-compat alias, see config_rewriter
 register_driver_id_rename(

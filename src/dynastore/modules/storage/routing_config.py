@@ -44,7 +44,7 @@ from typing import Any, Callable, ClassVar, Dict, FrozenSet, List, Optional, Set
 from pydantic import BaseModel, ConfigDict, Field
 
 from dynastore.models.protocols.driver_roles import DriverSla
-from dynastore.modules.db_config.config_rewriter import normalise_driver_id
+from dynastore.tools.config_rewriter import normalise_driver_id
 from dynastore.modules.db_config.platform_config_service import (
     Immutable,
     PluginConfig,
