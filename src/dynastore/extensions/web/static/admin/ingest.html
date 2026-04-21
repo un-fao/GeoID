@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ingest — DynaStore</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="../static/common/admin.css">
+</head>
+<body>
+  <main>
+    <header class="masthead">
+      <div class="folio">IV.</div>
+      <div>
+        <div class="kicker">DynaStore — Atlas of ingest</div>
+        <h1>Drop &amp; Register</h1>
+      </div>
+      <div class="stamp" id="masthead-stamp"></div>
+    </header>
+
+    <p class="subtitle">
+      Drag one or more GeoJSON documents — <em>Feature</em>,
+      <em>FeatureCollection</em>, or a list — onto the plate below. The
+      server responds with a per-feature insertion report; rejected rows
+      include their reason.
+    </p>
+
+    <div class="plate">
+      <div class="plate-header">
+        <h3>Target</h3>
+        <div class="plate-meta">DESTINATION</div>
+      </div>
+      <div class="form-row">
+        <div>
+          <label for="ing-catalog">Catalog</label>
+          <select id="ing-catalog" required></select>
+        </div>
+        <div>
+          <label for="ing-collection">Collection</label>
+          <select id="ing-collection" required disabled></select>
+        </div>
+      </div>
+    </div>
+
+    <div class="plate">
+      <div class="plate-header">
+        <h3>Manifest</h3>
+        <div class="plate-meta">DROP ZONE</div>
+      </div>
+      <div id="dropzone" class="dropzone">
+        Drag GeoJSON here, or click to choose files.
+      </div>
+      <input type="file" id="filepicker" accept=".geojson,.json,application/geo+json,application/json" multiple hidden>
+      <div class="row" style="margin-top:12px">
+        <button class="btn btn-secondary" id="clear" disabled>Clear</button>
+        <button class="btn" id="submit" disabled>Transmit</button>
+        <span id="status" class="status"></span>
+      </div>
+      <ul id="file-list" class="muted" style="margin-top:10px; list-style:none; font-family:var(--font-mono); font-size:.82rem;"></ul>
+    </div>
+
+    <div class="plate">
+      <div class="plate-header">
+        <h3>Insertion report</h3>
+        <div class="plate-meta" id="report-meta">—</div>
+      </div>
+      <div id="report" class="report">Awaiting transmission.</div>
+    </div>
+  </main>
+
+  <script>
+    document.getElementById("masthead-stamp").textContent =
+      `FOLIO ${new Date().toISOString().slice(0, 10)}\nREV. ${Math.floor(Math.random()*900+100)}`;
+  </script>
+  <script type="module" src="ingest.js"></script>
+</body>
+</html>

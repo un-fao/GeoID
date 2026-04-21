@@ -9,7 +9,7 @@
     <title>Dynastore | The Hyperscale Geospatial Platform</title>
     <link rel="icon" type="image/png" href="dynastore.png">
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="/web/static/vendor/vendor.css"/>
+    <link rel="stylesheet" href="static/vendor/vendor.css"/>
     <link href="styles.css" rel="stylesheet">
     <script>
         tailwind.config = {
@@ -134,9 +134,9 @@
                 </div>
 
                 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10 text-center">
-                    <div
+                    <div id="hero-version-pill"
                         class="inline-block px-4 py-1.5 rounded-full border border-blue-500/30 bg-blue-500/10 text-blue-300 text-sm font-medium mb-8">
-                        v0.8.0-beta Enterprise Preview
+                        Enterprise Preview
                     </div>
                     <h1 class="text-5xl md:text-7xl font-bold text-white mb-8 tracking-tight leading-tight">
                         The Core Catalyst for<br>
@@ -884,13 +884,13 @@
                 <!-- Editable Fields -->
                 <form id="profile-form" class="space-y-4 pt-4">
                     <div>
-                        <label class="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Display Name</label>
+                        <label for="profile-name-input" class="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Display Name</label>
                         <input type="text" id="profile-name-input" class="w-full bg-slate-900/50 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-dyna-primary transition focus:shadow-[0_0_15px_rgba(59,130,246,0.2)]">
                     </div>
-                    
+
                     <div class="grid grid-cols-2 gap-4">
                         <div>
-                            <label class="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Preferred Language</label>
+                            <label for="profile-lang-input" class="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Preferred Language</label>
                             <select id="profile-lang-input" class="w-full bg-slate-900/50 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-dyna-primary transition-colors appearance-none">
                                 <option value="en">English</option>
                                 <option value="es">Español</option>
@@ -898,7 +898,7 @@
                             </select>
                         </div>
                         <div>
-                            <label class="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Account Type</label>
+                            <span class="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Account Type</span>
                             <div class="w-full bg-slate-900/20 border border-white/5 rounded-xl px-4 py-3 text-slate-500 text-sm select-none">
                                 Enterprise Standard
                             </div>
@@ -1025,7 +1025,7 @@
 
             try {
                 // This endpoint needs to be provided by the backend `web` extension
-                const url = `/web/docs-content/${docId}`;
+                const url = `docs-content/${docId}`;
                 const response = await fetch(url);
                 if (!response.ok) throw new Error(`Failed to load content for ${docId}`);
                 const htmlContent = await response.text();
@@ -1106,8 +1106,11 @@
     </script>
     <script>
         fetch('health').then(function(r){return r.json()}).then(function(d){
+            if(!d||!d.version) return;
             var el=document.getElementById('dynastore-version');
-            if(el&&d.version) el.textContent='v'+d.version;
+            if(el) el.textContent='v'+d.version;
+            var pill=document.getElementById('hero-version-pill');
+            if(pill) pill.textContent='v'+d.version+' Enterprise Preview';
         }).catch(function(){});
     </script>
 </body>

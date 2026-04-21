@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Governance — DynaStore</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="../static/common/admin.css">
+</head>
+<body>
+  <main>
+    <header class="masthead">
+      <div class="folio">II.</div>
+      <div>
+        <div class="kicker">DynaStore — Atlas of governance</div>
+        <h1>Governance</h1>
+      </div>
+      <div class="stamp" id="masthead-stamp"></div>
+    </header>
+
+    <p class="subtitle">
+      Roles and policies are the coordinates of who may do what. Platform
+      scope is the baseline; catalog scope is the tenant overlay. Catalog
+      admins are confined to their own tenants.
+    </p>
+
+    <div id="context-bar" class="context-bar"></div>
+
+    <div class="tabs" id="tabs" role="tablist">
+      <button class="tab-btn active" data-tab="roles">Roles</button>
+      <button class="tab-btn" data-tab="policies">Policies</button>
+      <button class="tab-btn" data-tab="principals">Principals</button>
+    </div>
+
+    <!-- Roles --------------------------------------------------------- -->
+    <section id="tab-roles" class="tab-panel active">
+      <div class="plate">
+        <div class="plate-header">
+          <h3>Charter a role</h3>
+          <div class="plate-meta">POST /admin/roles</div>
+        </div>
+        <form id="role-create">
+          <div class="form-row">
+            <div>
+              <label for="role-name">Name</label>
+              <input id="role-name" type="text" required placeholder="editor">
+            </div>
+            <div>
+              <label for="role-description">Description</label>
+              <input id="role-description" type="text" placeholder="Can edit collections">
+            </div>
+          </div>
+          <div class="form-row">
+            <div>
+              <label for="role-policies">Policies — csv of IDs</label>
+              <input id="role-policies" type="text" placeholder="policy.read, policy.write">
+            </div>
+            <div>
+              <label for="role-parents">Parent roles — csv</label>
+              <input id="role-parents" type="text" placeholder="viewer">
+            </div>
+          </div>
+          <div class="row">
+            <button class="btn" type="submit">Charter</button>
+            <span id="role-status" class="status"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="plate">
+        <div class="plate-header">
+          <h3>Existing roles</h3>
+          <div class="plate-meta">
+            <button class="btn btn-secondary btn-xs" id="roles-refresh" type="button">Refresh</button>
+          </div>
+        </div>
+        <table id="roles-table">
+          <thead>
+            <tr><th>Name</th><th>Description</th><th>Policies</th><th>Parents</th><th></th></tr>
+          </thead>
+          <tbody><tr class="empty-row"><td colspan="5">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Policies ------------------------------------------------------ -->
+    <section id="tab-policies" class="tab-panel">
+      <div class="plate">
+        <div class="plate-header">
+          <h3>Charter a policy</h3>
+          <div class="plate-meta">POST /admin/policies</div>
+        </div>
+        <form id="policy-create">
+          <div class="form-row">
+            <div>
+              <label for="policy-id">ID</label>
+              <input id="policy-id" type="text" required placeholder="policy.read">
+            </div>
+            <div>
+              <label for="policy-effect">Effect</label>
+              <select id="policy-effect">
+                <option value="ALLOW">ALLOW</option>
+                <option value="DENY">DENY</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div style="grid-column:1/-1">
+              <label for="policy-description">Description</label>
+              <input id="policy-description" type="text">
+            </div>
+          </div>
+          <div class="form-row">
+            <div>
+              <label for="policy-actions">Actions — csv</label>
+              <input id="policy-actions" type="text" placeholder="GET, HEAD">
+            </div>
+            <div>
+              <label for="policy-resources">Resources — csv of regex</label>
+              <input id="policy-resources" type="text" placeholder="/catalogs/.*">
+            </div>
+          </div>
+          <div class="row">
+            <button class="btn" type="submit">Charter</button>
+            <span id="policy-status" class="status"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="plate">
+        <div class="plate-header">
+          <h3>Existing policies</h3>
+          <div class="plate-meta">
+            <button class="btn btn-secondary btn-xs" id="policies-refresh" type="button">Refresh</button>
+          </div>
+        </div>
+        <table id="policies-table">
+          <thead>
+            <tr><th>ID</th><th>Effect</th><th>Actions</th><th>Resources</th><th></th></tr>
+          </thead>
+          <tbody><tr class="empty-row"><td colspan="5">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Principals ---------------------------------------------------- -->
+    <section id="tab-principals" class="tab-panel">
+      <div class="plate">
+        <div class="plate-header">
+          <h3>Survey principals</h3>
+          <div class="plate-meta">GET /admin/principals</div>
+        </div>
+        <div class="row">
+          <input id="principals-query" type="search" placeholder="Identifier, subject, or email…" style="max-width:320px">
+          <button class="btn btn-secondary btn-xs" id="principals-refresh" type="button">Search</button>
+          <span id="principals-status" class="status"></span>
+        </div>
+        <hr class="rule">
+        <table id="principals-table">
+          <thead>
+            <tr><th>Identifier</th><th>Provider</th><th>Roles (at scope)</th><th></th></tr>
+          </thead>
+          <tbody><tr class="empty-row"><td colspan="4">Press <em>Search</em> for the first fifty principals.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <div id="footnote" class="footnote" style="display:none">
+      <strong>Rate limits &amp; quotas.</strong> Backend handlers
+      <code>RateLimitHandler</code> and <code>MaxCountHandler</code> are
+      currently no-ops; the corresponding UI is intentionally omitted until
+      persistence lands. Tracked as a separate follow-up.
+    </div>
+  </main>
+
+  <script>
+    document.getElementById("masthead-stamp").textContent =
+      `FOLIO ${new Date().toISOString().slice(0, 10)}\nREV. ${Math.floor(Math.random()*900+100)}`;
+  </script>
+  <script type="module" src="../static/admin/governance.js"></script>
+</body>
+</html>

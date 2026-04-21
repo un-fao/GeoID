@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>STAC Authoring — DynaStore</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="../static/common/admin.css">
+</head>
+<body>
+  <main>
+    <header class="masthead">
+      <div class="folio">III.</div>
+      <div>
+        <div class="kicker">DynaStore — Atlas of authoring</div>
+        <h1>STAC Authoring</h1>
+      </div>
+      <div class="stamp" id="masthead-stamp"></div>
+    </header>
+
+    <p class="subtitle">
+      Charter a new catalog or commission a collection under an existing
+      one. Sysadmins may author anywhere; catalog admins may only
+      commission collections under tenants they already command.
+    </p>
+
+    <div class="tabs" id="tabs" role="tablist">
+      <button class="tab-btn active" data-tab="catalog">New Catalog</button>
+      <button class="tab-btn" data-tab="collection">New Collection</button>
+    </div>
+
+    <!-- Catalog -------------------------------------------------------- -->
+    <section id="tab-catalog" class="tab-panel active">
+      <div class="plate">
+        <div class="plate-header">
+          <h3>Charter a catalog</h3>
+          <div class="plate-meta">POST /catalogs</div>
+        </div>
+        <p class="muted" style="margin-bottom:14px">
+          <em>Sysadmin only.</em> Creates a new tenant schema with its own
+          configurations, collections, and role-bindings.
+        </p>
+        <form id="catalog-create">
+          <div class="form-row">
+            <div>
+              <label for="cat-id">Catalog ID</label>
+              <input id="cat-id" type="text" required pattern="[a-z0-9_-]+"
+                     placeholder="fao_asis" title="Lowercase, digits, -, _">
+            </div>
+            <div>
+              <label for="cat-title">Title</label>
+              <input id="cat-title" type="text" required placeholder="FAO ASIS">
+            </div>
+          </div>
+          <div class="form-row">
+            <div style="grid-column:1/-1">
+              <label for="cat-description">Description</label>
+              <textarea id="cat-description" placeholder="One-paragraph provenance…"></textarea>
+            </div>
+          </div>
+          <div class="form-row">
+            <div>
+              <label for="cat-license">License</label>
+              <input id="cat-license" type="text" placeholder="CC-BY-4.0">
+            </div>
+            <div>
+              <label for="cat-keywords">Keywords — csv</label>
+              <input id="cat-keywords" type="text" placeholder="agriculture, drought">
+            </div>
+          </div>
+          <div class="row">
+            <button class="btn" type="submit">Charter catalog</button>
+            <span id="cat-status" class="status"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="plate">
+        <div class="plate-header">
+          <h3>Extant catalogs</h3>
+          <div class="plate-meta">GET /catalogs</div>
+        </div>
+        <table id="catalogs-table">
+          <thead><tr><th>ID</th><th>Title</th><th>License</th></tr></thead>
+          <tbody><tr class="empty-row"><td colspan="3">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Collection ---------------------------------------------------- -->
+    <section id="tab-collection" class="tab-panel">
+      <div class="plate">
+        <div class="plate-header">
+          <h3>Commission a collection</h3>
+          <div class="plate-meta">POST /catalogs/{id}/collections</div>
+        </div>
+        <form id="collection-create">
+          <div class="form-row">
+            <div>
+              <label for="col-catalog">Catalog</label>
+              <select id="col-catalog" required></select>
+            </div>
+            <div>
+              <label for="col-id">Collection ID</label>
+              <input id="col-id" type="text" required pattern="[a-z0-9_-]+"
+                     placeholder="ndvi_monthly">
+            </div>
+          </div>
+          <div class="form-row">
+            <div>
+              <label for="col-title">Title</label>
+              <input id="col-title" type="text" required placeholder="NDVI — monthly">
+            </div>
+            <div>
+              <label for="col-license">License</label>
+              <input id="col-license" type="text" placeholder="CC-BY-4.0">
+            </div>
+          </div>
+          <div class="form-row">
+            <div style="grid-column:1/-1">
+              <label for="col-description">Description</label>
+              <textarea id="col-description" required placeholder="One-paragraph provenance…"></textarea>
+            </div>
+          </div>
+          <div class="form-row">
+            <div>
+              <label for="col-bbox">Spatial extent — bbox (W,S,E,N)</label>
+              <input id="col-bbox" type="text" placeholder="-180,-90,180,90">
+            </div>
+            <div>
+              <label for="col-temporal">Temporal — ISO / ISO or "null"</label>
+              <input id="col-temporal" type="text" placeholder="2010-01-01/null">
+            </div>
+          </div>
+          <div class="row">
+            <button class="btn" type="submit">Commission collection</button>
+            <span id="col-status" class="status"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="plate">
+        <div class="plate-header">
+          <h3>Next — ingest features</h3>
+          <div class="plate-meta">→ /web/pages/ingest</div>
+        </div>
+        <p class="muted">
+          Once a collection exists, drag-and-drop GeoJSON into the
+          <a href="ingest" style="color:var(--terracotta);text-decoration:none;border-bottom:1px dotted">Ingest</a>
+          page to populate it. Failed features are reported per-row.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    document.getElementById("masthead-stamp").textContent =
+      `FOLIO ${new Date().toISOString().slice(0, 10)}\nREV. ${Math.floor(Math.random()*900+100)}`;
+  </script>
+  <script type="module" src="stac-authoring.js"></script>
+</body>
+</html>

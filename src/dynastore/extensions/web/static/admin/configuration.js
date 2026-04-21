@@ -6,10 +6,10 @@ import {
   fetchConfigSet,
   patchConfigSet,
   fetchMe,
-} from "/web/static/common/api.js";
-import { mountContextBar } from "/web/static/common/context-bar.js";
-import { mountSchemaList } from "/web/static/common/schema-list.js";
-import { mountSchemaForm } from "/web/static/common/schema-form.js";
+} from "../common/api.js";
+import { mountContextBar } from "../common/context-bar.js";
+import { mountSchemaList } from "../common/schema-list.js";
+import { mountSchemaForm } from "../common/schema-form.js";
 
 const $ = (sel) => document.querySelector(sel);
 

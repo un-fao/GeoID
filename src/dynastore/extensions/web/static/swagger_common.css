@@ -1,6 +1,6 @@
 /* --- SWAGGER COMMON CSS (FAO BRANDED LIGHT THEME) --- */
 
-@import url('/web/static/vendor/montserrat.css');
+@import url('vendor/montserrat.css');
 
 /* --- 1. FAO BRANDING --- */
 body, .swagger-ui {

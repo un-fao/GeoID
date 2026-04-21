@@ -97,11 +97,34 @@ def register_web_policies():
             "/web/pages/demo_manager",     # expose_web_page route
             "/web/pages/exposure",         # Service Exposure admin page
             "/web/pages/configuration",    # Configuration Hub admin page
+            "/web/pages/governance",       # Governance admin page (sysadmin + catalog-admin)
+            "/web/pages/stac-authoring",   # STAC catalog/collection authoring
+            "/web/pages/ingest",           # Feature ingest (authenticated write)
         ],
         effect="ALLOW",
     )
     pm.register_policy(web_sysadmin_policy)
     pm.register_role(Role(name=DefaultRole.SYSADMIN.value, policies=["web_sysadmin_access"]))
+
+    # Admin/authenticated users can reach the catalog-scoped admin pages.
+    # The pages themselves rely on server-side API authorization for every
+    # mutation; they simply render HTML here. Catalog admins need
+    # governance + stac-authoring; any authenticated user can open ingest
+    # (their actual POST calls still go through WritePolicy).
+    web_admin_policy = Policy(
+        id="web_admin_access",
+        description="Allows admins and authenticated users to load the catalog-scoped admin pages.",
+        actions=["GET", "OPTIONS"],
+        resources=[
+            "/web/pages/governance",
+            "/web/pages/stac-authoring",
+            "/web/pages/ingest",
+        ],
+        effect="ALLOW",
+    )
+    pm.register_policy(web_admin_policy)
+    pm.register_role(Role(name=DefaultRole.ADMIN.value, policies=["web_admin_access"]))
+    pm.register_role(Role(name=DefaultRole.USER.value, policies=["web_admin_access"]))
 
     logger.debug("Web policies registered via PermissionProtocol.")
 
@@ -845,6 +868,76 @@ async function demoAction(action) {
         html_path = os.path.join(static_dir, "configuration.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Configuration Hub template not found.")
+        with open(html_path, "r") as f:
+            return HTMLResponse(f.read())
+
+    @expose_web_page(
+        page_id="governance",
+        title="Governance",
+        icon="fa-scale-balanced",
+        description="Roles, policies and principal bindings at platform and catalog scope.",
+        required_roles=[
+            DefaultRole.SYSADMIN.value,
+            DefaultRole.ADMIN.value,
+            DefaultRole.USER.value,
+        ],
+        section="admin",
+        priority=15,
+    )
+    async def governance_page(self, request: Request):
+        """Roles, policies, principals. Client-side gates catalog scope by
+        ``/me/catalogs``; server-side ``/admin/*`` endpoints enforce the
+        actual authorization on every mutation."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static", "admin")
+        html_path = os.path.join(static_dir, "governance.html")
+        if not os.path.exists(html_path):
+            raise HTTPException(status_code=404, detail="Governance page template not found.")
+        with open(html_path, "r") as f:
+            return HTMLResponse(f.read())
+
+    @expose_web_page(
+        page_id="stac-authoring",
+        title="STAC Authoring",
+        icon="fa-book-atlas",
+        description="Charter catalogs (sysadmin) and commission collections (catalog admin).",
+        required_roles=[
+            DefaultRole.SYSADMIN.value,
+            DefaultRole.ADMIN.value,
+            DefaultRole.USER.value,
+        ],
+        section="admin",
+        priority=12,
+    )
+    async def stac_authoring_page(self, request: Request):
+        """STAC catalog + collection authoring forms."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static", "admin")
+        html_path = os.path.join(static_dir, "stac-authoring.html")
+        if not os.path.exists(html_path):
+            raise HTTPException(status_code=404, detail="STAC authoring template not found.")
+        with open(html_path, "r") as f:
+            return HTMLResponse(f.read())
+
+    @expose_web_page(
+        page_id="ingest",
+        title="Ingest Features",
+        icon="fa-upload",
+        description="Drop GeoJSON into a target collection; server reports per-feature results.",
+        required_roles=[
+            DefaultRole.SYSADMIN.value,
+            DefaultRole.ADMIN.value,
+            DefaultRole.USER.value,
+        ],
+        section="admin",
+        priority=8,
+    )
+    async def ingest_page(self, request: Request):
+        """Drag-and-drop GeoJSON ingest. The server does all authorization
+        for the underlying ``POST /catalogs/{cid}/collections/{colid}/items``
+        call; this page just shepherds the request and renders the report."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static", "admin")
+        html_path = os.path.join(static_dir, "ingest.html")
+        if not os.path.exists(html_path):
+            raise HTTPException(status_code=404, detail="Ingest page template not found.")
         with open(html_path, "r") as f:
             return HTMLResponse(f.read())
 
