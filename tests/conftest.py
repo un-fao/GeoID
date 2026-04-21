@@ -199,7 +199,32 @@ def dynastore_modules(request):
     # on every catalog operation, adding ~30 s per test.
     # Tests that require GCP behaviour must opt in explicitly:
     #   @pytest.mark.enable_modules("db_config", "db", "catalog", "gcp", ...)
-    return ["db_config", "db", "catalog", "stats", "iam", "metadata_postgresql"]
+    #
+    # M2.5 — domain-scoped catalog metadata drivers MUST be in the default
+    # set.  Post-M2.5b the legacy ``catalog.catalogs`` metadata columns are
+    # DROPPED, so catalog-tier reads go exclusively through the router in
+    # ``catalog_metadata_router.get_catalog_metadata`` which resolves
+    # drivers via ``get_protocols(CatalogMetadataStore)``.  Without the
+    # two catalog-tier entry-points loaded, ``update_catalog`` /
+    # ``get_catalog_model`` silently return None for metadata fields —
+    # tests that assert on ``catalog.title`` / ``catalog.description``
+    # fail with confusing ``AttributeError: 'NoneType' object has no
+    # attribute 'en'`` messages.  The collection-tier split-table drivers
+    # are registered too for symmetry (they are inactive by default per
+    # M2.5 scope cut SC1 but future-proof any test that opts in).
+    return [
+        "db_config", "db", "catalog", "stats", "iam",
+        # Legacy monolithic — still the default for collection-tier
+        # writes (SC1: collection-tier M2.2-M2.5 deferred).
+        "metadata_postgresql",
+        # M2.1 domain-scoped drivers — catalog tier is active in the
+        # router's default fan-out; collection tier is registered but
+        # inactive by default.
+        "metadata_catalog_core_postgresql",
+        "metadata_catalog_stac_postgresql",
+        "metadata_collection_core_postgresql",
+        "metadata_collection_stac_postgresql",
+    ]
 
 
 @pytest.fixture

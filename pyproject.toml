@@ -39,7 +39,28 @@ module_storage_elasticsearch_obfuscated = ["dynastore[module_elasticsearch]"]
 module_storage_elasticsearch_assets = ["dynastore[module_elasticsearch]"]
 module_metadata_postgresql = []
 module_metadata_elasticsearch = ["dynastore[module_elasticsearch]"]
-module_catalog = ["dynastore[geospatial_core]", "sqlalchemy>=2.0.0"]
+# M2.1 — domain-scoped Primary metadata driver extras.  Empty lists (no
+# additional runtime deps beyond what module_catalog already pulls) but
+# declared as extras so ``resolve_scope`` picks them up transitively
+# when the catalog module is enabled in a test or SCOPE.
+module_metadata_catalog_core_postgresql = []
+module_metadata_catalog_stac_postgresql = []
+module_metadata_collection_core_postgresql = []
+module_metadata_collection_stac_postgresql = []
+# M3.2 — diagnostic log indexer extras (INDEX role).  Opt-in only.
+module_metadata_catalog_log_indexer = []
+# ``module_catalog`` transitively pulls in the catalog-tier metadata
+# drivers.  Post-M2.5b the legacy ``catalog.catalogs`` metadata columns
+# are dropped, so catalog-tier reads MUST resolve through the router,
+# which requires CatalogCorePostgresqlDriver + CatalogStacPostgresqlDriver
+# to be registered.  Any test that opts in via
+# ``@enable_modules("catalog", ...)`` now gets these drivers for free
+# via the extras-graph walk in ``resolve_scope``.  Collection-tier
+# drivers stay opt-in until SC1 (collection-tier M2.2-M2.5) lands.
+module_catalog = [
+    "dynastore[geospatial_core, module_metadata_catalog_core_postgresql, module_metadata_catalog_stac_postgresql]",
+    "sqlalchemy>=2.0.0",
+]
 module_gcp = ["gcloud-aio-storage==9.6.0", "google-cloud-bigquery==3.24.0", "google-cloud-run", "google-cloud-storage>=3.1.0", "google-cloud-pubsub", "gcsfs>=2024.5.0", "charset-normalizer", "httpx"]
 module_datastore = ["dynastore[db_sync]", "psycopg2-binary>=2.9.7"]
 module_db_config = ["sqlalchemy", "geoalchemy2", "h3>=4.4.2", "s2sphere>=0.2.5", "python-dateutil"]
