@@ -286,6 +286,73 @@ def _build_catalog_metadata_payload(catalog_model: Catalog) -> Dict[str, Any]:
     return out
 
 
+def _extract_update_payload(
+    catalog_model: Catalog,
+    updated_fields: set[str],
+) -> Dict[str, Any]:
+    """Partial-update variant of :func:`_build_catalog_metadata_payload`.
+
+    Unlike the full-envelope flattener, this helper emits ONLY the
+    keys the caller listed in ``updated_fields`` (the set of fields the
+    update request carried) and that have a non-None value on
+    ``catalog_model``.  A PATCH that sets ``title`` alone yields a
+    payload of exactly ``{"title": {"en": "..."}}`` — downstream
+    Primary drivers' ``_filter_payload`` + PATCH-semantic UPSERT then
+    touch nothing else in the split tables.
+
+    The ``updated_fields`` set uses the public Catalog-model attribute
+    names (``title``, ``description``, ``keywords``, ``license``,
+    ``extra_metadata``, ``stac_version``, ``stac_extensions``,
+    ``conformsTo`` / ``conforms_to``, ``links``, ``assets``).  The
+    output dict uses snake_case keys matching the split-table column
+    names — the drivers' ``_*_COLUMNS`` tuples consume that shape.
+    """
+    out: Dict[str, Any] = {}
+
+    def _dump(value: Any) -> Any:
+        if value is None:
+            return None
+        if hasattr(value, "model_dump"):
+            return value.model_dump(exclude_none=True)
+        return value
+
+    # CORE + catalog-STAC field-name ↔ split-column mapping.  The
+    # ``conformsTo`` alias is explicit here because the client-facing
+    # field name is camelCase but the split column is snake_case.
+    candidates = [
+        ("title",            "title"),
+        ("description",      "description"),
+        ("keywords",         "keywords"),
+        ("license",          "license"),
+        ("extra_metadata",   "extra_metadata"),
+        ("stac_version",     "stac_version"),
+        ("stac_extensions",  "stac_extensions"),
+        ("conformsTo",       "conforms_to"),
+        ("conforms_to",      "conforms_to"),
+        ("links",            "links"),
+        ("assets",           "assets"),
+    ]
+    for src_field, out_key in candidates:
+        if src_field not in updated_fields:
+            continue
+        value = getattr(catalog_model, src_field, None)
+        if value is None:
+            continue
+        dumped = _dump(value)
+        if dumped is None:
+            continue
+        if src_field in ("stac_extensions", "conformsTo", "conforms_to"):
+            dumped = list(dumped) if hasattr(dumped, "__iter__") else dumped
+        elif src_field == "links":
+            dumped = [
+                _dump(link) if hasattr(link, "model_dump") else link
+                for link in value
+            ]
+        out[out_key] = dumped
+
+    return out
+
+
 # --- Queries ---
 
 _create_catalog_strict_query = DQLQuery(
@@ -1044,6 +1111,47 @@ class CatalogService(CatalogsProtocol):
                 conn, **params
             )
 
+            # M2.4 — propagate the same updates into the split-table
+            # Primary drivers so the router-overlaid read path sees
+            # fresh data.  Without this, ``get_catalog_model`` would
+            # overlay the pre-update split-table rows on top of the
+            # just-updated legacy columns and return stale values
+            # indefinitely (the router always wins — by design).
+            #
+            # Build a dict of the canonical Python values (not the
+            # JSON-encoded strings in ``params``) so each Primary
+            # driver's ``_to_json`` / ``_filter_payload`` do their own
+            # serialisation.  PATCH semantics (see M2.1 C1 fix) mean
+            # only the supplied columns are touched in the split
+            # tables — absent fields stay at their current value.
+            updated_payload: Dict[str, Any] = _extract_update_payload(
+                merged_model, set(update_fields),
+            )
+            if updated_payload:
+                from dynastore.modules.catalog.catalog_metadata_router import (
+                    upsert_catalog_metadata,
+                )
+                try:
+                    await upsert_catalog_metadata(
+                        catalog_id, updated_payload, db_resource=conn,
+                    )
+                except Exception as exc:  # noqa: BLE001 — degrade
+                    # A split-table write failure after the legacy
+                    # UPDATE succeeded is a genuine problem (split
+                    # tables will drift), but we do not roll the
+                    # legacy UPDATE back — the caller's intent was to
+                    # update the catalog, and the legacy path is still
+                    # the authoritative store until M2.5 drops it.
+                    # Log LOUD so ops can catch this during the
+                    # dual-write window.
+                    logger.error(
+                        "update_catalog: split-table propagation "
+                        "failed for %s (legacy UPDATE succeeded, "
+                        "split tables now diverge): %s",
+                        catalog_id, exc,
+                        exc_info=True,
+                    )
+
             await emit_event(
                 CatalogEventType.AFTER_CATALOG_UPDATE,
                 catalog_id=catalog_id,
@@ -1071,7 +1179,11 @@ class CatalogService(CatalogsProtocol):
             from dynastore.models.localization import Language
 
             can_delete = False
-            fields_to_update = {}
+            fields_to_update: Dict[str, str] = {}
+            # Python-native parallel of ``fields_to_update`` used to
+            # propagate the delete into the split tables via the router
+            # post-M2.4 read flip.  See the propagation block below.
+            router_fields_to_update: Dict[str, Any] = {}
 
             for field in [
                 "title",
@@ -1100,6 +1212,12 @@ class CatalogService(CatalogsProtocol):
                             fields_to_update[field] = json.dumps(
                                 data, cls=CustomJSONEncoder
                             )
+                            # Parallel Python-native dict for the M2.4
+                            # split-table propagation below (the legacy
+                            # fields_to_update holds JSON-string values
+                            # ready for the UPDATE; the router path
+                            # wants the un-serialised shape).
+                            router_fields_to_update[field] = data
                             can_delete = True
 
             if not can_delete:
@@ -1112,6 +1230,32 @@ class CatalogService(CatalogsProtocol):
             await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
                 conn, **params
             )
+
+            # M2.4 — same split-table propagation as ``update_catalog``.
+            # Without this the router-overlaid read returns the
+            # pre-deletion localized values (the split-table row still
+            # carries the language slot that was just removed from the
+            # legacy column).  Best-effort: a split-table failure is
+            # logged but does not roll the legacy UPDATE back.
+            if router_fields_to_update:
+                from dynastore.modules.catalog.catalog_metadata_router import (
+                    upsert_catalog_metadata,
+                )
+                try:
+                    await upsert_catalog_metadata(
+                        catalog_id,
+                        router_fields_to_update,
+                        db_resource=conn,
+                    )
+                except Exception as exc:  # noqa: BLE001 — degrade
+                    logger.error(
+                        "delete_catalog_language: split-table "
+                        "propagation failed for %s / lang=%s "
+                        "(legacy UPDATE succeeded; split tables now "
+                        "diverge): %s",
+                        catalog_id, lang, exc,
+                        exc_info=True,
+                    )
 
             # Special case for extra_metadata inner extra_metadata (legacy blob)
             # Actually our CatalogsProtocol/model handling for extra_metadata is a bit mixed.
@@ -1143,9 +1287,14 @@ class CatalogService(CatalogsProtocol):
             # M2.4 — overlay router-supplied metadata per-row.  Each row
             # carries a catalog_id we look up through the router; the
             # merged envelope wins over the legacy catalog.catalogs
-            # columns.  Router resolution is concurrent across rows so a
-            # list of N catalogs pays one gather round-trip, not N
-            # sequential ones.
+            # columns.  ``asyncio.gather`` here is structural (keeps the
+            # per-row work composable); the actual SQL calls still
+            # serialise through the shared connection's wire lock —
+            # asyncpg enforces one in-flight statement per connection.
+            # For a list of N catalogs × M domain drivers that's N×M
+            # sequential round-trips.  Batch-friendly refactoring
+            # (single SELECT JOINing the split tables) is a latency
+            # optimisation for M3+ once the read path is stable.
             import asyncio as _asyncio
 
             async def _unpack_one(r):

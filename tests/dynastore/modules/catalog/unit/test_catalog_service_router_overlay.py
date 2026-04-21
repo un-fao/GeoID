@@ -186,3 +186,85 @@ async def test_router_resolution_returns_none_when_router_returns_none(monkeypat
         "cat-42", db_resource=None,
     )
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Update propagation — regression for the M2.4 critical finding
+#
+# Before the 2026-04-21 deep-review fix, ``update_catalog`` wrote ONLY to
+# the legacy ``catalog.catalogs`` columns.  ``get_catalog_model`` then
+# overlaid the stale split-table row on top, so every read after the
+# update returned the pre-update envelope indefinitely.  These tests pin
+# the new behaviour: the router's ``upsert_catalog_metadata`` MUST run
+# after any legacy UPDATE so the split tables track the change.
+# ---------------------------------------------------------------------------
+
+
+def test_extract_update_payload_only_includes_requested_fields():
+    """``_extract_update_payload`` respects the updated_fields whitelist.
+
+    A PATCH that sets only ``title`` must produce a payload of exactly
+    ``{"title": …}`` — nothing else.  Without this, the split-table
+    upsert would touch unrelated columns on every partial update
+    (e.g. rewriting ``license`` to its already-stored value).
+    """
+    from dynastore.modules.catalog.catalog_service import (
+        _extract_update_payload,
+    )
+    from dynastore.modules.catalog.models import Catalog
+    from dynastore.models.localization import LocalizedText
+
+    cat = Catalog(
+        id="c", type="Catalog",
+        title=LocalizedText(en="T2"),
+        description=LocalizedText(en="D"),
+        stac_version="1.1.0",
+        conformsTo=["https://…/core"],
+        links=[],
+    )
+    payload = _extract_update_payload(cat, updated_fields={"title"})
+    assert payload == {"title": {"en": "T2"}}
+
+
+def test_extract_update_payload_respects_pydantic_alias_for_conforms_to():
+    """``conformsTo`` (camelCase) maps to ``conforms_to`` (snake_case column)."""
+    from dynastore.modules.catalog.catalog_service import (
+        _extract_update_payload,
+    )
+    from dynastore.modules.catalog.models import Catalog
+
+    cat = Catalog(
+        id="c", type="Catalog",
+        stac_version="1.1.0",
+        conformsTo=["https://…/core", "https://…/oaf"],
+        links=[],
+    )
+    payload = _extract_update_payload(
+        cat, updated_fields={"conformsTo"},
+    )
+    assert payload == {"conforms_to": ["https://…/core", "https://…/oaf"]}
+
+
+def test_extract_update_payload_empty_fields_yields_empty_dict():
+    """An empty updated_fields set yields an empty payload → upsert skipped."""
+    from dynastore.modules.catalog.catalog_service import (
+        _extract_update_payload,
+    )
+    from dynastore.modules.catalog.models import Catalog
+
+    cat = Catalog(id="c", type="Catalog", stac_version="1.1.0", links=[])
+    assert _extract_update_payload(cat, updated_fields=set()) == {}
+
+
+def test_extract_update_payload_drops_none_values():
+    """Fields in ``updated_fields`` with a None value don't make the payload."""
+    from dynastore.modules.catalog.catalog_service import (
+        _extract_update_payload,
+    )
+    from dynastore.modules.catalog.models import Catalog
+
+    cat = Catalog(id="c", type="Catalog", stac_version="1.1.0", links=[])
+    # title was listed for update but the merged model has no value →
+    # nothing to persist; empty payload → split-table row untouched.
+    payload = _extract_update_payload(cat, updated_fields={"title"})
+    assert payload == {}
