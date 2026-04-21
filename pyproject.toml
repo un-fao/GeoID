@@ -210,7 +210,7 @@ drivers_grp = ["dynastore[module_storage_postgresql,module_storage_duckdb,module
 # ==========================================================================
 # TASK GROUPINGS (sync-db)
 # ==========================================================================
-task_base = ["dynastore[db_sync,module_tasks,extension_processes]"]
+task_base = ["dynastore[db_sync,module_tasks,module_events,extension_processes]"]
 ingestion = ["dynastore[task_base,module_gcp,task_ingestion_deps]"]
 
 # ---- Worker / Cloud Run Job task extras (heavy; sync-db via task_base).

@@ -16,9 +16,13 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from typing import Dict, Type, Optional, Any, List
+from typing import Any, Dict, Mapping, Optional, Type, Union
 
-from dynastore.modules.catalog.sidecars.base import SidecarProtocol, SidecarConfig
+from dynastore.modules.catalog.sidecars.base import (
+    SidecarConfig,
+    SidecarConfigRegistry,
+    SidecarProtocol,
+)
 
 
 class SidecarRegistry:
@@ -65,16 +69,40 @@ class SidecarRegistry:
                 pass  # STAC extension not installed
 
     @classmethod
-    def get_sidecar(cls, config: SidecarConfig, lenient: bool = False) -> Optional[SidecarProtocol]:
+    def get_sidecar(
+        cls,
+        config: Union[SidecarConfig, Mapping[str, Any]],
+        lenient: bool = False,
+    ) -> Optional[SidecarProtocol]:
         """
         Factory method to instantiate the correct SidecarProtocol implementation
         for a given configuration object.
-        
+
+        Accepts either a typed ``SidecarConfig`` instance or a mapping carrying a
+        ``sidecar_type`` discriminator — the mapping form is coerced to the
+        appropriate subclass via ``SidecarConfigRegistry``. Partially-hydrated
+        configs (e.g. a DB round-trip that bypassed the container validator)
+        therefore no longer crash the consumer.
+
         Uses the config's sidecar_type field to look up the implementation.
-        
+
         If lenient=True, returns None if implementation is not registered.
         """
         cls._ensure_defaults()
+
+        if isinstance(config, Mapping):
+            if "sidecar_type" not in config:
+                raise TypeError(
+                    f"SidecarRegistry.get_sidecar: mapping input missing "
+                    f"'sidecar_type' discriminator. Keys: {sorted(config.keys())}"
+                )
+            config_cls = SidecarConfigRegistry.resolve_config_class(config["sidecar_type"])
+            config = config_cls.model_validate(dict(config))
+        elif not isinstance(config, SidecarConfig):
+            raise TypeError(
+                f"SidecarRegistry.get_sidecar: expected SidecarConfig or Mapping, "
+                f"got {type(config).__name__}"
+            )
 
         sidecar_type = config.sidecar_type
         sidecar_cls = cls._registry.get(sidecar_type)

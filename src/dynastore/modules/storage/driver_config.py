@@ -427,20 +427,40 @@ class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
     @field_validator("sidecars", mode="before")
     @classmethod
     def validate_sidecars_polymorphic(cls, v: Any) -> Any:
-        """Instantiate sidecar configs as their specialized subclasses."""
-        if isinstance(v, list):
-            from dynastore.modules.catalog.sidecars.base import SidecarConfigRegistry
+        """Instantiate sidecar configs as their specialized subclasses.
 
-            processed = []
-            for item in v:
-                if isinstance(item, dict) and "sidecar_type" in item:
-                    sidecar_type = item["sidecar_type"]
-                    config_cls = SidecarConfigRegistry.resolve_config_class(sidecar_type)
-                    processed.append(config_cls.model_validate(item))
-                else:
-                    processed.append(item)
-            return processed
-        return v
+        Each item must be either a typed ``SidecarConfig`` instance or a mapping
+        carrying a ``sidecar_type`` discriminator. Malformed entries raise
+        immediately so data-corruption bugs surface at hydration time instead of
+        crashing downstream consumers (e.g. ``SidecarRegistry.get_sidecar``).
+        """
+        if not isinstance(v, list):
+            return v
+
+        from dynastore.modules.catalog.sidecars.base import (
+            SidecarConfig,
+            SidecarConfigRegistry,
+        )
+
+        processed = []
+        for idx, item in enumerate(v):
+            if isinstance(item, SidecarConfig):
+                processed.append(item)
+            elif isinstance(item, dict):
+                sidecar_type = item.get("sidecar_type")
+                if not sidecar_type:
+                    raise ValueError(
+                        f"sidecars[{idx}]: dict is missing required "
+                        f"'sidecar_type' discriminator. Keys: {sorted(item.keys())}"
+                    )
+                config_cls = SidecarConfigRegistry.resolve_config_class(sidecar_type)
+                processed.append(config_cls.model_validate(item))
+            else:
+                raise ValueError(
+                    f"sidecars[{idx}]: expected SidecarConfig or dict, "
+                    f"got {type(item).__name__}"
+                )
+        return processed
 
     @field_validator("partitioning", mode="before")
     @classmethod
