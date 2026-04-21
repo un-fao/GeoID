@@ -15,6 +15,13 @@ def _make_app():
     async def sp(): return {}
     app.include_router(tiles)
     app.include_router(stac)
+    # ``install_filtered_openapi`` filters by PATH PREFIX, not by tag
+    # (tag-based filtering would break routes that share tags across
+    # extensions).  Production populates ``app.state.extension_prefixes``
+    # during extension registration; the test fixture must seed the
+    # same map, otherwise the filter has no prefix list to consult
+    # and nothing gets filtered.
+    app.state.extension_prefixes = [("/tiles", "tiles"), ("/stac", "stac")]
     return app
 
 
