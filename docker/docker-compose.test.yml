@@ -28,7 +28,7 @@ services:
     restart: "no"
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: src/dynastore/docker/Dockerfile
       target: builder
       args:
         SCOPE: ${CATALOG_SCOPE:-all}
@@ -61,7 +61,7 @@ services:
     restart: "no"
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: src/dynastore/docker/Dockerfile
       target: builder
       args:
         SCOPE: ${WORKER_SCOPE:-all}
@@ -88,7 +88,7 @@ services:
   test-runner:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: src/dynastore/docker/Dockerfile
       target: tester
       args:
         SCOPE: ${TEST_SCOPE:-all}

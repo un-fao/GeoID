@@ -30,7 +30,7 @@ services:
       service: catalog
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: src/dynastore/docker/Dockerfile
       target: development
       args:
         SCOPE: ${CATALOG_SCOPE:-scope_catalog}
@@ -64,7 +64,7 @@ services:
       service: geoid
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: src/dynastore/docker/Dockerfile
       target: development
       args:
         BUILD_JUPYTERLITE: "true"
@@ -88,7 +88,7 @@ services:
       service: worker
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: src/dynastore/docker/Dockerfile
       target: development
       args:
         SCOPE: ${WORKER_SCOPE:-scope_worker}
@@ -118,7 +118,7 @@ services:
       service: tools
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: src/dynastore/docker/Dockerfile
       target: development
       args:
         SCOPE: ${TOOLS_SCOPE:-scope_tools}
@@ -144,7 +144,7 @@ services:
       service: maps
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: src/dynastore/docker/Dockerfile
       target: development
       args:
         SCOPE: ${MAPS_SCOPE:-scope_maps}

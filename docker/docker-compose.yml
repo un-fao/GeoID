@@ -32,7 +32,7 @@ services:
   catalog:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: src/dynastore/docker/Dockerfile
       args:
         SCOPE: ${CATALOG_SCOPE:-scope_catalog}
         BUILD_JUPYTERLITE: "true"
@@ -60,7 +60,7 @@ services:
   geoid:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: src/dynastore/docker/Dockerfile
       args:
         SCOPE: ${GEOID_SCOPE:-scope_geoid}
         BUILD_JUPYTERLITE: "true"
@@ -94,7 +94,7 @@ services:
   worker:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: src/dynastore/docker/Dockerfile
       args:
         SCOPE: ${WORKER_SCOPE:-scope_worker}
         BUILD_JUPYTERLITE: "false"
@@ -122,7 +122,7 @@ services:
   tools:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: src/dynastore/docker/Dockerfile
       args:
         SCOPE: ${TOOLS_SCOPE:-scope_tools}
         # tools doesn't serve /web/pages/notebooks — skip the ~250 MB stage.
@@ -149,7 +149,7 @@ services:
   maps:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: src/dynastore/docker/Dockerfile
       args:
         SCOPE: ${MAPS_SCOPE:-scope_maps}
         # maps serves raster tiles, not notebooks — skip the ~250 MB stage.
