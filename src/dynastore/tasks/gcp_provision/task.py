@@ -45,7 +45,41 @@ def _get_catalog_protocol() -> CatalogsProtocol:
 def _get_storage_protocol() -> StorageProtocol:
     protocol = get_protocol(StorageProtocol)
     if not protocol:
-        raise PermanentTaskFailure("StorageProtocol not available - GCP module not loaded")
+        # Self-diagnostic: dump the full plugin + module registry so we can
+        # tell whether GCPModule was unregistered, whether some other
+        # StorageProtocol provider superseded it, or whether the module was
+        # simply not loaded in this worker.  Paired with the fix in
+        # commit ab5ca1b (GCP async clients no longer bound to the wrong
+        # event loop) — if this ever fires again, the log captures exactly
+        # which registry state caused it.
+        try:
+            from dynastore.tools.discovery import (
+                _DYNASTORE_PLUGINS,
+                get_all_protocols,
+            )
+            from dynastore.modules import _DYNASTORE_MODULES
+
+            plugin_types = sorted({type(p).__name__ for p in _DYNASTORE_PLUGINS})
+            loaded_modules = sorted(
+                name for name, cfg in _DYNASTORE_MODULES.items() if cfg.instance
+            )
+            # get_all_protocols includes is_available=False — tells us whether
+            # a provider existed but was filtered out at discovery.
+            all_storage = [
+                type(p).__name__ for p in get_all_protocols(StorageProtocol)
+            ]
+            logger.error(
+                "_get_storage_protocol: no StorageProtocol resolved. "
+                "plugins=%s loaded_modules=%s all_storage_providers=%s",
+                plugin_types, loaded_modules, all_storage,
+            )
+        except Exception as diag_err:  # pragma: no cover — diagnostic best-effort
+            logger.error(
+                "_get_storage_protocol: diagnostic dump failed: %s", diag_err,
+            )
+        raise PermanentTaskFailure(
+            "StorageProtocol not available - GCP module not loaded"
+        )
     return protocol
 
 class GcpProvisionInputs(BaseModel):
