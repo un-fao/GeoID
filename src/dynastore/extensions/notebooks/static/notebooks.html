@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Notebooks</title>
-<link rel="stylesheet" href="/web/static/vendor/vendor.css"/>
+<link rel="stylesheet" href="../static/vendor/vendor.css"/>
 <style>
   :root {
     --bg: #0d1117;
@@ -155,8 +155,9 @@
 <script src="https://cdn.jsdelivr.net/npm/marked@14/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 <!-- Warm the Lab app entry in parallel with the cards fetch.
-     Cache-Control on /web/lite/build/** is immutable, so subsequent opens hit disk cache. -->
-<link rel="prefetch" href="/web/lite/lab/index.html">
+     Cache-Control on /web/lite/build/** is immutable, so subsequent opens hit disk cache.
+     URL-relative href so the proxy prefix (e.g. /geospatial/v2/api/catalog) is preserved. -->
+<link rel="prefetch" href="../lite/lab/index.html">
 </head>
 <body>
 <div class="panel">
@@ -644,10 +645,12 @@ const seededPaths = new Set(); // paths whose content we've fetched into the cac
 let currentLitePath = null;    // path currently loaded in the iframe (for deduping reloads)
 
 function getLiteBaseUrl() {
-  // The `notebooks/` build is JupyterLite's classic single-notebook interface;
-  // unlike `lab/`, it exposes the application instance as window.jupyterapp,
-  // which the bridge needs to call serviceManager.contents.save() on.
-  return '/web/lite/notebooks/index.html';
+  // JupyterLite 0.7 ships only `lab/` as a usable entry — the build does not
+  // emit `notebooks/index.html`. lab/ accepts ?path=<file> deep-links and is
+  // what build-jupyterlite.sh patches with bridge.js.
+  // Resolve against the current document so the proxy prefix
+  // (e.g. /geospatial/v2/api/catalog) is preserved.
+  return new URL('../lite/lab/index.html', window.location.href).pathname;
 }
 
 // Boot the iframe lazily — first card click triggers the load. We attach a

@@ -17,7 +17,7 @@
     
     <!-- Favicon and Fonts from main app -->
     <link rel="icon" type="image/png" href="../static/dynastore.png">
-    <link rel="stylesheet" href="/web/static/vendor/vendor.css"/>
+    <link rel="stylesheet" href="../static/vendor/vendor.css"/>
     
     <!-- STAC Browser CDN -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/stac-browser/dist/style.css">
@@ -462,8 +462,14 @@ const tilejson_endpoint = '{{ tilejson_endpoint }}'
 const info_endpoint = '{{ info_endpoint }}'
 const stats_endpoint = '{{ statistics_endpoint }}'
             try {
-                // The root of your STAC API
-                const stacRootUrl = window.location.origin + '/stac/';
+                // The root of your STAC API. Compute base URL from the current
+                // location so the proxy prefix (e.g. /geospatial/v2/api/catalog)
+                // is preserved when served behind a reverse proxy.
+                const _stacP = window.location.pathname;
+                const _stacIdx = _stacP.indexOf('/web/');
+                const stacRootUrl = window.location.origin
+                    + (_stacIdx !== -1 ? _stacP.substring(0, _stacIdx) : '')
+                    + '/stac/';
 
 const dtype_ranges = {
   'int8': [-128, 127],

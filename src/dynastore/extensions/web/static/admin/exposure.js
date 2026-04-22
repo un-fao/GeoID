@@ -1,3 +1,5 @@
+import { apiUrl } from "../common/url.js";
+
 (async () => {
   const $ = (sel) => document.querySelector(sel);
   const state = {
@@ -8,26 +10,28 @@
     dirty: {}
   };
 
-  // Utility: fetch JSON with error handling
+  // Utility: fetch JSON with error handling. Routes absolute paths through
+  // apiUrl() so the proxy prefix (e.g. /geospatial/v2/api/catalog) is applied.
   async function getJSON(url) {
-    const r = await fetch(url);
+    const target = apiUrl(url);
+    const r = await fetch(target);
     if (!r.ok) {
       const text = await r.text();
-      throw new Error(`${url} -> ${r.status}: ${text}`);
+      throw new Error(`${target} -> ${r.status}: ${text}`);
     }
     return r.json();
   }
 
-  // Utility: PATCH JSON with error handling
   async function patchJSON(url, body) {
-    const r = await fetch(url, {
+    const target = apiUrl(url);
+    const r = await fetch(target, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
     if (!r.ok) {
       const text = await r.text();
-      throw new Error(`${url} -> ${r.status}: ${text}`);
+      throw new Error(`${target} -> ${r.status}: ${text}`);
     }
     return r.json();
   }

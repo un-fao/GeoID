@@ -1,12 +1,20 @@
 // Thin fetch helper for the admin Hub. Non-2xx responses throw with the
 // response body attached. Handles the three config scopes (platform,
 // catalog, collection) uniformly so page code never builds URLs by hand.
+//
+// Every absolute path passed in is run through apiUrl() so the proxy prefix
+// (e.g. /geospatial/v2/api/catalog) is preserved when served behind a
+// reverse proxy. Call sites can keep passing absolute paths like
+// "/admin/roles" — the prefix is applied transparently.
+
+import { apiUrl } from "./url.js";
 
 export async function getJSON(url) {
-  const r = await fetch(url, { credentials: "same-origin" });
+  const target = apiUrl(url);
+  const r = await fetch(target, { credentials: "same-origin" });
   if (!r.ok) {
     const text = await r.text().catch(() => "");
-    const err = new Error(`${r.status} ${url}: ${text.slice(0, 400)}`);
+    const err = new Error(`${r.status} ${target}: ${text.slice(0, 400)}`);
     err.status = r.status;
     err.body = text;
     throw err;
@@ -15,7 +23,8 @@ export async function getJSON(url) {
 }
 
 export async function patchJSON(url, body) {
-  const r = await fetch(url, {
+  const target = apiUrl(url);
+  const r = await fetch(target, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
@@ -23,7 +32,7 @@ export async function patchJSON(url, body) {
   });
   if (!r.ok) {
     const text = await r.text().catch(() => "");
-    const err = new Error(`${r.status} ${url}: ${text.slice(0, 400)}`);
+    const err = new Error(`${r.status} ${target}: ${text.slice(0, 400)}`);
     err.status = r.status;
     err.body = text;
     throw err;
@@ -82,16 +91,17 @@ export function fetchCatalogs() {
 // ----- HTTP verbs used by admin pages -----
 
 async function sendJSON(method, url, body, { expectJSON = true } = {}) {
+  const target = apiUrl(url);
   const init = {
     method,
     credentials: "same-origin",
     headers: body == null ? {} : { "Content-Type": "application/json" },
   };
   if (body != null) init.body = JSON.stringify(body);
-  const r = await fetch(url, init);
+  const r = await fetch(target, init);
   if (!r.ok) {
     const text = await r.text().catch(() => "");
-    const err = new Error(`${r.status} ${url}: ${text.slice(0, 400)}`);
+    const err = new Error(`${r.status} ${target}: ${text.slice(0, 400)}`);
     err.status = r.status;
     err.body = text;
     throw err;
@@ -185,7 +195,8 @@ export const createStacCollection = (catalogId, definition) =>
 export async function postFeatures(catalogId, collectionId, payload) {
   const url = `/catalogs/${encodeURIComponent(catalogId)}`
     + `/collections/${encodeURIComponent(collectionId)}/items`;
-  const r = await fetch(url, {
+  const target = apiUrl(url);
+  const r = await fetch(target, {
     method: "POST",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
@@ -195,7 +206,7 @@ export async function postFeatures(catalogId, collectionId, payload) {
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch (_) { /* ignore */ }
   if (!r.ok) {
-    const err = new Error(`${r.status} ${url}: ${text.slice(0, 400)}`);
+    const err = new Error(`${r.status} ${target}: ${text.slice(0, 400)}`);
     err.status = r.status;
     err.body = data ?? text;
     throw err;

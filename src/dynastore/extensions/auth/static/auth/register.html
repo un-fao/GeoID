@@ -69,7 +69,11 @@
             const form = document.querySelector('form');
             form.parentElement.insertBefore(errorDiv, form);
         }
-        document.getElementById('redirect_uri').value = urlParams.get('redirect_uri') || '/web/';
+        // Derive proxy prefix from this page's URL so the default
+        // redirect lands at <prefix>/web/ behind a reverse proxy.
+        const _authIdx = window.location.pathname.indexOf('/auth/');
+        const _proxyPrefix = _authIdx >= 0 ? window.location.pathname.substring(0, _authIdx) : '';
+        document.getElementById('redirect_uri').value = urlParams.get('redirect_uri') || (_proxyPrefix + '/web/');
         document.getElementById('state').value = urlParams.get('state') || 'init';
     </script>
 </body>

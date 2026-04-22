@@ -69,8 +69,12 @@
             form.parentElement.insertBefore(errorDiv, form);
         }
 
-        // We use '||' to provide defaults if params are missing
-        document.getElementById('redirect_uri').value = urlParams.get('redirect_uri') || '/web/';
+        // We use '||' to provide defaults if params are missing.
+        // Derive the proxy prefix from this page's own URL so the default
+        // redirect lands at <prefix>/web/ when served behind a reverse proxy.
+        const _authIdx = window.location.pathname.indexOf('/auth/');
+        const _proxyPrefix = _authIdx >= 0 ? window.location.pathname.substring(0, _authIdx) : '';
+        document.getElementById('redirect_uri').value = urlParams.get('redirect_uri') || (_proxyPrefix + '/web/');
         document.getElementById('state').value = urlParams.get('state') || 'init';
         document.getElementById('scope').value = urlParams.get('scope') || 'openid email profile';
 

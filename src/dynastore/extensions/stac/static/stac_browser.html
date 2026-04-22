@@ -7,7 +7,7 @@
 
     <!-- Favicon and Fonts -->
     <link rel="icon" type="image/png" href="../static/dynastore.png">
-    <link rel="stylesheet" href="/web/static/vendor/vendor.css"/>
+    <link rel="stylesheet" href="../static/vendor/vendor.css"/>
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Marked.js for rendering description markdown -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -156,7 +156,6 @@
         // Calls /stac/ API directly — no external class deps
         // -----------------------------------------------
 
-        const STAC_ROOT = '/stac/';
         let allItems = [];  // flat list for sidebar filter
 
         // Discover root STAC URL (handles /web/pages/ prefix)
