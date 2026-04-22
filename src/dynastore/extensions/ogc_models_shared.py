@@ -68,7 +68,7 @@ class SidecarRejection(BaseModel):
         description=(
             "URL of the effective CollectionWritePolicy for this collection, "
             "e.g. "
-            "'/configs/catalogs/{cat}/collections/{col}/configs/"
+            "'/configs/catalogs/{cat}/collections/{col}/classes/"
             "CollectionWritePolicy/effective'."
         ),
     )

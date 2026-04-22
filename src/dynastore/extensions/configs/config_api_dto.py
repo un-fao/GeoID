@@ -1,44 +1,69 @@
-"""DTOs for the centralised Config API endpoints (/configs/.../config)."""
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+
+"""DTOs for the centralised composed-config API.
+
+The response is a two-level (``scope -> topic`` — three-level under
+``storage/drivers``) tree where the leaves are raw PluginConfig
+payloads keyed by class name.  No wrapper envelopes, no duplicated
+driver configs inline under routing entries, no ``class_key`` field
+(the map key IS the class name).
+
+Tier-of-origin diagnostics (``meta[ClassName] = {source}``) are opt-in
+via the ``?meta=true`` query parameter; off by default to keep the
+default response slim.
+"""
 
 from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel, Field, RootModel
 
 
-class ResolvedDriverEntry(BaseModel):
-    """A driver resolved from a routing config entry, with its effective config."""
+class DriverRef(BaseModel):
+    """Slim reference to a driver configured under a routing operation.
+
+    ``config_ref`` is the class name the UI follows to look up the
+    driver's full config under the sibling ``storage.drivers.*`` topic
+    in the same response — avoiding per-routing-entry payload
+    duplication.
+    """
 
     driver_id: str = Field(
         ..., description="Driver class name, e.g. 'ItemsPostgresqlDriver'."
     )
-    on_failure: str = Field(..., description="Failure policy: fatal | warn | ignore.")
-    write_mode: str = Field(..., description="Write mode: sync | async.")
-    config_class_key: Optional[str] = Field(
+    config_ref: Optional[str] = Field(
         None,
-        description="PluginConfig class_key for this driver, if registered.",
+        description=(
+            "Class name of the driver's config (sibling lookup under "
+            "configs.storage.drivers.*).  Null when the driver has no "
+            "registered config."
+        ),
     )
-    config: Optional[Dict[str, Any]] = Field(
-        None,
-        description="Effective (waterfall-resolved) driver config payload.",
+    on_failure: str = Field(
+        "fatal", description="Failure policy: fatal | warn | ignore."
     )
+    write_mode: str = Field("sync", description="Write mode: sync | async.")
 
 
-class ConfigEntry(BaseModel):
-    """A single config class with its waterfall-resolved value and source tier."""
+class ConfigMeta(BaseModel):
+    """Tier-of-origin diagnostics for a single resolved config entry."""
 
-    class_key: str = Field(..., description="PluginConfig class_key.")
-    value: Dict[str, Any] = Field(..., description="Effective configuration payload.")
     source: str = Field(
         ...,
         description=(
-            "Tier that provided this value: 'collection' | 'catalog' | 'platform' | "
-            "'default'."
-        ),
-    )
-    resolved_drivers: Optional[Dict[str, List[ResolvedDriverEntry]]] = Field(
-        None,
-        description=(
-            "For routing configs only. Maps operation name (WRITE, READ, SEARCH, "
-            "TRANSFORM) to the list of resolved drivers with their effective configs."
+            "Tier that supplied the effective value: "
+            "'collection' | 'catalog' | 'platform' | 'default'."
         ),
     )
 
@@ -48,7 +73,7 @@ class ConfigPage(BaseModel):
 
     category: str = Field(
         ...,
-        description="Category name: 'collections' | 'assets' | 'records' | 'catalogs'.",
+        description="Category name: 'collections' | 'assets' | 'catalogs'.",
     )
     total: int = Field(0, ge=0, description="Total items in this category.")
     page: int = Field(1, ge=1, description="Current page number (1-based).")
@@ -73,15 +98,23 @@ class CollectionConfigResponse(BaseModel):
 
     collection_id: str
     catalog_id: str
-    configs: Dict[str, ConfigEntry] = Field(
+    configs: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Effective configs at this collection scope, keyed by class_key.",
+        description=(
+            "Effective configs at this collection scope, nested as "
+            "scope -> topic -> [sub ->] ClassName -> payload."
+        ),
+    )
+    meta: Optional[Dict[str, ConfigMeta]] = Field(
+        None,
+        description=(
+            "Per-class tier-of-origin diagnostics; populated only when "
+            "?meta=true is requested."
+        ),
     )
     categories: Optional[Dict[str, ConfigPage]] = Field(
         None,
-        description=(
-            "Paginated child categories: 'records', 'assets'. Null if depth=0."
-        ),
+        description="Paginated child categories: 'assets'. Null if depth=0.",
     )
 
 
@@ -89,9 +122,19 @@ class CatalogConfigResponse(BaseModel):
     """Composed view of all effective configs at a single catalog scope."""
 
     catalog_id: str
-    configs: Dict[str, ConfigEntry] = Field(
+    configs: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Effective configs at this catalog scope, keyed by class_key.",
+        description=(
+            "Effective configs at this catalog scope, nested as "
+            "scope -> topic -> [sub ->] ClassName -> payload."
+        ),
+    )
+    meta: Optional[Dict[str, ConfigMeta]] = Field(
+        None,
+        description=(
+            "Per-class tier-of-origin diagnostics; populated only when "
+            "?meta=true is requested."
+        ),
     )
     categories: Optional[Dict[str, ConfigPage]] = Field(
         None,
@@ -105,23 +148,33 @@ class PlatformConfigResponse(BaseModel):
     """Composed view of all effective configs at the platform scope."""
 
     scope: str = Field("platform", frozen=True)
-    configs: Dict[str, ConfigEntry] = Field(
+    configs: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Effective platform-level configs, keyed by class_key.",
+        description=(
+            "Effective platform-level configs, nested as "
+            "scope -> topic -> [sub ->] ClassName -> payload."
+        ),
+    )
+    meta: Optional[Dict[str, ConfigMeta]] = Field(
+        None,
+        description=(
+            "Per-class tier-of-origin diagnostics; populated only when "
+            "?meta=true is requested."
+        ),
     )
     categories: Optional[Dict[str, ConfigPage]] = Field(
         None,
-        description=(
-            "Paginated child categories: 'catalogs'. Null if depth=0."
-        ),
+        description="Paginated child categories: 'catalogs'. Null if depth=0.",
     )
 
 
 class PatchConfigBody(RootModel[Dict[str, Optional[Dict[str, Any]]]]):
     """Partial composed configuration.
 
-    Keys: plugin_id (class key). Values:
-      - non-null dict: partial merge into the stored config at this scope.
-      - null: delete the stored record at this scope (revert to inherit / class default).
+    Keys: class name.  Values:
+
+    * non-null dict — partial merge into the stored config at this scope.
+    * null          — delete the stored record at this scope (revert to
+                      inherit / class default).
     """
     pass

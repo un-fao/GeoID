@@ -72,8 +72,8 @@ import { apiUrl } from "../common/url.js";
   // Load configuration matrix (resolved and explicit)
   async function loadMatrix() {
     const base = state.scope === "platform"
-      ? "/configs/config"
-      : `/configs/catalogs/${encodeURIComponent(state.catalog)}/config`;
+      ? "/configs"
+      : `/configs/catalogs/${encodeURIComponent(state.catalog)}`;
 
     try {
       state.resolved = await loadIndex(`${base}?resolved=true`);
@@ -86,26 +86,27 @@ import { apiUrl } from "../common/url.js";
     render();
   }
 
-  // Normalize response to { class_key -> config_object }
+  // Flatten the composed response's nested scope→topic→[sub→]ClassName→payload
+  // tree into a plain { ClassName -> payload } map.  Class names are globally
+  // unique so the flatten is lossless.
   async function loadIndex(url) {
     const page = await getJSON(url);
+    const tree = page && page.configs && typeof page.configs === "object"
+      ? page.configs
+      : page;
     const out = {};
-
-    // Try items array first
-    if (Array.isArray(page.items)) {
-      for (const e of page.items) {
-        const key = e.class_key || e.plugin_id || e.key;
-        if (key) out[key] = e.value || e.config_data || e;
+    function isClassNode(name, node) {
+      return typeof name === "string" && /^[A-Z]/.test(name)
+        && node && typeof node === "object" && !Array.isArray(node);
+    }
+    function walk(node) {
+      if (!node || typeof node !== "object" || Array.isArray(node)) return;
+      for (const [k, v] of Object.entries(node)) {
+        if (isClassNode(k, v)) out[k] = v;
+        else walk(v);
       }
     }
-
-    // Fall back to configs object
-    if (!Object.keys(out).length && page.configs && typeof page.configs === "object") {
-      for (const [k, v] of Object.entries(page.configs)) {
-        out[k] = v;
-      }
-    }
-
+    walk(tree);
     return out;
   }
 
@@ -235,8 +236,8 @@ import { apiUrl } from "../common/url.js";
     }
 
     const url = state.scope === "platform"
-      ? "/configs/config"
-      : `/configs/catalogs/${encodeURIComponent(state.catalog)}/config`;
+      ? "/configs"
+      : `/configs/catalogs/${encodeURIComponent(state.catalog)}`;
 
     setStatus("Applying...", "");
     try {

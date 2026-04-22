@@ -1,4 +1,28 @@
-"""Business logic for the centralised Config API composed views."""
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+
+"""Composer for the centralised composed-config API.
+
+Response shape: ``configs[scope][topic][(sub)?][ClassName] -> payload``.
+Class name IS the identity — no ``class_key`` field inside the payload.
+Routing configs' ``operations[OP]`` become slim ``DriverRef`` dicts
+pointing at sibling driver configs in ``configs.storage.drivers.*``.
+Per-scope filtering is derived from the class name / module path —
+there is no per-class ClassVar override to maintain.
+"""
+
+from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Optional, Tuple, Type
@@ -6,25 +30,109 @@ from typing import Any, Dict, List, Optional, Tuple, Type
 from dynastore.extensions.configs.config_api_dto import (
     CatalogConfigResponse,
     CollectionConfigResponse,
-    ConfigEntry,
+    ConfigMeta,
     ConfigPage,
+    DriverRef,
     PlatformConfigResponse,
-    ResolvedDriverEntry,
 )
 from dynastore.models.protocols import ConfigsProtocol
 from dynastore.modules.db_config.platform_config_service import (
+    PluginConfig,
     list_registered_configs,
-    resolve_config_class,
 )
-from dynastore.modules.storage.driver_registry import DriverRegistry
 
 logger = logging.getLogger(__name__)
 
-_ROUTING_CONFIG_KEYS = frozenset({"CollectionRoutingConfig", "AssetRoutingConfig"})
+# --- Placement + relevance (inline — keeps the table next to the
+# composer that is its only consumer). -------------------------------
+
+# Abstract base configs are registered but must not surface in the tree.
+_ABSTRACT_BASES = frozenset({
+    "PluginConfig", "DriverPluginConfig",
+    "CollectionDriverConfig", "AssetDriverConfig",
+})
+
+# Per-class name prefixes that bucket classes into relevance tiers.
+_COLLECTION_PREFIXES = ("Items", "Asset", "Collection", "WritePolicyDefaults")
+_COLLECTION_NAMES = frozenset({"GcpCollectionBucketConfig"})
+_CATALOG_PREFIXES = ("Catalog",)
+_CATALOG_NAMES = frozenset({"GcpCatalogBucketConfig", "GcpEventingConfig"})
+
+# Module prefix → (scope, topic).  Longer prefixes first.
+_MODULE_RULES: List[Tuple[str, Tuple[str, str]]] = [
+    ("dynastore.modules.storage.routing_config",        ("storage", "routing")),
+    ("dynastore.modules.storage.drivers",               ("storage", "drivers")),
+    ("dynastore.modules.storage.driver_config",         ("storage", "drivers")),
+    ("dynastore.modules.elasticsearch.es_metadata",     ("storage", "drivers")),
+    ("dynastore.modules.catalog.catalog_config",        ("catalog", "collection")),
+    ("dynastore.modules.catalog.asset_config",          ("catalog", "asset")),
+    ("dynastore.modules.iam",                           ("platform", "security")),
+    ("dynastore.modules.web",                           ("platform", "web")),
+    ("dynastore.extensions.web",                        ("platform", "web")),
+    ("dynastore.modules.tasks",                         ("platform", "tasks")),
+    ("dynastore.modules.stats",                         ("platform", "stats")),
+    ("dynastore.modules.gcp",                           ("platform", "gcp")),
+    ("dynastore.modules.tiles",                         ("platform", "tiles")),
+    ("dynastore.modules.stac",                          ("extensions", "stac")),
+]
+_CLASS_SCOPE_TOPIC: Dict[str, Tuple[str, str]] = {
+    "CollectionWritePolicy": ("storage", "policy"),
+    "WritePolicyDefaults":   ("storage", "policy"),
+    "CollectionSchema":      ("storage", "schema"),
+}
+# Driver sub-bucket by class-name prefix (only when topic == "drivers").
+_DRIVER_SUB: List[Tuple[str, str]] = [
+    ("Items", "items"), ("Asset", "assets"),
+    ("Catalog", "catalog"), ("Collection", "collection"),
+    ("Metadata", "metadata"),
+]
+
+# Routing config keys whose ``operations[OP]`` is rewritten as DriverRefs.
+_ROUTING_CONFIG_KEYS = frozenset({
+    "CollectionRoutingConfig", "AssetRoutingConfig", "CatalogRoutingConfig",
+})
+
+
+def _place(cls: Type[PluginConfig], active_scope: str) -> Optional[Tuple[str, str, Optional[str]]]:
+    """Return ``(scope, topic, sub)`` for ``cls`` at ``active_scope``, or ``None`` to drop.
+
+    ``None`` means either the class is an abstract base or its relevance
+    tier does not include ``active_scope``.
+    """
+    name = cls.__name__
+    if name in _ABSTRACT_BASES:
+        return None
+
+    is_catalog = name in _CATALOG_NAMES or name.startswith(_CATALOG_PREFIXES)
+    is_collection = not is_catalog and (
+        name in _COLLECTION_NAMES or name.startswith(_COLLECTION_PREFIXES)
+    )
+    if is_catalog and active_scope == "collection":
+        return None
+    if is_collection and active_scope != "collection":
+        return None
+
+    if name in _CLASS_SCOPE_TOPIC:
+        scope, topic = _CLASS_SCOPE_TOPIC[name]
+    else:
+        mod = cls.__module__
+        hit = next((g for prefix, g in _MODULE_RULES if mod.startswith(prefix)), None)
+        if hit is not None:
+            scope, topic = hit
+        elif mod.startswith("dynastore.extensions."):
+            scope = "extensions"
+            topic = mod[len("dynastore.extensions."):].split(".", 1)[0]
+        else:
+            scope, topic = "platform", "misc"
+
+    sub: Optional[str] = None
+    if topic == "drivers":
+        sub = next((s for pfx, s in _DRIVER_SUB if name.startswith(pfx)), "misc")
+    return scope, topic, sub
 
 
 class ConfigApiService:
-    """Composes paginated configuration responses for platform / catalog / collection scope."""
+    """Composes the scope→topic→class-name configuration tree."""
 
     def __init__(
         self,
@@ -36,177 +144,330 @@ class ConfigApiService:
         self._assets_service = assets_service
         self._catalogs_service = catalogs_service
 
+    # --- Effective-value resolution (unchanged shape). ---
+
     async def _get_effective_configs(
         self,
         catalog_id: Optional[str],
         collection_id: Optional[str],
-        resolved: bool = True,
-    ) -> Dict[str, ConfigEntry]:
-        configs_svc = self._config_service
+        resolved: bool,
+    ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
+        """Return ``(by_class, sources)`` for every registered config class.
+
+        * ``by_class[ClassName]`` — effective payload (waterfall-resolved
+          when ``resolved``).
+        * ``sources[ClassName]`` — ``"collection" | "catalog" | "platform" | "default"``.
+        """
+        svc = self._config_service
         all_classes = list_registered_configs()
 
         if not resolved:
-            # Return only configs explicitly stored at the innermost scope.
-            # Values are validated through the Pydantic class (class defaults fill
-            # in unset fields; parent-tier values are NOT inherited).
             if catalog_id and collection_id:
-                result = await configs_svc.list_configs(
-                    catalog_id=catalog_id, collection_id=collection_id, limit=1000, offset=0
+                result = await svc.list_configs(
+                    catalog_id=catalog_id, collection_id=collection_id,
+                    limit=1000, offset=0,
                 )
-                scope_name = "collection"
+                source = "collection"
             elif catalog_id:
-                result = await configs_svc.list_configs(
-                    catalog_id=catalog_id, limit=1000, offset=0
-                )
-                scope_name = "catalog"
+                result = await svc.list_configs(catalog_id=catalog_id, limit=1000, offset=0)
+                source = "catalog"
             else:
-                result = await configs_svc.list_configs(limit=1000, offset=0)
-                scope_name = "platform"
+                result = await svc.list_configs(limit=1000, offset=0)
+                source = "platform"
 
-            out: Dict[str, ConfigEntry] = {}
+            by_class: Dict[str, Dict[str, Any]] = {}
+            sources: Dict[str, str] = {}
             for item in result.get("items", []):
                 class_key: str = item["plugin_id"]
                 cls = all_classes.get(class_key)
                 raw: Dict[str, Any] = item.get("config_data") or {}
-                if cls is not None:
-                    try:
-                        value: Dict[str, Any] = cls.model_validate(raw).model_dump()
-                    except Exception:
-                        value = raw
-                else:
-                    value = raw
-                out[class_key] = ConfigEntry(  # type: ignore[call-arg]
-                    class_key=class_key,
-                    value=value,
-                    source=scope_name,
-                )
-            return out
+                try:
+                    by_class[class_key] = (
+                        cls.model_validate(raw).model_dump() if cls else raw
+                    )
+                except Exception:
+                    by_class[class_key] = raw
+                sources[class_key] = source
+            return by_class, sources
 
+        # Resolved path — determine tier per class then materialise values.
         collection_keys: set = set()
         catalog_keys: set = set()
-        platform_keys: set = set()
-
         if catalog_id and collection_id:
-            result = await configs_svc.list_configs(
-                catalog_id=catalog_id, collection_id=collection_id, limit=1000, offset=0
+            r = await svc.list_configs(
+                catalog_id=catalog_id, collection_id=collection_id,
+                limit=1000, offset=0,
             )
-            collection_keys = {e["plugin_id"] for e in result.get("items", [])}
-
+            collection_keys = {e["plugin_id"] for e in r.get("items", [])}
         if catalog_id:
-            result = await configs_svc.list_configs(
-                catalog_id=catalog_id, limit=1000, offset=0
-            )
-            catalog_keys = {e["plugin_id"] for e in result.get("items", [])}
+            r = await svc.list_configs(catalog_id=catalog_id, limit=1000, offset=0)
+            catalog_keys = {e["plugin_id"] for e in r.get("items", [])}
+        r = await svc.list_configs(limit=1000, offset=0)
+        platform_keys = {e["plugin_id"] for e in r.get("items", [])}
 
-        result = await configs_svc.list_configs(limit=1000, offset=0)
-        platform_keys = {e["plugin_id"] for e in result.get("items", [])}
-
-        out: Dict[str, ConfigEntry] = {}
+        by_class = {}
+        sources = {}
         for class_key, cls in all_classes.items():
             if class_key in collection_keys:
-                source = "collection"
+                sources[class_key] = "collection"
             elif class_key in catalog_keys:
-                source = "catalog"
+                sources[class_key] = "catalog"
             elif class_key in platform_keys:
-                source = "platform"
+                sources[class_key] = "platform"
             else:
-                source = "default"
-
+                sources[class_key] = "default"
             try:
-                effective = await configs_svc.get_config(
-                    cls,
-                    catalog_id=catalog_id,
-                    collection_id=collection_id,
+                effective = await svc.get_config(
+                    cls, catalog_id=catalog_id, collection_id=collection_id,
                 )
-                value = effective.model_dump() if effective is not None else cls().model_dump()
+                by_class[class_key] = (
+                    effective.model_dump() if effective is not None
+                    else cls().model_dump()
+                )
             except Exception:
                 try:
-                    value = cls().model_dump()
+                    by_class[class_key] = cls().model_dump()
                 except Exception:
-                    value = {}
+                    by_class[class_key] = {}
+        return by_class, sources
 
-            out[class_key] = ConfigEntry(  # type: ignore[call-arg]
-                class_key=class_key,
-                value=value,
-                source=source,
-            )
+    # --- Tree + meta in one pass. ---
 
-        return out
+    @staticmethod
+    def _compose_tree(
+        by_class: Dict[str, Dict[str, Any]],
+        sources: Dict[str, str],
+        active_scope: str,
+        include_meta: bool,
+    ) -> Tuple[Dict[str, Any], Optional[Dict[str, ConfigMeta]]]:
+        """Bucket visible classes into scope/topic tree and optionally build meta."""
+        all_classes = list_registered_configs()
+        tree: Dict[str, Any] = {}
+        meta: Dict[str, ConfigMeta] = {}
+        for class_key, payload in by_class.items():
+            cls = all_classes.get(class_key)
+            if cls is None:
+                continue
+            placed = _place(cls, active_scope)
+            if placed is None:
+                continue
+            scope, topic, sub = placed
+            topic_node = tree.setdefault(scope, {}).setdefault(topic, {})
+            if sub is None:
+                topic_node[class_key] = payload
+            else:
+                topic_node.setdefault(sub, {})[class_key] = payload
+            if include_meta and class_key in sources:
+                meta[class_key] = ConfigMeta(source=sources[class_key])
+        return tree, (meta if include_meta else None)
 
-    async def _resolve_driver_configs(
-        self,
-        routing_value: Dict[str, Any],
-        catalog_id: Optional[str],
-        collection_id: Optional[str],
-    ) -> Dict[str, List[ResolvedDriverEntry]]:
-        driver_index = DriverRegistry.collection_index()
-        operations: Dict[str, Any] = routing_value.get("operations", {})
-        result: Dict[str, List[ResolvedDriverEntry]] = {}
+    # --- Routing-ref rewrite. ---
 
-        for operation, entries in operations.items():
-            resolved: List[ResolvedDriverEntry] = []
-            for entry in entries:
-                driver_id: str = entry.get("driver_id", "")
-                on_failure: str = entry.get("on_failure", "fatal")
-                write_mode: str = entry.get("write_mode", "sync")
+    @staticmethod
+    def _build_routing_refs(by_class: Dict[str, Dict[str, Any]]) -> None:
+        """Rewrite ``operations[OP]`` in routing configs as slim ``DriverRef``s.
 
-                driver_instance = driver_index.get(driver_id)
-                config_class_key: Optional[str] = None
-                config_value: Optional[Dict[str, Any]] = None
-
-                if driver_instance is not None:
-                    driver_cls = type(driver_instance)
-                    config_cls = resolve_config_class(f"{driver_cls.__name__}Config")
-                    if config_cls is None:
-                        alt_key = driver_cls.__name__.replace("Driver", "DriverConfig")
-                        config_cls = resolve_config_class(alt_key)
-                    if config_cls is not None:
-                        try:
-                            config_class_key = config_cls.class_key()
-                        except Exception:
-                            config_class_key = config_cls.__name__
-                        try:
-                            eff = await self._config_service.get_config(
-                                config_cls,
-                                catalog_id=catalog_id,
-                                collection_id=collection_id,
-                            )
-                            if eff is not None:
-                                config_value = eff.model_dump()
-                        except Exception:
-                            logger.debug(
-                                "Could not resolve config for driver %s", driver_id
-                            )
-
-                resolved.append(
-                    ResolvedDriverEntry(
+        Driver → config-class lookup uses the ``{DriverName}Config`` naming
+        convention against the PluginConfig registry — no DriverRegistry
+        round-trip, and no protocol coupling.
+        """
+        all_classes = list_registered_configs()
+        for class_key in _ROUTING_CONFIG_KEYS:
+            routing = by_class.get(class_key)
+            if not routing:
+                continue
+            operations = routing.get("operations")
+            if not isinstance(operations, dict):
+                continue
+            rewritten: Dict[str, List[Dict[str, Any]]] = {}
+            for op, entries in operations.items():
+                refs: List[Dict[str, Any]] = []
+                for entry in entries or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    driver_id = entry.get("driver_id", "")
+                    cfg_name = f"{driver_id}Config"
+                    config_ref = cfg_name if cfg_name in all_classes else None
+                    refs.append(DriverRef(
                         driver_id=driver_id,
-                        on_failure=on_failure,
-                        write_mode=write_mode,
-                        config_class_key=config_class_key,
-                        config=config_value,
-                    )
-                )
-            result[operation] = resolved
+                        config_ref=config_ref,
+                        on_failure=entry.get("on_failure", "fatal"),
+                        write_mode=entry.get("write_mode", "sync"),
+                    ).model_dump())
+                rewritten[op] = refs
+            routing["operations"] = rewritten
 
-        return result
+    # --- Compose endpoints. ---
 
-    async def _enrich_routing_configs(
+    async def compose_collection_config(
         self,
-        configs: Dict[str, ConfigEntry],
-        catalog_id: Optional[str],
-        collection_id: Optional[str],
-    ) -> None:
-        for class_key, entry in configs.items():
-            if class_key in _ROUTING_CONFIG_KEYS:
-                try:
-                    entry.resolved_drivers = await self._resolve_driver_configs(
-                        routing_value=entry.value,
-                        catalog_id=catalog_id,
-                        collection_id=collection_id,
+        base_url: str,
+        catalog_id: str,
+        collection_id: str,
+        depth: int = 0,
+        assets_page: int = 1,
+        page_size: int = 15,
+        resolved: bool = True,
+        meta: bool = False,
+    ) -> CollectionConfigResponse:
+        by_class, sources = await self._get_effective_configs(
+            catalog_id=catalog_id, collection_id=collection_id, resolved=resolved,
+        )
+        self._build_routing_refs(by_class)
+        tree, meta_dict = self._compose_tree(by_class, sources, "collection", meta)
+
+        categories: Optional[Dict[str, ConfigPage]] = None
+        if depth > 0:
+            categories = {}
+            assets_total, assets_items = await self._list_assets(
+                catalog_id, collection_id, assets_page, page_size,
+            )
+            pg = self._build_config_page(
+                base_url=base_url, category="assets", total=assets_total,
+                page=assets_page, page_size=page_size, extra_params={"depth": depth},
+            )
+            pg.items = assets_items
+            categories["assets"] = pg
+
+        return CollectionConfigResponse(
+            collection_id=collection_id, catalog_id=catalog_id,
+            configs=tree, meta=meta_dict, categories=categories,
+        )
+
+    async def compose_catalog_config(
+        self,
+        base_url: str,
+        catalog_id: str,
+        depth: int = 0,
+        collections_page: int = 1,
+        assets_page: int = 1,
+        page_size: int = 15,
+        resolved: bool = True,
+        meta: bool = False,
+    ) -> CatalogConfigResponse:
+        by_class, sources = await self._get_effective_configs(
+            catalog_id=catalog_id, collection_id=None, resolved=resolved,
+        )
+        self._build_routing_refs(by_class)
+        tree, meta_dict = self._compose_tree(by_class, sources, "catalog", meta)
+
+        categories: Optional[Dict[str, ConfigPage]] = None
+        if depth > 0:
+            categories = {}
+            coll_total, coll_items = await self._list_collections(
+                base_url, catalog_id, collections_page, page_size, depth,
+                resolved=resolved, meta=meta,
+            )
+            coll_pg = self._build_config_page(
+                base_url=base_url, category="collections", total=coll_total,
+                page=collections_page, page_size=page_size,
+                extra_params={"depth": depth, "assets_page": assets_page},
+            )
+            coll_pg.items = coll_items
+            categories["collections"] = coll_pg
+
+            assets_total, assets_items = await self._list_assets(
+                catalog_id, "", assets_page, page_size,
+            )
+            assets_pg = self._build_config_page(
+                base_url=base_url, category="assets", total=assets_total,
+                page=assets_page, page_size=page_size,
+                extra_params={"depth": depth, "collections_page": collections_page},
+            )
+            assets_pg.items = assets_items
+            categories["assets"] = assets_pg
+
+        return CatalogConfigResponse(
+            catalog_id=catalog_id, configs=tree, meta=meta_dict, categories=categories,
+        )
+
+    async def compose_platform_config(
+        self,
+        base_url: str,
+        depth: int = 0,
+        catalogs_page: int = 1,
+        page_size: int = 15,
+        resolved: bool = True,
+        meta: bool = False,
+    ) -> PlatformConfigResponse:
+        by_class, sources = await self._get_effective_configs(
+            catalog_id=None, collection_id=None, resolved=resolved,
+        )
+        self._build_routing_refs(by_class)
+        tree, meta_dict = self._compose_tree(by_class, sources, "platform", meta)
+
+        categories: Optional[Dict[str, ConfigPage]] = None
+        if depth > 0 and self._catalogs_service is not None:
+            categories = {}
+            offset = (catalogs_page - 1) * page_size
+            try:
+                cats = await self._catalogs_service.list_catalogs(
+                    limit=page_size, offset=offset,
+                )
+                count_fn = getattr(self._catalogs_service, "count_catalogs", None)
+                total = await count_fn() if count_fn is not None else len(cats)
+            except Exception:
+                cats, total = [], 0
+
+            items: List[Any] = []
+            for cat in cats:
+                cat_id = cat.id if hasattr(cat, "id") else cat.get("id", "")
+                if depth >= 2:
+                    cat_response = await self.compose_catalog_config(
+                        base_url=f"{base_url.rstrip('/')}/catalogs/{cat_id}",
+                        catalog_id=cat_id, depth=depth - 1, page_size=page_size,
+                        resolved=resolved, meta=meta,
                     )
-                except Exception:
-                    logger.debug("Could not resolve drivers for %s", class_key)
+                    items.append(cat_response.model_dump())
+                else:
+                    items.append({"catalog_id": cat_id})
+
+            pg = self._build_config_page(
+                base_url=base_url, category="catalogs", total=total,
+                page=catalogs_page, page_size=page_size, extra_params={"depth": depth},
+            )
+            pg.items = items
+            categories["catalogs"] = pg
+
+        return PlatformConfigResponse(
+            configs=tree, meta=meta_dict, categories=categories,
+        )
+
+    # --- PATCH. ---
+
+    async def patch_config(
+        self,
+        *,
+        catalog_id: Optional[str],
+        body: Dict[str, Optional[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        """Validate-then-write partial update of one or more configs at a scope."""
+        all_classes = list_registered_configs()
+        prepared: List[Tuple[str, Type[PluginConfig], Optional[Dict[str, Any]]]] = []
+
+        for plugin_id, value in body.items():
+            cls = all_classes.get(plugin_id)
+            if cls is None:
+                raise ValueError(f"Unknown config class '{plugin_id}'")
+            if value is None:
+                prepared.append((plugin_id, cls, None))
+                continue
+            current = (await self._config_service.get_persisted_config(
+                cls, catalog_id=catalog_id,
+            )) or {}
+            merged = {**current, **value}
+            cls.model_validate(merged)  # raises on bad data
+            prepared.append((plugin_id, cls, merged))
+
+        for plugin_id, cls, merged in prepared:
+            if merged is None:
+                await self._config_service.delete_config(cls, catalog_id=catalog_id)
+            else:
+                validated = cls.model_validate(merged)
+                await self._config_service.set_config(cls, validated, catalog_id=catalog_id)
+        return {"updated": [p for p, _, _ in prepared]}
+
+    # --- Pagination helpers. ---
 
     def _build_config_page(
         self,
@@ -231,204 +492,10 @@ class ConfigApiService:
         if page * page_size < total:
             links.append({"rel": "next", "href": _url(page + 1)})
 
-        return ConfigPage(  # type: ignore[call-arg]
-            category=category,
-            total=total,
-            page=page,
-            page_size=page_size,
+        return ConfigPage(
+            category=category, total=total, page=page, page_size=page_size,
             links=links,
         )
-
-    async def compose_collection_config(
-        self,
-        base_url: str,
-        catalog_id: str,
-        collection_id: str,
-        depth: int = 0,
-        assets_page: int = 1,
-        page_size: int = 15,
-        resolved: bool = True,
-    ) -> CollectionConfigResponse:
-        configs = await self._get_effective_configs(
-            catalog_id=catalog_id, collection_id=collection_id, resolved=resolved
-        )
-        await self._enrich_routing_configs(configs, catalog_id, collection_id)
-
-        categories: Optional[Dict[str, ConfigPage]] = None
-        if depth > 0:
-            categories = {}
-            assets_total, assets_items = await self._list_assets(
-                catalog_id, collection_id, assets_page, page_size
-            )
-            pg = self._build_config_page(
-                base_url=base_url,
-                category="assets",
-                total=assets_total,
-                page=assets_page,
-                page_size=page_size,
-                extra_params={"depth": depth},
-            )
-            pg.items = assets_items
-            categories["assets"] = pg
-
-        return CollectionConfigResponse(
-            collection_id=collection_id,
-            catalog_id=catalog_id,
-            configs=configs,
-            categories=categories,
-        )
-
-    async def compose_catalog_config(
-        self,
-        base_url: str,
-        catalog_id: str,
-        depth: int = 0,
-        collections_page: int = 1,
-        assets_page: int = 1,
-        page_size: int = 15,
-        resolved: bool = True,
-    ) -> CatalogConfigResponse:
-        configs = await self._get_effective_configs(
-            catalog_id=catalog_id, collection_id=None, resolved=resolved
-        )
-        await self._enrich_routing_configs(configs, catalog_id, None)
-
-        categories: Optional[Dict[str, ConfigPage]] = None
-        if depth > 0:
-            categories = {}
-            coll_total, coll_items = await self._list_collections(
-                base_url, catalog_id, collections_page, page_size, depth, resolved=resolved
-            )
-            coll_pg = self._build_config_page(
-                base_url=base_url,
-                category="collections",
-                total=coll_total,
-                page=collections_page,
-                page_size=page_size,
-                extra_params={"depth": depth, "assets_page": assets_page},
-            )
-            coll_pg.items = coll_items
-            categories["collections"] = coll_pg
-
-            assets_total, assets_items = await self._list_assets(
-                catalog_id, "", assets_page, page_size
-            )
-            assets_pg = self._build_config_page(
-                base_url=base_url,
-                category="assets",
-                total=assets_total,
-                page=assets_page,
-                page_size=page_size,
-                extra_params={"depth": depth, "collections_page": collections_page},
-            )
-            assets_pg.items = assets_items
-            categories["assets"] = assets_pg
-
-        return CatalogConfigResponse(
-            catalog_id=catalog_id, configs=configs, categories=categories
-        )
-
-    async def compose_platform_config(
-        self,
-        base_url: str,
-        depth: int = 0,
-        catalogs_page: int = 1,
-        page_size: int = 15,
-        resolved: bool = True,
-    ) -> PlatformConfigResponse:
-        configs = await self._get_effective_configs(
-            catalog_id=None, collection_id=None, resolved=resolved
-        )
-        await self._enrich_routing_configs(configs, None, None)
-
-        categories: Optional[Dict[str, ConfigPage]] = None
-        if depth > 0 and self._catalogs_service is not None:
-            categories = {}
-            offset = (catalogs_page - 1) * page_size
-            try:
-                cats = await self._catalogs_service.list_catalogs(
-                    limit=page_size, offset=offset
-                )
-                count_fn = getattr(self._catalogs_service, "count_catalogs", None)
-                total = await count_fn() if count_fn is not None else len(cats)
-            except Exception:
-                cats, total = [], 0
-
-            items: List[Any] = []
-            for cat in cats:
-                cat_id = cat.id if hasattr(cat, "id") else cat.get("id", "")
-                if depth >= 2:
-                    cat_response = await self.compose_catalog_config(
-                        base_url=f"{base_url.rstrip('/')}/catalogs/{cat_id}/config",
-                        catalog_id=cat_id,
-                        depth=depth - 1,
-                        page_size=page_size,
-                        resolved=resolved,
-                    )
-                    items.append(cat_response.model_dump())
-                else:
-                    items.append({"catalog_id": cat_id})
-
-            pg = self._build_config_page(
-                base_url=base_url,
-                category="catalogs",
-                total=total,
-                page=catalogs_page,
-                page_size=page_size,
-                extra_params={"depth": depth},
-            )
-            pg.items = items
-            categories["catalogs"] = pg
-
-        return PlatformConfigResponse(configs=configs, categories=categories)  # type: ignore[call-arg]
-
-    async def patch_config(
-        self,
-        *,
-        catalog_id: Optional[str],
-        body: Dict[str, Optional[Dict[str, Any]]],
-    ) -> Dict[str, Any]:
-        """Apply a partial update to one or more configs at the given scope.
-
-        Validates ALL entries before writing any of them (validate-first,
-        write-second, since bulk_write() does not exist on ConfigsProtocol).
-        Raises on the first failure; no writes occur when this happens:
-        - ValueError: unknown plugin_id (caller maps to 404)
-        - pydantic.ValidationError: invalid data (caller maps to 422)
-        """
-        all_classes = list_registered_configs()
-        prepared: List[Tuple[str, Type, Optional[Dict[str, Any]]]] = []
-
-        for plugin_id, value in body.items():
-            cls = all_classes.get(plugin_id)
-            if cls is None:
-                raise ValueError(f"Unknown plugin_id '{plugin_id}'")
-            if value is None:
-                prepared.append((plugin_id, cls, None))
-                continue
-            # Merge incoming patch over the tier-local delta, not the
-            # waterfall-resolved view. Fall back to {} when no row exists at
-            # this tier — otherwise class defaults would get baked in on the
-            # first PATCH of a previously-unset plugin.
-            current_data = (
-                await self._config_service.get_persisted_config(
-                    cls, catalog_id=catalog_id
-                )
-                or {}
-            )
-            merged = {**current_data, **value}
-            cls.model_validate(merged)  # raises ValidationError on bad data
-            prepared.append((plugin_id, cls, merged))
-
-        # All entries validated — now write sequentially.
-        for plugin_id, cls, merged in prepared:
-            if merged is None:
-                await self._config_service.delete_config(cls, catalog_id=catalog_id)
-            else:
-                validated = cls.model_validate(merged)
-                await self._config_service.set_config(cls, validated, catalog_id=catalog_id)
-
-        return {"updated": [p for p, _, _ in prepared]}
 
     async def _list_assets(
         self,
@@ -443,10 +510,8 @@ class ConfigApiService:
         try:
             col_id = collection_id or None
             items = await self._assets_service.list_assets(
-                catalog_id=catalog_id,
-                collection_id=col_id,
-                limit=page_size,
-                offset=offset,
+                catalog_id=catalog_id, collection_id=col_id,
+                limit=page_size, offset=offset,
             )
             count_fn = getattr(self._assets_service, "count_assets", None)
             if count_fn is not None:
@@ -457,9 +522,7 @@ class ConfigApiService:
                 a.model_dump() if hasattr(a, "model_dump") else dict(a) for a in items
             ]
         except Exception:
-            logger.debug(
-                "Could not list assets for %s/%s", catalog_id, collection_id
-            )
+            logger.debug("Could not list assets for %s/%s", catalog_id, collection_id)
             return 0, []
 
     async def _list_collections(
@@ -470,19 +533,20 @@ class ConfigApiService:
         page_size: int,
         parent_depth: int,
         resolved: bool = True,
+        meta: bool = False,
     ) -> Tuple[int, List[Any]]:
         if self._catalogs_service is None:
             return 0, []
         offset = (page - 1) * page_size
         try:
             collections = await self._catalogs_service.list_collections(
-                catalog_id=catalog_id, limit=page_size, offset=offset
+                catalog_id=catalog_id, limit=page_size, offset=offset,
             )
             count_fn = getattr(self._catalogs_service, "count_collections", None)
-            if count_fn is not None:
-                total = await count_fn(catalog_id=catalog_id)
-            else:
-                total = len(collections)
+            total = (
+                await count_fn(catalog_id=catalog_id) if count_fn is not None
+                else len(collections)
+            )
         except Exception:
             logger.debug("Could not list collections for %s", catalog_id)
             return 0, []
@@ -490,15 +554,12 @@ class ConfigApiService:
         items: List[Any] = []
         for col in collections:
             col_id = col.id if hasattr(col, "id") else col.get("id", "")
-            col_base = f"{base_url.rstrip('/')}/collections/{col_id}/config"
+            col_base = f"{base_url.rstrip('/')}/collections/{col_id}"
             next_depth = parent_depth - 1 if parent_depth >= 2 else 0
             col_response = await self.compose_collection_config(
-                base_url=col_base,
-                catalog_id=catalog_id,
-                collection_id=col_id,
-                depth=next_depth,
-                page_size=page_size,
-                resolved=resolved,
+                base_url=col_base, catalog_id=catalog_id, collection_id=col_id,
+                depth=next_depth, page_size=page_size,
+                resolved=resolved, meta=meta,
             )
             items.append(col_response.model_dump())
         return total, items

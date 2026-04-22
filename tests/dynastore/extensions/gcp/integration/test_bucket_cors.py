@@ -39,7 +39,7 @@ async def test_bucket_config_hook_trigger(app_lifespan, catalog_obj):
 
                 # This should trigger the hook in ConfigService -> on_apply_gcp_bucket_config -> GCPModule.apply_storage_config
                 response = await ac.put(
-                    f"/configs/catalogs/{catalog_id}/configs/{GcpCatalogBucketConfig.class_key()}",
+                    f"/configs/catalogs/{catalog_id}/classes/{GcpCatalogBucketConfig.class_key()}",
                     json=cors_config,
                 )
 
@@ -74,7 +74,7 @@ async def test_eventing_config_hook_trigger(app_lifespan, catalog_obj):
             eventing_config = {"managed_eventing": {"enabled": True}}
 
             response = await ac.put(
-                f"/configs/catalogs/{catalog_id}/configs/{GcpEventingConfig.class_key()}",
+                f"/configs/catalogs/{catalog_id}/classes/{GcpEventingConfig.class_key()}",
                 json=eventing_config,
             )
 

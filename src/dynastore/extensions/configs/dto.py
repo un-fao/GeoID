@@ -785,7 +785,7 @@ class QuickStartConfigSet(BaseModel):
     or collection with PostgreSQL defaults.
 
     Each key is a ``plugin_id``; the value is the config payload.
-    Use ``PUT /configs/{plugin_id}`` (or the catalog/collection variant)
+    Use ``PUT /configs/classes/{plugin_id}`` (or the catalog/collection variant)
     to apply each entry.
     """
 

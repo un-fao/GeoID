@@ -846,7 +846,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
 
         policy_source = (
             f"/configs/catalogs/{catalog_id}/collections/{collection_id}"
-            f"/configs/CollectionWritePolicy/effective"
+            f"/classes/CollectionWritePolicy/effective"
         )
 
         try:

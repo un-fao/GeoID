@@ -1103,7 +1103,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
     ):
         policy_source = (
             f"/configs/catalogs/{catalog_id}/collections/{collection_id}"
-            f"/configs/CollectionWritePolicy/effective"
+            f"/classes/CollectionWritePolicy/effective"
         )
         accepted_rows, rejections, was_single, batch_size = await self._ingest_items(
             catalog_id,

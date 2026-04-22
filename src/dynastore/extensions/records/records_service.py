@@ -366,7 +366,7 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
 
         policy_source = (
             f"/configs/catalogs/{catalog_id}/collections/{collection_id}"
-            f"/configs/CollectionWritePolicy/effective"
+            f"/classes/CollectionWritePolicy/effective"
         )
         # Pass the normalised list so the mixin works with the same payload
         # shape regardless of original body format.

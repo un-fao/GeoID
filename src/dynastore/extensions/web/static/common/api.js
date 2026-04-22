@@ -56,16 +56,25 @@ export function scopeBasePath(scope) {
 // GET the composed/resolved or explicit config set at a scope.
 // resolved=true returns inherited + overrides; resolved=false returns only
 // overrides set at this scope.
-export function fetchConfigSet(scope, { resolved = true } = {}) {
+export function fetchConfigSet(scope, { resolved = true, meta = false } = {}) {
   const base = scopeBasePath(scope);
-  return getJSON(`${base}/config?resolved=${resolved ? "true" : "false"}`);
+  const qs = new URLSearchParams({
+    resolved: resolved ? "true" : "false",
+    meta: meta ? "true" : "false",
+  });
+  return getJSON(`${base}?${qs.toString()}`);
 }
 
 // PATCH the composed endpoint at a scope. body is a shallow
-// {class_key: partial_dict | null} mapping. null deletes the override.
+// {ClassName: partial_dict | null} mapping. null deletes the override.
 export function patchConfigSet(scope, body) {
   const base = scopeBasePath(scope);
-  return patchJSON(`${base}/config`, body);
+  return patchJSON(base, body);
+}
+
+// Per-class CRUD: /configs[/catalogs/{id}[/collections/{c}]]/classes/{ClassName}
+export function classPath(scope, className) {
+  return `${scopeBasePath(scope)}/classes/${encodeURIComponent(className)}`;
 }
 
 // Schema inventory endpoint. Response shape:
