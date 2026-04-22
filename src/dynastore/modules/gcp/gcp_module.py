@@ -180,9 +180,18 @@ class GCPModule(
     _subscriber_client: Optional["pubsub_v1.SubscriberClient"] = None
 
     ################################################
-    # Asynchronous clients (initialized in lifespan)
+    # Asynchronous clients (lazy; bound to the running event loop on first
+    # use — see get_jobs_client/get_run_client). Must NOT be created from
+    # sync __init__, because google-api-core grpc.aio channels capture
+    # ``asyncio.get_event_loop()`` at construction time. If that loop is a
+    # throwaway (as happens during module discovery before uvicorn starts),
+    # every later await from the lifespan loop raises
+    # ``RuntimeError: got Future ... attached to a different loop``.
+    # Mirrors the loop-rebind pattern used by
+    # :class:`dynastore.tools.async_utils.WaitableSignal`.
     _jobs_client: Optional["run_v2.JobsAsyncClient"] = None
     _run_client: Optional["run_v2.ServicesAsyncClient"] = None
+    _async_clients_loop: Optional[asyncio.AbstractEventLoop] = None
     _bucket_service: Optional[BucketService] = None
 
     def __init__(self, app_state: object) -> None:
@@ -235,16 +244,13 @@ class GCPModule(
                 credentials=self._credentials
             )
 
-            # Async clients: always (re)create so that the module is usable as
-            # soon as __init__ runs — TasksModule starts its runner.setup() at
-            # priority 15, before GCPModule's lifespan runs (priority 30), so
-            # _jobs_client must be populated at __init__ time.
-            self._jobs_client = run_v2.JobsAsyncClient(
-                credentials=self._credentials
-            )
-            self._run_client = run_v2.ServicesAsyncClient(
-                credentials=self._credentials
-            )
+            # Async clients are built lazily in get_jobs_client/get_run_client
+            # on the running event loop. Reinitializing sync clients invalidates
+            # any previously-bound async clients so the next accessor rebuilds
+            # them against fresh credentials.
+            self._jobs_client = None
+            self._run_client = None
+            self._async_clients_loop = None
 
             # Update BucketService if it exists
             if self._bucket_service:
@@ -293,9 +299,10 @@ class GCPModule(
             )
 
         try:
-            # Async clients are already initialized in __init__ via reinitialize_clients().
-            # Recreate here so lifespan has fresh instances (e.g. after a hot-reload).
-            self.reinitialize_clients()
+            # Async clients (_jobs_client/_run_client) are built lazily by
+            # get_jobs_client/get_run_client on first use, bound to the current
+            # event loop. No eager reinit here — it would re-bind them to the
+            # lifespan loop pre-emptively and defeats the loop-id guard.
 
             # Initialize BucketService (Safe even if clients are None)
             self._bucket_service = BucketService(
@@ -401,7 +408,10 @@ class GCPModule(
 
         self._bucket_service = None
         self._config_service = None
-        # self._module_config is kept to preserve settings across lifespans if needed, 
+        # Invalidate the loop reference so the next get_jobs_client /
+        # get_run_client rebuilds cleanly on whatever loop is running.
+        self._async_clients_loop = None
+        # self._module_config is kept to preserve settings across lifespans if needed,
         # but re-fetched on start anyway.
 
     def get_config_service(self) -> ConfigsProtocol:
@@ -448,26 +458,61 @@ class GCPModule(
             )
         return self._subscriber_client
 
+    def _ensure_async_clients_for_current_loop(self) -> None:
+        """Build (or rebuild) the async gRPC clients on the running loop.
+
+        google-api-core ``*AsyncClient`` constructors create a grpc.aio channel
+        that captures ``asyncio.get_event_loop()`` at construction time. If the
+        cached client was bound to a different loop (e.g. a throwaway loop used
+        during module discovery), every later await raises
+        ``RuntimeError: got Future ... attached to a different loop``.
+
+        Follows the same rebind-on-loop-change pattern as
+        :meth:`dynastore.tools.async_utils.WaitableSignal._ensure_event`.
+        Called only from the sync accessors ``get_jobs_client`` /
+        ``get_run_client``, which are in turn only invoked from ``async def``
+        frames — so there is always a running loop.
+        """
+        if not self._credentials:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop — we cannot build loop-bound clients here.
+            # Defer: accessor will raise the "unavailable" error below, the
+            # caller is already sync, and no await will happen.
+            return
+
+        if (
+            self._jobs_client is not None
+            and self._run_client is not None
+            and self._async_clients_loop is loop
+        ):
+            return
+
+        # Drop clients bound to a different (possibly dead) loop without
+        # awaiting close() — we are in a sync frame and closing a channel
+        # attached to a foreign loop is unsafe. Garbage collection will
+        # tear down the orphaned grpc transport.
+        self._jobs_client = run_v2.JobsAsyncClient(credentials=self._credentials)
+        self._run_client = run_v2.ServicesAsyncClient(credentials=self._credentials)
+        self._async_clients_loop = loop
+        logger.info("GCP async clients built on event loop %r.", loop)
+
     def get_jobs_client(self) -> "run_v2.JobsAsyncClient":
         """
-        Returns the shared, thread-safe Google Cloud Run Jobs client instance.
+        Returns the async Cloud Run Jobs client, bound to the current event loop.
 
-        If the client is missing but credentials exist (e.g., client construction
-        failed during __init__, or close() ran during a shutdown race), attempt
-        a one-shot re-init before raising — avoids opaque "not available"
-        failures on the first dispatch after a transient startup issue.
+        The client is built (or rebuilt) on first access from a new loop —
+        essential because google-api-core async clients capture the event loop
+        at construction and raise ``Future attached to a different loop`` on
+        reuse across loops.
         """
-        # Google Cloud client libraries automatically handle token refresh.
-        if not self._jobs_client and self._credentials:
-            logger.warning("GCP jobs client missing; attempting lazy reinitialization.")
-            try:
-                self.reinitialize_clients()
-            except Exception as e:
-                logger.error(f"Lazy GCP client reinit failed: {e}", exc_info=True)
+        self._ensure_async_clients_for_current_loop()
         if not self._jobs_client:
             raise RuntimeError(
                 "GCPModule jobs client unavailable: "
-                + ("credentials missing" if not self._credentials else "client construction failed")
+                + ("credentials missing" if not self._credentials else "no running event loop")
             )
         return self._jobs_client
 
@@ -620,22 +665,15 @@ class GCPModule(
 
     def get_run_client(self) -> "run_v2.ServicesAsyncClient":
         """
-        Returns the shared, thread-safe Google Cloud Run client instance.
+        Returns the async Cloud Run Services client, bound to the current loop.
 
-        Lazily reinitializes clients if credentials exist but the client is None
-        (e.g. partial __init__ failure or shutdown race).
+        See :meth:`_ensure_async_clients_for_current_loop` for why this is lazy.
         """
-        # Google Cloud client libraries automatically handle token refresh.
-        if not self._run_client and self._credentials:
-            logger.warning("GCP run client missing; attempting lazy reinitialization.")
-            try:
-                self.reinitialize_clients()
-            except Exception as e:
-                logger.error(f"Lazy GCP client reinit failed: {e}", exc_info=True)
+        self._ensure_async_clients_for_current_loop()
         if not self._run_client:
             raise RuntimeError(
                 "GCPModule run client unavailable: "
-                + ("credentials missing" if not self._credentials else "client construction failed")
+                + ("credentials missing" if not self._credentials else "no running event loop")
             )
         return self._run_client
 

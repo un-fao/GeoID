@@ -53,6 +53,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from dynastore.modules.tasks.queue import NEW_TASK_QUEUED
 from dynastore.modules.db_config.query_executor import DbResource
+from dynastore.modules.db_config.exceptions import TableNotFoundError
 from dynastore.tools.async_utils import signal_bus
 
 logger = logging.getLogger(__name__)
@@ -415,6 +416,21 @@ async def run_dispatcher(
         except asyncio.CancelledError:
             logger.info("Dispatcher: Cancelled — shutting down.")
             break
+        except TableNotFoundError as e:
+            # Transient: the global tasks table is gone (dev-compose db-reset
+            # race, CASCADE DROP during manual cleanup, or cross-pod DDL
+            # still in flight).  TasksModule.lifespan re-creates it under an
+            # advisory lock at next startup; meanwhile a hot loop of ERROR
+            # logs is noise, not signal.  Back off long enough for recovery
+            # and keep quiet.
+            if shutdown_event.is_set():
+                break
+            logger.warning(
+                "Dispatcher: tasks table not yet available (%s) — backing off 10s. "
+                "This is expected during startup / DB reset; becomes an error if "
+                "it persists.", e,
+            )
+            await asyncio.sleep(10.0)
         except Exception as e:
             if shutdown_event.is_set():
                 break
