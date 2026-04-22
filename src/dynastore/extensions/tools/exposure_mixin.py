@@ -25,6 +25,6 @@ ALWAYS_ON_EXTENSIONS: frozenset[str] = frozenset({
 KNOWN_EXTENSION_IDS: frozenset[str] = frozenset({
     *ALWAYS_ON_EXTENSIONS,
     "stac", "features", "wfs", "coverages", "records", "processes",
-    "tiles", "maps", "styles", "dimensions", "dwh", "search", "stats",
+    "tiles", "maps", "styles", "dimensions", "dwh", "joins", "search", "stats",
     "gcp", "logs", "notebooks", "crs", "gdal", "assets",
 })

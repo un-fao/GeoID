@@ -94,11 +94,24 @@ def discover_extensions():
 
     Identity is package metadata.  Entry-points whose module imports fail
     (optional deps not installed) are gracefully skipped.
+
+    Idempotent: if an entry-point class is already registered, the existing
+    ExtensionConfig (and its live instance, if any) is preserved.  A class
+    identity change is a packaging bug — we warn rather than silently replace.
     """
     logger.info("--- [extensions] Discovering components via entry points... ---")
     from dynastore.tools.discovery import discover_and_load_plugins
 
     for name, cls in discover_and_load_plugins("dynastore.extensions").items():
+        existing = _DYNASTORE_EXTENSIONS.get(name)
+        if existing is not None:
+            if existing.cls is cls:
+                logger.debug(f"Extension '{name}' already registered — skipping.")
+                continue
+            logger.warning(
+                f"Extension '{name}' class changed from {existing.cls} to {cls} "
+                f"— this is a packaging bug. Replacing registration."
+            )
         _DYNASTORE_EXTENSIONS[name] = ExtensionConfig(cls=cls)
 
     logger.info(f"--- DISCOVERED EXTENSIONS: {list(_DYNASTORE_EXTENSIONS.keys())} ---")
@@ -131,7 +144,12 @@ def instantiate_extensions(app: Any, include_only: Optional[List[str]] = None):
         if not config:
             logger.warning(f"Extension '{extension_name}' is enabled but not discovered. Skipping instantiation.")
             continue
-            
+
+        if config.instance is not None:
+            logger.info(f"Extension '{extension_name}' already instantiated ({config.cls.__name__}) — reusing.")
+            ordered_configs.append(config)
+            continue
+
         cls = config.cls
         load_component_dotenv(cls)
         try:
@@ -144,13 +162,13 @@ def instantiate_extensions(app: Any, include_only: Optional[List[str]] = None):
                 instance = factory(app_state=getattr(app, 'state', app))
             else:
                 instance = factory()
-            
+
             config.instance = instance
-            
+
             # Register in central registry
             from dynastore.tools.discovery import register_plugin
             register_plugin(instance)
-            
+
             logger.info(f"Instantiated Extension: '{extension_name}' ({cls.__name__})")
             if config.instance:
                 ordered_configs.append(config)
