@@ -326,7 +326,7 @@ all = ["dynastore[api_full,geoid_service,worker_service]"]
 # referenced anywhere in src/. Pyright/mypy need these resolvable to clear
 # `reportMissingImports` on optional code paths (duckdb, pyiceberg, morecantile,
 # …). Not for runtime: keep service images on `all` to stay slim.
-typecheck = ["dynastore[all,drivers_grp,task_tiles_preseed_deps]"]
+typecheck = ["dynastore[all,drivers_grp,task_tiles_preseed_deps,extension_template]"]
 test = ["pytest>=8.0.0", "pytest-asyncio>=0.23.5", "pytest-cov>=4.1.0", "pytest-xdist>=3.5.0", "pytest-timeout>=2.3.0", "requests>=2.31.0", "orjson>=3.9.15"]
 notebooks_test = ["dynastore[test]", "nbval>=0.11", "ipykernel>=6.29", "jupyter-client>=8.6", "httpx>=0.27", "python-dotenv>=1.0"]
 lite_build = ["jupyterlite-core>=0.4", "jupyterlite-pyodide-kernel>=0.4"]
