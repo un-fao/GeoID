@@ -78,9 +78,11 @@ def _get_storage_protocol() -> StorageProtocol:
                 "_get_storage_protocol: diagnostic dump failed: %s", diag_err,
             )
         # Raise RuntimeError (NOT PermanentTaskFailure) so the dispatcher
-        # retries.  GCPModule failing to load on a specific Cloud Run instance
-        # is a transient startup condition — a retry may land on a healthy
-        # instance or the module may have recovered by then.
+        # retries.  Each Cloud Run instance has its own in-process registry;
+        # if GCPModule failed to load on THIS instance (transient ADC/startup
+        # issue), retrying resets the task to PENDING in the DB.  The
+        # dispatcher's claim_batch() is instance-agnostic — a healthy instance
+        # can pick up the task on the next cycle.
         raise RuntimeError("StorageProtocol not available - GCP module not loaded")
     return protocol
 
