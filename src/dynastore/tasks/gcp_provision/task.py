@@ -77,9 +77,11 @@ def _get_storage_protocol() -> StorageProtocol:
             logger.error(
                 "_get_storage_protocol: diagnostic dump failed: %s", diag_err,
             )
-        raise PermanentTaskFailure(
-            "StorageProtocol not available - GCP module not loaded"
-        )
+        # Raise RuntimeError (NOT PermanentTaskFailure) so the dispatcher
+        # retries.  GCPModule failing to load on a specific Cloud Run instance
+        # is a transient startup condition — a retry may land on a healthy
+        # instance or the module may have recovered by then.
+        raise RuntimeError("StorageProtocol not available - GCP module not loaded")
     return protocol
 
 class GcpProvisionInputs(BaseModel):
@@ -136,18 +138,25 @@ class ProvisioningTask(TaskProtocol):
             await self._mark_failed(catalog_id)
             raise
         except RuntimeError as e:
-            msg = str(e)
+            msg = str(e).lower()
+            # Only truly unrecoverable credential/client-init failures get
+            # permanent treatment.  Everything else (GCP module not yet loaded,
+            # lifespan not finished, transient GCS conflict/quota) is retryable
+            # — don't mark the catalog failed so a successful retry can flip it
+            # to "ready" instead of leaving it stuck in "failed" state.
             _permanent_indicators = (
-                "not been initialized",
                 "failed to create a storage client",
-                "bucket name returned as none",
                 "credentials",
             )
-            if any(indicator in msg.lower() for indicator in _permanent_indicators):
+            if any(indicator in msg for indicator in _permanent_indicators):
                 await self._mark_failed(catalog_id)
-                raise PermanentTaskFailure(f"GCP unavailable, cannot provision '{catalog_id}': {msg}") from e
-            logger.error(f"CRITICAL: GcpProvisionCatalogTask FAILED for {catalog_id}: {e}", exc_info=True)
-            await self._mark_failed(catalog_id)
+                raise PermanentTaskFailure(
+                    f"GCP unavailable, cannot provision '{catalog_id}': {e}"
+                ) from e
+            logger.error(
+                "GcpProvisionCatalogTask FAILED for %r (retryable): %s",
+                catalog_id, e, exc_info=True,
+            )
             raise
         except Exception as e:
             logger.error(f"CRITICAL: GcpProvisionCatalogTask FAILED for {catalog_id}: {e}", exc_info=True)

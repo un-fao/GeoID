@@ -30,11 +30,12 @@ if TYPE_CHECKING:
 else:
     try:
         from google.cloud import storage
-        from google.api_core.exceptions import NotFound, Conflict, GoogleAPICallError
+        from google.api_core.exceptions import NotFound, Conflict, Forbidden, GoogleAPICallError
     except ImportError:
         storage = None
         NotFound = Exception
         Conflict = Exception
+        Forbidden = Exception
         GoogleAPICallError = Exception
 from urllib.parse import urlparse
 from dynastore.modules.gcp.gcp_config import GcpCatalogBucketConfig
@@ -179,6 +180,16 @@ def _create_bucket_sync(
         for attempt in range(5):
             try:
                 return client_to_use.get_bucket(bucket_name)
+            except Forbidden as exc:
+                # The bucket name is globally taken by a different GCP project —
+                # we cannot claim it.  Raise a clear RuntimeError so the task
+                # dispatcher retries (the retry will generate the same
+                # deterministic name, but it may succeed once the conflicting
+                # bucket is deleted or IAM grants propagate).
+                raise RuntimeError(
+                    f"Bucket '{bucket_name}' exists in another GCP project or "
+                    f"service-account lacks storage.buckets.get permission: {exc}"
+                ) from exc
             except NotFound:
                 if attempt < 4:
                     wait = 0.5 * (2 ** attempt)  # 0.5, 1, 2, 4 seconds
