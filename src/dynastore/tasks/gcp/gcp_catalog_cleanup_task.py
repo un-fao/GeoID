@@ -32,7 +32,7 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict
 
-from dynastore.tasks.protocols import TaskProtocol
+from dynastore.tasks.protocols import TaskProtocol, requires
 from dynastore.models.tasks import TaskPayload
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import StorageProtocol, EventingProtocol, ConfigsProtocol
@@ -54,6 +54,7 @@ class GcpCatalogCleanupInputs(BaseModel):
     bucket_name: Optional[str] = None     # pre-resolved before schema drop
 
 
+@requires(StorageProtocol)
 class GcpCatalogCleanupTask(TaskProtocol):
     """
     Idempotent GCP resource teardown triggered by catalog/collection hard-deletion.

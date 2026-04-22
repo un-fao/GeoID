@@ -68,9 +68,33 @@ class TaskProtocol(HasConfigService, Protocol, Generic[DefinitionType, PayloadTy
         """
         return getattr(cls, "_registered_name", cls.__name__.lower())
 
+    required_protocols = ()
+
+    def are_protocols_satisfied(self) -> bool:
+        """Return True if every required protocol has at least one provider installed on this service.
+
+        Uses get_all_protocols() (includes is_available=False providers) rather than
+        get_protocol() (active-only) so that a temporarily unavailable module (e.g. GCP
+        client failed to init) does not cause the service to stop claiming task types it
+        owns — the task will fail and retry on this same service instead of being routed
+        to a service that fundamentally lacks the module.
+        """
+        if not self.required_protocols:
+            return True
+        from dynastore.tools.discovery import get_all_protocols
+        return all(len(get_all_protocols(p)) > 0 for p in self.required_protocols)
+
     @abc.abstractmethod
     async def run(self, payload: PayloadType) -> ReturnType:
         """
         Executes the task's logic.
         """
         ...
+
+
+def requires(*protocols: type):
+    """Class decorator: declare protocols this task requires to be present for dispatch."""
+    def decorator(cls):
+        cls.required_protocols = protocols
+        return cls
+    return decorator
