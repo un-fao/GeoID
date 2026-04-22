@@ -430,7 +430,7 @@ class ConfigApiService:
             categories["catalogs"] = pg
 
         return PlatformConfigResponse(
-            configs=tree, meta=meta_dict, categories=categories,
+            scope="platform", configs=tree, meta=meta_dict, categories=categories,
         )
 
     # --- PATCH. ---
@@ -494,7 +494,7 @@ class ConfigApiService:
 
         return ConfigPage(
             category=category, total=total, page=page, page_size=page_size,
-            links=links,
+            links=links, items=None,
         )
 
     async def _list_assets(
