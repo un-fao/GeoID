@@ -172,7 +172,7 @@ geospatial_core = [
 ]
 geospatial_io = [
     "dynastore[geospatial_core]",
-    "lxml==6.0.2",
+    "lxml>=6.1.0,<7",
     "pyarrow<19,>=16",
     "numpy==1.26.4",
     "geopandas>=0.14.0",
