@@ -247,7 +247,7 @@ class MetadataElasticsearchDriver:
 
     @staticmethod
     def _enrich_doc(metadata: Dict[str, Any]) -> Dict[str, Any]:
-        """Add bbox_shape envelope for geo_shape queries."""
+        """Prepare doc for ES: add bbox_shape and convert temporal interval to date_range format."""
         doc = dict(metadata)
         extent = doc.get("extent")
         if isinstance(extent, dict):
@@ -259,6 +259,28 @@ class MetadataElasticsearchDriver:
                     envelope = _bbox_to_envelope(first_bbox)
                     if envelope:
                         spatial["bbox_shape"] = envelope
+
+            temporal = extent.get("temporal")
+            if isinstance(temporal, dict):
+                interval = temporal.get("interval")
+                if isinstance(interval, list):
+                    # STAC: [[start, end], ...] → ES date_range: [{"gte": start, "lte": end}, ...]
+                    # Skip null-null bounds (no useful range for ES date_range queries).
+                    date_ranges = []
+                    for bounds in interval:
+                        if isinstance(bounds, list) and len(bounds) >= 2:
+                            start, end = bounds[0], bounds[1]
+                            if start is not None or end is not None:
+                                range_obj: Dict[str, Any] = {}
+                                if start is not None:
+                                    range_obj["gte"] = start
+                                if end is not None:
+                                    range_obj["lte"] = end
+                                date_ranges.append(range_obj)
+                    if date_ranges:
+                        temporal["interval"] = date_ranges
+                    else:
+                        temporal.pop("interval", None)
         return doc
 
     async def get_metadata(

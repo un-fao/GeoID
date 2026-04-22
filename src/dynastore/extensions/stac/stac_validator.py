@@ -27,6 +27,7 @@ This module is called from the service layer before persisting to any storage dr
 (PostgreSQL sidecar pipeline or Elasticsearch/SFEOS).
 """
 
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -101,7 +102,9 @@ def validate_stac_item(
     # 2. stac-pydantic model + extension-schema validation (when available)
     if STAC_PYDANTIC_AVAILABLE:
         try:
-            sp_item = StacPydanticItem(**item_dict)
+            from dynastore.tools.json import CustomJSONEncoder
+            json_safe = json.loads(json.dumps(item_dict, cls=CustomJSONEncoder))
+            sp_item = StacPydanticItem(**json_safe)
             _sp_validate_extensions(sp_item)
         except Exception as exc:
             msg = f"stac-pydantic validation: {exc}"
@@ -151,7 +154,9 @@ def validate_stac_collection(
     # 2. stac-pydantic model + extension-schema validation (when available)
     if STAC_PYDANTIC_AVAILABLE:
         try:
-            sp_coll = StacPydanticCollection(**collection_dict)
+            from dynastore.tools.json import CustomJSONEncoder
+            json_safe = json.loads(json.dumps(collection_dict, cls=CustomJSONEncoder))
+            sp_coll = StacPydanticCollection(**json_safe)
             _sp_validate_extensions(sp_coll)
         except Exception as exc:
             msg = f"stac-pydantic validation: {exc}"
