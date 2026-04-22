@@ -1,7 +1,7 @@
 """End-to-end coverage for the Service Exposure Control Panel.
 
 Covers the full stack wired in Tasks 3-7:
-- PATCH /configs/config invalidates the ExposureMatrix and resets app.openapi_schema
+- PATCH /configs invalidates the ExposureMatrix and resets app.openapi_schema
 - Platform-disabled extensions are filtered from /openapi.json
 - Platform-disabled extensions return 503 on their routes
 - Re-enable restores OpenAPI visibility + route serving
@@ -14,7 +14,7 @@ import pytest
 @pytest.fixture
 def dynastore_extensions():
     # Override integration/conftest.py default ("features") — we also need the
-    # configs extension so /configs/config PATCH routes are mounted.
+    # configs extension so /configs PATCH routes are mounted.
     return ["configs", "features"]
 
 
@@ -32,7 +32,7 @@ async def test_platform_disable_filters_openapi_and_gates_routes(
 
     # Disable FeaturesPluginConfig at platform scope.
     r1 = await client.patch(
-        "/configs/config", json={"FeaturesPluginConfig": {"enabled": False}}
+        "/configs", json={"FeaturesPluginConfig": {"enabled": False}}
     )
     assert r1.status_code == 200, r1.text
 
@@ -49,7 +49,7 @@ async def test_platform_disable_filters_openapi_and_gates_routes(
 
     # Re-enable → OpenAPI + routes restored.
     r3 = await client.patch(
-        "/configs/config", json={"FeaturesPluginConfig": {"enabled": True}}
+        "/configs", json={"FeaturesPluginConfig": {"enabled": True}}
     )
     assert r3.status_code == 200, r3.text
 
@@ -68,7 +68,7 @@ async def test_platform_disable_filters_openapi_and_gates_routes(
 async def test_patch_unknown_plugin_returns_404(sysadmin_in_process_client):
     client = sysadmin_in_process_client
     r = await client.patch(
-        "/configs/config", json={"NoSuchPluginConfig": {"enabled": False}}
+        "/configs", json={"NoSuchPluginConfig": {"enabled": False}}
     )
     assert r.status_code == 404, r.text
     assert "Unknown plugin_id" in r.json()["detail"]
@@ -78,6 +78,6 @@ async def test_patch_unknown_plugin_returns_404(sysadmin_in_process_client):
 async def test_patch_validation_error_returns_422(sysadmin_in_process_client):
     client = sysadmin_in_process_client
     r = await client.patch(
-        "/configs/config", json={"FeaturesPluginConfig": {"enabled": "not-a-bool"}}
+        "/configs", json={"FeaturesPluginConfig": {"enabled": "not-a-bool"}}
     )
     assert r.status_code == 422, r.text

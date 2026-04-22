@@ -42,6 +42,7 @@ from typing import (
     Any,
     ClassVar,
     Dict,
+    FrozenSet,
     Optional,
     Type,
     TypeVar,

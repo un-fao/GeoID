@@ -164,7 +164,7 @@ async def test_gcp_end_to_end_lifecycle(
         stac_config = _stac_data_loader("config.json")
         resp = await in_process_client.put(
             f"/configs/catalogs/{catalog_id}/collections/{collection_id}"
-            f"/configs/StacPluginConfig",
+            f"/classes/StacPluginConfig",
             json=stac_config,
         )
         assert resp.status_code in (200, 204), f"config put: {resp.text}"

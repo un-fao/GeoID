@@ -98,7 +98,10 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
-from dynastore.models.protocols.metadata_driver import CatalogMetadataStore
+from dynastore.models.protocols.metadata_driver import (
+    CatalogMetadataStore,
+    MetadataCapability,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +109,26 @@ logger = logging.getLogger(__name__)
 # not on every request.  A deployment that resolves this condition by
 # registering a driver later (entry-point reload, dynamic plugin) will
 # get subsequent successful resolutions without the log re-firing.
-_MISSING_DRIVERS_LOGGED: Dict[str, bool] = {"catalog": False}
+_MISSING_DRIVERS_LOGGED: Dict[str, bool] = {
+    "catalog": False,
+    "catalog_write": False,
+    "catalog_delete": False,
+}
+
+
+def _filter_capable(
+    drivers: List[CatalogMetadataStore],
+    capability: str,
+) -> List[CatalogMetadataStore]:
+    """Keep only drivers declaring ``capability`` — TRANSFORM-only drivers
+    (e.g. ``BigQueryMetadataTransformDriver``) must never reach the WRITE
+    / DELETE fan-out.  See ``TransformOnlyCatalogMetadataStoreMixin`` in
+    ``models/protocols/metadata_driver.py`` — its raising stubs are a
+    bug-catcher; routers MUST honour the capability contract before
+    invocation.
+    """
+    return [d for d in drivers
+            if capability in getattr(d, "capabilities", frozenset())]
 
 
 def _resolve_catalog_metadata_drivers() -> List[CatalogMetadataStore]:
@@ -243,8 +265,24 @@ async def upsert_catalog_metadata(
     the successful driver writes (the authoritative store already
     has the update; a missing event just means slower propagation
     until the consumer's backfill catches up).
+
+    Only drivers declaring ``MetadataCapability.WRITE`` participate in
+    the fan-out.  TRANSFORM-only drivers never receive
+    ``upsert_catalog_metadata`` — they'd raise ``NotImplementedError``
+    from the mixin stub.
     """
-    drivers = drivers if drivers is not None else _resolve_catalog_metadata_drivers()
+    if drivers is None:
+        drivers = _filter_capable(
+            _resolve_catalog_metadata_drivers(), MetadataCapability.WRITE,
+        )
+    if not drivers:
+        if not _MISSING_DRIVERS_LOGGED["catalog_write"]:
+            logger.warning(
+                "No WRITE-capable CatalogMetadataStore drivers "
+                "registered; upsert_catalog_metadata is a no-op."
+            )
+            _MISSING_DRIVERS_LOGGED["catalog_write"] = True
+        return
     for driver in drivers:
         await driver.upsert_catalog_metadata(
             catalog_id, metadata, db_resource=db_resource,
@@ -273,8 +311,23 @@ async def delete_catalog_metadata(
     implementation.  That asymmetry is acceptable for M2.3b — M2.4's
     read flip will pull STAC via the same router, and a hard-deleted
     STAC row is indistinguishable from "never had STAC".
+
+    Only drivers declaring ``MetadataCapability.WRITE`` participate in
+    the fan-out (no separate ``DELETE`` capability exists).  TRANSFORM-
+    only drivers never receive ``delete_catalog_metadata``.
     """
-    drivers = drivers if drivers is not None else _resolve_catalog_metadata_drivers()
+    if drivers is None:
+        drivers = _filter_capable(
+            _resolve_catalog_metadata_drivers(), MetadataCapability.WRITE,
+        )
+    if not drivers:
+        if not _MISSING_DRIVERS_LOGGED["catalog_delete"]:
+            logger.warning(
+                "No WRITE-capable CatalogMetadataStore drivers "
+                "registered; delete_catalog_metadata is a no-op."
+            )
+            _MISSING_DRIVERS_LOGGED["catalog_delete"] = True
+        return
     for driver in drivers:
         await driver.delete_catalog_metadata(
             catalog_id, soft=soft, db_resource=db_resource,

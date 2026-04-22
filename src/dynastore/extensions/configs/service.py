@@ -89,6 +89,7 @@ class ConfigsService(ExtensionProtocol):
         yield
 
     def _setup_routes(self):
+        # ---- Schema / discovery (unchanged) ----
         self.router.add_api_route(
             "/schemas",
             self.get_config_schemas,
@@ -119,53 +120,7 @@ class ConfigsService(ExtensionProtocol):
             methods=["GET"],
             summary="List all registered storage drivers grouped by Protocol qualname",
         )
-        self.router.add_api_route(
-            "/",
-            self.list_platform_configs,
-            methods=["GET"],
-            summary="List all platform-level configurations",
-        )
-        # ---- Config API — composed views at all scopes (must be before /{plugin_id}) ----
-        self.router.add_api_route(
-            "/config",
-            self.get_platform_config_composed,
-            methods=["GET"],
-            summary="Platform config — all effective platform configs composed",
-            tags=["Config API"],
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/config",
-            self.get_catalog_config_composed,
-            methods=["GET"],
-            summary="Catalog config — all effective catalog configs composed",
-            tags=["Config API"],
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/config",
-            self.get_collection_config_composed,
-            methods=["GET"],
-            summary="Collection config — all effective collection configs composed",
-            tags=["Config API"],
-        )
-        # ---- Config API — PATCH (partial write) at platform / catalog scope ----
-        self.router.add_api_route(
-            "/config",
-            self._patch_platform_config,
-            methods=["PATCH"],
-            summary="Partially update platform-level configs; null value deletes the override",
-            tags=["Config API"],
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/config",
-            self._patch_catalog_config,
-            methods=["PATCH"],
-            summary="Partially update catalog-level configs; null value deletes the override",
-            tags=["Config API"],
-        )
-        # Examples & Quick-start routes — MUST be registered BEFORE the generic
-        # ``/{plugin_id}`` catch-all, otherwise FastAPI routes ``GET /configs/examples``
-        # through the catch-all with plugin_id="examples" and returns
-        # "plugin 'examples' is not registered".
+        # ---- Examples & quick-start ----
         self.router.add_api_route(
             "/examples",
             self.list_all_examples,
@@ -180,81 +135,110 @@ class ConfigsService(ExtensionProtocol):
             summary="Get configuration examples for a specific plugin",
             tags=["Configurations", "Examples"],
         )
+        # ---- Composed views (scope roots) ----
         self.router.add_api_route(
-            "/{plugin_id}",
+            "/",
+            self.get_platform_config_composed,
+            methods=["GET"],
+            summary="Platform config — all effective platform configs composed",
+            tags=["Config API"],
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}",
+            self.get_catalog_config_composed,
+            methods=["GET"],
+            summary="Catalog config — all effective catalog configs composed",
+            tags=["Config API"],
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}",
+            self.get_collection_config_composed,
+            methods=["GET"],
+            summary="Collection config — all effective collection configs composed",
+            tags=["Config API"],
+        )
+        # ---- PATCH (partial write at platform / catalog scope) ----
+        self.router.add_api_route(
+            "/",
+            self._patch_platform_config,
+            methods=["PATCH"],
+            summary="Partially update platform-level configs; null value deletes the override",
+            tags=["Config API"],
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}",
+            self._patch_catalog_config,
+            methods=["PATCH"],
+            summary="Partially update catalog-level configs; null value deletes the override",
+            tags=["Config API"],
+        )
+        # ---- Per-class CRUD (platform) ----
+        self.router.add_api_route(
+            "/classes/{plugin_id}",
             self.get_platform_config,
             methods=["GET"],
             summary="Get platform-level configuration",
         )
         self.router.add_api_route(
-            "/{plugin_id}",
+            "/classes/{plugin_id}",
             self.update_platform_config,
             methods=["PUT"],
             summary="Set platform-level configuration",
         )
         self.router.add_api_route(
-            "/{plugin_id}",
+            "/classes/{plugin_id}",
             self.delete_platform_config,
             methods=["DELETE"],
             summary="Delete platform-level configuration",
+            status_code=status.HTTP_204_NO_CONTENT,
         )
+        # ---- Per-class CRUD (catalog) ----
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/configs",
-            self.list_catalog_configs,
-            methods=["GET"],
-            summary="List all catalog-level configurations",
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/configs/{plugin_id}",
+            "/catalogs/{catalog_id}/classes/{plugin_id}",
             self.get_catalog_config,
             methods=["GET"],
             summary="Get effective configuration for a catalog",
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/configs/{plugin_id}",
+            "/catalogs/{catalog_id}/classes/{plugin_id}",
             self.update_catalog_config,
             methods=["PUT"],
             summary="Set or update a catalog-level configuration",
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/configs/{plugin_id}",
+            "/catalogs/{catalog_id}/classes/{plugin_id}",
             self.delete_catalog_config,
             methods=["DELETE"],
             summary="Delete a catalog-level configuration",
             status_code=status.HTTP_204_NO_CONTENT,
         )
+        # ---- Per-class CRUD (collection) ----
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/configs",
-            self.list_collection_configs,
-            methods=["GET"],
-            summary="List all collection-level configurations",
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/configs/{plugin_id}/effective",
+            "/catalogs/{catalog_id}/collections/{collection_id}/classes/{plugin_id}/effective",
             self.get_effective_collection_config,
             methods=["GET"],
             summary="Waterfall-resolved config with per-field source annotation",
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/configs/{plugin_id}",
+            "/catalogs/{catalog_id}/collections/{collection_id}/classes/{plugin_id}",
             self.get_collection_config,
             methods=["GET"],
             summary="Get effective configuration for a collection",
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/configs/{plugin_id}",
+            "/catalogs/{catalog_id}/collections/{collection_id}/classes/{plugin_id}",
             self.update_collection_config,
             methods=["PUT"],
             summary="Set or update a collection-level configuration",
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/configs/{plugin_id}",
+            "/catalogs/{catalog_id}/collections/{collection_id}/classes/{plugin_id}",
             self.delete_collection_config,
             methods=["DELETE"],
             summary="Delete a collection-level configuration",
             status_code=status.HTTP_204_NO_CONTENT,
         )
-        # Bulk-apply
+        # ---- Bulk-apply ----
         self.router.add_api_route(
             "/catalogs/{catalog_id}/bulk",
             self.bulk_apply_catalog_configs,
@@ -269,7 +253,7 @@ class ConfigsService(ExtensionProtocol):
             summary="Apply multiple configurations to a collection in one call",
             tags=["Configurations", "Bulk"],
         )
-        # Search routes
+        # ---- Search ----
         self.router.add_api_route(
             "/catalogs/{catalog_id}/search",
             self.search_catalog_configs,
@@ -529,6 +513,13 @@ class ConfigsService(ExtensionProtocol):
                 "When false: only configs explicitly stored at platform scope."
             ),
         ),
+        meta: bool = Query(
+            False,
+            description=(
+                "When true, include per-class tier-of-origin diagnostics under "
+                "``meta.{ClassName}.source``.  Off by default to keep the payload slim."
+            ),
+        ),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_platform_config(
@@ -537,6 +528,7 @@ class ConfigsService(ExtensionProtocol):
             catalogs_page=catalogs_page,
             page_size=page_size,
             resolved=resolved,
+            meta=meta,
         )
         return JSONResponse(content=response.model_dump())
 
@@ -555,6 +547,13 @@ class ConfigsService(ExtensionProtocol):
                 "When false: only configs explicitly stored at this catalog scope."
             ),
         ),
+        meta: bool = Query(
+            False,
+            description=(
+                "When true, include per-class tier-of-origin diagnostics under "
+                "``meta.{ClassName}.source``.  Off by default to keep the payload slim."
+            ),
+        ),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_catalog_config(
@@ -565,6 +564,7 @@ class ConfigsService(ExtensionProtocol):
             assets_page=assets_page,
             page_size=page_size,
             resolved=resolved,
+            meta=meta,
         )
         return JSONResponse(content=response.model_dump())
 
@@ -583,6 +583,13 @@ class ConfigsService(ExtensionProtocol):
                 "When false: only configs explicitly stored at this collection scope."
             ),
         ),
+        meta: bool = Query(
+            False,
+            description=(
+                "When true, include per-class tier-of-origin diagnostics under "
+                "``meta.{ClassName}.source``.  Off by default to keep the payload slim."
+            ),
+        ),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_collection_config(
@@ -593,6 +600,7 @@ class ConfigsService(ExtensionProtocol):
             assets_page=assets_page,
             page_size=page_size,
             resolved=resolved,
+            meta=meta,
         )
         return JSONResponse(content=response.model_dump())
 
@@ -696,49 +704,6 @@ class ConfigsService(ExtensionProtocol):
         }
 
         return DriverListResponse(drivers=drivers)
-
-    # --- Configuration Listing Endpoints ---
-
-
-    async def list_platform_configs(
-        self, limit: int = Query(10, ge=1, le=1000), offset: int = Query(0, ge=0)
-    ) -> Dict[str, Any]:
-        """
-        Retrieves paginated configurations explicitly set at the global platform level.
-        """
-        return await self.configs.list_configs(limit=limit, offset=offset)
-
-
-    async def list_catalog_configs(
-        self,
-        catalog_id: str,
-        limit: int = Query(10, ge=1, le=1000),
-        offset: int = Query(0, ge=0),
-    ) -> Dict[str, Any]:
-        """
-        Retrieves paginated configurations explicitly set for a specific catalog.
-        """
-        return await self.configs.list_configs(
-            catalog_id=catalog_id, limit=limit, offset=offset
-        )
-
-
-    async def list_collection_configs(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        limit: int = Query(10, ge=1, le=1000),
-        offset: int = Query(0, ge=0),
-    ) -> Dict[str, Any]:
-        """
-        Retrieves paginated configurations explicitly set for a specific collection.
-        """
-        return await self.configs.list_configs(
-            catalog_id=catalog_id,
-            collection_id=collection_id,
-            limit=limit,
-            offset=offset,
-        )
 
     # --- Specific Plugin Configuration (GET/PUT) ---
 
@@ -957,7 +922,7 @@ class ConfigsService(ExtensionProtocol):
         """Returns configuration examples for a specific plugin.
 
         The returned list contains one or more example payloads that can be
-        sent directly to ``PUT /configs/{plugin_id}`` (or the catalog/collection variant).
+        sent directly to ``PUT /configs/classes/{plugin_id}`` (or the catalog/collection variant).
         """
         examples = get_plugin_examples(plugin_id)
         if examples is None:
@@ -1017,7 +982,7 @@ class ConfigsService(ExtensionProtocol):
         """Apply multiple plugin configurations to a catalog in one call.
 
         Iterates over every entry in ``configs`` and applies each via
-        ``PUT /configs/catalogs/{catalog_id}/configs/{plugin_id}``.
+        ``PUT /configs/catalogs/{catalog_id}/classes/{plugin_id}``.
         Failures on individual plugins do not abort the entire operation;
         check the ``results`` array for per-plugin status.
         """

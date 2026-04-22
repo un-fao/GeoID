@@ -22,7 +22,7 @@ class TestSidecarRejection:
 
     def test_populated_fields_preserve_policy_pointer(self):
         pointer = (
-            "/configs/catalogs/demo/collections/c/configs/"
+            "/configs/catalogs/demo/collections/c/classes/"
             "CollectionWritePolicy/effective"
         )
         r = SidecarRejection(

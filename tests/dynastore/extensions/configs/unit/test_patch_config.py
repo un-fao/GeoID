@@ -1,4 +1,4 @@
-"""Unit tests for PATCH /configs/config — ConfigApiService.patch_config."""
+"""Unit tests for PATCH /configs — ConfigApiService.patch_config."""
 # Registering TilesConfig / FeaturesPluginConfig in the PluginConfig registry
 # requires importing their extension packages (which transitively import
 # config.py). The test identifies configs by class_key, so the registry must
@@ -102,7 +102,7 @@ async def test_patch_unknown_plugin_raises_value_error():
     config_svc = _make_config_service(stored)
     api = ConfigApiService(config_service=config_svc)
 
-    with pytest.raises(ValueError, match="Unknown plugin_id"):
+    with pytest.raises(ValueError, match="Unknown config class"):
         await api.patch_config(
             catalog_id=None,
             body={"NonExistentConfig": {"enabled": False}},

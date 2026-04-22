@@ -49,7 +49,26 @@ logger = logging.getLogger(__name__)
 # Per-process latch: log "no drivers registered" once per process, not
 # per request.  ES-only / custom deployments that boot briefly without
 # PG drivers would otherwise spam the log.
-_MISSING_DRIVERS_LOGGED: Dict[str, bool] = {"collection": False}
+_MISSING_DRIVERS_LOGGED: Dict[str, bool] = {
+    "collection": False,
+    "collection_write": False,
+    "collection_delete": False,
+}
+
+
+def _filter_capable(
+    drivers: List[CollectionMetadataStore],
+    capability: str,
+) -> List[CollectionMetadataStore]:
+    """Keep only drivers declaring ``capability`` — TRANSFORM-only drivers
+    (e.g. ``BigQueryMetadataTransformDriver``) must never reach the WRITE
+    / DELETE fan-out.  See ``TransformOnlyCollectionMetadataStoreMixin``
+    in ``models/protocols/metadata_driver.py`` — its raising stubs are a
+    bug-catcher; routers MUST honour the capability contract before
+    invocation.
+    """
+    return [d for d in drivers
+            if capability in getattr(d, "capabilities", frozenset())]
 
 
 def _resolve_drivers() -> List[CollectionMetadataStore]:
@@ -125,8 +144,21 @@ async def upsert_collection_metadata(
     On failure, logs which driver raised and re-raises.  No silent
     suppression — callers at the service layer decide whether the write
     is fatal to their request.
+
+    Only drivers declaring ``MetadataCapability.WRITE`` participate in
+    the fan-out.  TRANSFORM-only drivers never receive ``upsert_metadata``
+    — they'd raise ``NotImplementedError`` from the mixin stub.
     """
-    drivers = drivers if drivers is not None else _resolve_drivers()
+    if drivers is None:
+        drivers = _filter_capable(_resolve_drivers(), MetadataCapability.WRITE)
+    if not drivers:
+        if not _MISSING_DRIVERS_LOGGED["collection_write"]:
+            logger.warning(
+                "No WRITE-capable CollectionMetadataStore drivers "
+                "registered; upsert_collection_metadata is a no-op."
+            )
+            _MISSING_DRIVERS_LOGGED["collection_write"] = True
+        return
     for driver in drivers:
         try:
             await driver.upsert_metadata(
@@ -156,8 +188,21 @@ async def delete_collection_metadata(
     deletes are recoverable (idempotent re-delete), so observability
     wins over fail-fast here.  If any driver raised, re-raises the
     first exception after every driver has been attempted.
+
+    Only drivers declaring ``MetadataCapability.WRITE`` participate in
+    the fan-out (no separate ``DELETE`` capability exists).  TRANSFORM-
+    only drivers never receive ``delete_metadata``.
     """
-    drivers = drivers if drivers is not None else _resolve_drivers()
+    if drivers is None:
+        drivers = _filter_capable(_resolve_drivers(), MetadataCapability.WRITE)
+    if not drivers:
+        if not _MISSING_DRIVERS_LOGGED["collection_delete"]:
+            logger.warning(
+                "No WRITE-capable CollectionMetadataStore drivers "
+                "registered; delete_collection_metadata is a no-op."
+            )
+            _MISSING_DRIVERS_LOGGED["collection_delete"] = True
+        return
     first_error: Optional[BaseException] = None
     for driver in drivers:
         try:

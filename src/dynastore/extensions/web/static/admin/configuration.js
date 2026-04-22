@@ -28,19 +28,34 @@ function setStatus(msg, cls = "") {
   s.className = "status " + cls;
 }
 
-// Normalize composed response to { class_key -> value }.
+// Flatten the composed response's nested scope→topic→[sub→]ClassName→payload
+// tree into a plain { ClassName -> payload } map. Class names are globally
+// unique so the flatten is lossless.
 function normalizeConfigSet(payload) {
   if (!payload) return {};
-  if (Array.isArray(payload.items)) {
-    const out = {};
-    for (const e of payload.items) {
-      const key = e.class_key || e.plugin_id || e.key;
-      if (key) out[key] = e.value || e.config_data || e;
-    }
-    return out;
+  const tree = payload.configs && typeof payload.configs === "object"
+    ? payload.configs
+    : payload;
+  const out = {};
+  function looksLikeClass(name, node) {
+    // Class names are PascalCase and their direct payload is always an object
+    // that is NOT shaped like a topic container (which itself contains only
+    // PascalCase or sub-topic-named children).
+    return typeof name === "string" && /^[A-Z]/.test(name)
+      && node && typeof node === "object" && !Array.isArray(node);
   }
-  if (payload.configs && typeof payload.configs === "object") return payload.configs;
-  return payload;
+  function walk(node) {
+    if (!node || typeof node !== "object" || Array.isArray(node)) return;
+    for (const [k, v] of Object.entries(node)) {
+      if (looksLikeClass(k, v)) {
+        out[k] = v;
+      } else {
+        walk(v);
+      }
+    }
+  }
+  walk(tree);
+  return out;
 }
 
 async function refreshConfigsForScope() {
