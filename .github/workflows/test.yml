@@ -51,6 +51,13 @@ jobs:
 
   test:
     runs-on: ubuntu-22.04
+    # Belt-and-braces timeout. ``pytest-timeout`` in pytest.ini is the
+    # primary defence against individual-test hangs; this job-level
+    # ``timeout-minutes`` catches hangs that escape pytest (docker-compose
+    # build stuck, pytest bootstrap stalled, etc.). 45min is ~3x the
+    # historical norm; any run approaching it is a genuine infra issue.
+    # Static config — no untrusted-input interpolation.
+    timeout-minutes: 45
     permissions:
       contents: read
       checks: write

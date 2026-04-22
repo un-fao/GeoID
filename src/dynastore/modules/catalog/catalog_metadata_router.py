@@ -149,10 +149,8 @@ async def get_catalog_metadata(
     """Merged catalog metadata across all registered domain drivers.
 
     Each driver owns a slice of the envelope (CORE → title/description/…,
-    STAC → stac_version/conforms_to/…).  This function awaits every
-    driver concurrently via :func:`asyncio.gather` and merges the
-    returned dicts.  Last-domain-wins on duplicate keys — not expected
-    for domain-scoped drivers, but defined for safety.
+    STAC → stac_version/conforms_to/…).  Last-domain-wins on duplicate
+    keys — not expected for domain-scoped drivers, but defined for safety.
 
     Returns ``None`` only when every driver returned ``None`` (i.e. the
     catalog has no metadata in any domain).  Any non-``None`` driver
@@ -161,6 +159,17 @@ async def get_catalog_metadata(
     ``drivers`` is injectable so callers with a pinned routing config
     can pass a filtered subset; default resolution discovers every
     registered driver.
+
+    **Sequential fan-out (load-bearing).**  Earlier versions used
+    ``asyncio.gather`` here, but when the caller passes a shared
+    ``db_resource`` (a live asyncpg ``Connection``), concurrent
+    ``get_catalog_metadata`` calls race on the single wire and asyncpg
+    deadlocks — the hang manifests as pytest's event loop stuck in
+    ``selectors.kqueue.control`` waiting for the connection to respond.
+    This is the same hazard documented on :func:`list_catalogs` in
+    ``catalog_service.py`` — the symmetric fix lives here too.  A
+    future refactor that gives each driver its own pooled connection
+    can re-enable ``gather`` at that point.
     """
     drivers = drivers if drivers is not None else _resolve_catalog_metadata_drivers()
     if not drivers:
@@ -179,7 +188,12 @@ async def get_catalog_metadata(
             )
             return None
 
-    results = await asyncio.gather(*[_safe_get(d) for d in drivers])
+    # Sequential to avoid asyncpg single-wire deadlock when db_resource
+    # is a shared Connection (see docstring).  Per-driver latency is
+    # additive but dominated by the round-trip anyway (~1-2ms each).
+    results: List[Optional[Dict[str, Any]]] = []
+    for driver in drivers:
+        results.append(await _safe_get(driver))
 
     merged: Dict[str, Any] = {}
     any_found = False

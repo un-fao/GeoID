@@ -669,11 +669,33 @@ class EventService(EventBusProtocol):
         )
 
     async def stop_consumer(self) -> None:
-        """Stop the background event consumer loop gracefully."""
+        """Stop the background event consumer loop gracefully.
+
+        **Await-after-cancel is load-bearing.**  ``task.cancel()`` only
+        *requests* cancellation — the actual coroutine still has to run
+        to its next await, catch the ``CancelledError``, and exit.  If
+        the caller (fixture teardown, module shutdown) doesn't await
+        the task, the asyncio event loop keeps the task pending and
+        pytest's runner hangs forever waiting for it to finish.  This
+        was the root cause of the 30–50 min CI stalls: every test that
+        used ``app_lifespan`` + registered any async event listener
+        wired up the consumer via ``start_consumer``, and teardown
+        discarded the reference without draining the cancellation.
+        """
         self._consumer_running = False
         task = getattr(self, "_consumer_task", None)
         if task is not None:
             task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                # Expected on cancel; also swallow any shutdown-time
+                # exception (a partially-executed consume loop can raise
+                # on reconnect-retry paths).  The caller's fixture
+                # teardown MUST still continue — an unhandled shutdown
+                # error masking a test's real failure is worse than a
+                # logged one.
+                pass
             self._consumer_task = None
             logger.info("EventService: Durable event consumer task cancelled.")
 
