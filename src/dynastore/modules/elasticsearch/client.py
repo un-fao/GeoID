@@ -28,6 +28,8 @@ from typing import Optional
 
 from opensearchpy import AsyncOpenSearch
 
+from dynastore.modules.elasticsearch._serializer import CustomOpenSearchSerializer
+
 logger = logging.getLogger(__name__)
 
 _client: Optional[AsyncOpenSearch] = None
@@ -72,6 +74,12 @@ def _build_client() -> AsyncOpenSearch:
         "timeout": int(os.environ.get("ES_REQUEST_TIMEOUT", "30")),
         "retry_on_timeout": True,
         "max_retries": 3,
+        # Custom serializer tolerates pydantic models, pydantic v2 Url
+        # types (HttpUrl/AnyUrl/…), __geo_interface__ objects, sets and
+        # bytes — the stock JSONSerializer only handles datetime/UUID/Decimal
+        # and crashed on `providers[*].url: HttpUrl(...)` in STAC Collection
+        # upserts (prod incident 2026-04-22).
+        "serializer": CustomOpenSearchSerializer(),
     }
     if api_key:
         kwargs["headers"] = {"Authorization": f"ApiKey {api_key}"}
