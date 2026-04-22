@@ -117,8 +117,10 @@ class DwhService(ExtensionProtocol):
         self._register_routes()
 
         from dynastore.tools.discovery import register_plugin
+        from .link_contrib import DwhLinkContributor
         from .query_transform import DWHJoinQueryTransform
         register_plugin(DWHJoinQueryTransform())
+        register_plugin(DwhLinkContributor())
 
     async def _dwh_join_impl(
         self,
