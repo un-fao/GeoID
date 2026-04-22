@@ -23,12 +23,6 @@ from dynastore.modules.processes.models import Process, ExecuteRequest, as_proce
 from dynastore.modules.tasks import tasks_module
 from dynastore.modules.tasks.runners import RunnerProtocol
 from dynastore.modules.tasks.models import Task, TaskCreate, TaskUpdate, TaskExecutionMode, RunnerContext
-from dynastore.modules.gcp.tools.jobs import (
-    run_cloud_run_job_async,
-    load_job_config,
-    get_job_map_sync,
-    try_load_process_definition,
-)
 from dynastore.tools.identifiers import generate_id_hex
 from dynastore.tools.plugin import ProtocolPlugin
 
@@ -48,6 +42,7 @@ class GcpJobRunner(RunnerProtocol, ProtocolPlugin[Any]):
 
     async def setup(self, app_state: Any) -> None:
         """Warm the sync job map cache at startup."""
+        from dynastore.modules.gcp.tools.jobs import load_job_config
         try:
             await load_job_config()
         except Exception as e:
@@ -55,10 +50,12 @@ class GcpJobRunner(RunnerProtocol, ProtocolPlugin[Any]):
 
     def can_handle(self, task_type: str) -> bool:
         """Returns True if a Cloud Run Job is configured for this task type."""
+        from dynastore.modules.gcp.tools.jobs import get_job_map_sync
         return task_type in get_job_map_sync()
 
     async def run(self, context: RunnerContext) -> Optional[Task]:
         """Creates a task record and dispatches the job to Cloud Run."""
+        from dynastore.modules.gcp.tools.jobs import load_job_config, run_cloud_run_job_async, try_load_process_definition
         job_map = await load_job_config()
         job_name = job_map.get(context.task_type)
 

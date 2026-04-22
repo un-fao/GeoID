@@ -136,13 +136,13 @@ async def test_dispatcher_claims_gcp_provision_exclusively(
         f"task status={task.status.value}, retry_count={task.retry_count}, "
         f"message={task.error_message!r}"
     )
-    assert task.owner_id is not None, (
-        "owner_id is null — task was never claimed by any dispatcher. "
+    assert task.started_at is not None, (
+        "started_at is null — task was never claimed by any dispatcher. "
         "The dispatcher may have crashed at startup."
     )
     logger.info(
-        "gcp_provision_catalog claimed by owner_id=%r, completed in retry_count=%d",
-        task.owner_id, task.retry_count,
+        "gcp_provision_catalog claimed at started_at=%r, completed in retry_count=%d",
+        task.started_at, task.retry_count,
     )
 
     # 5. GCS bucket must exist.

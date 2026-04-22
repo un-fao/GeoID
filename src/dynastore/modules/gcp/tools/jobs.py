@@ -17,13 +17,13 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 from typing import TYPE_CHECKING, Dict, Optional
-from google.api_core.operation import Operation
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import JobExecutionProtocol
 from dynastore.tools.cache import cached
 import logging
 
 if TYPE_CHECKING:
+    from google.api_core.operation import Operation
     from dynastore.modules.processes.models import Process
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ _JOB_MAP_SYNC: Dict[str, str] = {}
 
 async def run_cloud_run_job_async(
     job_name: str, args: Optional[list] = None, env_vars: Optional[dict] = None
-) -> Operation:
+) -> "Operation":
     """
     Triggers a serverless job asynchronously using the JobExecutionProtocol.
 
