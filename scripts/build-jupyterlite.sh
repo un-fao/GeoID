@@ -11,7 +11,7 @@ LITE_OUT="${REPO_DIR}/src/dynastore/extensions/notebooks/static/lite"
 
 if ! command -v jupyter >/dev/null 2>&1; then
     echo "Installing jupyterlite-core + pyodide-kernel into current env…"
-    pip install jupyterlite-core jupyterlite-pyodide-kernel
+    pip install "jupyterlite-core>=0.4,<0.5" "jupyterlite-pyodide-kernel>=0.4,<0.5"
 fi
 
 WHEELS_DIR="${LITE_CONFIG}/wheels"
@@ -23,8 +23,10 @@ if [ -s "${LITE_CONFIG}/requirements.txt" ]; then
         || echo "WARN: wheel pre-download partial; packages will fall back to piplite CDN"
 fi
 
-# ogc-dimensions: not on PyPI — build from sibling checkout if present.
-OGC_DIM_SRC="${REPO_DIR}/../ogc-dimensions/reference-implementation"
+# ogc-dimensions: not on PyPI — build from local checkout if present.
+# Override path with OGC_DIMENSIONS_SRC=/path/to/reference-implementation.
+# Default falls back to a sibling checkout for convenience in dev setups.
+OGC_DIM_SRC="${OGC_DIMENSIONS_SRC:-${REPO_DIR}/../ogc-dimensions/reference-implementation}"
 if [ -d "${OGC_DIM_SRC}" ]; then
     echo "Building ogc-dimensions wheel from ${OGC_DIM_SRC}…"
     rm -f "${WHEELS_DIR}"/ogc_dimensions-*.whl
