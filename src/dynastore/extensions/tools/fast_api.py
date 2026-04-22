@@ -24,7 +24,7 @@ except ImportError:
     try:
         from starlette.responses import JSONResponse
     except ImportError:
-        from typing import Any as JSONResponse  # type: ignore
+        from typing import Any as JSONResponse
 
 from dynastore.tools.json import CustomJSONEncoder, orjson_default
 from typing import Any

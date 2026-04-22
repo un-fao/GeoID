@@ -68,7 +68,7 @@ class TaskProtocol(HasConfigService, Protocol, Generic[DefinitionType, PayloadTy
         """
         return getattr(cls, "_registered_name", cls.__name__.lower())
 
-    required_protocols = ()
+    required_protocols: tuple[type, ...] = ()
 
     def are_protocols_satisfied(self) -> bool:
         """Return True if every required protocol has at least one provider installed on this service.

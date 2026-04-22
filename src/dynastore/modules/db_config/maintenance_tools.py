@@ -29,7 +29,7 @@ from dynastore.modules.db_config.query_executor import (
     DbEngine,
     DbConnection,
 )
-from dynastore.modules.db_config.partition_tools import ensure_partition_exists  # type: ignore
+from dynastore.modules.db_config.partition_tools import ensure_partition_exists
 from dynastore.modules.db_config.locking_tools import (
     acquire_startup_lock,
     check_schema_exists,

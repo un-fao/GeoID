@@ -45,7 +45,7 @@ class Feature(_Feature):
     model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
 
 class FeatureCollection(_FeatureCollection):
-    features: List[Feature] = []  # type: ignore[reportGeneralTypeIssues]
+    features: List[Feature] = []
     links: Optional[List[Link]] = None
     timeStamp: Optional[str] = None
     numberMatched: Optional[int] = None

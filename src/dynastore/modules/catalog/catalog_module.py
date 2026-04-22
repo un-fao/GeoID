@@ -178,7 +178,7 @@ class CatalogModule(ModuleProtocol):
         # --- Instantiate and register internal services ---
         self.log_service = LogService()
         self.catalog_service = CatalogService(engine=engine)  # type: ignore[abstract]
-        self.collection_service = CollectionService(engine=engine)  # type: ignore[abstract]
+        self.collection_service = CollectionService(engine=engine)
         self.items_service = ItemService(engine=engine)
         self.config_service = ConfigService(engine=engine)
         self.asset_service = AssetService(engine=engine, event_emitter=_asset_event_bridge)  # type: ignore[abstract]

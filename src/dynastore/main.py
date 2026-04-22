@@ -45,7 +45,7 @@ class _CorrelationFilter(logging.Filter):
     """Add correlation_id from context to all log records."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.correlation_id = _correlation_id_var.get(None)  # type: ignore[attr-defined]
+        record.correlation_id = _correlation_id_var.get(None)
         return True
 
 

@@ -120,7 +120,7 @@ task_elasticsearch_indexer_deps = ["dynastore[module_elasticsearch]"]
 task_ingestion_deps = ["dynastore[geospatial,module_gcp]"]
 task_dwh_join_deps = ["dynastore[dwh]"]
 task_export_features_deps = ["dynastore[geospatial_core,stac]"]
-task_tiles_preseed_deps = ["dynastore[geospatial_core]", "morecantile==7.0.2"]
+task_tiles_preseed_deps = ["dynastore[geospatial_core]", "morecantile>=7.0.3,<8"]
 task_dimensions_materialize_deps = ["dynastore[extension_dimensions]"]
 
 # ---- Catalog-hosted lightweight tasks (async-db, in-process).
@@ -473,6 +473,10 @@ reportUnknownParameterType = false
 reportUnknownVariableType = false
 reportMissingParameterType = false
 reportUnnecessaryTypeIgnoreComment = "warning"
+# Many runtime deps ship as binary wheels without source (.py) files; pyright
+# resolves them via stubs. The "could not be resolved from source" warning is
+# noise that doesn't indicate a real problem.
+reportMissingModuleSource = "none"
 
 [[tool.pyright.executionEnvironments]]
 root = "src/dynastore/models/protocols"

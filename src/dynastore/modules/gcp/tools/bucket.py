@@ -26,7 +26,7 @@ import asyncio
 from typing import TYPE_CHECKING, Optional, List, Tuple, Iterator
 if TYPE_CHECKING:
     from google.cloud import storage
-    from google.api_core.exceptions import NotFound, Conflict, GoogleAPICallError
+    from google.api_core.exceptions import NotFound, Conflict, Forbidden, GoogleAPICallError
 else:
     try:
         from google.cloud import storage

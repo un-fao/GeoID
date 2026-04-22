@@ -19,7 +19,7 @@
 import logging
 from typing import Dict, Any, List, Optional, Tuple, Set
 
-from sqlalchemy import text # type: ignore
+from sqlalchemy import text
 from pydantic import BaseModel
 
 from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig

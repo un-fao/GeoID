@@ -42,7 +42,7 @@ class CustomOpenSearchSerializer(JSONSerializer):
     already handles (datetime, UUID, Decimal, …) — via the shared encoder.
     """
 
-    def dumps(self, data: Any) -> Any:  # type: ignore[override]
+    def dumps(self, data: Any) -> Any:
         if isinstance(data, str):
             return data
         try:

@@ -372,7 +372,7 @@ class BucketService(ExtensionProtocol):
     )
     async def init_upload_endpoint(
         req: Request,  # type: ignore[reportGeneralTypeIssues]
-        request: InitiateUploadRequest = Body(  # type: ignore[arg-type]
+        request: InitiateUploadRequest = Body(
             ...,
             examples={  # type: ignore[arg-type]
                 "basic_raster_upload": {

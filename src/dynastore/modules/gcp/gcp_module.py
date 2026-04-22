@@ -785,7 +785,7 @@ class GCPModule(
         return os.getenv("K_SERVICE")
 
     @cached(maxsize=1, distributed=False)
-    async def get_self_url(self) -> str:  # type: ignore[override]
+    async def get_self_url(self) -> str:
         """
         Dynamically discovers and returns the public URL of the running Cloud Run service.
         The result is cached for subsequent calls.

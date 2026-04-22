@@ -73,7 +73,7 @@ def register_platform_notebook(
         title=resolved_title,
         description=resolved_description,
         tags=tags or [],
-        content=notebook_content,  # type: ignore[arg-type]
+        content=notebook_content,
         metadata=nb_meta,
         registered_by=registered_by,
         owner_type=owner_type,

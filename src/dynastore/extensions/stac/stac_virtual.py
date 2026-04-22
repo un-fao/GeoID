@@ -484,7 +484,7 @@ class StacVirtualMixin(_Host):
             dim_proto = get_protocol(DimensionsProtocol)
             if dim_proto is None:
                 return None
-            provider = dim_proto.get_provider(hierarchy_id)  # type: ignore[attr-defined]
+            provider = dim_proto.get_provider(hierarchy_id)
         except Exception:
             return None
         if not getattr(provider, "hierarchical", False):
@@ -542,7 +542,7 @@ class StacVirtualMixin(_Host):
                 from dynastore.models.protocols.dimensions import DimensionsProtocol  # type: ignore
                 dim_proto = get_protocol(DimensionsProtocol)
                 if dim_proto is not None:
-                    ctx.get_provider = lambda dim_id: dim_proto.get_provider(dim_id)  # type: ignore[attr-defined]
+                    ctx.get_provider = lambda dim_id: dim_proto.get_provider(dim_id)
             except Exception:
                 pass
 

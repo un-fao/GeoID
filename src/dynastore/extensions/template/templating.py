@@ -21,7 +21,7 @@ import time
 import json
 from typing import Optional, List, Tuple, cast
 from attrs import define
-from jinja2 import Template, Environment  # type: ignore[import-not-found]
+from jinja2 import Template, Environment
 from pydantic import BaseModel, HttpUrl, types
 from itertools import zip_longest
 from fastapi import Query, HTTPException, Header
@@ -72,7 +72,7 @@ logger = logging.getLogger(__name__)
 jinja_env = Environment()
 # {"enable_async":True}
 
-def _extract_headers(h_list: Any = None, headers: Any = None) -> dict:  # type: ignore[assignment]
+def _extract_headers(h_list: Any = None, headers: Any = None) -> dict:
     _headers = {}
     if isinstance(h_list, list):
         for h in h_list:
@@ -157,7 +157,7 @@ async def _interpolate_streaming(template, model: dict, escapeTemplate: bool = F
     jinja_template = jinja_env.from_string(template)
     # Apply auto-escaping if necessary
 
-    jinja_template.autoescape = autoEscape  # type: ignore[reportGeneralTypeIssues]
+    jinja_template.autoescape = autoEscape  # type: ignore[reportAttributeAccessIssue]
     # jinja_template = Template(source=template, autoescape=autoEscape)
     try:
         for chunk in jinja_template.stream(model):
@@ -177,7 +177,7 @@ def _interpolate(template: str, model: dict, escapeTemplate: bool = False, autoE
     jinja_template = jinja_env.from_string(template)
 
     # Apply auto-escaping if necessary
-    jinja_template.autoescape = autoEscape  # type: ignore[reportGeneralTypeIssues]
+    jinja_template.autoescape = autoEscape  # type: ignore[reportAttributeAccessIssue]
     # jinja_template = Template(source=template, autoescape=autoEscape)
 
     return jinja_template.render(model)
@@ -564,7 +564,7 @@ class TemplatingExtension(ExtensionProtocol):
             logger.warning("Template extension: 'httpx' extension not found. URL fetching capabilities will be disabled.")
 
     @router.get("/resolve_url", response_description="Resolve the url in a json object")
-    async def resolve_url(  # type: ignore[misc]
+    async def resolve_url(
         request: Request,  # type: ignore
         url: str = Query(..., description="The json url to download"),
         key_list: list = Query(..., description="The list of keys to resolve"),
@@ -584,7 +584,7 @@ class TemplatingExtension(ExtensionProtocol):
         return file_json
 
     @router.get("/interpolate", response_description="Render template with urls to files and a model")
-    async def interpolate_template_get(  # type: ignore[misc]
+    async def interpolate_template_get(
         request: Request,  # type: ignore
         t: Optional[TemplateParam] = Query(default=None, description="The Jinja2 template"),
         t_url: Optional[str] = Query(default=None, description="URL of the Jinja2 template file"),
@@ -731,7 +731,7 @@ class TemplatingExtension(ExtensionProtocol):
         return await interpolate_template_get(request=request, t=t, t_url=t_url, t_url_h=t_url_h, m=m, m_urls=m_urls, m_urls_h=m_urls_h, ru=ru, ru_h=ru_h, ae=ae, et=et, mm=mm, r_mt=r_mt, stream=stream)  # type: ignore[name-defined]
     
     @router.post("/xml-to-json/stream")
-    async def stream_parse_post(  # type: ignore[misc]
+    async def stream_parse_post(
         request: Request,  # type: ignore
         parser: str = Query("sax", enum=["sax"]),
         attr_prefix: str = Query("@"),
@@ -753,7 +753,7 @@ class TemplatingExtension(ExtensionProtocol):
             return result
 
     @router.get("/xml-to-json/stream")
-    async def stream_parse_get(  # type: ignore[misc]
+    async def stream_parse_get(
         xml_url: AnyUrl,  # type: ignore
         request: Request,
         parser: str = Query("sax", enum=["sax"]),
@@ -780,7 +780,7 @@ class TemplatingExtension(ExtensionProtocol):
     @router.post("/xml-to-json/",
             summary="Convert XML to JSON with security hardening",
             response_description="Converted JSON structure")
-    async def post_xml_to_json(  # type: ignore[misc]
+    async def post_xml_to_json(
         xml_data: str = Body(..., media_type="application/xml", embed=True,  # type: ignore
                             max_length=MAX_XML_SIZE,
                             example="<root><item id='1'>Content</item></root>"),
@@ -817,7 +817,7 @@ class TemplatingExtension(ExtensionProtocol):
     @router.get("/xml-to-json/",
             summary="Convert XML from URL to JSON",
             response_description="Converted JSON structure")
-    async def get_xml_to_json(  # type: ignore[misc]
+    async def get_xml_to_json(
         request: Request,  # type: ignore
         xml_url: AnyUrl = Query(..., description="URL to fetch XML from"),
         parser: str = Query("elementtree", 

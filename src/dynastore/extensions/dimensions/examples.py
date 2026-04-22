@@ -18,7 +18,7 @@ from __future__ import annotations
 
 def demo_dekadal() -> None:
     """Dekadal: 10-day periods, 36/year, D3 absorbs remainder of month."""
-    from ogc_dimensions.providers import DailyPeriodProvider  # type: ignore[import]
+    from ogc_dimensions.providers import DailyPeriodProvider
 
     gen = DailyPeriodProvider(period_days=10, scheme="monthly")
     print(f"  provider_type = {gen.provider_type}")
@@ -37,7 +37,7 @@ def demo_dekadal() -> None:
 
 def demo_pentadal() -> None:
     """Pentadal monthly: 5-day periods, 72/year, P6 absorbs 26-EOM."""
-    from ogc_dimensions.providers import DailyPeriodProvider  # type: ignore[import]
+    from ogc_dimensions.providers import DailyPeriodProvider
 
     gen = DailyPeriodProvider(period_days=5, scheme="monthly")
     print(f"  provider_type = {gen.provider_type}")
@@ -53,7 +53,7 @@ def demo_pentadal() -> None:
 
 def demo_admin_hierarchy() -> None:
     """Admin boundaries: leveled tree with multilingual labels."""
-    from ogc_dimensions.providers import LeveledTreeProvider  # type: ignore[import]
+    from ogc_dimensions.providers import LeveledTreeProvider
 
     from .use_cases import ADMIN_NODES
 

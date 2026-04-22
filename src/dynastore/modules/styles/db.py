@@ -149,7 +149,7 @@ async def update_style(conn: DbResource, catalog_id: str, style_id: str, style_d
 
     # Use DDLQuery.from_builder to create a one-off executor for this dynamic query.
     update_executor = DQLQuery.from_builder(_update_builder, result_handler=ResultHandler.ONE)
-    raw_row = await update_executor.execute(conn, catalog_id=catalog_id, style_id=style_id, **update_values) # type: ignore
+    raw_row = await update_executor.execute(conn, catalog_id=catalog_id, style_id=style_id, **update_values)
     return _enrich_style_from_row(raw_row) if raw_row else None
 
 async def delete_style(conn: DbResource, catalog_id: str, style_uuid: uuid.UUID) -> bool:

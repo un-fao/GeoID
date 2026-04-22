@@ -57,7 +57,7 @@ from dynastore.extensions.stac.search import (
 
 from dynastore.modules.stac.stac_config import StacPluginConfig
 
-from dynastore.tools.db import validate_sql_identifier  # type: ignore
+from dynastore.tools.db import validate_sql_identifier
 from .stac_models import STACCatalogRequest, stac_localize
 from .stac_validator import validate_stac_item, validate_stac_collection
 from dynastore.models.shared_models import Feature
@@ -560,7 +560,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         catalog_id: str,
         definition: STACCatalogUpdate,
         language: str = Depends(get_language),
-    ):  # type: ignore
+    ):
         # Auto-detect if multi-language input is used
         from dynastore.models.localization import is_multilanguage_input
 
@@ -1116,7 +1116,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         "/catalogs/{catalog_id}/collections/{collection_id}/aggregate",
         response_class=JSONResponse,
     )
-    async def aggregate_collection_items(  # type: ignore[misc]
+    async def aggregate_collection_items(
         catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
         collection_id: str,
         request: Request,

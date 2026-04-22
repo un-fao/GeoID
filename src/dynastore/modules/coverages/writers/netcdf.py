@@ -19,7 +19,7 @@ def write_netcdf(
     import tempfile
 
     import numpy as np
-    from netCDF4 import Dataset  # type: ignore[import-not-found]
+    from netCDF4 import Dataset
 
     tf = tempfile.NamedTemporaryFile(prefix="cov-", suffix=".nc", delete=False)
     tf.close()

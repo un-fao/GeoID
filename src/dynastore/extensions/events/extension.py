@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 try:
     from dynastore.models.protocols.events import EventsProtocol  # type: ignore[assignment]
 except ImportError:
-    class EventsProtocol:  # type: ignore[no-redef]
+    class EventsProtocol:
         pass
 
 

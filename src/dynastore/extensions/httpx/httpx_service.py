@@ -51,7 +51,7 @@ class HttpxExtension(ExtensionProtocol, HttpxProtocol):
     app: FastAPI = None  # type: ignore[assignment]
 
     @asynccontextmanager
-    async def lifespan(self, app: FastAPI): # type: ignore
+    async def lifespan(self, app: FastAPI):
         logger.info("HttpxExtension: Creating shared httpx clients.")
         self.app = app
         

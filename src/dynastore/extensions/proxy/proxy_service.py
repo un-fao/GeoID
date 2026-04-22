@@ -522,7 +522,7 @@ class ProxyService(ExtensionProtocol):
     @router.delete("/catalogs/{catalog_id}/urls/{short_key}", status_code=204)
     async def delete_url_endpoint(
         catalog_id: str, short_key: str, engine: DbResource = Depends(get_async_engine)  # type: ignore[reportGeneralTypeIssues]
-    ):  # type: ignore
+    ):
         deleted_key = await delete_short_url(
             engine, catalog_id=catalog_id, short_key=short_key
         )

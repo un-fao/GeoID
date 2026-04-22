@@ -349,7 +349,7 @@ async def create_collection(
     driver = await get_driver(Operation.READ, catalog_id, collection_id)
     metadata_model, layer_config = await asyncio.gather(
         catalogs_svc.get_collection_model(catalog_id, collection_id),  # type: ignore[attr-defined]
-        driver.get_driver_config(catalog_id, collection_id),  # type: ignore[attr-defined]
+        driver.get_driver_config(catalog_id, collection_id),
     )
     if not metadata_model:
         return None

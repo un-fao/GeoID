@@ -19,7 +19,7 @@
 import random
 import uuid
 import logging
-from osgeo import gdal, ogr, osr, __version__ as gdal_version  # type: ignore[import-not-found]
+from osgeo import gdal, ogr, osr, __version__ as gdal_version
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Any, Optional
 from collections import defaultdict

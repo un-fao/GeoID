@@ -99,7 +99,7 @@ class FeatureAttributeSidecar(SidecarProtocol):
         cls, context: Dict[str, Any]
     ) -> Optional[FeatureAttributeSidecarConfig]:
         """Auto-inject attributes sidecar by default."""
-        return FeatureAttributeSidecarConfig()  # type: ignore[call-arg]
+        return FeatureAttributeSidecarConfig()
 
     @property
     def provides_feature_id(self) -> bool:
@@ -432,7 +432,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
             am = get_protocol(AssetsProtocol)
             if am:
                 from dynastore.models.driver_context import DriverContext
-                await am.ensure_asset_cleanup_trigger(  # type: ignore[attr-defined]
+                await am.ensure_asset_cleanup_trigger(
                     schema, table_name, ctx=DriverContext(db_resource=conn) if conn is not None else None,
                 )
             else:

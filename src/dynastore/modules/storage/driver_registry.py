@@ -69,7 +69,7 @@ class DriverRegistry:
             with cls._lock:
                 if cls._collection_index is None:
                     cls._collection_index = cls._build_collection()
-        return cls._collection_index  # type: ignore[return-value]
+        return cls._collection_index
 
     @classmethod
     def _ensure_asset(cls) -> "Dict[str, AssetStore]":
@@ -77,7 +77,7 @@ class DriverRegistry:
             with cls._lock:
                 if cls._asset_index is None:
                     cls._asset_index = cls._build_asset()
-        return cls._asset_index  # type: ignore[return-value]
+        return cls._asset_index
 
     @classmethod
     def get_collection(

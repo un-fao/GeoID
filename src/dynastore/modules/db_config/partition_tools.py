@@ -85,7 +85,7 @@ async def ensure_partition_exists(
     Optimized with existence check to avoid unnecessary lock acquisition.
     """
     partition_name: Optional[str] = None
-    create_sql: Optional[str] = None # type: ignore
+    create_sql: Optional[str] = None
     
     try:
         # 1. Calculate Name and SQL (Pure logic, no DB)

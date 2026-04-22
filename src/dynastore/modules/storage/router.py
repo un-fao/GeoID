@@ -152,7 +152,7 @@ async def resolve_drivers(
     l4_key = (routing_plugin_cls, catalog_id, collection_id, operation, hint)
     l4 = get_request_driver_cache()
     if l4_key in l4:
-        return l4[l4_key]  # type: ignore[return-value]
+        return l4[l4_key]
 
     resolved_ids = await _resolve_driver_ids_cached(
         routing_plugin_cls, catalog_id, collection_id, operation, hint,

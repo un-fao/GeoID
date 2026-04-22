@@ -21,7 +21,7 @@ from enum import Enum
 from typing import Optional, Tuple, Set
 
 try:
-    from osgeo import gdal, ogr  # type: ignore[import]
+    from osgeo import gdal, ogr
     gdal.UseExceptions()
     ogr.UseExceptions()
     GDAL_AVAILABLE = True

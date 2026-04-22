@@ -1241,7 +1241,7 @@ class CatalogService(CatalogsProtocol):
         from dynastore.modules.storage.routing_config import Operation
 
         driver = await get_driver(Operation.READ, catalog_id, collection_id)
-        return await driver.get_driver_config(  # type: ignore[attr-defined]
+        return await driver.get_driver_config(
             catalog_id, collection_id, db_resource=db_resource
         )
 
@@ -1496,7 +1496,7 @@ class CatalogService(CatalogsProtocol):
             driver = await get_driver("WRITE", catalog_id, collection_id)
         except ValueError:
             return
-        await driver.ensure_storage(  # type: ignore[attr-defined]
+        await driver.ensure_storage(
             catalog_id,
             collection_id,
             physical_table=physical_table,
@@ -1623,7 +1623,7 @@ class CatalogService(CatalogsProtocol):
         # Build Request
         raw_where = filter_cql
 
-        request = QueryRequest(  # type: ignore[call-arg]
+        request = QueryRequest(
             select=selects, limit=limit, offset=offset, raw_where=raw_where
         )
 
@@ -1754,7 +1754,7 @@ async def ensure_collection_exists(
 
     _ctx = DriverContext(db_resource=db_resource) if db_resource else None
     if catalogs:
-        if not await catalogs.get_collection(  # type: ignore[attr-defined]
+        if not await catalogs.get_collection(
             catalog_id, collection_id, ctx=_ctx
         ):
             await catalogs.create_collection(
