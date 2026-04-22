@@ -74,6 +74,50 @@ async def test_read_degrades_on_driver_exception(caplog):
     assert any("Collection-metadata READ failed" in r.message for r in caplog.records)
 
 
+@pytest.mark.asyncio
+async def test_read_calls_drivers_sequentially_on_shared_connection():
+    """READ fan-out must be sequential — concurrent SELECTs over a shared
+    asyncpg Connection deadlock on the single-wire protocol.
+
+    Same hazard previously fixed in PR #28 (list_catalogs) and PR #32
+    (catalog_metadata_router). This guards the symmetric collection-tier
+    READ path so we don't regress to ``asyncio.gather`` again.
+    """
+    in_flight = 0
+    max_in_flight = 0
+    order: list[str] = []
+
+    def _make(name: str, payload: dict):
+        m = MagicMock()
+        async def _get(catalog_id, collection_id, *, context=None, db_resource=None):
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            # Yield the loop so a concurrent caller would race with us.
+            import asyncio as _asyncio
+            await _asyncio.sleep(0)
+            order.append(name)
+            in_flight -= 1
+            return payload
+        m.get_metadata = AsyncMock(side_effect=_get)
+        return m
+
+    core = _make("core", {"title": {"en": "T"}})
+    stac = _make("stac", {"stac_version": "1.1.0"})
+    conn = MagicMock(name="shared_conn")
+
+    merged = await get_collection_metadata(
+        "cat", "col", db_resource=conn, drivers=[core, stac],
+    )
+
+    assert merged == {"title": {"en": "T"}, "stac_version": "1.1.0"}
+    assert order == ["core", "stac"]
+    assert max_in_flight == 1, (
+        "Drivers ran concurrently — READ fan-out must be sequential when "
+        "db_resource is a shared Connection (asyncpg single-wire deadlock)."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Write fan-out
 # ---------------------------------------------------------------------------

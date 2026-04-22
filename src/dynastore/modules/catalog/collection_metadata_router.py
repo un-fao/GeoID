@@ -94,7 +94,20 @@ async def get_collection_metadata(
     db_resource: Optional[Any] = None,
     drivers: Optional[List[CollectionMetadataStore]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Merge every registered driver's READ slice into a single envelope."""
+    """Merge every registered driver's READ slice into a single envelope.
+
+    **Sequential fan-out (load-bearing).**  Earlier versions used
+    ``asyncio.gather`` here, but when the caller passes a shared
+    ``db_resource`` (a live asyncpg ``Connection``), concurrent driver
+    SELECTs race on the single wire and asyncpg deadlocks — the hang
+    manifests as pytest's event loop stuck in ``selectors.kqueue.control``
+    waiting for the connection to respond.  Same hazard already fixed on
+    ``list_catalogs`` (PR #28) and ``get_catalog_metadata`` (PR #32) —
+    this is the third occurrence on the symmetric collection-scope path.
+    Per-driver latency is additive (~1-2ms each) but dominated by the
+    round-trip anyway.  A future refactor that hands each driver its own
+    pooled connection can re-enable ``gather`` at that point.
+    """
     drivers = drivers if drivers is not None else _resolve_drivers()
     if not drivers:
         return None
@@ -113,7 +126,12 @@ async def get_collection_metadata(
             )
             return None
 
-    results = await asyncio.gather(*[_safe_get(d) for d in drivers])
+    # Sequential to avoid asyncpg single-wire deadlock when db_resource
+    # is a shared Connection (see docstring).
+    results: List[Optional[Dict[str, Any]]] = []
+    for d in drivers:
+        results.append(await _safe_get(d))
+
     merged: Dict[str, Any] = {}
     any_found = False
     for result in results:
