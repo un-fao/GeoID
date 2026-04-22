@@ -59,6 +59,32 @@ from .models import Task, TaskCreate, TaskUpdate
 logger = logging.getLogger(__name__)
 
 
+def _serialize_inputs(inputs: Any) -> Optional[str]:
+    """Serialize a task ``inputs`` payload for JSONB storage.
+
+    Uses :class:`dynastore.tools.json.CustomJSONEncoder` so datetime /
+    UUID / Decimal / shapely values survive the round-trip to PG.
+
+    Without this, producers that pass ``model_dump()`` of a pydantic
+    model containing a ``datetime`` (e.g. ``BulkCatalogReindexInputs``
+    emitted by the Elasticsearch module after a ``catalog_metadata_changed``
+    event) blow up in ``tasks.create_task`` with::
+
+        ElasticsearchModule: Failed to dispatch task
+        elasticsearch_index: Object of type datetime is not JSON serializable
+
+    The task row is never created, the reindex never runs, and the
+    catalog silently drifts from its search index.
+
+    Returns ``None`` when ``inputs`` is empty so the DB column stays
+    NULL (matches the legacy behaviour).
+    """
+    if not inputs:
+        return None
+    from dynastore.tools.json import CustomJSONEncoder
+    return json.dumps(inputs, cls=CustomJSONEncoder)
+
+
 def get_task_schema() -> str:
     """Returns the default schema for global tasks."""
     return os.getenv("DYNASTORE_TASK_SCHEMA", "tasks")
@@ -798,7 +824,7 @@ async def create_task(
             task_type=task_data.task_type,
             type=task_data.type,
             execution_mode=task_data.execution_mode,
-            inputs=json.dumps(inputs) if inputs else None,
+            inputs=_serialize_inputs(inputs),
             timestamp=creation_time,
             collection_id=task_data.collection_id,
             dedup_key=task_data.dedup_key,
@@ -951,7 +977,7 @@ async def enqueue(
             task_type=task_data.task_type,
             type=task_data.type,
             execution_mode=execution_mode,
-            inputs=json.dumps(task_data.inputs) if task_data.inputs else None,
+            inputs=_serialize_inputs(task_data.inputs),
             timestamp=creation_time,
             collection_id=task_data.collection_id,
             dedup_key=dedup_key,
