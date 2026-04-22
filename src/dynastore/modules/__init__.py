@@ -121,13 +121,14 @@ def instantiate_modules(app_state: object, include_only: Optional[List[str]] = N
         return getattr(config.cls, "priority", 100)
 
     ordered_modules = sorted(available_modules, key=_priority)
-    
+
     logger.info(f"Instantiating modules in order: {ordered_modules}")
+    init_failures: List[str] = []
     for module_name in ordered_modules:
         config = _DYNASTORE_MODULES.get(module_name)
         if not config:
             continue
-        
+
         cls = config.cls
         load_component_dotenv(cls)
         try:
@@ -140,9 +141,63 @@ def instantiate_modules(app_state: object, include_only: Optional[List[str]] = N
             register_plugin(instance)
 
             logger.info(f"Instantiated module '{module_name}' ({cls.__name__})")
-        except Exception:
-            logger.error(f"CRITICAL: Failed during __init__ of module '{module_name}'. It will be unavailable.", exc_info=True)
+        except Exception as e:
+            # Louder than the original error line: modules that fail here are
+            # invisible at runtime (get_protocol returns None for every
+            # protocol they were supposed to provide).  Track them so the
+            # post-discovery audit below can summarise in one line — useful
+            # on Cloud Run where a single log line is enough to filter on.
+            init_failures.append(f"{module_name}: {type(e).__name__}: {e}")
+            logger.error(
+                f"CRITICAL: Failed during __init__ of module '{module_name}'. "
+                f"It will be unavailable. Downstream code that calls "
+                f"get_protocol(<ProtocolName>) will silently return None until "
+                f"this is fixed.",
+                exc_info=True,
+            )
             config.instance = None
+
+    # Post-discovery audit — single log line per pod boot that tells us
+    # exactly which modules are live, which failed, and which core
+    # protocols ended up resolvable.  Paired with
+    # `_get_storage_protocol` diagnostic in commit f8be448 — at runtime
+    # we dump registry state; at boot, this line tells us what SHOULD
+    # have registered on this pod.
+    try:
+        from dynastore.tools.discovery import get_protocol
+        live_modules = sorted(
+            name for name, cfg in _DYNASTORE_MODULES.items() if cfg.instance
+        )
+        missing_modules = sorted(
+            name for name in ordered_modules
+            if _DYNASTORE_MODULES.get(name) and not _DYNASTORE_MODULES[name].instance
+        )
+
+        # Probe a small set of protocols that downstream code is known to
+        # resolve without a DB round-trip. Keep this list in sync with the
+        # "cannot_start_without" set of protocols referenced by tasks.
+        from dynastore.models.protocols import (
+            StorageProtocol, DatabaseProtocol, CatalogsProtocol, TasksProtocol,
+        )
+        probed = {
+            "Storage": type(get_protocol(StorageProtocol)).__name__ if get_protocol(StorageProtocol) else None,
+            "Database": type(get_protocol(DatabaseProtocol)).__name__ if get_protocol(DatabaseProtocol) else None,
+            "Catalogs": type(get_protocol(CatalogsProtocol)).__name__ if get_protocol(CatalogsProtocol) else None,
+            "Tasks": type(get_protocol(TasksProtocol)).__name__ if get_protocol(TasksProtocol) else None,
+        }
+        logger.info(
+            "Module discovery complete. live=%s missing=%s init_failures=%s protocol_resolvers=%s",
+            live_modules, missing_modules, init_failures, probed,
+        )
+        if any(v is None for v in probed.values()):
+            logger.critical(
+                "Module discovery left core protocols UNRESOLVED: %s — "
+                "tasks depending on these will fail at runtime. Check "
+                "CRITICAL 'Failed during __init__' lines above.",
+                [k for k, v in probed.items() if v is None],
+            )
+    except Exception as audit_err:  # pragma: no cover — diagnostic best-effort
+        logger.error("Module-discovery audit failed: %s", audit_err)
 
 
 @asynccontextmanager

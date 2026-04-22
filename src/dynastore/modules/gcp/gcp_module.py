@@ -195,21 +195,28 @@ class GCPModule(
     _bucket_service: Optional[BucketService] = None
 
     def __init__(self, app_state: object) -> None:
+        logger.info("GCPModule.__init__: START")
         super().__init__()
-        logger.info("Attempting to identify active GCP credentials...")
+        logger.info("GCPModule.__init__: identifying active GCP credentials...")
 
         # Stage 1: credentials. If ADC is genuinely unavailable the module
         # stays disabled and every getter raises a clear RuntimeError.
         try:
             self._credentials, self._identity = get_credentials()
-            logger.info(f"GCP identity found: {self.get_account_email()}")
+            logger.info(
+                "GCPModule.__init__: credentials OK (identity=%s).",
+                self.get_account_email(),
+            )
         except Exception as e:
             logger.warning(
-                f"GCP Module: No usable GCP credentials ({e}). Module disabled; "
-                "clients will remain unavailable until credentials are provided."
+                f"GCPModule.__init__: no usable GCP credentials ({e}). "
+                "Module disabled; clients will remain unavailable until credentials "
+                "are provided. Module stays REGISTERED as StorageProtocol provider — "
+                "runtime calls will raise clear RuntimeError, not silent None."
             )
             self._credentials = None
             self._identity = None
+            logger.info("GCPModule.__init__: END (credentials missing, disabled)")
             return
 
         # Stage 2: clients. A failure here is recoverable — keep the valid
@@ -219,10 +226,12 @@ class GCPModule(
             self.reinitialize_clients()
         except Exception as e:
             logger.error(
-                f"GCP Module: Credentials loaded but client construction failed ({e}). "
-                "Will retry lazily on first use.",
+                f"GCPModule.__init__: sync clients failed ({e}). "
+                "Module stays registered; async clients will still build lazily on "
+                "first use.",
                 exc_info=True,
             )
+        logger.info("GCPModule.__init__: END (registered with StorageProtocol)")
 
     def reinitialize_clients(self) -> None:
         """
