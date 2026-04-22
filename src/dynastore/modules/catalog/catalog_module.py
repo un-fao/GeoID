@@ -850,15 +850,35 @@ class CatalogModule(ModuleProtocol):
                 )
                 catalogs = get_protocol(CatalogsProtocol)
                 if catalogs:
+                    _dr = kwargs.get("db_resource")
+                    _ctx = DriverContext(db_resource=_dr) if _dr else None
+                    # (1) Flip the provisioning_status column to 'failed' so
+                    #     the fail-fast guard at the API layer rejects
+                    #     write operations on this catalog (endpoints call
+                    #     ``require_catalog_ready`` which reads this column).
                     try:
-                        _dr = kwargs.get("db_resource")
-                        await catalogs.update_catalog(
-                            catalog_id,
-                            {"extra_metadata": {"provisioning_status": "failed", "error": error_message}},
-                            ctx=DriverContext(db_resource=_dr) if _dr else None,
+                        await catalogs.update_provisioning_status(
+                            catalog_id, "failed", ctx=_ctx,
                         )
                     except Exception as e:
-                        logger.error(f"Rollback for catalog '{catalog_id}' failed: {e}")
+                        logger.error(
+                            f"Rollback for catalog '{catalog_id}': failed to "
+                            f"set provisioning_status='failed': {e}"
+                        )
+                    # (2) Record the error detail in ``extra_metadata`` —
+                    #     best-effort diagnostic for operators; unrelated
+                    #     to the fail-fast column flip above.
+                    try:
+                        await catalogs.update_catalog(
+                            catalog_id,
+                            {"extra_metadata": {"provisioning_error": error_message}},
+                            ctx=_ctx,
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Rollback for catalog '{catalog_id}': failed to "
+                            f"record provisioning_error in extra_metadata: {e}"
+                        )
 
 # --- Module level proxies for common protocol operations ---
 

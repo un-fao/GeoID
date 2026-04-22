@@ -533,6 +533,10 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             )
 
             catalogs_svc = await self._get_catalogs_service()
+            # Fail-fast guard: reject writes against catalogs whose
+            # provisioning hasn't completed — the backing storage
+            # doesn't exist yet (or provisioning failed).
+            await self._require_catalog_ready(catalog_id, catalogs_svc=catalogs_svc)
             created_collection_model = await catalogs_svc.create_collection(
                 catalog_id, input_data, lang=use_lang, stac_context=True
             )
@@ -577,6 +581,9 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         )
 
         catalogs_svc = await self._get_catalogs_service()
+        # Fail-fast guard: can't mutate metadata on a catalog whose
+        # backing storage isn't ready.
+        await self._require_catalog_ready(catalog_id, catalogs_svc=catalogs_svc)
         updated_catalog_model = await catalogs_svc.update_catalog(
             catalog_id, input_data, lang=use_lang
         )
@@ -645,6 +652,9 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         )
 
         catalogs_svc = await self._get_catalogs_service()
+        # Fail-fast guard: can't update a collection when the enclosing
+        # catalog isn't ready.
+        await self._require_catalog_ready(catalog_id, catalogs_svc=catalogs_svc)
         updated_collection_model = await catalogs_svc.update_collection(
             catalog_id, collection_id, input_data, lang=use_lang
         )
@@ -819,6 +829,12 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         engine=Depends(get_async_engine),
         language: str = Depends(get_language),
     ):
+        # Fail-fast guard: reject item writes when the enclosing catalog
+        # isn't ready.  Runs BEFORE STAC validation so we surface the
+        # real blocker (missing storage) rather than letting a driver
+        # 500 deep down the stack.
+        await self._require_catalog_ready(catalog_id)
+
         # Write-time STAC validation per item (lenient — warnings only)
         items_to_validate: list[STACItem] = (
             list(item_payload.features)
@@ -909,6 +925,9 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         engine=Depends(get_async_engine),
         language: str = Depends(get_language),
     ):
+        # Fail-fast guard: no item writes on a not-ready catalog.
+        await self._require_catalog_ready(catalog_id)
+
         # Write-time STAC validation (lenient — warnings only)
         validate_stac_item(item_payload.model_dump(by_alias=True, exclude_unset=True))
 
