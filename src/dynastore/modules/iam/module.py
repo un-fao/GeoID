@@ -47,11 +47,15 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
     _policy_service: Optional[PolicyService] = None
     _authorizer: Optional[IamAuthorizer] = None
     storage: Optional[AbstractIamStorage] = None
-    _pending_tasks: list = []
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._pending_tasks = []
+        # In-memory buffers deduped across extensions. Roles with the same
+        # name coming from multiple extensions (e.g. 'anonymous' from features,
+        # stac, coverages, records, notebooks, web) are merged here and
+        # persisted exactly once during flush_pending_registrations().
+        self._pending_policies: dict[str, Any] = {}
+        self._pending_roles: dict[str, Any] = {}
         self._role_lock = asyncio.Lock()
         # Register as early as possible to be discoverable during extension configuration
         register_plugin(self)
@@ -211,9 +215,8 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
     async def _persist_role(self, role: Any):
         """Persist a role to the database via storage upsert.
 
-        Uses an asyncio lock to serialize concurrent role merges and
-        prevent read-modify-write races when multiple extensions register
-        policies for the same role (e.g. 'anonymous') during startup.
+        Lock serializes cross-worker-safe read-modify-write merges so a
+        role registered in a different process does not clobber ours.
         """
         async with self._role_lock:
             storage = self.storage
@@ -229,7 +232,6 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
                 async with managed_transaction(engine) as conn:
                     existing = await storage.get_role(role.name, schema="iam", conn=conn)
                     if existing:
-                        # Merge policies
                         merged_policies = list(set(existing.policies + role.policies))
                         role = role.model_copy(update={"policies": merged_policies})
                         await storage.update_role(role, schema="iam", conn=conn)
@@ -241,41 +243,48 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
                 logger.warning(f"Failed to persist role {role.name}: {e}")
 
     def register_policy(self, policy: Any) -> Any:
-        """Persist policy to database. Called by extensions during lifespan."""
+        """Buffer a policy for persistence at flush time.
+
+        Extensions call this during their lifespan. Duplicate IDs replace
+        the earlier entry (policy IDs are globally unique per extension, so
+        this only guards against re-registration within one process).
+        """
         if not self._policy_service:
             logger.warning(f"PolicyService not ready; cannot register policy {policy.id}")
             return policy
-
-        import asyncio
-        try:
-            loop = asyncio.get_running_loop()
-            task = loop.create_task(self._persist_policy(policy))
-            self._pending_tasks.append(task)
-        except RuntimeError:
-            pass
+        self._pending_policies[policy.id] = policy
         return policy
 
     def register_role(self, role: Any) -> Any:
-        """Persist role to database. Called by extensions during lifespan."""
+        """Buffer a role for persistence at flush time, merging policies by name.
+
+        Multiple extensions register roles with the same name (e.g. every
+        OGC extension adds its public-access policy to 'anonymous'). We
+        union policy lists in-memory so the DB sees exactly one upsert
+        per unique role name in flush_pending_registrations().
+        """
         if not self._policy_service:
             logger.warning(f"PolicyService not ready; cannot register role {getattr(role, 'name', role)}")
             return role
-
-        import asyncio
-        try:
-            loop = asyncio.get_running_loop()
-            task = loop.create_task(self._persist_role(role))
-            self._pending_tasks.append(task)
-        except RuntimeError:
-            pass
+        existing = self._pending_roles.get(role.name)
+        if existing is None:
+            self._pending_roles[role.name] = role
+        else:
+            merged_policies = list(set(existing.policies + role.policies))
+            self._pending_roles[role.name] = existing.model_copy(update={"policies": merged_policies})
         return role
 
     async def flush_pending_registrations(self):
-        """Await all pending policy/role registration tasks. Call after extensions register."""
-        if self._pending_tasks:
-            import asyncio
-            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-            self._pending_tasks.clear()
+        """Persist buffered policies and roles. Call after all extension lifespans have registered."""
+        policies = list(self._pending_policies.values())
+        roles = list(self._pending_roles.values())
+        self._pending_policies.clear()
+        self._pending_roles.clear()
+        if not policies and not roles:
+            return
+        tasks = [self._persist_policy(p) for p in policies]
+        tasks.extend(self._persist_role(r) for r in roles)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 
