@@ -17,7 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel
 from dynastore.tasks.protocols import TaskProtocol
@@ -99,6 +99,7 @@ class ProvisioningTask(TaskProtocol):
                 "status": "ready"
             }
         except PermanentTaskFailure:
+            await self._mark_failed(catalog_id)
             raise
         except RuntimeError as e:
             msg = str(e)
@@ -109,12 +110,46 @@ class ProvisioningTask(TaskProtocol):
                 "credentials",
             )
             if any(indicator in msg.lower() for indicator in _permanent_indicators):
+                await self._mark_failed(catalog_id)
                 raise PermanentTaskFailure(f"GCP unavailable, cannot provision '{catalog_id}': {msg}") from e
             logger.error(f"CRITICAL: GcpProvisionCatalogTask FAILED for {catalog_id}: {e}", exc_info=True)
+            await self._mark_failed(catalog_id)
             raise
         except Exception as e:
             logger.error(f"CRITICAL: GcpProvisionCatalogTask FAILED for {catalog_id}: {e}", exc_info=True)
+            await self._mark_failed(catalog_id)
             raise
+
+    async def _mark_failed(self, catalog_id: Optional[str]) -> None:
+        """Flip ``catalog.catalogs.provisioning_status`` → ``'failed'``.
+
+        Called from every failure path in :meth:`run` so the fail-fast
+        guard at the API layer
+        (``OGCServiceMixin._require_catalog_ready``) can reject
+        subsequent write operations with a 409 instead of letting them
+        500 deep inside a driver.
+
+        Best-effort: if the update itself raises (DB down, protocol
+        unavailable), we swallow — the task's own FAILED status lands
+        via ``fail_task`` in the runner, and the pg_cron reaper / a
+        later ``gcp.init.*`` log line will still surface the problem.
+        Silently proceeding is preferable to masking the original
+        exception that is about to be re-raised.
+        """
+        if not catalog_id:
+            return
+        try:
+            catalogs = _get_catalog_protocol()
+            await catalogs.update_provisioning_status(catalog_id, "failed")
+            logger.info(
+                f"GcpProvisionCatalogTask: catalog '{catalog_id}' marked FAILED "
+                f"(API writes will 409 via fail-fast guard)."
+            )
+        except Exception as mark_err:  # pragma: no cover — diagnostic best-effort
+            logger.error(
+                f"GcpProvisionCatalogTask: failed to mark catalog '{catalog_id}' "
+                f"provisioning_status='failed': {mark_err}"
+            )
 
 class GcpDestroyCatalogTask(TaskProtocol):
     priority: int = 100
