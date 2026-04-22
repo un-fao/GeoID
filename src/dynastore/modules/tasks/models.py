@@ -48,6 +48,47 @@ class PermanentTaskFailure(Exception):
     """
 
 
+class _DeferredCompletionSentinel:
+    """Marker returned by a runner to signal that it scheduled background
+    execution on the same claimed row and will update ``complete_task`` /
+    ``fail_task`` itself.
+
+    Contract with the dispatcher:
+
+    - Dispatcher MUST NOT call ``complete_task`` after seeing this sentinel
+      (the background coroutine will do it when work terminates).
+    - Dispatcher MUST NOT ``unregister`` the heartbeat for the task —
+      ownership has been transferred to the background coroutine which
+      will unregister in its ``finally`` block.
+    - The background coroutine is responsible for every terminal state
+      (COMPLETED / FAILED / CancelledError handling).
+
+    Used by :class:`BackgroundRunner` in the dispatcher-claimed path to
+    avoid the pre-2026-04 duplicate-insert bug (a second task row being
+    written with ``status='RUNNING'`` while the dispatcher marked the
+    real claimed row COMPLETED prematurely in 124ms).
+    """
+
+    _instance: "Optional[_DeferredCompletionSentinel]" = None
+
+    def __new__(cls) -> "_DeferredCompletionSentinel":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:  # pragma: no cover — trivial
+        return "DEFERRED_COMPLETION"
+
+    def __bool__(self) -> bool:  # pragma: no cover — trivial
+        # Truthy so the dispatcher's ``if result is not None`` / ``if result:``
+        # continues to treat the runner as having handled the task.
+        return True
+
+
+DEFERRED_COMPLETION = _DeferredCompletionSentinel()
+"""Module-level singleton; compare with ``is DEFERRED_COMPLETION``."""
+
+
 class RunnerContext(BaseModel):
     engine: DbResource
     task_type: str

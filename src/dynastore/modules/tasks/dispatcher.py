@@ -283,19 +283,52 @@ async def run_dispatcher(
         f"async_types={capability_map.async_types}, "
         f"sync_types={capability_map.sync_types})."
     )
-    _last_janitor_run = datetime.now(timezone.utc) - timedelta(seconds=signal_timeout)
+    # In-process _run_janitor retired — stuck-task reaping is now handled by
+    # the pg_cron job ``dynastore-task-reaper`` (registered in TasksModule
+    # startup).  Single coordinated executor at the DB side; zero pod
+    # connections, zero leader-election.  See
+    # ``tasks_module.reap_stuck_tasks``.
 
     heartbeat = BatchedHeartbeat(engine, visibility_timeout=visibility_timeout)
     await heartbeat.start()
 
     async def _dispatch_one(row: Dict) -> None:
-        """Dispatch a single claimed task with full error handling."""
+        """Dispatch a single claimed task with full error handling.
+
+        Two completion paths:
+
+        - **Synchronous runners** (``SyncRunner``) return the task result
+          directly; dispatcher calls ``complete_task`` and unregisters the
+          heartbeat.
+        - **Background runners** (``BackgroundRunner`` in dispatcher-path
+          mode) return :data:`DEFERRED_COMPLETION`: the dispatcher skips
+          ``complete_task`` and hands off heartbeat ownership to the
+          background coroutine, which updates the row (COMPLETED / FAILED)
+          and unregisters itself when execution terminates.
+        """
+        from dynastore.modules.tasks.models import DEFERRED_COMPLETION
+
         task_id = row["task_id"]
         timestamp = row["timestamp"]
+        deferred = False
 
         await heartbeat.register(str(task_id), timestamp)
         try:
-            result = await execution_engine.dispatch(row, engine=engine)
+            result = await execution_engine.dispatch(
+                row, engine=engine, heartbeat=heartbeat,
+            )
+            if result is DEFERRED_COMPLETION:
+                # Background runner scheduled async work against the SAME
+                # claimed row and will update complete_task / fail_task
+                # itself.  Heartbeat ownership has been transferred — the
+                # coroutine unregisters in its ``finally`` block.
+                deferred = True
+                logger.debug(
+                    f"Dispatcher: task {task_id} deferred to background runner "
+                    f"(heartbeat + completion ownership transferred)."
+                )
+                return
+
             await complete_task(engine, task_id, timestamp, outputs=result)
             logger.info(f"Dispatcher: Task {task_id} completed successfully.")
 
@@ -335,18 +368,18 @@ async def run_dispatcher(
             )
 
         finally:
-            await heartbeat.unregister(str(task_id))
+            # Skip unregister when the background runner took heartbeat
+            # ownership — it will unregister in its own ``finally``.
+            if not deferred:
+                await heartbeat.unregister(str(task_id))
 
     while not shutdown_event.is_set():
         try:
-            # Wait for a notification or periodic wakeup
+            # Wait for a notification or periodic wakeup.  Periodic wakeup is
+            # a defensive fallback — the pg_cron reaper issues ``pg_notify
+            # 'new_task_queued'`` when it resets stuck rows, so we will be
+            # woken promptly in steady state.
             got_signal = await signal_bus.wait_for(NEW_TASK_QUEUED, timeout=signal_timeout)
-
-            # Janitor pass (throttled: once per signal_timeout/2 at most)
-            now = datetime.now(timezone.utc)
-            if (now - _last_janitor_run).total_seconds() >= signal_timeout / 2:
-                await _run_janitor(engine, visibility_timeout)
-                _last_janitor_run = datetime.now(timezone.utc)
 
             # Claim and dispatch in batches until queue is empty
             while not shutdown_event.is_set():

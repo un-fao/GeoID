@@ -43,7 +43,7 @@ OGC Job State Machine::
 import json
 import logging
 from datetime import timedelta
-from typing import Any, Optional, List
+from typing import Any, Dict, Optional, List
 from uuid import UUID
 
 from dynastore.models.tasks import (
@@ -405,6 +405,7 @@ class ExecutionEngine:
         task_row: dict,
         *,
         engine: DbResource,
+        heartbeat: Optional[Any] = None,
     ) -> Any:
         """
         Execute a claimed task from the queue.
@@ -415,6 +416,14 @@ class ExecutionEngine:
 
         Falls back to direct ``TaskProtocol`` execution if no runner
         handles the task type.
+
+        ``heartbeat`` is the dispatcher's :class:`BatchedHeartbeat` — when
+        passed, it is placed in ``RunnerContext.extra_context`` under
+        ``"heartbeat"`` so async runners (``BackgroundRunner``) can keep
+        the claimed row's ``locked_until`` alive while they execute in
+        the background **on the same claimed row** (see
+        ``DEFERRED_COMPLETION`` contract in
+        :mod:`dynastore.modules.tasks.models`).
         """
         from dynastore.modules.tasks.models import RunnerContext
         from dynastore.tasks import get_task_instance, hydrate_task_payload
@@ -450,13 +459,26 @@ class ExecutionEngine:
         cid = task_inputs.pop(_INTERNAL_KEY, None)
         token = set_correlation_id(cid) if cid else None
 
+        # Dispatcher-path handoff: the row is already ACTIVE with the
+        # dispatcher's heartbeat extending ``locked_until``.  Runners that
+        # schedule async work (``BackgroundRunner``) pick up both the
+        # claimed ``task_id + task_timestamp`` AND the heartbeat handle so
+        # they can re-register under their own ownership before the
+        # dispatcher unregisters (see DEFERRED_COMPLETION).
+        _extra_context: Dict[str, Any] = {
+            "task_id": str(task_id),
+            "task_timestamp": task_row.get("timestamp"),
+        }
+        if heartbeat is not None:
+            _extra_context["heartbeat"] = heartbeat
+
         context = RunnerContext(
             engine=engine,
             task_type=task_type,
             caller_id=raw_payload["caller_id"],
             inputs=task_inputs,
             db_schema=task_row.get("schema_name", "tasks"),
-            extra_context={"task_id": str(task_id)},
+            extra_context=_extra_context,
         )
 
         try:
