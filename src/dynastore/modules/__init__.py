@@ -73,11 +73,33 @@ def discover_modules():
     Identity is package metadata.  Entry-points whose module imports fail
     (because their optional deps weren't selected at ``pip install`` time)
     are gracefully skipped by :func:`discover_and_load_plugins`.
+
+    Idempotent: if the same entry-point class was already discovered, the
+    existing :class:`ModuleConfig` (and any attached ``instance``) is
+    preserved.  This matters because multiple bootstrap paths call us
+    (``main.py``, ``extensions/bootstrap.py``, ``tasks/bootstrap.py``); a
+    naïve re-assignment would reset ``instance = None`` on every re-entry,
+    making ``_DYNASTORE_MODULES[name].instance`` fall out of sync with
+    ``_DYNASTORE_PLUGINS`` and breaking the ``get_protocol`` fallback path.
     """
     logger.info("--- [modules] Discovering components via entry points... ---")
     from dynastore.tools.discovery import discover_and_load_plugins
 
     for name, cls in discover_and_load_plugins("dynastore.modules").items():
+        existing = _DYNASTORE_MODULES.get(name)
+        if existing is not None and existing.cls is cls:
+            # Same class already registered — keep the config (and its
+            # instance, if any).  Avoids wiping the live instance on
+            # repeated discover_modules() invocations from different
+            # bootstrap callers.
+            continue
+        if existing is not None and existing.instance is not None:
+            logger.warning(
+                "Module '%s' discovered with a different class (%s → %s); "
+                "discarding the live instance. This is almost certainly a "
+                "packaging / entry-point duplication bug.",
+                name, existing.cls.__name__, cls.__name__,
+            )
         _DYNASTORE_MODULES[name] = ModuleConfig(cls=cls)
 
     logger.info(f"--- DISCOVERED MODULES: {list(_DYNASTORE_MODULES.keys())} ---")
@@ -127,6 +149,18 @@ def instantiate_modules(app_state: object, include_only: Optional[List[str]] = N
     for module_name in ordered_modules:
         config = _DYNASTORE_MODULES.get(module_name)
         if not config:
+            continue
+
+        # Idempotent: if this module was already instantiated in an earlier
+        # bootstrap pass (e.g. main.py ran, then extensions/bootstrap.py
+        # re-entered), reuse the live instance.  Rebuilding would create a
+        # second GCPModule (etc.) whose __init__ might reinitialize sync
+        # clients on the wrong event loop, and leave the registered-plugin
+        # registry containing a stale reference.
+        if config.instance is not None:
+            logger.info(
+                f"Module '{module_name}' already instantiated ({type(config.instance).__name__}) — reusing."
+            )
             continue
 
         cls = config.cls
