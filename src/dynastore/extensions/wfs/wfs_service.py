@@ -329,9 +329,15 @@ class WFSService(ExtensionProtocol):
 
         if catalog_id:
             # Scoped request: only fetch collections for the specified catalog.
-            catalog_metadata, all_collections_summary = await asyncio.gather(
-                catalogs_svc.get_catalog(catalog_id, ctx=DriverContext(db_resource=conn)),
-                catalogs_svc.list_collections(catalog_id, limit=1000, ctx=DriverContext(db_resource=conn)),
+            # Sequential awaits — both calls share `conn` (the request's
+            # asyncpg Connection); concurrent SELECTs on the same wire
+            # deadlock asyncpg's single-stream protocol.  See
+            # `feedback_asyncpg_shared_connection_deadlock.md` (#28, #32, #43).
+            catalog_metadata = await catalogs_svc.get_catalog(
+                catalog_id, ctx=DriverContext(db_resource=conn)
+            )
+            all_collections_summary = await catalogs_svc.list_collections(
+                catalog_id, limit=1000, ctx=DriverContext(db_resource=conn)
             )
             if catalog_metadata:
                 # Use the catalog's metadata for the service identification block.

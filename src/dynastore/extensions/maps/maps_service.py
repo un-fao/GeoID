@@ -110,14 +110,20 @@ async def _validate_collections_helper(conn, dataset, requested_collections):
     
     collection_metadata_results = await asyncio.gather(*collection_metadata_coroutines)
     
-    physical_table_checks = []
+    # Sequential — every check runs `.execute(conn, ...)` on the SAME asyncpg
+    # Connection.  Concurrent SELECTs on a single wire deadlock asyncpg's
+    # single-stream protocol — see feedback_asyncpg_shared_connection_deadlock.md
+    # (#28, #32, #43).  Per-table latency is ~1ms; serializing N checks is fine.
+    physical_table_results = []
     for i, coll_id in enumerate(requested_collections):
         if collection_metadata_results[i]:
-            physical_table_checks.append(shared_queries.table_exists_query.execute(conn, schema=dataset, table=coll_id))
+            physical_table_results.append(
+                await shared_queries.table_exists_query.execute(
+                    conn, schema=dataset, table=coll_id
+                )
+            )
         else:
-            physical_table_checks.append(asyncio.sleep(0, result=False))
-    
-    physical_table_results = await asyncio.gather(*physical_table_checks)
+            physical_table_results.append(False)
 
     valid_collections = []
     for i, coll_id in enumerate(requested_collections):
