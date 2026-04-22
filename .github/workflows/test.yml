@@ -37,12 +37,15 @@ jobs:
       - uses: actions/checkout@v6
 
       # Build the `tester` stage of the canonical Dockerfile — same image used
-      # by the test job. Already has GDAL native libs + pyright + ".[test,all,dev]".
+      # by the test job. Override SCOPE with the `typecheck` extra so pyright
+      # can resolve every optional code path (duckdb, pyiceberg, morecantile…)
+      # that the runtime `all` extra intentionally omits.
       - name: Build tester image
         run: |
           docker build \
             --file src/dynastore/docker/Dockerfile \
             --target tester \
+            --build-arg SCOPE=typecheck \
             --tag dynastore-tester:ci \
             .
 
