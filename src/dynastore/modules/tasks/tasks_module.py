@@ -168,6 +168,72 @@ CREATE TRIGGER on_task_status_update
     EXECUTE FUNCTION {schema}.notify_task_status_changed();
 """
 
+# ---------------------------------------------------------------------------
+# pg_cron-driven stuck-task reaper
+# ---------------------------------------------------------------------------
+#
+# Replaces the in-process dispatcher janitor (``_run_janitor``) — a
+# DB-scheduled function so coordination happens at the DB layer, not
+# through Python pods racing on a pg_try_advisory_xact_lock.
+#
+# At prod scale (GUNICORN_WORKERS=5 × MAX_SCALE=80 = up to 400 dispatcher
+# loops), running the janitor in-process means 400 pods redundantly
+# scanning ``tasks.tasks`` on every wakeup and a lot of wasted
+# ``pg_try_advisory_xact_lock`` churn.  A pg_cron job is one coordinated
+# actor running on the DB: zero pod connections held, no leader election.
+#
+# Semantics:
+#   - Scans ACTIVE rows whose ``locked_until < NOW()`` (heartbeat expired
+#     = owner pod died / got SIGKILL / network partition / OOM).
+#   - Resets to PENDING (retry_count+1) unless ``retry_count >= max_retries``,
+#     in which case the row is moved to DEAD_LETTER.
+#   - Emits ``pg_notify('new_task_queued', 'reaper')`` so live dispatchers
+#     wake up immediately instead of waiting for their next signal_timeout.
+#   - Uses ``FOR UPDATE SKIP LOCKED`` defensively (the cron job has only
+#     one writer, but this prevents any interleaved heartbeat update from
+#     blocking the reap pass).
+GLOBAL_TASKS_REAPER_DDL = """
+CREATE OR REPLACE FUNCTION {schema}.reap_stuck_tasks(
+    p_max_retries INT DEFAULT 3
+) RETURNS INTEGER LANGUAGE plpgsql AS $func$
+DECLARE
+    reaped INT;
+BEGIN
+    WITH stuck AS (
+        SELECT timestamp, task_id, retry_count, max_retries
+        FROM {schema}.tasks
+        WHERE status = 'ACTIVE'
+          AND locked_until < NOW()
+        FOR UPDATE SKIP LOCKED
+    ),
+    reset AS (
+        UPDATE {schema}.tasks t
+        SET status = CASE
+                WHEN s.retry_count >= COALESCE(s.max_retries, p_max_retries)
+                    THEN 'DEAD_LETTER'
+                ELSE 'PENDING'
+            END,
+            retry_count       = s.retry_count + 1,
+            owner_id          = NULL,
+            locked_until      = NULL,
+            last_heartbeat_at = NULL,
+            error_message     = 'Reaped by {schema}.reap_stuck_tasks (heartbeat expired)'
+        FROM stuck s
+        WHERE t.timestamp = s.timestamp AND t.task_id = s.task_id
+        RETURNING t.task_id
+    )
+    SELECT COUNT(*) INTO reaped FROM reset;
+
+    IF reaped > 0 THEN
+        PERFORM pg_notify('new_task_queued', 'reaper');
+    END IF;
+
+    RETURN reaped;
+END
+$func$;
+"""
+
+
 
 def _build_tasks_ddl_batch(schema: str) -> DDLBatch:
     """Build a module-level DDL batch scoped to *schema*.
@@ -550,6 +616,35 @@ async def ensure_task_storage_exists(conn: DbResource, schema: str):
         logger.warning(
             f"TasksModule: register_partition_creation_policy failed for {schema}.tasks "
             f"(pg_cron unavailable?): {e}"
+        )
+
+    # Reaper function — DB-side replacement for the in-process janitor.
+    # Idempotent (CREATE OR REPLACE).
+    await DDLQuery(GLOBAL_TASKS_REAPER_DDL).execute(conn, schema=schema)
+
+    # Schedule the reaper via pg_cron.  Every minute — short enough to
+    # recover a pod failure within SLA, long enough that live heartbeats
+    # (default 30s interval extending locked_until to +5min) always win
+    # the race against the reap scan.
+    try:
+        reaper_command = (
+            f'SELECT "{schema}".reap_stuck_tasks();'
+        )
+        await maintenance_tools.register_cron_job(
+            conn,
+            job_name=f"dynastore-task-reaper-{schema}",
+            schedule="* * * * *",
+            command=reaper_command,
+        )
+        logger.info(
+            f"TasksModule: registered pg_cron reaper 'dynastore-task-reaper-{schema}' "
+            f"(every minute → {schema}.reap_stuck_tasks())."
+        )
+    except Exception as e:
+        logger.warning(
+            f"TasksModule: register_cron_job failed for {schema}.reap_stuck_tasks "
+            f"(pg_cron unavailable?): {e} — stuck tasks will accumulate until a "
+            f"manual SELECT {schema}.reap_stuck_tasks() or next successful boot."
         )
 
 
