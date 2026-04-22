@@ -50,6 +50,9 @@ from google.api_core.exceptions import NotFound
 from dynastore.models.protocols import CatalogsProtocol, StorageProtocol
 from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
 from dynastore.modules.gcp.gcp_module import GCPModule
+from dynastore.modules.db_config.query_executor import managed_transaction
+from dynastore.modules.tasks.runners import capability_map
+from dynastore.modules.tasks.tasks_module import list_tasks_for_catalog
 from dynastore.tools.discovery import get_protocol
 from tests.dynastore.test_utils import generate_test_id
 
@@ -65,6 +68,97 @@ def _stac_data_loader(filename: str):
     )
     with open(os.path.join(base, filename)) as f:
         return json.load(f)
+
+
+@pytest.mark.gcp
+@pytest.mark.asyncio
+@pytest.mark.enable_modules(
+    "db_config", "db", "catalog", "tasks", "gcp", "iam", "events", "cache",
+    "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql",
+)
+@pytest.mark.enable_extensions("stac")
+@pytest.mark.enable_tasks("gcp_provision", "gcp_catalog_cleanup")
+async def test_dispatcher_claims_gcp_provision_exclusively(
+    sysadmin_in_process_client, app_lifespan, catalog_cleaner,
+):
+    """Regression guard for the DefinitionOnlyTask dispatcher-crash bug (PR #39).
+
+    Root cause (2026-04-22): CapabilityMap.refresh() called are_protocols_satisfied()
+    on DefinitionOnlyTask placeholders, which lacked the method.  The AttributeError
+    killed the dispatcher before it entered its main loop — all gcp_provision_catalog
+    tasks stayed PENDING forever and no GCS buckets were created.
+
+    This test verifies the full ownership chain:
+    1. CapabilityMap has gcp_provision_catalog after startup (dispatcher started cleanly).
+    2. Catalog creation via POST /stac/catalogs enqueues the task.
+    3. wait_for_all_tasks() returns — task was claimed and ran.
+    4. Task status=COMPLETED and owner_id is populated (dispatcher identity, not null).
+    5. GCS bucket exists for the catalog.
+    """
+    gcp_module = get_protocol(StorageProtocol)
+    if not isinstance(gcp_module, GCPModule):
+        pytest.skip("GCPModule not registered as StorageProtocol.")
+    if not getattr(app_lifespan, "engine", None):
+        pytest.skip("app_state.engine not initialized.")
+    try:
+        storage_client = gcp_module.get_storage_client()
+    except RuntimeError:
+        pytest.skip("GCP storage client not available (no credentials).")
+
+    # 1. Dispatcher started cleanly — gcp_provision_catalog must be in async_types.
+    #    If DefinitionOnlyTask crashed refresh(), this set is empty.
+    assert "gcp_provision_catalog" in capability_map.async_types, (
+        f"gcp_provision_catalog missing from async capability map: {capability_map.async_types}. "
+        "Likely the dispatcher crashed at startup (DefinitionOnlyTask bug or missing GCPModule)."
+    )
+
+    catalog_id = f"it_dsp_{generate_test_id(8)}"
+    catalog_cleaner(catalog_id)
+
+    cat_payload = _stac_data_loader("catalog.json")
+    cat_payload["id"] = catalog_id
+
+    # 2. Create catalog — gcp_provision_catalog task enqueued inside the request.
+    resp = await sysadmin_in_process_client.post("/stac/catalogs", json=cat_payload)
+    assert resp.status_code in (200, 201), f"catalog create failed: {resp.text}"
+
+    # 3. Wait for the dispatcher to claim and complete the task.
+    await lifecycle_registry.wait_for_all_tasks(timeout=60.0)
+
+    # 4. Verify task status and who claimed it.
+    engine = app_lifespan.engine
+    async with managed_transaction(engine) as conn:
+        tasks = await list_tasks_for_catalog(conn, catalog_id)
+    prov_tasks = [t for t in tasks if t.task_type == "gcp_provision_catalog"]
+    assert prov_tasks, f"No gcp_provision_catalog task found for {catalog_id}"
+    task = prov_tasks[0]
+    assert task.status.value == "COMPLETED", (
+        f"task status={task.status.value}, retry_count={task.retry_count}, "
+        f"message={task.error_message!r}"
+    )
+    assert task.owner_id is not None, (
+        "owner_id is null — task was never claimed by any dispatcher. "
+        "The dispatcher may have crashed at startup."
+    )
+    logger.info(
+        "gcp_provision_catalog claimed by owner_id=%r, completed in retry_count=%d",
+        task.owner_id, task.retry_count,
+    )
+
+    # 5. GCS bucket must exist.
+    bucket_name = await gcp_module.get_storage_identifier(catalog_id)
+    assert bucket_name, f"No bucket linked to catalog {catalog_id} after COMPLETED task"
+    bucket = None
+    for _ in range(10):
+        try:
+            bucket = storage_client.get_bucket(bucket_name)
+            break
+        except NotFound:
+            await asyncio.sleep(1.0)
+    assert bucket is not None and bucket.exists(), (
+        f"Bucket {bucket_name} not visible in GCS after task COMPLETED"
+    )
+    logger.info("Bucket %s provisioned and verified for catalog %s", bucket_name, catalog_id)
 
 
 @pytest.mark.gcp

@@ -133,3 +133,46 @@ async def test_capability_map_includes_task_with_no_requirements():
         await cap.refresh()
 
     assert "test_no_req" in cap.async_types
+
+
+@pytest.mark.asyncio
+async def test_capability_map_tolerates_definition_only_placeholder():
+    """Regression: DefinitionOnlyTask-shaped placeholders must not crash refresh().
+
+    The placeholder is registered when a task's definition module is importable but its
+    heavy execution deps are missing. It is intentionally not a TaskProtocol subclass
+    (it is cast to one at registration). Before the fix, refresh() called
+    instance.are_protocols_satisfied() on the placeholder and crashed with
+    AttributeError, killing the dispatcher at startup so no service claimed any task
+    (observed on dynastore-catalog rev 00132-qsp, 2026-04-22 — carlo_catalog task
+    stayed PENDING, GCS bucket never provisioned).
+
+    This test mirrors the placeholder shape from
+    ``dynastore/tasks/__init__.py::_register_missing_task_definitions`` and asserts
+    the refresh() contract without having to exercise the entry-points machinery.
+    """
+    class _Placeholder:
+        """Shape-matches the real DefinitionOnlyTask."""
+        _task_type = "test_placeholder"
+        is_placeholder = True
+        required_protocols: tuple = ()
+
+        def are_protocols_satisfied(self) -> bool:
+            return True
+
+    instance = _Placeholder()
+    assert instance.are_protocols_satisfied() is True
+    assert instance.required_protocols == ()
+
+    cap = CapabilityMap()
+    with (
+        patch("dynastore.tasks.get_loaded_task_types", return_value=["test_placeholder"]),
+        patch("dynastore.tasks.get_task_instance", return_value=instance),
+        # No runner handles the placeholder → it should be silently excluded,
+        # not crash the refresh.
+        patch("dynastore.modules.tasks.runners.get_runners", return_value=[]),
+    ):
+        await cap.refresh()  # must not raise
+
+    assert "test_placeholder" not in cap.async_types
+    assert "test_placeholder" not in cap.sync_types
