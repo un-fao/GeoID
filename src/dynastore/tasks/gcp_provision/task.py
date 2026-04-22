@@ -20,7 +20,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel
-from dynastore.tasks.protocols import TaskProtocol
+from dynastore.tasks.protocols import TaskProtocol, requires
 from dynastore.modules.tasks.models import (
     RunnerContext,
     TaskPayload,
@@ -88,6 +88,8 @@ def _get_storage_protocol() -> StorageProtocol:
 
 class GcpProvisionInputs(BaseModel):
     catalog_id: str
+
+@requires(StorageProtocol)
 class ProvisioningTask(TaskProtocol):
     priority: int = 100
     """
@@ -196,6 +198,7 @@ class ProvisioningTask(TaskProtocol):
                 f"provisioning_status='failed': {mark_err}"
             )
 
+@requires(StorageProtocol)
 class GcpDestroyCatalogTask(TaskProtocol):
     priority: int = 100
     """

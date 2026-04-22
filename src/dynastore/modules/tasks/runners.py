@@ -604,11 +604,23 @@ class CapabilityMap:
 
     async def refresh(self) -> None:
         """Rebuild capability map from current runners and loaded task types."""
-        from dynastore.tasks import get_loaded_task_types
+        from dynastore.tasks import get_loaded_task_types, get_task_instance
+        from dynastore.tools.discovery import get_all_protocols
         async with self._lock:
             self._async_types.clear()
             self._sync_types.clear()
             for task_type in get_loaded_task_types():
+                instance = get_task_instance(task_type)
+                if instance is not None and not instance.are_protocols_satisfied():
+                    missing = [
+                        p.__name__ for p in instance.required_protocols
+                        if len(get_all_protocols(p)) == 0
+                    ]
+                    logger.warning(
+                        "CapabilityMap: skipping '%s' — required protocols unavailable: %s",
+                        task_type, missing,
+                    )
+                    continue
                 for runner in get_runners(TaskExecutionMode.ASYNCHRONOUS):
                     if runner.can_handle(task_type):
                         self._async_types.add(task_type)

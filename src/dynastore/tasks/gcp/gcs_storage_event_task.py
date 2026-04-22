@@ -34,7 +34,7 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict
 
-from dynastore.tasks.protocols import TaskProtocol
+from dynastore.tasks.protocols import TaskProtocol, requires
 from dynastore.models.tasks import TaskPayload
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import AssetsProtocol
@@ -54,6 +54,7 @@ class GcsStorageEventInputs(BaseModel):
     metadata: Dict[str, Any] = {}
 
 
+@requires(AssetsProtocol)
 class GcsStorageEventTask(TaskProtocol):
     """
     Durable task for reacting to GCS object lifecycle events.

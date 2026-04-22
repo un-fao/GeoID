@@ -218,3 +218,21 @@ async def test_successful_provision_marks_ready():
     assert result["status"] == "ready"
     assert result["bucket_name"] == "d88971-test-catalog-ok"
     mock_catalogs.update_provisioning_status.assert_awaited_once_with("c1", "ready")
+
+
+# ---------------------------------------------------------------------------
+# Protocol-gate declaration — regression guard
+# ---------------------------------------------------------------------------
+
+
+def test_provisioning_task_declares_storage_protocol():
+    """ProvisioningTask must declare StorageProtocol as required (prevents wrong service claiming it)."""
+    from dynastore.models.protocols import StorageProtocol
+    assert StorageProtocol in ProvisioningTask.required_protocols
+
+
+def test_provisioning_task_unsatisfied_without_storage():
+    """ProvisioningTask.are_protocols_satisfied() returns False when StorageProtocol unavailable."""
+    task = ProvisioningTask()
+    with patch("dynastore.tools.discovery.get_all_protocols", return_value=[]):
+        assert task.are_protocols_satisfied() is False
