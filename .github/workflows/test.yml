@@ -36,17 +36,22 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-
-      - name: Install dependencies for type checking
+      # Build the `tester` stage of the canonical Dockerfile — same image used
+      # by the test job. Already has GDAL native libs + pyright + ".[test,all,dev]".
+      - name: Build tester image
         run: |
-          pip install "pyright>=1.1.390"
-          pip install -e ".[all]"
+          docker build \
+            --file src/dynastore/docker/Dockerfile \
+            --target tester \
+            --tag dynastore-tester:ci \
+            .
 
       - name: Run Pyright
-        run: pyright src/dynastore/ --warnings
+        run: |
+          docker run --rm \
+            --workdir /dynastore \
+            dynastore-tester:ci \
+            /opt/venv/bin/pyright src/dynastore/ --warnings
 
   test:
     runs-on: ubuntu-22.04
