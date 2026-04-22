@@ -24,7 +24,8 @@ from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel
 
-from dynastore.tasks.protocols import TaskProtocol
+from dynastore.tasks.protocols import TaskProtocol, requires
+from dynastore.models.protocols import IndexerProtocol
 from dynastore.modules.tasks.models import TaskPayload
 
 logger = logging.getLogger(__name__)
@@ -193,6 +194,7 @@ async def _reindex_collection(
 # Task: BulkCatalogReindexTask
 # ---------------------------------------------------------------------------
 
+@requires(IndexerProtocol)
 class BulkCatalogReindexTask(TaskProtocol):
     """
     Reindex all items in a catalog into Elasticsearch.
@@ -287,6 +289,7 @@ class BulkCatalogReindexTask(TaskProtocol):
 # Task: BulkCollectionReindexTask
 # ---------------------------------------------------------------------------
 
+@requires(IndexerProtocol)
 class BulkCollectionReindexTask(TaskProtocol):
     """
     Reindex all items in a single collection into Elasticsearch.
@@ -341,6 +344,7 @@ class BulkCollectionReindexTask(TaskProtocol):
 # Task: ObfuscatedIndexTask  (per-item, incremental)
 # ---------------------------------------------------------------------------
 
+@requires(IndexerProtocol)
 class ObfuscatedIndexTask(TaskProtocol):
     """
     Index a single item as a full tenant-feature doc into the per-tenant
@@ -407,6 +411,7 @@ class ObfuscatedIndexTask(TaskProtocol):
 # Task: ObfuscatedDeleteTask  (per-item, incremental)
 # ---------------------------------------------------------------------------
 
+@requires(IndexerProtocol)
 class ObfuscatedDeleteTask(TaskProtocol):
     """
     Remove a single geoid document from the obfuscated index.
