@@ -111,7 +111,14 @@ from dynastore.models.query_builder import QueryRequest, FieldSelection, FilterC
 from dynastore.extensions import ExtensionProtocol
 class DwhService(ExtensionProtocol):
     priority: int = 100
-    router: APIRouter = APIRouter(prefix="/dwh", tags=["Data Warehouse API"])
+
+    def __init__(self):
+        self.router = APIRouter(prefix="/dwh", tags=["Data Warehouse API"])
+        self._register_routes()
+
+        from dynastore.tools.discovery import register_plugin
+        from .query_transform import DWHJoinQueryTransform
+        register_plugin(DWHJoinQueryTransform())
 
     async def _dwh_join_impl(
         self,
@@ -249,14 +256,6 @@ class DwhService(ExtensionProtocol):
             target_srid=req.destination_crs,
             encoding=req.output_encoding,
         )
-
-    def __init__(self):
-        self._register_routes()
-        
-        # Register query transformer
-        from dynastore.tools.discovery import register_plugin
-        from .query_transform import DWHJoinQueryTransform
-        register_plugin(DWHJoinQueryTransform())
 
     def _register_routes(self):
         self.router.add_api_route(
