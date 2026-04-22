@@ -71,6 +71,8 @@ class GcpJobRunner(RunnerProtocol, ProtocolPlugin[Any]):
             inputs=context.inputs,
         )
         new_task = await tasks_module.create_task(context.engine, task_create_request, schema=context.db_schema)
+        if new_task is None:
+            raise RuntimeError("GcpCloudRunner: create_task returned None (dedup hit on a non-dedup task).")
 
         from datetime import datetime, timezone, timedelta
         locked_time = datetime.now(timezone.utc) + timedelta(minutes=5)

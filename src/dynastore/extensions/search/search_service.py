@@ -491,6 +491,8 @@ class SearchService(ExtensionProtocol):
             ),
             schema=tasks_module.get_task_schema(),
         )
+        if task is None:
+            raise RuntimeError("reindex_catalog: create_task returned None (dedup hit on a non-dedup task).")
         return {"task_id": str(task.task_id), "catalog_id": catalog_id, "mode": resolved_mode, "driver": driver, "status": "queued"}
 
     async def reindex_collection(
@@ -529,6 +531,8 @@ class SearchService(ExtensionProtocol):
             ),
             schema=tasks_module.get_task_schema(),
         )
+        if task is None:
+            raise RuntimeError("reindex_collection: create_task returned None (dedup hit on a non-dedup task).")
         return {
             "task_id": str(task.task_id),
             "catalog_id": catalog_id,

@@ -116,6 +116,8 @@ class FastAPIBackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
             caller_id=context.caller_id, task_type=str(context.task_type), inputs=context.inputs
         )
         new_task = await tasks_module.create_task(context.engine, task_create_request, schema=context.db_schema)
+        if new_task is None:
+            raise RuntimeError("FastAPIBackgroundRunner: create_task returned None (dedup hit on a non-dedup task).")
         logger.info(f"Created task '{new_task.task_id}' for FastAPI background execution.")
 
         # 3. Add the robust wrapper to FastAPI's background tasks.

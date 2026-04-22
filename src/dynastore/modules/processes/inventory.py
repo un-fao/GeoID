@@ -15,7 +15,7 @@ and lets the same logic back future clients (admin panels, notebooks).
 from __future__ import annotations
 
 import logging
-from typing import Iterable, List, Optional, Set
+from typing import Dict, Iterable, List, Literal, Optional, Set
 
 from fastapi import Request
 
@@ -55,7 +55,7 @@ _ASSET_PROCESS_TYPOLOGY = models.ProcessTypology(
 )
 
 # Runner -> execution location. Anything not listed defaults to "in_process".
-_RUNNER_LOCATIONS = {
+_RUNNER_LOCATIONS: Dict[str, Literal["in_process", "cloud_run"]] = {
     "gcp_cloud_run": "cloud_run",
 }
 

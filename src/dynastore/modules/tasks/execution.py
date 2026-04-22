@@ -562,6 +562,8 @@ class ExecutionEngine:
         )
 
         task = await create_task(engine, task_data, schema)
+        if task is None:
+            raise RuntimeError("run_ephemeral: create_task returned None (dedup hit on a non-dedup task).")
         owner_id = f"ephemeral-{task.task_id}"
         row = await claim_by_id(engine, task.task_id, visibility_timeout, owner_id)
         if row is None:

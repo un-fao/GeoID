@@ -42,12 +42,11 @@ jobs:
 
       - name: Install dependencies for type checking
         run: |
-          pip install pyright>=1.1.390
-          pip install -e ".[all]" 2>/dev/null || pip install -e "." 2>/dev/null || true
+          pip install "pyright>=1.1.390"
+          pip install -e ".[all]"
 
       - name: Run Pyright
         run: pyright src/dynastore/ --warnings
-        continue-on-error: true
 
   test:
     runs-on: ubuntu-22.04

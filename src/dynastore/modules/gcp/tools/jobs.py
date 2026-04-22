@@ -16,12 +16,15 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from typing import Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional
 from google.api_core.operation import Operation
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import JobExecutionProtocol
 from dynastore.tools.cache import cached
 import logging
+
+if TYPE_CHECKING:
+    from dynastore.modules.processes.models import Process
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +80,7 @@ def get_job_map_sync() -> Dict[str, str]:
     return _JOB_MAP_SYNC
 
 
-def try_load_process_definition(task_type: str) -> Optional[object]:
+def try_load_process_definition(task_type: str) -> Optional["Process"]:
     """Load a Process definition from a lightweight definition.py module.
 
     Tries both dotted (``export_features``) and hyphenated (``export-features``)
