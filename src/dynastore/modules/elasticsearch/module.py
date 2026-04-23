@@ -597,8 +597,13 @@ class ElasticsearchModule(ModuleProtocol):
             return
 
         # --- Obfuscated path: index only {geoid, catalog_id, collection_id} ---
-        es_cfg = await _get_es_catalog_config(catalog_id)
-        if es_cfg and getattr(es_cfg, "obfuscated", False):
+        # Per-collection resolver consults the collection-tier override first
+        # (ElasticsearchCollectionConfig.obfuscated) and falls back to the
+        # catalog-tier flag (ElasticsearchCatalogConfig.obfuscated).
+        from dynastore.modules.elasticsearch.es_collection_config import (
+            is_collection_obfuscated,
+        )
+        if await is_collection_obfuscated(catalog_id, collection_id):
             from dynastore.tasks.elasticsearch_indexer.tasks import ObfuscatedIndexInputs
             await self._dispatch_task(
                 task_type="elasticsearch_obfuscated_index",
@@ -642,8 +647,13 @@ class ElasticsearchModule(ModuleProtocol):
         items_subset = (payload if isinstance(payload, dict) else {}).get("items_subset", [])
 
         # --- Obfuscated path ---
-        es_cfg = await _get_es_catalog_config(catalog_id)
-        if es_cfg and getattr(es_cfg, "obfuscated", False):
+        # Single resolver call before the loop — every item in this bulk
+        # event shares the same (catalog_id, collection_id) so the
+        # obfuscation decision is identical for the whole batch.
+        from dynastore.modules.elasticsearch.es_collection_config import (
+            is_collection_obfuscated,
+        )
+        if await is_collection_obfuscated(catalog_id, collection_id):
             from dynastore.tasks.elasticsearch_indexer.tasks import ObfuscatedIndexInputs
             for item_doc in items_subset:
                 item_id = item_doc.get("id")
