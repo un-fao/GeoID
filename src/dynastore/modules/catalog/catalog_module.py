@@ -305,19 +305,31 @@ class CatalogModule(ModuleProtocol):
 
 
             # 6. Start Background Event Consumer (automatic)
-            # If any module registered async event listeners, start the
-            # durable event consumer automatically — no env var needed.
+            # Both reindex and task.failed listeners are registered
+            # unconditionally above, so has_listeners() is True on every
+            # service that loads CatalogModule — including maps/auth/geoid
+            # that have no indexer-side work to do. Gate consumer start on
+            # IndexerProtocol presence (mirrors @requires(IndexerProtocol)
+            # used by tasks/elasticsearch*); only catalog/worker include
+            # index_grp, so non-indexing services skip the 16-shard spawn
+            # and stop storming asyncpg with consume_batch claims they
+            # have no reason to make.
+            from dynastore.tools.discovery import get_all_protocols
+            from dynastore.models.protocols.indexer import IndexerProtocol
+
             _consumer_shutdown = asyncio.Event()
-            if self.event_service.has_listeners():
+            has_indexer = bool(get_all_protocols(IndexerProtocol))
+            if self.event_service.has_listeners() and has_indexer:
                 logger.info(
-                    "CatalogModule: Async event listeners detected — "
-                    "starting durable event consumer automatically."
+                    "CatalogModule: listeners + IndexerProtocol present — "
+                    "starting durable event consumer."
                 )
                 await self.event_service.start_consumer(_consumer_shutdown)
             else:
                 logger.info(
-                    "CatalogModule: No async event listeners registered — "
-                    "event consumer not started."
+                    "CatalogModule: event consumer not started "
+                    "(has_listeners=%s, has_indexer=%s).",
+                    self.event_service.has_listeners(), has_indexer,
                 )
 
             try:
