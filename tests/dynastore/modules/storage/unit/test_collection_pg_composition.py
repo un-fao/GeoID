@@ -447,3 +447,50 @@ async def test_apply_handler_ignores_non_wrapper_configs():
     await _on_apply_collection_pg_driver_config(
         _Unrelated(), catalog_id="cat", collection_id=None, db_resource=None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Discovery integration — wrapper IS the discovered CollectionMetadataStore
+# plugin after register_plugin().  Closes a real gap: existing router tests
+# inject mocks via ``drivers=`` and don't exercise the production discovery
+# path.  This test catches "I forgot to register the wrapper" or "I forgot
+# to remove a raw driver entry-point" — exactly the cutover-class
+# regressions PR 1e step 3b would have introduced if not caught.
+# ---------------------------------------------------------------------------
+
+
+async def test_wrapper_is_discoverable_via_get_protocols():
+    """Verify ``get_protocols(CollectionMetadataStore)`` returns the
+    wrapper after ``register_plugin``, NOT a raw inner driver.  Mirrors
+    the production discovery path that ``collection_metadata_router._resolve_drivers``
+    uses when called without an explicit ``drivers=`` kwarg.
+    """
+    from dynastore.models.protocols.metadata_driver import (
+        CollectionMetadataStore,
+    )
+    from dynastore.tools.discovery import (
+        get_protocols,
+        register_plugin,
+        unregister_plugin,
+    )
+
+    wrapper = CollectionPostgresqlDriver()
+    register_plugin(wrapper)
+    try:
+        discovered = list(get_protocols(CollectionMetadataStore))
+        # Wrapper IS in the discovery results.
+        assert wrapper in discovered
+        # And every PG-tier discovered instance is a wrapper, not a raw inner.
+        # (Other CollectionMetadataStore implementers — e.g. ES drivers — may
+        # also appear; this test only pins the PG-tier shape.)
+        from dynastore.modules.storage.drivers.metadata_postgresql import (
+            CollectionCorePostgresqlDriver,
+        )
+        for d in discovered:
+            assert not isinstance(d, CollectionCorePostgresqlDriver), (
+                "Raw CollectionCorePostgresqlDriver must NOT surface as a "
+                "discovered plugin after PR 1e step 3b cutover — composition "
+                "is the only PG-tier path."
+            )
+    finally:
+        unregister_plugin(wrapper)

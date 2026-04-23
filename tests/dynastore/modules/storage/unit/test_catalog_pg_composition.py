@@ -367,3 +367,33 @@ async def test_apply_handler_ignores_non_wrapper_configs():
     await _on_apply_catalog_pg_driver_config(
         _Unrelated(), catalog_id="cat", collection_id=None, db_resource=None,
     )
+
+
+async def test_wrapper_is_discoverable_via_get_protocols():
+    """Sister test to the collection wrapper's discovery integration
+    test — verify ``get_protocols(CatalogMetadataStore)`` returns the
+    catalog wrapper after ``register_plugin``, and that no raw
+    ``CatalogCorePostgresqlDriver`` surfaces.
+    """
+    from dynastore.tools.discovery import (
+        get_protocols,
+        register_plugin,
+        unregister_plugin,
+    )
+
+    wrapper = CatalogPostgresqlDriver()
+    register_plugin(wrapper)
+    try:
+        discovered = list(get_protocols(CatalogMetadataStore))
+        assert wrapper in discovered
+        from dynastore.modules.storage.drivers.metadata_postgresql import (
+            CatalogCorePostgresqlDriver,
+        )
+        for d in discovered:
+            assert not isinstance(d, CatalogCorePostgresqlDriver), (
+                "Raw CatalogCorePostgresqlDriver must NOT surface as a "
+                "discovered plugin after PR 1e step 3c cutover — composition "
+                "is the only PG-tier path."
+            )
+    finally:
+        unregister_plugin(wrapper)
