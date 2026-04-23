@@ -54,7 +54,7 @@ from dynastore.models.tasks import (
     Task,
 )
 from dynastore.modules.db_config.query_executor import DbResource
-from dynastore.modules.iam.models import SYSTEM_USER_ID
+from dynastore.models.auth_models import SYSTEM_USER_ID
 
 logger = logging.getLogger(__name__)
 

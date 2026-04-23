@@ -20,8 +20,7 @@
 Driver-role shared types — MetadataDomain + DriverSla.
 
 These types are shared across the role-based driver architecture
-(Primary / Transformer / Indexer / Backup — see
-~/.claude/plans/geoid-i-m-checking-the-groovy-blossom.md).
+(Primary / Transformer / Indexer / Backup).
 
 - :class:`MetadataDomain` — which slice of the payload a driver owns
   (``CORE``, ``STAC``, future ``RECORDS``/``DC``/``STATS``).  Declared as
