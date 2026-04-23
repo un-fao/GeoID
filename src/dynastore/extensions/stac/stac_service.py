@@ -514,7 +514,8 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
 
             input_data = request_body.model_dump(exclude_unset=True)
 
-            # Write-time STAC validation (lenient — warnings only)
+            # Write-time STAC validation (lenient — warnings only; pystac/stac-pydantic
+            # are too strict on optional fields like `links` to gate the request).
             validate_stac_collection(input_data)
 
             use_lang = (
