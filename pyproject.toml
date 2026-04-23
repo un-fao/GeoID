@@ -289,9 +289,9 @@ api_open = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,process
 # api_catalog: api_open + auth (most common production deployment)
 api_catalog = ["dynastore[api_open,auth_grp]"]
 # api_maps: maps/tiles/styles service — WITH auth (kept for reference / future use)
-api_maps = ["dynastore[core,catalog_grp,google_grp,maps_grp,tools_grp,monitor_grp,auth_grp]"]
+api_maps = ["dynastore[core,catalog_grp,google_grp,maps_grp,tools_grp,monitor_grp,auth_grp,module_catalog_elasticsearch]"]
 # api_maps_open: maps service WITHOUT auth — public tile/style serving
-api_maps_open = ["dynastore[core,catalog_grp,google_grp,maps_grp,tools_grp,monitor_grp]"]
+api_maps_open = ["dynastore[core,catalog_grp,google_grp,maps_grp,tools_grp,monitor_grp,module_catalog_elasticsearch]"]
 # api_features: lightweight local-dev service — OGC Features + STAC, no GCP/tools/index
 api_features = ["dynastore[core,catalog_grp]"]
 # api_full: all features (local dev or monolithic deployments)
