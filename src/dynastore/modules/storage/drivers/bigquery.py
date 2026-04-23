@@ -13,6 +13,7 @@ from dynastore.models.protocols import (
     ConfigsProtocol,
 )
 from dynastore.models.protocols.field_definition import FieldDefinition
+from dynastore.models.protocols.typed_driver import TypedDriver
 from dynastore.modules.storage.drivers.bigquery_models import (
     BigQueryCredentials,
     BigQueryTarget,
@@ -30,7 +31,7 @@ def _get_bq_service() -> Optional[BigQueryProtocol]:
     return get_protocol(BigQueryProtocol)
 
 
-class ItemsBigQueryDriver:
+class ItemsBigQueryDriver(TypedDriver[ItemsBigQueryDriverConfig]):
     """BigQuery driver — READ + STREAMING (Phase 4a) + reporter-mode WRITE (Phase 3).
 
     WRITE is gated by ``ItemsBigQueryDriverConfig.reporter_mode``:

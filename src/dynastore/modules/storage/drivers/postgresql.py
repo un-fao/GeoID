@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols.storage_driver import Capability
+from dynastore.models.protocols.typed_driver import TypedDriver
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.protocols import ModuleProtocol
 from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
@@ -43,7 +44,7 @@ from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
 logger = logging.getLogger(__name__)
 
 
-class ItemsPostgresqlDriver(ModuleProtocol):
+class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProtocol):
     """PostgreSQL storage driver — delegates to existing ItemsProtocol.
 
     Satisfies ``CollectionItemsStore`` by wrapping the existing

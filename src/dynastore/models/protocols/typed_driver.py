@@ -72,6 +72,17 @@ ConfigT = TypeVar("ConfigT", bound="_PluginDriverConfig")
 # needed — the resolved string is constant per class).
 _DRIVER_REGISTRY: Dict[Type["_PluginDriverConfig"], Type["TypedDriver[Any]"]] = {}
 
+# Names of abstract intermediate bases that are PluginConfig subclasses but
+# never published on the wire.  ``class_key()`` returns ``__qualname__`` for
+# these so ``TypedModelRegistry.register`` (called from PluginConfig's
+# ``__init_subclass__``) doesn't choke during the abstract base's creation.
+_ABSTRACT_BASE_NAMES: frozenset[str] = frozenset({
+    "_PluginDriverConfig",
+    "DriverPluginConfig",
+    "CollectionDriverConfig",
+    "AssetDriverConfig",
+})
+
 
 class TypedDriver(Generic[ConfigT]):
     """Base for every driver class whose config class is type-bound.
@@ -109,18 +120,28 @@ class TypedDriver(Generic[ConfigT]):
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        try:
-            cfg_cls = cls.config_cls()
-        except TypeError:
-            return  # abstract intermediate — no bind to register
-        existing = _DRIVER_REGISTRY.get(cfg_cls)
+        # Register ONLY when ``TypedDriver[X]`` appears directly in this
+        # subclass's __orig_bases__ — not when the bind is inherited.  Lets a
+        # specialisation (e.g. ``ItemsElasticsearchObfuscatedDriver(
+        # ItemsElasticsearchDriver)``) share the parent's config without
+        # colliding on the registry.
+        direct_bind = None
+        for base in cls.__dict__.get("__orig_bases__", ()):
+            if get_origin(base) is TypedDriver:
+                args = get_args(base)
+                if args:
+                    direct_bind = args[0]
+                break
+        if direct_bind is None:
+            return
+        existing = _DRIVER_REGISTRY.get(direct_bind)
         if existing is not None and existing is not cls:
             raise RuntimeError(
-                f"TypedDriver bind conflict: {cfg_cls.__name__} is already "
+                f"TypedDriver bind conflict: {direct_bind.__name__} is already "
                 f"bound to {existing.__name__}; cannot re-bind to {cls.__name__}. "
                 "A config class can serve at most one driver class.",
             )
-        _DRIVER_REGISTRY[cfg_cls] = cls
+        _DRIVER_REGISTRY[direct_bind] = cls
 
 
 class _PluginDriverConfig(PluginConfig):
@@ -144,18 +165,26 @@ class _PluginDriverConfig(PluginConfig):
     @classmethod
     def class_key(cls) -> str:
         """Return the wire-published key — the bound driver class name when
-        a driver is registered, else the config's ``__qualname__`` as a
-        non-fatal fallback.
+        a :class:`TypedDriver` binds this config, else ``__qualname__``.
 
-        Fallback is needed because ``TypedModelRegistry.register`` calls
-        ``class_key()`` from the ``__init_subclass__`` chain BEFORE the
-        ``class XDriver(TypedDriver[XConfig])`` declaration has had a
-        chance to register the pair (Python class-body order).  Raising
-        here would make every config import-order-fragile.
+        The qualname fallback is necessary because ``PluginConfig.__init_subclass__``
+        chains into ``TypedModelRegistry.register`` which calls ``class_key()``
+        during class creation — BEFORE the paired ``class XDriver(TypedDriver[XConfig])``
+        declaration in the driver module has had a chance to populate
+        :data:`_DRIVER_REGISTRY`.  The fallback is class-loading mechanics,
+        not an operator-facing legacy alias: by the time an operator-facing
+        publisher calls ``class_key()`` (post-import), every concrete
+        ``*DriverConfig`` is bound and returns the driver class name.
 
-        Operators / publishers should call :meth:`assert_bound` before
-        relying on the wire key being the driver class name.
+        Operator-facing publishers should call :meth:`assert_bound` to surface
+        any orphan configs that escaped the binding.
+
+        The intermediate bases (``_PluginDriverConfig``, ``DriverPluginConfig``,
+        ``CollectionDriverConfig``, ``AssetDriverConfig``) always return
+        ``__qualname__`` — they're abstract markers, never published.
         """
+        if cls.__name__ in _ABSTRACT_BASE_NAMES:
+            return cls.__qualname__
         driver_cls = _DRIVER_REGISTRY.get(cls)
         if driver_cls is None:
             return cls.__qualname__
@@ -164,22 +193,16 @@ class _PluginDriverConfig(PluginConfig):
     @classmethod
     def assert_bound(cls) -> None:
         """Raise :class:`RuntimeError` if no :class:`TypedDriver` binds this
-        config class.  Call from operator-facing publish paths to surface
-        orphan configs loudly.
-
-        The bare ``_PluginDriverConfig`` base is exempt — it's an abstract
-        marker, not a real config.  ``__name__`` comparison avoids the
-        NameError that an identity check would hit during the subclass-
-        creation chain.
+        config class.  Operator-facing publish paths call this before
+        relying on the wire key being the driver class name.
         """
-        if cls.__name__ == "_PluginDriverConfig":
+        if cls.__name__ in _ABSTRACT_BASE_NAMES:
             return
         if cls not in _DRIVER_REGISTRY:
             raise RuntimeError(
                 f"{cls.__name__}: no TypedDriver class binds this config. "
                 f"Declare `class XDriver(TypedDriver[{cls.__name__}])` so "
-                "the driver class name becomes the wire key, or inherit "
-                "from PluginConfig directly if no driver-pairing is intended.",
+                "the driver class name becomes the operator-facing wire key.",
             )
 
 

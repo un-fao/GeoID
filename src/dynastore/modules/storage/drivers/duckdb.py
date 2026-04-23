@@ -52,6 +52,7 @@ if TYPE_CHECKING:
 
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols.storage_driver import Capability
+from dynastore.models.protocols.typed_driver import TypedDriver
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.concurrency import run_in_thread
 from dynastore.modules.protocols import ModuleProtocol
@@ -198,7 +199,7 @@ def _close_pool():
             logger.info("DuckDB: connection pool closed (%d connections)", closed)
 
 
-class ItemsDuckdbDriver(ModuleProtocol):
+class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
     """DuckDB storage driver — file-based analytical reads.
 
     Reads from parquet, CSV, JSON, etc. via DuckDB's built-in readers.

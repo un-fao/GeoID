@@ -36,6 +36,10 @@ from typing import Any, ClassVar, Dict, FrozenSet, List, Optional, Tuple
 from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols.metadata_driver import MetadataCapability
 from dynastore.modules.storage.storage_location import StorageLocation
+from dynastore.models.protocols.typed_driver import (
+    TypedDriver,
+    _PluginDriverConfig,
+)
 from dynastore.modules.db_config.platform_config_service import (
     Immutable,
     PluginConfig,
@@ -44,7 +48,7 @@ from pydantic import Field
 
 logger = logging.getLogger(__name__)
 
-class MetadataElasticsearchDriverConfig(PluginConfig):
+class MetadataElasticsearchDriverConfig(_PluginDriverConfig):
     """Configuration for the Elasticsearch collection metadata driver.
 
     ``index_prefix`` is ``Immutable`` — once set it cannot change, because
@@ -171,7 +175,7 @@ def _bbox_to_envelope(bbox: List[float]) -> Optional[Dict[str, Any]]:
     }
 
 
-class MetadataElasticsearchDriver:
+class MetadataElasticsearchDriver(TypedDriver[MetadataElasticsearchDriverConfig]):
     """Elasticsearch implementation of CollectionMetadataStore.
 
     Uses opensearch-py client (wire-compatible with ES and OpenSearch).

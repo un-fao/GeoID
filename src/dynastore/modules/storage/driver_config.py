@@ -44,6 +44,7 @@ from pydantic import ConfigDict, Discriminator, Field, field_validator, model_va
 from dynastore.tools.secrets import Secret
 from dynastore.tools.ui_hints import ui
 
+from dynastore.models.protocols.typed_driver import _PluginDriverConfig
 from dynastore.modules.db_config.platform_config_service import (
     Immutable,
     PluginConfig,
@@ -364,11 +365,14 @@ class WritePolicyDefaults(PluginConfig):
 # ---------------------------------------------------------------------------
 
 
-class DriverPluginConfig(PluginConfig):
+class DriverPluginConfig(_PluginDriverConfig):
     """Base for all per-driver configs.
 
-    Subclasses are identified by their class name (``class_key()`` defaults to
-    ``__qualname__``).  No ``_class_key`` override is needed or allowed.
+    Inherits :class:`_PluginDriverConfig`, which auto-derives ``class_key()``
+    from the ``TypedDriver[X]`` bind on the paired driver class.  Operator-
+    facing JSON wire key drops the ``Config`` suffix and matches the routing
+    entry's ``driver_id`` byte-for-byte.  No per-class ``class_key()``
+    override is needed or allowed.
 
     Fields shared across all drivers:
 

@@ -66,6 +66,7 @@ from dynastore.models.protocols.metadata_driver import (
     CollectionMetadataStore,
     MetadataCapability,
 )
+from dynastore.models.protocols.typed_driver import TypedDriver
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     DbResource,
@@ -415,7 +416,9 @@ class _PgCollectionMetadataBase:
         return None
 
 
-class CollectionCorePostgresqlDriver(_PgCollectionMetadataBase):
+class CollectionCorePostgresqlDriver(
+    TypedDriver[CollectionCorePostgresqlDriverConfig], _PgCollectionMetadataBase,
+):
     """Primary driver for CORE collection metadata (``title``, ``description``, …).
 
     Backs ``{schema}.collection_metadata_core``.  Declares ``SEARCH`` because
@@ -636,7 +639,9 @@ class _PgCatalogMetadataBase:
         return None
 
 
-class CatalogCorePostgresqlDriver(_PgCatalogMetadataBase):
+class CatalogCorePostgresqlDriver(
+    TypedDriver[CatalogCorePostgresqlDriverConfig], _PgCatalogMetadataBase,
+):
     """Primary driver for CORE catalog metadata.
 
     Backs ``catalog.catalog_metadata_core``.  Scope: ``title``,

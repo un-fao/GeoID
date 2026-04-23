@@ -54,8 +54,13 @@ if TYPE_CHECKING:
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols.storage_driver import Capability
+from dynastore.models.protocols.typed_driver import TypedDriver
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.protocols import ModuleProtocol
+from dynastore.modules.storage.driver_config import (
+    AssetElasticsearchDriverConfig,
+    ItemsElasticsearchDriverConfig,
+)
 from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
 
 logger = logging.getLogger(__name__)
@@ -233,7 +238,9 @@ class _ElasticsearchBase:
 # ItemsElasticsearchDriver — SFEOS-backed full STAC
 # ---------------------------------------------------------------------------
 
-class ItemsElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
+class ItemsElasticsearchDriver(
+    TypedDriver[ItemsElasticsearchDriverConfig], _ElasticsearchBase, ModuleProtocol,
+):
     """SFEOS-compatible Elasticsearch storage driver.
 
     Delegates all ES operations to ``stac-fastapi-elasticsearch``'s
@@ -1562,7 +1569,9 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
 # AssetElasticsearchDriver — per-catalog asset index
 # ---------------------------------------------------------------------------
 
-class AssetElasticsearchDriver(_ElasticsearchBase, ModuleProtocol):
+class AssetElasticsearchDriver(
+    TypedDriver[AssetElasticsearchDriverConfig], _ElasticsearchBase, ModuleProtocol,
+):
     """Elasticsearch storage driver for asset metadata.
 
     Indexes asset documents into per-catalog ``{prefix}-assets-{catalog_id}``

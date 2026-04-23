@@ -53,6 +53,8 @@ from sqlalchemy import text
 
 from dynastore.models.protocols.asset_driver import AssetStore
 from dynastore.models.protocols.storage_driver import Capability
+from dynastore.models.protocols.typed_driver import TypedDriver
+from dynastore.modules.storage.driver_config import AssetPostgresqlDriverConfig
 from dynastore.modules.db_config.query_executor import (
     DDLQuery,
     DQLQuery,
@@ -68,7 +70,7 @@ logger = logging.getLogger(__name__)
 _CATALOG_LEVEL_COLLECTION_ID = "_catalog_"
 
 
-class AssetPostgresqlDriver:
+class AssetPostgresqlDriver(TypedDriver[AssetPostgresqlDriverConfig]):
     """PostgreSQL implementation of ``AssetStore``.
 
     Owns all DDL and SQL for asset storage in the tenant schema.

@@ -33,6 +33,7 @@ from __future__ import annotations
 from typing import ClassVar, FrozenSet, Tuple
 
 from dynastore.models.protocols.metadata_driver import MetadataCapability
+from dynastore.models.protocols.typed_driver import TypedDriver
 from dynastore.modules.storage.driver_config import DriverPluginConfig
 from dynastore.modules.storage.drivers.metadata_postgresql import (
     _PgCatalogMetadataBase,
@@ -57,7 +58,9 @@ class CatalogStacPostgresqlDriverConfig(DriverPluginConfig):
     """Identity marker for CatalogStacPostgresqlDriver."""
 
 
-class CollectionStacPostgresqlDriver(_PgCollectionMetadataBase):
+class CollectionStacPostgresqlDriver(
+    TypedDriver[CollectionStacPostgresqlDriverConfig], _PgCollectionMetadataBase,
+):
     """Primary driver for STAC collection metadata (``extent``, ``providers``, …).
 
     Backs ``{schema}.collection_metadata_stac``. Declares ``SPATIAL_FILTER``
@@ -85,7 +88,9 @@ class CollectionStacPostgresqlDriver(_PgCollectionMetadataBase):
         return self._columns
 
 
-class CatalogStacPostgresqlDriver(_PgCatalogMetadataBase):
+class CatalogStacPostgresqlDriver(
+    TypedDriver[CatalogStacPostgresqlDriverConfig], _PgCatalogMetadataBase,
+):
     """Primary driver for STAC catalog metadata.
 
     Backs ``catalog.catalog_metadata_stac``. Scope: ``stac_version``,

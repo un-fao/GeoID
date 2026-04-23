@@ -71,6 +71,7 @@ if TYPE_CHECKING:
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols.storage_driver import Capability
+from dynastore.models.protocols.typed_driver import TypedDriver
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.concurrency import run_in_thread
 from dynastore.modules.protocols import ModuleProtocol
@@ -126,7 +127,7 @@ def _resolve_iceberg_type(type_str: str):
     }.get(type_str, StringType())
 
 
-class ItemsIcebergDriver(ModuleProtocol):
+class ItemsIcebergDriver(TypedDriver[ItemsIcebergDriverConfig], ModuleProtocol):
     """Iceberg storage driver — Open Table Format with full OTF capabilities.
 
     Uses PyIceberg for ACID transactions, snapshot management, time-travel,
