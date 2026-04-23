@@ -166,3 +166,36 @@ def validate_stac_collection(
             logger.warning(msg)
 
     return warnings
+
+
+# --- Exception handler (registered by STACService at construction) ---
+
+from fastapi import HTTPException, status  # noqa: E402
+
+from dynastore.extensions.tools.exception_handlers import ExceptionHandler  # noqa: E402
+
+
+class STACValidationExceptionHandler(ExceptionHandler):
+    """Maps STACValidationError → 422 with a structured detail."""
+
+    def can_handle(self, exception: Exception) -> bool:
+        return isinstance(exception, STACValidationError)
+
+    def handle(
+        self, exception: Exception, context: Optional[Dict[str, Any]] = None
+    ) -> Optional[HTTPException]:
+        context = context or {}
+        resource_id = context.get("resource_id", "")
+        operation = context.get("operation", "Operation")
+
+        errors = getattr(exception, "errors", None) or [str(exception)]
+        head = (
+            f"{operation} failed STAC validation for '{resource_id}'"
+            if resource_id
+            else f"{operation} failed STAC validation"
+        )
+        detail = head + ": " + "; ".join(errors)
+        logger.warning(detail)
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail
+        )

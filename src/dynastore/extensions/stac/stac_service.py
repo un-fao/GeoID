@@ -229,6 +229,16 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
     def __init__(self, app: Optional[FastAPI] = None):
         self.app = app
         self._register_routes()
+        self._register_exception_handlers()
+
+    def _register_exception_handlers(self):
+        from dynastore.extensions.tools.exception_handlers import register_handler
+        from dynastore.extensions.stac.stac_validator import (
+            STACValidationExceptionHandler,
+        )
+
+        # prepend so STAC-specific 422 wins over the generic ValidationExceptionHandler
+        register_handler(STACValidationExceptionHandler(), prepend=True)
 
     async def _get_storage_service(self) -> Optional[StorageProtocol]:
         """Helper to get the storage service protocol."""
