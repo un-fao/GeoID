@@ -673,21 +673,70 @@ class DDLExecutor(BaseExecutor):
             res = await res
         return res
 
+    def _call_existence_check_sync(self, conn, params) -> bool:
+        """Sync sibling of _call_existence_check.
+
+        For sync existence checks: call directly.
+
+        For async existence checks (the auto-inferred case from
+        ddl_inference._infer_existence_check): drive the coroutine manually
+        with ``coro.send(None)``. This is intentional — sync DDL execution
+        is sometimes invoked from inside an async lifespan handler whose
+        thread already owns a running loop, so neither ``asyncio.run`` nor
+        ``run_in_event_loop`` is usable here. The inferred check chain
+        eventually reaches ``DQLQuery.execute`` → ``BaseExecutor.__call__``
+        which dispatches to ``_execute_sync_workflow`` for sync conns —
+        the coroutine wraps sync work and never actually awaits real I/O,
+        so manual driving completes in one step.
+        """
+        check = self.existence_check
+        assert check is not None, "_call_existence_check_sync called with no existence_check set"
+        if getattr(check, "_needs_raw_params", False):
+            res = check(conn, params, self._raw_params)
+        else:
+            res = check(conn, params)
+        if inspect.iscoroutine(res):
+            try:
+                while True:
+                    res.send(None)
+            except StopIteration as stop:
+                res = stop.value
+        elif inspect.isawaitable(res):
+            # Non-coroutine awaitable — fall back to asyncio.run only if no
+            # loop is currently running. Manual driving doesn't apply here.
+            try:
+                asyncio.get_running_loop()
+                raise RuntimeError(
+                    "_call_existence_check_sync received a non-coroutine awaitable "
+                    "while a loop is running; cannot dispatch safely."
+                )
+            except RuntimeError:
+                pass
+
+                async def _consume():
+                    return await res
+
+                res = asyncio.run(_consume())
+        return bool(res)
+
     def _execute_sync(self, conn: DbSyncConnection, query_obj: TextClause, params: dict):
         """Execute DDL with centralized coordination and timeout guards."""
         from .locking_tools import sync_acquire_startup_lock
         import json
 
-        # 1. Faster Optimistic Check
+        # 1. Optimistic existence check (outside any lock).
+        # Supports both sync and async existence_check callables — async ones
+        # are dispatched via run_in_event_loop. Failures here are logged and
+        # we proceed to the lock + in-tx re-check below.
         if self.existence_check:
             try:
-                # DDLExecutor._execute_sync is used by DDLQuery in sync contexts.
-                # If existence_check is a coroutine (from DDLQuery.__init__), skip here.
-                if not inspect.iscoroutinefunction(self.existence_check):
-                    if self.existence_check(conn, params):
-                        return self._apply_post_processing_sync(None)
-            except Exception:
-                pass
+                if self._call_existence_check_sync(conn, params):
+                    return self._apply_post_processing_sync(None)
+            except Exception as e:
+                logger.warning(
+                    "DDL optimistic existence check failed (sync): %s; proceeding to lock + re-check.",
+                    e,
+                )
 
         stmt_text = query_obj.text if isinstance(query_obj, TextClause) else str(query_obj)
         # Include parameters in hash for proper coordination
@@ -702,6 +751,21 @@ class DDLExecutor(BaseExecutor):
             ) as active_conn:
                 if active_conn:
                     _active: DbSyncConnection = cast(DbSyncConnection, active_conn)
+
+                    # 2. In-tx re-check after lock acquisition. Required for
+                    # idempotency: another worker may have created the object
+                    # between our optimistic check and our lock acquisition.
+                    # Mirrors _execute_async:776-787.
+                    if self.existence_check:
+                        try:
+                            if self._call_existence_check_sync(_active, params):
+                                return self._apply_post_processing_sync(None)
+                        except Exception as e:
+                            logger.warning(
+                                "DDL post-lock existence re-check failed (sync): %s; proceeding to DDL.",
+                                e,
+                            )
+
                     try:
                         # Timeout guard to prevent deadlocks
                         _active.execute(text("SET LOCAL statement_timeout = '30s'"))
@@ -743,8 +807,12 @@ class DDLExecutor(BaseExecutor):
 
                         if res:
                             return await self._apply_post_processing_async(None)
-                    except Exception:
-                        pass  # SAVEPOINT was rolled back cleanly; outer tx remains healthy
+                    except Exception as e:
+                        # SAVEPOINT was rolled back cleanly; outer tx remains healthy.
+                        logger.debug(
+                            "DDL existence check savepoint rolled back (expected on aborted check): %s",
+                            e,
+                        )
                 else:
                     res = await self._call_existence_check(conn, params)
                     # The SELECT in the existence check triggers SQLAlchemy autobegin.
@@ -760,8 +828,11 @@ class DDLExecutor(BaseExecutor):
                             pass
                     if res:
                         return await self._apply_post_processing_async(None)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(
+                    "DDL optimistic existence check failed (async): %s; proceeding to lock + re-check.",
+                    e,
+                )
 
         stmt_text = query_obj.text if isinstance(query_obj, TextClause) else str(query_obj)
         # Include parameters in hash for proper coordination
@@ -1230,16 +1301,46 @@ class DDLBatch:
         self.steps = steps
 
     async def execute(self, conn: DbResource, **kwargs):
-        # Fast-path: check if sentinel object already exists
+        # Fast-path: check if sentinel object already exists.
+        #
+        # The sentinel SELECT is wrapped in a SAVEPOINT when the conn is
+        # already inside a transaction — asyncpg leaves the connection in an
+        # aborted state if the SELECT fails inside an existing tx, which
+        # would poison every subsequent statement in the batch. Mirrors
+        # DDLExecutor._execute_async:728-764.
         sentinel_executor = self.sentinel._executor
         if sentinel_executor.existence_check:
             sentinel_executor._raw_params = kwargs
             try:
-                res = await sentinel_executor._call_existence_check(conn, kwargs)
-                if res:
-                    return  # All DDL already applied — skip entire batch
-            except Exception:
-                pass  # Sentinel check failed — execute all steps
+                if isinstance(conn, (AsyncConnection, AsyncSession)) and conn.in_transaction():
+                    res = False
+                    async with conn.begin_nested() as sp:
+                        res = await sentinel_executor._call_existence_check(conn, kwargs)
+                        # Always rollback the savepoint: if the SELECT failed
+                        # silently, RELEASE SAVEPOINT will throw and poison
+                        # the outer tx. Explicit rollback guarantees health.
+                        await sp.rollback()
+                    if res:
+                        return  # All DDL already applied — skip entire batch
+                elif isinstance(conn, SAConnection) and conn.in_transaction():
+                    res = False
+                    with conn.begin_nested() as sp:
+                        res = sentinel_executor._call_existence_check_sync(conn, kwargs)
+                        sp.rollback()
+                    if res:
+                        return
+                else:
+                    res = await sentinel_executor._call_existence_check(conn, kwargs)
+                    if res:
+                        return
+            except Exception as e:
+                logger.warning(
+                    "DDLBatch sentinel existence check failed (%s); falling through to per-step execution. "
+                    "Each step still has its own existence check, but silent failures here mask root cause. "
+                    "Sentinel SQL: %r",
+                    e,
+                    getattr(self.sentinel._executor.query_builder_strategy, "query_template", "<unknown>"),
+                )
 
         # Cold path: execute each DDL in order
         for step in self.steps:

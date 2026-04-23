@@ -232,3 +232,51 @@ def test_ddlquery_rejects_lock_key_kwarg():
 
     with pytest.raises(TypeError):
         DDLQuery("CREATE TABLE IF NOT EXISTS t(id int);", lock_key="foo")  # type: ignore[call-arg]
+
+
+# ---------------------------------------------------------------------------
+# DDLExecutor._call_existence_check_sync — async checks dispatched via
+# run_in_event_loop so the sync path can use the same auto-inferred checks
+# as the async path. Regression guard for the on_event_insert DuplicateObject
+# crash where _execute_sync silently skipped async existence checks and
+# proceeded to run a raw CREATE TRIGGER on a hot DB.
+# ---------------------------------------------------------------------------
+
+
+def test_call_existence_check_sync_dispatches_async_check():
+    from dynastore.modules.db_config.query_executor import DDLExecutor, TemplateQueryBuilder
+
+    invocations: List[Any] = []
+
+    async def _async_check(conn, params, raw_params):
+        invocations.append((conn, params, raw_params))
+        return True
+
+    _async_check._needs_raw_params = True  # type: ignore[attr-defined]
+
+    executor = DDLExecutor(
+        TemplateQueryBuilder("CREATE TABLE IF NOT EXISTS t(id int);"),
+        existence_check=_async_check,
+    )
+    executor._raw_params = {"schema": "events"}
+
+    fake_conn = _FakeConn()
+    assert executor._call_existence_check_sync(fake_conn, {}) is True
+    assert len(invocations) == 1
+    assert invocations[0][0] is fake_conn
+    assert invocations[0][2] == {"schema": "events"}
+
+
+def test_call_existence_check_sync_returns_false_on_async_check_returning_false():
+    from dynastore.modules.db_config.query_executor import DDLExecutor, TemplateQueryBuilder
+
+    async def _async_check(conn, params):
+        return False
+
+    executor = DDLExecutor(
+        TemplateQueryBuilder("CREATE TABLE IF NOT EXISTS t(id int);"),
+        existence_check=_async_check,
+    )
+    executor._raw_params = {}
+
+    assert executor._call_existence_check_sync(_FakeConn(), {}) is False

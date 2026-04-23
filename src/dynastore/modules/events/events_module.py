@@ -37,6 +37,7 @@ from dynastore.modules.db_config.query_executor import (
 from dynastore.modules.db_config.locking_tools import (
     acquire_startup_lock,
     _get_stable_lock_id,
+    check_trigger_exists,
 )
 from dynastore.models.protocols import (
     CatalogsProtocol,
@@ -132,12 +133,30 @@ CREATE TRIGGER on_event_insert
 # Module-level batch: on warm starts, the sentinel (trigger) existence check
 # is the only round-trip — table and indexes are skipped entirely.
 # Advisory lock keys are auto-derived from statement hash by DDLExecutor.
+#
+# `check_query` is passed explicitly (rather than relying on regex
+# auto-inference in ddl_inference._infer_existence_check) because the
+# events trigger is the most failure-prone DDL in the system: a stale or
+# mis-parsed inferred check would silently fall through to a bare
+# CREATE TRIGGER on a hot DB and abort foundational-module startup with
+# DuplicateObject (PG has no CREATE TRIGGER IF NOT EXISTS, and DROP+CREATE
+# would deadlock against live consumers — see comment above the trigger DDL).
+def _check_events_trigger_exists(conn):
+    return check_trigger_exists(
+        conn, "on_event_insert", _EVENTS_SCHEMA, table="events"
+    )
+
+
 GLOBAL_EVENTS_DDL_BATCH = DDLBatch(
-    sentinel=DDLQuery(GLOBAL_EVENTS_TRIGGER_DDL),
+    sentinel=DDLQuery(
+        GLOBAL_EVENTS_TRIGGER_DDL, check_query=_check_events_trigger_exists
+    ),
     steps=[
         DDLQuery(GLOBAL_EVENTS_TABLE_DDL),
         DDLQuery(GLOBAL_EVENTS_INDEXES_DDL),
-        DDLQuery(GLOBAL_EVENTS_TRIGGER_DDL),
+        DDLQuery(
+            GLOBAL_EVENTS_TRIGGER_DDL, check_query=_check_events_trigger_exists
+        ),
     ],
 )
 
