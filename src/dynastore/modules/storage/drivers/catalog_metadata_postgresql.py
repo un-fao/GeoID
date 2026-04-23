@@ -232,9 +232,45 @@ class CatalogPostgresqlDriverConfig(_PluginDriverConfig):
             "(`catalog_metadata_core` always, `catalog_metadata_stac` "
             "if the stac extra is installed).  Immutable once set — "
             "changing it would orphan rows in the per-domain "
-            "``catalog.catalog_metadata_*`` tables."
+            "``catalog.catalog_metadata_*`` tables.  "
+            "NOTE — runtime override is NOT YET WIRED (sister gap to "
+            "``CollectionPostgresqlDriverConfig.sidecars``); the wrapper "
+            "uses ``CatalogMetadataPgSidecarRegistry.default_sidecars()`` "
+            "unconditionally.  Apply handler emits a WARNING when a "
+            "non-empty list is submitted to surface the silent-drop."
         ),
     )
+
+
+async def _on_apply_catalog_pg_driver_config(
+    config: Any,
+    catalog_id: Optional[str],
+    collection_id: Optional[str],
+    db_resource: Optional[Any],
+) -> None:
+    """Warn operators when their non-empty ``sidecars`` override will
+    be silently dropped at runtime.  Sister handler to the collection
+    tier's ``_on_apply_collection_pg_driver_config``.
+    """
+    if not isinstance(config, CatalogPostgresqlDriverConfig):
+        return
+    if not config.sidecars:
+        return
+    scope = (
+        f"catalog '{catalog_id}'" if catalog_id else "platform"
+    )
+    logger.warning(
+        "CatalogPostgresqlDriverConfig.sidecars override at %s scope is "
+        "currently NOT honored at runtime — the wrapper uses "
+        "CatalogMetadataPgSidecarRegistry.default_sidecars() unconditionally.  "
+        "Submitted entries: %s.  Tracked as PR 1e step 4 follow-up.",
+        scope, [getattr(s, "sidecar_type", "?") for s in config.sidecars],
+    )
+
+
+CatalogPostgresqlDriverConfig.register_apply_handler(
+    _on_apply_catalog_pg_driver_config,
+)
 
 
 class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):

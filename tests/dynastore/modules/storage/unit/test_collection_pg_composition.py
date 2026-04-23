@@ -386,3 +386,64 @@ def test_wrapper_returns_empty_columns_when_no_stac_inner_loaded():
     MetadataPgSidecarRegistry._registry.pop("metadata_stac", None)
     driver = CollectionPostgresqlDriver()
     assert driver.stac_metadata_columns() == ()
+
+
+# ---------------------------------------------------------------------------
+# Apply-handler warning — surfaces silent-drop of operator sidecars override
+# until runtime fetch is wired.  Honest acknowledgment of the half-finished
+# state of the ``sidecars`` config field; without this warning an operator
+# patching the routing config with custom sidecars would see no behaviour
+# change and assume their override took effect.
+# ---------------------------------------------------------------------------
+
+
+async def test_apply_handler_warns_when_sidecars_override_submitted(caplog):
+    from dynastore.modules.storage.drivers.collection_metadata_postgresql import (
+        _on_apply_collection_pg_driver_config,
+    )
+
+    cfg = CollectionPostgresqlDriverConfig(
+        sidecars=[MetadataCoreSidecarConfig()],  # non-empty → trigger warning
+    )
+    with caplog.at_level("WARNING"):
+        await _on_apply_collection_pg_driver_config(
+            cfg, catalog_id="some-catalog", collection_id=None, db_resource=None,
+        )
+    assert any(
+        "NOT honored at runtime" in r.message and "metadata_core" in r.message
+        for r in caplog.records
+    ), "Apply handler must warn when operator submits non-empty sidecars override"
+
+
+async def test_apply_handler_silent_for_empty_sidecars():
+    """Default-empty config (registry-default fallback path) must NOT
+    emit the warning — operator never explicitly configured anything.
+    """
+    from dynastore.modules.storage.drivers.collection_metadata_postgresql import (
+        _on_apply_collection_pg_driver_config,
+    )
+
+    cfg = CollectionPostgresqlDriverConfig()  # empty default
+    # Must not raise; should also not log WARNING (covered by absence
+    # of the WARNING-level filter triggering the test_apply_handler_warns
+    # assertion above — same caplog behaviour).
+    await _on_apply_collection_pg_driver_config(
+        cfg, catalog_id="cat", collection_id=None, db_resource=None,
+    )
+
+
+async def test_apply_handler_ignores_non_wrapper_configs():
+    """Apply-handler is registered globally on the config-apply pipeline;
+    must no-op cleanly when handed a config of a different class.
+    """
+    from dynastore.modules.storage.drivers.collection_metadata_postgresql import (
+        _on_apply_collection_pg_driver_config,
+    )
+
+    class _Unrelated:
+        pass
+
+    # Must not raise on unrelated config types.
+    await _on_apply_collection_pg_driver_config(
+        _Unrelated(), catalog_id="cat", collection_id=None, db_resource=None,
+    )

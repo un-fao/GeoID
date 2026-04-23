@@ -246,9 +246,52 @@ class CollectionPostgresqlDriverConfig(_PluginDriverConfig):
             "`sidecar_type`.  Empty → registry default "
             "(`metadata_core` always, `metadata_stac` if the stac extra "
             "is installed).  Immutable once set — changing it would orphan "
-            "rows in the per-domain tables under the per-tenant schema."
+            "rows in the per-domain tables under the per-tenant schema.  "
+            "NOTE — runtime override is NOT YET WIRED: the wrapper "
+            "currently always uses ``MetadataPgSidecarRegistry.default_sidecars()`` "
+            "regardless of this field's value (forward-compat slot for a "
+            "future bounded unit that adds a per-call config-fetch via "
+            "``ConfigsProtocol``).  Submitting a non-empty list emits a "
+            "WARNING via the apply handler to make the silent-drop visible."
         ),
     )
+
+
+async def _on_apply_collection_pg_driver_config(
+    config: Any,
+    catalog_id: Optional[str],
+    collection_id: Optional[str],
+    db_resource: Optional[Any],
+) -> None:
+    """Warn operators when their non-empty ``sidecars`` override will
+    be silently dropped at runtime.
+
+    The wrapper's ``sidecars`` field is forward-compat infrastructure;
+    the wrapper currently fans out via the registry default in every
+    code path.  Without this warning an operator who PATCHes the
+    routing config with a custom sidecar list would silently see no
+    behaviour change — a UX trap.  Logging here gives a clear breadcrumb
+    pointing at the unimplemented runtime fetch.
+    """
+    if not isinstance(config, CollectionPostgresqlDriverConfig):
+        return
+    if not config.sidecars:
+        return
+    scope = (
+        f"catalog '{catalog_id}'" if catalog_id else "platform"
+    )
+    logger.warning(
+        "CollectionPostgresqlDriverConfig.sidecars override at %s scope is "
+        "currently NOT honored at runtime — the wrapper uses "
+        "MetadataPgSidecarRegistry.default_sidecars() unconditionally.  "
+        "Submitted entries: %s.  Tracked as PR 1e step 4 follow-up.",
+        scope, [getattr(s, "sidecar_type", "?") for s in config.sidecars],
+    )
+
+
+CollectionPostgresqlDriverConfig.register_apply_handler(
+    _on_apply_collection_pg_driver_config,
+)
 
 
 class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):

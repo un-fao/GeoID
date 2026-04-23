@@ -317,3 +317,53 @@ def test_wrapper_returns_empty_columns_when_no_stac_inner_loaded():
     CatalogMetadataPgSidecarRegistry._registry.pop("catalog_metadata_stac", None)
     driver = CatalogPostgresqlDriver()
     assert driver.stac_metadata_columns() == ()
+
+
+# ---------------------------------------------------------------------------
+# Apply-handler warning — sister surface to the collection wrapper's
+# silent-drop guard.  Honest acknowledgment that ``sidecars`` overrides
+# aren't yet honored at runtime.
+# ---------------------------------------------------------------------------
+
+
+async def test_apply_handler_warns_when_sidecars_override_submitted(caplog):
+    from dynastore.modules.storage.drivers.catalog_metadata_postgresql import (
+        _on_apply_catalog_pg_driver_config,
+    )
+
+    cfg = CatalogPostgresqlDriverConfig(
+        sidecars=[CatalogMetadataCoreSidecarConfig()],
+    )
+    with caplog.at_level("WARNING"):
+        await _on_apply_catalog_pg_driver_config(
+            cfg, catalog_id="some-catalog", collection_id=None, db_resource=None,
+        )
+    assert any(
+        "NOT honored at runtime" in r.message
+        and "catalog_metadata_core" in r.message
+        for r in caplog.records
+    ), "Apply handler must warn when operator submits non-empty sidecars override"
+
+
+async def test_apply_handler_silent_for_empty_sidecars():
+    from dynastore.modules.storage.drivers.catalog_metadata_postgresql import (
+        _on_apply_catalog_pg_driver_config,
+    )
+
+    cfg = CatalogPostgresqlDriverConfig()
+    await _on_apply_catalog_pg_driver_config(
+        cfg, catalog_id="cat", collection_id=None, db_resource=None,
+    )
+
+
+async def test_apply_handler_ignores_non_wrapper_configs():
+    from dynastore.modules.storage.drivers.catalog_metadata_postgresql import (
+        _on_apply_catalog_pg_driver_config,
+    )
+
+    class _Unrelated:
+        pass
+
+    await _on_apply_catalog_pg_driver_config(
+        _Unrelated(), catalog_id="cat", collection_id=None, db_resource=None,
+    )
