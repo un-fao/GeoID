@@ -261,7 +261,7 @@ class AssetService(ExtensionProtocol):
             "/assets-search",
             self.advanced_search_global,
             methods=["POST"],
-            summary="Advanced Asset Search (cross-catalog, sysadmin only)",
+            summary="Advanced Asset Search (cross-catalog)",
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/assets-search",
@@ -764,27 +764,12 @@ class AssetService(ExtensionProtocol):
         request: Request,
         query: SearchQuery = Body(...),
     ):
-        """Cross-catalog search. Admin-only; iterates accessible catalogs.
+        """Cross-catalog search. Iterates accessible catalogs and aggregates matches.
 
         Aggregates up to `limit` matches across catalogs the caller can see.
-        Non-admin callers receive HTTP 403.
+        Authorization (if any) is enforced by `IamMiddleware` when the IAM
+        extension is installed; this handler does not gate on IAM itself.
         """
-        try:
-            from dynastore.extensions.iam.guards import security_context_from_request
-            from dynastore.modules.iam.authorization import require_permission
-            from dynastore.models.protocols.authorization import Permission
-        except Exception:
-            ctx = None
-        else:
-            ctx = security_context_from_request(request)
-            try:
-                await require_permission(ctx, Permission.ADMIN)
-            except PermissionError:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Cross-catalog search requires administrative privileges.",
-                )
-
         from dynastore.models.protocols import CatalogsProtocol
         catalogs_svc = cast(CatalogsProtocol, get_protocol(CatalogsProtocol))
         if catalogs_svc is None:

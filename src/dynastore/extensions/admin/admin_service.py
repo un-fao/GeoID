@@ -25,9 +25,6 @@ from contextlib import asynccontextmanager
 from dynastore.extensions import ExtensionProtocol
 from dynastore.modules import get_protocol
 from dynastore.modules.iam.iam_service import IamService
-from dynastore.models.protocols.authorization import Permission
-from dynastore.modules.iam.authorization import require_permission
-from dynastore.extensions.iam.guards import security_context_from_request
 from dynastore.models.protocols.policies import Policy, Role, Principal
 
 from .models import (
@@ -46,14 +43,6 @@ def _iam() -> IamService:
     if mgr is None:
         raise HTTPException(status_code=503, detail="Auth service not available.")
     return mgr
-
-
-async def _require_sysadmin(request: Request) -> None:
-    ctx = security_context_from_request(request)
-    try:
-        await require_permission(ctx, Permission.SYSADMIN)
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="System Administrator privileges required.")
 
 
 class AdminService(ExtensionProtocol):
@@ -441,7 +430,6 @@ class AdminService(ExtensionProtocol):
         request: Request,  # type: ignore[reportGeneralTypeIssues]
         catalog_id: Optional[str] = Query(None, description="Catalog ID for tenant-scoped reset, or None for global"),
     ):
-        await _require_sysadmin(request)
         mgr = _iam()
         pm = mgr.get_policy_service()
         if not pm:
@@ -451,7 +439,6 @@ class AdminService(ExtensionProtocol):
 
     @router.post("/rotate-jwt-secret", summary="Rotate JWT signing secret")
     async def rotate_jwt_secret(request: Request):  # type: ignore[reportGeneralTypeIssues]
-        await _require_sysadmin(request)
         mgr = _iam()
         if not hasattr(mgr, "rotate_jwt_secret"):
             raise HTTPException(status_code=503, detail="JWT rotation not supported.")

@@ -17,25 +17,6 @@ import os
 logger = logging.getLogger(__name__)
 
 
-async def _require_sysadmin(request: Request) -> None:
-    """Guard: platform-namespace writes/deletes are sysadmin-only.
-
-    Lazy imports avoid a circular import between notebooks and iam extensions.
-    When the IAM module isn't loaded, the call is skipped (dev/test permissive mode).
-    """
-    try:
-        from dynastore.extensions.iam.guards import security_context_from_request
-        from dynastore.modules.iam.authorization import require_permission
-        from dynastore.models.protocols.authorization import Permission
-    except Exception:
-        return
-    ctx = security_context_from_request(request)
-    try:
-        await require_permission(ctx, Permission.SYSADMIN)
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="System Administrator privileges required.")
-
-
 def _coerce_localized(value: Any) -> Any:
     """Accept a plain string title and wrap it into a LocalizedText-shaped dict.
 
