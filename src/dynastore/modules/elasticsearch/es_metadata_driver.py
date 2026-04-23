@@ -326,7 +326,7 @@ class MetadataElasticsearchDriver:
             index=index_name,
             id=collection_id,
             body=doc,
-            refresh="wait_for",  # type: ignore[call-arg]
+            refresh="wait_for",
         )
 
     async def delete_metadata(
@@ -349,13 +349,13 @@ class MetadataElasticsearchDriver:
                     index=index_name,
                     id=collection_id,
                     body={"doc": {"_deleted": True}},
-                    refresh="wait_for",  # type: ignore[call-arg]
+                    refresh="wait_for",
                 )
             else:
                 await client.delete(
                     index=index_name,
                     id=collection_id,
-                    refresh="wait_for",  # type: ignore[call-arg]
+                    refresh="wait_for",
                 )
         except Exception as e:
             logger.debug("delete_metadata ES error for %s/%s: %s", catalog_id, collection_id, e)
