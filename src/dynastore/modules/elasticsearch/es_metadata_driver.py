@@ -179,7 +179,16 @@ class MetadataElasticsearchDriver(TypedDriver[MetadataElasticsearchDriverConfig]
     """Elasticsearch implementation of CollectionMetadataStore.
 
     Uses opensearch-py client (wire-compatible with ES and OpenSearch).
+
+    Indexer tier markers — this catch-all driver indexes both catalog-tier
+    and collection-tier metadata, so it opts in to both
+    :class:`CatalogIndexer` and :class:`CollectionIndexer`.  When the
+    per-tier ES driver split lands (later phase of PR 1e), each tier will
+    have its own driver class with a single matching marker.
     """
+
+    is_catalog_indexer: ClassVar[bool] = True
+    is_collection_indexer: ClassVar[bool] = True
 
     capabilities: FrozenSet[str] = frozenset({
         MetadataCapability.READ,

@@ -17,11 +17,18 @@ Indexer protocol definitions.
 
 Abstracts document indexing lifecycle so that event-driven modules can
 dispatch indexing operations without coupling to a specific search backend.
+
+Per-tier marker Protocols (``CatalogIndexer``, ``CollectionIndexer``,
+``AssetIndexer``, ``ItemIndexer``) let drivers opt in to one or more tiers
+they can serve as INDEX-role propagation targets.  Routing-config
+self-registration validators walk these markers per tier to auto-populate
+``operations[INDEX]`` with sensible async defaults.  Both metadata and
+data are indexable — markers are tier-scoped, not metadata-vs-data.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Literal, Optional, Protocol, runtime_checkable
+from typing import Any, ClassVar, Dict, Literal, Optional, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -161,3 +168,58 @@ class IndexerProtocol(Protocol):
                         is per-catalog).
         """
         ...
+
+
+# ---------------------------------------------------------------------------
+# Per-tier indexer marker Protocols
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class CatalogIndexer(Protocol):
+    """Marker — driver indexes catalog-tier records.
+
+    A driver opts in by setting ``is_catalog_indexer: ClassVar[bool] = True``.
+    Routing-config self-registration validators walk this marker to
+    auto-populate the catalog routing config's ``operations[INDEX]`` with
+    ``write_mode='async'``, ``on_failure='warn'``.
+    """
+
+    is_catalog_indexer: ClassVar[bool]
+
+
+@runtime_checkable
+class CollectionIndexer(Protocol):
+    """Marker — driver indexes collection-tier records.
+
+    A driver opts in by setting ``is_collection_indexer: ClassVar[bool] = True``.
+    Auto-registers into the collection routing config's ``operations[INDEX]``
+    with ``write_mode='async'``, ``on_failure='warn'``.
+    """
+
+    is_collection_indexer: ClassVar[bool]
+
+
+@runtime_checkable
+class AssetIndexer(Protocol):
+    """Marker — driver indexes asset-tier records.
+
+    A driver opts in by setting ``is_asset_indexer: ClassVar[bool] = True``.
+    Auto-registers into the asset routing config's ``operations[INDEX]``
+    with ``write_mode='async'``, ``on_failure='warn'``.
+    """
+
+    is_asset_indexer: ClassVar[bool]
+
+
+@runtime_checkable
+class ItemIndexer(Protocol):
+    """Marker — driver indexes item / feature records (the per-collection
+    items table; aka record-tier indexer).
+
+    A driver opts in by setting ``is_item_indexer: ClassVar[bool] = True``.
+    Auto-registers into the items routing config's ``operations[INDEX]``
+    with ``write_mode='async'``, ``on_failure='warn'``.
+    """
+
+    is_item_indexer: ClassVar[bool]

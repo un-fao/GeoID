@@ -45,7 +45,7 @@ All drivers register as async event listeners, checking
 import logging
 import re
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, FrozenSet, List, Optional, Union
+from typing import TYPE_CHECKING, Any, AsyncIterator, ClassVar, Dict, FrozenSet, List, Optional, Union
 
 if TYPE_CHECKING:
     from dynastore.modules.storage.driver_config import CollectionWritePolicy
@@ -248,7 +248,12 @@ class ItemsElasticsearchDriver(
     Supports items, collections, and catalogs (``stac-fastapi-core[catalogs]``).
 
     Registered as ``storage_elasticsearch`` via entry points.
+
+    Indexer marker — opts in to :class:`ItemIndexer` so the items routing
+    config auto-registers it under ``operations[INDEX]``.
     """
+
+    is_item_indexer: ClassVar[bool] = True
 
     priority: int = 50
     preferred_chunk_size: int = 500
@@ -1574,6 +1579,9 @@ class AssetElasticsearchDriver(
 ):
     """Elasticsearch storage driver for asset metadata.
 
+    Indexer marker — opts in to :class:`AssetIndexer` so the asset routing
+    config auto-registers it under ``operations[INDEX]``.
+
     Indexes asset documents into per-catalog ``{prefix}-assets-{catalog_id}``
     indices using the ``ASSET_MAPPING`` from ``modules/elasticsearch/mappings.py``.
 
@@ -1583,6 +1591,8 @@ class AssetElasticsearchDriver(
 
     Registered as ``storage_elasticsearch_assets`` via entry points.
     """
+
+    is_asset_indexer: ClassVar[bool] = True
 
     priority: int = 52
     capabilities: FrozenSet[str] = frozenset({
