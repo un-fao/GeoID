@@ -1042,8 +1042,14 @@ def cached(
                 # Fast path
                 raw = await _backend.get(cache_key)
                 if raw is not None:
-                    _backend._stats.hits += 1
-                    return raw  # NullSerializer for local; msgpack for Valkey
+                    # Re-validate against ``condition`` so stale entries written
+                    # before the condition was added (or by a code path that
+                    # bypassed it) cannot keep being served forever.  Drop the
+                    # entry across all tiers so the next read refetches.
+                    if condition is None or condition(raw):
+                        _backend._stats.hits += 1
+                        return raw  # NullSerializer for local; msgpack for Valkey
+                    await _backend.clear(key=cache_key)
 
                 # Stampede protection
                 if _backend_has_lock:
@@ -1055,8 +1061,10 @@ def cached(
                 async with lock:
                     raw = await _backend.get(cache_key)
                     if raw is not None:
-                        _backend._stats.hits += 1
-                        return raw
+                        if condition is None or condition(raw):
+                            _backend._stats.hits += 1
+                            return raw
+                        await _backend.clear(key=cache_key)
 
                     _backend._stats.misses += 1
                     result = await func(*args, **kwargs)
@@ -1127,8 +1135,10 @@ def cached(
 
                 raw = _sync_backend.get(cache_key)
                 if raw is not None:
-                    _sync_backend._stats.hits += 1
-                    return raw
+                    if condition is None or condition(raw):
+                        _sync_backend._stats.hits += 1
+                        return raw
+                    _sync_backend.clear(key=cache_key)
 
                 _sync_backend._stats.misses += 1
                 result = func(*args, **kwargs)

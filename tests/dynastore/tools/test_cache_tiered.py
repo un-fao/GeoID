@@ -241,6 +241,71 @@ class TestTieredAsyncBackend:
         assert tiered.priority == 100  # min(1000, 100)
 
 
+class TestCachedConditionOnRead:
+    """Read-side ``condition=`` enforcement in ``cached()``.
+
+    Guards against stale entries (written before the condition was added,
+    or by a code path that bypassed it) being served forever via the
+    fast path.  Without this, the only mitigation was the entry's TTL —
+    which doesn't help when the original write had ``ttl=None``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_condition_failing_value_is_evicted_and_refetched(self):
+        """Stale value already in the backend → condition fails → evicted.
+
+        Pins ``cached()`` to a named backend so the test can inject a
+        stale entry into the same backing store the wrapper reads from.
+        """
+        from dynastore.tools.cache import cached, get_cache_manager
+
+        class _NamedBackend(LocalAsyncCacheBackend):
+            @property
+            def name(self) -> str:  # type: ignore[override]
+                return "cond-read-test-backend"
+
+        backend = _NamedBackend()
+        get_cache_manager().register_backend(backend)
+
+        try:
+            calls = {"n": 0}
+
+            @cached(
+                maxsize=8,
+                ttl=60,
+                namespace="cond_read_test",
+                backend="cond-read-test-backend",
+                condition=lambda v: isinstance(v, dict) and v.get("status") == "ready",
+            )
+            async def fetch(key: str):
+                calls["n"] += 1
+                return {"status": "ready", "rev": calls["n"]}
+
+            # Warm cache with a 'ready' result, then mutate the stored entry
+            # to a stale 'provisioning' value — mirrors a pre-condition
+            # write that survives in the backend after a deploy adds it.
+            await fetch("k1")
+            assert calls["n"] == 1
+
+            stored_keys = list(backend._store.keys())
+            assert stored_keys, "expected a cache entry under the namespace"
+            key = stored_keys[0]
+            backend._store[key].value = {"status": "provisioning"}
+
+            # Fast path sees the stale value → condition fails → entry
+            # cleared → wrapped function re-invoked → fresh ready cached.
+            result = await fetch("k1")
+            assert result == {"status": "ready", "rev": 2}
+            assert calls["n"] == 2
+
+            # Post-eviction read serves the cached ready value.
+            result = await fetch("k1")
+            assert result == {"status": "ready", "rev": 2}
+            assert calls["n"] == 2
+        finally:
+            get_cache_manager().unregister_backend(backend)
+
+
 @pytest.mark.skipif(
     __import__("importlib.util").util.find_spec("valkey") is None,
     reason="valkey not installed (optional dependency)",

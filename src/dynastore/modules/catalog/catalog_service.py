@@ -368,13 +368,22 @@ class CatalogService(CatalogsProtocol):
         # Only cache 'ready' catalogs: transient states ('provisioning', 'failed')
         # would otherwise stick in per-worker L1 forever (no cross-worker invalidation),
         # making init-upload return 503 long after provisioning completes.
+        # Condition is also applied on read (cache.py fast path) so pre-existing
+        # stale entries in L2/Valkey can't keep being served.  L1 stores the
+        # Catalog model directly; L2 (msgpack) returns a dict — handle both.
+        def _is_ready(c: Any) -> bool:
+            if c is None:
+                return False
+            status = c.get("provisioning_status") if isinstance(c, dict) \
+                else getattr(c, "provisioning_status", None)
+            return status == "ready"
+
         self._get_catalog_model_cached = cached(
             maxsize=128,
             ttl=30,
             jitter=5,
             namespace="catalog_model",
-            condition=lambda c: c is not None
-            and getattr(c, "provisioning_status", None) == "ready",
+            condition=_is_ready,
         )(self._get_catalog_model_db)
 
     def is_available(self) -> bool:
