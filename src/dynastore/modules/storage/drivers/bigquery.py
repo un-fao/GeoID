@@ -140,6 +140,7 @@ class ItemsBigQueryDriver(TypedDriver[ItemsBigQueryDriverConfig]):
                 report_target.fqn(),
                 rows,
                 project_id=project_id,
+                credentials=cfg.credentials,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort reporter sink
             logger.warning(
@@ -219,8 +220,13 @@ class ItemsBigQueryDriver(TypedDriver[ItemsBigQueryDriverConfig]):
         if where:
             base_query += f" WHERE {where}"
 
+        creds = cfg.credentials
+
+        async def _execute(q: str, pid: str):
+            return await service.execute_query(q, pid, credentials=creds)
+
         async for feat in paged_feature_stream(
-            service.execute_query,
+            _execute,
             project_id=project_id,
             base_query=base_query,
             id_column=id_col,
@@ -245,6 +251,7 @@ class ItemsBigQueryDriver(TypedDriver[ItemsBigQueryDriverConfig]):
         rows = await service.execute_query(
             f"SELECT COUNT(*) FROM `{cfg.target.fqn()}`",
             project_id,
+            credentials=cfg.credentials,
         )
         return int(next(iter(rows[0].values()))) if rows else 0
 
@@ -271,6 +278,7 @@ class ItemsBigQueryDriver(TypedDriver[ItemsBigQueryDriverConfig]):
         rows = await service.execute_query(
             f"SELECT {agg}({expr}) FROM `{cfg.target.fqn()}`",
             project_id,
+            credentials=cfg.credentials,
         )
         return next(iter(rows[0].values())) if rows else None
 

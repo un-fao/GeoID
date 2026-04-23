@@ -26,7 +26,12 @@ to decouple BigQuery access from the ``google.cloud.bigquery`` library.
 Typical implementation: ``BigQueryService`` in ``modules/gcp/bigquery_service.py``.
 """
 
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from dynastore.modules.storage.drivers.bigquery_models import (
+        BigQueryCredentials,
+    )
 
 
 @runtime_checkable
@@ -37,16 +42,31 @@ class BigQueryProtocol(Protocol):
     query execution.  Read results are returned as a list of row dicts;
     writes use the BQ streaming insert API (``insertAll``) with partial
     failure surfaced via the returned error list.
+
+    The ``credentials`` kwarg (Phase 4e step 2) carries the registered-
+    per-collection ``BigQueryCredentials``.  When supplied and non-empty,
+    the implementation MUST resolve them through the same single-reveal
+    site as ``modules/storage/drivers/bigquery._make_bq_client`` so the
+    SA JSON / api_key never leaks outside that one function.  When
+    omitted or empty, the implementation falls back to
+    ``CloudIdentityProtocol`` (Phase 4a default).
     """
 
     async def execute_query(
-        self, query: str, project_id: str,
+        self,
+        query: str,
+        project_id: str,
+        *,
+        credentials: Optional["BigQueryCredentials"] = None,
     ) -> List[Dict[str, Any]]:
         """Execute a SQL query and return results as row dicts.
 
         Args:
-            query:      The BigQuery SQL query to execute.
-            project_id: The GCP project ID to run the query against.
+            query:       The BigQuery SQL query to execute.
+            project_id:  The GCP project ID to run the query against.
+            credentials: Optional Secret-wrapped per-collection
+                         credentials.  ``None`` / ``is_empty()`` falls
+                         back to ``CloudIdentityProtocol``.
 
         Returns:
             List of dicts, one per row, with column names as keys.
@@ -63,6 +83,7 @@ class BigQueryProtocol(Protocol):
         *,
         project_id: str,
         row_ids: Optional[List[Optional[str]]] = None,
+        credentials: Optional["BigQueryCredentials"] = None,
     ) -> List[Dict[str, Any]]:
         """Stream rows into a BigQuery table via ``insertAll``.
 
@@ -82,6 +103,9 @@ class BigQueryProtocol(Protocol):
                         buffer (24-hour window).  ``None`` per row means
                         BQ assigns a UUID.  Length must match ``rows``
                         when supplied.
+            credentials: Optional Secret-wrapped per-collection
+                        credentials.  ``None`` / ``is_empty()`` falls
+                        back to ``CloudIdentityProtocol``.
 
         Returns:
             The BQ-returned error list — empty on full success; otherwise

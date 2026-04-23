@@ -35,21 +35,25 @@ import logging
 from contextlib import asynccontextmanager
 
 from dynastore.modules import ModuleProtocol
-from dynastore.tools.discovery import get_protocol, register_plugin
+from dynastore.tools.discovery import get_protocol
 
 logger = logging.getLogger(__name__)
 
 
 class StacModule(ModuleProtocol):
-    """Lifespan owner for the STAC PG metadata drivers + global DDL.
+    """Lifespan owner for the global STAC DDL.
 
     On lifespan entry:
     - Imports the per-tenant lifecycle hook so its
       ``@lifecycle_registry.sync_catalog_initializer`` decorator fires.
     - Applies the global ``catalog.catalog_metadata_stac`` DDL.
-    - Registers the two STAC PG drivers via ``register_plugin(...)`` so
-      ``get_protocols(CollectionMetadataStore)`` /
-      ``get_protocols(StacCollectionMetadataCapability)`` find them.
+
+    Neither STAC PG driver is surfaced as a standalone
+    ``CollectionMetadataStore`` / ``CatalogMetadataStore`` plugin
+    anymore (PR 1e steps 3b + 3c).  Both slices are composed inside
+    the wrapper drivers ``CollectionPostgresqlDriver`` /
+    ``CatalogPostgresqlDriver`` via the per-tier sidecar registries'
+    try-imports.
     """
 
     priority: int = 60
@@ -62,11 +66,6 @@ class StacModule(ModuleProtocol):
         from dynastore.modules.stac.db_init.metadata_stac_tables import (
             ensure_global_stac_metadata_tables,
         )
-        from dynastore.modules.stac.drivers.metadata_postgresql import (
-            CatalogStacPostgresqlDriver,
-            CollectionStacPostgresqlDriver,
-        )
-
         # Apply global DDL (catalog.catalog_metadata_stac) — once, idempotent.
         from dynastore.models.protocols import DatabaseProtocol
         from dynastore.modules.db_config.query_executor import managed_transaction
@@ -85,9 +84,12 @@ class StacModule(ModuleProtocol):
                 "DDL skipped; STAC catalog metadata persistence will fail."
             )
 
-        register_plugin(CollectionStacPostgresqlDriver())
-        register_plugin(CatalogStacPostgresqlDriver())
-        logger.info("StacModule: registered STAC PG metadata drivers.")
+        logger.info(
+            "StacModule: STAC PG driver registration is now handled by "
+            "the per-tier composition wrappers "
+            "(CollectionPostgresqlDriver / CatalogPostgresqlDriver) "
+            "via their sidecar registries' try-imports.",
+        )
 
         try:
             yield

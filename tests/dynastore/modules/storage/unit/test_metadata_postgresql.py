@@ -371,15 +371,21 @@ class TestColumnTupleAlignment:
 
 class TestEntryPoints:
     def test_core_entry_points_registered(self):
-        """CORE driver entry-points stay at this module path; STAC drivers
-        moved to ``modules/stac/`` and are tested under
-        ``tests/dynastore/modules/stac/unit/test_metadata_postgresql.py``.
+        """Both raw CORE driver entry-points were retired in PR 1e steps
+        3b (collection) and 3c (catalog) — the wrappers
+        ``CollectionPostgresqlDriver`` (entry-point ``collection_postgresql``)
+        and ``CatalogPostgresqlDriver`` (entry-point ``catalog_postgresql``)
+        are now the only PG-tier metadata plugins.  Each wrapper composes
+        the raw CORE driver internally via its per-tier
+        ``*MetadataPgSidecarRegistry``.
+
+        This test now asserts that the wrappers ARE registered.
         """
         from importlib.metadata import entry_points
 
         expected = {
-            "metadata_collection_core_postgresql": "CollectionCorePostgresqlDriver",
-            "metadata_catalog_core_postgresql": "CatalogCorePostgresqlDriver",
+            "collection_postgresql": "CollectionPostgresqlDriver",
+            "catalog_postgresql": "CatalogPostgresqlDriver",
         }
 
         got = {

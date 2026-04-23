@@ -202,14 +202,69 @@ class CollectionIndexer(Protocol):
 
 @runtime_checkable
 class AssetIndexer(Protocol):
-    """Marker — driver indexes asset-tier records.
+    """Marker — driver indexes asset-tier records (catalog + collection assets).
+
+    Today the canonical implementer (``AssetElasticsearchDriver``)
+    indexes BOTH catalog-level and collection-level assets in a single
+    per-catalog index keyed by ``(catalog_id, nullable collection_id)``.
+    The ``AssetIndexer`` marker is therefore tier-spanning at the
+    catalog/collection level.
 
     A driver opts in by setting ``is_asset_indexer: ClassVar[bool] = True``.
     Auto-registers into the asset routing config's ``operations[INDEX]``
     with ``write_mode='async'``, ``on_failure='warn'``.
+
+    Per-tier asset markers
+    ----------------------
+    :class:`ItemAssetIndexer` and :class:`PlatformAssetIndexer` (below)
+    are the extension axis for tiers ``AssetIndexer`` does NOT cover
+    today: item-embedded assets (currently stored as opaque blob in item
+    docs — promoting them to first-class index entries is a deferred
+    STAC read/write refactor) and platform-level assets (no design yet).
+    Future drivers — or a future extension of ``AssetElasticsearchDriver``
+    when item-asset promotion lands — opt in to those markers as the
+    tiers they serve grow.
     """
 
     is_asset_indexer: ClassVar[bool]
+
+
+@runtime_checkable
+class ItemAssetIndexer(Protocol):
+    """Marker — driver indexes item-embedded assets as first-class index entries.
+
+    Today STAC item documents carry an embedded ``assets`` map that is
+    stored as opaque blob (``mappings.py`` ``COMMON_PROPERTIES`` declares
+    ``"assets": {"type": "object", "enabled": False}``).  A driver opting
+    in to ``ItemAssetIndexer`` promotes those item-embedded assets to
+    individual searchable documents in the assets index — making per-asset
+    search + filter possible without re-shaping the item write path
+    operators rely on.
+
+    The opt-in flag ``is_item_asset_indexer: ClassVar[bool] = True`` is
+    the extension axis only — no implementer ships in this PR.  Reserves
+    the marker so future drivers (or a future ``AssetElasticsearchDriver``
+    extension) can self-register without renaming.
+    """
+
+    is_item_asset_indexer: ClassVar[bool]
+
+
+@runtime_checkable
+class PlatformAssetIndexer(Protocol):
+    """Marker — driver indexes platform-scope assets (above any catalog).
+
+    A "platform" asset is one not owned by any specific catalog —
+    typically global static resources (UI assets, shared imagery,
+    cross-tenant references).  No "platform asset" concept exists in the
+    asset model today (``AssetBase`` requires ``catalog_id``); this
+    marker reserves the design space.
+
+    The opt-in flag ``is_platform_asset_indexer: ClassVar[bool] = True``
+    is the extension axis only — no implementer ships in this PR.
+    """
+
+    is_platform_asset_indexer: ClassVar[bool]
 
 
 @runtime_checkable

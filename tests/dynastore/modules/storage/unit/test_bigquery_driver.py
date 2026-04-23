@@ -590,3 +590,239 @@ class TestReporterWriteEntities:
         with caplog.at_level(logging.WARNING, logger=mod.__name__):
             await d.write_entities("cat", "col", features)
         assert any("partial failure" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4e step 2 — credentials kwarg forwarding
+# ---------------------------------------------------------------------------
+
+
+def _cfg_with_creds(secret_value: str = "{}"):
+    """Build a fully-qualified config carrying a Secret-wrapped SA JSON."""
+    from dynastore.modules.storage.drivers.bigquery_models import (
+        BigQueryCredentials,
+        BigQueryTarget,
+        ItemsBigQueryDriverConfig,
+    )
+    from dynastore.tools.secrets import Secret
+
+    return ItemsBigQueryDriverConfig(
+        target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
+        credentials=BigQueryCredentials(service_account_json=Secret(secret_value)),
+    )
+
+
+class TestDriverForwardsCredentials:
+    """Driver call sites must forward cfg.credentials to BigQueryProtocol."""
+
+    @pytest.mark.asyncio
+    async def test_count_entities_forwards_credentials(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        import dynastore.modules.storage.drivers.bigquery as mod
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
+
+        cfg = _cfg_with_creds()
+        fake = type("S", (), {})()
+        fake.execute_query = AsyncMock(return_value=[{"f0_": 7}])
+        monkeypatch.setattr(mod, "_get_bq_service", lambda: fake)
+
+        d = ItemsBigQueryDriver()
+        monkeypatch.setattr(d, "get_driver_config", AsyncMock(return_value=cfg))
+        await d.count_entities("cat", "col")
+
+        kwargs = fake.execute_query.call_args.kwargs
+        assert kwargs["credentials"] is cfg.credentials
+
+    @pytest.mark.asyncio
+    async def test_aggregate_forwards_credentials(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        import dynastore.modules.storage.drivers.bigquery as mod
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
+
+        cfg = _cfg_with_creds()
+        fake = type("S", (), {})()
+        fake.execute_query = AsyncMock(return_value=[{"f0_": 1.0}])
+        monkeypatch.setattr(mod, "_get_bq_service", lambda: fake)
+
+        d = ItemsBigQueryDriver()
+        monkeypatch.setattr(d, "get_driver_config", AsyncMock(return_value=cfg))
+        await d.aggregate("cat", "col", aggregation_type="sum", field="value")
+
+        kwargs = fake.execute_query.call_args.kwargs
+        assert kwargs["credentials"] is cfg.credentials
+
+    @pytest.mark.asyncio
+    async def test_read_entities_forwards_credentials(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        import dynastore.modules.storage.drivers.bigquery as mod
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
+
+        cfg = _cfg_with_creds()
+        fake = type("S", (), {})()
+        fake.execute_query = AsyncMock(side_effect=[[{"id": "x"}], []])
+        monkeypatch.setattr(mod, "_get_bq_service", lambda: fake)
+
+        d = ItemsBigQueryDriver()
+        monkeypatch.setattr(d, "get_driver_config", AsyncMock(return_value=cfg))
+        async for _ in d.read_entities("cat", "col", limit=5):
+            pass
+
+        kwargs = fake.execute_query.call_args.kwargs
+        assert kwargs["credentials"] is cfg.credentials
+
+    @pytest.mark.asyncio
+    async def test_reporter_write_forwards_credentials(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        import dynastore.modules.storage.drivers.bigquery as mod
+        from dynastore.models.ogc import Feature
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
+        from dynastore.modules.storage.drivers.bigquery_models import (
+            BigQueryCredentials,
+            BigQueryTarget,
+            ItemsBigQueryDriverConfig,
+        )
+        from dynastore.tools.secrets import Secret
+
+        cfg = ItemsBigQueryDriverConfig(
+            target=BigQueryTarget(project_id="p", dataset_id="d", table_name="t"),
+            credentials=BigQueryCredentials(service_account_json=Secret("{}")),
+            reporter_mode="batch_summary",
+        )
+        fake = type("S", (), {})()
+        fake.insert_rows_json = AsyncMock(return_value=[])
+        monkeypatch.setattr(mod, "_get_bq_service", lambda: fake)
+
+        d = ItemsBigQueryDriver()
+        monkeypatch.setattr(d, "get_driver_config", AsyncMock(return_value=cfg))
+        feat = Feature.model_validate({
+            "type": "Feature", "id": "a", "geometry": None, "properties": {},
+        })
+        await d.write_entities("cat", "col", [feat])
+
+        kwargs = fake.insert_rows_json.call_args.kwargs
+        assert kwargs["credentials"] is cfg.credentials
+
+
+class TestBigQueryServiceCredentialResolution:
+    """BigQueryService.execute_query / insert_rows_json must route credential
+    resolution through ``_make_bq_client`` (the single SA-reveal site)."""
+
+    @pytest.mark.asyncio
+    async def test_execute_query_uses_make_bq_client_with_credentials(
+        self, monkeypatch,
+    ):
+        from unittest.mock import MagicMock
+
+        import dynastore.modules.gcp.bigquery_service as svc_mod
+        from dynastore.modules.gcp.bigquery_service import BigQueryService
+        from dynastore.modules.storage.drivers.bigquery_models import (
+            BigQueryCredentials,
+        )
+        from dynastore.tools.secrets import Secret
+
+        creds = BigQueryCredentials(service_account_json=Secret("{}"))
+
+        fake_query_job = MagicMock()
+        fake_df = MagicMock()
+        fake_df.to_dict.return_value = [{"a": 1}]
+        fake_query_job.to_dataframe.return_value = fake_df
+        fake_client = MagicMock()
+        fake_client.query.return_value = fake_query_job
+
+        captured = {}
+
+        def fake_build(project_id, credentials):
+            captured["project_id"] = project_id
+            captured["credentials"] = credentials
+            return fake_client
+
+        monkeypatch.setattr(svc_mod, "_build_client", fake_build)
+
+        rows = await BigQueryService().execute_query(
+            "SELECT 1", "proj", credentials=creds,
+        )
+        assert rows == [{"a": 1}]
+        assert captured == {"project_id": "proj", "credentials": creds}
+        fake_client.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_execute_query_without_credentials_passes_none(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        import dynastore.modules.gcp.bigquery_service as svc_mod
+        from dynastore.modules.gcp.bigquery_service import BigQueryService
+
+        fake_df = MagicMock()
+        fake_df.to_dict.return_value = []
+        fake_client = MagicMock()
+        fake_client.query.return_value.to_dataframe.return_value = fake_df
+
+        captured = {}
+
+        def fake_build(project_id, credentials):
+            captured["credentials"] = credentials
+            return fake_client
+
+        monkeypatch.setattr(svc_mod, "_build_client", fake_build)
+
+        await BigQueryService().execute_query("SELECT 1", "proj")
+        assert captured["credentials"] is None
+
+    @pytest.mark.asyncio
+    async def test_insert_rows_json_uses_make_bq_client_with_credentials(
+        self, monkeypatch,
+    ):
+        from unittest.mock import MagicMock
+
+        import dynastore.modules.gcp.bigquery_service as svc_mod
+        from dynastore.modules.gcp.bigquery_service import BigQueryService
+        from dynastore.modules.storage.drivers.bigquery_models import (
+            BigQueryCredentials,
+        )
+        from dynastore.tools.secrets import Secret
+
+        creds = BigQueryCredentials(service_account_json=Secret("{}"))
+
+        fake_client = MagicMock()
+        fake_client.insert_rows_json.return_value = []
+
+        captured = {}
+
+        def fake_build(project_id, credentials):
+            captured["credentials"] = credentials
+            return fake_client
+
+        monkeypatch.setattr(svc_mod, "_build_client", fake_build)
+
+        result = await BigQueryService().insert_rows_json(
+            "p.d.t", [{"x": 1}], project_id="proj", credentials=creds,
+        )
+        assert result == []
+        assert captured["credentials"] is creds
+        fake_client.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_insert_rows_json_empty_input_skips_client_build(
+        self, monkeypatch,
+    ):
+        """Empty input is a fast no-op — no client built, no creds resolved."""
+        import dynastore.modules.gcp.bigquery_service as svc_mod
+        from dynastore.modules.gcp.bigquery_service import BigQueryService
+
+        called = {"n": 0}
+
+        def fake_build(project_id, credentials):
+            called["n"] += 1
+            raise AssertionError("should not build a client for empty rows")
+
+        monkeypatch.setattr(svc_mod, "_build_client", fake_build)
+
+        result = await BigQueryService().insert_rows_json(
+            "p.d.t", [], project_id="proj",
+        )
+        assert result == []
+        assert called["n"] == 0

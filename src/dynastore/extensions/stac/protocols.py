@@ -44,12 +44,16 @@ from dynastore.models.protocols.metadata_driver import (
 class StacCollectionMetadataCapability(CollectionMetadataStore, Protocol):
     """A ``CollectionMetadataStore`` that persists the STAC slice of metadata.
 
-    Concrete STAC PG sidecar drivers (``modules/stac/drivers/metadata_postgresql.py``)
-    satisfy this structurally by implementing the base ``CollectionMetadataStore``
-    methods *and* exposing the ``stac_metadata_columns()`` marker method.
-    Non-STAC drivers (``CollectionCorePostgresqlDriver``, ``MetadataElasticsearchDriver``,
-    etc.) lack the marker method and therefore fail the ``isinstance`` check —
-    that's the discriminator the STAC service relies on.
+    The PG-tier composition wrapper ``CollectionPostgresqlDriver``
+    satisfies this structurally by exposing ``stac_metadata_columns()``
+    that delegates to its first STAC-capable inner sidecar (or returns
+    ``()`` if no STAC sidecar is loaded — e.g. a deployment without the
+    stac extra).  ``stac_service._has_stac`` requires both the
+    ``isinstance`` check AND a non-empty column tuple, so the empty
+    delegation correctly identifies STAC as unavailable in those
+    deployments.  Non-STAC drivers like ``CollectionElasticsearchDriver``
+    lack the marker method entirely and fail the ``isinstance`` check
+    outright.
     """
 
     def stac_metadata_columns(self) -> Tuple[str, ...]:
