@@ -2,10 +2,20 @@ import pytest
 
 from dynastore.modules.volumes.sidecar_bounds import (
     BoundsQuerySpec,
+    SidecarBoundsSource,
     build_bounds_query,
     row_to_feature_bounds,
     rows_to_bounds,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_get_bounds_cache():
+    """Reset the @cached layer on `get_bounds` before each test so cache
+    state from one test doesn't leak hits into the next."""
+    SidecarBoundsSource.get_bounds.cache_clear()
+    yield
+    SidecarBoundsSource.get_bounds.cache_clear()
 
 
 def test_query_emits_schema_qualified_join():
@@ -173,3 +183,115 @@ def _fake_connection_factory_returning(rows, sql_sink=None):
         return _FactoryCM()
 
     return _call
+
+
+# --- @cached behaviour ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_bounds_caches_repeated_calls():
+    """Second call with identical args must hit cache — DB executed once."""
+    fake_rows = [
+        {"feature_id": "a", "min_x": 0, "min_y": 0, "min_z": 0,
+         "max_x": 1, "max_y": 1, "max_z": 1},
+    ]
+    executed_sql: list = []
+
+    src = SidecarBoundsSource(
+        connection_factory=_fake_connection_factory_returning(
+            fake_rows, sql_sink=executed_sql,
+        ),
+        schema_resolver=_make_resolver("tenant_cache_a"),
+        hub_table_for_collection=_make_table("assets"),
+        geometries_table_for_collection=_make_table("assets_geometries"),
+    )
+
+    first = await src.get_bounds("cat_cache_a", "col_cache_a")
+    second = await src.get_bounds("cat_cache_a", "col_cache_a")
+
+    assert [b.feature_id for b in first] == ["a"]
+    assert [b.feature_id for b in second] == ["a"]
+    assert len(executed_sql) == 1, (
+        "expected one DB execution, got " + str(len(executed_sql))
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_bounds_distinct_keys_dont_collide():
+    """Different (catalog_id, collection_id) tuples must be cached separately."""
+    fake_rows = [
+        {"feature_id": "x", "min_x": 0, "min_y": 0, "min_z": 0,
+         "max_x": 1, "max_y": 1, "max_z": 1},
+    ]
+    executed_sql: list = []
+
+    src = SidecarBoundsSource(
+        connection_factory=_fake_connection_factory_returning(
+            fake_rows, sql_sink=executed_sql,
+        ),
+        schema_resolver=_make_resolver("tenant_cache_b"),
+        hub_table_for_collection=_make_table("assets"),
+        geometries_table_for_collection=_make_table("assets_geometries"),
+    )
+
+    await src.get_bounds("cat_cache_b1", "col_cache_b")
+    await src.get_bounds("cat_cache_b2", "col_cache_b")
+    await src.get_bounds("cat_cache_b1", "col_cache_b_other")
+
+    assert len(executed_sql) == 3
+
+
+@pytest.mark.asyncio
+async def test_get_bounds_distinct_limits_dont_collide():
+    """``limit`` is part of the cache key — different limits = different entries."""
+    fake_rows = [
+        {"feature_id": "x", "min_x": 0, "min_y": 0, "min_z": 0,
+         "max_x": 1, "max_y": 1, "max_z": 1},
+    ]
+    executed_sql: list = []
+
+    src = SidecarBoundsSource(
+        connection_factory=_fake_connection_factory_returning(
+            fake_rows, sql_sink=executed_sql,
+        ),
+        schema_resolver=_make_resolver("tenant_cache_c"),
+        hub_table_for_collection=_make_table("assets"),
+        geometries_table_for_collection=_make_table("assets_geometries"),
+    )
+
+    await src.get_bounds("cat_cache_c", "col_cache_c", limit=10)
+    await src.get_bounds("cat_cache_c", "col_cache_c", limit=20)
+    await src.get_bounds("cat_cache_c", "col_cache_c", limit=10)  # repeat -> hit
+
+    assert len(executed_sql) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_bounds_failed_validation_is_not_cached():
+    """Identifier validation raises before the DB call; the failure must
+    not cache an entry that would shadow a later valid call with the
+    same key."""
+    fake_rows = [
+        {"feature_id": "y", "min_x": 0, "min_y": 0, "min_z": 0,
+         "max_x": 1, "max_y": 1, "max_z": 1},
+    ]
+    executed_sql: list = []
+
+    src = SidecarBoundsSource(
+        connection_factory=_fake_connection_factory_returning(
+            fake_rows, sql_sink=executed_sql,
+        ),
+        schema_resolver=_make_resolver("tenant_cache_d"),
+        hub_table_for_collection=_make_table("assets"),
+        geometries_table_for_collection=_make_table("assets_geometries"),
+    )
+
+    with pytest.raises(ValueError):
+        await src.get_bounds("cat_cache_d; DROP", "col_cache_d")
+
+    # A subsequent VALID call with safe identifiers must execute against
+    # the DB rather than returning a cached error/sentinel.
+    out = await src.get_bounds("cat_cache_d", "col_cache_d")
+    assert [b.feature_id for b in out] == ["y"]
+    assert len(executed_sql) == 1
+
