@@ -37,3 +37,7 @@ def bootstrap_task_env(
 
     logger.info("--- [tasks/bootstrap.py] Discovering background tasks ---")
     tasks.discover_tasks()
+    # Ensure get_task_instance() can construct tasks that need app_state even
+    # when called outside the manage_tasks() lifespan (capability checks,
+    # ad-hoc runner lookups during dispatcher startup).
+    tasks.set_task_app_state(app_state)

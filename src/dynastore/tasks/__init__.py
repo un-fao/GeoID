@@ -22,6 +22,24 @@ class TaskConfig:
 
 _DYNASTORE_TASKS: Dict[str, TaskConfig] = {}
 
+# Module-level handle to the runtime app_state so ``get_task_instance`` can
+# construct task classes that declare ``def __init__(self, app_state)`` even
+# when called outside the ``manage_tasks`` lifespan (e.g. capability checks
+# during dispatcher startup, FastAPI runners that look up tasks ad-hoc).
+# Set by ``manage_tasks`` and ``tasks/bootstrap.py``.
+_TASK_APP_STATE: object | None = None
+
+
+def set_task_app_state(app_state: object) -> None:
+    """Register the runtime app_state used to construct task instances.
+
+    Called once during process bootstrap (Cloud Run job entrypoint or API
+    server lifespan). Subsequent ``get_task_instance`` calls will pass it to
+    task ``__init__`` methods that declare an ``app_state`` parameter.
+    """
+    global _TASK_APP_STATE
+    _TASK_APP_STATE = app_state
+
 def get_task_config(task_type: str) -> Optional[TaskConfig]:
     """Look up task config by registration name or task_type class attribute."""
     config = _DYNASTORE_TASKS.get(task_type)
@@ -211,8 +229,15 @@ def _register_task(target_cls: Type[TaskProtocol], registration_name: Optional[s
     logger.info(f"Registered task: {target_cls.__name__} (as '{registration_name}')")
     return target_cls
 
-def get_task_instance(name: str) -> TaskProtocol | None:
-    """Look up a task by registration name OR by its task_type class attribute."""
+def get_task_instance(name: str, app_state: object | None = None) -> TaskProtocol | None:
+    """Look up a task by registration name OR by its task_type class attribute.
+
+    If the task class declares ``def __init__(self, app_state)`` it is
+    constructed with the supplied ``app_state`` (or, if None, the module-level
+    one set by :func:`set_task_app_state` / :func:`manage_tasks`). This mirrors
+    the construction logic in :func:`manage_tasks` so single-shot lookups
+    (capability checks, ad-hoc runners) work identically.
+    """
     config = _DYNASTORE_TASKS.get(name)
     if not config:
         # Fallback: search by task_type attribute (DB task_type may differ from
@@ -229,9 +254,22 @@ def get_task_instance(name: str) -> TaskProtocol | None:
 
     load_component_dotenv(config.cls)
     try:
-        return config.cls()
-    except Exception as e:
-        logger.error(f"Failed to instantiate task '{name}': {e}")
+        sig = inspect.signature(config.cls.__init__)
+        factory = cast(Any, config.cls)
+        if "app_state" in sig.parameters:
+            resolved_app_state = app_state if app_state is not None else _TASK_APP_STATE
+            if resolved_app_state is None:
+                logger.error(
+                    "Task '%s' requires app_state but none was provided and "
+                    "set_task_app_state() was never called. Ensure the process "
+                    "bootstrap calls bootstrap_task_env() or manage_tasks().",
+                    name,
+                )
+                return None
+            return factory(app_state=resolved_app_state)
+        return factory()
+    except Exception:
+        logger.exception("Failed to instantiate task '%s'", name)
         return None
 
 def _extract_inputs_type(payload_hint):
@@ -300,6 +338,9 @@ async def manage_tasks(app_state: object, include_only: Optional[List[str]] = No
     It instantiates each task, enters its lifespan, and yields control.
     On exit, it ensures all lifespans are exited in reverse order.
     """
+    # Make app_state available to subsequent get_task_instance() lookups.
+    set_task_app_state(app_state)
+
     # Filter tasks if requested (primarily for tests)
     tasks_to_manage = _DYNASTORE_TASKS.items()
     if include_only is not None:

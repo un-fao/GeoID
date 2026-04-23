@@ -58,22 +58,21 @@ class CacheModule(ModuleProtocol):
             yield
             return
 
-        from dynastore.tools.cache_valkey import ValkeyCacheBackend
-
         # Mask credentials in logged URL (valkey://:pass@host → valkey://host)
         _safe_url = valkey_url.split("@")[-1] if "@" in valkey_url else valkey_url
 
         logger.info("CacheModule: Connecting to Valkey at %s …", _safe_url)
         try:
+            from dynastore.tools.cache_valkey import ValkeyCacheBackend
             backend = ValkeyCacheBackend(url=valkey_url)
         except Exception as exc:
             logger.warning(
-                "CacheModule: Invalid VALKEY_URL (%s) — falling back to local cache.",
+                "CacheModule: Cannot initialise Valkey backend (%s) — falling back to local cache.",
                 exc,
             )
             logger.warning(
                 "CACHE BACKEND: LOCAL (in-memory, per-instance) — "
-                "VALKEY_URL invalid; cross-instance consistency NOT guaranteed."
+                "Valkey unavailable; cross-instance consistency NOT guaranteed."
             )
             yield
             return

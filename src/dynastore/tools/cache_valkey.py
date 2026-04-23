@@ -34,7 +34,20 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-import msgpack
+# msgpack + valkey are optional — provided by the ``module_cache`` extra.
+# Import them lazily so the module can be imported in environments that
+# don't ship the extra; ``ValkeyCacheBackend.__init__`` raises a friendly
+# ImportError if the deps are actually needed.
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    import msgpack
+try:
+    import msgpack  # noqa: F811
+    _CACHE_DEPS_OK = True
+    _CACHE_DEPS_ERR: Optional[ImportError] = None
+except ImportError as _e:
+    _CACHE_DEPS_OK = False
+    _CACHE_DEPS_ERR = _e
 
 from dynastore.models.protocols.cache import CacheStats
 
@@ -163,7 +176,20 @@ class ValkeyCacheBackend:
     """
 
     def __init__(self, url: str, key_prefix: str = "ds:") -> None:
-        import valkey.asyncio as avalkey
+        if not _CACHE_DEPS_OK:
+            raise ImportError(
+                "ValkeyCacheBackend requires the 'module_cache' extra "
+                "(`pip install 'dynastore[module_cache]'` — provides msgpack + valkey). "
+                f"Original error: {_CACHE_DEPS_ERR}"
+            )
+        try:
+            import valkey.asyncio as avalkey
+        except ImportError as e:
+            raise ImportError(
+                "ValkeyCacheBackend requires the 'module_cache' extra "
+                "(`pip install 'dynastore[module_cache]'` — provides msgpack + valkey). "
+                f"Original error: {e}"
+            ) from e
 
         self._pool = avalkey.ConnectionPool.from_url(url, decode_responses=False)
         self._client = avalkey.Valkey(connection_pool=self._pool)
