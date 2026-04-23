@@ -1579,15 +1579,49 @@ class AssetElasticsearchDriver(
 ):
     """Elasticsearch storage driver for asset metadata.
 
-    Indexer marker — opts in to :class:`AssetIndexer` so the asset routing
-    config auto-registers it under ``operations[INDEX]``.
+    Multi-tier scope today
+    ----------------------
+    The per-catalog index ``{prefix}-assets-{catalog_id}`` (mapping at
+    ``modules/elasticsearch/mappings.py:ASSET_MAPPING``) carries BOTH
+    catalog-tier and collection-tier assets — the mapping has both
+    ``catalog_id`` (always set) and a nullable ``collection_id``
+    (NULL for catalog-tier assets, set for collection-tier).  This is
+    NOT a per-tier driver; it serves the catalog/collection asset
+    spectrum from one index.
 
-    Indexes asset documents into per-catalog ``{prefix}-assets-{catalog_id}``
-    indices using the ``ASSET_MAPPING`` from ``modules/elasticsearch/mappings.py``.
+    Indexer marker — opts in to :class:`AssetIndexer` only.  The
+    ``AssetIndexer`` marker is documented as tier-spanning at the
+    catalog/collection level (see ``models/protocols/indexer.py``); per-tier
+    asset routing is unnecessary today because both tiers land in the
+    same index.
 
+    Extension axis — future tier expansions
+    ---------------------------------------
+    Two future tiers are pre-declared as marker Protocols in
+    ``models/protocols/indexer.py`` but have no implementer yet:
+
+    * :class:`ItemAssetIndexer` (``is_item_asset_indexer``) — for
+      promoting item-embedded assets to first-class index entries.
+      Today STAC item docs store ``assets`` as opaque blob
+      (``COMMON_PROPERTIES`` declares ``"assets": {"enabled": False}``);
+      promotion is a deferred STAC read/write refactor.  When it lands,
+      this class will add ``is_item_asset_indexer: ClassVar[bool] = True``
+      and start emitting per-item-asset documents to the same per-catalog
+      index (with ``item_id`` populated; mapping field already added for
+      forward-compat).
+    * :class:`PlatformAssetIndexer` (``is_platform_asset_indexer``) —
+      for assets above the catalog scope (no design yet; ``AssetBase``
+      requires ``catalog_id`` today).
+
+    Both marker opt-ins are deferred until the consumer tier ships;
+    the markers themselves exist so future drivers (or this driver's
+    future extension) can self-register without a rename.
+
+    Lifecycle wiring
+    ----------------
     Event listeners for ``CatalogEventType.ASSET_*`` are registered at
-    lifespan if available.  The driver also exposes ``index_asset()`` and
-    ``delete_asset()`` for direct programmatic use.
+    lifespan if available.  The driver also exposes ``index_asset()``
+    and ``delete_asset()`` for direct programmatic use.
 
     Registered as ``storage_elasticsearch_assets`` via entry points.
     """

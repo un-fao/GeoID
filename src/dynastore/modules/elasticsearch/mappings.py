@@ -206,6 +206,11 @@ ASSET_MAPPING: Dict[str, Any] = {
         "asset_id":      {"type": "keyword"},
         "catalog_id":    {"type": "keyword"},
         "collection_id": {"type": "keyword"},
+        # Forward-compat for item-embedded asset promotion
+        # (ItemAssetIndexer marker, no implementer in this PR).  Asset
+        # docs sourced from item-embedded assets will populate item_id;
+        # standalone catalog/collection assets leave it unset.
+        "item_id":       {"type": "keyword"},
         "asset_type":    {"type": "keyword"},
         "uri":           {"type": "keyword", "index": False, "doc_values": False},
         "owned_by":      {"type": "keyword"},

@@ -31,6 +31,7 @@ import dynastore.modules.storage.drivers.elasticsearch  # noqa: F401
 import dynastore.modules.storage.drivers.metadata_postgresql  # noqa: F401
 import dynastore.modules.stac.drivers.metadata_postgresql  # noqa: F401
 import dynastore.modules.elasticsearch.collection_es_driver  # noqa: F401
+import dynastore.modules.elasticsearch.catalog_es_driver  # noqa: F401
 import dynastore.modules.catalog.drivers.pg_asset_driver  # noqa: F401
 
 from dynastore.models.protocols.typed_driver import (
