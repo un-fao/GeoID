@@ -545,13 +545,20 @@ class TestIcebergExportEntities:
 # ---------------------------------------------------------------------------
 
 
-class TestIcebergResolveLocation:
+class TestIcebergLocation:
+    """Modern typed-location API. Replaces deleted resolve_storage_location()
+    test after the StorageLocationResolver Protocol was removed in favour of
+    CollectionItemsStore.location() returning a typed StorageLocation."""
+
     @pytest.mark.asyncio
-    async def test_returns_default_when_no_config(self):
+    async def test_location_returns_default_when_no_config(self):
         driver = ItemsIcebergDriver()
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=None):
-            loc = await driver.resolve_storage_location("cat1")
-            assert isinstance(loc, ItemsIcebergDriverConfig)
+            loc = await driver.location("cat1", "col1")
+            assert loc.backend == "iceberg"
+            # Defaults: namespace == catalog_id, table == collection_id
+            assert loc.identifiers["namespace"] == "cat1"
+            assert loc.identifiers["table"] == "col1"
 
 
 # ---------------------------------------------------------------------------

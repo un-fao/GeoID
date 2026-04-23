@@ -208,7 +208,7 @@ class ItemsDuckdbDriver(ModuleProtocol):
     ``queue.Queue``).  All blocking DuckDB operations are offloaded to
     the thread pool via ``run_in_thread()``.
 
-    Satisfies ``CollectionItemsStore`` and ``StorageLocationResolver``.
+    Satisfies ``CollectionItemsStore``.
     """
 
     priority: int = 30
@@ -798,18 +798,6 @@ class ItemsDuckdbDriver(ModuleProtocol):
         return await run_in_thread(
             self._export_entities_sync, loc, format, target_path
         )
-
-    async def resolve_storage_location(
-        self,
-        catalog_id: str,
-        collection_id: Optional[str] = None,
-        *,
-        db_resource: Optional[Any] = None,
-    ) -> ItemsDuckdbDriverConfig:
-        loc = await self._get_location_async(catalog_id, collection_id)
-        if loc:
-            return loc
-        return ItemsDuckdbDriverConfig()
 
     async def location(
         self,

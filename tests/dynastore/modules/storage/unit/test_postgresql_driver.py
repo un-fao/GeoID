@@ -232,15 +232,18 @@ class TestLifecycleMethods:
             await driver.export_entities("cat1", "col1")
 
 
-class TestResolveStorageLocation:
+class TestLocation:
+    """Modern typed-location API. Replaces deleted resolve_storage_location()
+    tests after the StorageLocationResolver Protocol was removed in favour of
+    CollectionItemsStore.location() returning a typed StorageLocation."""
+
     @pytest.mark.asyncio
-    async def test_resolve_with_collection(self):
+    async def test_location_with_collection(self):
         driver = ItemsPostgresqlDriver()
         with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
             mock_catalogs = AsyncMock()
             mock_catalogs.resolve_physical_schema = AsyncMock(return_value="my_schema")
 
-            # ConfigsProtocol mock returns a config with physical_table set
             mock_configs = AsyncMock()
             mock_configs.get_config = AsyncMock(
                 return_value=ItemsPostgresqlDriverConfig(physical_table="my_table")
@@ -255,26 +258,7 @@ class TestResolveStorageLocation:
                 return None
 
             mock_gp.side_effect = side_effect
-            loc = await driver.resolve_storage_location("cat1", "col1")
-            assert isinstance(loc, ItemsPostgresqlDriverConfig)
-            assert loc.physical_schema == "my_schema"
-            assert loc.physical_table == "my_table"
-
-    @pytest.mark.asyncio
-    async def test_resolve_without_collection(self):
-        driver = ItemsPostgresqlDriver()
-        with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
-            mock_catalogs = AsyncMock()
-            mock_catalogs.resolve_physical_schema = AsyncMock(return_value="my_schema")
-
-            def side_effect(proto):
-                name = proto.__name__ if hasattr(proto, "__name__") else str(proto)
-                if "Catalogs" in name:
-                    return mock_catalogs
-                return None
-
-            mock_gp.side_effect = side_effect
-            loc = await driver.resolve_storage_location("cat1")
-            assert isinstance(loc, ItemsPostgresqlDriverConfig)
-            assert loc.physical_schema == "my_schema"
-            assert loc.physical_table is None
+            loc = await driver.location("cat1", "col1")
+            assert loc.backend == "postgresql"
+            assert loc.identifiers["schema"] == "my_schema"
+            assert loc.identifiers["table"] == "my_table"

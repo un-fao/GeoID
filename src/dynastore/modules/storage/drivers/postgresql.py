@@ -1143,26 +1143,6 @@ class ItemsPostgresqlDriver(ModuleProtocol):
         async with managed_transaction(db_proto.engine) as conn:
             return await _query(conn)
 
-    async def resolve_storage_location(
-        self,
-        catalog_id: str,
-        collection_id: Optional[str] = None,
-        *,
-        db_resource: Optional[Any] = None,
-    ) -> ItemsPostgresqlDriverConfig:
-        """Resolve PG storage coordinates using internal methods."""
-        schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
-        table = None
-        if collection_id:
-            table = await self.resolve_physical_table(
-                catalog_id, collection_id, db_resource=db_resource,
-            )
-
-        return ItemsPostgresqlDriverConfig(
-            physical_schema=schema,
-            physical_table=table,
-        )
-
     async def location(
         self,
         catalog_id: str,

@@ -32,6 +32,7 @@ from dynastore.models.protocols import (
     StorageProtocol,
     EventingProtocol,
     CatalogsProtocol,
+    GcpCatalogProvisioning,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,13 +114,14 @@ class ProvisioningTask(TaskProtocol):
             # 1. Resolve storage protocol (GCP)
             storage = _get_storage_protocol()
 
-            # 2. Setup the bucket and eventing idempotently
-            setup_gcp = getattr(storage, "setup_catalog_gcp_resources", None)
-            if setup_gcp is not None:
-                # Native GCP module method provisions both bucket and eventing
-                bucket_name, _ = await setup_gcp(catalog_id)
+            # 2. Setup the bucket and eventing idempotently. A storage
+            # implementation that satisfies GcpCatalogProvisioning provisions
+            # bucket + eventing in one call (more efficient on GCS where the
+            # two resources are interleaved). Mocks and non-GCP backends fall
+            # back to the cross-vendor sequence.
+            if isinstance(storage, GcpCatalogProvisioning):
+                bucket_name, _ = await storage.setup_catalog_gcp_resources(catalog_id)
             else:
-                # Fallback for mocked storage
                 bucket_name = await storage.ensure_storage_for_catalog(catalog_id)
                 eventing = get_protocol(EventingProtocol)
                 if eventing:
@@ -216,24 +218,25 @@ class GcpDestroyCatalogTask(TaskProtocol):
 
         logger.info(f"GcpDestroyCatalogTask: Tearing down resources for catalog '{catalog_id}'...")
 
-        # 1. Teardown eventing (optional)
+        # 1. Teardown eventing (optional). Calls the typed EventingProtocol
+        # method directly — previously this dispatched via getattr to a
+        # non-existent `teardown_catalog_notifications` method, silently
+        # no-opping every destroy. Real teardown now executes.
         eventing = get_protocol(EventingProtocol)
         if eventing:
-            teardown = getattr(eventing, "teardown_catalog_notifications", None)
-            if teardown is not None:
-                try:
-                    await teardown(catalog_id)
-                    logger.info(f"GcpDestroyCatalogTask: Eventing removed for catalog '{catalog_id}'.")
-                except Exception as e:
-                    logger.warning(f"GcpDestroyCatalogTask: Failed to teardown eventing for '{catalog_id}': {e}")
+            try:
+                await eventing.teardown_catalog_eventing(catalog_id)
+                logger.info(f"GcpDestroyCatalogTask: Eventing removed for catalog '{catalog_id}'.")
+            except Exception as e:
+                logger.warning(f"GcpDestroyCatalogTask: Failed to teardown eventing for '{catalog_id}': {e}")
 
-        # 2. Delete/cleanup storage
+        # 2. Delete/cleanup storage. Same fix: was dispatching via getattr to
+        # a non-existent `delete_catalog_bucket`; now calls the typed
+        # StorageProtocol.delete_storage_for_catalog directly.
         try:
             storage = _get_storage_protocol()
-            delete_bucket = getattr(storage, "delete_catalog_bucket", None)
-            if delete_bucket is not None:
-                await delete_bucket(catalog_id)
-                logger.info(f"GcpDestroyCatalogTask: Bucket resources for '{catalog_id}' deleted.")
+            await storage.delete_storage_for_catalog(catalog_id)
+            logger.info(f"GcpDestroyCatalogTask: Bucket resources for '{catalog_id}' deleted.")
         except Exception as e:
             logger.warning(f"GcpDestroyCatalogTask: Failed to delete storage for '{catalog_id}': {e}")
 

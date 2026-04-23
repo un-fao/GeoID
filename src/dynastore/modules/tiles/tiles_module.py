@@ -888,17 +888,12 @@ async def get_collection_source_srid(
 
         try:
             driver = await get_driver(Operation.READ, catalog_id, collection_id)
-            resolve = getattr(driver, "resolve_storage_location", None)
-            if resolve is None:
-                return 4326
-            location = await resolve(
-                catalog_id, collection_id, db_resource=conn
-            )
+            location = await driver.location(catalog_id, collection_id)
         except (ValueError, Exception):
             return 4326
 
-        phys_schema = getattr(location, "physical_schema", None)
-        phys_table = getattr(location, "physical_table", None)
+        phys_schema = location.identifiers.get("schema")
+        phys_table = location.identifiers.get("table")
 
         if not phys_schema or not phys_table:
             return None
@@ -938,17 +933,12 @@ async def get_tile_resolution_params(
 
         try:
             driver = await get_driver(Operation.READ, catalog_id, collection_id)
-            resolve = getattr(driver, "resolve_storage_location", None)
-            if resolve is None:
-                return {}
-            location = await resolve(
-                catalog_id, collection_id, db_resource=conn
-            )
+            location = await driver.location(catalog_id, collection_id)
         except (ValueError, Exception):
             return {}
 
-        phys_schema = getattr(location, "physical_schema", None)
-        phys_table = getattr(location, "physical_table", None)
+        phys_schema = location.identifiers.get("schema")
+        phys_table = location.identifiers.get("table")
 
         if not phys_schema or not phys_table:
             return {}

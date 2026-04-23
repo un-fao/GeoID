@@ -39,7 +39,6 @@ from dynastore.models.protocols.storage_driver import (
     Capability,
     CollectionItemsStore,
     ReadOnlyDriverMixin,
-    StorageLocationResolver,
 )
 from dynastore.modules.storage.storage_location import StorageLocation
 from dynastore.modules.storage.driver_config import (
@@ -96,7 +95,6 @@ from dynastore.modules.storage.routing_config import (
 __all__ = [
     # Protocol
     "CollectionItemsStore",
-    "StorageLocationResolver",
     "StorageLocation",
     "Capability",
     "ReadOnlyDriverMixin",

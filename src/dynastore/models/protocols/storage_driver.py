@@ -493,10 +493,6 @@ class CollectionItemsStore(Protocol):
     ) -> "StorageLocation":
         """Return the typed physical storage coordinates for this collection.
 
-        Replaces the old ``StorageLocationResolver.resolve_storage_location()``
-        (which returned ``Any``) and all ``isinstance(driver, ItemsPostgresqlDriver)``
-        patterns that read ``physical_schema``/``physical_table`` directly.
-
         Drivers that advertise ``Capability.PHYSICAL_ADDRESSING`` MUST implement
         this method.  Drivers without physical addressing return a placeholder.
 
@@ -505,27 +501,6 @@ class CollectionItemsStore(Protocol):
             and ``display_label`` populated from this driver's config for the
             given catalog/collection.
         """
-        ...
-
-
-# StorageLocationResolver is kept for backward compatibility with existing drivers
-# that implement resolve_storage_location().  New code uses CollectionItemsStore.location().
-@runtime_checkable
-class StorageLocationResolver(Protocol):
-    """Deprecated: use CollectionItemsStore.location() instead.
-
-    Kept so existing isinstance checks and driver docstrings don't break until
-    the full class-name harmonization milestone removes it.
-    """
-
-    async def resolve_storage_location(
-        self,
-        catalog_id: str,
-        collection_id: Optional[str] = None,
-        *,
-        db_resource: Optional[Any] = None,
-    ) -> Any:
-        """Return the physical storage coordinates for this driver + collection."""
         ...
 
 

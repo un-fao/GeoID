@@ -524,14 +524,8 @@ async def search_items(
 
         try:
             _driver = await get_driver(Operation.READ, cat_id, collection_id)
-            _resolve = getattr(_driver, "resolve_storage_location", None)
-            if _resolve is None:
-                phys_table = None
-            else:
-                _location = await _resolve(
-                    cat_id, collection_id, db_resource=db_resource
-                )
-                phys_table = getattr(_location, "physical_table", None)
+            _location = await _driver.location(cat_id, collection_id)
+            phys_table = _location.identifiers.get("table")
         except (ValueError, Exception):
             phys_table = None
         if not phys_table or not phys_schema:

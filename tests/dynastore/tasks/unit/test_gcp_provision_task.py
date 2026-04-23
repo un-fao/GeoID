@@ -236,3 +236,72 @@ def test_provisioning_task_unsatisfied_without_storage():
     task = ProvisioningTask()
     with patch("dynastore.tools.discovery.get_all_protocols", return_value=[]):
         assert task.are_protocols_satisfied() is False
+
+
+# ---------------------------------------------------------------------------
+# GcpCatalogProvisioning sub-Protocol — capability gating
+# ---------------------------------------------------------------------------
+
+
+def test_gcp_module_satisfies_gcp_catalog_provisioning():
+    """GCPModule must structurally satisfy the GcpCatalogProvisioning sub-Protocol
+    so the typed isinstance dispatch in ProvisioningTask.run picks the
+    combined bucket+eventing setup path instead of the cross-vendor fallback.
+    """
+    from dynastore.modules.gcp.gcp_module import GCPModule
+    from dynastore.models.protocols import GcpCatalogProvisioning
+
+    assert issubclass(GCPModule, GcpCatalogProvisioning)
+
+
+def test_storage_without_setup_method_falls_back():
+    """A StorageProtocol implementation that does NOT satisfy
+    GcpCatalogProvisioning must NOT pass the isinstance check —
+    callers fall back to ensure_storage_for_catalog + setup_catalog_eventing.
+    """
+    from dynastore.models.protocols import GcpCatalogProvisioning
+
+    class MinimalStorage:
+        async def ensure_storage_for_catalog(self, catalog_id, conn=None):
+            return f"bucket-{catalog_id}"
+
+    assert not isinstance(MinimalStorage(), GcpCatalogProvisioning)
+
+
+@pytest.mark.asyncio
+async def test_destroy_task_invokes_typed_destruction():
+    """GcpDestroyCatalogTask must call EventingProtocol.teardown_catalog_eventing
+    AND StorageProtocol.delete_storage_for_catalog directly — previously these
+    were getattr-dispatched to non-existent methods and silently no-opped.
+    Path A bug-fix regression guard.
+    """
+    from dynastore.tasks.gcp_provision.task import GcpDestroyCatalogTask
+
+    mock_storage = MagicMock()
+    mock_storage.delete_storage_for_catalog = AsyncMock(return_value=True)
+
+    mock_eventing = MagicMock()
+    mock_eventing.teardown_catalog_eventing = AsyncMock(return_value=None)
+
+    def _get_protocol_dispatch(proto):
+        from dynastore.models.protocols import EventingProtocol
+        if proto is EventingProtocol:
+            return mock_eventing
+        return None
+
+    task = GcpDestroyCatalogTask()
+    with (
+        patch(
+            "dynastore.tasks.gcp_provision.task._get_storage_protocol",
+            return_value=mock_storage,
+        ),
+        patch(
+            "dynastore.tasks.gcp_provision.task.get_protocol",
+            side_effect=_get_protocol_dispatch,
+        ),
+    ):
+        result = await task.run(_make_payload("destroy_test_cat"))
+
+    mock_eventing.teardown_catalog_eventing.assert_awaited_once_with("destroy_test_cat")
+    mock_storage.delete_storage_for_catalog.assert_awaited_once_with("destroy_test_cat")
+    assert result["status"] == "destroyed"

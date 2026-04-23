@@ -127,25 +127,30 @@ class TestDuckDBDropStorage:
             await driver.drop_storage("cat1", "col1", soft=True)
 
 
-class TestDuckDBResolveLocation:
+class TestDuckDBLocation:
+    """Modern typed-location API. Replaces deleted resolve_storage_location()
+    tests after the StorageLocationResolver Protocol was removed in favour of
+    CollectionItemsStore.location() returning a typed StorageLocation."""
+
     @pytest.mark.asyncio
-    async def test_resolve_returns_config(self):
+    async def test_location_returns_typed_storage_location(self):
         from dynastore.modules.storage.drivers.duckdb import ItemsDuckdbDriver
         driver = ItemsDuckdbDriver()
         loc = ItemsDuckdbDriverConfig(format="csv", path="/data/f.csv")
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=loc):
-            result = await driver.resolve_storage_location("cat1", "col1")
-            assert isinstance(result, ItemsDuckdbDriverConfig)
-            assert result.format == "csv"
+            result = await driver.location("cat1", "col1")
+            assert result.backend == "duckdb"
+            assert result.identifiers["format"] == "csv"
+            assert result.identifiers["path"] == "/data/f.csv"
 
     @pytest.mark.asyncio
-    async def test_resolve_returns_default_when_missing(self):
+    async def test_location_default_format_when_missing(self):
         from dynastore.modules.storage.drivers.duckdb import ItemsDuckdbDriver
         driver = ItemsDuckdbDriver()
         with patch.object(driver, "_get_location_async", new_callable=AsyncMock, return_value=None):
-            result = await driver.resolve_storage_location("cat1")
-            assert isinstance(result, ItemsDuckdbDriverConfig)
-            assert result.format == "parquet"
+            result = await driver.location("cat1", "col1")
+            assert result.backend == "duckdb"
+            assert result.identifiers["format"] == "parquet"
 
 
 class TestDuckDBEnsureStorage:

@@ -48,6 +48,7 @@ from dynastore.models.protocols.job_execution import JobExecutionProtocol
 from dynastore.models.protocols.cloud_storage_client import CloudStorageClientProtocol
 from dynastore.models.protocols.cloud_identity import CloudIdentityProtocol
 from dynastore.models.protocols.eventing import EventingProtocol
+from dynastore.models.protocols.gcp_provisioning import GcpCatalogProvisioning
 from dynastore.models.protocols.events import EventsProtocol
 from dynastore.models.protocols.tasks import TasksProtocol
 from dynastore.models.protocols.task_queue import TaskQueueProtocol
@@ -147,6 +148,7 @@ __all__ = [
     "CloudStorageClientProtocol",
     "CloudIdentityProtocol",
     "EventingProtocol",
+    "GcpCatalogProvisioning",
     "EventsProtocol",
     "TasksProtocol",
     "TaskQueueProtocol",

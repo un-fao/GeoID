@@ -132,7 +132,7 @@ class ItemsIcebergDriver(ModuleProtocol):
     Uses PyIceberg for ACID transactions, snapshot management, time-travel,
     and schema evolution.  Reads and writes via PyArrow integration.
 
-    Satisfies ``CollectionItemsStore`` and ``StorageLocationResolver``.
+    Satisfies ``CollectionItemsStore``.
     """
 
     priority: int = 20
@@ -974,22 +974,6 @@ class ItemsIcebergDriver(ModuleProtocol):
         await run_in_thread(_export_to_file)
         del pa_table  # release memory early (Cloud Run)
         return target_path
-
-    # ------------------------------------------------------------------
-    # StorageLocationResolver
-    # ------------------------------------------------------------------
-
-    async def resolve_storage_location(
-        self,
-        catalog_id: str,
-        collection_id: Optional[str] = None,
-        *,
-        db_resource: Optional[Any] = None,
-    ) -> ItemsIcebergDriverConfig:
-        loc = await self._get_location_async(catalog_id, collection_id)
-        if loc:
-            return loc
-        return ItemsIcebergDriverConfig()
 
     async def location(
         self,
