@@ -371,17 +371,21 @@ class TestColumnTupleAlignment:
 
 class TestEntryPoints:
     def test_core_entry_points_registered(self):
-        """Catalog-tier CORE driver retains its standalone entry-point;
-        the collection-tier CORE entry-point was retired in PR 1e step
-        3b — collection metadata writes now flow through the composition
-        driver ``CollectionPostgresqlDriver`` (entry-point
-        ``collection_postgresql``) which instantiates the raw CORE driver
-        internally via ``MetadataPgSidecarRegistry``.
+        """Both raw CORE driver entry-points were retired in PR 1e steps
+        3b (collection) and 3c (catalog) — the wrappers
+        ``CollectionPostgresqlDriver`` (entry-point ``collection_postgresql``)
+        and ``CatalogPostgresqlDriver`` (entry-point ``catalog_postgresql``)
+        are now the only PG-tier metadata plugins.  Each wrapper composes
+        the raw CORE driver internally via its per-tier
+        ``*MetadataPgSidecarRegistry``.
+
+        This test now asserts that the wrappers ARE registered.
         """
         from importlib.metadata import entry_points
 
         expected = {
-            "metadata_catalog_core_postgresql": "CatalogCorePostgresqlDriver",
+            "collection_postgresql": "CollectionPostgresqlDriver",
+            "catalog_postgresql": "CatalogPostgresqlDriver",
         }
 
         got = {

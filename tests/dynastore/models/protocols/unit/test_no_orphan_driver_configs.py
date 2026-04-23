@@ -23,6 +23,7 @@ import pytest
 # subclasses become reachable via ``__subclasses__()``.  Order doesn't
 # matter — we just need each module's class-creation side effects to fire.
 import dynastore.modules.storage.driver_config  # noqa: F401
+import dynastore.modules.storage.drivers.catalog_metadata_postgresql  # noqa: F401
 import dynastore.modules.storage.drivers.collection_metadata_postgresql  # noqa: F401
 import dynastore.modules.storage.drivers.postgresql  # noqa: F401
 import dynastore.modules.storage.drivers.duckdb  # noqa: F401
@@ -43,7 +44,17 @@ from dynastore.models.protocols.typed_driver import (
 
 def _all_concrete_subclasses(root: type) -> list[type]:
     """Return every concrete leaf subclass of ``root`` reachable via
-    recursive ``__subclasses__()`` walk, skipping known abstract bases.
+    recursive ``__subclasses__()`` walk, skipping known abstract bases
+    AND test-local subclasses defined inside test function bodies.
+
+    The ``<locals>`` filter is necessary because pytest-xdist may place
+    this test in the same worker process as ``test_typed_driver.py``,
+    which intentionally creates orphan and named-with-non-Config
+    ``_PluginDriverConfig`` subclasses inside test function scope to
+    exercise edge cases of the bind machinery.  Those locals stay
+    referenced in ``__subclasses__()`` for the lifetime of the worker
+    even after the test function returns, so without this filter the
+    orphan-guard would conflate test fixtures with production code.
     """
     seen: set[type] = set()
     out: list[type] = []
@@ -56,6 +67,8 @@ def _all_concrete_subclasses(root: type) -> list[type]:
         stack.extend(cls.__subclasses__())
         if cls.__name__ in _ABSTRACT_BASE_NAMES:
             continue
+        if "<locals>" in cls.__qualname__:
+            continue  # test-local fixture, not a production driver config
         out.append(cls)
     return out
 
@@ -124,6 +137,9 @@ def test_class_key_drops_config_suffix_convention():
 
     violations: list[str] = []
     for cfg_cls in _registered_pairs():
+        # Skip test-local fixtures (see _all_concrete_subclasses docstring).
+        if "<locals>" in cfg_cls.__qualname__:
+            continue
         if not cfg_cls.__name__.endswith("Config"):
             violations.append(
                 f"  - {cfg_cls.__qualname__}: name doesn't end in 'Config'"

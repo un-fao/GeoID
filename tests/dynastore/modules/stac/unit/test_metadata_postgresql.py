@@ -278,17 +278,16 @@ class TestEntryPoints:
         from importlib.metadata import entry_points
 
         expected = {
-            "metadata_catalog_stac_postgresql": (
-                "dynastore.modules.stac.drivers.metadata_postgresql:"
-                "CatalogStacPostgresqlDriver"
-            ),
             "stac": "dynastore.modules.stac.module:StacModule",
         }
-        # NOTE: ``metadata_collection_stac_postgresql`` was retired in PR 1e
-        # step 3b — the collection-tier STAC slice is now composed inside
-        # ``CollectionPostgresqlDriver`` (entry-point ``collection_postgresql``)
-        # via ``MetadataPgSidecarRegistry``'s try-import, not surfaced as a
-        # standalone ``CollectionMetadataStore`` plugin.
+        # NOTE: BOTH ``metadata_collection_stac_postgresql`` (retired in
+        # PR 1e step 3b) and ``metadata_catalog_stac_postgresql`` (retired
+        # in PR 1e step 3c) are gone.  The STAC slice is now composed
+        # inside the per-tier wrapper drivers
+        # (``CollectionPostgresqlDriver`` / ``CatalogPostgresqlDriver``)
+        # via their sidecar registries' try-imports.  StacModule itself
+        # remains entry-point-registered as the lifespan owner of the
+        # global ``catalog.catalog_metadata_stac`` DDL.
         got = {
             ep.name: ep.value
             for ep in entry_points(group="dynastore.modules")
