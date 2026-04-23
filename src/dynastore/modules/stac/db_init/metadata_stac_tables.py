@@ -18,19 +18,20 @@
 
 """STAC-slice metadata DDL — relocated from ``modules/catalog/db_init/metadata_domain_split.py``.
 
-When the STAC module is installed (and its initializer wired into the
-catalog provisioning lifecycle in PR 1b), the per-tenant initializer here
-runs alongside the core-tables initializer to create the STAC sidecar
-tables. Without the STAC module, the STAC tables are never created —
-operators get a "STAC fields not part of this collection's schema"
-loud failure rather than silent drops.
+When the STAC module is installed, the per-tenant lifecycle initializer
+``_ensure_tenant_stac_metadata_tables`` (decorated with
+``@lifecycle_registry.sync_catalog_initializer``) runs at every
+``CatalogService.create_catalog`` call — alongside the core-tables
+initializer in ``metadata_domain_split.py``. The global STAC table is
+applied once during ``StacModule.lifespan``.
 
-Currently dormant: the canonical DDL still lives in ``metadata_domain_split.py``
-and runs unconditionally from ``CatalogService.create_catalog``. PR 1b
-flips the wiring: the core file drops the STAC DDL, and ``StacModule``
-hooks ``ensure_stac_metadata_tables`` into the catalog provisioning path.
+Without the STAC module loaded, neither the global nor the per-tenant
+STAC sidecar table is created — a STAC field write hits the loud
+"StacCollectionMetadataCapability not registered" error from
+``stac_service._has_stac()``.
 """
 
+from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
 from dynastore.modules.db_config.query_executor import (
     DDLQuery,
     DbResource,
@@ -71,17 +72,22 @@ CREATE TABLE IF NOT EXISTS {schema}.collection_metadata_stac (
 async def ensure_global_stac_metadata_tables(conn: DbResource) -> None:
     """Apply the global STAC DDL (``catalog.catalog_metadata_stac``).
 
-    Idempotent. PR 1b wires this into ``StacModule.lifespan`` so it runs
-    once on module init alongside ``ensure_global_metadata_core_tables``.
+    Idempotent. ``StacModule.lifespan`` calls this once at app startup
+    after ``CatalogModule`` has created ``catalog.catalogs`` (the FK
+    target). Module priority ordering enforces the sequencing.
     """
     await DDLQuery(CATALOG_METADATA_STAC_DDL).execute(conn)
 
 
-async def ensure_tenant_stac_metadata_tables(conn: DbResource, schema: str) -> None:
-    """Apply the per-tenant STAC DDL (``{schema}.collection_metadata_stac``).
+@lifecycle_registry.sync_catalog_initializer(priority=2)
+async def _ensure_tenant_stac_metadata_tables(
+    conn: DbResource, schema: str, catalog_id: str
+) -> None:
+    """Per-tenant lifecycle hook: create ``{schema}.collection_metadata_stac``.
 
-    Idempotent. PR 1b registers this with the catalog-creation lifecycle
-    so it runs alongside ``ensure_tenant_metadata_core_tables`` when a
-    new tenant schema is created — only if the STAC module is installed.
+    Priority 2 keeps this very early — before any module-specific
+    lifecycle hooks (priority 5+) that might write STAC metadata
+    immediately. Only runs when the STAC module is loaded (the
+    decorator only fires on import).
     """
     await DDLQuery(TENANT_METADATA_STAC_DDL).execute(conn, schema=schema)

@@ -17,20 +17,25 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-Domain-scoped Primary metadata drivers (M2.1 of the role-based driver refactor).
-
-Four drivers backed by the M2.0 DDL split:
+CORE Primary metadata drivers backed by the per-domain DDL split.
 
 - :class:`CollectionCorePostgresqlDriver`  → ``{schema}.collection_metadata_core``
-- :class:`CollectionStacPostgresqlDriver`  → ``{schema}.collection_metadata_stac``
 - :class:`CatalogCorePostgresqlDriver`     → ``catalog.catalog_metadata_core``
-- :class:`CatalogStacPostgresqlDriver`     → ``catalog.catalog_metadata_stac``
 
-Each driver owns only its **domain's** columns.  Callers that need the full
-envelope run both Primary drivers (CORE + STAC) through the metadata router
-(:mod:`~dynastore.modules.catalog.catalog_metadata_router` for catalogs,
-:mod:`~dynastore.modules.catalog.collection_metadata_router` for collections)
-which fans out the payload on WRITE and merges the slices on READ.
+The matching STAC drivers (``Collection``/``CatalogStacPostgresqlDriver``)
+relocated to :mod:`dynastore.modules.stac.drivers.metadata_postgresql`
+when STAC was promoted to its own module — see PR 1b of the
+STAC-decoupling sequence. They inherit the same shared CRUD bases
+defined in this file (``_CollectionMetadataDomainBase`` /
+``_CatalogMetadataDomainBase``); PR 1c renames the bases to drop the
+``MetadataDomain`` ClassVar.
+
+Each driver owns only its **domain's** columns.  Callers that need the
+full envelope run all participating Primary drivers through the metadata
+router (:mod:`~dynastore.modules.catalog.catalog_metadata_router` for
+catalogs, :mod:`~dynastore.modules.catalog.collection_metadata_router`
+for collections) which fans out the payload on WRITE and merges the
+slices on READ.
 
 Naming convention (Phase 1 of the naming harmonisation):
 
@@ -95,15 +100,8 @@ logger = logging.getLogger(__name__)
 _COLLECTION_CORE_COLUMNS: Tuple[str, ...] = (
     "title", "description", "keywords", "license", "extra_metadata",
 )
-_COLLECTION_STAC_COLUMNS: Tuple[str, ...] = (
-    "stac_version", "stac_extensions", "extent", "providers",
-    "summaries", "links", "assets", "item_assets",
-)
 _CATALOG_CORE_COLUMNS: Tuple[str, ...] = (
     "title", "description", "keywords", "license", "extra_metadata",
-)
-_CATALOG_STAC_COLUMNS: Tuple[str, ...] = (
-    "stac_version", "stac_extensions", "conforms_to", "links", "assets",
 )
 
 
@@ -194,16 +192,8 @@ class CollectionCorePostgresqlDriverConfig(DriverPluginConfig):
     """
 
 
-class CollectionStacPostgresqlDriverConfig(DriverPluginConfig):
-    """Identity marker for CollectionStacPostgresqlDriver."""
-
-
 class CatalogCorePostgresqlDriverConfig(DriverPluginConfig):
     """Identity marker for CatalogCorePostgresqlDriver."""
-
-
-class CatalogStacPostgresqlDriverConfig(DriverPluginConfig):
-    """Identity marker for CatalogStacPostgresqlDriver."""
 
 
 # ---------------------------------------------------------------------------
@@ -516,28 +506,6 @@ class CollectionCorePostgresqlDriver(_CollectionMetadataDomainBase):
             return [_deserialise_jsonb(dict(r), self._columns) for r in rows], total
 
 
-class CollectionStacPostgresqlDriver(_CollectionMetadataDomainBase):
-    """Primary driver for STAC collection metadata (``extent``, ``providers``, …).
-
-    Backs ``{schema}.collection_metadata_stac``.  Declares ``SPATIAL_FILTER``
-    because the ``extent`` column carries the STAC bbox the spatial-filter
-    endpoints match against.  Active via the collection-metadata router
-    alongside :class:`CollectionCorePostgresqlDriver`.
-    """
-
-    _table: ClassVar[str] = "collection_metadata_stac"
-    _columns: ClassVar[Tuple[str, ...]] = _COLLECTION_STAC_COLUMNS
-    domain: ClassVar[MetadataDomain] = MetadataDomain.STAC
-
-    capabilities: FrozenSet[str] = frozenset({
-        MetadataCapability.READ,
-        MetadataCapability.WRITE,
-        MetadataCapability.SOFT_DELETE,
-        MetadataCapability.SPATIAL_FILTER,
-        MetadataCapability.PHYSICAL_ADDRESSING,
-    })
-
-
 # ---------------------------------------------------------------------------
 # Catalog-tier drivers (global catalog.catalog_metadata_*)
 # ---------------------------------------------------------------------------
@@ -698,24 +666,6 @@ class CatalogCorePostgresqlDriver(_CatalogMetadataDomainBase):
         MetadataCapability.WRITE,
         MetadataCapability.SOFT_DELETE,
         MetadataCapability.QUERY_FALLBACK_SOURCE,
-    })
-
-
-class CatalogStacPostgresqlDriver(_CatalogMetadataDomainBase):
-    """Primary driver for STAC catalog metadata.
-
-    Backs ``catalog.catalog_metadata_stac``.  Scope: ``stac_version``,
-    ``stac_extensions``, ``conforms_to``, ``links``, ``assets``.
-    """
-
-    _table: ClassVar[str] = "catalog_metadata_stac"
-    _columns: ClassVar[Tuple[str, ...]] = _CATALOG_STAC_COLUMNS
-    domain: ClassVar[MetadataDomain] = MetadataDomain.STAC
-
-    capabilities: FrozenSet[str] = frozenset({
-        MetadataCapability.READ,
-        MetadataCapability.WRITE,
-        MetadataCapability.SOFT_DELETE,
     })
 
 

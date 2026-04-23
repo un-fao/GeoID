@@ -95,7 +95,7 @@ def _assert_stac_capable_metadata_stack() -> None:
     ``stac_extensions``, ``conforms_to``, ``links``, and ``assets`` of
     the catalog itself must land somewhere, or the STAC catalog is
     meaningless.  Fail with HTTPException(422) if no registered
-    ``CatalogMetadataStore`` declares ``domain == MetadataDomain.STAC``.
+    ``CatalogMetadataStore`` satisfies ``StacCatalogMetadataCapability``.
 
     The collection tier is a **soft requirement**: a STAC catalog can
     legitimately exist with zero STAC collections at create time
@@ -107,40 +107,44 @@ def _assert_stac_capable_metadata_stack() -> None:
     under this catalog's configured backing.
 
     Default PG config satisfies both checks via
-    ``CatalogStacPostgresqlDriver`` + ``CollectionStacPostgresqlDriver``.
+    ``CatalogStacPostgresqlDriver`` + ``CollectionStacPostgresqlDriver``
+    once the STAC module is loaded.
     """
-    from dynastore.models.protocols.driver_roles import MetadataDomain
+    from dynastore.extensions.stac.protocols import (
+        StacCatalogMetadataCapability,
+        StacCollectionMetadataCapability,
+    )
     from dynastore.models.protocols.metadata_driver import (
         CatalogMetadataStore,
         CollectionMetadataStore,
     )
 
-    def _has_stac(proto_cls: type) -> bool:
-        for driver in get_protocols(proto_cls):
-            domain = getattr(driver, "domain", None)
-            if domain == MetadataDomain.STAC:
-                return True
-        return False
+    def _has_stac(proto_cls: type, capability_cls: type) -> bool:
+        return any(
+            isinstance(d, capability_cls) for d in get_protocols(proto_cls)
+        )
 
-    if not _has_stac(CatalogMetadataStore):
+    if not _has_stac(CatalogMetadataStore, StacCatalogMetadataCapability):
         raise HTTPException(
             status_code=422,
             detail=(
                 "STAC catalog creation requires a registered "
-                "CatalogMetadataStore driver declaring "
-                "domain=MetadataDomain.STAC (e.g. "
-                "CatalogStacPostgresqlDriver).  Current deployment has "
-                "no STAC-capable catalog-metadata driver registered — "
+                "CatalogMetadataStore driver implementing "
+                "StacCatalogMetadataCapability (e.g. "
+                "CatalogStacPostgresqlDriver).  Install the STAC "
+                "module or check the routing config — without a "
+                "STAC-capable catalog-metadata driver registered, "
                 "the catalog's STAC envelope cannot be persisted."
             ),
         )
-    if not _has_stac(CollectionMetadataStore):
+    if not _has_stac(CollectionMetadataStore, StacCollectionMetadataCapability):
         logger.warning(
             "STAC catalog creation proceeding without a registered "
             "CollectionMetadataStore STAC driver.  Adding a STAC "
             "collection under this catalog will drop the STAC slice on "
             "write.  Register CollectionStacPostgresqlDriver (or an "
-            "equivalent) before creating STAC collections."
+            "equivalent implementing StacCollectionMetadataCapability) "
+            "before creating STAC collections."
         )
 
 

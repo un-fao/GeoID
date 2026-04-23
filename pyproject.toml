@@ -39,6 +39,7 @@ module_storage_elasticsearch_obfuscated = ["dynastore[module_elasticsearch]"]
 module_storage_elasticsearch_assets = ["dynastore[module_elasticsearch]"]
 module_metadata_postgresql = []
 module_metadata_elasticsearch = ["dynastore[module_elasticsearch]"]
+module_stac = []
 module_catalog = ["dynastore[geospatial_core]", "sqlalchemy>=2.0.0"]
 module_gcp = ["gcloud-aio-storage==9.6.0", "google-cloud-bigquery==3.24.0", "google-cloud-run", "google-cloud-storage>=3.1.0", "google-cloud-pubsub", "gcsfs>=2024.5.0", "charset-normalizer", "httpx"]
 module_datastore = ["dynastore[db_sync]", "psycopg2-binary>=2.9.7"]
@@ -143,7 +144,7 @@ events = ["dynastore[module_events,extension_events]"]
 elasticsearch = ["dynastore[module_elasticsearch,task_elasticsearch_deps]"]
 gdal = ["dynastore[module_gdal,extension_gdal,task_gdal_deps]"]
 maps = ["dynastore[extension_maps]"]
-stac = ["dynastore[extension_stac]"]
+stac = ["dynastore[module_stac, extension_stac]"]
 stats = ["dynastore[module_stats,extension_stats]"]
 web = ["dynastore[extension_web]"]
 geoid = ["dynastore[web_core,extension_geoid]"]
@@ -358,6 +359,7 @@ db = "dynastore.modules.db.db_service:DBService"
 crs = "dynastore.modules.crs.crs_module:CRSModule"
 events = "dynastore.modules.events.events_module:EventsModule"
 notebooks = "dynastore.modules.notebooks.notebooks_module:NotebooksModule"
+stac = "dynastore.modules.stac.module:StacModule"
 elasticsearch = "dynastore.modules.elasticsearch.module:ElasticsearchModule"
 stats = "dynastore.modules.stats.stats_module:STATS"
 web = "dynastore.modules.web.web_module:WebModule"
@@ -375,9 +377,9 @@ metadata_elasticsearch = "dynastore.modules.elasticsearch.es_metadata_driver:Met
 # based on the CollectionRoutingConfig / CatalogRoutingConfig metadata
 # operations.
 metadata_collection_core_postgresql = "dynastore.modules.storage.drivers.metadata_domain_postgresql:CollectionCorePostgresqlDriver"
-metadata_collection_stac_postgresql = "dynastore.modules.storage.drivers.metadata_domain_postgresql:CollectionStacPostgresqlDriver"
+metadata_collection_stac_postgresql = "dynastore.modules.stac.drivers.metadata_postgresql:CollectionStacPostgresqlDriver"
 metadata_catalog_core_postgresql = "dynastore.modules.storage.drivers.metadata_domain_postgresql:CatalogCorePostgresqlDriver"
-metadata_catalog_stac_postgresql = "dynastore.modules.storage.drivers.metadata_domain_postgresql:CatalogStacPostgresqlDriver"
+metadata_catalog_stac_postgresql = "dynastore.modules.stac.drivers.metadata_postgresql:CatalogStacPostgresqlDriver"
 # M3.2 — first concrete INDEX-role driver for the catalog tier.
 # Diagnostic-only (logs every dispatch); NOT in the default
 # CatalogRoutingConfig.operations[INDEX] list — opt-in via platform

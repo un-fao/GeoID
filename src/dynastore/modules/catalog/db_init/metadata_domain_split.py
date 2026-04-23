@@ -59,20 +59,6 @@ CREATE TABLE IF NOT EXISTS catalog.catalog_metadata_core (
 );
 """
 
-CATALOG_METADATA_STAC_DDL = """
-CREATE TABLE IF NOT EXISTS catalog.catalog_metadata_stac (
-    catalog_id      VARCHAR PRIMARY KEY REFERENCES catalog.catalogs(id) ON DELETE CASCADE,
-    stac_version    VARCHAR(20),
-    stac_extensions JSONB,
-    conforms_to     JSONB,
-    links           JSONB,
-    assets          JSONB,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-"""
-
-
 # Freshness columns on ``catalog.catalogs``.  Canonical freshness tokens
 # used by INDEX / BACKUP propagation (plan §Freshness contract).  Kept
 # as an idempotent ALTER so deployments that have ``catalog.catalogs``
@@ -103,31 +89,18 @@ CREATE TABLE IF NOT EXISTS {schema}.collection_metadata_core (
 );
 """
 
-TENANT_METADATA_STAC_DDL = """
-CREATE TABLE IF NOT EXISTS {schema}.collection_metadata_stac (
-    collection_id   VARCHAR PRIMARY KEY,
-    stac_version    VARCHAR(20),
-    stac_extensions JSONB,
-    extent          JSONB,
-    providers       JSONB,
-    summaries       JSONB,
-    links           JSONB,
-    assets          JSONB,
-    item_assets     JSONB,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-"""
-
-
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
 
 async def ensure_global_metadata_domain_tables(conn: DbResource) -> None:
-    """Apply the global DDL (``catalog.catalog_metadata_core`` + ``_stac``
-    tables, plus the freshness columns on ``catalog.catalogs``).
+    """Apply the global CORE DDL (``catalog.catalog_metadata_core``)
+    plus the freshness columns on ``catalog.catalogs``.
+
+    The STAC sidecar table (``catalog.catalog_metadata_stac``) is owned
+    by the STAC module — when installed, ``StacModule.lifespan`` applies
+    its DDL via ``ensure_global_stac_metadata_tables``.
 
     Idempotent.  Called once during ``CatalogModule`` init after the
     ``catalog.catalogs`` table has been created.
@@ -135,23 +108,23 @@ async def ensure_global_metadata_domain_tables(conn: DbResource) -> None:
     await DDLQuery(
         CATALOGS_FRESHNESS_COLUMNS_DDL
         + CATALOG_METADATA_CORE_DDL
-        + CATALOG_METADATA_STAC_DDL
     ).execute(conn)
 
 
 async def ensure_tenant_metadata_domain_tables(conn: DbResource, schema: str) -> None:
-    """Apply the per-tenant DDL (``{schema}.collection_metadata_core`` + ``_stac``).
+    """Apply the per-tenant CORE DDL (``{schema}.collection_metadata_core``).
+
+    The per-tenant STAC sidecar (``{schema}.collection_metadata_stac``) is
+    owned by the STAC module — when installed, the lifecycle-registered
+    ``ensure_tenant_stac_metadata_tables`` initializer in
+    ``modules.stac.db_init.metadata_stac_tables`` runs alongside this.
 
     Idempotent.  Called from ``create_catalog`` as the canonical
-    collection-metadata storage provision step.
-
-    Both tables share ``collection_id`` as PK.  FK to
+    collection-metadata storage provision step.  FK to
     ``{schema}.collections(id)`` is intentionally omitted because the
     collection row is inserted after ``create_catalog`` completes;
     enforcing the FK would require reordering or deferring constraints.
     A later cleanup pass may add deferred FKs once every tenant init has
     completed.
     """
-    await DDLQuery(
-        TENANT_METADATA_CORE_DDL + TENANT_METADATA_STAC_DDL
-    ).execute(conn, schema=schema)
+    await DDLQuery(TENANT_METADATA_CORE_DDL).execute(conn, schema=schema)

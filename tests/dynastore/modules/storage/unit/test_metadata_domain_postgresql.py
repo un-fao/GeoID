@@ -46,20 +46,6 @@ class TestStructuralInvariants:
         # Structural typing — CollectionMetadataStore is @runtime_checkable.
         assert isinstance(d, CollectionMetadataStore)
 
-    def test_collection_stac_driver_identifies_as_stac_collection(self):
-        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
-            CollectionStacPostgresqlDriver,
-        )
-
-        d = CollectionStacPostgresqlDriver()
-        assert d.domain is MetadataDomain.STAC
-        assert d._table == "collection_metadata_stac"
-        assert MetadataCapability.SPATIAL_FILTER in d.capabilities
-        # STAC collection driver does NOT advertise SEARCH — the CORE
-        # driver owns title/description; STAC carries structured fields.
-        assert MetadataCapability.SEARCH not in d.capabilities
-        assert isinstance(d, CollectionMetadataStore)
-
     def test_catalog_core_driver_identifies_as_core_catalog(self):
         from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
             CatalogCorePostgresqlDriver,
@@ -69,17 +55,6 @@ class TestStructuralInvariants:
         assert d.domain is MetadataDomain.CORE
         assert d._table == "catalog_metadata_core"
         assert isinstance(d, CatalogMetadataStore)
-
-    def test_catalog_stac_driver_identifies_as_stac_catalog(self):
-        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
-            CatalogStacPostgresqlDriver,
-        )
-
-        d = CatalogStacPostgresqlDriver()
-        assert d.domain is MetadataDomain.STAC
-        assert d._table == "catalog_metadata_stac"
-        assert isinstance(d, CatalogMetadataStore)
-
 
 class TestDomainColumnSets:
     """Column sets must match the M2.0 DDL exactly.
@@ -101,16 +76,6 @@ class TestDomainColumnSets:
             "title", "description", "keywords", "license", "extra_metadata",
         )
 
-    def test_collection_stac_columns(self):
-        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
-            _COLLECTION_STAC_COLUMNS,
-        )
-
-        assert _COLLECTION_STAC_COLUMNS == (
-            "stac_version", "stac_extensions", "extent", "providers",
-            "summaries", "links", "assets", "item_assets",
-        )
-
     def test_catalog_core_columns(self):
         from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
             _CATALOG_CORE_COLUMNS,
@@ -119,16 +84,6 @@ class TestDomainColumnSets:
         assert _CATALOG_CORE_COLUMNS == (
             "title", "description", "keywords", "license", "extra_metadata",
         )
-
-    def test_catalog_stac_columns(self):
-        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
-            _CATALOG_STAC_COLUMNS,
-        )
-
-        assert _CATALOG_STAC_COLUMNS == (
-            "stac_version", "stac_extensions", "conforms_to", "links", "assets",
-        )
-
 
 class TestPayloadFilter:
     def test_filter_payload_drops_unowned_keys(self):
@@ -163,10 +118,10 @@ class TestPayloadFilter:
         NULL (data loss).
         """
         from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
-            _COLLECTION_STAC_COLUMNS, _filter_payload,
+            _COLLECTION_CORE_COLUMNS, _filter_payload,
         )
 
-        filtered = _filter_payload({}, _COLLECTION_STAC_COLUMNS)
+        filtered = _filter_payload({}, _COLLECTION_CORE_COLUMNS)
         assert filtered == {}
 
     def test_filter_payload_drops_none_values(self):
@@ -330,45 +285,6 @@ async def test_collection_core_upsert_empty_payload_only_bumps_updated_at(
 
 
 @pytest.mark.asyncio
-async def test_collection_stac_upsert_uses_stac_columns_only(fake_conn_with_dql):
-    """Full STAC payload → INSERT columns match the supplied STAC keys."""
-    from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
-        CollectionStacPostgresqlDriver,
-    )
-
-    _, dql_execute = fake_conn_with_dql
-    d = CollectionStacPostgresqlDriver()
-    await d.upsert_metadata(
-        "cat", "col",
-        metadata={
-            "extent": {"spatial": {"bbox": [[0, 0, 1, 1]]}},
-            "providers": [{"name": "FAO"}],
-            "summaries": {"gsd": [10]},
-            "links": [],
-            "assets": {},
-            "item_assets": {},
-            "stac_version": "1.1.0",
-            "stac_extensions": ["https://…/datacube/v2"],
-            "title": "SHOULD BE IGNORED — CORE COLUMN",
-            "license": "IGNORE",
-        },
-    )
-
-    dql_execute.assert_awaited_once()
-    sql, params = dql_execute.call_args.args[0], dql_execute.call_args.kwargs
-    assert '"t_alpha".collection_metadata_stac' in sql
-    assert "title" not in sql
-    assert "license" not in sql
-    assert "extent" in sql
-    assert "stac_version" in sql
-    # Params: :id + all 8 STAC columns the caller supplied.
-    assert set(params) == {
-        "id", "stac_version", "stac_extensions", "extent", "providers",
-        "summaries", "links", "assets", "item_assets",
-    }
-
-
-@pytest.mark.asyncio
 async def test_catalog_core_upsert_targets_global_schema(fake_conn_with_dql):
     from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
         CatalogCorePostgresqlDriver,
@@ -387,46 +303,6 @@ async def test_catalog_core_upsert_targets_global_schema(fake_conn_with_dql):
     assert "catalog.catalog_metadata_core" in sql
     assert '"t_alpha"' not in sql  # no tenant schema reference
     assert "NOW()" in sql
-
-
-@pytest.mark.asyncio
-async def test_catalog_stac_upsert_carries_catalog_stac_columns(fake_conn_with_dql):
-    """Catalog STAC domain carries conforms_to but not item_assets.
-
-    Partial-update semantics: only supplied keys appear in the SQL.
-    ``stac_extensions`` / ``links`` / ``assets`` are absent from the
-    payload so the INSERT / ON CONFLICT UPDATE clauses do not touch
-    them — existing row values survive a partial write.
-    """
-    from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
-        CatalogStacPostgresqlDriver,
-    )
-
-    _, dql_execute = fake_conn_with_dql
-    d = CatalogStacPostgresqlDriver()
-    await d.upsert_catalog_metadata(
-        "cat",
-        metadata={
-            "stac_version": "1.1.0",
-            "conforms_to": ["http://…/core"],
-            "item_assets": "SHOULD BE IGNORED — catalog STAC has no item_assets",
-        },
-    )
-    dql_execute.assert_awaited_once()
-    sql, params = dql_execute.call_args.args[0], dql_execute.call_args.kwargs
-    assert "catalog.catalog_metadata_stac" in sql
-    # Catalog STAC has conforms_to but NOT item_assets — sanity-check the leak.
-    assert "conforms_to" in sql
-    assert "item_assets" not in sql
-    # Absent catalog-STAC columns should NOT appear in the SQL on a
-    # partial update — writing them would NULL-out existing data.
-    for untouched in ("stac_extensions", "links", "assets"):
-        assert untouched not in sql, (
-            f"SQL references {untouched!r} on partial update — would "
-            f"NULL-out existing column value (C1 regression)"
-        )
-    # Only :id + the two supplied STAC columns end up as bind params.
-    assert set(params) == {"id", "stac_version", "conforms_to"}
 
 
 # ---------------------------------------------------------------------------
@@ -484,18 +360,6 @@ class TestColumnTupleAlignment:
             TENANT_METADATA_CORE_DDL,
         )
 
-    def test_collection_stac_columns_match_ddl(self):
-        from dynastore.modules.catalog.db_init.metadata_domain_split import (
-            TENANT_METADATA_STAC_DDL,
-        )
-        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
-            _COLLECTION_STAC_COLUMNS,
-        )
-
-        assert set(_COLLECTION_STAC_COLUMNS) == self._parse_ddl_columns(
-            TENANT_METADATA_STAC_DDL,
-        )
-
     def test_catalog_core_columns_match_ddl(self):
         from dynastore.modules.catalog.db_init.metadata_domain_split import (
             CATALOG_METADATA_CORE_DDL,
@@ -508,28 +372,17 @@ class TestColumnTupleAlignment:
             CATALOG_METADATA_CORE_DDL,
         )
 
-    def test_catalog_stac_columns_match_ddl(self):
-        from dynastore.modules.catalog.db_init.metadata_domain_split import (
-            CATALOG_METADATA_STAC_DDL,
-        )
-        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
-            _CATALOG_STAC_COLUMNS,
-        )
-
-        assert set(_CATALOG_STAC_COLUMNS) == self._parse_ddl_columns(
-            CATALOG_METADATA_STAC_DDL,
-        )
-
-
 class TestEntryPoints:
-    def test_four_new_entry_points_registered(self):
+    def test_core_entry_points_registered(self):
+        """CORE driver entry-points stay at this module path; STAC drivers
+        moved to ``modules/stac/`` and are tested under
+        ``tests/dynastore/modules/stac/unit/test_metadata_postgresql.py``.
+        """
         from importlib.metadata import entry_points
 
         expected = {
             "metadata_collection_core_postgresql": "CollectionCorePostgresqlDriver",
-            "metadata_collection_stac_postgresql": "CollectionStacPostgresqlDriver",
             "metadata_catalog_core_postgresql": "CatalogCorePostgresqlDriver",
-            "metadata_catalog_stac_postgresql": "CatalogStacPostgresqlDriver",
         }
 
         got = {

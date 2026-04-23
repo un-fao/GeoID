@@ -66,6 +66,10 @@ class CollectionStacPostgresqlDriver(_CollectionMetadataDomainBase):
     because the ``extent`` column carries the STAC bbox the spatial-filter
     endpoints match against. Active via the collection-metadata router
     alongside ``CollectionCorePostgresqlDriver``.
+
+    Structurally satisfies ``StacCollectionMetadataCapability`` via the
+    ``stac_metadata_columns()`` marker method below — this is the runtime
+    discriminator that ``stac_service._has_stac()`` uses.
     """
 
     _table: ClassVar[str] = "collection_metadata_stac"
@@ -80,12 +84,18 @@ class CollectionStacPostgresqlDriver(_CollectionMetadataDomainBase):
         MetadataCapability.PHYSICAL_ADDRESSING,
     })
 
+    def stac_metadata_columns(self) -> Tuple[str, ...]:
+        return self._columns
+
 
 class CatalogStacPostgresqlDriver(_CatalogMetadataDomainBase):
     """Primary driver for STAC catalog metadata.
 
     Backs ``catalog.catalog_metadata_stac``. Scope: ``stac_version``,
     ``stac_extensions``, ``conforms_to``, ``links``, ``assets``.
+
+    Structurally satisfies ``StacCatalogMetadataCapability`` via the
+    ``stac_metadata_columns()`` marker method.
     """
 
     _table: ClassVar[str] = "catalog_metadata_stac"
@@ -97,3 +107,6 @@ class CatalogStacPostgresqlDriver(_CatalogMetadataDomainBase):
         MetadataCapability.WRITE,
         MetadataCapability.SOFT_DELETE,
     })
+
+    def stac_metadata_columns(self) -> Tuple[str, ...]:
+        return self._columns
