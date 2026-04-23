@@ -355,7 +355,7 @@ async def _emit_catalog_metadata_changed(
     """Emit one ``catalog_metadata_changed`` event per driver-class touched.
 
     One event per driver class (``CollectionCorePostgresqlDriver``,
-    ``CollectionStacPostgresqlDriver``, ``MetadataElasticsearchDriver``,
+    ``CollectionStacPostgresqlDriver``, ``CollectionElasticsearchDriver``,
     …) rather than one per mutation — gives the ReindexWorker per-class
     claim surface (no N-way contention over a single PLATFORM event)
     while staying domain-blind: the router does not need to know which

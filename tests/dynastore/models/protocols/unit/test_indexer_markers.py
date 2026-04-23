@@ -71,19 +71,19 @@ def test_multi_tier_opt_in():
 # ---------------------------------------------------------------------------
 
 
-def test_metadata_es_driver_indexes_catalog_and_collection():
-    """The catch-all ``MetadataElasticsearchDriver`` indexes both catalog
-    and collection metadata today; it opts in to both markers.  When the
-    per-tier ES driver split lands, each new driver class will carry one
-    matching marker.
+def test_collection_es_driver_indexes_collection_only():
+    """``CollectionElasticsearchDriver`` indexes ONE tier — collection
+    metadata, keyed by ``(catalog_id, collection_id)``.  It opts in to
+    :class:`CollectionIndexer` only.  Catalog-tier indexing is a
+    separate driver class (NEW; not part of the catch-all rename).
     """
-    from dynastore.modules.elasticsearch.es_metadata_driver import (
-        MetadataElasticsearchDriver,
+    from dynastore.modules.elasticsearch.collection_es_driver import (
+        CollectionElasticsearchDriver,
     )
 
-    obj = MetadataElasticsearchDriver()
-    assert isinstance(obj, CatalogIndexer)
+    obj = CollectionElasticsearchDriver()
     assert isinstance(obj, CollectionIndexer)
+    assert not isinstance(obj, CatalogIndexer)
     assert not isinstance(obj, AssetIndexer)
     assert not isinstance(obj, ItemIndexer)
 

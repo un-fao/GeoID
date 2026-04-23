@@ -291,12 +291,12 @@ class TestMetadataRoutingConfig:
     def test_read_operation(self):
         cfg = MetadataRoutingConfig(operations={
             Operation.READ: [OperationDriverEntry(
-                driver_id="MetadataElasticsearchDriver",
+                driver_id="CollectionElasticsearchDriver",
                 write_mode=WriteMode.FIRST,
             )],
         })
         assert len(cfg.operations[Operation.READ]) == 1
-        assert cfg.operations[Operation.READ][0].driver_id == "MetadataElasticsearchDriver"
+        assert cfg.operations[Operation.READ][0].driver_id == "CollectionElasticsearchDriver"
 
     def test_transform_operation(self):
         cfg = MetadataRoutingConfig(operations={
@@ -340,7 +340,7 @@ class TestMetadataRoutingSnapshot:
         return CollectionRoutingConfig(
             metadata=MetadataRoutingConfig(operations={
                 Operation.READ: [OperationDriverEntry(
-                    driver_id="MetadataElasticsearchDriver",
+                    driver_id="CollectionElasticsearchDriver",
                     write_mode=WriteMode.FIRST,
                 )],
             })
@@ -363,7 +363,7 @@ class TestMetadataRoutingSnapshot:
         return CollectionRoutingConfig(
             metadata=MetadataRoutingConfig(operations={
                 Operation.READ: [OperationDriverEntry(
-                    driver_id="MetadataElasticsearchDriver",
+                    driver_id="CollectionElasticsearchDriver",
                 )],
                 Operation.TRANSFORM: [OperationDriverEntry(
                     driver_id="ItemsIcebergDriver",
@@ -376,7 +376,7 @@ class TestMetadataRoutingSnapshot:
         cfg = self._make_es_override_routing()
         read_entries = cfg.metadata.operations.get(Operation.READ, [])
         assert len(read_entries) == 1
-        assert read_entries[0].driver_id == "MetadataElasticsearchDriver"
+        assert read_entries[0].driver_id == "CollectionElasticsearchDriver"
 
     def test_transform_driver_resolution(self):
         cfg = self._make_iceberg_storage_routing()

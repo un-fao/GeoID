@@ -47,7 +47,7 @@ class StacCollectionMetadataCapability(CollectionMetadataStore, Protocol):
     Concrete STAC PG sidecar drivers (``modules/stac/drivers/metadata_postgresql.py``)
     satisfy this structurally by implementing the base ``CollectionMetadataStore``
     methods *and* exposing the ``stac_metadata_columns()`` marker method.
-    Non-STAC drivers (``CollectionCorePostgresqlDriver``, ``MetadataElasticsearchDriver``,
+    Non-STAC drivers (``CollectionCorePostgresqlDriver``, ``CollectionElasticsearchDriver``,
     etc.) lack the marker method and therefore fail the ``isinstance`` check —
     that's the discriminator the STAC service relies on.
     """

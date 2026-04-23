@@ -38,7 +38,7 @@ module_storage_elasticsearch = ["dynastore[module_elasticsearch]"]
 module_storage_elasticsearch_obfuscated = ["dynastore[module_elasticsearch]"]
 module_storage_elasticsearch_assets = ["dynastore[module_elasticsearch]"]
 module_metadata_postgresql = []
-module_metadata_elasticsearch = ["dynastore[module_elasticsearch]"]
+module_collection_elasticsearch = ["dynastore[module_elasticsearch]"]
 module_stac = []
 module_catalog = ["dynastore[geospatial_core]", "sqlalchemy>=2.0.0"]
 module_gcp = ["gcloud-aio-storage==9.6.0", "google-cloud-bigquery==3.24.0", "google-cloud-run", "google-cloud-storage>=3.1.0", "google-cloud-pubsub", "gcsfs>=2024.5.0", "charset-normalizer", "httpx"]
@@ -206,7 +206,7 @@ tools_grp = ["dynastore[extension_httpx,template,dimensions,notebooks]"]
 monitor_grp = ["dynastore[stats,logs]"]
 index_grp = ["dynastore[elasticsearch,task_elasticsearch_indexer_deps]"]
 # drivers_grp — all storage/asset/metadata drivers (both collection and asset domains)
-drivers_grp = ["dynastore[module_storage_postgresql,module_storage_duckdb,module_storage_iceberg,module_storage_elasticsearch,module_storage_elasticsearch_obfuscated,module_storage_elasticsearch_assets,module_metadata_postgresql,module_metadata_elasticsearch]"]
+drivers_grp = ["dynastore[module_storage_postgresql,module_storage_duckdb,module_storage_iceberg,module_storage_elasticsearch,module_storage_elasticsearch_obfuscated,module_storage_elasticsearch_assets,module_metadata_postgresql,module_collection_elasticsearch]"]
 
 # ==========================================================================
 # TASK GROUPINGS (sync-db)
@@ -370,7 +370,7 @@ storage_elasticsearch_assets = "dynastore.modules.storage.drivers.elasticsearch:
 storage_duckdb = "dynastore.modules.storage.drivers.duckdb:ItemsDuckdbDriver"
 storage_iceberg = "dynastore.modules.storage.drivers.iceberg:ItemsIcebergDriver"
 storage_bigquery = "dynastore.modules.storage.drivers.bigquery:ItemsBigQueryDriver"
-metadata_elasticsearch = "dynastore.modules.elasticsearch.es_metadata_driver:MetadataElasticsearchDriver"
+collection_elasticsearch = "dynastore.modules.elasticsearch.collection_es_driver:CollectionElasticsearchDriver"
 # M2.1 — domain-scoped Primary metadata drivers (additive; legacy
 # metadata_postgresql stays until M2.5).  One entry-point per concrete
 # driver class; the routing layer picks the right (tier, domain) pair

@@ -1,4 +1,4 @@
-"""Unit tests for MetadataElasticsearchDriver._enrich_doc.
+"""Unit tests for CollectionElasticsearchDriver._enrich_doc.
 
 Regression guard for the production incident (2026-04-22) where
 extent.temporal.interval was sent as [[null, null]] to an ES `date_range`
@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import pytest
 
-from dynastore.modules.elasticsearch.es_metadata_driver import MetadataElasticsearchDriver
+from dynastore.modules.elasticsearch.collection_es_driver import CollectionElasticsearchDriver
 
 
-_enrich = MetadataElasticsearchDriver._enrich_doc
+_enrich = CollectionElasticsearchDriver._enrich_doc
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ def test_both_spatial_and_temporal_enriched():
 # Protocol signature regression — `context` kwarg
 #
 # Guards against the drift that caused the production log spam:
-#     MetadataElasticsearchDriver.get_metadata() got an unexpected keyword
+#     CollectionElasticsearchDriver.get_metadata() got an unexpected keyword
 #     argument 'context' — omitting slice from merged envelope
 # The router at collection_metadata_router.py always forwards `context=`;
 # if the driver rejects it, the ES slice is silently dropped on every read.
@@ -144,21 +144,21 @@ from unittest.mock import AsyncMock, patch
 
 
 def test_get_metadata_accepts_context_kwarg():
-    params = inspect.signature(MetadataElasticsearchDriver.get_metadata).parameters
+    params = inspect.signature(CollectionElasticsearchDriver.get_metadata).parameters
     assert "context" in params, (
         "get_metadata must accept `context` per CollectionMetadataStore protocol"
     )
 
 
 def test_search_metadata_accepts_context_kwarg():
-    params = inspect.signature(MetadataElasticsearchDriver.search_metadata).parameters
+    params = inspect.signature(CollectionElasticsearchDriver.search_metadata).parameters
     assert "context" in params, (
         "search_metadata must accept `context` per CollectionMetadataStore protocol"
     )
 
 
 async def test_get_metadata_call_with_context_does_not_raise_typeerror():
-    driver = MetadataElasticsearchDriver()
+    driver = CollectionElasticsearchDriver()
     mock_client = AsyncMock()
     mock_client.indices.exists = AsyncMock(return_value=False)
     with patch.object(driver, "_get_client", return_value=mock_client), \
@@ -171,7 +171,7 @@ async def test_get_metadata_call_with_context_does_not_raise_typeerror():
 
 
 async def test_search_metadata_call_with_context_does_not_raise_typeerror():
-    driver = MetadataElasticsearchDriver()
+    driver = CollectionElasticsearchDriver()
     mock_client = AsyncMock()
     mock_client.indices.exists = AsyncMock(return_value=False)
     with patch.object(driver, "_get_client", return_value=mock_client), \

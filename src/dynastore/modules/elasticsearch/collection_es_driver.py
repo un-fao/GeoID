@@ -17,7 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-Elasticsearch metadata driver — implements CollectionMetadataStore.
+Elasticsearch collection-metadata driver — implements CollectionMetadataStore.
 
 Stores collection metadata in an ES index per catalog.  Provides fulltext
 search (multi_match on title/description/keywords), CQL2-JSON filter support,
@@ -48,7 +48,7 @@ from pydantic import Field
 
 logger = logging.getLogger(__name__)
 
-class MetadataElasticsearchDriverConfig(_PluginDriverConfig):
+class CollectionElasticsearchDriverConfig(_PluginDriverConfig):
     """Configuration for the Elasticsearch collection metadata driver.
 
     ``index_prefix`` is ``Immutable`` — once set it cannot change, because
@@ -67,24 +67,24 @@ class MetadataElasticsearchDriverConfig(_PluginDriverConfig):
     )
 
 
-# MetadataElasticsearchDriverConfig auto-registers via PluginConfig.__init_subclass__.
+# CollectionElasticsearchDriverConfig auto-registers via PluginConfig.__init_subclass__.
 
 
-async def _on_apply_es_metadata_driver_config(
+async def _on_apply_collection_es_driver_config(
     config: PluginConfig,
     catalog_id: Optional[str],
     collection_id: Optional[str],
     db_resource: Optional[Any],
 ) -> None:
     """Create the ES metadata index for the catalog when the driver config is applied."""
-    if not isinstance(config, MetadataElasticsearchDriverConfig):
+    if not isinstance(config, CollectionElasticsearchDriverConfig):
         return
     if not catalog_id:
         return  # platform-level config — no catalog to create index for
 
     from dynastore.tools.discovery import get_protocol
 
-    driver = get_protocol(MetadataElasticsearchDriver)
+    driver = get_protocol(CollectionElasticsearchDriver)
     if driver is None:
         return
     try:
@@ -96,7 +96,7 @@ async def _on_apply_es_metadata_driver_config(
         )
 
 
-MetadataElasticsearchDriverConfig.register_apply_handler(_on_apply_es_metadata_driver_config)
+CollectionElasticsearchDriverConfig.register_apply_handler(_on_apply_collection_es_driver_config)
 
 # ---------------------------------------------------------------------------
 # Mapping — explicit typing only for fields ES cannot auto-detect
@@ -175,19 +175,16 @@ def _bbox_to_envelope(bbox: List[float]) -> Optional[Dict[str, Any]]:
     }
 
 
-class MetadataElasticsearchDriver(TypedDriver[MetadataElasticsearchDriverConfig]):
-    """Elasticsearch implementation of CollectionMetadataStore.
+class CollectionElasticsearchDriver(TypedDriver[CollectionElasticsearchDriverConfig]):
+    """Elasticsearch implementation of :class:`CollectionMetadataStore`.
 
     Uses opensearch-py client (wire-compatible with ES and OpenSearch).
-
-    Indexer tier markers — this catch-all driver indexes both catalog-tier
-    and collection-tier metadata, so it opts in to both
-    :class:`CatalogIndexer` and :class:`CollectionIndexer`.  When the
-    per-tier ES driver split lands (later phase of PR 1e), each tier will
-    have its own driver class with a single matching marker.
+    Indexes ONE tier — collection metadata, keyed by ``(catalog_id,
+    collection_id)`` — so it opts in to :class:`CollectionIndexer` only.
+    Catalog-tier indexing is handled by a separate driver class (NEW —
+    not part of this rename).
     """
 
-    is_catalog_indexer: ClassVar[bool] = True
     is_collection_indexer: ClassVar[bool] = True
 
     capabilities: FrozenSet[str] = frozenset({
@@ -223,7 +220,7 @@ class MetadataElasticsearchDriver(TypedDriver[MetadataElasticsearchDriverConfig]
     async def ensure_storage(self, catalog_id: str) -> None:
         """Ensure the ES metadata index exists for the given catalog (idempotent).
 
-        Called by ``MetadataElasticsearchDriverConfig`` apply handler
+        Called by ``CollectionElasticsearchDriverConfig`` apply handler
         when the driver config is applied at catalog scope.
         """
         await self._ensure_index(catalog_id)
@@ -471,7 +468,7 @@ class MetadataElasticsearchDriver(TypedDriver[MetadataElasticsearchDriverConfig]
             return {}
         try:
             return await configs.get_config(
-                MetadataElasticsearchDriverConfig,
+                CollectionElasticsearchDriverConfig,
                 catalog_id=catalog_id,
                 ctx=DriverContext(db_resource=db_resource),
             )

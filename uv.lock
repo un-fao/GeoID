@@ -1482,6 +1482,10 @@ module-catalog = [
     { name = "shapely" },
     { name = "sqlalchemy" },
 ]
+module-collection-elasticsearch = [
+    { name = "httpx" },
+    { name = "opensearch-py", extra = ["async"] },
+]
 module-crs = [
     { name = "geojson-pydantic" },
     { name = "pyproj" },
@@ -1535,10 +1539,6 @@ module-gdal = [
 module-iam = [
     { name = "pydantic", extra = ["email"] },
     { name = "pyjwt" },
-]
-module-metadata-elasticsearch = [
-    { name = "httpx" },
-    { name = "opensearch-py", extra = ["async"] },
 ]
 module-notebooks = [
     { name = "httpx" },
@@ -2244,10 +2244,11 @@ requires-dist = [
     { name = "dynastore", extras = ["module-cache"], marker = "extra == 'cache'" },
     { name = "dynastore", extras = ["module-catalog", "module-gcp"], marker = "extra == 'catalog-task-gcp-catalog-cleanup'" },
     { name = "dynastore", extras = ["module-catalog", "module-gcp"], marker = "extra == 'catalog-task-gcs-storage-event'" },
+    { name = "dynastore", extras = ["module-collection-elasticsearch", "module-metadata-postgresql", "module-storage-duckdb", "module-storage-elasticsearch", "module-storage-elasticsearch-assets", "module-storage-elasticsearch-obfuscated", "module-storage-iceberg", "module-storage-postgresql"], marker = "extra == 'drivers-grp'" },
     { name = "dynastore", extras = ["module-datastore"], marker = "extra == 'datastore'" },
     { name = "dynastore", extras = ["module-db"], marker = "extra == 'db'" },
     { name = "dynastore", extras = ["module-db-config"], marker = "extra == 'db-config'" },
-    { name = "dynastore", extras = ["module-elasticsearch"], marker = "extra == 'module-metadata-elasticsearch'" },
+    { name = "dynastore", extras = ["module-elasticsearch"], marker = "extra == 'module-collection-elasticsearch'" },
     { name = "dynastore", extras = ["module-elasticsearch"], marker = "extra == 'module-storage-elasticsearch'" },
     { name = "dynastore", extras = ["module-elasticsearch"], marker = "extra == 'module-storage-elasticsearch-assets'" },
     { name = "dynastore", extras = ["module-elasticsearch"], marker = "extra == 'module-storage-elasticsearch-obfuscated'" },
@@ -2257,7 +2258,6 @@ requires-dist = [
     { name = "dynastore", extras = ["module-gcp"], marker = "extra == 'catalog-task-gcp-provision'" },
     { name = "dynastore", extras = ["module-gcp", "task-base", "task-ingestion-deps"], marker = "extra == 'ingestion'" },
     { name = "dynastore", extras = ["module-gdal"], marker = "extra == 'task-gdal-deps'" },
-    { name = "dynastore", extras = ["module-metadata-elasticsearch", "module-metadata-postgresql", "module-storage-duckdb", "module-storage-elasticsearch", "module-storage-elasticsearch-assets", "module-storage-elasticsearch-obfuscated", "module-storage-iceberg", "module-storage-postgresql"], marker = "extra == 'drivers-grp'" },
     { name = "dynastore", extras = ["module-storage"], marker = "extra == 'storage'" },
     { name = "dynastore", extras = ["monitor-grp", "worker-service"], marker = "extra == 'worker-local'" },
     { name = "dynastore", extras = ["test"], marker = "extra == 'dev'" },
@@ -2341,7 +2341,7 @@ requires-dist = [
     { name = "valkey", marker = "extra == 'module-cache'", specifier = ">=6.0" },
     { name = "xmltodict", marker = "extra == 'extension-template'", specifier = ">=0.13.0" },
 ]
-provides-extras = ["module-storage", "module-storage-postgresql", "module-storage-duckdb", "module-storage-iceberg", "module-storage-elasticsearch", "module-storage-elasticsearch-obfuscated", "module-storage-elasticsearch-assets", "module-metadata-postgresql", "module-metadata-elasticsearch", "module-stac", "module-catalog", "module-gcp", "module-datastore", "module-db-config", "module-iam", "module-db", "module-crs", "module-events", "module-elasticsearch", "module-gdal", "module-tiles", "module-cache", "module-tasks", "module-proxy", "module-styles", "module-stats", "module-notebooks", "extension-base", "extension-web", "extension-httpx", "extension-catalog", "extension-stac", "extension-auth", "extension-template", "extension-processes", "extension-features", "extension-tiles", "extension-tasks", "extension-proxy", "extension-gdal", "extension-styles", "extension-iam", "extension-logs", "extension-configs", "extension-stats", "extension-crs", "extension-events", "extension-wfs", "extension-admin", "extension-assets", "extension-notebooks", "extension-records", "extension-search", "extension-gcp-bucket", "extension-geoid", "extension-maps", "extension-coverages", "extension-dwh", "extension-dimensions", "task-gdal-deps", "task-elasticsearch-deps", "task-elasticsearch-indexer-deps", "task-ingestion-deps", "task-dwh-join-deps", "task-export-features-deps", "task-tiles-preseed-deps", "task-dimensions-materialize-deps", "catalog-task-gcp-provision", "catalog-task-gcs-storage-event", "catalog-task-gcp-catalog-cleanup", "catalog", "gcp", "datastore", "db-config", "iam", "db", "crs", "cache", "events", "elasticsearch", "gdal", "maps", "stac", "stats", "web", "geoid", "processes", "features", "styles", "tiles", "tasks", "proxy", "logs", "assets", "configs", "search", "storage", "auth", "template", "dimensions", "notebooks", "geospatial-core", "geospatial-io", "geospatial", "db-async", "db-sync", "core", "catalog-grp", "maps-grp", "google-grp", "auth-grp", "tools-grp", "monitor-grp", "index-grp", "drivers-grp", "task-base", "ingestion", "worker-task-dwh-join", "worker-task-ingestion", "worker-task-export-features", "worker-task-tiles-preseed", "worker-task-gdal", "worker-task-dimensions-materialize", "worker-task-elasticsearch-indexer", "api-open", "api-catalog", "api-maps", "api-maps-open", "api-features", "api-full", "geoid-service", "worker-service", "catalog-local", "worker-local", "scope-catalog", "scope-geoid", "scope-worker", "scope-tools", "scope-maps", "all", "typecheck", "test", "notebooks-test", "lite-build", "dev", "mvt", "joins", "dwh", "psycopg-pool"]
+provides-extras = ["module-storage", "module-storage-postgresql", "module-storage-duckdb", "module-storage-iceberg", "module-storage-elasticsearch", "module-storage-elasticsearch-obfuscated", "module-storage-elasticsearch-assets", "module-metadata-postgresql", "module-collection-elasticsearch", "module-stac", "module-catalog", "module-gcp", "module-datastore", "module-db-config", "module-iam", "module-db", "module-crs", "module-events", "module-elasticsearch", "module-gdal", "module-tiles", "module-cache", "module-tasks", "module-proxy", "module-styles", "module-stats", "module-notebooks", "extension-base", "extension-web", "extension-httpx", "extension-catalog", "extension-stac", "extension-auth", "extension-template", "extension-processes", "extension-features", "extension-tiles", "extension-tasks", "extension-proxy", "extension-gdal", "extension-styles", "extension-iam", "extension-logs", "extension-configs", "extension-stats", "extension-crs", "extension-events", "extension-wfs", "extension-admin", "extension-assets", "extension-notebooks", "extension-records", "extension-search", "extension-gcp-bucket", "extension-geoid", "extension-maps", "extension-coverages", "extension-dwh", "extension-dimensions", "task-gdal-deps", "task-elasticsearch-deps", "task-elasticsearch-indexer-deps", "task-ingestion-deps", "task-dwh-join-deps", "task-export-features-deps", "task-tiles-preseed-deps", "task-dimensions-materialize-deps", "catalog-task-gcp-provision", "catalog-task-gcs-storage-event", "catalog-task-gcp-catalog-cleanup", "catalog", "gcp", "datastore", "db-config", "iam", "db", "crs", "cache", "events", "elasticsearch", "gdal", "maps", "stac", "stats", "web", "geoid", "processes", "features", "styles", "tiles", "tasks", "proxy", "logs", "assets", "configs", "search", "storage", "auth", "template", "dimensions", "notebooks", "geospatial-core", "geospatial-io", "geospatial", "db-async", "db-sync", "core", "catalog-grp", "maps-grp", "google-grp", "auth-grp", "tools-grp", "monitor-grp", "index-grp", "drivers-grp", "task-base", "ingestion", "worker-task-dwh-join", "worker-task-ingestion", "worker-task-export-features", "worker-task-tiles-preseed", "worker-task-gdal", "worker-task-dimensions-materialize", "worker-task-elasticsearch-indexer", "api-open", "api-catalog", "api-maps", "api-maps-open", "api-features", "api-full", "geoid-service", "worker-service", "catalog-local", "worker-local", "scope-catalog", "scope-geoid", "scope-worker", "scope-tools", "scope-maps", "all", "typecheck", "test", "notebooks-test", "lite-build", "dev", "mvt", "joins", "dwh", "psycopg-pool"]
 
 [[package]]
 name = "email-validator"
