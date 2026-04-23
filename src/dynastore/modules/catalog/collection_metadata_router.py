@@ -23,9 +23,10 @@ Mirror of :mod:`catalog_metadata_router` at the collection tier.  Every
 registered :class:`CollectionMetadataStore` driver receives WRITE / DELETE
 fan-outs and contributes its slice on READ; the router merges per-domain
 dicts into the envelope returned to callers.  Default deployment
-registers :class:`CollectionCorePostgresqlDriver` +
-:class:`CollectionStacPostgresqlDriver`; additional drivers (ES indexer,
-future TRANSFORM contributors) slot in without changing call sites.
+registers :class:`CollectionPostgresqlDriver` (the composition wrapper
+that fans CRUD across ``metadata_core`` + ``metadata_stac`` sidecars
+internally — PR 1e step 3b); the ES indexer and any future TRANSFORM
+contributors slot in alongside without changing call sites.
 
 Each driver's ``upsert_metadata`` filters the incoming payload to its
 own domain's columns and no-ops when the filtered slice is empty —

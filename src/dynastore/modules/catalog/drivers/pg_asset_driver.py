@@ -26,9 +26,9 @@ Owns the DDL and all SQL operations for:
 Collection-level metadata is no longer this driver's responsibility.
 Callers go through :mod:`dynastore.modules.catalog.collection_metadata_router`
 which fans out across registered ``CollectionMetadataStore`` drivers
-(``CollectionCorePostgresqlDriver`` + ``CollectionStacPostgresqlDriver``
-in the default deployment).  The asset driver handles asset-level CRUD
-only.
+(``CollectionPostgresqlDriver`` — the composition wrapper that owns
+the metadata_core + metadata_stac sidecar fan-out — in the default PG
+deployment).  The asset driver handles asset-level CRUD only.
 
 Lifecycle
 ~~~~~~~~~
@@ -643,12 +643,13 @@ class AssetPostgresqlDriver(TypedDriver[AssetPostgresqlDriverConfig]):
             ).execute(conn, catalog_id=catalog_id, asset_id=asset_id)
             return rows or []
 
-    # Collection-metadata CRUD has moved to the domain-scoped drivers +
+    # Collection-metadata CRUD has moved to the
+    # CollectionMetadataStore protocol +
     # :mod:`dynastore.modules.catalog.collection_metadata_router`.  The
     # asset driver no longer owns collection metadata — callers invoke
-    # the router, which fans out across CollectionMetadataStore
-    # implementers (CollectionCorePostgresqlDriver +
-    # CollectionStacPostgresqlDriver by default).
+    # the router, which delegates to the registered
+    # CollectionMetadataStore implementers (the PG-tier wrapper
+    # CollectionPostgresqlDriver in the default deployment).
 
 
 # ==============================================================================

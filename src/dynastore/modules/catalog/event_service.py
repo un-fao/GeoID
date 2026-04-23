@@ -200,8 +200,10 @@ class CatalogEventType(EventType):
     # without a circular-import workaround, but no code path currently
     # emits it.  The collection-tier equivalent of the catalog-tier
     # M3.0 work (event emission from the split-table router) was NOT
-    # delivered on this branch — see the CollectionCorePostgresqlDriver
-    # docstring warnings + the scope-cut tracker for the follow-up.
+    # delivered on this branch — see the scope-cut tracker for the
+    # follow-up.  After PR 1e step 3b the relevant emitter would live
+    # behind ``CollectionPostgresqlDriver`` (the composition wrapper
+    # that owns the metadata_core + metadata_stac sidecar fan-out).
     # Until an emitter exists, listeners registered against this event
     # will never fire — they are not an accidental production coupling.
     COLLECTION_METADATA_CHANGED = define_event(

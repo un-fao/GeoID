@@ -61,16 +61,16 @@ class CatalogStacPostgresqlDriverConfig(DriverPluginConfig):
 class CollectionStacPostgresqlDriver(
     TypedDriver[CollectionStacPostgresqlDriverConfig], _PgCollectionMetadataBase,
 ):
-    """Primary driver for STAC collection metadata (``extent``, ``providers``, …).
+    """Inner driver for the STAC collection metadata slice (``extent``,
+    ``providers``, …).
 
     Backs ``{schema}.collection_metadata_stac``. Declares ``SPATIAL_FILTER``
     because the ``extent`` column carries the STAC bbox the spatial-filter
-    endpoints match against. Active via the collection-metadata router
-    alongside ``CollectionCorePostgresqlDriver``.
-
-    Structurally satisfies ``StacCollectionMetadataCapability`` via the
-    ``stac_metadata_columns()`` marker method below — this is the runtime
-    discriminator that ``stac_service._has_stac()`` uses.
+    endpoints match against.  Composed inside the PG-tier wrapper
+    ``CollectionPostgresqlDriver`` via the ``metadata_stac`` sidecar
+    (PR 1e step 3b); not a standalone ``CollectionMetadataStore`` plugin
+    anymore.  The wrapper forwards the ``stac_metadata_columns()`` marker
+    to this class via ``MetadataPgSidecarRegistry`` try-import.
     """
 
     _table: ClassVar[str] = "collection_metadata_stac"

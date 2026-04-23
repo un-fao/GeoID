@@ -106,9 +106,11 @@ def _assert_stac_capable_metadata_stack() -> None:
     collections, or accept that STAC collections cannot be persisted
     under this catalog's configured backing.
 
-    Default PG config satisfies both checks via
-    ``CatalogStacPostgresqlDriver`` + ``CollectionStacPostgresqlDriver``
-    once the STAC module is loaded.
+    Default PG config satisfies both checks via the per-tier
+    composition wrappers ``CatalogPostgresqlDriver`` +
+    ``CollectionPostgresqlDriver`` once the stac extra is installed —
+    each wrapper composes its tier's STAC slice via
+    ``*MetadataPgSidecarRegistry`` try-import (PR 1e steps 3b+3c).
     """
     from dynastore.extensions.stac.protocols import (
         StacCatalogMetadataCapability,
@@ -148,20 +150,24 @@ def _assert_stac_capable_metadata_stack() -> None:
             detail=(
                 "STAC catalog creation requires a registered "
                 "CatalogMetadataStore driver implementing "
-                "StacCatalogMetadataCapability (e.g. "
-                "CatalogStacPostgresqlDriver).  Install the STAC "
-                "module or check the routing config — without a "
-                "STAC-capable catalog-metadata driver registered, "
-                "the catalog's STAC envelope cannot be persisted."
+                "StacCatalogMetadataCapability and exposing non-empty "
+                "stac_metadata_columns().  The default PG deployment "
+                "satisfies this via CatalogPostgresqlDriver once the "
+                "stac extra is installed (the wrapper composes the "
+                "STAC slice via CatalogMetadataPgSidecarRegistry's "
+                "try-import).  Install ``dynastore[module_stac]`` or "
+                "check the routing config."
             ),
         )
     if not _has_stac(CollectionMetadataStore, StacCollectionMetadataCapability):
         logger.warning(
-            "STAC catalog creation proceeding without a registered "
-            "CollectionMetadataStore STAC driver.  Adding a STAC "
-            "collection under this catalog will drop the STAC slice on "
-            "write.  Register CollectionStacPostgresqlDriver (or an "
-            "equivalent implementing StacCollectionMetadataCapability) "
+            "STAC catalog creation proceeding without a STAC-capable "
+            "CollectionMetadataStore driver.  Adding a STAC collection "
+            "under this catalog will drop the STAC slice on write.  "
+            "Default PG deployment satisfies this via "
+            "CollectionPostgresqlDriver once the stac extra is "
+            "installed; install ``dynastore[module_stac]`` or register "
+            "an equivalent implementing StacCollectionMetadataCapability "
             "before creating STAC collections."
         )
 
@@ -484,11 +490,13 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             # STAC precondition: at least one registered driver must declare
             # the STAC metadata domain, so a STAC envelope (stac_version,
             # stac_extensions, conforms_to, links, assets) actually lands
-            # somewhere.  Default PG config satisfies this via
-            # CatalogStacPostgresqlDriver + CollectionStacPostgresqlDriver.
+            # somewhere.  Default PG config satisfies this via the
+            # composition wrappers CatalogPostgresqlDriver +
+            # CollectionPostgresqlDriver, which compose their tier's STAC
+            # sidecar via ``*MetadataPgSidecarRegistry`` try-import.
             # Deployments pointing routing configs at STAC-blind drivers
-            # (e.g. ES-only without the STAC sidecar) fail loudly here
-            # rather than silently dropping the STAC slice on write.
+            # (e.g. ES-only without the stac extra installed) fail loudly
+            # here rather than silently dropping the STAC slice on write.
             _assert_stac_capable_metadata_stack()
 
             # We use STACCatalog (DTO) for validation but the catalogs_svc expects the structure to be merged
