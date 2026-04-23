@@ -79,8 +79,8 @@ def _resolve_drivers() -> List[CollectionMetadataStore]:
         logger.error(
             "No CollectionMetadataStore drivers registered; collection-"
             "metadata router will no-op all operations.  Check that "
-            "metadata_domain_postgresql imports cleanly and its entry-"
-            "points are installed."
+            "metadata_postgresql imports cleanly and its entry-points "
+            "are installed."
         )
         _MISSING_DRIVERS_LOGGED["collection"] = True
     return drivers

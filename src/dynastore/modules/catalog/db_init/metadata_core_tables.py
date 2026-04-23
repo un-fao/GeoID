@@ -7,29 +7,25 @@
 #        http://www.apache.org/licenses/LICENSE-2.0
 
 """
-Metadata-domain DDL — canonical post-M2.5 shape (delete + rebuild policy).
+Core PostgreSQL metadata DDL — catalog + tenant ``*_metadata_core`` tables.
 
-Creates the per-domain metadata tables that back the ``CatalogMetadataStore``
-and ``CollectionMetadataStore`` protocols.
+Backs the ``CatalogMetadataStore`` / ``CollectionMetadataStore`` core
+drivers (``modules.storage.drivers.metadata_postgresql``).
 
 Global (under ``catalog.`` schema):
 
 - ``catalog.catalog_metadata_core`` — CORE fields (title, description,
   keywords, license, extra_metadata) keyed on ``catalog_id``.
-- ``catalog.catalog_metadata_stac`` — STAC fields (stac_version,
-  stac_extensions, conforms_to, links, assets) keyed on ``catalog_id``.
 
 Per-tenant (under each ``{schema}``):
 
 - ``{schema}.collection_metadata_core`` — CORE collection metadata
   (title, description, keywords, license, extra_metadata).
-- ``{schema}.collection_metadata_stac`` — STAC collection metadata
-  (extent, providers, summaries, assets, item_assets, links,
-  stac_version, stac_extensions).
 
-No legacy-data migration is performed.  The deployment policy for the
-M2.5 cut is delete-and-rebuild: fresh deployments get the canonical
-shape directly from the ``CREATE TABLE IF NOT EXISTS`` statements below.
+The STAC sidecar tables (``*.catalog_metadata_stac`` /
+``*.collection_metadata_stac``) live in
+``modules.stac.db_init.metadata_stac_tables`` and run only when the STAC
+module is installed.
 """
 
 import logging
@@ -94,7 +90,7 @@ CREATE TABLE IF NOT EXISTS {schema}.collection_metadata_core (
 # ---------------------------------------------------------------------------
 
 
-async def ensure_global_metadata_domain_tables(conn: DbResource) -> None:
+async def ensure_global_metadata_core_tables(conn: DbResource) -> None:
     """Apply the global CORE DDL (``catalog.catalog_metadata_core``)
     plus the freshness columns on ``catalog.catalogs``.
 
@@ -111,12 +107,12 @@ async def ensure_global_metadata_domain_tables(conn: DbResource) -> None:
     ).execute(conn)
 
 
-async def ensure_tenant_metadata_domain_tables(conn: DbResource, schema: str) -> None:
+async def ensure_tenant_metadata_core_tables(conn: DbResource, schema: str) -> None:
     """Apply the per-tenant CORE DDL (``{schema}.collection_metadata_core``).
 
     The per-tenant STAC sidecar (``{schema}.collection_metadata_stac``) is
     owned by the STAC module — when installed, the lifecycle-registered
-    ``ensure_tenant_stac_metadata_tables`` initializer in
+    ``_ensure_tenant_stac_metadata_tables`` initializer in
     ``modules.stac.db_init.metadata_stac_tables`` runs alongside this.
 
     Idempotent.  Called from ``create_catalog`` as the canonical

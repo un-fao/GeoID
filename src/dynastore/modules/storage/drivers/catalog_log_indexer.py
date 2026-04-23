@@ -60,13 +60,6 @@ Protocol contract
 
 :class:`CatalogMetadataStore` methods:
 
-* ``domain``      — :attr:`MetadataDomain.CORE` by default.  The
-  concrete domain is ARBITRARY for a log indexer (it logs whatever
-  envelope the :class:`ReindexWorker` hydrates — which is always the
-  merged CORE + STAC envelope from the catalog-tier router,
-  regardless of ``domain``).  Declaring CORE keeps the router's
-  per-domain event de-dup (see ``_emit_catalog_metadata_changed``)
-  predictable without requiring a bespoke domain value.
 * ``capabilities`` — empty frozenset; the indexer reads nothing,
   writes nothing persistently, and serves no queries.  A future
   richer indexer would declare ``WRITE`` + ``SEARCH_FULLTEXT`` +
@@ -107,10 +100,7 @@ from __future__ import annotations
 import logging
 from typing import Any, ClassVar, Dict, FrozenSet, Optional
 
-from dynastore.models.protocols.driver_roles import (
-    DriverSla,
-    MetadataDomain,
-)
+from dynastore.models.protocols.driver_roles import DriverSla
 
 logger = logging.getLogger(__name__)
 
@@ -126,13 +116,6 @@ class LogCatalogIndexer:
     indexer backed by a log is ``LogCatalogIndexer``, paralleling
     the future ``CatalogCoreEsIndexer``.
     """
-
-    # Arbitrary choice for the log indexer — see class docstring.
-    # The router uses this only for event-emission de-dup (one event
-    # per unique domain in ``_emit_catalog_metadata_changed``); a
-    # pure INDEX driver never participates in WRITE fan-out so the
-    # emitted-domains set it contributes to is informational at most.
-    domain: ClassVar[MetadataDomain] = MetadataDomain.CORE
 
     # Empty capabilities set — the indexer neither reads nor writes
     # persistent state.  ``READ`` is intentionally NOT declared so

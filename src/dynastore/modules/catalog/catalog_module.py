@@ -240,10 +240,10 @@ class CatalogModule(ModuleProtocol):
                 # Metadata-domain tables: catalog.catalog_metadata_core +
                 # catalog.catalog_metadata_stac.  The only collection- and
                 # catalog-metadata storage path after the M2.5 hard cut.
-                from dynastore.modules.catalog.db_init.metadata_domain_split import (
-                    ensure_global_metadata_domain_tables,
+                from dynastore.modules.catalog.db_init.metadata_core_tables import (
+                    ensure_global_metadata_core_tables,
                 )
-                await ensure_global_metadata_domain_tables(conn)
+                await ensure_global_metadata_core_tables(conn)
 
                 # Ensure stored procedures (replacing init.sql)
                 from dynastore.modules.catalog.db_init.stored_procedures import (

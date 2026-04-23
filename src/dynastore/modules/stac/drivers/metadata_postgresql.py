@@ -22,23 +22,21 @@ The two collection/catalog-tier STAC drivers persist the STAC subset of
 the metadata envelope into the per-tenant ``{schema}.collection_metadata_stac``
 and global ``catalog.catalog_metadata_stac`` tables respectively.
 
-The shared CRUD bodies live on ``_CollectionMetadataDomainBase`` /
-``_CatalogMetadataDomainBase`` in the core PG metadata module — imported
-here, not duplicated. PR 1c renames the base classes (``_PgCollectionMetadataBase``
-/ ``_PgCatalogMetadataBase``) and drops the ``MetadataDomain`` ClassVar;
-the import path updates atomically with that rename.
+The shared CRUD bodies live on ``_PgCollectionMetadataBase`` /
+``_PgCatalogMetadataBase`` in the core PG metadata module
+(``modules/storage/drivers/metadata_postgresql.py``) — imported here,
+not duplicated.
 """
 
 from __future__ import annotations
 
 from typing import ClassVar, FrozenSet, Tuple
 
-from dynastore.models.protocols.driver_roles import MetadataDomain
 from dynastore.models.protocols.metadata_driver import MetadataCapability
 from dynastore.modules.storage.driver_config import DriverPluginConfig
-from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
-    _CatalogMetadataDomainBase,
-    _CollectionMetadataDomainBase,
+from dynastore.modules.storage.drivers.metadata_postgresql import (
+    _PgCatalogMetadataBase,
+    _PgCollectionMetadataBase,
 )
 
 
@@ -59,7 +57,7 @@ class CatalogStacPostgresqlDriverConfig(DriverPluginConfig):
     """Identity marker for CatalogStacPostgresqlDriver."""
 
 
-class CollectionStacPostgresqlDriver(_CollectionMetadataDomainBase):
+class CollectionStacPostgresqlDriver(_PgCollectionMetadataBase):
     """Primary driver for STAC collection metadata (``extent``, ``providers``, …).
 
     Backs ``{schema}.collection_metadata_stac``. Declares ``SPATIAL_FILTER``
@@ -74,7 +72,6 @@ class CollectionStacPostgresqlDriver(_CollectionMetadataDomainBase):
 
     _table: ClassVar[str] = "collection_metadata_stac"
     _columns: ClassVar[Tuple[str, ...]] = _COLLECTION_STAC_COLUMNS
-    domain: ClassVar[MetadataDomain] = MetadataDomain.STAC
 
     capabilities: FrozenSet[str] = frozenset({
         MetadataCapability.READ,
@@ -88,7 +85,7 @@ class CollectionStacPostgresqlDriver(_CollectionMetadataDomainBase):
         return self._columns
 
 
-class CatalogStacPostgresqlDriver(_CatalogMetadataDomainBase):
+class CatalogStacPostgresqlDriver(_PgCatalogMetadataBase):
     """Primary driver for STAC catalog metadata.
 
     Backs ``catalog.catalog_metadata_stac``. Scope: ``stac_version``,
@@ -100,7 +97,6 @@ class CatalogStacPostgresqlDriver(_CatalogMetadataDomainBase):
 
     _table: ClassVar[str] = "catalog_metadata_stac"
     _columns: ClassVar[Tuple[str, ...]] = _CATALOG_STAC_COLUMNS
-    domain: ClassVar[MetadataDomain] = MetadataDomain.STAC
 
     capabilities: FrozenSet[str] = frozenset({
         MetadataCapability.READ,

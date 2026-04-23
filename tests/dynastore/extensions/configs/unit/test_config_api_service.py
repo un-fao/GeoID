@@ -114,7 +114,7 @@ def test_compose_tree_places_classes_by_module_path():
     registry = _stub_registry(
         WebConfig={"__module__": "dynastore.extensions.web.web"},
         CatalogCorePostgresqlDriverConfig={
-            "__module__": "dynastore.modules.storage.drivers.metadata_domain_postgresql",
+            "__module__": "dynastore.modules.storage.drivers.metadata_postgresql",
         },
     )
     with patch(

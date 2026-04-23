@@ -273,24 +273,25 @@ class TestMetadataChangedEventEmission:
     """M3.0 — the router emits catalog_metadata_changed on every mutation.
 
     These tests override the autouse emit stub so they can assert the
-    exact calls made.  One event per domain is expected; duplicate
-    driver domains (e.g. two STAC drivers registered concurrently) must
-    de-dup to a single event per domain per call.
+    exact calls made.  One event per driver class is expected; multiple
+    instances of the same driver class de-dup to a single event per call.
     """
 
     @pytest.mark.asyncio
-    async def test_upsert_emits_per_domain_event(self, monkeypatch):
-        from dynastore.models.protocols.driver_roles import MetadataDomain
+    async def test_upsert_emits_per_driver_class_event(self, monkeypatch):
         from dynastore.modules.catalog.catalog_metadata_router import (
             upsert_catalog_metadata,
         )
 
-        core = MagicMock()
-        core.domain = MetadataDomain.CORE
-        core.upsert_catalog_metadata = AsyncMock()
-        stac = MagicMock()
-        stac.domain = MetadataDomain.STAC
-        stac.upsert_catalog_metadata = AsyncMock()
+        # Two distinct driver classes — emit dedups by class name.
+        class CoreDriver:
+            upsert_catalog_metadata = AsyncMock()
+
+        class StacDriver:
+            upsert_catalog_metadata = AsyncMock()
+
+        core = CoreDriver()
+        stac = StacDriver()
 
         emit = AsyncMock(return_value=None)
         monkeypatch.setattr(
@@ -298,12 +299,16 @@ class TestMetadataChangedEventEmission:
         )
 
         await upsert_catalog_metadata(
-            "cat-42", {"title": {"en": "T"}}, drivers=[core, stac],
+            "cat-42", {"title": {"en": "T"}},
+            drivers=[core, stac],  # type: ignore[arg-type]
         )
-        # One event per domain — two drivers → two events.
+        # One event per driver class — two distinct classes → two events.
         assert emit.await_count == 2
-        domains = [call.kwargs["payload"]["domain"] for call in emit.call_args_list]
-        assert set(domains) == {"core", "stac"}
+        classes = [
+            call.kwargs["payload"]["driver_class"]
+            for call in emit.call_args_list
+        ]
+        assert set(classes) == {"CoreDriver", "StacDriver"}
         # Every event carries ``operation`` and ``catalog_id``.
         for call in emit.call_args_list:
             payload = call.kwargs["payload"]
@@ -312,13 +317,11 @@ class TestMetadataChangedEventEmission:
 
     @pytest.mark.asyncio
     async def test_delete_emits_delete_operation(self, monkeypatch):
-        from dynastore.models.protocols.driver_roles import MetadataDomain
         from dynastore.modules.catalog.catalog_metadata_router import (
             delete_catalog_metadata,
         )
 
         core = MagicMock()
-        core.domain = MetadataDomain.CORE
         core.delete_catalog_metadata = AsyncMock()
 
         emit = AsyncMock(return_value=None)
@@ -332,13 +335,11 @@ class TestMetadataChangedEventEmission:
 
     @pytest.mark.asyncio
     async def test_soft_delete_emits_soft_delete_operation(self, monkeypatch):
-        from dynastore.models.protocols.driver_roles import MetadataDomain
         from dynastore.modules.catalog.catalog_metadata_router import (
             delete_catalog_metadata,
         )
 
         core = MagicMock()
-        core.domain = MetadataDomain.CORE
         core.delete_catalog_metadata = AsyncMock()
         emit = AsyncMock(return_value=None)
         monkeypatch.setattr(
@@ -349,28 +350,28 @@ class TestMetadataChangedEventEmission:
         assert emit.call_args.kwargs["payload"]["operation"] == "soft_delete"
 
     @pytest.mark.asyncio
-    async def test_duplicate_domain_drivers_dedup_to_one_event(self, monkeypatch):
-        """Two drivers on the same domain → one event per domain, not two."""
-        from dynastore.models.protocols.driver_roles import MetadataDomain
+    async def test_duplicate_driver_class_dedup_to_one_event(self, monkeypatch):
+        """Two instances of the same driver class → one event, not two."""
         from dynastore.modules.catalog.catalog_metadata_router import (
             upsert_catalog_metadata,
         )
 
-        pg_core = MagicMock()
-        pg_core.domain = MetadataDomain.CORE
-        pg_core.upsert_catalog_metadata = AsyncMock()
-        es_core = MagicMock()
-        es_core.domain = MetadataDomain.CORE   # second CORE driver
-        es_core.upsert_catalog_metadata = AsyncMock()
+        class PgCore:
+            upsert_catalog_metadata = AsyncMock()
+
+        pg_a = PgCore()
+        pg_b = PgCore()  # second instance of the same class
 
         emit = AsyncMock(return_value=None)
         monkeypatch.setattr(
             "dynastore.modules.catalog.event_service.emit_event", emit,
         )
 
-        await upsert_catalog_metadata("cat", {}, drivers=[pg_core, es_core])
-        assert emit.await_count == 1   # one CORE event, not two
-        assert emit.call_args.kwargs["payload"]["domain"] == "core"
+        await upsert_catalog_metadata(
+            "cat", {}, drivers=[pg_a, pg_b],  # type: ignore[arg-type]
+        )
+        assert emit.await_count == 1   # one PgCore event, not two
+        assert emit.call_args.kwargs["payload"]["driver_class"] == "PgCore"
 
     @pytest.mark.asyncio
     async def test_upsert_emit_receives_same_db_resource_as_drivers(
@@ -390,17 +391,19 @@ class TestMetadataChangedEventEmission:
         bearing)" section depends on this identity propagation; this
         test is the regression fuse against silent breakage of it.
         """
-        from dynastore.models.protocols.driver_roles import MetadataDomain
         from dynastore.modules.catalog.catalog_metadata_router import (
             upsert_catalog_metadata,
         )
 
-        core = MagicMock()
-        core.domain = MetadataDomain.CORE
-        core.upsert_catalog_metadata = AsyncMock()
-        stac = MagicMock()
-        stac.domain = MetadataDomain.STAC
-        stac.upsert_catalog_metadata = AsyncMock()
+        # Two distinct driver classes → two events emitted.
+        class _RouterTestCore:
+            upsert_catalog_metadata = AsyncMock()
+
+        class _RouterTestStac:
+            upsert_catalog_metadata = AsyncMock()
+
+        core = _RouterTestCore()
+        stac = _RouterTestStac()
 
         emit = AsyncMock(return_value=None)
         monkeypatch.setattr(
@@ -414,13 +417,14 @@ class TestMetadataChangedEventEmission:
 
         await upsert_catalog_metadata(
             "cat-42", {"title": {"en": "T"}, "stac_version": "1.1.0"},
-            db_resource=live_conn, drivers=[core, stac],
+            db_resource=live_conn,
+            drivers=[core, stac],  # type: ignore[arg-type]
         )
 
         # Driver writes see the same connection.
         assert core.upsert_catalog_metadata.await_args.kwargs["db_resource"] is live_conn
         assert stac.upsert_catalog_metadata.await_args.kwargs["db_resource"] is live_conn
-        # Emits see the same connection (one per domain, two total).
+        # Emits see the same connection (one per driver class, two total).
         assert emit.await_count == 2
         for call in emit.call_args_list:
             assert call.kwargs["db_resource"] is live_conn, (
@@ -432,14 +436,12 @@ class TestMetadataChangedEventEmission:
     @pytest.mark.asyncio
     async def test_emit_failure_logs_but_does_not_raise(self, monkeypatch, caplog):
         """A broken emit_event must not turn a successful write into a 5xx."""
-        from dynastore.models.protocols.driver_roles import MetadataDomain
         from dynastore.modules.catalog import catalog_metadata_router as mod
         from dynastore.modules.catalog.catalog_metadata_router import (
             upsert_catalog_metadata,
         )
 
         core = MagicMock()
-        core.domain = MetadataDomain.CORE
         core.upsert_catalog_metadata = AsyncMock()
 
         async def _boom(*args, **kwargs):

@@ -1,7 +1,7 @@
 """Unit tests for the relocated STAC PG metadata drivers.
 
 Mirror of the STAC-specific subset of
-``tests/dynastore/modules/storage/unit/test_metadata_domain_postgresql.py``,
+``tests/dynastore/modules/storage/unit/test_metadata_postgresql.py``,
 relocated alongside the drivers that moved to ``modules/stac/`` in
 PR 1b of the STAC-decoupling sequence.
 
@@ -22,7 +22,6 @@ from dynastore.extensions.stac.protocols import (
     StacCatalogMetadataCapability,
     StacCollectionMetadataCapability,
 )
-from dynastore.models.protocols.driver_roles import MetadataDomain
 from dynastore.models.protocols.metadata_driver import (
     CatalogMetadataStore,
     CollectionMetadataStore,
@@ -37,7 +36,6 @@ class TestStructuralInvariants:
         )
 
         d = CollectionStacPostgresqlDriver()
-        assert d.domain is MetadataDomain.STAC
         assert d._table == "collection_metadata_stac"
         assert MetadataCapability.SPATIAL_FILTER in d.capabilities
         # STAC collection driver does NOT advertise SEARCH — the CORE
@@ -53,7 +51,6 @@ class TestStructuralInvariants:
         )
 
         d = CatalogStacPostgresqlDriver()
-        assert d.domain is MetadataDomain.STAC
         assert d._table == "catalog_metadata_stac"
         assert isinstance(d, CatalogMetadataStore)
         assert isinstance(d, StacCatalogMetadataCapability)
@@ -83,7 +80,7 @@ class TestStructuralInvariants:
         """``isinstance(core_driver, StacCollectionMetadataCapability)`` must
         be False — the marker method is the discriminator.
         """
-        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+        from dynastore.modules.storage.drivers.metadata_postgresql import (
             CatalogCorePostgresqlDriver,
             CollectionCorePostgresqlDriver,
         )
@@ -124,7 +121,7 @@ def fake_conn_with_dql():
     ``_CatalogMetadataDomainBase`` live — STAC drivers inherit the CRUD
     bodies from those bases, so the patches must target their module).
     """
-    import dynastore.modules.storage.drivers.metadata_domain_postgresql as mod
+    import dynastore.modules.storage.drivers.metadata_postgresql as mod
 
     fake_engine = MagicMock()
     dql_execute = AsyncMock(return_value=None)

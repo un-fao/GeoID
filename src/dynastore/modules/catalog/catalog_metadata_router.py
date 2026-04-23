@@ -155,7 +155,7 @@ def _resolve_catalog_metadata_drivers() -> List[CatalogMetadataStore]:
             "router will no-op all operations.  Entry-point discovery did "
             "not surface any dynastore.modules entry-point implementing "
             "CatalogMetadataStore — check installed package metadata and "
-            "that metadata_domain_postgresql imports cleanly in this env."
+            "that metadata_postgresql imports cleanly in this env."
         )
         _MISSING_DRIVERS_LOGGED["catalog"] = True
     return drivers
@@ -352,35 +352,30 @@ async def _emit_catalog_metadata_changed(
     operation: str,
     db_resource: Optional[Any],
 ) -> None:
-    """Emit one ``catalog_metadata_changed`` event per driver-domain touched.
+    """Emit one ``catalog_metadata_changed`` event per driver-class touched.
 
-    One event per domain rather than one per mutation because the
-    ReindexWorker shards on ``(catalog_id, domain)`` — issuing a
-    dedicated row per domain keeps each consumer's claim surface
-    tight (no N-way contention over a single PLATFORM event).
-
-    Domain is read from the driver's ``domain`` ClassVar
-    (``MetadataDomain.CORE`` / ``STAC``).  Drivers without a
-    ``domain`` attribute (future 3rd-party) default to ``CORE`` so
-    the event still lands.
+    One event per driver class (``CollectionCorePostgresqlDriver``,
+    ``CollectionStacPostgresqlDriver``, ``MetadataElasticsearchDriver``,
+    …) rather than one per mutation — gives the ReindexWorker per-class
+    claim surface (no N-way contention over a single PLATFORM event)
+    while staying domain-blind: the router does not need to know which
+    driver handles which payload slice.
 
     Errors here are logged, not raised — the metadata write already
     succeeded and the caller's mutation intent is satisfied.  A
     missing event means INDEX/BACKUP propagation lags until the
-    consumer runs its own catch-up pass.
+    consumer runs its own backfill pass.
     """
     from dynastore.modules.catalog.event_service import (
         CatalogEventType, emit_event,
     )
 
-    emitted_domains: set[str] = set()
+    emitted_classes: set[str] = set()
     for driver in drivers:
-        domain_value = getattr(
-            getattr(driver, "domain", None), "value", "CORE",
-        )
-        if domain_value in emitted_domains:
+        driver_class = type(driver).__name__
+        if driver_class in emitted_classes:
             continue  # de-dup within this call
-        emitted_domains.add(domain_value)
+        emitted_classes.add(driver_class)
         try:
             await emit_event(
                 CatalogEventType.CATALOG_METADATA_CHANGED,
@@ -388,7 +383,7 @@ async def _emit_catalog_metadata_changed(
                 db_resource=db_resource,
                 payload={
                     "catalog_id": catalog_id,
-                    "domain": domain_value,
+                    "driver_class": driver_class,
                     "operation": operation,
                 },
             )
@@ -397,5 +392,5 @@ async def _emit_catalog_metadata_changed(
                 "catalog_metadata_changed event emission failed for "
                 "%s / %s: %s — INDEX / BACKUP consumers will pick "
                 "this up via their backfill pass",
-                catalog_id, domain_value, exc,
+                catalog_id, driver_class, exc,
             )

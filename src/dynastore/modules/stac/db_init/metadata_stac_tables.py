@@ -16,14 +16,14 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""STAC-slice metadata DDL — relocated from ``modules/catalog/db_init/metadata_domain_split.py``.
+"""STAC-slice metadata DDL.
 
 When the STAC module is installed, the per-tenant lifecycle initializer
 ``_ensure_tenant_stac_metadata_tables`` (decorated with
 ``@lifecycle_registry.sync_catalog_initializer``) runs at every
 ``CatalogService.create_catalog`` call — alongside the core-tables
-initializer in ``metadata_domain_split.py``. The global STAC table is
-applied once during ``StacModule.lifespan``.
+initializer in ``modules.catalog.db_init.metadata_core_tables``. The
+global STAC table is applied once during ``StacModule.lifespan``.
 
 Without the STAC module loaded, neither the global nor the per-tenant
 STAC sidecar table is created — a STAC field write hits the loud

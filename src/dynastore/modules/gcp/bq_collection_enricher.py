@@ -37,7 +37,7 @@ the partial entirely.
 import logging
 from typing import Any, ClassVar, Dict, FrozenSet, Optional
 
-from dynastore.models.protocols.driver_roles import DriverSla, MetadataDomain
+from dynastore.models.protocols.driver_roles import DriverSla
 from dynastore.models.protocols.metadata_driver import (
     MetadataCapability,
     TransformOnlyCollectionMetadataStoreMixin,
@@ -58,7 +58,6 @@ class BigQueryMetadataTransformDriver(TransformOnlyCollectionMetadataStoreMixin)
     class's own ``get_metadata`` / ``is_available`` implementations.
 
     Role-based driver attributes (plan §Driver roles):
-    - ``domain``       — ``CORE`` (the ``bq_stats`` key is core-supplementary).
     - ``capabilities`` — ``{TRANSFORM}`` — router never picks this as a
                           Primary for READ / WRITE / SEARCH.
     - ``sla``          — 2 s timeout, ``degrade`` on timeout (BigQuery is
@@ -67,7 +66,6 @@ class BigQueryMetadataTransformDriver(TransformOnlyCollectionMetadataStoreMixin)
 
     # --- Role-based driver attributes ---------------------------------------
     capabilities: FrozenSet[str] = frozenset({MetadataCapability.TRANSFORM})
-    domain: ClassVar[MetadataDomain] = MetadataDomain.CORE
     sla: ClassVar[DriverSla] = DriverSla(
         timeout_ms=2000,
         on_timeout="degrade",

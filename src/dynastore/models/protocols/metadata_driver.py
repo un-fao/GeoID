@@ -43,13 +43,10 @@ from typing import (
     runtime_checkable,
 )
 
-# Re-exported so concrete driver classes can declare ``domain`` / ``sla`` as
-# ``ClassVar[MetadataDomain]`` / ``ClassVar[Optional[DriverSla]]`` alongside
-# their other protocol attributes without a separate import of driver_roles.
-from dynastore.models.protocols.driver_roles import (  # noqa: F401
-    DriverSla,
-    MetadataDomain,
-)
+# Re-exported so concrete driver classes can declare ``sla`` as
+# ``ClassVar[Optional[DriverSla]]`` alongside their other protocol
+# attributes without a separate import of driver_roles.
+from dynastore.models.protocols.driver_roles import DriverSla  # noqa: F401
 
 if TYPE_CHECKING:
     from dynastore.modules.storage.storage_location import StorageLocation
@@ -104,11 +101,12 @@ class CollectionMetadataStore(Protocol):
     ``capabilities`` declares what the driver supports.  Callers check
     membership before invoking capability-gated methods.
 
-    ``domain`` declares which slice of the metadata payload this driver
-    owns (``CORE``, ``STAC``, …).  Declared as ``ClassVar[MetadataDomain]``
-    on each concrete driver class so the router can group drivers by
-    domain statically without instantiation.  Optional for now — existing
-    drivers that don't declare it are treated as ``CORE``.
+    Drivers that own only a slice of the payload (e.g. STAC PG drivers
+    persisting STAC-extension columns) declare a sub-Capability Protocol
+    owned by their extension (e.g. ``StacCollectionMetadataCapability``
+    in ``extensions/stac/protocols.py``); consumers dispatch via
+    ``isinstance`` against the sub-Capability, not against a string tag
+    or enum value on this base Protocol.
 
     ``sla`` is a **mandatory** per-class SLA when ``MetadataCapability.TRANSFORM``
     is declared — a transform without an SLA can quietly tax the hot path.
@@ -121,7 +119,6 @@ class CollectionMetadataStore(Protocol):
     """
 
     capabilities: FrozenSet[str]
-    # domain: ClassVar[MetadataDomain]     — declared in each concrete driver class.
     # sla: ClassVar[Optional[DriverSla]]   — mandatory when TRANSFORM is declared.
     # description: ClassVar[LocalizedText] — declared in each concrete driver class.
 
@@ -271,7 +268,6 @@ class TransformOnlyCollectionMetadataStoreMixin:
 
         class MyTransformDriver(TransformOnlyCollectionMetadataStoreMixin):
             capabilities: FrozenSet[str] = frozenset({MetadataCapability.TRANSFORM})
-            domain: ClassVar[MetadataDomain] = MetadataDomain.CORE
             sla: ClassVar[DriverSla] = DriverSla(timeout_ms=2000, on_timeout="degrade")
 
             async def get_metadata(self, catalog_id, collection_id, *, context=None, db_resource=None):
@@ -382,12 +378,10 @@ class CatalogMetadataStore(Protocol):
     ``catalog.catalog_metadata_stac`` (STAC extension only).
 
     ``capabilities`` — same semantics as :class:`CollectionMetadataStore`.
-    ``domain``        — ``ClassVar[MetadataDomain]`` on each concrete driver.
     ``sla``           — mandatory when ``MetadataCapability.TRANSFORM``.
     """
 
     capabilities: FrozenSet[str]
-    # domain: ClassVar[MetadataDomain]    — declared in each concrete driver class.
     # sla: ClassVar[Optional[DriverSla]]  — mandatory when TRANSFORM is declared.
 
     async def get_catalog_metadata(

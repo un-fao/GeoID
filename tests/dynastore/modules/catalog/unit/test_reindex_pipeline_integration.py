@@ -94,7 +94,6 @@ async def test_pipeline_router_emit_listener_worker_indexer(
     catalog we mutated.  If any link in the chain breaks, this log
     line is missing.
     """
-    from dynastore.models.protocols.driver_roles import MetadataDomain
     from dynastore.modules.catalog import event_service as event_service_mod
     from dynastore.modules.catalog.catalog_metadata_router import (
         upsert_catalog_metadata,
@@ -155,10 +154,8 @@ async def test_pipeline_router_emit_listener_worker_indexer(
 
     # ------- Set up two stub Primary drivers for the WRITE fan-out
     core = MagicMock()
-    core.domain = MetadataDomain.CORE
     core.upsert_catalog_metadata = AsyncMock()
     stac = MagicMock()
-    stac.domain = MetadataDomain.STAC
     stac.upsert_catalog_metadata = AsyncMock()
 
     # ------- Mutate: the router fans out + emits the event.
@@ -212,7 +209,6 @@ async def test_pipeline_deletes_route_to_delete_catalog_metadata(
     of ``ReindexWorker._dispatch_one`` which calls
     ``driver.delete_catalog_metadata`` instead of ``upsert_catalog_metadata``.
     """
-    from dynastore.models.protocols.driver_roles import MetadataDomain
     from dynastore.modules.catalog import event_service as event_service_mod
     from dynastore.modules.catalog.catalog_metadata_router import (
         delete_catalog_metadata,
@@ -262,7 +258,6 @@ async def test_pipeline_deletes_route_to_delete_catalog_metadata(
     register_reindex_listener(svc, worker=worker)
 
     core = MagicMock()
-    core.domain = MetadataDomain.CORE
     core.delete_catalog_metadata = AsyncMock()
 
     caplog.set_level(

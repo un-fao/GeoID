@@ -17,33 +17,23 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-CORE Primary metadata drivers backed by the per-domain DDL split.
+CORE PostgreSQL metadata drivers + shared CRUD base classes.
 
 - :class:`CollectionCorePostgresqlDriver`  → ``{schema}.collection_metadata_core``
 - :class:`CatalogCorePostgresqlDriver`     → ``catalog.catalog_metadata_core``
 
-The matching STAC drivers (``Collection``/``CatalogStacPostgresqlDriver``)
-relocated to :mod:`dynastore.modules.stac.drivers.metadata_postgresql`
-when STAC was promoted to its own module — see PR 1b of the
-STAC-decoupling sequence. They inherit the same shared CRUD bases
-defined in this file (``_CollectionMetadataDomainBase`` /
-``_CatalogMetadataDomainBase``); PR 1c renames the bases to drop the
-``MetadataDomain`` ClassVar.
+The matching STAC drivers live in
+:mod:`dynastore.modules.stac.drivers.metadata_postgresql` and inherit
+the shared CRUD bases (``_PgCollectionMetadataBase`` /
+``_PgCatalogMetadataBase``) defined in this file — same column-filtered
+upsert / delete / search shape, different column tuples and table names.
 
-Each driver owns only its **domain's** columns.  Callers that need the
-full envelope run all participating Primary drivers through the metadata
-router (:mod:`~dynastore.modules.catalog.catalog_metadata_router` for
-catalogs, :mod:`~dynastore.modules.catalog.collection_metadata_router`
-for collections) which fans out the payload on WRITE and merges the
-slices on READ.
-
-Naming convention (Phase 1 of the naming harmonisation):
-
-- ``<Tier><Domain><Backend>Driver`` — ``Collection`` / ``Catalog`` tier,
-  ``Core`` / ``Stac`` domain, ``Postgresql`` backend.  No ``Metadata``
-  infix — the tier + domain combination already makes the scope clear
-  (``CollectionCorePostgresqlDriver`` reads as "collection-tier CORE
-  metadata driver backed by PostgreSQL").
+Each driver owns only its declared columns.  Callers that need the full
+envelope run all participating drivers through the metadata router
+(:mod:`~dynastore.modules.catalog.catalog_metadata_router` for catalogs,
+:mod:`~dynastore.modules.catalog.collection_metadata_router` for
+collections) which fans out the payload on WRITE and merges the slices
+on READ.
 
 Capabilities
 ------------
@@ -71,7 +61,6 @@ import logging
 from typing import TYPE_CHECKING, Any, ClassVar, Dict, FrozenSet, List, Optional, Tuple
 
 from dynastore.models.driver_context import DriverContext
-from dynastore.models.protocols.driver_roles import MetadataDomain
 from dynastore.models.protocols.metadata_driver import (
     CatalogMetadataStore,
     CollectionMetadataStore,
@@ -201,7 +190,7 @@ class CatalogCorePostgresqlDriverConfig(DriverPluginConfig):
 # ---------------------------------------------------------------------------
 
 
-class _CollectionMetadataDomainBase:
+class _PgCollectionMetadataBase:
     """Shared implementation for the two collection-tier metadata drivers.
 
     Domain-specific knobs (table name, column tuple, capability set,
@@ -217,7 +206,6 @@ class _CollectionMetadataDomainBase:
     _table: ClassVar[str]              # e.g. "collection_metadata_core"
     _columns: ClassVar[Tuple[str, ...]]  # columns this driver owns
     capabilities: FrozenSet[str]
-    domain: ClassVar[MetadataDomain]
 
     async def is_available(self) -> bool:
         return _get_engine() is not None
@@ -409,7 +397,7 @@ class _CollectionMetadataDomainBase:
             backend="postgresql",
             canonical_uri=f"postgresql://{phys}.{self._table}",
             identifiers={
-                "schema": phys, "table": self._table, "domain": self.domain.value,
+                "schema": phys, "table": self._table,
             },
             display_label=f"{phys}.{self._table}",
         )
@@ -427,7 +415,7 @@ class _CollectionMetadataDomainBase:
         return None
 
 
-class CollectionCorePostgresqlDriver(_CollectionMetadataDomainBase):
+class CollectionCorePostgresqlDriver(_PgCollectionMetadataBase):
     """Primary driver for CORE collection metadata (``title``, ``description``, …).
 
     Backs ``{schema}.collection_metadata_core``.  Declares ``SEARCH`` because
@@ -441,7 +429,6 @@ class CollectionCorePostgresqlDriver(_CollectionMetadataDomainBase):
 
     _table: ClassVar[str] = "collection_metadata_core"
     _columns: ClassVar[Tuple[str, ...]] = _COLLECTION_CORE_COLUMNS
-    domain: ClassVar[MetadataDomain] = MetadataDomain.CORE
 
     capabilities: FrozenSet[str] = frozenset({
         MetadataCapability.READ,
@@ -511,13 +498,12 @@ class CollectionCorePostgresqlDriver(_CollectionMetadataDomainBase):
 # ---------------------------------------------------------------------------
 
 
-class _CatalogMetadataDomainBase:
+class _PgCatalogMetadataBase:
     """Shared implementation for the two catalog-tier metadata drivers."""
 
     _table: ClassVar[str]              # e.g. "catalog_metadata_core"
     _columns: ClassVar[Tuple[str, ...]]  # columns this driver owns
     capabilities: FrozenSet[str]
-    domain: ClassVar[MetadataDomain]
 
     async def is_available(self) -> bool:
         return _get_engine() is not None
@@ -554,7 +540,7 @@ class _CatalogMetadataDomainBase:
         """Partial-update UPSERT — only columns the caller set are touched.
 
         Same "PATCH, not PUT" semantics as the collection-tier driver
-        (see :meth:`_CollectionMetadataDomainBase.upsert_metadata`).
+        (see :meth:`_PgCollectionMetadataBase.upsert_metadata`).
         Absent keys are never stamped as ``NULL``; partial updates
         preserve previously-populated columns.
 
@@ -650,7 +636,7 @@ class _CatalogMetadataDomainBase:
         return None
 
 
-class CatalogCorePostgresqlDriver(_CatalogMetadataDomainBase):
+class CatalogCorePostgresqlDriver(_PgCatalogMetadataBase):
     """Primary driver for CORE catalog metadata.
 
     Backs ``catalog.catalog_metadata_core``.  Scope: ``title``,
@@ -659,7 +645,6 @@ class CatalogCorePostgresqlDriver(_CatalogMetadataDomainBase):
 
     _table: ClassVar[str] = "catalog_metadata_core"
     _columns: ClassVar[Tuple[str, ...]] = _CATALOG_CORE_COLUMNS
-    domain: ClassVar[MetadataDomain] = MetadataDomain.CORE
 
     capabilities: FrozenSet[str] = frozenset({
         MetadataCapability.READ,

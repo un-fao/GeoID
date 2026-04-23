@@ -17,47 +17,25 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-Driver-role shared types — MetadataDomain + DriverSla.
+Driver-role shared types — DriverSla.
 
-These types are shared across the role-based driver architecture
-(Primary / Transformer / Indexer / Backup).
+Per-driver SLA wrapper used mainly on TRANSFORM / INDEX / BACKUP driver
+entries.  Mandatory on TRANSFORM drivers so the hot path is never
+unboundedly delayed; optional on INDEX / BACKUP to govern async
+propagation timeouts.  Kept separate from ``WriteMode`` /
+``FailurePolicy`` so it can be attached per-entry rather than per-class.
 
-- :class:`MetadataDomain` — which slice of the payload a driver owns
-  (``CORE``, ``STAC``, future ``RECORDS``/``DC``/``STATS``).  Declared as
-  ``ClassVar[MetadataDomain]`` on concrete driver classes; the router reads it
-  statically to group drivers by domain without instantiation.
-
-- :class:`DriverSla` — per-driver SLA wrapper used mainly on TRANSFORM /
-  INDEX / BACKUP driver entries.  Mandatory on TRANSFORM drivers so the hot
-  path is never unboundedly delayed; optional on INDEX / BACKUP to govern
-  async propagation timeouts.  Kept separate from ``WriteMode`` /
-  ``FailurePolicy`` so it can be attached per-entry rather than per-class.
+Per-driver "which slice of the payload" identification was previously
+done via a ``MetadataDomain`` StrEnum + ``ClassVar`` ClassVar on each
+driver.  That coupling was removed when STAC was promoted to its own
+module — STAC drivers now satisfy ``StacCollectionMetadataCapability``
+(a ``@runtime_checkable Protocol`` owned by ``extensions/stac/protocols.py``)
+and consumers dispatch via ``isinstance``.
 """
 
-from enum import StrEnum
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
-
-
-class MetadataDomain(StrEnum):
-    """Slice of the metadata payload a driver owns.
-
-    Drivers declare this as ``ClassVar[MetadataDomain]`` on their class so
-    the router can group them by domain statically (no instantiation needed).
-
-    ``CORE`` — title, description, keywords, license, extra_metadata.  Owned
-    by the ``catalog`` module; always present.
-
-    ``STAC`` — stac_version, stac_extensions, conforms_to, extent, providers,
-    summaries, assets, item_assets, links.  Owned by the ``stac`` extension;
-    DDL created only when STAC is loaded.
-
-    Future extensions plug additional domains through the same routing surface.
-    """
-
-    CORE = "core"
-    STAC = "stac"
 
 
 class DriverSla(BaseModel):

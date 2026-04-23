@@ -72,7 +72,7 @@ from dynastore.models.protocols.metadata_driver import (
     CatalogMetadataStore,
     CollectionMetadataStore,
 )
-from dynastore.models.protocols.driver_roles import DriverSla, MetadataDomain
+from dynastore.models.protocols.driver_roles import DriverSla
 from dynastore.models.protocols.asset_driver import AssetStore
 # CollectionMetadataEnricherProtocol and AssetEnricherProtocol were deleted
 # in the role-based driver refactor.  Replacement: TRANSFORM-capable drivers
@@ -171,7 +171,6 @@ __all__ = [
     "CollectionMetadataStore",
     "CatalogMetadataStore",
     "DriverSla",
-    "MetadataDomain",
     "AssetStore",
     "AssetContributor",
     "AssetLink",

@@ -168,10 +168,11 @@ def _build_catalog_metadata_payload(catalog_model: Catalog) -> Dict[str, Any]:
     """Flatten the Catalog model into a dict keyed by domain-metadata columns.
 
     Keys align with the column tuples in
-    :mod:`dynastore.modules.storage.drivers.metadata_domain_postgresql` so
-    the ``catalog_metadata_router`` can fan the payload out to every
+    :mod:`dynastore.modules.storage.drivers.metadata_postgresql` (CORE)
+    and :mod:`dynastore.modules.stac.drivers.metadata_postgresql` (STAC)
+    so the ``catalog_metadata_router`` can fan the payload out to every
     registered driver and let each driver ``_filter_payload`` down to
-    its own domain's columns.  Absent fields are omitted (not set to
+    its own column slice.  Absent fields are omitted (not set to
     ``None``) so drivers skip the write entirely when their filtered
     slice is empty (default-fast invariant).
 
@@ -662,15 +663,14 @@ class CatalogService(CatalogsProtocol):
                 conn, schema=physical_schema
             )
 
-            # 3. Domain-scoped collection-metadata tables
-            # (``collection_metadata_core`` + ``collection_metadata_stac``)
-            # — the sole collection-metadata storage path after the M2.5
-            # hard cut.  MUST precede lifecycle hooks because downstream
+            # 3. Per-tenant collection-metadata CORE table.  STAC sidecar
+            # (when StacModule is loaded) attaches via lifecycle_registry
+            # below.  MUST precede lifecycle hooks because downstream
             # drivers may write metadata immediately.
-            from dynastore.modules.catalog.db_init.metadata_domain_split import (
-                ensure_tenant_metadata_domain_tables,
+            from dynastore.modules.catalog.db_init.metadata_core_tables import (
+                ensure_tenant_metadata_core_tables,
             )
-            await ensure_tenant_metadata_domain_tables(conn, physical_schema)
+            await ensure_tenant_metadata_core_tables(conn, physical_schema)
 
             # 4. Module-specific lifecycle hooks (stats, tiles, …) all run AFTER
             #    the schema and core tables exist, inside their own SAVEPOINTs.

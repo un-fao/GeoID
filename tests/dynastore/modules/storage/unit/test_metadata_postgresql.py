@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from dynastore.models.protocols.driver_roles import MetadataDomain
 from dynastore.models.protocols.metadata_driver import (
     CatalogMetadataStore,
     CollectionMetadataStore,
@@ -32,12 +31,11 @@ from dynastore.models.protocols.metadata_driver import (
 
 class TestStructuralInvariants:
     def test_collection_core_driver_identifies_as_core_collection(self):
-        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+        from dynastore.modules.storage.drivers.metadata_postgresql import (
             CollectionCorePostgresqlDriver,
         )
 
         d = CollectionCorePostgresqlDriver()
-        assert d.domain is MetadataDomain.CORE
         assert d._table == "collection_metadata_core"
         assert MetadataCapability.READ in d.capabilities
         assert MetadataCapability.WRITE in d.capabilities
@@ -47,12 +45,11 @@ class TestStructuralInvariants:
         assert isinstance(d, CollectionMetadataStore)
 
     def test_catalog_core_driver_identifies_as_core_catalog(self):
-        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+        from dynastore.modules.storage.drivers.metadata_postgresql import (
             CatalogCorePostgresqlDriver,
         )
 
         d = CatalogCorePostgresqlDriver()
-        assert d.domain is MetadataDomain.CORE
         assert d._table == "catalog_metadata_core"
         assert isinstance(d, CatalogMetadataStore)
 
@@ -60,7 +57,7 @@ class TestDomainColumnSets:
     """Column sets must match the M2.0 DDL exactly.
 
     Guards against drift between the driver's ``_columns`` tuple and the
-    CREATE TABLE statements in ``modules/catalog/db_init/metadata_domain_split.py``.
+    CREATE TABLE statements in ``modules/catalog/db_init/metadata_core_tables.py``.
     A stray column on the Python side silently succeeds on UPDATE (the
     EXCLUDED alias accepts any column) but fails on INSERT with
     UndefinedColumn.  Pinning the column sets here means the test fails
@@ -68,7 +65,7 @@ class TestDomainColumnSets:
     """
 
     def test_collection_core_columns(self):
-        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+        from dynastore.modules.storage.drivers.metadata_postgresql import (
             _COLLECTION_CORE_COLUMNS,
         )
 
@@ -77,7 +74,7 @@ class TestDomainColumnSets:
         )
 
     def test_catalog_core_columns(self):
-        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+        from dynastore.modules.storage.drivers.metadata_postgresql import (
             _CATALOG_CORE_COLUMNS,
         )
 
@@ -87,7 +84,7 @@ class TestDomainColumnSets:
 
 class TestPayloadFilter:
     def test_filter_payload_drops_unowned_keys(self):
-        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+        from dynastore.modules.storage.drivers.metadata_postgresql import (
             _COLLECTION_CORE_COLUMNS, _filter_payload,
         )
 
@@ -117,7 +114,7 @@ class TestPayloadFilter:
         previously had description / keywords would overwrite both to
         NULL (data loss).
         """
-        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+        from dynastore.modules.storage.drivers.metadata_postgresql import (
             _COLLECTION_CORE_COLUMNS, _filter_payload,
         )
 
@@ -126,7 +123,7 @@ class TestPayloadFilter:
 
     def test_filter_payload_drops_none_values(self):
         """Explicit None values are dropped — same as absent keys."""
-        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+        from dynastore.modules.storage.drivers.metadata_postgresql import (
             _COLLECTION_CORE_COLUMNS, _filter_payload,
         )
 
@@ -150,7 +147,7 @@ def fake_conn_with_dql():
     Lets each test inspect the exact SQL string and bind params the
     driver issued without needing a live DB.
     """
-    import dynastore.modules.storage.drivers.metadata_domain_postgresql as mod
+    import dynastore.modules.storage.drivers.metadata_postgresql as mod
 
     fake_engine = MagicMock()
     dql_execute = AsyncMock(return_value=None)
@@ -185,7 +182,7 @@ def fake_conn_with_dql():
 @pytest.mark.asyncio
 async def test_collection_core_upsert_uses_core_columns_only(fake_conn_with_dql):
     """Full CORE payload → INSERT column list matches supplied CORE keys."""
-    from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+    from dynastore.modules.storage.drivers.metadata_postgresql import (
         CollectionCorePostgresqlDriver,
     )
 
@@ -231,7 +228,7 @@ async def test_collection_core_upsert_partial_update_preserves_other_columns(
     the supplied columns, so the DO UPDATE SET clause leaves the
     other columns untouched.
     """
-    from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+    from dynastore.modules.storage.drivers.metadata_postgresql import (
         CollectionCorePostgresqlDriver,
     )
 
@@ -267,7 +264,7 @@ async def test_collection_core_upsert_empty_payload_only_bumps_updated_at(
     INDEX / BACKUP propagation reads ``updated_at`` as the freshness
     token — a silent no-op here would hide the activity.
     """
-    from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+    from dynastore.modules.storage.drivers.metadata_postgresql import (
         CollectionCorePostgresqlDriver,
     )
 
@@ -286,7 +283,7 @@ async def test_collection_core_upsert_empty_payload_only_bumps_updated_at(
 
 @pytest.mark.asyncio
 async def test_catalog_core_upsert_targets_global_schema(fake_conn_with_dql):
-    from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+    from dynastore.modules.storage.drivers.metadata_postgresql import (
         CatalogCorePostgresqlDriver,
     )
 
@@ -312,7 +309,7 @@ async def test_catalog_core_upsert_targets_global_schema(fake_conn_with_dql):
 
 class TestColumnTupleAlignment:
     """N2 regression: the ``_*_COLUMNS`` tuples must stay in lock-step with
-    the CREATE TABLE column lists in ``metadata_domain_split.py``.
+    the CREATE TABLE column lists in ``metadata_core_tables.py``.
 
     Without this guard, a future DDL change that adds a column but
     forgets to extend the tuple would have ``_filter_payload`` silently
@@ -349,10 +346,10 @@ class TestColumnTupleAlignment:
         return cols
 
     def test_collection_core_columns_match_ddl(self):
-        from dynastore.modules.catalog.db_init.metadata_domain_split import (
+        from dynastore.modules.catalog.db_init.metadata_core_tables import (
             TENANT_METADATA_CORE_DDL,
         )
-        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+        from dynastore.modules.storage.drivers.metadata_postgresql import (
             _COLLECTION_CORE_COLUMNS,
         )
 
@@ -361,10 +358,10 @@ class TestColumnTupleAlignment:
         )
 
     def test_catalog_core_columns_match_ddl(self):
-        from dynastore.modules.catalog.db_init.metadata_domain_split import (
+        from dynastore.modules.catalog.db_init.metadata_core_tables import (
             CATALOG_METADATA_CORE_DDL,
         )
-        from dynastore.modules.storage.drivers.metadata_domain_postgresql import (
+        from dynastore.modules.storage.drivers.metadata_postgresql import (
             _CATALOG_CORE_COLUMNS,
         )
 

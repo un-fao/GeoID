@@ -248,11 +248,9 @@ async def test_reindex_worker_dispatches_delete_to_log_indexer(caplog):
 
 def test_class_attributes_match_documented_shape():
     """Pin the advertised protocol facts so doc + code don't drift."""
-    from dynastore.models.protocols.driver_roles import MetadataDomain
     from dynastore.modules.storage.drivers.catalog_log_indexer import (
         LogCatalogIndexer,
     )
 
-    assert LogCatalogIndexer.domain == MetadataDomain.CORE
     assert LogCatalogIndexer.capabilities == frozenset()
     assert LogCatalogIndexer.sla is None

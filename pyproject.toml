@@ -376,9 +376,9 @@ metadata_elasticsearch = "dynastore.modules.elasticsearch.es_metadata_driver:Met
 # driver class; the routing layer picks the right (tier, domain) pair
 # based on the CollectionRoutingConfig / CatalogRoutingConfig metadata
 # operations.
-metadata_collection_core_postgresql = "dynastore.modules.storage.drivers.metadata_domain_postgresql:CollectionCorePostgresqlDriver"
+metadata_collection_core_postgresql = "dynastore.modules.storage.drivers.metadata_postgresql:CollectionCorePostgresqlDriver"
 metadata_collection_stac_postgresql = "dynastore.modules.stac.drivers.metadata_postgresql:CollectionStacPostgresqlDriver"
-metadata_catalog_core_postgresql = "dynastore.modules.storage.drivers.metadata_domain_postgresql:CatalogCorePostgresqlDriver"
+metadata_catalog_core_postgresql = "dynastore.modules.storage.drivers.metadata_postgresql:CatalogCorePostgresqlDriver"
 metadata_catalog_stac_postgresql = "dynastore.modules.stac.drivers.metadata_postgresql:CatalogStacPostgresqlDriver"
 # M3.2 — first concrete INDEX-role driver for the catalog tier.
 # Diagnostic-only (logs every dispatch); NOT in the default
