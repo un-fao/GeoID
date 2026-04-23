@@ -280,6 +280,7 @@ class MetadataElasticsearchDriver:
         catalog_id: str,
         collection_id: str,
         *,
+        context: Optional[Dict[str, Any]] = None,
         db_resource: Optional[Any] = None,
     ) -> Optional[Dict[str, Any]]:
         client = self._get_client()
@@ -317,7 +318,7 @@ class MetadataElasticsearchDriver:
             index=index_name,
             id=collection_id,
             body=doc,
-            refresh="wait_for",  # type: ignore[call-arg]
+            refresh="wait_for",
         )
 
     async def delete_metadata(
@@ -340,13 +341,13 @@ class MetadataElasticsearchDriver:
                     index=index_name,
                     id=collection_id,
                     body={"doc": {"_deleted": True}},
-                    refresh="wait_for",  # type: ignore[call-arg]
+                    refresh="wait_for",
                 )
             else:
                 await client.delete(
                     index=index_name,
                     id=collection_id,
-                    refresh="wait_for",  # type: ignore[call-arg]
+                    refresh="wait_for",
                 )
         except Exception as e:
             logger.debug("delete_metadata ES error for %s/%s: %s", catalog_id, collection_id, e)
@@ -361,6 +362,7 @@ class MetadataElasticsearchDriver:
         filter_cql: Optional[Dict[str, Any]] = None,
         limit: int = 100,
         offset: int = 0,
+        context: Optional[Dict[str, Any]] = None,
         db_resource: Optional[Any] = None,
     ) -> Tuple[List[Dict[str, Any]], int]:
         client = self._get_client()

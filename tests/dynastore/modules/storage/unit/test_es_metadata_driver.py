@@ -127,3 +127,57 @@ def test_both_spatial_and_temporal_enriched():
     })
     assert "bbox_shape" in doc["extent"]["spatial"]
     assert doc["extent"]["temporal"]["interval"] == [{"gte": "2021-01-01T00:00:00+00:00"}]
+
+
+# ---------------------------------------------------------------------------
+# Protocol signature regression — `context` kwarg
+#
+# Guards against the drift that caused the production log spam:
+#     MetadataElasticsearchDriver.get_metadata() got an unexpected keyword
+#     argument 'context' — omitting slice from merged envelope
+# The router at collection_metadata_router.py always forwards `context=`;
+# if the driver rejects it, the ES slice is silently dropped on every read.
+# ---------------------------------------------------------------------------
+
+import inspect
+from unittest.mock import AsyncMock, patch
+
+
+def test_get_metadata_accepts_context_kwarg():
+    params = inspect.signature(MetadataElasticsearchDriver.get_metadata).parameters
+    assert "context" in params, (
+        "get_metadata must accept `context` per CollectionMetadataStore protocol"
+    )
+
+
+def test_search_metadata_accepts_context_kwarg():
+    params = inspect.signature(MetadataElasticsearchDriver.search_metadata).parameters
+    assert "context" in params, (
+        "search_metadata must accept `context` per CollectionMetadataStore protocol"
+    )
+
+
+async def test_get_metadata_call_with_context_does_not_raise_typeerror():
+    driver = MetadataElasticsearchDriver()
+    mock_client = AsyncMock()
+    mock_client.indices.exists = AsyncMock(return_value=False)
+    with patch.object(driver, "_get_client", return_value=mock_client), \
+         patch.object(driver, "_get_prefix", return_value="meta"):
+        result = await driver.get_metadata(
+            "cat", "col", context={"user": "x"},
+        )
+    assert result is None
+    mock_client.indices.exists.assert_awaited_once()
+
+
+async def test_search_metadata_call_with_context_does_not_raise_typeerror():
+    driver = MetadataElasticsearchDriver()
+    mock_client = AsyncMock()
+    mock_client.indices.exists = AsyncMock(return_value=False)
+    with patch.object(driver, "_get_client", return_value=mock_client), \
+         patch.object(driver, "_get_prefix", return_value="meta"):
+        results, total = await driver.search_metadata(
+            "cat", q="foo", context={"user": "x"},
+        )
+    assert results == []
+    assert total == 0
