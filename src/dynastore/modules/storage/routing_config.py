@@ -39,7 +39,7 @@ Resolution semantics:
 
 import logging
 from enum import StrEnum
-from typing import Any, Callable, ClassVar, Dict, FrozenSet, List, Optional, Set, cast
+from typing import Any, Callable, ClassVar, Dict, FrozenSet, List, Optional, Set, Tuple, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -486,6 +486,39 @@ def _validate_routing_entries(
             )
 
 
+def _self_register_metadata_drivers(
+    config: "CollectionRoutingConfig | CatalogRoutingConfig",
+    metadata_driver_index: Dict[str, Any],
+    *,
+    op_keys: Tuple[str, ...] = (Operation.WRITE, Operation.READ),
+) -> None:
+    """Auto-append every installed metadata driver missing from ``operations[op]``.
+
+    Closes the "implicit fan-out, invisible to operators" antipattern:
+    every protocol-installed driver participates in WRITE/READ unless an
+    operator explicitly drops it after the auto-append fires (in which
+    case they at least had to see the entry to remove it).
+
+    Mutates ``config`` in place — `Immutable[Dict[...]]` is enforced at the
+    Pydantic field level (you can't reassign the dict), but the contents
+    are still appendable.  Called from the apply handlers below.
+    """
+    target_ops = config.metadata.operations if hasattr(config, "metadata") else config.operations  # type: ignore[union-attr]
+    for op in op_keys:
+        listed = {entry.driver_id for entry in target_ops.get(op, [])}
+        for driver_id in metadata_driver_index:
+            if driver_id in listed:
+                continue
+            target_ops.setdefault(op, []).append(
+                OperationDriverEntry(driver_id=driver_id)
+            )
+            logger.info(
+                "Routing config self-registration: appended installed "
+                "metadata driver '%s' to operations[%s]",
+                driver_id, op,
+            )
+
+
 async def _on_apply_routing_config(
     config: CollectionRoutingConfig,
     catalog_id: Optional[str],
@@ -496,6 +529,12 @@ async def _on_apply_routing_config(
 
     Validates driver_id, hints, operations, write_mode, and metadata entries,
     then invalidates the router and metadata-router caches.
+
+    Self-registration step: auto-appends every installed
+    ``CollectionMetadataStore`` driver missing from
+    ``config.metadata.operations[WRITE]`` / ``[READ]`` so operators
+    reading ``/configs/...`` see every driver that will run; no implicit
+    fan-out behind the config's back.
     """
     from dynastore.models.protocols.metadata_driver import CollectionMetadataStore
     from dynastore.models.protocols.storage_driver import CollectionItemsStore
@@ -506,6 +545,7 @@ async def _on_apply_routing_config(
 
     # Validate metadata.operations[READ] entries (CollectionMetadataStore drivers)
     metadata_driver_index = {type(d).__name__: d for d in get_protocols(CollectionMetadataStore)}
+    _self_register_metadata_drivers(config, metadata_driver_index)
     for entry in config.metadata.operations.get(Operation.READ, []):
         if entry.driver_id not in metadata_driver_index:
             raise ValueError(
@@ -641,6 +681,7 @@ async def _on_apply_catalog_routing_config(
     from dynastore.tools.discovery import get_protocols
 
     driver_index = {type(d).__name__: d for d in get_protocols(CatalogMetadataStore)}
+    _self_register_metadata_drivers(config, driver_index)
     _validate_routing_entries(config, driver_index, "Catalog routing config")
 
     # Catalog router cache invalidation is wired in M2 when `catalog_router.py`
