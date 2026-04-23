@@ -109,11 +109,12 @@ def _stub_registry(**classes):
 def test_compose_tree_places_classes_by_module_path():
     by_class = {
         "WebConfig": {"brand_name": "x"},
-        "CatalogCorePostgresqlDriverConfig": {"enabled": True},
+        "CatalogCorePostgresqlDriver": {"enabled": True},
     }
     registry = _stub_registry(
         WebConfig={"__module__": "dynastore.extensions.web.web"},
-        CatalogCorePostgresqlDriverConfig={
+        # Stub key matches the wire key (TypedDriver bind drops Config suffix).
+        CatalogCorePostgresqlDriver={
             "__module__": "dynastore.modules.storage.drivers.metadata_postgresql",
         },
     )
@@ -125,7 +126,7 @@ def test_compose_tree_places_classes_by_module_path():
             by_class, sources={}, active_scope="catalog", include_meta=False,
         )
     assert tree["platform"]["web"]["WebConfig"] == {"brand_name": "x"}
-    assert "CatalogCorePostgresqlDriverConfig" in tree["storage"]["drivers"]["catalog"]
+    assert "CatalogCorePostgresqlDriver" in tree["storage"]["drivers"]["catalog"]
     assert meta is None
 
 
@@ -191,9 +192,10 @@ def test_build_routing_refs_replaces_entries_with_slim_refs():
                 ],
             },
         },
-        "CatalogCorePostgresqlDriverConfig": {"enabled": True},
+        "CatalogCorePostgresqlDriver": {"enabled": True},
     }
-    registry = _stub_registry(CatalogCorePostgresqlDriverConfig={"__module__": "m"})
+    # Stub key matches the wire key (TypedDriver bind drops Config suffix).
+    registry = _stub_registry(CatalogCorePostgresqlDriver={"__module__": "m"})
     with patch(
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
@@ -205,7 +207,7 @@ def test_build_routing_refs_replaces_entries_with_slim_refs():
     assert len(write) == 1
     ref = write[0]
     assert ref["driver_id"] == "CatalogCorePostgresqlDriver"
-    assert ref["config_ref"] == "CatalogCorePostgresqlDriverConfig"
+    assert ref["config_ref"] == "CatalogCorePostgresqlDriver"
     assert ref["on_failure"] == "fatal"
     assert ref["write_mode"] == "sync"
     # Hints / sla / other legacy fields must not survive into the ref.

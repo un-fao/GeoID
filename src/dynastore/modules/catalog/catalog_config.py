@@ -74,7 +74,8 @@ class CollectionPluginConfig(PluginConfig):
 
     PG-specific fields (``sidecars``, ``partitioning``, ``collection_type``)
     have moved to ``ItemsPostgresqlDriverConfig``
-    (``plugin_id = "ItemsPostgresqlDriverConfig"``).
+    (operator-facing ``plugin_id = "ItemsPostgresqlDriver"`` per the
+    TypedDriver bind — wire key drops the ``Config`` suffix).
 
     Storage routing is handled by ``CollectionRoutingConfig``
     (``plugin_id = "CollectionRoutingConfig"``).

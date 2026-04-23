@@ -45,7 +45,9 @@ class TestCollectionPluginConfigDefaults:
 
 class TestItemsPostgresqlDriverConfigDefaults:
     def test_class_key(self):
-        assert ItemsPostgresqlDriverConfig.class_key() == "ItemsPostgresqlDriverConfig"
+        # Wire key is the bound TypedDriver class name, not the *Config name.
+        from dynastore.modules.storage.drivers.postgresql import ItemsPostgresqlDriver  # noqa: F401
+        assert ItemsPostgresqlDriverConfig.class_key() == "ItemsPostgresqlDriver"
 
     def test_default_sidecars_is_empty(self):
         """Default is empty as of M1b.2.
@@ -496,7 +498,8 @@ class TestItemsIcebergDriverConfigValidator:
             )
 
     def test_class_key(self):
-        assert ItemsIcebergDriverConfig.class_key() == "ItemsIcebergDriverConfig"
+        from dynastore.modules.storage.drivers.iceberg import ItemsIcebergDriver  # noqa: F401
+        assert ItemsIcebergDriverConfig.class_key() == "ItemsIcebergDriver"
 
 
 class TestDuckDBConfigEnvLevel:
@@ -511,7 +514,8 @@ class TestDuckDBConfigEnvLevel:
 
 class TestItemsDuckdbDriverConfigDefaults:
     def test_class_key(self):
-        assert ItemsDuckdbDriverConfig.class_key() == "ItemsDuckdbDriverConfig"
+        from dynastore.modules.storage.drivers.duckdb import ItemsDuckdbDriver  # noqa: F401
+        assert ItemsDuckdbDriverConfig.class_key() == "ItemsDuckdbDriver"
 
     def test_default_format(self):
         cfg = ItemsDuckdbDriverConfig()

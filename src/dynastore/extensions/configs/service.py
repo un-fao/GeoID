@@ -915,8 +915,8 @@ class ConfigsService(ExtensionProtocol):
         self,
         plugin_id: str = Path(
             ...,
-            description="Plugin identifier (e.g. ``ItemsPostgresqlDriverConfig``, ``CollectionRoutingConfig``, ``stac``).",
-            examples=["ItemsPostgresqlDriverConfig", "CollectionRoutingConfig", "stac"],
+            description="Plugin identifier (e.g. ``ItemsPostgresqlDriver``, ``CollectionRoutingConfig``, ``stac``).",
+            examples=["ItemsPostgresqlDriver", "CollectionRoutingConfig", "stac"],
         ),
     ) -> List[Dict[str, Any]]:
         """Returns configuration examples for a specific plugin.
@@ -1003,7 +1003,7 @@ class ConfigsService(ExtensionProtocol):
                     ),
                     "value": {
                         "configs": {
-                            "ItemsPostgresqlDriverConfig": {
+                            "ItemsPostgresqlDriver": {
                                 "enabled": True,
                                 "collection_type": "VECTOR",
                                 "sidecars": [

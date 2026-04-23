@@ -267,9 +267,10 @@ class ConfigApiService:
     def _build_routing_refs(by_class: Dict[str, Dict[str, Any]]) -> None:
         """Rewrite ``operations[OP]`` in routing configs as slim ``DriverRef``s.
 
-        Driver → config-class lookup uses the ``{DriverName}Config`` naming
-        convention against the PluginConfig registry — no DriverRegistry
-        round-trip, and no protocol coupling.
+        Driver → config-class lookup uses the registry directly: post-TypedDriver
+        bind, ``class_key()`` for ``XDriverConfig`` returns ``"XDriver"`` — the
+        same string used as ``driver_id`` in routing entries.  ``driver_id`` IS
+        the lookup key into ``list_registered_configs()``.
         """
         all_classes = list_registered_configs()
         for class_key in _ROUTING_CONFIG_KEYS:
@@ -286,8 +287,7 @@ class ConfigApiService:
                     if not isinstance(entry, dict):
                         continue
                     driver_id = entry.get("driver_id", "")
-                    cfg_name = f"{driver_id}Config"
-                    config_ref = cfg_name if cfg_name in all_classes else None
+                    config_ref = driver_id if driver_id in all_classes else None
                     refs.append(DriverRef(
                         driver_id=driver_id,
                         config_ref=config_ref,
