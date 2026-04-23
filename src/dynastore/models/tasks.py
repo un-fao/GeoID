@@ -243,6 +243,14 @@ class TaskCreate(TaskBase):
     execution_mode: str = TaskExecutionMode.ASYNCHRONOUS
     execution_scope: str = TaskExecutionScope.LOCAL_QUEUE
     scope: str = TaskScope.CATALOG
+    max_retries: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Per-row retry budget consumed by the reaper / fail_task. "
+                    "Defaults to the column DEFAULT (3) when None. Cloud Run "
+                    "Job runners read it from the job's MAX_RETRIES env to "
+                    "cap expensive long-running jobs at 1 retry.",
+    )
     dedup_key: Optional[str] = Field(
         default=None,
         description="Deduplication key. If set, INSERT uses ON CONFLICT DO NOTHING "

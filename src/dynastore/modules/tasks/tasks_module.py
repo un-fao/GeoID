@@ -218,12 +218,35 @@ CREATE TRIGGER on_task_status_update
 #   - Uses ``FOR UPDATE SKIP LOCKED`` defensively (the cron job has only
 #     one writer, but this prevents any interleaved heartbeat update from
 #     blocking the reap pass).
+# Platform-wide retry circuit breaker (overridden by TasksPluginConfig at
+# lifespan startup). Defaults to 5 — enough to absorb transient cloud
+# failures, low enough to bound a runaway loop. Read by claim_batch (rejects
+# rows above the cap so dispatchers stop wasting cycles), reaper (DLQs once
+# crossed), and fail_task (refuses retry once crossed).
+_HARD_RETRY_CAP: int = 5
+
+
+def get_hard_retry_cap() -> int:
+    """Return the active platform-wide hard retry cap."""
+    return _HARD_RETRY_CAP
+
+
+def set_hard_retry_cap(value: int) -> None:
+    """Set the active platform-wide hard retry cap (called from lifespan)."""
+    global _HARD_RETRY_CAP
+    if value < 1:
+        raise ValueError(f"hard_retry_cap must be >= 1 (got {value})")
+    _HARD_RETRY_CAP = int(value)
+
+
 GLOBAL_TASKS_REAPER_DDL = """
 CREATE OR REPLACE FUNCTION {schema}.reap_stuck_tasks(
-    p_max_retries INT DEFAULT 3
+    p_max_retries INT DEFAULT 3,
+    p_hard_cap INT DEFAULT 5
 ) RETURNS INTEGER LANGUAGE plpgsql AS $func$
 DECLARE
     reaped INT;
+    dead_lettered INT;
 BEGIN
     WITH stuck AS (
         SELECT timestamp, task_id, retry_count, max_retries
@@ -235,7 +258,14 @@ BEGIN
     reset AS (
         UPDATE {schema}.tasks t
         SET status = CASE
-                WHEN s.retry_count >= COALESCE(s.max_retries, p_max_retries)
+                -- Per-row max_retries (typically 1 for Cloud Run jobs) wins
+                -- when reached. The platform-wide hard_cap is the circuit
+                -- breaker that fires even when per-row config is missing or
+                -- mis-configured (defends against re-enqueue loops).
+                WHEN s.retry_count + 1 >= LEAST(
+                        COALESCE(s.max_retries, p_max_retries),
+                        p_hard_cap
+                    )
                     THEN 'DEAD_LETTER'
                 ELSE 'PENDING'
             END,
@@ -243,12 +273,26 @@ BEGIN
             owner_id          = NULL,
             locked_until      = NULL,
             last_heartbeat_at = NULL,
-            error_message     = 'Reaped by {schema}.reap_stuck_tasks (heartbeat expired)'
+            error_message     = CASE
+                WHEN s.retry_count + 1 >= p_hard_cap
+                    THEN 'Reaped: hard retry cap (' || p_hard_cap || ') reached'
+                ELSE 'Reaped by {schema}.reap_stuck_tasks (heartbeat expired)'
+            END
         FROM stuck s
         WHERE t.timestamp = s.timestamp AND t.task_id = s.task_id
-        RETURNING t.task_id
+        RETURNING t.task_id, t.status
+    ),
+    counted AS (
+        SELECT
+            COUNT(*) AS n_reaped,
+            SUM(CASE WHEN status = 'DEAD_LETTER' THEN 1 ELSE 0 END) AS n_dead
+        FROM reset
     )
-    SELECT COUNT(*) INTO reaped FROM reset;
+    SELECT n_reaped, n_dead INTO reaped, dead_lettered FROM counted;
+
+    IF dead_lettered > 0 THEN
+        RAISE WARNING 'dynastore.task.hard_cap_hit: % task(s) moved to DEAD_LETTER in {schema} this pass', dead_lettered;
+    END IF;
 
     IF reaped > 0 THEN
         PERFORM pg_notify('new_task_queued', 'reaper');
@@ -491,6 +535,29 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
                 executor = get_background_executor()
                 schema = get_task_schema()
 
+                # Load TasksPluginConfig BEFORE storage init so the reaper
+                # cron command (registered inside ensure_task_storage_exists)
+                # picks up the user-configured hard_retry_cap. claim_batch /
+                # fail_task read the same module-level value at runtime.
+                from dynastore.tools.discovery import get_protocol
+                from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
+                from dynastore.modules.tasks.tasks_config import TasksPluginConfig
+
+                poll_interval = 30.0
+                hard_cap = get_hard_retry_cap()
+                config_mgr = get_protocol(PlatformConfigsProtocol)
+                if config_mgr:
+                    try:
+                        tasks_config = await config_mgr.get_config(TasksPluginConfig, ctx=DriverContext(db_resource=engine))
+                        if isinstance(tasks_config, TasksPluginConfig):
+                            poll_interval = tasks_config.queue_poll_interval
+                            hard_cap = tasks_config.hard_retry_cap
+                            set_hard_retry_cap(hard_cap)
+                    except Exception as e:
+                        logger.warning(f"TasksModule: Failed to load TasksPluginConfig, defaulting to {poll_interval}s / hard_cap={hard_cap}: {e}")
+
+                logger.info(f"TasksModule: hard_retry_cap = {hard_cap} (circuit breaker)")
+
                 # Ensure the tasks table + current-month partition exist before
                 # the dispatcher starts. The advisory lock must be held on the
                 # SAME connection as the DDL, otherwise two concurrent revisions
@@ -514,21 +581,6 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
                 # "relation does not exist".
                 async with managed_transaction(engine) as probe_conn:
                     await _assert_current_partition_ready(probe_conn, schema)
-
-                from dynastore.tools.discovery import get_protocol
-                from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
-                from dynastore.modules.tasks.tasks_config import TasksPluginConfig
-                
-                poll_interval = 30.0
-                config_mgr = get_protocol(PlatformConfigsProtocol)
-                if config_mgr:
-                    try:
-                        # get_config can fetch from cache or DB; since we have an engine inside manage_tasks, we pass it safely
-                        tasks_config = await config_mgr.get_config(TasksPluginConfig, ctx=DriverContext(db_resource=engine))
-                        if isinstance(tasks_config, TasksPluginConfig):
-                            poll_interval = tasks_config.queue_poll_interval
-                    except Exception as e:
-                        logger.warning(f"TasksModule: Failed to load TasksPluginConfig, defaulting to {poll_interval}s: {e}")
 
                 executor.submit(start_queue_listener(engine, shutdown_event, poll_timeout=poll_interval), task_name="service:queue_listener")
                 executor.submit(run_dispatcher(engine, None, shutdown_event), task_name="service:dispatcher")
@@ -653,8 +705,12 @@ async def ensure_task_storage_exists(conn: DbResource, schema: str):
     # (default 30s interval extending locked_until to +5min) always win
     # the race against the reap scan.
     try:
+        # Pass the live hard cap (loaded from TasksPluginConfig in the
+        # caller's lifespan) as the second arg. Falls back to the function's
+        # DEFAULT (5) if the config hasn't been touched.
+        hard_cap = get_hard_retry_cap()
         reaper_command = (
-            f'SELECT "{schema}".reap_stuck_tasks();'
+            f'SELECT "{schema}".reap_stuck_tasks(3, {int(hard_cap)});'
         )
         await maintenance_tools.register_cron_job(
             conn,
@@ -664,7 +720,7 @@ async def ensure_task_storage_exists(conn: DbResource, schema: str):
         )
         logger.info(
             f"TasksModule: registered pg_cron reaper 'dynastore-task-reaper-{schema}' "
-            f"(every minute → {schema}.reap_stuck_tasks())."
+            f"(every minute → {schema}.reap_stuck_tasks(3, {hard_cap}))."
         )
     except Exception as e:
         logger.warning(
@@ -797,17 +853,34 @@ async def create_task(
             if existing:
                 return None
 
-        sql = f"""
-            INSERT INTO {task_schema}.tasks
-                (task_id, schema_name, scope, caller_id, task_type, type,
-                 execution_mode, inputs, timestamp, collection_id, dedup_key,
-                 status)
-            VALUES
-                (:task_id, :schema_name, :scope, :caller_id, :task_type, :type,
-                 :execution_mode, :inputs, :timestamp, :collection_id, :dedup_key,
-                 :status)
-            RETURNING *;
-        """
+        # max_retries: caller may override the column DEFAULT (3) per-row.
+        # Cloud Run Job runners pass the job's MAX_RETRIES env so a long-running
+        # ingestion job is capped at the deploy-time intent (typically 1) rather
+        # than a generic 3-retry default.
+        if task_data.max_retries is None:
+            sql = f"""
+                INSERT INTO {task_schema}.tasks
+                    (task_id, schema_name, scope, caller_id, task_type, type,
+                     execution_mode, inputs, timestamp, collection_id, dedup_key,
+                     status)
+                VALUES
+                    (:task_id, :schema_name, :scope, :caller_id, :task_type, :type,
+                     :execution_mode, :inputs, :timestamp, :collection_id, :dedup_key,
+                     :status)
+                RETURNING *;
+            """
+        else:
+            sql = f"""
+                INSERT INTO {task_schema}.tasks
+                    (task_id, schema_name, scope, caller_id, task_type, type,
+                     execution_mode, inputs, timestamp, collection_id, dedup_key,
+                     status, max_retries)
+                VALUES
+                    (:task_id, :schema_name, :scope, :caller_id, :task_type, :type,
+                     :execution_mode, :inputs, :timestamp, :collection_id, :dedup_key,
+                     :status, :max_retries)
+                RETURNING *;
+            """
 
         from dynastore.tools.correlation import _INTERNAL_KEY, get_correlation_id
         inputs = dict(task_data.inputs) if task_data.inputs else {}
@@ -815,8 +888,7 @@ async def create_task(
         if cid is not None:
             inputs[_INTERNAL_KEY] = cid
 
-        task_dict = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
-            conn,
+        insert_kwargs: Dict[str, Any] = dict(
             task_id=task_id,
             schema_name=schema,
             scope=task_data.scope,
@@ -829,6 +901,12 @@ async def create_task(
             collection_id=task_data.collection_id,
             dedup_key=task_data.dedup_key,
             status=initial_status,
+        )
+        if task_data.max_retries is not None:
+            insert_kwargs["max_retries"] = task_data.max_retries
+
+        task_dict = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
+            conn, **insert_kwargs,
         )
         get_task.cache_invalidate(conn, task_id, schema)
         task = Task.model_validate(task_dict)
@@ -1094,6 +1172,7 @@ async def claim_batch(
         "now": now,
         "lookback": lookback,
         "batch_size": batch_size,
+        "hard_cap": _HARD_RETRY_CAP,
     }
 
     if async_task_types:
@@ -1119,6 +1198,10 @@ async def claim_batch(
     # SELECT (PostgreSQL forbids FOR UPDATE with DISTINCT). Use a two-step
     # approach: a CTE picks one candidate per tenant (oldest PENDING task via
     # DISTINCT ON), then the outer SELECT locks those specific rows.
+    #
+    # Circuit breaker: rows whose retry_count has reached the platform-wide
+    # ``hard_cap`` are invisible to dispatchers — the reaper will DLQ them on
+    # its next pass. This caps the cost of any future re-enqueue regression.
     sql = f"""
         WITH candidates AS (
             SELECT DISTINCT ON (schema_name) timestamp, task_id
@@ -1126,6 +1209,7 @@ async def claim_batch(
             WHERE status = 'PENDING'
               AND timestamp >= :lookback
               AND (locked_until IS NULL OR locked_until <= :now)
+              AND retry_count < :hard_cap
               AND ({mode_filter})
             ORDER BY schema_name, timestamp ASC
         )
@@ -1198,30 +1282,45 @@ async def fail_task(
     task_schema = get_task_schema()
 
     if retry:
-        # Attempt retry: increment retry_count, reset to PENDING with backoff
+        # Attempt retry: increment retry_count, reset to PENDING with backoff.
+        # The platform-wide hard cap (`hard_retry_cap` from TasksPluginConfig)
+        # forces DEAD_LETTER once crossed even if the row's max_retries is
+        # generous — defends against runaway loops where a runner repeatedly
+        # mis-handles the same row.
         sql = f"""
             UPDATE {task_schema}.tasks
             SET status = CASE
-                    WHEN retry_count + 1 < max_retries THEN 'PENDING'
+                    WHEN retry_count + 1 < LEAST(max_retries, :hard_cap)
+                        THEN 'PENDING'
                     ELSE 'DEAD_LETTER'
                 END,
-                error_message = :error_message,
+                error_message = CASE
+                    WHEN retry_count + 1 >= :hard_cap
+                        THEN :error_message || ' [hard retry cap ' || :hard_cap || ' reached]'
+                    ELSE :error_message
+                END,
                 retry_count = retry_count + 1,
                 locked_until = CASE
-                    WHEN retry_count + 1 < max_retries
+                    WHEN retry_count + 1 < LEAST(max_retries, :hard_cap)
                     THEN NOW() + (POWER(2, retry_count + 1) || ' seconds')::INTERVAL
                     ELSE NULL
                 END,
                 finished_at = CASE
-                    WHEN retry_count + 1 >= max_retries THEN :finished_at
+                    WHEN retry_count + 1 >= LEAST(max_retries, :hard_cap) THEN :finished_at
                     ELSE finished_at
                 END,
                 owner_id = CASE
-                    WHEN retry_count + 1 < max_retries THEN NULL
+                    WHEN retry_count + 1 < LEAST(max_retries, :hard_cap) THEN NULL
                     ELSE owner_id
                 END
             WHERE task_id = :task_id;
         """
+        params = {
+            "task_id": task_id,
+            "error_message": error_message,
+            "finished_at": timestamp,
+            "hard_cap": _HARD_RETRY_CAP,
+        }
     else:
         sql = f"""
             UPDATE {task_schema}.tasks
@@ -1232,10 +1331,15 @@ async def fail_task(
                 owner_id = NULL
             WHERE task_id = :task_id;
         """
+        params = {
+            "task_id": task_id,
+            "error_message": error_message,
+            "finished_at": timestamp,
+        }
 
     async with managed_transaction(engine) as conn:
         await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
-            conn, task_id=task_id, error_message=error_message, finished_at=timestamp
+            conn, **params,
         )
 
 

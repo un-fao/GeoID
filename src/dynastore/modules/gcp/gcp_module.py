@@ -613,7 +613,26 @@ class GCPModule(
 
                 if task_type:
                     job_map[task_type] = job_name
-                    logger.info(f"Discovered GCP job: task '{task_type}' -> job '{job_name}'")
+                    # Side-channel: capture per-job MAX_RETRIES env so
+                    # GcpJobRunner can stamp it on the task row at create-time
+                    # (caps long-running expensive jobs at deploy-time intent
+                    # rather than the column DEFAULT of 3 retries).
+                    max_retries_raw = env_map.get("MAX_RETRIES")
+                    extras: Dict[str, object] = {}
+                    if max_retries_raw is not None:
+                        try:
+                            extras["max_retries"] = int(max_retries_raw)
+                        except (TypeError, ValueError):
+                            logger.warning(
+                                f"Job '{job_name}' has non-integer MAX_RETRIES='{max_retries_raw}'; ignoring."
+                            )
+                    if extras:
+                        from dynastore.modules.gcp.tools.jobs import set_job_extras
+                        set_job_extras(task_type, extras)
+                    logger.info(
+                        f"Discovered GCP job: task '{task_type}' -> job '{job_name}' "
+                        f"(extras={extras or '{}'})"
+                    )
         except Exception as e:
             logger.error(
                 f"Error discovering GCP jobs (Project: {project_id}, Region: {region}): {e}",
@@ -827,9 +846,38 @@ class GCPModule(
             return service_url
 
 
+def _should_register_gcp_job_runner() -> bool:
+    """Decide whether this process should host the Cloud Run Job dispatcher runner.
+
+    Skip registration in Cloud Run Job containers (TASK_TYPE env set) — they
+    are themselves the runtime, they don't dispatch other jobs. Skip in
+    services explicitly opting out (DYNASTORE_DISABLE_GCP_JOB_RUNNER=true) so
+    auth / geoid services don't compete with catalog for ingestion claims.
+
+    Without this gate, every service that imports modules.gcp registers a
+    GcpJobRunner whose can_handle() answers True for any task type with a
+    matching Cloud Run Job. Combined with the dispatcher's lack of scope
+    filter, that causes cross-service races on PENDING ingestion rows.
+    """
+    if os.environ.get("TASK_TYPE", "").strip():
+        # Cloud Run Job container — never act as a dispatcher.
+        logger.info(
+            "GcpJobRunner: skipping registration (TASK_TYPE env set — this is a Cloud Run Job container)."
+        )
+        return False
+    if os.environ.get("DYNASTORE_DISABLE_GCP_JOB_RUNNER", "").lower() in ("1", "true", "yes"):
+        logger.info(
+            "GcpJobRunner: skipping registration (DYNASTORE_DISABLE_GCP_JOB_RUNNER=true)."
+        )
+        return False
+    return True
+
+
 try:
     from dynastore.modules.gcp.gcp_runner import GcpJobRunner
     from dynastore.tools.discovery import register_plugin as _reg_runner
-    _reg_runner(GcpJobRunner())
+    if _should_register_gcp_job_runner():
+        _reg_runner(GcpJobRunner())
+        logger.info("GcpJobRunner: registered as task runner.")
 except ImportError:
     pass

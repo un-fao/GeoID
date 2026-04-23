@@ -30,6 +30,28 @@ logger = logging.getLogger(__name__)
 
 _JOB_MAP_SYNC: Dict[str, str] = {}
 
+# Per-job extras beyond name (currently: max_retries from MAX_RETRIES env on
+# the Cloud Run job). Populated as a side-effect of the GCP get_job_config
+# implementation; consulted by GcpJobRunner to honour deploy-time retry intent.
+_JOB_EXTRAS_SYNC: Dict[str, Dict[str, object]] = {}
+
+
+def set_job_extras(task_type: str, extras: Dict[str, object]) -> None:
+    """Populate per-job metadata side-channel (called by JobExecutionProtocol impls)."""
+    _JOB_EXTRAS_SYNC[task_type] = extras
+
+
+def get_job_max_retries(task_type: str) -> Optional[int]:
+    """Return the MAX_RETRIES env value from the Cloud Run Job, if discovered."""
+    extras = _JOB_EXTRAS_SYNC.get(task_type) or {}
+    val = extras.get("max_retries")
+    if val is None:
+        return None
+    try:
+        return int(val)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
 
 async def run_cloud_run_job_async(
     job_name: str, args: Optional[list] = None, env_vars: Optional[dict] = None
