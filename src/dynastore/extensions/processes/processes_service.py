@@ -56,7 +56,7 @@ from dynastore.modules.processes.inventory import (
     parse_runner_filter,
     parse_scope_filter,
 )
-from dynastore.modules.iam.models import Principal, SYSTEM_USER_ID
+from dynastore.models.auth_models import SYSTEM_USER_ID
 from dynastore.models.driver_context import DriverContext
 
 
@@ -520,7 +520,6 @@ async def execute_process(
 
     principal = getattr(request.state, "principal", None)
     caller_id = str(principal.id) if principal else SYSTEM_USER_ID
-    caller_roles = list(principal.roles or []) if principal else None
     engine = get_async_engine(request)
 
     preferred_mode = _get_preferred_mode(request)
@@ -532,7 +531,6 @@ async def execute_process(
             execution_request=execution_request,
             engine=engine,
             caller_id=caller_id,
-            caller_roles=caller_roles,
             preferred_mode=preferred_mode,
             background_tasks=background_tasks,
         )
@@ -564,7 +562,6 @@ async def execute_process_catalog(
 
     principal = getattr(request.state, "principal", None)
     caller_id = str(principal.id) if principal else SYSTEM_USER_ID
-    caller_roles = list(principal.roles or []) if principal else None
     engine = get_async_engine(request)
     preferred_mode = _get_preferred_mode(request)
     result = None
@@ -575,7 +572,6 @@ async def execute_process_catalog(
             execution_request=execution_request,
             engine=engine,
             caller_id=caller_id,
-            caller_roles=caller_roles,
             preferred_mode=preferred_mode,
             background_tasks=background_tasks,
             catalog_id=catalog_id,
@@ -611,7 +607,6 @@ async def execute_process_collection(
 
     principal = getattr(request.state, "principal", None)
     caller_id = str(principal.id) if principal else SYSTEM_USER_ID
-    caller_roles = list(principal.roles or []) if principal else None
     engine = get_async_engine(request)
     preferred_mode = _get_preferred_mode(request)
     result = None
@@ -621,7 +616,6 @@ async def execute_process_collection(
             execution_request=execution_request,
             engine=engine,
             caller_id=caller_id,
-            caller_roles=caller_roles,
             preferred_mode=preferred_mode,
             background_tasks=background_tasks,
             catalog_id=catalog_id,
@@ -1034,7 +1028,6 @@ async def create_job(
     """Create a deferred job (System context). Status = CREATED."""
     principal = getattr(request.state, "principal", None)
     caller_id = str(principal.id) if principal else SYSTEM_USER_ID
-    caller_roles = list(principal.roles or []) if principal else None
     engine = get_async_engine(request)
     job = await execution_engine.create_job(
         task_type=body.process_id,
@@ -1068,7 +1061,6 @@ async def create_job_catalog(
     """Create a deferred job (Catalog context). Status = CREATED."""
     principal = getattr(request.state, "principal", None)
     caller_id = str(principal.id) if principal else SYSTEM_USER_ID
-    caller_roles = list(principal.roles or []) if principal else None
     engine = get_async_engine(request)
     schema = await _resolve_catalog_schema(catalog_id, conn)
     job = await execution_engine.create_job(
@@ -1104,7 +1096,6 @@ async def create_job_collection(
     """Create a deferred job (Collection context). Status = CREATED."""
     principal = getattr(request.state, "principal", None)
     caller_id = str(principal.id) if principal else SYSTEM_USER_ID
-    caller_roles = list(principal.roles or []) if principal else None
     engine = get_async_engine(request)
     schema = await _resolve_catalog_schema(catalog_id, conn)
     job = await execution_engine.create_job(

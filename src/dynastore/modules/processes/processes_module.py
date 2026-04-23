@@ -17,7 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from typing import Any, List, Optional
+from typing import Any, Optional
 from pydantic import ValidationError
 
 from dynastore.modules.db_config.query_executor import DbEngine
@@ -26,10 +26,9 @@ from dynastore.modules.tasks import runners
 from dynastore.modules.tasks.models import TaskExecutionMode
 from dynastore.modules.processes import models
 from dynastore.modules.processes.protocols import ProcessRegistryProtocol
-from dynastore.modules.iam.models import SYSTEM_USER_ID
+from dynastore.models.auth_models import SYSTEM_USER_ID
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.tools.discovery import get_protocols
-from dynastore.models.auth import AuthorizationProtocol, Principal, Action
 from dynastore.modules.tasks.execution import execution_engine
 
 logger = logging.getLogger(__name__)
@@ -106,7 +105,6 @@ async def execute_process(
     execution_request: models.ExecuteRequest,
     engine: DbEngine,
     caller_id: str = SYSTEM_USER_ID,
-    caller_roles: Optional[List[str]] = None,
     preferred_mode: Optional[models.JobControlOptions] = None,
     background_tasks: Optional[Any] = None,
     catalog_id: Optional[str] = None,
@@ -119,8 +117,7 @@ async def execute_process(
       1. Lookup process definition
       2. Validate inputs against JSON Schema
       3. Resolve execution mode from preference + process constraints
-      4. Authorization check
-      5. Delegate to ExecutionEngine.execute()
+      4. Delegate to ExecutionEngine.execute()
     """
     # 1. Find the requested process definition.
     process: Optional[models.Process] = None
@@ -137,37 +134,7 @@ async def execute_process(
     # 3. Determine execution mode.
     execution_mode = _resolve_execution_mode(process, preferred_mode)
 
-    # 4. Authorization check.
-    auth_protocol = get_protocol(AuthorizationProtocol)
-    if auth_protocol:
-        # Preserve roles from the authenticated caller so the policy engine's
-        # sysadmin short-circuit (and any role-based policies) can take effect.
-        # Without this, sysadmin callers would 403 on any process that lacks
-        # an explicit ALLOW policy — see IamPolicyService.check_permission.
-        principal = Principal(
-            id=caller_id, subject_id=caller_id, roles=caller_roles or [],
-        )
-        resource_id = f"catalog:{catalog_id}" if catalog_id else "system"
-        if collection_id:
-            resource_id = f"{resource_id}:collection:{collection_id}"
-
-        is_authorized = await auth_protocol.check_permission(
-            principal=principal,
-            action=Action.EXECUTE,
-            resource=resource_id,
-        )
-        if not is_authorized:
-            from fastapi import HTTPException
-
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    f"User '{caller_id}' is not authorized to execute "
-                    f"process '{process_id}' on resource '{resource_id}'."
-                ),
-            )
-
-    # 5. Resolve DB schema and delegate to ExecutionEngine.
+    # 4. Resolve DB schema and delegate to ExecutionEngine.
     db_schema = "public"
     catalog_protocol = get_protocol(CatalogsProtocol)
     if catalog_protocol and catalog_id:
