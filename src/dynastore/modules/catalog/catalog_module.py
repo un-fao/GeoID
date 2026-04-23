@@ -308,28 +308,28 @@ class CatalogModule(ModuleProtocol):
             # Both reindex and task.failed listeners are registered
             # unconditionally above, so has_listeners() is True on every
             # service that loads CatalogModule — including maps/auth/geoid
-            # that have no indexer-side work to do. Gate consumer start on
-            # IndexerProtocol presence (mirrors @requires(IndexerProtocol)
-            # used by tasks/elasticsearch*); only catalog/worker include
-            # index_grp, so non-indexing services skip the 16-shard spawn
-            # and stop storming asyncpg with consume_batch claims they
-            # have no reason to make.
+            # that have no consumer-role work. Gate on CatalogEventConsumer
+            # presence; that marker is registered only by deployments that
+            # install the indexer-tasks package (catalog, worker), so
+            # services loading the ES module purely for query/resolver work
+            # (maps's module_catalog_elasticsearch) do not re-arm the
+            # consumer despite carrying IndexerProtocol.
             from dynastore.tools.discovery import get_all_protocols
-            from dynastore.models.protocols.indexer import IndexerProtocol
+            from dynastore.models.protocols.event_consumer import CatalogEventConsumer
 
             _consumer_shutdown = asyncio.Event()
-            has_indexer = bool(get_all_protocols(IndexerProtocol))
-            if self.event_service.has_listeners() and has_indexer:
+            has_consumer_role = bool(get_all_protocols(CatalogEventConsumer))
+            if self.event_service.has_listeners() and has_consumer_role:
                 logger.info(
-                    "CatalogModule: listeners + IndexerProtocol present — "
+                    "CatalogModule: listeners + CatalogEventConsumer present — "
                     "starting durable event consumer."
                 )
                 await self.event_service.start_consumer(_consumer_shutdown)
             else:
                 logger.info(
                     "CatalogModule: event consumer not started "
-                    "(has_listeners=%s, has_indexer=%s).",
-                    self.event_service.has_listeners(), has_indexer,
+                    "(has_listeners=%s, has_consumer_role=%s).",
+                    self.event_service.has_listeners(), has_consumer_role,
                 )
 
             try:
