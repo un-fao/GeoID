@@ -27,13 +27,12 @@ class is purely a composition layer so that operators can list ONE
 ``driver_id`` in routing config instead of two and tune the active set
 via a single ``sidecars`` discriminated union on the wrapper config.
 
-This file is intentionally **library-only** at the time of landing —
-no ``[project.entry-points]`` registration, no auto-discovery as a
-``CollectionMetadataStore`` plugin.  Adding the entry-point is a
-SEPARATE bounded unit because flipping the switch must coincide with
-de-registering the two inner drivers' entry-points; otherwise
-``get_protocols(CollectionMetadataStore)`` would surface BOTH the raw
-inner drivers AND the wrapper, producing duplicate writes.
+As of PR 1e step 3b this driver IS entry-point-registered (group
+``dynastore.modules``, name ``collection_postgresql``); the two raw
+inner drivers' entry-points were removed in the same change so that
+``get_protocols(CollectionMetadataStore)`` returns only the wrapper.
+The catalog-tier raw drivers stay entry-point-registered until step
+3c lands ``CatalogPostgresqlDriver``.
 
 Sidecar discriminated union shape mirrors the items-tier
 ``_PgSidecarConfig`` (`storage/driver_config.py:72`) — same operator
@@ -56,6 +55,7 @@ per-domain slicing.
 from __future__ import annotations
 
 import logging
+from functools import cached_property
 from typing import (
     Annotated,
     Any,
@@ -291,6 +291,11 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
         (e.g. ``metadata_stac`` in a deployment without the stac extra)
         log a warning and are skipped — a missing slice is a less-bad
         failure mode than crashing the whole write.
+
+        Production paths call this with ``sidecars=None`` and so go
+        through :attr:`_default_inner_drivers` — which caches the
+        resolution per wrapper instance, eliminating a registry lookup +
+        4 fresh instantiations per request.
         """
         if not sidecars:
             sidecars = MetadataPgSidecarRegistry.default_sidecars()
@@ -314,8 +319,16 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
             out.append(cls())
         return out
 
+    @cached_property
+    def _default_inner_drivers(self) -> List[CollectionMetadataStore]:
+        """Cached registry-default resolution.  One wrapper instance is the
+        entry-point-discovered singleton, so this list is effectively
+        process-global — instantiated lazily on the first metadata call.
+        """
+        return self._resolve_inner_drivers(None)
+
     async def is_available(self) -> bool:
-        for inner in self._resolve_inner_drivers():
+        for inner in self._default_inner_drivers:
             if await inner.is_available():
                 return True
         return False
@@ -336,7 +349,7 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
         Returns ``None`` only when every inner returned ``None``.
         """
         merged: Dict[str, Any] = {}
-        for inner in self._resolve_inner_drivers():
+        for inner in self._default_inner_drivers:
             try:
                 slice_ = await inner.get_metadata(
                     catalog_id, collection_id,
@@ -368,7 +381,7 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
         stamp.  Same default-fast invariant as the existing two-driver
         router fan-out.
         """
-        for inner in self._resolve_inner_drivers():
+        for inner in self._default_inner_drivers:
             await inner.upsert_metadata(
                 catalog_id, collection_id, metadata,
                 db_resource=db_resource,
@@ -382,7 +395,7 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
         soft: bool = False,
         db_resource: Optional[Any] = None,
     ) -> None:
-        for inner in self._resolve_inner_drivers():
+        for inner in self._default_inner_drivers:
             await inner.delete_metadata(
                 catalog_id, collection_id,
                 soft=soft, db_resource=db_resource,
@@ -409,7 +422,7 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
         revisited (union? rank-then-merge?); for now first-wins matches
         the existing two-driver router behaviour.
         """
-        for inner in self._resolve_inner_drivers():
+        for inner in self._default_inner_drivers:
             inner_caps = getattr(inner, "capabilities", frozenset())
             if MetadataCapability.SEARCH in inner_caps:
                 return await inner.search_metadata(
@@ -436,7 +449,7 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
         to know the underlying tenant schema, which every inner shares.
         """
         from dynastore.modules.storage.storage_location import StorageLocation
-        for inner in self._resolve_inner_drivers():
+        for inner in self._default_inner_drivers:
             inner_caps = getattr(inner, "capabilities", frozenset())
             if MetadataCapability.PHYSICAL_ADDRESSING in inner_caps:
                 return await inner.location(catalog_id, collection_id)

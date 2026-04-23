@@ -41,15 +41,19 @@ logger = logging.getLogger(__name__)
 
 
 class StacModule(ModuleProtocol):
-    """Lifespan owner for the STAC PG metadata drivers + global DDL.
+    """Lifespan owner for the STAC catalog-tier PG metadata driver + global DDL.
 
     On lifespan entry:
     - Imports the per-tenant lifecycle hook so its
       ``@lifecycle_registry.sync_catalog_initializer`` decorator fires.
     - Applies the global ``catalog.catalog_metadata_stac`` DDL.
-    - Registers the two STAC PG drivers via ``register_plugin(...)`` so
-      ``get_protocols(CollectionMetadataStore)`` /
-      ``get_protocols(StacCollectionMetadataCapability)`` find them.
+    - Registers ``CatalogStacPostgresqlDriver`` via ``register_plugin(...)``.
+      The collection-tier STAC slice is no longer surfaced as a standalone
+      ``CollectionMetadataStore`` plugin — it is composed inside
+      ``CollectionPostgresqlDriver`` via the
+      ``MetadataPgSidecarRegistry`` try-import (PR 1e step 3b).  Until
+      step 3c lands ``CatalogPostgresqlDriver``, the catalog-tier STAC
+      driver still ships as its own plugin.
     """
 
     priority: int = 60
@@ -64,7 +68,6 @@ class StacModule(ModuleProtocol):
         )
         from dynastore.modules.stac.drivers.metadata_postgresql import (
             CatalogStacPostgresqlDriver,
-            CollectionStacPostgresqlDriver,
         )
 
         # Apply global DDL (catalog.catalog_metadata_stac) — once, idempotent.
@@ -85,9 +88,12 @@ class StacModule(ModuleProtocol):
                 "DDL skipped; STAC catalog metadata persistence will fail."
             )
 
-        register_plugin(CollectionStacPostgresqlDriver())
         register_plugin(CatalogStacPostgresqlDriver())
-        logger.info("StacModule: registered STAC PG metadata drivers.")
+        logger.info(
+            "StacModule: registered catalog-tier STAC PG metadata driver "
+            "(collection-tier STAC slice is composed inside "
+            "CollectionPostgresqlDriver via MetadataPgSidecarRegistry).",
+        )
 
         try:
             yield

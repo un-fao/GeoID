@@ -373,13 +373,16 @@ storage_iceberg = "dynastore.modules.storage.drivers.iceberg:ItemsIcebergDriver"
 storage_bigquery = "dynastore.modules.storage.drivers.bigquery:ItemsBigQueryDriver"
 collection_elasticsearch = "dynastore.modules.elasticsearch.collection_es_driver:CollectionElasticsearchDriver"
 catalog_elasticsearch = "dynastore.modules.elasticsearch.catalog_es_driver:CatalogElasticsearchDriver"
-# M2.1 — domain-scoped Primary metadata drivers (additive; legacy
-# metadata_postgresql stays until M2.5).  One entry-point per concrete
-# driver class; the routing layer picks the right (tier, domain) pair
-# based on the CollectionRoutingConfig / CatalogRoutingConfig metadata
-# operations.
-metadata_collection_core_postgresql = "dynastore.modules.storage.drivers.metadata_postgresql:CollectionCorePostgresqlDriver"
-metadata_collection_stac_postgresql = "dynastore.modules.stac.drivers.metadata_postgresql:CollectionStacPostgresqlDriver"
+# PR 1e step 3b — collection-tier PG metadata is now served by the
+# composition driver ``CollectionPostgresqlDriver``.  It instantiates
+# ``CollectionCorePostgresqlDriver`` + (try-imported)
+# ``CollectionStacPostgresqlDriver`` internally via
+# ``MetadataPgSidecarRegistry``; the two raw drivers' entry-points
+# were removed in this PR so ``get_protocols(CollectionMetadataStore)``
+# no longer surfaces them and routing fan-out happens once, inside the
+# wrapper.  The CATALOG-tier raw drivers stay entry-point-registered
+# until step 3c lands ``CatalogPostgresqlDriver``.
+collection_postgresql = "dynastore.modules.storage.drivers.collection_metadata_postgresql:CollectionPostgresqlDriver"
 metadata_catalog_core_postgresql = "dynastore.modules.storage.drivers.metadata_postgresql:CatalogCorePostgresqlDriver"
 metadata_catalog_stac_postgresql = "dynastore.modules.stac.drivers.metadata_postgresql:CatalogStacPostgresqlDriver"
 # M3.2 — first concrete INDEX-role driver for the catalog tier.

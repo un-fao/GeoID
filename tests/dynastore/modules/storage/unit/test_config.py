@@ -313,7 +313,7 @@ class TestMetadataRoutingConfig:
 
     def test_read_and_transform_together(self):
         cfg = MetadataRoutingConfig(operations={
-            Operation.READ: [OperationDriverEntry(driver_id="CollectionCorePostgresqlDriver")],
+            Operation.READ: [OperationDriverEntry(driver_id="CollectionPostgresqlDriver")],
             Operation.TRANSFORM: [OperationDriverEntry(driver_id="ItemsIcebergDriver")],
         })
         assert Operation.READ in cfg.operations
@@ -322,9 +322,9 @@ class TestMetadataRoutingConfig:
     def test_embedded_in_collection_routing_config(self):
         """CollectionRoutingConfig.metadata must accept MetadataRoutingConfig."""
         cfg = CollectionRoutingConfig(metadata=MetadataRoutingConfig(operations={
-            Operation.READ: [OperationDriverEntry(driver_id="CollectionCorePostgresqlDriver")],
+            Operation.READ: [OperationDriverEntry(driver_id="CollectionPostgresqlDriver")],
         }))
-        assert cfg.metadata.operations[Operation.READ][0].driver_id == "CollectionCorePostgresqlDriver"
+        assert cfg.metadata.operations[Operation.READ][0].driver_id == "CollectionPostgresqlDriver"
 
     def test_default_embedded_metadata_is_empty(self):
         cfg = CollectionRoutingConfig()
