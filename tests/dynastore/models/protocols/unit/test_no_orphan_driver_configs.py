@@ -23,6 +23,7 @@ import pytest
 # subclasses become reachable via ``__subclasses__()``.  Order doesn't
 # matter — we just need each module's class-creation side effects to fire.
 import dynastore.modules.storage.driver_config  # noqa: F401
+import dynastore.modules.storage.drivers.collection_metadata_postgresql  # noqa: F401
 import dynastore.modules.storage.drivers.postgresql  # noqa: F401
 import dynastore.modules.storage.drivers.duckdb  # noqa: F401
 import dynastore.modules.storage.drivers.iceberg  # noqa: F401
