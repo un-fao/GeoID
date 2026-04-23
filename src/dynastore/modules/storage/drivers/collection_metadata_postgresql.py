@@ -471,3 +471,26 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
         provisioning time — same no-op as the inner drivers themselves.
         """
         return None
+
+    def stac_metadata_columns(self) -> Tuple[str, ...]:
+        """Forward the STAC capability marker through to the first inner
+        driver that exposes it.
+
+        Defining this method makes the wrapper structurally satisfy
+        :class:`extensions.stac.protocols.StacCollectionMetadataCapability`,
+        so ``get_protocols(CollectionMetadataStore)`` -> isinstance check
+        in ``stac_service._assert_stac_capable_metadata_stack`` keeps
+        working after the wrapper replaces the raw STAC driver in the
+        plugin registry.
+
+        Returns ``()`` when no inner advertises the marker — e.g. a
+        deployment without the stac extra installed, or a wrapper config
+        that explicitly omitted the ``metadata_stac`` sidecar.  Callers
+        that need to distinguish "STAC unavailable" from "STAC available
+        but empty" should check for non-empty return.
+        """
+        for inner in self._default_inner_drivers:
+            method = getattr(inner, "stac_metadata_columns", None)
+            if method is not None:
+                return tuple(method())
+        return ()

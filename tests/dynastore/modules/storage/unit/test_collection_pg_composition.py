@@ -344,3 +344,45 @@ def test_wrapper_config_default_sidecars_is_empty_list():
     """
     cfg = CollectionPostgresqlDriverConfig()
     assert cfg.sidecars == []
+
+
+# ---------------------------------------------------------------------------
+# STAC capability marker — wrapper must structurally satisfy
+# ``StacCollectionMetadataCapability`` IFF a STAC inner is loaded.
+# Regression guard for PR 1e step 3b: before the fix, the wrapper had no
+# ``stac_metadata_columns`` method, so ``isinstance(wrapper,
+# StacCollectionMetadataCapability)`` returned False and
+# ``stac_service._assert_stac_capable_metadata_stack`` warned
+# "STAC slice will be dropped on write" even though the wrapper's
+# STAC sidecar actually persisted it.
+# ---------------------------------------------------------------------------
+
+
+def test_wrapper_satisfies_stac_capability_when_stac_inner_loaded():
+    from dynastore.extensions.stac.protocols import (
+        StacCollectionMetadataCapability,
+    )
+
+    # Make the STAC fake actually expose the marker method so the wrapper
+    # can delegate to it.
+    def _stac_cols(self):
+        return ("extent", "providers", "stac_version")
+    _FakeStacCls._instance = _FakeInner()
+    _FakeStacCls._instance.stac_metadata_columns = _stac_cols.__get__(  # type: ignore[attr-defined]
+        _FakeStacCls._instance, _FakeInner,
+    )
+    driver = CollectionPostgresqlDriver()
+    assert isinstance(driver, StacCollectionMetadataCapability)
+    cols = driver.stac_metadata_columns()
+    assert "extent" in cols
+    assert "stac_version" in cols
+
+
+def test_wrapper_returns_empty_columns_when_no_stac_inner_loaded():
+    """Deployment without the stac extra: registry has only metadata_core,
+    wrapper's stac_metadata_columns() must return () so
+    ``stac_service._has_stac`` correctly identifies STAC as unavailable.
+    """
+    MetadataPgSidecarRegistry._registry.pop("metadata_stac", None)
+    driver = CollectionPostgresqlDriver()
+    assert driver.stac_metadata_columns() == ()

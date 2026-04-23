@@ -120,9 +120,27 @@ def _assert_stac_capable_metadata_stack() -> None:
     )
 
     def _has_stac(proto_cls: type, capability_cls: type) -> bool:
-        return any(
-            isinstance(d, capability_cls) for d in get_protocols(proto_cls)
-        )
+        """True iff a registered driver satisfies the capability AND
+        returns a non-empty column tuple.
+
+        The empty-tuple guard catches composition drivers (e.g.
+        ``CollectionPostgresqlDriver`` after PR 1e step 3b) that always
+        expose the ``stac_metadata_columns`` marker but return ``()`` in
+        deployments without the stac extra installed — purely-structural
+        ``isinstance`` would falsely pass in that case and silence this
+        warning even when the STAC slice would genuinely be dropped on
+        write.
+        """
+        for d in get_protocols(proto_cls):
+            if not isinstance(d, capability_cls):
+                continue
+            try:
+                cols = d.stac_metadata_columns()
+            except Exception:
+                continue
+            if cols:
+                return True
+        return False
 
     if not _has_stac(CatalogMetadataStore, StacCatalogMetadataCapability):
         raise HTTPException(
