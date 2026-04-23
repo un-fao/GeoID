@@ -424,6 +424,18 @@ class _CollectionMetadataDomainBase:
             display_label=f"{phys}.{self._table}",
         )
 
+    async def ensure_storage(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
+        """No-op: PG metadata tables are created by the per-tenant DDL in
+        ``modules.catalog.db_init.metadata_domain_split`` at catalog provisioning
+        time, not on a per-driver basis.
+        """
+        return None
+
 
 class CollectionCorePostgresqlDriver(_CollectionMetadataDomainBase):
     """Primary driver for CORE collection metadata (``title``, ``description``, …).

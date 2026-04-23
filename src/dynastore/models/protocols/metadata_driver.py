@@ -230,6 +230,24 @@ class CollectionMetadataStore(Protocol):
         """
         ...
 
+    async def ensure_storage(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
+        """Ensure backing storage exists for this driver (idempotent).
+
+        Mirrors ``CollectionItemsStore.ensure_storage`` and ``AssetStore.ensure_storage``
+        — provisioning is a uniform driver concern across the three store
+        protocols.  Called by routing-config apply handlers and by the
+        collection-creation flow when this driver is referenced for a catalog.
+
+        Drivers with no provisioning work (e.g. transform-only) inherit a no-op
+        from :class:`TransformOnlyCollectionMetadataStoreMixin`.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Helper mixin: default-raising stubs for TRANSFORM-only drivers
@@ -326,6 +344,15 @@ class TransformOnlyCollectionMetadataStoreMixin:
         raise NotImplementedError(
             f"{type(self).__name__} does not declare PHYSICAL_ADDRESSING."
         )
+
+    async def ensure_storage(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
+        """No-op: TRANSFORM-only drivers have no backing storage to provision."""
+        return None
 
 
 # ---------------------------------------------------------------------------

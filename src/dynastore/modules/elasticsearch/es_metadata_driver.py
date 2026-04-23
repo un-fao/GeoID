@@ -34,10 +34,7 @@ import logging
 from typing import Any, ClassVar, Dict, FrozenSet, List, Optional, Tuple
 
 from dynastore.models.driver_context import DriverContext
-from dynastore.models.protocols.metadata_driver import (
-    CollectionMetadataStore,
-    MetadataCapability,
-)
+from dynastore.models.protocols.metadata_driver import MetadataCapability
 from dynastore.modules.storage.storage_location import StorageLocation
 from dynastore.modules.db_config.platform_config_service import (
     Immutable,
@@ -81,23 +78,18 @@ async def _on_apply_es_metadata_driver_config(
     if not catalog_id:
         return  # platform-level config — no catalog to create index for
 
-    from dynastore.tools.discovery import get_protocols
+    from dynastore.tools.discovery import get_protocol
 
-    drivers = [
-        d for d in get_protocols(CollectionMetadataStore)
-        if getattr(d, "driver_id", None) == "elasticsearch_metadata"
-    ]
-    for driver in drivers:
-        ensure = getattr(driver, "ensure_storage", None)
-        if ensure is None:
-            continue
-        try:
-            await ensure(catalog_id)
-        except Exception as exc:
-            logger.warning(
-                "ensure_storage failed for elasticsearch_metadata on catalog '%s': %s",
-                catalog_id, exc,
-            )
+    driver = get_protocol(MetadataElasticsearchDriver)
+    if driver is None:
+        return
+    try:
+        await driver.ensure_storage(catalog_id)
+    except Exception as exc:
+        logger.warning(
+            "ensure_storage failed for elasticsearch_metadata on catalog '%s': %s",
+            catalog_id, exc,
+        )
 
 
 MetadataElasticsearchDriverConfig.register_apply_handler(_on_apply_es_metadata_driver_config)

@@ -145,7 +145,7 @@ def get_runners(mode: TaskExecutionMode) -> List[RunnerProtocol]:
     register_default_runners()
     
     from dynastore.tools.discovery import get_protocols
-    return [r for r in get_protocols(RunnerProtocol) if getattr(r, "mode", None) == mode]
+    return [r for r in get_protocols(RunnerProtocol) if r.mode == mode]
 
 def get_all_runners_with_setup() -> List[Tuple[int, RunnerProtocol]]:
     """
@@ -158,7 +158,7 @@ def get_all_runners_with_setup() -> List[Tuple[int, RunnerProtocol]]:
     for runner in get_protocols(RunnerProtocol):
         # Check if the instance's setup method is not the default one from the base class
         if getattr(runner.setup, "__func__", runner.setup) is not RunnerProtocol.setup:
-            all_runners.append((getattr(runner, "priority", 0), runner))
+            all_runners.append((runner.priority, runner))
     return all_runners
 
 # --- Default Runner Implementations ---

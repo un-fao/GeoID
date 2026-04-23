@@ -560,15 +560,15 @@ async def _on_apply_routing_config(
     if catalog_id:
         for entry in config.metadata.operations.get(Operation.READ, []):
             driver = metadata_driver_index.get(entry.driver_id)
-            ensure_fn = getattr(driver, "ensure_storage", None) if driver else None
-            if ensure_fn is not None:
-                try:
-                    await ensure_fn(catalog_id)
-                except Exception as exc:
-                    logger.warning(
-                        "ensure_storage failed for metadata driver '%s' on catalog '%s': %s",
-                        entry.driver_id, catalog_id, exc,
-                    )
+            if driver is None:
+                continue
+            try:
+                await driver.ensure_storage(catalog_id)
+            except Exception as exc:
+                logger.warning(
+                    "ensure_storage failed for metadata driver '%s' on catalog '%s': %s",
+                    entry.driver_id, catalog_id, exc,
+                )
 
     # NOTE: ensure_storage() for collection WRITE/READ drivers is intentionally
     # NOT called here. It is invoked by the collection-creation flow
@@ -610,15 +610,15 @@ async def _on_apply_asset_routing_config(
                 seen_ids.add(entry.driver_id)
         for did in seen_ids:
             driver = driver_index.get(did)
-            ensure_fn = getattr(driver, "ensure_storage", None) if driver else None
-            if ensure_fn is not None:
-                try:
-                    await ensure_fn(catalog_id, collection_id)
-                except Exception as exc:
-                    logger.warning(
-                        "ensure_storage failed for asset driver '%s' on %s/%s: %s",
-                        did, catalog_id, collection_id, exc,
-                    )
+            if driver is None:
+                continue
+            try:
+                await driver.ensure_storage(catalog_id, collection_id)
+            except Exception as exc:
+                logger.warning(
+                    "ensure_storage failed for asset driver '%s' on %s/%s: %s",
+                    did, catalog_id, collection_id, exc,
+                )
 
 
 async def _on_apply_catalog_routing_config(
