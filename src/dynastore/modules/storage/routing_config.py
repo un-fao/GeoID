@@ -486,6 +486,46 @@ def _validate_routing_entries(
             )
 
 
+def _self_register_indexers_into(
+    target_ops: Dict[str, List["OperationDriverEntry"]],
+    marker_proto: type,
+) -> None:
+    """Auto-append every installed driver satisfying ``marker_proto`` to
+    ``target_ops[INDEX]`` with sensible async defaults
+    (``write_mode=async``, ``on_failure=warn``).
+
+    Tier-scoped: caller passes the right marker (``CatalogIndexer`` →
+    catalog routing, ``CollectionIndexer`` → collection routing,
+    ``AssetIndexer`` → asset routing).  Drivers indexing multiple tiers
+    opt in to multiple markers and self-register into each tier's
+    ``operations[INDEX]`` independently.
+
+    Idempotent: drivers already listed under ``operations[INDEX]`` are
+    not re-appended (operator-supplied entries with custom ``on_failure``
+    or ``write_mode`` survive).
+    """
+    from dynastore.tools.discovery import get_protocols
+
+    listed = {entry.driver_id for entry in target_ops.get(Operation.INDEX, [])}
+    for driver in get_protocols(marker_proto):
+        driver_id = type(driver).__name__
+        if driver_id in listed:
+            continue
+        target_ops.setdefault(Operation.INDEX, []).append(
+            OperationDriverEntry(
+                driver_id=driver_id,
+                on_failure=FailurePolicy.WARN,
+                write_mode=WriteMode.ASYNC,
+            )
+        )
+        listed.add(driver_id)
+        logger.info(
+            "Routing config self-registration: appended %s indexer '%s' "
+            "to operations[INDEX] (write_mode=async, on_failure=warn)",
+            marker_proto.__name__, driver_id,
+        )
+
+
 def _self_register_metadata_drivers(
     config: "CollectionRoutingConfig | CatalogRoutingConfig",
     metadata_driver_index: Dict[str, Any],
@@ -596,6 +636,12 @@ async def _on_apply_routing_config(
     # The collection-metadata router is cache-free (pure discovery fan-out);
     # nothing to invalidate after a routing-config apply.
 
+    # Auto-register installed CollectionIndexer drivers under metadata.operations[INDEX]
+    # with async/warn defaults.  Per-tier marker — only collection-tier indexers
+    # land here.
+    from dynastore.models.protocols.indexer import CollectionIndexer
+    _self_register_indexers_into(config.metadata.operations, CollectionIndexer)
+
     # Call ensure_storage() on metadata READ drivers (idempotent, catalog-scoped).
     if catalog_id:
         for entry in config.metadata.operations.get(Operation.READ, []):
@@ -633,6 +679,10 @@ async def _on_apply_asset_routing_config(
 
     driver_index = {type(d).__name__: d for d in get_protocols(AssetStore)}
     _validate_routing_entries(config, driver_index, "Asset routing config")
+
+    # Auto-register installed AssetIndexer drivers under operations[INDEX].
+    from dynastore.models.protocols.indexer import AssetIndexer
+    _self_register_indexers_into(config.operations, AssetIndexer)
 
     # Invalidate router cache
     try:
@@ -683,6 +733,10 @@ async def _on_apply_catalog_routing_config(
     driver_index = {type(d).__name__: d for d in get_protocols(CatalogMetadataStore)}
     _self_register_metadata_drivers(config, driver_index)
     _validate_routing_entries(config, driver_index, "Catalog routing config")
+
+    # Auto-register installed CatalogIndexer drivers under operations[INDEX].
+    from dynastore.models.protocols.indexer import CatalogIndexer
+    _self_register_indexers_into(config.operations, CatalogIndexer)
 
     # Catalog router cache invalidation is wired in M2 when `catalog_router.py`
     # lands.  Until then, config changes are picked up on the next resolution

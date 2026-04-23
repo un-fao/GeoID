@@ -100,3 +100,69 @@ def test_self_registration_skips_zero_drivers():
     # Operations stay empty — auto-append only adds for present drivers.
     assert cfg.metadata.operations.get(Operation.WRITE, []) == []
     assert cfg.metadata.operations.get(Operation.READ, []) == []
+
+
+# ---------------------------------------------------------------------------
+# Per-tier indexer marker self-registration
+# ---------------------------------------------------------------------------
+
+
+def test_indexer_marker_lands_in_INDEX_with_async_warn_defaults():
+    """A driver opting in to a tier indexer marker auto-registers under
+    operations[INDEX] with write_mode=async, on_failure=warn — sourced
+    from the per-tier marker, not from generic capability discovery.
+    """
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    from dynastore.models.protocols.indexer import CollectionIndexer
+    from dynastore.modules.storage.routing_config import (
+        WriteMode,
+        _self_register_indexers_into,
+    )
+
+    class _CollectionES:
+        is_collection_indexer: ClassVar[bool] = True
+
+    class _NotAnIndexer:
+        pass
+
+    target_ops: dict = {}
+    fake_pool = [_CollectionES(), _NotAnIndexer()]
+
+    def _fake_get_protocols(proto):
+        return [d for d in fake_pool if isinstance(d, proto)]
+
+    with patch("dynastore.tools.discovery.get_protocols", _fake_get_protocols):
+        _self_register_indexers_into(target_ops, CollectionIndexer)
+
+    entries = target_ops.get(Operation.INDEX, [])
+    assert len(entries) == 1
+    assert entries[0].driver_id == "_CollectionES"
+    assert entries[0].on_failure == FailurePolicy.WARN
+    assert entries[0].write_mode == WriteMode.ASYNC
+
+
+def test_indexer_marker_skips_already_listed_driver():
+    """Operator-supplied INDEX entry survives — only missing drivers get appended."""
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    from dynastore.models.protocols.indexer import AssetIndexer
+    from dynastore.modules.storage.routing_config import _self_register_indexers_into
+
+    class _AssetES:
+        is_asset_indexer: ClassVar[bool] = True
+
+    operator_entry = OperationDriverEntry(
+        driver_id="_AssetES", on_failure=FailurePolicy.FATAL,
+    )
+    target_ops: dict = {Operation.INDEX: [operator_entry]}
+
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_AssetES()] if proto is AssetIndexer else []):
+        _self_register_indexers_into(target_ops, AssetIndexer)
+
+    # No duplicate; operator-supplied on_failure=FATAL preserved.
+    assert len(target_ops[Operation.INDEX]) == 1
+    assert target_ops[Operation.INDEX][0].on_failure == FailurePolicy.FATAL
