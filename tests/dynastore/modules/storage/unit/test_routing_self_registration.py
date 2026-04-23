@@ -198,6 +198,61 @@ def test_apply_handlers_invoke_indexer_self_registration():
     assert calls == [CollectionIndexer, AssetIndexer, CatalogIndexer]
 
 
+def test_end_to_end_marker_to_INDEX_entry_via_real_apply_handler():
+    """End-to-end: register a real driver opting in to ``CatalogIndexer``,
+    invoke ``_on_apply_catalog_routing_config`` against a fresh
+    ``CatalogRoutingConfig``, assert the driver lands in
+    ``operations[INDEX]`` with the marker's defaults (async + warn).
+
+    Validates the full chain shipped in d1aa321 + dbe505f + 98d0801:
+    marker discovery → helper invocation → entry with correct policy.
+    """
+    import asyncio
+    from typing import ClassVar
+
+    from dynastore.models.protocols.indexer import CatalogIndexer
+    from dynastore.modules.storage.routing_config import (
+        WriteMode,
+        _on_apply_catalog_routing_config,
+    )
+    from dynastore.tools.discovery import register_plugin, unregister_plugin
+
+    class _DummyCatalogIndexer:
+        is_catalog_indexer: ClassVar[bool] = True
+        # Minimal CatalogMetadataStore surface — enough for
+        # _validate_routing_entries to accept it under operations[INDEX]
+        # if it were referenced (it isn't pre-apply; the marker self-
+        # registration appends it).  We avoid populating WRITE/READ to
+        # skip validation for those op-keys.
+        capabilities = frozenset()
+
+    instance = _DummyCatalogIndexer()
+    register_plugin(instance)
+    try:
+        cfg = CatalogRoutingConfig()
+        cfg.operations.clear()  # skip default validation against unregistered drivers
+
+        asyncio.run(_on_apply_catalog_routing_config(
+            cfg, catalog_id=None, collection_id=None, db_resource=None,
+        ))
+
+        index_entries = cfg.operations.get(Operation.INDEX, [])
+        assert any(
+            e.driver_id == "_DummyCatalogIndexer"
+            and e.on_failure == FailurePolicy.WARN
+            and e.write_mode == WriteMode.ASYNC
+            for e in index_entries
+        ), f"_DummyCatalogIndexer not auto-registered: {index_entries!r}"
+    finally:
+        unregister_plugin(instance)
+        # Sanity: ensure cleanup so other tests don't see this stub.
+        from dynastore.tools.discovery import get_protocols
+        assert not any(
+            isinstance(d, CatalogIndexer) and type(d).__name__ == "_DummyCatalogIndexer"
+            for d in get_protocols(CatalogIndexer)
+        )
+
+
 def test_indexer_marker_skips_already_listed_driver():
     """Operator-supplied INDEX entry survives — only missing drivers get appended."""
     from typing import ClassVar
