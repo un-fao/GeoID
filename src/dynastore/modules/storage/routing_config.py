@@ -44,6 +44,11 @@ from typing import Any, Callable, ClassVar, Dict, FrozenSet, List, Optional, Set
 from pydantic import BaseModel, ConfigDict, Field
 
 from dynastore.models.protocols.driver_roles import DriverSla
+from dynastore.models.protocols.indexer import (
+    AssetIndexer,
+    CatalogIndexer,
+    CollectionIndexer,
+)
 from dynastore.modules.db_config.platform_config_service import (
     Immutable,
     PluginConfig,
@@ -639,7 +644,6 @@ async def _on_apply_routing_config(
     # Auto-register installed CollectionIndexer drivers under metadata.operations[INDEX]
     # with async/warn defaults.  Per-tier marker — only collection-tier indexers
     # land here.
-    from dynastore.models.protocols.indexer import CollectionIndexer
     _self_register_indexers_into(config.metadata.operations, CollectionIndexer)
 
     # Call ensure_storage() on metadata READ drivers (idempotent, catalog-scoped).
@@ -681,7 +685,6 @@ async def _on_apply_asset_routing_config(
     _validate_routing_entries(config, driver_index, "Asset routing config")
 
     # Auto-register installed AssetIndexer drivers under operations[INDEX].
-    from dynastore.models.protocols.indexer import AssetIndexer
     _self_register_indexers_into(config.operations, AssetIndexer)
 
     # Invalidate router cache
@@ -735,7 +738,6 @@ async def _on_apply_catalog_routing_config(
     _validate_routing_entries(config, driver_index, "Catalog routing config")
 
     # Auto-register installed CatalogIndexer drivers under operations[INDEX].
-    from dynastore.models.protocols.indexer import CatalogIndexer
     _self_register_indexers_into(config.operations, CatalogIndexer)
 
     # Catalog router cache invalidation is wired in M2 when `catalog_router.py`

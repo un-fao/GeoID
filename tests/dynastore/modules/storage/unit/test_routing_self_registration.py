@@ -143,6 +143,61 @@ def test_indexer_marker_lands_in_INDEX_with_async_warn_defaults():
     assert entries[0].write_mode == WriteMode.ASYNC
 
 
+def test_apply_handlers_invoke_indexer_self_registration():
+    """Each routing-config apply handler MUST invoke
+    ``_self_register_indexers_into`` against the matching tier marker.
+    Pins the wiring against accidental drop in a future refactor.
+    """
+    import asyncio
+    from unittest.mock import patch
+
+    from dynastore.modules.storage.routing_config import (
+        AssetRoutingConfig,
+        _on_apply_asset_routing_config,
+        _on_apply_catalog_routing_config,
+        _on_apply_routing_config,
+    )
+
+    calls: list[type] = []
+
+    def _spy(target_ops, marker_proto):
+        calls.append(marker_proto)
+
+    # Empty operations so _validate_routing_entries has nothing to check
+    # against the (stubbed-empty) driver registry.
+    coll = CollectionRoutingConfig()
+    coll.operations.clear()
+    coll.metadata.operations.clear()
+    asset = AssetRoutingConfig()
+    asset.operations.clear()
+    cat = CatalogRoutingConfig()
+    cat.operations.clear()
+
+    with patch(
+        "dynastore.modules.storage.routing_config._self_register_indexers_into",
+        _spy,
+    ), patch(
+        "dynastore.tools.discovery.get_protocols",
+        lambda proto: [],
+    ):
+        asyncio.run(_on_apply_routing_config(
+            coll, catalog_id=None, collection_id=None, db_resource=None,
+        ))
+        asyncio.run(_on_apply_asset_routing_config(
+            asset, catalog_id=None, collection_id=None, db_resource=None,
+        ))
+        asyncio.run(_on_apply_catalog_routing_config(
+            cat, catalog_id=None, collection_id=None, db_resource=None,
+        ))
+
+    from dynastore.models.protocols.indexer import (
+        AssetIndexer,
+        CatalogIndexer,
+        CollectionIndexer,
+    )
+    assert calls == [CollectionIndexer, AssetIndexer, CatalogIndexer]
+
+
 def test_indexer_marker_skips_already_listed_driver():
     """Operator-supplied INDEX entry survives — only missing drivers get appended."""
     from typing import ClassVar
