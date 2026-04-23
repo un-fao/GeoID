@@ -68,6 +68,7 @@ from dynastore.models.protocols.typed_driver import (
     _PluginDriverConfig,
 )
 from dynastore.modules.db_config.platform_config_service import Immutable
+from dynastore.tools.cache import cached
 
 logger = logging.getLogger(__name__)
 
@@ -232,12 +233,10 @@ class CatalogPostgresqlDriverConfig(_PluginDriverConfig):
             "(`catalog_metadata_core` always, `catalog_metadata_stac` "
             "if the stac extra is installed).  Immutable once set — "
             "changing it would orphan rows in the per-domain "
-            "``catalog.catalog_metadata_*`` tables.  "
-            "NOTE — runtime override is NOT YET WIRED (sister gap to "
-            "``CollectionPostgresqlDriverConfig.sidecars``); the wrapper "
-            "uses ``CatalogMetadataPgSidecarRegistry.default_sidecars()`` "
-            "unconditionally.  Apply handler emits a WARNING when a "
-            "non-empty list is submitted to surface the silent-drop."
+            "``catalog.catalog_metadata_*`` tables.  Honored at runtime "
+            "via per-catalog ``ConfigsProtocol`` fetch with TTL=60s cache "
+            "(PR 1e step 4); apply handler bumps the cache for instant "
+            "effect on operator override."
         ),
     )
 
@@ -248,24 +247,34 @@ async def _on_apply_catalog_pg_driver_config(
     collection_id: Optional[str],
     db_resource: Optional[Any],
 ) -> None:
-    """Warn operators when their non-empty ``sidecars`` override will
-    be silently dropped at runtime.  Sister handler to the collection
-    tier's ``_on_apply_collection_pg_driver_config``.
+    """Invalidate the wrapper's per-catalog sidecar cache so the
+    operator's submitted ``sidecars`` override takes effect immediately.
+    Sister handler to the collection tier's
+    ``_on_apply_collection_pg_driver_config``.
     """
     if not isinstance(config, CatalogPostgresqlDriverConfig):
         return
-    if not config.sidecars:
+    from dynastore.tools.discovery import get_protocol
+
+    wrapper = get_protocol(CatalogPostgresqlDriver)
+    if wrapper is None:
         return
-    scope = (
-        f"catalog '{catalog_id}'" if catalog_id else "platform"
-    )
-    logger.warning(
-        "CatalogPostgresqlDriverConfig.sidecars override at %s scope is "
-        "currently NOT honored at runtime — the wrapper uses "
-        "CatalogMetadataPgSidecarRegistry.default_sidecars() unconditionally.  "
-        "Submitted entries: %s.  Tracked as PR 1e step 4 follow-up.",
-        scope, [getattr(s, "sidecar_type", "?") for s in config.sidecars],
-    )
+    try:
+        wrapper._resolve_sidecars_for_catalog.cache_clear()  # type: ignore[attr-defined]
+    except Exception as exc:
+        logger.debug(
+            "CatalogPostgresqlDriver: cache_clear failed (%s) — TTL "
+            "expiry will still propagate the override within ~60s", exc,
+        )
+        return
+    if config.sidecars:
+        logger.info(
+            "CatalogPostgresqlDriver: sidecar cache invalidated after "
+            "config apply at %s scope; new sidecar set %s takes effect on "
+            "next metadata operation.",
+            f"catalog '{catalog_id}'" if catalog_id else "platform",
+            [getattr(s, "sidecar_type", "?") for s in config.sidecars],
+        )
 
 
 CatalogPostgresqlDriverConfig.register_apply_handler(
@@ -325,11 +334,52 @@ class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
 
     @cached_property
     def _default_inner_drivers(self) -> List[CatalogMetadataStore]:
-        """Cached registry-default resolution.  One wrapper instance is
-        the entry-point-discovered singleton, so this list is effectively
-        process-global — instantiated lazily on the first metadata call.
+        """Cached registry-default resolution — used by code paths that
+        have no ``catalog_id`` in scope (``is_available``,
+        ``stac_metadata_columns``).  Per-catalog paths go through
+        :meth:`_resolve_sidecars_for_catalog`.
         """
         return self._resolve_inner_drivers(None)
+
+    @cached(
+        maxsize=128, ttl=60, jitter=5,
+        namespace="catalog_pg_wrapper_sidecars",
+        ignore=["self", "db_resource"],
+        distributed=False,
+    )
+    async def _resolve_sidecars_for_catalog(
+        self,
+        catalog_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> List[CatalogMetadataStore]:
+        """Resolve the inner driver list for ``catalog_id`` honoring any
+        operator-submitted ``sidecars`` override at the catalog or
+        platform scope.  Mirrors the collection wrapper's same-named
+        method — TTL=60s + jitter, apply handler invalidates for instant
+        effect, fetch failure falls back to registry default.
+        """
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.tools.discovery import get_protocol
+
+        sidecars: Optional[List[_PgCatalogMetadataSidecarConfigBase]] = None
+        configs = get_protocol(ConfigsProtocol)
+        if configs is not None:
+            try:
+                cfg = await configs.get_config(
+                    CatalogPostgresqlDriverConfig,
+                    catalog_id=catalog_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "CatalogPostgresqlDriver: config fetch failed for "
+                    "catalog %r (%s) — falling back to registry default",
+                    catalog_id, exc,
+                )
+                cfg = None
+            if cfg is not None and cfg.sidecars:
+                sidecars = list(cfg.sidecars)
+        return self._resolve_inner_drivers(sidecars)
 
     async def is_available(self) -> bool:
         for inner in self._default_inner_drivers:
@@ -350,7 +400,10 @@ class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
         existing ``catalog_metadata_router`` _safe_get semantics.
         """
         merged: Dict[str, Any] = {}
-        for inner in self._default_inner_drivers:
+        inners = await self._resolve_sidecars_for_catalog(
+            catalog_id, db_resource=db_resource,
+        )
+        for inner in inners:
             try:
                 slice_ = await inner.get_catalog_metadata(
                     catalog_id, context=context, db_resource=db_resource,
@@ -376,7 +429,10 @@ class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
         inner filters to its own ``_columns`` and no-ops if the filtered
         slice is empty (existing ``_PgCatalogMetadataBase`` invariant).
         """
-        for inner in self._default_inner_drivers:
+        inners = await self._resolve_sidecars_for_catalog(
+            catalog_id, db_resource=db_resource,
+        )
+        for inner in inners:
             await inner.upsert_catalog_metadata(
                 catalog_id, metadata, db_resource=db_resource,
             )
@@ -388,7 +444,10 @@ class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
         soft: bool = False,
         db_resource: Optional[Any] = None,
     ) -> None:
-        for inner in self._default_inner_drivers:
+        inners = await self._resolve_sidecars_for_catalog(
+            catalog_id, db_resource=db_resource,
+        )
+        for inner in inners:
             await inner.delete_catalog_metadata(
                 catalog_id, soft=soft, db_resource=db_resource,
             )

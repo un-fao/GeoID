@@ -11,7 +11,7 @@ entry-point registration as a one-line change.
 from __future__ import annotations
 
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -141,7 +141,11 @@ class _FakeStacCls:
 @pytest.fixture(autouse=True)
 def _reset_registry():
     """Replace the production registry with our two fake classes for the
-    duration of each test, then restore.
+    duration of each test, then restore.  Also clears the wrapper's
+    per-catalog sidecar cache (PR 1e step 4) so cache entries from
+    previous tests don't leak across instances — the cache key
+    deliberately ignores ``self`` for production efficiency, which
+    means without this clear, test 2 would see test 1's resolved inners.
     """
     saved = dict(MetadataPgSidecarRegistry._registry)
     saved_loaded = MetadataPgSidecarRegistry._defaults_loaded
@@ -152,12 +156,21 @@ def _reset_registry():
     # Clear singletons between tests.
     _FakeCoreCls._instance = None
     _FakeStacCls._instance = None
+    # Flush the wrapper's per-catalog sidecar cache.
+    try:
+        CollectionPostgresqlDriver._resolve_sidecars_for_catalog.cache_clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
     try:
         yield
     finally:
         MetadataPgSidecarRegistry.clear()
         MetadataPgSidecarRegistry._registry.update(saved)
         MetadataPgSidecarRegistry._defaults_loaded = saved_loaded
+        try:
+            CollectionPostgresqlDriver._resolve_sidecars_for_catalog.cache_clear()  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -397,39 +410,59 @@ def test_wrapper_returns_empty_columns_when_no_stac_inner_loaded():
 # ---------------------------------------------------------------------------
 
 
-async def test_apply_handler_warns_when_sidecars_override_submitted(caplog):
-    from dynastore.modules.storage.drivers.collection_metadata_postgresql import (
-        _on_apply_collection_pg_driver_config,
-    )
-
-    cfg = CollectionPostgresqlDriverConfig(
-        sidecars=[MetadataCoreSidecarConfig()],  # non-empty → trigger warning
-    )
-    with caplog.at_level("WARNING"):
-        await _on_apply_collection_pg_driver_config(
-            cfg, catalog_id="some-catalog", collection_id=None, db_resource=None,
-        )
-    assert any(
-        "NOT honored at runtime" in r.message and "metadata_core" in r.message
-        for r in caplog.records
-    ), "Apply handler must warn when operator submits non-empty sidecars override"
-
-
-async def test_apply_handler_silent_for_empty_sidecars():
-    """Default-empty config (registry-default fallback path) must NOT
-    emit the warning — operator never explicitly configured anything.
+async def test_apply_handler_invalidates_cache_and_logs_info(caplog):
+    """PR 1e step 4: handler clears the per-catalog sidecar cache and
+    logs INFO so the operator-submitted override takes effect on the
+    next metadata operation instead of waiting for the TTL to expire.
     """
     from dynastore.modules.storage.drivers.collection_metadata_postgresql import (
         _on_apply_collection_pg_driver_config,
     )
+    from dynastore.tools.discovery import register_plugin, unregister_plugin
 
-    cfg = CollectionPostgresqlDriverConfig()  # empty default
-    # Must not raise; should also not log WARNING (covered by absence
-    # of the WARNING-level filter triggering the test_apply_handler_warns
-    # assertion above — same caplog behaviour).
-    await _on_apply_collection_pg_driver_config(
-        cfg, catalog_id="cat", collection_id=None, db_resource=None,
+    wrapper = CollectionPostgresqlDriver()
+    register_plugin(wrapper)
+    try:
+        cfg = CollectionPostgresqlDriverConfig(
+            sidecars=[MetadataCoreSidecarConfig()],  # non-empty → log INFO
+        )
+        with caplog.at_level("INFO"):
+            await _on_apply_collection_pg_driver_config(
+                cfg, catalog_id="some-catalog", collection_id=None,
+                db_resource=None,
+            )
+        assert any(
+            "sidecar cache invalidated" in r.message and "metadata_core" in r.message
+            for r in caplog.records
+        ), "Apply handler must log INFO when invalidating cache for non-empty override"
+    finally:
+        unregister_plugin(wrapper)
+
+
+async def test_apply_handler_silent_for_empty_sidecars(caplog):
+    """Default-empty config: handler still invalidates the cache (cheap)
+    but suppresses the INFO log to avoid noise — operator expressed no
+    explicit override worth surfacing.
+    """
+    from dynastore.modules.storage.drivers.collection_metadata_postgresql import (
+        _on_apply_collection_pg_driver_config,
     )
+    from dynastore.tools.discovery import register_plugin, unregister_plugin
+
+    wrapper = CollectionPostgresqlDriver()
+    register_plugin(wrapper)
+    try:
+        cfg = CollectionPostgresqlDriverConfig()  # empty default
+        with caplog.at_level("INFO"):
+            await _on_apply_collection_pg_driver_config(
+                cfg, catalog_id="cat", collection_id=None, db_resource=None,
+            )
+        assert not any(
+            "sidecar cache invalidated" in r.message
+            for r in caplog.records
+        ), "Empty override must not emit the INFO log"
+    finally:
+        unregister_plugin(wrapper)
 
 
 async def test_apply_handler_ignores_non_wrapper_configs():
@@ -447,6 +480,87 @@ async def test_apply_handler_ignores_non_wrapper_configs():
     await _on_apply_collection_pg_driver_config(
         _Unrelated(), catalog_id="cat", collection_id=None, db_resource=None,
     )
+
+
+async def test_apply_handler_safe_when_wrapper_not_yet_registered():
+    """Early-lifespan apply flushes can run before the wrapper is
+    register_plugin'd — handler must no-op cleanly, not crash.  The
+    cold cache will start fresh on first use anyway.
+    """
+    from dynastore.modules.storage.drivers.collection_metadata_postgresql import (
+        _on_apply_collection_pg_driver_config,
+    )
+
+    cfg = CollectionPostgresqlDriverConfig(
+        sidecars=[MetadataCoreSidecarConfig()],
+    )
+    # No register_plugin — handler should silently return.
+    await _on_apply_collection_pg_driver_config(
+        cfg, catalog_id="cat", collection_id=None, db_resource=None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Operator-override behavior — the whole point of PR 1e step 4.
+# Pins that a non-empty CollectionPostgresqlDriverConfig.sidecars
+# fetched via ConfigsProtocol actually changes which inner drivers
+# get fanned to at runtime, vs. registry-default fallback.
+# ---------------------------------------------------------------------------
+
+
+async def test_operator_override_actually_changes_runtime_fanout():
+    """Mock ConfigsProtocol.get_config to return a config with ONLY
+    metadata_core in sidecars (no metadata_stac).  Verify the wrapper
+    fans out to ONLY core, not both — proving the runtime override
+    is honored, not silently dropped (which was the v0.5.70 state).
+    """
+    custom_cfg = CollectionPostgresqlDriverConfig(
+        sidecars=[MetadataCoreSidecarConfig()],  # core only — no stac
+    )
+    fake_configs = MagicMock()
+    fake_configs.get_config = AsyncMock(return_value=custom_cfg)
+
+    from dynastore.models.protocols.configs import ConfigsProtocol
+
+    # The wrapper imports get_protocol locally inside the resolver
+    # method, so patch it where it's used (the discovery module).
+    with patch(
+        "dynastore.tools.discovery.get_protocol",
+        side_effect=lambda p: fake_configs if p is ConfigsProtocol else None,
+    ):
+        CollectionPostgresqlDriver._resolve_sidecars_for_catalog.cache_clear()
+        driver = CollectionPostgresqlDriver()
+        payload = {"title": "T", "extent": {"bbox": [[0, 0, 1, 1]]}}
+        await driver.upsert_metadata("cat-a", "col-a", payload)
+
+    # Core inner saw the call (operator opted in).
+    assert len(_FakeCoreCls().upsert_calls) == 1
+    # STAC inner did NOT (operator opted out via config).
+    assert len(_FakeStacCls().upsert_calls) == 0
+
+
+async def test_registry_default_used_when_no_operator_override():
+    """When ConfigsProtocol.get_config returns a config with EMPTY
+    sidecars (or fetch fails / no ConfigsProtocol), wrapper falls back
+    to MetadataPgSidecarRegistry.default_sidecars — both inners get fanned.
+    """
+    empty_cfg = CollectionPostgresqlDriverConfig()  # no sidecars
+    fake_configs = MagicMock()
+    fake_configs.get_config = AsyncMock(return_value=empty_cfg)
+
+    from dynastore.models.protocols.configs import ConfigsProtocol
+
+    with patch(
+        "dynastore.tools.discovery.get_protocol",
+        side_effect=lambda p: fake_configs if p is ConfigsProtocol else None,
+    ):
+        CollectionPostgresqlDriver._resolve_sidecars_for_catalog.cache_clear()
+        driver = CollectionPostgresqlDriver()
+        await driver.upsert_metadata("cat-a", "col-a", {"title": "T"})
+
+    # Both inners reached (registry default).
+    assert len(_FakeCoreCls().upsert_calls) == 1
+    assert len(_FakeStacCls().upsert_calls) == 1
 
 
 # ---------------------------------------------------------------------------
