@@ -25,9 +25,17 @@ from typing import Any, Dict, Iterable, Optional, Sequence
 
 from dynastore.models.protocols.bounds_source import BoundsSourceProtocol
 from dynastore.modules.volumes.bounds import FeatureBounds
+from dynastore.tools.cache import cached
 from dynastore.tools.db import validate_sql_identifier
 
 logger = logging.getLogger(__name__)
+
+
+# Default TTL matches ``VolumesConfig.on_demand_cache_ttl_s`` (1h) — the
+# user's preferred alternative to the spec's pre-compute volumes tasks.
+# Jitter is ~10% of TTL to spread expiry across the fleet.
+_BOUNDS_CACHE_TTL_S = 3600
+_BOUNDS_CACHE_JITTER_S = 300
 
 
 @dataclass(frozen=True)
@@ -153,6 +161,13 @@ class SidecarBoundsSource:
         self._geometries_table_for_collection = geometries_table_for_collection
         self._height_column = height_column
 
+    @cached(
+        maxsize=1024,
+        ttl=_BOUNDS_CACHE_TTL_S,
+        jitter=_BOUNDS_CACHE_JITTER_S,
+        namespace="volumes_sidecar_bounds",
+        ignore=["self"],
+    )
     async def get_bounds(
         self,
         catalog_id: str,
