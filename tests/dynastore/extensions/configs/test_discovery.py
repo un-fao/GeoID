@@ -259,11 +259,21 @@ class TestGetEffectiveCollectionConfig:
     def _make_service(self, platform_data, catalog_data, collection_data):
         from fastapi import FastAPI
         from dynastore.extensions.configs.service import ConfigsService
-        svc = ConfigsService(FastAPI())
-        svc._configs = _MockConfigsService(platform_data, catalog_data, collection_data)
-        # Patch the configs property to return our mock
-        type(svc).configs = property(lambda self: self._configs)
-        return svc
+
+        mock = _MockConfigsService(platform_data, catalog_data, collection_data)
+
+        # Subclass so the `configs` property override is local to the test
+        # instance — patching `type(svc).configs = property(...)` directly
+        # mutates the shared ConfigsService class and poisons every later
+        # test that creates a real ConfigsService (the patched property
+        # then dereferences `self._configs`, which doesn't exist on real
+        # instances → AttributeError on every subsequent test).
+        class _TestConfigsService(ConfigsService):
+            @property
+            def configs(self):  # type: ignore[override]
+                return mock
+
+        return _TestConfigsService(FastAPI())
 
     @pytest.mark.asyncio
     async def test_unknown_class_key_raises_404(self):
