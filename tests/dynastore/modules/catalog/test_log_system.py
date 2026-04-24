@@ -4,17 +4,17 @@ from dynastore.tools.discovery import get_protocol
 from dynastore.modules.db_config.query_executor import managed_transaction, DQLQuery, ResultHandler
 from dynastore.tools.protocol_helpers import get_engine
 
-# Serialize with the rest of the app_lifespan suite — parallel CatalogModule
+# Serialize with the rest of the app_lifespan_module suite — parallel CatalogModule
 # startups race on advisory locks, and the log-event assertion sees zero rows
 # because the writer module skipped lifespan on the losing worker.
 pytestmark = [pytest.mark.xdist_group("catalog_lifespan")]
 
 @pytest.mark.asyncio
 @pytest.mark.enable_modules("db_config", "db", "catalog", "stats")
-async def test_system_logs_creation(app_lifespan):
+async def test_system_logs_creation(app_lifespan_module):
     """Verifies that the system_logs table is created and can be queried."""
-    # app_lifespan yields app.state
-    engine = get_engine(app_lifespan)
+    # app_lifespan_module yields app.state
+    engine = get_engine(app_lifespan_module)
     assert engine is not None
     
     async with managed_transaction(engine) as conn:
@@ -27,7 +27,7 @@ async def test_system_logs_creation(app_lifespan):
 
 @pytest.mark.asyncio
 @pytest.mark.enable_modules("db_config", "db", "catalog", "stats")
-async def test_log_event_system(app_lifespan):
+async def test_log_event_system(app_lifespan_module):
     """Verifies that logging to _system_ works correctly."""
     logs_service = get_protocol(LogsProtocol)
     assert logs_service is not None
@@ -43,7 +43,7 @@ async def test_log_event_system(app_lifespan):
     # Flush to be sure
     await logs_service.flush()
     
-    engine = get_engine(app_lifespan)
+    engine = get_engine(app_lifespan_module)
     async with managed_transaction(engine) as conn:
         logs = await DQLQuery(
             "SELECT message FROM catalog.system_logs WHERE event_type = 'test_event' ORDER BY timestamp DESC LIMIT 1",

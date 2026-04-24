@@ -773,23 +773,86 @@ async def app_lifespan(
         yield app.state
 
 
+_DEFAULT_MODULE_LIST = [
+    "db_config", "db", "catalog", "stats", "iam",
+    "metadata_collection_core_postgresql",
+    "metadata_collection_stac_postgresql",
+    "metadata_catalog_core_postgresql",
+    "metadata_catalog_stac_postgresql",
+]
+_DEFAULT_EXTENSION_LIST: list = []
+_DEFAULT_TASK_LIST: list = []
+
+
+def _resolve_module_lifespan_markers(request):
+    """Collect enable_modules / enable_extensions / enable_tasks markers across
+    every test in the current pytest module, returning the UNION as the bootstrap set.
+
+    Module-level ``pytestmark`` markers contribute to every test; function/class
+    markers contribute only to that test. We take the union so a module-scoped
+    bootstrap satisfies the strictest test in the file.
+
+    Returns (modules_list, extensions_list, tasks_list).
+    """
+    mod_set: set = set()
+    ext_set: set = set()
+    task_set: set = set()
+    have_modules_marker = False
+    have_extensions_marker = False
+    have_tasks_marker = False
+
+    for item in request.session.items:
+        if getattr(item, "module", None) is not request.module:
+            continue
+        for marker_name, target_set, flag_name in (
+            ("enable_modules", mod_set, "have_modules_marker"),
+            ("enable_extensions", ext_set, "have_extensions_marker"),
+            ("enable_tasks", task_set, "have_tasks_marker"),
+        ):
+            for marker in item.iter_markers(marker_name):
+                target_set.update(marker.args)
+                if marker_name == "enable_modules":
+                    have_modules_marker = True
+                elif marker_name == "enable_extensions":
+                    have_extensions_marker = True
+                else:
+                    have_tasks_marker = True
+
+    modules_list = sorted(mod_set) if have_modules_marker else list(_DEFAULT_MODULE_LIST)
+    extensions_list = sorted(ext_set) if have_extensions_marker else list(_DEFAULT_EXTENSION_LIST)
+    tasks_list = sorted(task_set) if have_tasks_marker else list(_DEFAULT_TASK_LIST)
+    # `processes` extension hard-requires the `processes` module — match
+    # app_lifespan's behaviour at line 715.
+    if "processes" in extensions_list and "processes" not in modules_list:
+        modules_list.append("processes")
+    return modules_list, extensions_list, tasks_list
+
+
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def app_lifespan_module(request):
     """
-    Module-scoped variant of app_lifespan.
+    Module-scoped variant of ``app_lifespan``.
 
     Bootstraps the application ONCE per test file (module) instead of once per
-    test function.  This dramatically reduces overhead when many tests in the same
-    file share the same module/extension configuration.
+    test function — eliminates ~3-5s × N redundant ``reset_dynastore_state`` +
+    module-discovery + lifespan-entry cycles per file.
+
+    Module/extension/task selection: walks every test in the module and unions
+    their ``enable_modules`` / ``enable_extensions`` / ``enable_tasks`` markers
+    (function-, class-, and module-level all contribute). When NO marker for a
+    category is present anywhere in the module, falls back to the defaults
+    used by ``dynastore_modules`` / ``dynastore_extensions`` / ``dynastore_tasks``.
 
     Test isolation is achieved at the DB level via unique catalog/collection IDs
-    (uuid4 per test) rather than by restarting the whole application.
+    (``generate_test_id()`` in ``tests/dynastore/test_utils``); the convention is
+    already enforced across the suite, so cross-test pollution within a module
+    is benign.
 
     Usage:
-        Add ``app_lifespan_module`` as a fixture dependency instead of
-        ``app_lifespan``.  All other helpers (catalog_obj, collection_obj, …)
-        that reference ``app_lifespan`` should be updated to accept this fixture
-        in the local conftest or individual tests.
+        Replace ``app_lifespan`` with ``app_lifespan_module`` in test signatures.
+        File-level ``pytestmark = [pytest.mark.enable_modules(...), ...]``
+        is the cleanest expression of the bootstrap set; per-test markers also
+        work (their args are unioned).
     """
     import asyncio
     import os
@@ -830,15 +893,9 @@ async def app_lifespan_module(request):
     from dynastore.extensions.bootstrap import bootstrap_app
     from dynastore import modules, extensions, tasks
 
-    # Respect enable_modules / enable_extensions / enable_tasks on the module level.
-    modules_marker = request.module.__dict__.get("pytestmark", [])
-
-    # Default module list (mirrors the function-scoped fixture)
-    modules_list = ["db_config", "db", "catalog", "stats", "iam", "metadata_collection_core_postgresql", "metadata_collection_stac_postgresql", "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql"]
-    extensions_list = ["features", "web"]
-    tasks_list: list = []
-
+    modules_list, extensions_list, tasks_list = _resolve_module_lifespan_markers(request)
     _ = tasks_list  # reserved for future test-side task-isolation helper
+
     bootstrap_app(
         app,
         include_modules=modules_list,
