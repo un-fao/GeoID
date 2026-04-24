@@ -23,10 +23,6 @@ pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.enable_extensions("web", "logs", "features", "stac"),
     pytest.mark.enable_modules("db_config", "db", "catalog", "stats", "iam"),
-    # Serialize with WFS / multilanguage / log-system tests on a single worker;
-    # parallel app_lifespan startups race on CatalogModule advisory locks and
-    # leave core protocols UNRESOLVED on losing workers, surfacing as 422/500.
-    pytest.mark.xdist_group("catalog_lifespan"),
 ]
 
 

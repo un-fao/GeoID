@@ -19,12 +19,6 @@ from dynastore.modules import get_protocol
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.modules.catalog.models import Catalog, Collection
 
-# Serialize with the rest of the app_lifespan_module suite — parallel CatalogModule
-# startups race on advisory locks and the losing worker sees CatalogsProtocol
-# unresolved, so update_catalog round-trips return Catalog with title=None.
-pytestmark = [pytest.mark.xdist_group("catalog_lifespan")]
-
-
 @pytest.mark.asyncio
 async def test_multilanguage_validation_conflicts(app_lifespan_module):
     """Tests that providing multilanguage dict with specific lang raises ValueError."""
