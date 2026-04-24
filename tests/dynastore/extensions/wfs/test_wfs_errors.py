@@ -6,7 +6,7 @@ from dynastore.models.driver_context import DriverContext
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "collection_postgresql", "collection_postgresql", "catalog_postgresql", "catalog_postgresql")
+@pytest.mark.enable_modules("db_config", "db", "catalog", "stac", "collection_postgresql", "catalog_postgresql")
 @pytest.mark.enable_extensions("features", "configs", "wfs", "assets", "stac")
 async def test_get_feature_missing_table(
     in_process_client, setup_collection, setup_catalog, db_engine
@@ -103,7 +103,7 @@ async def test_get_feature_missing_table(
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "collection_postgresql", "collection_postgresql", "catalog_postgresql", "catalog_postgresql")
+@pytest.mark.enable_modules("db_config", "db", "catalog", "stac", "collection_postgresql", "catalog_postgresql")
 @pytest.mark.enable_extensions("features", "configs", "wfs", "assets", "stac")
 async def test_describe_feature_type_missing_table(
     in_process_client, setup_collection, setup_catalog, db_engine

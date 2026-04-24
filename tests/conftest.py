@@ -199,7 +199,7 @@ def dynastore_modules(request):
     # on every catalog operation, adding ~30 s per test.
     # Tests that require GCP behaviour must opt in explicitly:
     #   @pytest.mark.enable_modules("db_config", "db", "catalog", "gcp", ...)
-    return ["db_config", "db", "catalog", "stats", "iam", "collection_postgresql", "catalog_postgresql"]
+    return ["db_config", "db", "catalog", "stats", "iam", "stac", "collection_postgresql", "catalog_postgresql"]
 
 
 @pytest.fixture
@@ -774,7 +774,7 @@ async def app_lifespan(
 
 
 _DEFAULT_MODULE_LIST = [
-    "db_config", "db", "catalog", "stats", "iam",
+    "db_config", "db", "catalog", "stats", "iam", "stac",
     "collection_postgresql",
     "catalog_postgresql",
 ]
