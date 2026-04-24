@@ -19,6 +19,19 @@
 import logging
 from contextlib import asynccontextmanager
 
+# Hard-import the async PG driver at module load.  When SCOPE excludes
+# ``module_db`` (e.g. Cloud Run jobs that use ``db_sync`` + DatastoreModule
+# only), asyncpg is genuinely not installed.  Without this import,
+# ``create_async_engine(postgresql+asyncpg://…)`` blows up deep inside
+# the SQLAlchemy lifespan with a ModuleNotFoundError that re-raises as
+# ``CRITICAL: Foundational module 'DBService' failed during startup``.
+# Failing here instead lets the module-discovery layer
+# (modules/__init__.py) catch the ImportError on __init__, set
+# ``instance=None``, and silently skip the lifespan — exactly the same
+# wrong-SCOPE-soft-skip contract used by GCP/ES/dwh/export/gdal/ingestion
+# tasks.  Same fix family as project_geoid_task_routing_config v0.5.86–89.
+import asyncpg  # noqa: F401  — gate the entry-point on the async driver
+
 from sqlalchemy.ext.asyncio import create_async_engine
 from typing import Optional, Any, Protocol, runtime_checkable
 from sqlalchemy.ext.asyncio import AsyncEngine
