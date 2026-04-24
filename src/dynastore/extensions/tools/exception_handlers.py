@@ -115,7 +115,18 @@ class ProgrammingErrorHandler(ExceptionHandler):
     ) -> Optional[HTTPException]:
         err_type = exception.__class__.__name__
         operation = (context or {}).get("operation", "the requested operation")
-        detail = f"Could not complete {operation} due to an internal server configuration error. Please contact the administrator. (Reference: {err_type})"
+        # Surface the correlation id in the 5xx body so operators can
+        # grep the structured log line tied to this exact request.
+        # Falls back to "(no correlation id)" when middleware didn't set
+        # one (e.g. internal task path); the textual marker is itself
+        # greppable.
+        from dynastore.tools.correlation import get_correlation_id
+        cid = get_correlation_id() or "(no correlation id)"
+        detail = (
+            f"Could not complete {operation} due to an internal server "
+            f"configuration error. Please contact the administrator. "
+            f"(Reference: {err_type}; correlation_id={cid})"
+        )
 
         logger.error(
             f"Internal Programming Error (500): {err_type}: {str(exception)} during {operation}",

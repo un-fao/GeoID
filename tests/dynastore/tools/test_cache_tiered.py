@@ -90,6 +90,25 @@ class FakeCacheBackend:
 class TestTieredAsyncBackend:
     """TieredAsyncBackend chaining and coherence."""
 
+    def test_exposes_stats_attribute(self):
+        """Regression: cached() pokes _backend._stats.{hits,misses,size} on
+        every call regardless of backend type.  TieredAsyncBackend used
+        to omit ``_stats`` and AttributeError'd on the very first cache
+        miss — observed in prod as a 500 from
+        ``_get_catalog_model_cached`` after Valkey/L2 was wired in.
+        """
+        from dynastore.models.protocols.cache import CacheStats
+
+        l1 = FakeCacheBackend("l1", 1000)
+        l2 = FakeCacheBackend("l2", 100)
+        tiered = TieredAsyncBackend([l1, l2])
+        assert hasattr(tiered, "_stats")
+        assert isinstance(tiered._stats, CacheStats)
+        # cached() does ``_backend._stats.misses += 1`` — must not raise.
+        tiered._stats.misses += 1
+        tiered._stats.hits += 1
+        assert tiered._stats.hits == 1 and tiered._stats.misses == 1
+
     @pytest.mark.asyncio
     async def test_get_l1_hit(self):
         """Value in L1 is returned immediately without querying L2."""

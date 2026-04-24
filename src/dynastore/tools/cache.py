@@ -415,6 +415,12 @@ class TieredAsyncBackend:
         self._backends = backends
         self._name = "-".join(b.name for b in backends)
         self._priority = min(b.priority for b in backends)
+        # ``cached()`` increments _stats.{hits,misses,size} unconditionally
+        # on every call regardless of the backend type, so the wrapper
+        # must expose the same shape as the leaf backends or it AttributeErrors
+        # on the first call.  Stats here aggregate across tiers — leaves
+        # keep their own per-tier counters for finer-grained inspection.
+        self._stats = CacheStats()
 
     @property
     def name(self) -> str:
