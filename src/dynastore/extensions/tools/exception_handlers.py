@@ -190,6 +190,17 @@ class ValidationExceptionHandler(ExceptionHandler):
             detail = f"{operation} failed validation: {str(exception)}"
 
         logger.warning(detail)
+        # ValueError("X 'id' not found.") is a NotFound, not a validation
+        # failure — services raise it for missing catalogs/collections from
+        # service-layer call sites that haven't migrated to a typed
+        # NotFoundError yet. 422 confuses OGC clients (e.g. WFS expects 404
+        # for a missing typename); detect the conventional message and
+        # downgrade to 404.
+        msg_lower = str(exception).lower()
+        if "not found" in msg_lower:
+            return HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=detail
+            )
         return HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail
         )
