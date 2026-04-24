@@ -41,7 +41,7 @@ import logging
 from enum import StrEnum
 from typing import Any, Callable, ClassVar, Dict, FrozenSet, List, Optional, Set, Tuple, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from dynastore.models.protocols.driver_roles import DriverSla
 from dynastore.models.protocols.indexer import (
@@ -311,9 +311,39 @@ class CollectionRoutingConfig(PluginConfig):
             "``operations[READ]`` selects the CollectionMetadataStore backend "
             "(first available wins); "
             "``operations[TRANSFORM]`` selects CollectionItemsStore backends "
-            "that contribute metadata at READ time."
+            "that contribute metadata at READ time. "
+            "``operations[INDEX]`` and ``operations[SEARCH]`` are "
+            "auto-augmented at validation time with discoverable "
+            "CollectionIndexer / SEARCH-capable CollectionMetadataStore "
+            "drivers (typically CollectionElasticsearchDriver)."
         ),
     )
+
+    @model_validator(mode="after")
+    def _augment_metadata_with_discoverable_indexers_searchers(
+        self,
+    ) -> "CollectionRoutingConfig":
+        """Mirror of the catalog-tier augmentation but on the
+        ``metadata.operations`` sub-dict.  See
+        :meth:`CatalogRoutingConfig._augment_with_discoverable_indexers_searchers`.
+        """
+        from dynastore.models.protocols.metadata_driver import (
+            CollectionMetadataStore,
+        )
+
+        try:
+            _self_register_indexers_into(
+                self.metadata.operations, CollectionIndexer,
+            )
+            _self_register_searchers_into(
+                self.metadata.operations, CollectionMetadataStore,
+            )
+        except Exception as exc:
+            logger.debug(
+                "CollectionRoutingConfig: read-time self-register skipped "
+                "(%s); apply-handler will populate on next write.", exc,
+            )
+        return self
 
 
 class AssetRoutingConfig(PluginConfig):
@@ -334,8 +364,26 @@ class AssetRoutingConfig(PluginConfig):
             Operation.WRITE: [OperationDriverEntry(driver_id="AssetPostgresqlDriver")],
             Operation.READ: [OperationDriverEntry(driver_id="AssetPostgresqlDriver")],
         },
-        description="Operation → ordered driver list for asset drivers.",
+        description=(
+            "Operation → ordered driver list for asset drivers. "
+            "``operations[INDEX]`` is auto-augmented at validation time "
+            "with discoverable AssetIndexer drivers."
+        ),
     )
+
+    @model_validator(mode="after")
+    def _augment_with_discoverable_indexers(self) -> "AssetRoutingConfig":
+        """Asset tier has no SEARCH op today (assets aren't searchable
+        the way collection items / catalogs are), so only INDEX is
+        augmented.  Mirrors :meth:`CatalogRoutingConfig._augment_*`."""
+        try:
+            _self_register_indexers_into(self.operations, AssetIndexer)
+        except Exception as exc:
+            logger.debug(
+                "AssetRoutingConfig: read-time self-register skipped "
+                "(%s); apply-handler will populate on next write.", exc,
+            )
+        return self
 
 
 class CatalogRoutingConfig(PluginConfig):
@@ -380,10 +428,46 @@ class CatalogRoutingConfig(PluginConfig):
         description=(
             "Operation → ordered driver list for catalog-tier metadata drivers. "
             "Supports WRITE, READ, SEARCH, TRANSFORM, INDEX, BACKUP. "
-            "Default fans out to the CORE + STAC PG Primaries; additional "
-            "roles opt in via config."
+            "Default fans out to the CORE + STAC PG Primaries; INDEX and "
+            "SEARCH entries are auto-augmented at validation time with "
+            "every discoverable CatalogIndexer / SEARCH-capable "
+            "CatalogMetadataStore (typically CatalogElasticsearchDriver). "
+            "Operator-explicit entries take precedence; auto-augmentation "
+            "is idempotent set-default behaviour, never overwrite."
         ),
     )
+
+    @model_validator(mode="after")
+    def _augment_with_discoverable_indexers_searchers(
+        self,
+    ) -> "CatalogRoutingConfig":
+        """Fold discoverable CatalogIndexer + SEARCH-capable
+        CatalogMetadataStore drivers into ``operations[INDEX]`` and
+        ``operations[SEARCH]`` after model validation.
+
+        Closes the gap where the default-state config (no operator
+        write) shows neither INDEX nor SEARCH entries even when an ES
+        catalog driver is installed.  Mirrors the apply-handler
+        self-registration so default-state and apply-time configs
+        converge — ``_on_apply_catalog_routing_config`` calls the same
+        helpers, with the same idempotent semantics.
+        """
+        from dynastore.models.protocols.metadata_driver import (
+            CatalogMetadataStore,
+        )
+
+        try:
+            _self_register_indexers_into(self.operations, CatalogIndexer)
+            _self_register_searchers_into(self.operations, CatalogMetadataStore)
+        except Exception as exc:
+            # Discovery may not be ready (e.g. test fixtures that
+            # validate routing configs before plugins register).  The
+            # apply-handler path is the safety net for those cases.
+            logger.debug(
+                "CatalogRoutingConfig: read-time self-register skipped "
+                "(%s); apply-handler will populate on next write.", exc,
+            )
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -531,6 +615,54 @@ def _self_register_indexers_into(
         )
 
 
+def _self_register_searchers_into(
+    target_ops: Dict[str, List["OperationDriverEntry"]],
+    marker_proto: type,
+) -> None:
+    """Auto-append every installed driver declaring a SEARCH-family
+    metadata capability to ``target_ops[SEARCH]``.
+
+    The SEARCH operation is umbrella for keyword/fulltext, vector kNN,
+    and exact pk lookup; any of the four
+    :class:`MetadataCapability` constants
+    (``SEARCH``, ``SEARCH_FULLTEXT``, ``SEARCH_VECTOR``, ``SEARCH_EXACT``)
+    qualifies a driver to be the SEARCH provider.
+
+    Mirrors :func:`_self_register_indexers_into` for the SEARCH op:
+    tier-scoped via ``marker_proto`` (the metadata-store base for the
+    relevant tier — ``CatalogMetadataStore`` for catalog routing,
+    ``CollectionMetadataStore`` for collection routing).  Idempotent —
+    drivers already listed under ``operations[SEARCH]`` are not
+    re-appended (operator-supplied entries with custom hints survive).
+    """
+    from dynastore.models.protocols.metadata_driver import MetadataCapability
+    from dynastore.tools.discovery import get_protocols
+
+    search_caps: FrozenSet[str] = frozenset({
+        MetadataCapability.SEARCH,
+        MetadataCapability.SEARCH_FULLTEXT,
+        MetadataCapability.SEARCH_VECTOR,
+        MetadataCapability.SEARCH_EXACT,
+    })
+    listed = {entry.driver_id for entry in target_ops.get(Operation.SEARCH, [])}
+    for driver in get_protocols(marker_proto):
+        driver_caps = getattr(driver, "capabilities", frozenset())
+        if not (driver_caps & search_caps):
+            continue
+        driver_id = type(driver).__name__
+        if driver_id in listed:
+            continue
+        target_ops.setdefault(Operation.SEARCH, []).append(
+            OperationDriverEntry(driver_id=driver_id)
+        )
+        listed.add(driver_id)
+        logger.info(
+            "Routing config self-registration: appended %s SEARCH "
+            "driver '%s' to operations[SEARCH]",
+            marker_proto.__name__, driver_id,
+        )
+
+
 def _self_register_metadata_drivers(
     config: "CollectionRoutingConfig | CatalogRoutingConfig",
     metadata_driver_index: Dict[str, Any],
@@ -643,8 +775,11 @@ async def _on_apply_routing_config(
 
     # Auto-register installed CollectionIndexer drivers under metadata.operations[INDEX]
     # with async/warn defaults.  Per-tier marker — only collection-tier indexers
-    # land here.
+    # land here.  Also auto-register SEARCH-capable CollectionMetadataStore
+    # drivers under metadata.operations[SEARCH] for parity with the read-time
+    # validator on CollectionRoutingConfig.
     _self_register_indexers_into(config.metadata.operations, CollectionIndexer)
+    _self_register_searchers_into(config.metadata.operations, CollectionMetadataStore)
 
     # Call ensure_storage() on metadata READ drivers (idempotent, catalog-scoped).
     if catalog_id:
@@ -737,8 +872,11 @@ async def _on_apply_catalog_routing_config(
     _self_register_metadata_drivers(config, driver_index)
     _validate_routing_entries(config, driver_index, "Catalog routing config")
 
-    # Auto-register installed CatalogIndexer drivers under operations[INDEX].
+    # Auto-register installed CatalogIndexer drivers under operations[INDEX]
+    # and SEARCH-capable CatalogMetadataStore drivers under operations[SEARCH]
+    # for parity with the read-time validator on CatalogRoutingConfig.
     _self_register_indexers_into(config.operations, CatalogIndexer)
+    _self_register_searchers_into(config.operations, CatalogMetadataStore)
 
     # Catalog router cache invalidation is wired in M2 when `catalog_router.py`
     # lands.  Until then, config changes are picked up on the next resolution

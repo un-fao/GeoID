@@ -276,3 +276,266 @@ def test_indexer_marker_skips_already_listed_driver():
     # No duplicate; operator-supplied on_failure=FATAL preserved.
     assert len(target_ops[Operation.INDEX]) == 1
     assert target_ops[Operation.INDEX][0].on_failure == FailurePolicy.FATAL
+
+
+# ---------------------------------------------------------------------------
+# SEARCH self-registration helper
+# ---------------------------------------------------------------------------
+
+
+def test_searcher_helper_picks_up_drivers_with_search_capability():
+    """Any driver declaring a SEARCH-family MetadataCapability lands in
+    operations[SEARCH] (umbrella SEARCH or any of the three specialisations)."""
+    from unittest.mock import patch
+
+    from dynastore.models.protocols.metadata_driver import (
+        CatalogMetadataStore,
+        MetadataCapability,
+    )
+    from dynastore.modules.storage.routing_config import (
+        _self_register_searchers_into,
+    )
+
+    class _ESCat:
+        capabilities = frozenset({MetadataCapability.SEARCH})
+
+    class _VectorBackend:
+        capabilities = frozenset({MetadataCapability.SEARCH_VECTOR})
+
+    class _NotASearcher:
+        capabilities = frozenset({MetadataCapability.READ})
+
+    target_ops: dict = {}
+    fake_pool = [_ESCat(), _VectorBackend(), _NotASearcher()]
+
+    # Bypass the runtime_checkable Protocol membership check — the test
+    # pool intentionally doesn't implement the full CatalogMetadataStore
+    # surface; this test pins the SEARCH-capability filter alone.
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: fake_pool):
+        _self_register_searchers_into(target_ops, CatalogMetadataStore)
+
+    ids = {e.driver_id for e in target_ops.get(Operation.SEARCH, [])}
+    assert ids == {"_ESCat", "_VectorBackend"}
+
+
+def test_searcher_helper_skips_drivers_without_search_capability():
+    """Driver with only READ/WRITE capabilities is not added to SEARCH."""
+    from unittest.mock import patch
+
+    from dynastore.models.protocols.metadata_driver import (
+        CatalogMetadataStore,
+        MetadataCapability,
+    )
+    from dynastore.modules.storage.routing_config import (
+        _self_register_searchers_into,
+    )
+
+    class _PgPrimary:
+        capabilities = frozenset({
+            MetadataCapability.READ, MetadataCapability.WRITE,
+        })
+
+    target_ops: dict = {}
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_PgPrimary()]):
+        _self_register_searchers_into(target_ops, CatalogMetadataStore)
+    assert target_ops.get(Operation.SEARCH, []) == []
+
+
+def test_searcher_helper_idempotent():
+    """Repeated calls don't add duplicates; operator-supplied entry survives."""
+    from unittest.mock import patch
+
+    from dynastore.models.protocols.metadata_driver import (
+        CatalogMetadataStore,
+        MetadataCapability,
+    )
+    from dynastore.modules.storage.routing_config import (
+        _self_register_searchers_into,
+    )
+
+    class _ESCat:
+        capabilities = frozenset({MetadataCapability.SEARCH_FULLTEXT})
+
+    op_entry = OperationDriverEntry(driver_id="_ESCat", hints={"custom"})
+    target_ops: dict = {Operation.SEARCH: [op_entry]}
+
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_ESCat()]):
+        _self_register_searchers_into(target_ops, CatalogMetadataStore)
+        _self_register_searchers_into(target_ops, CatalogMetadataStore)
+
+    assert len(target_ops[Operation.SEARCH]) == 1
+    assert target_ops[Operation.SEARCH][0].hints == {"custom"}
+
+
+# ---------------------------------------------------------------------------
+# Read-time model_validator augmentation
+# ---------------------------------------------------------------------------
+
+
+def test_catalog_routing_validator_augments_INDEX_and_SEARCH():
+    """Constructing a default CatalogRoutingConfig must fold in
+    discoverable CatalogIndexer + SEARCH-capable drivers."""
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    from dynastore.models.protocols.metadata_driver import MetadataCapability
+
+    class _CatES:
+        is_catalog_indexer: ClassVar[bool] = True
+        capabilities = frozenset({MetadataCapability.SEARCH})
+
+    instance = _CatES()
+
+    def _fake_get_protocols(proto):
+        # Marker check + capability check both rely on isinstance —
+        # the fake instance has the right ClassVar + duck-typed
+        # `capabilities` set so it satisfies both runtime_checkable
+        # Protocols (CatalogIndexer + CatalogMetadataStore via
+        # the SEARCH cap predicate inside _self_register_searchers_into).
+        return [instance]
+
+    with patch("dynastore.tools.discovery.get_protocols", _fake_get_protocols):
+        cfg = CatalogRoutingConfig()
+
+    index_ids = {e.driver_id for e in cfg.operations.get(Operation.INDEX, [])}
+    search_ids = {e.driver_id for e in cfg.operations.get(Operation.SEARCH, [])}
+    assert "_CatES" in index_ids
+    assert "_CatES" in search_ids
+    # Default WRITE/READ entries unchanged.
+    write_ids = {e.driver_id for e in cfg.operations[Operation.WRITE]}
+    assert write_ids == {"CatalogCorePostgresqlDriver", "CatalogStacPostgresqlDriver"}
+
+
+def test_catalog_routing_validator_no_op_when_no_indexers_discoverable():
+    """No discoverable indexer/searcher → operations stays at the
+    default-factory shape (just WRITE+READ, no INDEX/SEARCH keys)."""
+    from unittest.mock import patch
+
+    with patch("dynastore.tools.discovery.get_protocols", lambda proto: []):
+        cfg = CatalogRoutingConfig()
+
+    assert Operation.INDEX not in cfg.operations or cfg.operations[Operation.INDEX] == []
+    assert Operation.SEARCH not in cfg.operations or cfg.operations[Operation.SEARCH] == []
+
+
+def test_collection_routing_validator_augments_metadata_INDEX_and_SEARCH():
+    """CollectionRoutingConfig validator augments metadata.operations
+    (not top-level operations)."""
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    from dynastore.models.protocols.metadata_driver import MetadataCapability
+
+    class _ColES:
+        is_collection_indexer: ClassVar[bool] = True
+        capabilities = frozenset({MetadataCapability.SEARCH_FULLTEXT})
+
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_ColES()]):
+        cfg = CollectionRoutingConfig()
+
+    index_ids = {e.driver_id for e in cfg.metadata.operations.get(Operation.INDEX, [])}
+    search_ids = {e.driver_id for e in cfg.metadata.operations.get(Operation.SEARCH, [])}
+    assert "_ColES" in index_ids
+    assert "_ColES" in search_ids
+
+
+def test_asset_routing_validator_augments_INDEX_only():
+    """AssetRoutingConfig validator augments INDEX but NOT SEARCH —
+    assets aren't search-addressable the way collection items are."""
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    from dynastore.modules.storage.routing_config import AssetRoutingConfig
+
+    class _AssetES:
+        is_asset_indexer: ClassVar[bool] = True
+        capabilities = frozenset()  # no search caps anyway
+
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_AssetES()]):
+        cfg = AssetRoutingConfig()
+
+    index_ids = {e.driver_id for e in cfg.operations.get(Operation.INDEX, [])}
+    assert "_AssetES" in index_ids
+    assert Operation.SEARCH not in cfg.operations or cfg.operations[Operation.SEARCH] == []
+
+
+def test_validator_failure_in_discovery_does_not_break_construction():
+    """If `get_protocols` raises (e.g. discovery not ready during test
+    fixture loading), the validator must not propagate — a debug log is
+    enough; the apply-handler path is the safety net."""
+    from unittest.mock import patch
+
+    def _boom(proto):
+        raise RuntimeError("discovery not ready")
+
+    with patch("dynastore.tools.discovery.get_protocols", _boom):
+        cfg = CatalogRoutingConfig()  # must not raise
+
+    # Default WRITE/READ unaffected.
+    write_ids = {e.driver_id for e in cfg.operations[Operation.WRITE]}
+    assert write_ids == {"CatalogCorePostgresqlDriver", "CatalogStacPostgresqlDriver"}
+    # INDEX/SEARCH absent because the augmentation was skipped.
+    assert Operation.INDEX not in cfg.operations or cfg.operations[Operation.INDEX] == []
+    assert Operation.SEARCH not in cfg.operations or cfg.operations[Operation.SEARCH] == []
+
+
+# ---------------------------------------------------------------------------
+# Apply-handler parity for SEARCH
+# ---------------------------------------------------------------------------
+
+
+def test_apply_handlers_invoke_searcher_self_registration():
+    """The collection-tier and catalog-tier apply handlers MUST also call
+    `_self_register_searchers_into` (asset tier doesn't, by design — no
+    SEARCH op for assets)."""
+    import asyncio
+    from unittest.mock import patch
+
+    from dynastore.modules.storage.routing_config import (
+        AssetRoutingConfig,
+        _on_apply_asset_routing_config,
+        _on_apply_catalog_routing_config,
+        _on_apply_routing_config,
+    )
+
+    calls: list[type] = []
+
+    def _spy(target_ops, marker_proto):
+        calls.append(marker_proto)
+
+    coll = CollectionRoutingConfig()
+    coll.operations.clear()
+    coll.metadata.operations.clear()
+    asset = AssetRoutingConfig()
+    asset.operations.clear()
+    cat = CatalogRoutingConfig()
+    cat.operations.clear()
+
+    with patch(
+        "dynastore.modules.storage.routing_config._self_register_searchers_into",
+        _spy,
+    ), patch(
+        "dynastore.tools.discovery.get_protocols",
+        lambda proto: [],
+    ):
+        asyncio.run(_on_apply_routing_config(
+            coll, catalog_id=None, collection_id=None, db_resource=None,
+        ))
+        asyncio.run(_on_apply_asset_routing_config(
+            asset, catalog_id=None, collection_id=None, db_resource=None,
+        ))
+        asyncio.run(_on_apply_catalog_routing_config(
+            cat, catalog_id=None, collection_id=None, db_resource=None,
+        ))
+
+    from dynastore.models.protocols.metadata_driver import (
+        CatalogMetadataStore,
+        CollectionMetadataStore,
+    )
+    # Collection and catalog tiers call the searcher; asset tier does not.
+    assert calls == [CollectionMetadataStore, CatalogMetadataStore]
