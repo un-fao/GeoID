@@ -318,6 +318,51 @@ async def run_ingestion_task(
 
         import fiona
 
+        # Diagnostic: GDAL's silent error handler swallows the underlying
+        # ``ERROR n: …`` line so a fiona ``Failed to open dataset
+        # (flags=68): /vsigs/<bucket>/<key>`` carries no actionable hint.
+        # Install a capturing handler around the open + log every GDAL
+        # error message we collected.  Helps distinguish missing Parquet
+        # driver vs /vsigs/ auth vs 404, etc.  Cheap; safe to keep.
+        try:
+            from osgeo import gdal as _gdal  # type: ignore[import-not-found]
+
+            _gdal_errors: List[str] = []
+
+            def _capture_gdal_error(err_class: int, err_no: int, err_msg: str) -> None:
+                _gdal_errors.append(f"GDAL[{err_class}:{err_no}] {err_msg}")
+
+            _gdal.UseExceptions()
+            _gdal.PushErrorHandler(_capture_gdal_error)
+        except Exception:  # noqa: BLE001 — diagnostic only
+            _gdal = None
+            _gdal_errors = []
+
+        try:
+            with fiona.open(
+                source_file_path, "r", encoding=task_request.encoding
+            ) as reader:
+                pass  # placeholder to keep diff minimal — real loop below
+            _open_ok = True
+        except Exception as _open_exc:
+            _open_ok = False
+            _open_err = _open_exc
+        finally:
+            if _gdal is not None:
+                try:
+                    _gdal.PopErrorHandler()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        if not _open_ok:
+            for _e in _gdal_errors:
+                logger.error("ingestion source-open: %s", _e)
+            logger.error(
+                "ingestion source-open: fiona.open(%r) failed; %s",
+                source_file_path, _open_err,
+            )
+            raise _open_err
+
         with fiona.open(
             source_file_path, "r", encoding=task_request.encoding
         ) as reader:
