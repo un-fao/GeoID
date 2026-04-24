@@ -19,6 +19,87 @@ from dynastore.modules.elasticsearch.collection_es_driver import CollectionElast
 
 
 _enrich = CollectionElasticsearchDriver._enrich_doc
+_unenrich = CollectionElasticsearchDriver._unenrich_doc
+
+
+# ---------------------------------------------------------------------------
+# Round-trip + no-mutation guarantees (regression for create_collection 422)
+# ---------------------------------------------------------------------------
+
+
+def test_enrich_does_not_mutate_input():
+    """_enrich_doc must NOT mutate nested extent dicts.  An earlier
+    shallow-copy bug let the gte/lte rewrite leak back into the
+    caller's payload, which then failed Pydantic re-validation in
+    CollectionService.create_collection with
+    ``Input should be a valid list``.
+    """
+    payload = {
+        "extent": {
+            "spatial": {"bbox": [[-180, -90, 180, 90]]},
+            "temporal": {"interval": [["2020-01-01T00:00:00Z", None]]},
+        }
+    }
+    enriched = _enrich(payload)
+    # Original interval shape preserved → caller can still re-validate.
+    assert payload["extent"]["temporal"]["interval"] == [
+        ["2020-01-01T00:00:00Z", None]
+    ]
+    # And the enriched copy carries the date_range shape.
+    assert enriched["extent"]["temporal"]["interval"] == [
+        {"gte": "2020-01-01T00:00:00Z"}
+    ]
+    # No shared references between layers.
+    assert enriched["extent"] is not payload["extent"]
+    assert enriched["extent"]["temporal"] is not payload["extent"]["temporal"]
+
+
+def test_unenrich_round_trips_to_stac_shape():
+    """ES ``date_range`` shape on read converts back to STAC ``[start, end]``.
+
+    Without this, the catalog metadata router fan-in surfaces the ES
+    slice as the merged ``extent`` and ``Collection.model_validate``
+    rejects ``interval[0]`` for being a dict instead of a list — exactly
+    the 422 observed on POST /collections after create.
+    """
+    enriched = {
+        "extent": {
+            "spatial": {
+                "bbox": [[-180, -90, 180, 90]],
+                "bbox_shape": {"type": "envelope", "coordinates": [[-180, 90], [180, -90]]},
+            },
+            "temporal": {
+                "interval": [
+                    {"gte": "2020-01-01T00:00:00Z", "lte": "2025-01-01T00:00:00Z"},
+                    {"gte": "2026-01-01T00:00:00Z"},
+                ]
+            },
+        }
+    }
+    restored = _unenrich(enriched)
+    assert restored["extent"]["temporal"]["interval"] == [
+        ["2020-01-01T00:00:00Z", "2025-01-01T00:00:00Z"],
+        ["2026-01-01T00:00:00Z", None],
+    ]
+    # bbox_shape is ES-internal; stripped on read so STAC consumers
+    # don't see it.
+    assert "bbox_shape" not in restored["extent"]["spatial"]
+
+
+def test_unenrich_passes_through_already_stac_shaped_intervals():
+    """Defensive: if the stored doc happens to already be in STAC
+    shape (e.g. an older write predating _enrich_doc), pass it through.
+    """
+    src = {
+        "extent": {
+            "spatial": {"bbox": [[-180, -90, 180, 90]]},
+            "temporal": {"interval": [["2020-01-01T00:00:00Z", None]]},
+        }
+    }
+    out = _unenrich(src)
+    assert out["extent"]["temporal"]["interval"] == [
+        ["2020-01-01T00:00:00Z", None]
+    ]
 
 
 # ---------------------------------------------------------------------------

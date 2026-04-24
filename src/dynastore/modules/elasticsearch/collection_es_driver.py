@@ -30,6 +30,7 @@ The schema is extensible — metadata fields are stored as-is in ES
 automatically indexed and searchable.
 """
 
+import copy
 import logging
 from typing import Any, ClassVar, Dict, FrozenSet, List, Optional, Tuple
 
@@ -249,8 +250,17 @@ class CollectionElasticsearchDriver(TypedDriver[CollectionElasticsearchDriverCon
 
     @staticmethod
     def _enrich_doc(metadata: Dict[str, Any]) -> Dict[str, Any]:
-        """Prepare doc for ES: add bbox_shape and convert temporal interval to date_range format."""
-        doc = dict(metadata)
+        """Prepare doc for ES: add bbox_shape and convert temporal interval to date_range format.
+
+        Deep-copies the input — earlier versions did ``doc = dict(metadata)``
+        (shallow), which left the nested ``extent.spatial`` / ``extent.temporal``
+        dicts shared between caller and the rewritten ES doc.  Mutating
+        ``temporal['interval']`` in-place to the ``[{'gte': …, 'lte': …}]``
+        shape then leaked into the caller's payload, breaking the
+        post-create re-validation in ``CollectionService.create_collection``
+        with a 422 ``"Input should be a valid list"`` error.
+        """
+        doc = copy.deepcopy(metadata)
         extent = doc.get("extent")
         if isinstance(extent, dict):
             spatial = extent.get("spatial")
@@ -285,6 +295,40 @@ class CollectionElasticsearchDriver(TypedDriver[CollectionElasticsearchDriverCon
                         temporal.pop("interval", None)
         return doc
 
+    @staticmethod
+    def _unenrich_doc(source: Dict[str, Any]) -> Dict[str, Any]:
+        """Reverse :meth:`_enrich_doc` for read paths: convert ES
+        ``date_range`` shape back to STAC ``[[start, end], …]`` and drop
+        the synthetic ``bbox_shape`` so the merged Pydantic ``Collection``
+        envelope round-trips cleanly.  Without this, the router fan-in
+        feeds the ES-shaped extent into ``Collection.model_validate`` and
+        Pydantic rejects ``interval[0]`` as a dict where a list is
+        expected.
+        """
+        doc = copy.deepcopy(source)
+        extent = doc.get("extent")
+        if isinstance(extent, dict):
+            spatial = extent.get("spatial")
+            if isinstance(spatial, dict):
+                spatial.pop("bbox_shape", None)
+
+            temporal = extent.get("temporal")
+            if isinstance(temporal, dict):
+                interval = temporal.get("interval")
+                if isinstance(interval, list):
+                    restored: List[List[Any]] = []
+                    for bounds in interval:
+                        if isinstance(bounds, dict):
+                            restored.append(
+                                [bounds.get("gte"), bounds.get("lte")]
+                            )
+                        elif isinstance(bounds, list):
+                            # already in STAC shape — pass through.
+                            restored.append(bounds)
+                    if restored:
+                        temporal["interval"] = restored
+        return doc
+
     async def get_metadata(
         self,
         catalog_id: str,
@@ -302,7 +346,7 @@ class CollectionElasticsearchDriver(TypedDriver[CollectionElasticsearchDriverCon
             return None
         try:
             resp = await client.get(index=index_name, id=collection_id)
-            return resp["_source"]
+            return self._unenrich_doc(resp["_source"])
         except Exception:
             return None
 
