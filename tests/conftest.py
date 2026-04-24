@@ -451,7 +451,14 @@ async def reset_dynastore_state(engine=None):
     # 8.2 Clear Tasks Table (CRITICAL for test isolation)
     # Use DELETE (RowExclusiveLock) instead of TRUNCATE CASCADE (AccessExclusiveLock)
     # so concurrent SELECT queries from other workers are not blocked.
-    if engine:
+    #
+    # Skip under xdist: the unscoped DELETE wipes rows belonging to OTHER
+    # workers' in-flight tests, producing deterministic state corruption
+    # (180s timeouts, 500s, "Event loop is closed"). The session-finish
+    # cleanup hook in pytest_sessionfinish does the wholesale wipe when
+    # all workers are done; intra-test isolation is achieved at the
+    # catalog-scope level via generate_test_id-based unique catalog IDs.
+    if engine and not os.environ.get("PYTEST_XDIST_WORKER"):
         from dynastore.modules.db_config.query_executor import DQLQuery, managed_transaction
         from dynastore.modules.db_config.locking_tools import check_table_exists
         from dynastore.modules.tasks.tasks_module import get_task_schema
