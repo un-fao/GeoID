@@ -491,27 +491,44 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
             f'CREATE TABLE IF NOT EXISTS "{schema}"."{physical_table}" '
             f'({", ".join(hub_columns_ddl)}){partition_clause};'
         )
-        await DDLQuery(create_hub_sql).execute(db_resource)
 
-        # --- Create sidecar tables ---
-        for sidecar_config in col_config.sidecars:
-            try:
-                sidecar_impl = SidecarRegistry.get_sidecar(sidecar_config)
-                if sidecar_impl is None:
-                    continue
-                sc_has_validity = sidecar_impl.has_validity()
-                ddl_statements = sidecar_impl.get_ddl(
-                    physical_table=physical_table,
-                    partition_keys=partition_keys,
-                    partition_key_types=partition_key_types,
-                    has_validity=sc_has_validity,
-                )
-                await DDLQuery(ddl_statements).execute(db_resource, schema=schema)
-                await sidecar_impl.setup_lifecycle_hooks(
-                    db_resource, schema, f"{physical_table}_{sidecar_impl.sidecar_id}"
-                )
-            except ValueError as e:
-                logger.warning("Skipping sidecar table creation: %s", e)
+        # Hub + every sidecar DDL must run on a SHARED connection so
+        # the FK references emitted by ``sidecar_impl.get_ddl(...)``
+        # see the freshly-created hub on the same transaction snapshot.
+        # The previous code ran each ``DDLQuery.execute(engine, …)`` on
+        # its own ``engine.begin()`` transaction; in prod this surfaced
+        # as the hub being silently absent at sidecar-FK time
+        # (``relation "<schema>.<hub>" does not exist``).  Architecturally
+        # the hub is "the first sidecar" — it MUST commit visibly before
+        # any FK-bearing sidecar DDL runs, and the cleanest enforcement is
+        # to share one connection across the whole ensure_storage block.
+        logger.info(
+            "ItemsPostgresqlDriver.ensure_storage: creating hub '%s.%s' "
+            "+ %s sidecars",
+            schema, physical_table, len(col_config.sidecars),
+        )
+        async with managed_transaction(db_resource) as conn:
+            await DDLQuery(create_hub_sql).execute(conn)
+
+            # --- Create sidecar tables ---
+            for sidecar_config in col_config.sidecars:
+                try:
+                    sidecar_impl = SidecarRegistry.get_sidecar(sidecar_config)
+                    if sidecar_impl is None:
+                        continue
+                    sc_has_validity = sidecar_impl.has_validity()
+                    ddl_statements = sidecar_impl.get_ddl(
+                        physical_table=physical_table,
+                        partition_keys=partition_keys,
+                        partition_key_types=partition_key_types,
+                        has_validity=sc_has_validity,
+                    )
+                    await DDLQuery(ddl_statements).execute(conn, schema=schema)
+                    await sidecar_impl.setup_lifecycle_hooks(
+                        conn, schema, f"{physical_table}_{sidecar_impl.sidecar_id}"
+                    )
+                except ValueError as e:
+                    logger.warning("Skipping sidecar table creation: %s", e)
 
         # --- Store physical_table in driver config ---
         from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
