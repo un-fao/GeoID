@@ -34,6 +34,9 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict
 
+# Hard runtime dep — see tasks/gcp_provision/task.py for rationale.
+import google.cloud.storage  # noqa: F401
+
 from dynastore.tasks.protocols import TaskProtocol
 from dynastore.models.tasks import TaskPayload
 from dynastore.modules import get_protocol

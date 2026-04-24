@@ -19,6 +19,14 @@
 import logging
 from typing import Any, Dict, Optional
 
+# Hard runtime dep — fail entry-point load on services without ``module_gcp``
+# installed (e.g. SCOPEs that don't include the GCP module). Without this, the
+# task class would load anyway via lazy ``get_protocol(StorageProtocol)`` calls
+# inside ``run()``; routing config not yet PUT → CapabilityMap surfaces the
+# task → claim → runtime crash. The hard import keeps the symmetry with the
+# elasticsearch task module fix (commit 54d1cdc).
+import google.cloud.storage  # noqa: F401
+
 from pydantic import BaseModel
 from dynastore.tasks.protocols import TaskProtocol
 from dynastore.modules.tasks.models import (
