@@ -101,6 +101,16 @@ P = ParamSpec("P")
 
 logger = logging.getLogger(__name__)
 
+
+# DDL execution timeouts — short by default to surface deadlocks fast in
+# prod, but tunable for CI where xdist parallelism + shared PG instance
+# create lock contention that a 30s ceiling routinely exceeds. Set
+# ``DYNASTORE_DDL_STATEMENT_TIMEOUT`` / ``DYNASTORE_DDL_LOCK_TIMEOUT``
+# (PG interval syntax: ``30s``, ``2min``, ``"120s"``) in test compose to
+# raise the ceiling without weakening prod behaviour.
+_DDL_STATEMENT_TIMEOUT = os.environ.get("DYNASTORE_DDL_STATEMENT_TIMEOUT", "30s")
+_DDL_LOCK_TIMEOUT = os.environ.get("DYNASTORE_DDL_LOCK_TIMEOUT", "30s")
+
 _metadata = MetaData()
 
 # --- Connection Serialization (Re-entrant Async Wire Lock) ---
@@ -768,7 +778,7 @@ class DDLExecutor(BaseExecutor):
 
                     try:
                         # Timeout guard to prevent deadlocks
-                        _active.execute(text("SET LOCAL statement_timeout = '30s'"))
+                        _active.execute(text(f"SET LOCAL statement_timeout = '{_DDL_STATEMENT_TIMEOUT}'"))
 
                         # Support multi-statement DDL by splitting
                         statements = split_ddl(stmt_text)
@@ -867,7 +877,7 @@ class DDLExecutor(BaseExecutor):
                 if not acquired:
                     # Another worker holds the lock. Wait for them to finish so that
                     # their transaction is committed before we re-check existence.
-                    await tx_conn.execute(text("SET LOCAL lock_timeout = '30s'"))
+                    await tx_conn.execute(text(f"SET LOCAL lock_timeout = '{_DDL_LOCK_TIMEOUT}'"))
                     await tx_conn.execute(
                         text("SELECT pg_advisory_xact_lock(:lock_id)"),
                         {"lock_id": lock_id},
@@ -880,7 +890,7 @@ class DDLExecutor(BaseExecutor):
                     # Object still doesn't exist — fall through and create it.
 
                 # Timeout guard to prevent DDL hangs
-                await tx_conn.execute(text("SET LOCAL statement_timeout = '30s'"))
+                await tx_conn.execute(text(f"SET LOCAL statement_timeout = '{_DDL_STATEMENT_TIMEOUT}'"))
 
                 # Support multi-statement DDL by splitting (asyncpg limitation)
                 statements = split_ddl(stmt_text)

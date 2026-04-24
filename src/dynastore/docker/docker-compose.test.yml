@@ -115,6 +115,13 @@ services:
       - DYNASTORE_API_URL=http://catalog:80
       - DYNASTORE_WORKER_URL=http://worker:81
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-gis_dev}
+      # Raise DDL timeouts above the 30s prod default — xdist runs N
+      # bootstraps in parallel against the same shared PG, and the
+      # CatalogModule lifespan DDL routinely takes >30s under that
+      # contention. Surfaces as QueryCanceledError / LockNotAvailableError
+      # in CI but never reproduces locally where the suite is sequential.
+      - DYNASTORE_DDL_STATEMENT_TIMEOUT=120s
+      - DYNASTORE_DDL_LOCK_TIMEOUT=120s
     volumes:
       - ../../../tests:/dynastore/tests
       - ../../../src:/dynastore/src
