@@ -570,12 +570,37 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
                 # via PlatformConfigsProtocol; nothing to load eagerly here.
                 # Register an apply-handler so live PUT /configs updates trigger
                 # a re-narrowing of the dispatcher's capability set without
-                # process restart.
+                # process restart. The handler also validates the new config
+                # against this process's loaded task types (warns on typos /
+                # types only loaded by other services) and emits an INFO
+                # summary of what this service will claim post-refresh.
                 from dynastore.modules.tasks.runners import capability_map as _capability_map
+                from dynastore.modules.tasks.dispatcher import _SERVICE_NAME
 
-                async def _on_routing_change(_cfg, _catalog_id, _collection_id, _conn):
+                async def _on_routing_change(cfg, _catalog_id, _collection_id, _conn):
                     logger.info("TaskRoutingConfig changed — refreshing CapabilityMap.")
+                    # Typo / cross-service-only diagnostic — informational only,
+                    # since each service loads only the task types its SCOPE
+                    # pulls in. A WARN here is the cheapest way to surface
+                    # routing keys that nothing in this deployment can claim.
+                    try:
+                        from dynastore.tasks import get_loaded_task_types
+                        known = set(get_loaded_task_types())
+                        unknown = sorted(t for t in (getattr(cfg, "routing", {}) or {}) if t not in known)
+                        if unknown:
+                            logger.warning(
+                                "TaskRoutingConfig: %d routing key(s) not loaded "
+                                "on this service ('%s') — likely typos OR types "
+                                "only loaded elsewhere: %s",
+                                len(unknown), _SERVICE_NAME, unknown,
+                            )
+                    except Exception as exc:  # noqa: BLE001 — never fail apply
+                        logger.debug("Routing-key validation skipped: %s", exc)
                     await _capability_map.refresh()
+                    logger.info(
+                        "Service '%s' will claim async types: %s",
+                        _SERVICE_NAME, _capability_map.async_types,
+                    )
 
                 TaskRoutingConfig.register_apply_handler(_on_routing_change)
 
@@ -607,6 +632,14 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
 
                 executor.submit(start_queue_listener(engine, shutdown_event, poll_timeout=poll_interval), task_name="service:queue_listener")
                 executor.submit(run_dispatcher(engine, None, shutdown_event), task_name="service:dispatcher")
+                # Stuck-PENDING warner — periodic read-only scan for tasks that
+                # have been PENDING with retry_count=0 for too long. The most
+                # common cause is a routing typo or a service that should claim
+                # the task but isn't deployed. See _warn_stuck_pending_tasks.
+                executor.submit(
+                    _warn_stuck_pending_tasks(engine, schema, shutdown_event),
+                    task_name="service:stuck_pending_warner",
+                )
                 logger.info(f"TasksModule: QueueListener (poll_interval={poll_interval}s) and Multi-Tenant Dispatcher launched.")
             else:
                 logger.warning(
@@ -625,6 +658,67 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
 # All queries target the global tasks table. The `schema_name` column
 # distinguishes tenants; `get_task_schema()` returns the PostgreSQL schema
 # that hosts the global table (default: "tasks").
+
+
+async def _warn_stuck_pending_tasks(
+    engine: DbResource,
+    schema: str,
+    shutdown_event: asyncio.Event,
+    interval_s: float = 60.0,
+    min_age_s: float = 600.0,
+    sample_limit: int = 50,
+) -> None:
+    """Periodic read-only scan that logs WARNINGs for tasks that have been
+    PENDING with ``retry_count = 0`` for more than ``min_age_s`` seconds.
+
+    The most common cause is operator misconfiguration of
+    :class:`TaskRoutingConfig` — a typo in a service name or a target that
+    no deployed service maps to — which leaves tasks sitting unclaimable
+    forever. Today the dispatcher's CapabilityMap silently excludes them;
+    this coroutine surfaces the silence.
+
+    Read-only by design: we never mutate the row. The pg_cron-driven
+    ``reap_stuck_tasks`` SQL function continues to handle stuck *ACTIVE*
+    tasks (lock expired); this coroutine handles stuck *PENDING* tasks
+    (never claimed). Two orthogonal failure modes, two independent signals.
+
+    Idempotent and crash-safe: any error is logged and swallowed; the loop
+    sleeps and retries. Stops cleanly when ``shutdown_event`` is set.
+    """
+    sql = (
+        f'SELECT task_id, task_type, schema_name, '  # nosec - schema is validated upstream
+        f'  EXTRACT(EPOCH FROM NOW() - timestamp) AS age_s '
+        f'FROM "{schema}".tasks '
+        f"WHERE status = 'PENDING' "
+        f"  AND retry_count = 0 "
+        f"  AND timestamp < NOW() - make_interval(secs => :min_age_s) "
+        f"ORDER BY timestamp ASC LIMIT :sample_limit;"
+    )
+    query = DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS)
+
+    while not shutdown_event.is_set():
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=interval_s)
+            break  # shutdown signalled during sleep
+        except asyncio.TimeoutError:
+            pass  # normal — periodic wakeup
+
+        try:
+            async with managed_transaction(engine) as conn:
+                rows = await query.execute(
+                    conn, min_age_s=min_age_s, sample_limit=sample_limit,
+                )
+            for row in rows or []:
+                logger.warning(
+                    "stuck-pending: task '%s' (%s, schema=%s) has been "
+                    "PENDING for %.0fs with retry_count=0 — check "
+                    "TaskRoutingConfig.routing[%r] for typos or for a "
+                    "service that should claim it but isn't deployed.",
+                    row["task_id"], row["task_type"], row.get("schema_name"),
+                    row["age_s"], row["task_type"],
+                )
+        except Exception as exc:  # noqa: BLE001 — never crash on diagnostic
+            logger.warning("stuck-pending warner: scan failed: %s", exc)
 
 
 async def _assert_current_partition_ready(conn: DbResource, schema: str) -> None:

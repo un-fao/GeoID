@@ -182,3 +182,45 @@ async def test_empty_target_list_treated_as_open():
         sync_handles=set(),
     )
     assert cap.async_types == ["t_a"]
+
+
+# ---------------------------------------------------------------------------
+# Routing-config apply-handler validation — same diagnostic logic the
+# in-lifespan handler runs after every PUT /configs/classes/TaskRoutingConfig.
+# We can't import the closure directly (it's defined inside lifespan), so
+# we exercise the same shape: cross-reference routing keys against
+# get_loaded_task_types() and emit a WARN for unknown ones.
+# ---------------------------------------------------------------------------
+
+
+def _validate_routing(cfg, my_service, loaded):
+    """Mirror of the in-lifespan diagnostic. Returns the list of unknown keys
+    that the apply-handler would WARN about."""
+    return sorted(t for t in (getattr(cfg, "routing", {}) or {}) if t not in loaded)
+
+
+def test_validator_flags_unknown_task_type_keys():
+    """Routing keys not present in get_loaded_task_types are flagged."""
+    cfg = TaskRoutingConfig(routing={
+        "elasticsearch_index": ["catalog"],   # known
+        "Elasticsearch_index": ["catalog"],   # typo (capital E)
+        "tile_preseed": ["maps"],             # known
+        "made_up_type": ["worker"],           # only in another deployment
+    })
+    loaded = {"elasticsearch_index", "tile_preseed"}
+    unknown = _validate_routing(cfg, "catalog", loaded)
+    assert unknown == ["Elasticsearch_index", "made_up_type"]
+
+
+def test_validator_silent_when_all_keys_known():
+    cfg = TaskRoutingConfig(routing={
+        "elasticsearch_index": ["catalog"],
+        "tile_preseed": ["maps"],
+    })
+    loaded = {"elasticsearch_index", "tile_preseed", "extra_one"}
+    assert _validate_routing(cfg, "catalog", loaded) == []
+
+
+def test_validator_handles_empty_routing():
+    cfg = TaskRoutingConfig(routing={})
+    assert _validate_routing(cfg, "catalog", {"any"}) == []
