@@ -21,6 +21,17 @@ datetime, Enum, and UUID.
 
 Registered by ``CacheModule`` when ``VALKEY_URL`` is set.
 Falls back to ``LocalAsyncCacheBackend`` (priority=1000) when unavailable.
+
+Env vars:
+  VALKEY_URL           — connection URL (e.g. ``valkey://10.0.0.1:6379``)
+  VALKEY_TLS           — ``true`` to wrap the connection in TLS (independent
+                         of URL scheme). Required for GCP Memorystore IAM mode.
+  VALKEY_TLS_CA_PATH   — optional path to a server CA bundle for verification.
+                         If unset and TLS is on, cert/hostname checks are
+                         disabled (acceptable on private VPC).
+  VALKEY_IAM_AUTH      — ``true`` to authenticate via a Google OAuth2 access
+                         token minted from ADC. Requires ``google-auth``
+                         (provided by the ``module_gcp`` extra).
 """
 
 from __future__ import annotations
@@ -29,7 +40,7 @@ import asyncio
 import importlib
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -163,6 +174,85 @@ def _deserialize(data: bytes) -> Any:
 
 
 # ---------------------------------------------------------------------------
+#  Google IAM credential provider for Memorystore for Valkey
+# ---------------------------------------------------------------------------
+
+
+class _GoogleIamCredentialProvider:
+    """Mints Google OAuth2 access tokens for Memorystore IAM AUTH.
+
+    Reuses ``GCPModule`` (via ``CloudIdentityProtocol.get_fresh_token``) when
+    it has been registered — same cached creds object, same refresh logic that
+    powers signed URLs and other GCP clients. When CacheModule starts before
+    GCPModule (priority 9 vs 30), we fall back to a direct ADC fetch using
+    ``modules.gcp.tools.service_account``; on later reconnects the protocol
+    lookup wins.
+
+    Memorystore expects the service-account email as username and a fresh
+    OAuth2 access token as password.
+    """
+
+    def __init__(self) -> None:
+        self._fallback_creds: Any = None
+        self._username: Optional[str] = None
+
+    def _resolve_via_protocol(self) -> Optional[tuple]:
+        try:
+            from dynastore.models.protocols.cloud_identity import (
+                CloudIdentityProtocol,
+            )
+            from dynastore.tools.discovery import get_protocol
+        except ImportError:
+            return None
+        provider = get_protocol(CloudIdentityProtocol)
+        if provider is None:
+            return None
+        # GCPModule._refresh_credentials is sync; get_fresh_token offloads it.
+        # Called from sync get_credentials() path → use the underlying creds
+        # object directly to stay sync-friendly here.
+        creds = provider.get_credentials_object()
+        if not creds.valid or creds.expired:
+            import google.auth.transport.requests as _gart
+            creds.refresh(_gart.Request())
+        username = (
+            provider.get_account_email()
+            or getattr(creds, "service_account_email", None)
+            or "default"
+        )
+        return (username, creds.token)
+
+    def _resolve_via_adc(self) -> tuple:
+        try:
+            from dynastore.modules.gcp.tools.service_account import (
+                get_credentials as _gcp_get_credentials,
+            )
+        except ImportError as e:
+            raise ImportError(
+                "VALKEY_IAM_AUTH=true requires the 'module_gcp' extra "
+                "(google-auth). "
+                f"Original error: {e}"
+            ) from e
+
+        if self._fallback_creds is None:
+            creds, identity = _gcp_get_credentials()
+            self._fallback_creds = creds
+            self._username = identity.get("account_email") or "default"
+
+        creds = self._fallback_creds
+        if not creds.valid or creds.expired:
+            import google.auth.transport.requests as _gart
+            creds.refresh(_gart.Request())
+        return (self._username or "default", creds.token)
+
+    def get_credentials(self) -> tuple:
+        return self._resolve_via_protocol() or self._resolve_via_adc()
+
+    async def get_credentials_async(self) -> tuple:
+        # google-auth refresh is sync HTTP; offload so we don't block the loop.
+        return await asyncio.to_thread(self.get_credentials)
+
+
+# ---------------------------------------------------------------------------
 #  ValkeyCacheBackend
 # ---------------------------------------------------------------------------
 
@@ -191,7 +281,29 @@ class ValkeyCacheBackend:
                 f"Original error: {e}"
             ) from e
 
-        self._pool = avalkey.ConnectionPool.from_url(url, decode_responses=False)
+        pool_kwargs: Dict[str, Any] = {"decode_responses": False}
+
+        # TLS: VALKEY_TLS=true forces TLS regardless of URL scheme.
+        # On Memorystore private VPC, traffic stays in Google's network so
+        # cert-verify and hostname checks are commonly disabled when no CA
+        # bundle is provided (VALKEY_TLS_CA_PATH overrides).
+        if os.getenv("VALKEY_TLS", "").lower() in ("1", "true", "yes"):
+            pool_kwargs["connection_class"] = avalkey.SSLConnection
+            ca_path = os.getenv("VALKEY_TLS_CA_PATH")
+            if ca_path:
+                pool_kwargs["ssl_ca_certs"] = ca_path
+            else:
+                pool_kwargs["ssl_cert_reqs"] = "none"
+                pool_kwargs["ssl_check_hostname"] = False
+
+        # IAM auth: mint a Google OAuth2 access token per-connection and
+        # pass it as the Valkey AUTH password. Tokens auto-refresh because
+        # ``GoogleIamCredentialProvider.get_credentials`` is invoked by the
+        # pool on every new connection / reauth.
+        if os.getenv("VALKEY_IAM_AUTH", "").lower() in ("1", "true", "yes"):
+            pool_kwargs["credential_provider"] = _GoogleIamCredentialProvider()
+
+        self._pool = avalkey.ConnectionPool.from_url(url, **pool_kwargs)
         self._client = avalkey.Valkey(connection_pool=self._pool)
         self._prefix = key_prefix
         self._stats = CacheStats(maxsize=0)
