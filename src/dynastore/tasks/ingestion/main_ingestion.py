@@ -191,16 +191,15 @@ async def run_ingestion_task(
         # --- Process and Ingest Features ---
         total_features = None
         try:
-            import fiona
+            from dynastore.tasks.ingestion.readers import resolve_reader
 
-            with fiona.open(
-                source_file_path, "r", encoding=task_request.encoding
-            ) as source:
-                total_features = len(source)
-            logger.info(f"Source file contains {total_features} features.")
-            await asyncio.gather(
-                *(reporter.update_progress(0, total_features) for reporter in reporters)
-            )
+            _count_reader = resolve_reader(source_file_path)()
+            total_features = _count_reader.feature_count(source_file_path)
+            if total_features is not None:
+                logger.info(f"Source file contains {total_features} features.")
+                await asyncio.gather(
+                    *(reporter.update_progress(0, total_features) for reporter in reporters)
+                )
         except Exception as e:
             logger.warning(f"Could not determine total feature count: {e}")
 
@@ -316,55 +315,24 @@ async def run_ingestion_task(
 
             return feature
 
-        import fiona
+        # Pluggable source reader.  ``ReaderRegistry.resolve`` picks the
+        # highest-priority reader whose ``can_read(uri)`` matches —
+        # GdalOsgeoReader (system libgdal, supports Parquet/FGB/SHP/CSV/…)
+        # then FionaReader as a tail fallback.  Solves the
+        # ``CPLE_OpenFailedError: not recognized as being in a supported
+        # file format`` blocker when fiona's bundled libgdal lacks the
+        # Arrow/Parquet driver.
+        from dynastore.tasks.ingestion.readers import resolve_reader
 
-        # Diagnostic: GDAL's silent error handler swallows the underlying
-        # ``ERROR n: …`` line so a fiona ``Failed to open dataset
-        # (flags=68): /vsigs/<bucket>/<key>`` carries no actionable hint.
-        # Install a capturing handler around the open + log every GDAL
-        # error message we collected.  Helps distinguish missing Parquet
-        # driver vs /vsigs/ auth vs 404, etc.  Cheap; safe to keep.
-        try:
-            from osgeo import gdal as _gdal  # type: ignore[import-not-found]
+        reader_cls = resolve_reader(source_file_path)
+        reader_inst = reader_cls()
+        logger.info(
+            "ingestion: source %r → reader '%s'",
+            source_file_path, reader_cls.reader_id or reader_cls.__name__,
+        )
 
-            _gdal_errors: List[str] = []
-
-            def _capture_gdal_error(err_class: int, err_no: int, err_msg: str) -> None:
-                _gdal_errors.append(f"GDAL[{err_class}:{err_no}] {err_msg}")
-
-            _gdal.UseExceptions()
-            _gdal.PushErrorHandler(_capture_gdal_error)
-        except Exception:  # noqa: BLE001 — diagnostic only
-            _gdal = None
-            _gdal_errors = []
-
-        try:
-            with fiona.open(
-                source_file_path, "r", encoding=task_request.encoding
-            ) as reader:
-                pass  # placeholder to keep diff minimal — real loop below
-            _open_ok = True
-        except Exception as _open_exc:
-            _open_ok = False
-            _open_err = _open_exc
-        finally:
-            if _gdal is not None:
-                try:
-                    _gdal.PopErrorHandler()
-                except Exception:  # noqa: BLE001
-                    pass
-
-        if not _open_ok:
-            for _e in _gdal_errors:
-                logger.error("ingestion source-open: %s", _e)
-            logger.error(
-                "ingestion source-open: fiona.open(%r) failed; %s",
-                source_file_path, _open_err,
-            )
-            raise _open_err
-
-        with fiona.open(
-            source_file_path, "r", encoding=task_request.encoding
+        with reader_inst.open(
+            source_file_path, encoding=task_request.encoding,
         ) as reader:
             sliced_reader = itertools.islice(
                 reader,
