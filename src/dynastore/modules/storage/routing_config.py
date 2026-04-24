@@ -39,7 +39,7 @@ Resolution semantics:
 
 import logging
 from enum import StrEnum
-from typing import Any, Callable, ClassVar, Dict, FrozenSet, List, Optional, Set, Tuple, cast
+from typing import Any, Callable, ClassVar, Dict, FrozenSet, List, Literal, Optional, Set, Tuple, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -226,6 +226,22 @@ class OperationDriverEntry(BaseModel):
             "BACKUP entries only: container format the driver emits "
             "(e.g. 'parquet', 'ndjson').  The export endpoint picks the entry "
             "whose ``fmt`` matches the request's ``?format=`` query param."
+        ),
+    )
+    source: Literal["operator", "auto"] = Field(
+        default="operator",
+        description=(
+            "Provenance of this entry.  ``operator`` (default) means the "
+            "entry was written by an operator via the configs API or "
+            "constructed by hand.  ``auto`` means the entry was added by "
+            "the routing-config self-register helpers "
+            "(``_self_register_indexers_into`` / "
+            "``_self_register_searchers_into``) because a discoverable "
+            "driver matched the marker / capability gate.  Operators can "
+            "remove auto-added entries by writing an explicit operations "
+            "dict that omits the driver — the next read won't re-add it "
+            "as long as the operator-explicit list contains other entries "
+            "(self-register is set-default, never overwrite)."
         ),
     )
 
@@ -605,12 +621,13 @@ def _self_register_indexers_into(
                 driver_id=driver_id,
                 on_failure=FailurePolicy.WARN,
                 write_mode=WriteMode.ASYNC,
+                source="auto",
             )
         )
         listed.add(driver_id)
         logger.info(
             "Routing config self-registration: appended %s indexer '%s' "
-            "to operations[INDEX] (write_mode=async, on_failure=warn)",
+            "to operations[INDEX] (write_mode=async, on_failure=warn, source=auto)",
             marker_proto.__name__, driver_id,
         )
 
@@ -653,12 +670,12 @@ def _self_register_searchers_into(
         if driver_id in listed:
             continue
         target_ops.setdefault(Operation.SEARCH, []).append(
-            OperationDriverEntry(driver_id=driver_id)
+            OperationDriverEntry(driver_id=driver_id, source="auto")
         )
         listed.add(driver_id)
         logger.info(
             "Routing config self-registration: appended %s SEARCH "
-            "driver '%s' to operations[SEARCH]",
+            "driver '%s' to operations[SEARCH] (source=auto)",
             marker_proto.__name__, driver_id,
         )
 
@@ -687,11 +704,11 @@ def _self_register_metadata_drivers(
             if driver_id in listed:
                 continue
             target_ops.setdefault(op, []).append(
-                OperationDriverEntry(driver_id=driver_id)
+                OperationDriverEntry(driver_id=driver_id, source="auto")
             )
             logger.info(
                 "Routing config self-registration: appended installed "
-                "metadata driver '%s' to operations[%s]",
+                "metadata driver '%s' to operations[%s] (source=auto)",
                 driver_id, op,
             )
 

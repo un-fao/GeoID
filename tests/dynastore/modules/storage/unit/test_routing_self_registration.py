@@ -489,6 +489,152 @@ def test_validator_failure_in_discovery_does_not_break_construction():
 # ---------------------------------------------------------------------------
 
 
+# Imports needed for the source-provenance test block below.
+from dynastore.modules.storage.routing_config import (  # noqa: E402
+    _self_register_metadata_drivers,
+)
+
+
+def test_default_entry_source_is_operator():
+    """An entry constructed without ``source`` defaults to ``operator`` —
+    the assumption is that any explicit construction is operator-driven
+    unless an auto helper marks it otherwise."""
+    e = OperationDriverEntry(driver_id="X")
+    assert e.source == "operator"
+
+
+def test_indexer_helper_marks_entries_as_auto():
+    """Entries created by `_self_register_indexers_into` carry
+    `source="auto"` so operators can distinguish them in the API
+    response."""
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    from dynastore.models.protocols.indexer import CollectionIndexer
+    from dynastore.modules.storage.routing_config import (
+        _self_register_indexers_into,
+    )
+
+    class _ColES:
+        is_collection_indexer: ClassVar[bool] = True
+
+    target_ops: dict = {}
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_ColES()]):
+        _self_register_indexers_into(target_ops, CollectionIndexer)
+
+    assert len(target_ops[Operation.INDEX]) == 1
+    assert target_ops[Operation.INDEX][0].source == "auto"
+
+
+def test_searcher_helper_marks_entries_as_auto():
+    """Entries created by `_self_register_searchers_into` also carry
+    `source="auto"`."""
+    from unittest.mock import patch
+
+    from dynastore.models.protocols.metadata_driver import (
+        CatalogMetadataStore,
+        MetadataCapability,
+    )
+    from dynastore.modules.storage.routing_config import (
+        _self_register_searchers_into,
+    )
+
+    class _ESCat:
+        capabilities = frozenset({MetadataCapability.SEARCH})
+
+    target_ops: dict = {}
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_ESCat()]):
+        _self_register_searchers_into(target_ops, CatalogMetadataStore)
+
+    assert len(target_ops[Operation.SEARCH]) == 1
+    assert target_ops[Operation.SEARCH][0].source == "auto"
+
+
+def test_metadata_driver_helper_marks_entries_as_auto():
+    """`_self_register_metadata_drivers` also marks new entries as auto."""
+    cfg = CollectionRoutingConfig()
+    cfg.metadata.operations.clear()
+
+    metadata_index = {"PgCoreMeta": object()}
+    _self_register_metadata_drivers(cfg, metadata_index)
+
+    for op in (Operation.WRITE, Operation.READ):
+        entries = cfg.metadata.operations[op]
+        assert len(entries) == 1
+        assert entries[0].source == "auto"
+
+
+def test_operator_entry_preserved_alongside_auto_entry():
+    """Operator-supplied entry stays `source="operator"`; the helper only
+    auto-marks NEW entries it appends.  Critical: the API surface must
+    let operators see which entries they added vs which ones were folded
+    in by discovery."""
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    from dynastore.models.protocols.indexer import CollectionIndexer
+    from dynastore.modules.storage.routing_config import (
+        _self_register_indexers_into,
+    )
+
+    class _AutoDriver:
+        is_collection_indexer: ClassVar[bool] = True
+
+    class _OpDriver:
+        is_collection_indexer: ClassVar[bool] = True
+
+    operator_entry = OperationDriverEntry(
+        driver_id="_OpDriver", on_failure=FailurePolicy.FATAL,
+    )
+    target_ops: dict = {Operation.INDEX: [operator_entry]}
+
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_AutoDriver(), _OpDriver()]):
+        _self_register_indexers_into(target_ops, CollectionIndexer)
+
+    by_id = {e.driver_id: e for e in target_ops[Operation.INDEX]}
+    # _OpDriver entry preserved with source=operator (default).
+    assert by_id["_OpDriver"].source == "operator"
+    assert by_id["_OpDriver"].on_failure == FailurePolicy.FATAL
+    # _AutoDriver was missing so the helper appended it with source=auto.
+    assert by_id["_AutoDriver"].source == "auto"
+
+
+def test_source_field_serialises_in_model_dump():
+    """The new field appears in `model_dump()` output so it surfaces in
+    the configs API response without any endpoint-side changes."""
+    e_op = OperationDriverEntry(driver_id="X")
+    e_auto = OperationDriverEntry(driver_id="Y", source="auto")
+    assert e_op.model_dump()["source"] == "operator"
+    assert e_auto.model_dump()["source"] == "auto"
+
+
+def test_source_field_round_trips_via_model_validate():
+    """Persisted JSONB rows that include `source` deserialise correctly.
+    Rows that DON'T include it (older persisted data) get the default
+    `operator` — backwards-compatible."""
+    e_new = OperationDriverEntry.model_validate({"driver_id": "X", "source": "auto"})
+    assert e_new.source == "auto"
+    e_legacy = OperationDriverEntry.model_validate({"driver_id": "X"})
+    assert e_legacy.source == "operator"
+
+
+def test_source_field_rejects_invalid_value():
+    """Literal[\"operator\", \"auto\"] is enforced — typos fail validation."""
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    with _pytest.raises(ValidationError):
+        OperationDriverEntry(driver_id="X", source="bogus")  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Apply-handler parity for SEARCH (existing test below)
+# ---------------------------------------------------------------------------
+
+
 def test_apply_handlers_invoke_searcher_self_registration():
     """The collection-tier and catalog-tier apply handlers MUST also call
     `_self_register_searchers_into` (asset tier doesn't, by design — no
