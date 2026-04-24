@@ -32,6 +32,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 import pystac
+from pydantic.networks import _BaseUrl, _BaseMultiHostUrl
 
 from dynastore.models.localization import _is_valid_lang_key
 
@@ -69,6 +70,9 @@ def _coerce_for_stac_validation(value: Any, lang: str = "en") -> Any:
         return [_coerce_for_stac_validation(v, lang) for v in value]
     if hasattr(value, "isoformat"):
         return value.isoformat()
+    # pydantic v2 Url types (HttpUrl, AnyUrl, …) aren't JSON-serialisable.
+    if isinstance(value, (_BaseUrl, _BaseMultiHostUrl)):
+        return str(value)
     return value
 
 # --- Capability detection ---
