@@ -18,6 +18,16 @@
 
 import logging
 from typing import Any, Optional
+
+# Hard runtime dep — see modules/elasticsearch/module.py for rationale.
+# Forces entry-point load to fail on services without ``geopandas``
+# (transitively required by the ``geospatial_io`` extra in worker_task_ingestion
+# → ingestion → task_ingestion_deps → geospatial → geospatial_io) so the
+# CapabilityMap doesn't list this task as claimable on services lacking it.
+# ``main_ingestion.py`` itself imports fiona lazily inside functions, but we
+# need the strict gate at the task entry-point layer.
+import geopandas  # noqa: F401
+
 from dynastore.tasks.protocols import TaskProtocol
 from dynastore.modules.processes.protocols import ProcessTaskProtocol
 from dynastore.modules.tasks.models import TaskPayload

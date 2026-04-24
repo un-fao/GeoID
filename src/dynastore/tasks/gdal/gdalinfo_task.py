@@ -19,6 +19,16 @@
 import logging
 import asyncio
 from typing import List, Optional, Dict, Any, Union, Callable, Awaitable
+
+# Hard runtime dep — see modules/elasticsearch/module.py for rationale.
+# Forces entry-point load to fail on services without ``GDAL`` (the osgeo
+# package, transitively required by the ``module_gdal`` extra) so the
+# CapabilityMap doesn't list this task as claimable on services lacking it.
+# ``modules.gdal.service`` itself uses a ``try: from osgeo import gdal except
+# ImportError`` pattern (lines 23-29) — that's intentional for read paths
+# that don't open rasters; we need the strict gate at the task tier.
+from osgeo import gdal as _gdal  # noqa: F401  # pyright: ignore[reportMissingImports]
+
 from dynastore.modules.catalog.asset_service import (
     Asset,
     AssetTypeEnum,

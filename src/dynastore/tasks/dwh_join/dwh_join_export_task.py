@@ -2,6 +2,12 @@ import logging
 import asyncio
 from typing import Any, Optional, List
 
+# Hard runtime dep — see modules/elasticsearch/module.py for rationale.
+# Forces entry-point load to fail on services without ``google-cloud-bigquery``
+# (transitively required by the ``dwh`` extra → ``joins``) so the
+# CapabilityMap doesn't list this task as claimable on services lacking it.
+import google.cloud.bigquery  # noqa: F401
+
 from dynastore.tasks.protocols import TaskProtocol
 from dynastore.modules.tasks.models import TaskPayload, TaskStatusEnum
 from dynastore.tools.protocol_helpers import get_engine

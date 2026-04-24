@@ -16,6 +16,12 @@ Cloud Run Job worker — only the request envelope and reporter plumbing differ.
 import logging
 from typing import Optional
 
+# Hard runtime dep — see modules/elasticsearch/module.py for rationale.
+# Forces entry-point load to fail on services without ``shapely`` (transitively
+# required by the ``geospatial_core`` extra in worker_task_export_features) so
+# the CapabilityMap doesn't list this task as claimable on services lacking it.
+import shapely  # noqa: F401
+
 from dynastore.modules.features_exporter import export_features
 from dynastore.modules.processes.models import ExecuteRequest, Process, StatusInfo
 from dynastore.modules.tasks.models import TaskPayload, TaskStatusEnum
