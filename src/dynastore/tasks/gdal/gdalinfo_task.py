@@ -27,7 +27,7 @@ from typing import List, Optional, Dict, Any, Union, Callable, Awaitable
 # ``modules.gdal.service`` itself uses a ``try: from osgeo import gdal except
 # ImportError`` pattern (lines 23-29) — that's intentional for read paths
 # that don't open rasters; we need the strict gate at the task tier.
-from osgeo import gdal as _gdal  # noqa: F401  # pyright: ignore[reportMissingImports]
+from osgeo import gdal as _gdal  # noqa: F401
 
 from dynastore.modules.catalog.asset_service import (
     Asset,
