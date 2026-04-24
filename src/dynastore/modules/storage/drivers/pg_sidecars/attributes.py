@@ -64,6 +64,32 @@ logger = logging.getLogger(__name__)
 from pydantic_core import PydanticUndefined
 
 
+def _make_tstzrange(start: Any, end: Any, *, lower_inc: bool = True, upper_inc: bool = False) -> Any:
+    """Build a tstzrange-compatible value usable by both async (asyncpg) and
+    sync (psycopg2) PG drivers.  Sync workers (DatastoreModule + worker
+    SCOPEs) don't ship asyncpg, so the historical ``from asyncpg import
+    Range`` blew up at ingestion time with ``ModuleNotFoundError``.
+    """
+    try:
+        from asyncpg import Range  # type: ignore[import-not-found]
+        return Range(start, end, lower_inc=lower_inc, upper_inc=upper_inc)
+    except ImportError:
+        pass
+    try:
+        from psycopg2.extras import DateTimeTZRange  # type: ignore[import-not-found]
+        bounds = ("[" if lower_inc else "(") + ("]" if upper_inc else ")")
+        return DateTimeTZRange(start, end, bounds=bounds)
+    except ImportError:
+        pass
+    # Last resort: PG literal string.  PG casts ``'[lo,hi)'`` to tstzrange
+    # at INSERT time — works with any driver, costs a server-side parse.
+    lo = ("[" if lower_inc else "(")
+    hi = ("]" if upper_inc else ")")
+    s_iso = start.isoformat() if hasattr(start, "isoformat") else (start or "")
+    e_iso = end.isoformat() if hasattr(end, "isoformat") else (end or "")
+    return f"{lo}{s_iso},{e_iso}{hi}"
+
+
 class FeatureAttributeSidecar(SidecarProtocol):
     """
     Sidecar for feature attributes and identity.
@@ -1368,7 +1394,6 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                 v_to = context.get("valid_to")
 
                 from datetime import datetime, timezone
-                from asyncpg import Range
 
                 # If start missing, MUST sync with Hub transaction_time to ensure join consistency.
                 # Do NOT rely on DB default CURRENT_TIMESTAMP as it will be > transaction_time.
@@ -1377,8 +1402,15 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                         timezone.utc
                     )
 
-                payload["validity"] = Range(
-                    v_from, v_to, lower_inc=True, upper_inc=False
+                # Driver-agnostic tstzrange wrapper.  asyncpg services
+                # use ``asyncpg.Range``; sync (psycopg2 + DatastoreModule)
+                # workers don't have asyncpg installed at all.  The
+                # psycopg2 equivalent is ``DateTimeTZRange``; both are
+                # bound to a ``tstzrange`` column the same way.  As a
+                # last resort emit the PG literal ``[lo,hi)`` string —
+                # Postgres casts it to tstzrange on insert.
+                payload["validity"] = _make_tstzrange(
+                    v_from, v_to, lower_inc=True, upper_inc=False,
                 )
 
         return payload
