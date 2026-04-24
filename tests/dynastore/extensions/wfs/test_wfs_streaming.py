@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "metadata_collection_core_postgresql", "metadata_collection_stac_postgresql", "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql")
+@pytest.mark.enable_modules("db_config", "db", "catalog", "collection_postgresql", "collection_postgresql", "catalog_postgresql", "catalog_postgresql")
 @pytest.mark.enable_extensions("features", "configs", "wfs", "assets", "stac")
 async def test_wfs_streaming_basic(in_process_client, setup_catalog, setup_collection):
     catalog_id = setup_catalog
@@ -38,7 +38,7 @@ async def test_wfs_streaming_basic(in_process_client, setup_catalog, setup_colle
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "metadata_collection_core_postgresql", "metadata_collection_stac_postgresql", "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql")
+@pytest.mark.enable_modules("db_config", "db", "catalog", "collection_postgresql", "collection_postgresql", "catalog_postgresql", "catalog_postgresql")
 @pytest.mark.enable_extensions("features", "configs", "wfs", "assets", "stac")
 async def test_wfs_hits(in_process_client, setup_catalog, setup_collection):
     catalog_id = setup_catalog
@@ -79,7 +79,7 @@ async def test_wfs_hits(in_process_client, setup_catalog, setup_collection):
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "metadata_collection_core_postgresql", "metadata_collection_stac_postgresql", "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql")
+@pytest.mark.enable_modules("db_config", "db", "catalog", "collection_postgresql", "collection_postgresql", "catalog_postgresql", "catalog_postgresql")
 @pytest.mark.enable_extensions("features", "configs", "wfs", "assets", "stac")
 async def test_wfs_streaming_geojson(
     in_process_client, setup_catalog, setup_collection
@@ -121,7 +121,7 @@ async def test_wfs_streaming_geojson(
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "metadata_collection_core_postgresql", "metadata_collection_stac_postgresql", "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql")
+@pytest.mark.enable_modules("db_config", "db", "catalog", "collection_postgresql", "collection_postgresql", "catalog_postgresql", "catalog_postgresql")
 @pytest.mark.enable_extensions("features", "configs", "wfs", "assets", "stac")
 async def test_wfs_buffered_gml(in_process_client, setup_catalog, setup_collection):
     catalog_id = setup_catalog

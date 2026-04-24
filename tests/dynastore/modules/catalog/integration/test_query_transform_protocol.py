@@ -31,7 +31,7 @@ from dynastore.models.driver_context import DriverContext
 # Enable extensions required for these tests
 pytestmark = [
     pytest.mark.enable_extensions("tiles", "dwh", "features"),
-    pytest.mark.enable_modules("db_config", "db", "catalog", "stats", "tiles", "metadata_collection_core_postgresql", "metadata_collection_stac_postgresql", "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql"),
+    pytest.mark.enable_modules("db_config", "db", "catalog", "stats", "tiles", "collection_postgresql", "collection_postgresql", "catalog_postgresql", "catalog_postgresql"),
 ]
 
 

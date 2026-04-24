@@ -74,7 +74,7 @@ def _stac_data_loader(filename: str):
 @pytest.mark.asyncio
 @pytest.mark.enable_modules(
     "db_config", "db", "catalog", "tasks", "gcp", "iam", "events", "cache",
-    "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql",
+    "catalog_postgresql", "catalog_postgresql",
 )
 @pytest.mark.enable_extensions("stac")
 @pytest.mark.enable_tasks("gcp_provision", "gcp_catalog_cleanup")
@@ -165,7 +165,7 @@ async def test_dispatcher_claims_gcp_provision_exclusively(
 @pytest.mark.asyncio
 @pytest.mark.enable_modules(
     "db_config", "db", "catalog", "stac", "processes", "tasks",
-    "proxy", "gcp", "iam", "metadata_collection_core_postgresql", "metadata_collection_stac_postgresql", "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql",
+    "proxy", "gcp", "iam", "collection_postgresql", "collection_postgresql", "catalog_postgresql", "catalog_postgresql",
 )
 @pytest.mark.enable_extensions(
     "stac", "assets", "features", "configs", "processes", "web",

@@ -280,8 +280,8 @@ class TestEntryPoints:
         expected = {
             "stac": "dynastore.modules.stac.module:StacModule",
         }
-        # NOTE: BOTH ``metadata_collection_stac_postgresql`` (retired in
-        # PR 1e step 3b) and ``metadata_catalog_stac_postgresql`` (retired
+        # NOTE: BOTH ``collection_postgresql`` (retired in
+        # PR 1e step 3b) and ``catalog_postgresql`` (retired
         # in PR 1e step 3c) are gone.  The STAC slice is now composed
         # inside the per-tier wrapper drivers
         # (``CollectionPostgresqlDriver`` / ``CatalogPostgresqlDriver``)

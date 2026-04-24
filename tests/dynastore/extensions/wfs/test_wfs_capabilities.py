@@ -2,7 +2,7 @@ import pytest
 from fastapi import Request
 
 @pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "metadata_collection_core_postgresql", "metadata_collection_stac_postgresql", "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql")
+@pytest.mark.enable_modules("db_config", "db", "catalog", "collection_postgresql", "collection_postgresql", "catalog_postgresql", "catalog_postgresql")
 @pytest.mark.enable_extensions("features", "configs", "wfs", "assets", "stac")
 async def test_get_capabilities_scoped(in_process_client, setup_collection):
     collection_id = setup_collection
@@ -17,7 +17,7 @@ async def test_get_capabilities_scoped(in_process_client, setup_collection):
     pass
 
 @pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "metadata_collection_core_postgresql", "metadata_collection_stac_postgresql", "metadata_catalog_core_postgresql", "metadata_catalog_stac_postgresql")
+@pytest.mark.enable_modules("db_config", "db", "catalog", "collection_postgresql", "collection_postgresql", "catalog_postgresql", "catalog_postgresql")
 @pytest.mark.enable_extensions("features", "configs", "wfs", "assets", "stac")
 async def test_get_capabilities_with_collection(in_process_client, setup_collection, setup_catalog):
     catalog_id = setup_catalog
