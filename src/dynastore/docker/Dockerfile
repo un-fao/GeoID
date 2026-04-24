@@ -82,9 +82,18 @@ ARG SCOPE=all
 # Set BUILD_JUPYTERLITE=false for services that do not include the notebooks scope (e.g. worker).
 ARG BUILD_JUPYTERLITE=false
 # Use buildkit cache for pip
+#
+# fiona ships a manylinux wheel with its own bundled libgdal — that bundled
+# build does NOT include the Arrow/Parquet driver.  Reading GeoParquet over
+# /vsigs/ from the ingestion task therefore failed with
+# ``CPLE_OpenFailedError: not recognized as being in a supported file format``
+# even though the system GDAL from ``ghcr.io/osgeo/gdal:ubuntu-full-3.12.3``
+# has the Parquet driver (the maps service confirms via /maps/gdal/vector/info
+# → driverShortName='Parquet').  Force fiona to rebuild from sdist against
+# the system libgdal so it inherits every driver the base image ships.
 RUN --mount=type=cache,target=/root/.cache/pip \
     ${VENV_PATH}/bin/pip install --upgrade pip setuptools wheel && \
-    ${VENV_PATH}/bin/pip install ".[${SCOPE}]" uvicorn gunicorn
+    ${VENV_PATH}/bin/pip install --no-binary fiona ".[${SCOPE}]" uvicorn gunicorn
 
 # Startup scripts ship as package data under dynastore/scripts/ (SSOT). Copy
 # from site-packages so this step is identical across every Dockerfile that
