@@ -71,12 +71,12 @@ def _make_tstzrange(start: Any, end: Any, *, lower_inc: bool = True, upper_inc: 
     Range`` blew up at ingestion time with ``ModuleNotFoundError``.
     """
     try:
-        from asyncpg import Range  # type: ignore[import-not-found]
+        from asyncpg import Range
         return Range(start, end, lower_inc=lower_inc, upper_inc=upper_inc)
     except ImportError:
         pass
     try:
-        from psycopg2.extras import DateTimeTZRange  # type: ignore[import-not-found]
+        from psycopg2.extras import DateTimeTZRange
         bounds = ("[" if lower_inc else "(") + ("]" if upper_inc else ")")
         return DateTimeTZRange(start, end, bounds=bounds)
     except ImportError:

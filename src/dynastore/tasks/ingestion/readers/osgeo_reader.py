@@ -36,7 +36,7 @@ from typing import Any, ClassVar, Iterable, Iterator, Tuple
 # ``register_reader(GdalOsgeoReader)`` line from running — the registry
 # stays narrower and resolve() falls through to the next candidate
 # (FionaReader / future PyArrow reader).
-from osgeo import ogr, gdal  # type: ignore[import-not-found]  # noqa: F401
+from osgeo import ogr, gdal  # noqa: F401
 
 from .base import SourceReaderProtocol, _to_vsigs, register_reader
 
