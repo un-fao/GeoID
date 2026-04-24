@@ -63,9 +63,10 @@ class CacheModule(ModuleProtocol):
 
         _tls = os.getenv("VALKEY_TLS", "").lower() in ("1", "true", "yes")
         _iam = os.getenv("VALKEY_IAM_AUTH", "").lower() in ("1", "true", "yes")
+        _cluster = os.getenv("VALKEY_CLUSTER", "").lower() in ("1", "true", "yes")
         logger.info(
-            "CacheModule: Connecting to Valkey at %s (tls=%s, iam_auth=%s) …",
-            _safe_url, _tls, _iam,
+            "CacheModule: Connecting to Valkey at %s (tls=%s, iam_auth=%s, cluster=%s) …",
+            _safe_url, _tls, _iam, _cluster,
         )
         try:
             from dynastore.tools.cache_valkey import ValkeyCacheBackend

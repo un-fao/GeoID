@@ -32,6 +32,9 @@ Env vars:
   VALKEY_IAM_AUTH      — ``true`` to authenticate via a Google OAuth2 access
                          token minted from ADC. Requires ``google-auth``
                          (provided by the ``module_gcp`` extra).
+  VALKEY_CLUSTER       — ``true`` for GCP Memorystore for Valkey CLUSTER
+                         instances. Uses ``ValkeyCluster`` (handles MOVED/ASK
+                         redirects, per-node pools).
 """
 
 from __future__ import annotations
@@ -303,8 +306,23 @@ class ValkeyCacheBackend:
         if os.getenv("VALKEY_IAM_AUTH", "").lower() in ("1", "true", "yes"):
             pool_kwargs["credential_provider"] = _GoogleIamCredentialProvider()
 
-        self._pool = avalkey.ConnectionPool.from_url(url, **pool_kwargs)
-        self._client = avalkey.Valkey(connection_pool=self._pool)
+        # Cluster mode: GCP Memorystore for Valkey CLUSTER instances expose a
+        # cluster discovery endpoint. A standalone client misroutes commands
+        # and surfaces NOAUTH-shaped errors. ValkeyCluster handles MOVED/ASK
+        # redirects and per-node connection pools.
+        if os.getenv("VALKEY_CLUSTER", "").lower() in ("1", "true", "yes"):
+            from valkey.asyncio.cluster import ValkeyCluster
+            # ConnectionPool kwargs flow through; cluster takes the URL directly.
+            # `decode_responses=False` is the default; pass remaining kwargs
+            # except `connection_class` (cluster picks its own per-node).
+            cluster_kwargs = {k: v for k, v in pool_kwargs.items()
+                              if k != "connection_class"}
+            cluster_kwargs["ssl"] = "connection_class" in pool_kwargs
+            self._pool = None  # cluster owns its pools internally
+            self._client = ValkeyCluster.from_url(url, **cluster_kwargs)
+        else:
+            self._pool = avalkey.ConnectionPool.from_url(url, **pool_kwargs)
+            self._client = avalkey.Valkey(connection_pool=self._pool)
         self._prefix = key_prefix
         self._stats = CacheStats(maxsize=0)
         self._locks: Dict[str, asyncio.Lock] = {}
@@ -453,6 +471,11 @@ class ValkeyCacheBackend:
         into a dict keyed by section name, each value being a dict of fields.
         """
         raw = await self._client.info("all")
+        # Cluster mode returns Dict[node_addr, Dict[field, value]]; pick the
+        # first node's view (all nodes report the same server/version info,
+        # only stats/replication differ — close enough for the startup log).
+        if raw and isinstance(next(iter(raw.values())), dict):
+            raw = next(iter(raw.values()))
         # valkey.asyncio returns a flat dict of all fields; group into sections
         # by matching known prefixes so callers can use info["server"]["redis_version"]
         sections: dict = {}
@@ -466,4 +489,5 @@ class ValkeyCacheBackend:
     async def close(self) -> None:
         """Shut down connection pool cleanly."""
         await self._client.aclose()
-        await self._pool.aclose()
+        if self._pool is not None:
+            await self._pool.aclose()
