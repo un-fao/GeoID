@@ -1,178 +1,184 @@
-"""Unit tests for the protocol-gate dispatch mechanism.
+"""Unit tests for the service-affinity routing gate in CapabilityMap.refresh.
 
-Regression guard ensuring that services missing required protocols do not claim
-task types they cannot execute.  Covers:
-- TaskProtocol.are_protocols_satisfied()
-- CapabilityMap.refresh() skipping task types with unmet requirements
+Replaces the previous ``@requires(Protocol)`` / ``are_protocols_satisfied``
+gate (removed in favour of operator-controlled ``TaskRoutingConfig``).
+Covers:
+
+- ``CapabilityMap.refresh()`` narrowing claimable types when routing config
+  pins a task to a different service.
+- Empty / missing routing entry preserves legacy "any capable service may
+  claim" behaviour.
+- ``routing_disabled=True`` collapses the filter to no-op.
+- ``service_name=None`` (no instance.json) preserves legacy behaviour.
+- Multi-target arrays (``["catalog", "worker"]``) admit either service.
 """
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from dynastore.tasks.protocols import TaskProtocol, requires
+import pytest
+
 from dynastore.modules.tasks.runners import CapabilityMap
+from dynastore.modules.tasks.tasks_config import TaskRoutingConfig
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-class _NoReqTask(TaskProtocol):
-    task_type = "test_no_req"
 
-    async def run(self, payload):
-        return {}
-
-
-@requires(object)  # use `object` as a stand-in protocol type
-class _RequiresObjTask(TaskProtocol):
-    task_type = "test_requires_obj"
-
-    async def run(self, payload):
-        return {}
+def _runner(task_types):
+    r = MagicMock()
+    r.can_handle = lambda t: t in task_types
+    return r
 
 
-# ---------------------------------------------------------------------------
-# are_protocols_satisfied()
-# ---------------------------------------------------------------------------
+def _patch_refresh_deps(*, async_runners, sync_runners, loaded_types,
+                       routing_cfg, service_name):
+    """Patch every external dep CapabilityMap.refresh touches."""
+    config_mgr = AsyncMock()
+    config_mgr.get_config = AsyncMock(return_value=routing_cfg)
+
+    return [
+        patch("dynastore.tasks.get_loaded_task_types", return_value=list(loaded_types)),
+        patch("dynastore.modules.tasks.runners.get_runners",
+              side_effect=lambda mode: async_runners
+              if str(mode).endswith("ASYNCHRONOUS") else sync_runners),
+        patch("dynastore.tools.discovery.get_protocol",
+              return_value=config_mgr if routing_cfg is not None else None),
+        patch("dynastore.modules.tasks.dispatcher._SERVICE_NAME", service_name),
+    ]
 
 
-def test_empty_required_protocols_always_satisfied():
-    task = _NoReqTask()
-    assert task.required_protocols == ()
-    assert task.are_protocols_satisfied() is True
-
-
-def test_satisfied_when_protocol_available():
-    task = _RequiresObjTask()
-    mock_provider = MagicMock()
-    with patch("dynastore.tools.discovery.get_all_protocols", return_value=[mock_provider]):
-        assert task.are_protocols_satisfied() is True
-
-
-def test_unsatisfied_when_protocol_missing():
-    task = _RequiresObjTask()
-    with patch("dynastore.tools.discovery.get_all_protocols", return_value=[]):
-        assert task.are_protocols_satisfied() is False
-
-
-def test_requires_decorator_sets_attribute():
-    assert _RequiresObjTask.required_protocols == (object,)
-
-
-def test_requires_decorator_does_not_affect_other_tasks():
-    assert _NoReqTask.required_protocols == ()
-
-
-# ---------------------------------------------------------------------------
-# CapabilityMap.refresh() — protocol gate
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_capability_map_excludes_task_with_missing_protocol():
-    """Task with unmet required_protocols must NOT appear in the capability map."""
-    mock_instance = MagicMock()
-    mock_instance.required_protocols = (object,)
-    mock_instance.are_protocols_satisfied.return_value = False
-
+async def _refresh_with(routing_cfg, service_name, loaded_types,
+                       async_handles, sync_handles):
     cap = CapabilityMap()
-
-    with (
-        patch("dynastore.tasks.get_loaded_task_types", return_value=["test_requires_obj"]),
-        patch("dynastore.tasks.get_task_instance", return_value=mock_instance),
-        patch("dynastore.tools.discovery.get_all_protocols", return_value=[]),
-        patch("dynastore.modules.tasks.runners.get_runners", return_value=[]),
-    ):
+    patches = _patch_refresh_deps(
+        async_runners=[_runner(set(async_handles))],
+        sync_runners=[_runner(set(sync_handles))],
+        loaded_types=loaded_types,
+        routing_cfg=routing_cfg,
+        service_name=service_name,
+    )
+    for p in patches:
+        p.start()
+    try:
         await cap.refresh()
+        return cap
+    finally:
+        for p in reversed(patches):
+            p.stop()
 
-    assert "test_requires_obj" not in cap.async_types
-    assert "test_requires_obj" not in cap.sync_types
 
-
-@pytest.mark.asyncio
-async def test_capability_map_includes_task_with_met_protocol():
-    """Task with satisfied required_protocols must appear in the capability map."""
-    mock_instance = MagicMock()
-    mock_instance.required_protocols = (object,)
-    mock_instance.are_protocols_satisfied.return_value = True
-
-    mock_runner = MagicMock()
-    mock_runner.can_handle.return_value = True
-
-    cap = CapabilityMap()
-
-    with (
-        patch("dynastore.tasks.get_loaded_task_types", return_value=["test_requires_obj"]),
-        patch("dynastore.tasks.get_task_instance", return_value=mock_instance),
-        patch("dynastore.modules.tasks.runners.get_runners", return_value=[mock_runner]),
-    ):
-        await cap.refresh()
-
-    assert "test_requires_obj" in cap.async_types
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_capability_map_includes_task_with_no_requirements():
-    """Task with no required_protocols is always included if a runner handles it."""
-    mock_instance = MagicMock()
-    mock_instance.required_protocols = ()
-    mock_instance.are_protocols_satisfied.return_value = True
-
-    mock_runner = MagicMock()
-    mock_runner.can_handle.return_value = True
-
-    cap = CapabilityMap()
-
-    with (
-        patch("dynastore.tasks.get_loaded_task_types", return_value=["test_no_req"]),
-        patch("dynastore.tasks.get_task_instance", return_value=mock_instance),
-        patch("dynastore.modules.tasks.runners.get_runners", return_value=[mock_runner]),
-    ):
-        await cap.refresh()
-
-    assert "test_no_req" in cap.async_types
+async def test_no_routing_config_legacy_behaviour():
+    """When no TaskRoutingConfig is registered, all capable types are claimed."""
+    cap = await _refresh_with(
+        routing_cfg=None,
+        service_name="catalog",
+        loaded_types=["t_a", "t_b"],
+        async_handles={"t_a", "t_b"},
+        sync_handles=set(),
+    )
+    assert sorted(cap.async_types) == ["t_a", "t_b"]
 
 
 @pytest.mark.asyncio
-async def test_capability_map_tolerates_definition_only_placeholder():
-    """Regression: DefinitionOnlyTask-shaped placeholders must not crash refresh().
+async def test_service_name_unset_skips_routing():
+    """Without a service_name (no instance.json), routing is bypassed."""
+    cfg = TaskRoutingConfig(routing={"t_a": ["catalog"]})
+    cap = await _refresh_with(
+        routing_cfg=cfg,
+        service_name=None,
+        loaded_types=["t_a", "t_b"],
+        async_handles={"t_a", "t_b"},
+        sync_handles=set(),
+    )
+    assert sorted(cap.async_types) == ["t_a", "t_b"]
 
-    The placeholder is registered when a task's definition module is importable but its
-    heavy execution deps are missing. It is intentionally not a TaskProtocol subclass
-    (it is cast to one at registration). Before the fix, refresh() called
-    instance.are_protocols_satisfied() on the placeholder and crashed with
-    AttributeError, killing the dispatcher at startup so no service claimed any task
-    (observed on dynastore-catalog rev 00132-qsp, 2026-04-22 — carlo_catalog task
-    stayed PENDING, GCS bucket never provisioned).
 
-    This test mirrors the placeholder shape from
-    ``dynastore/tasks/__init__.py::_register_missing_task_definitions`` and asserts
-    the refresh() contract without having to exercise the entry-points machinery.
-    """
-    class _Placeholder:
-        """Shape-matches the real DefinitionOnlyTask."""
-        _task_type = "test_placeholder"
-        is_placeholder = True
-        required_protocols: tuple = ()
+@pytest.mark.asyncio
+async def test_routing_disabled_kill_switch():
+    """``routing_disabled=true`` returns to legacy behaviour."""
+    cfg = TaskRoutingConfig(
+        routing={"t_a": ["maps"]}, routing_disabled=True,
+    )
+    cap = await _refresh_with(
+        routing_cfg=cfg,
+        service_name="catalog",
+        loaded_types=["t_a", "t_b"],
+        async_handles={"t_a", "t_b"},
+        sync_handles=set(),
+    )
+    assert sorted(cap.async_types) == ["t_a", "t_b"]
 
-        def are_protocols_satisfied(self) -> bool:
-            return True
 
-    instance = _Placeholder()
-    assert instance.are_protocols_satisfied() is True
-    assert instance.required_protocols == ()
+@pytest.mark.asyncio
+async def test_routing_filters_out_other_service():
+    """A task pinned to ``maps`` is not claimable on ``catalog``."""
+    cfg = TaskRoutingConfig(
+        routing={"t_a": ["maps"], "t_b": ["catalog"]},
+    )
+    cap = await _refresh_with(
+        routing_cfg=cfg,
+        service_name="catalog",
+        loaded_types=["t_a", "t_b"],
+        async_handles={"t_a", "t_b"},
+        sync_handles=set(),
+    )
+    assert cap.async_types == ["t_b"]
 
-    cap = CapabilityMap()
-    with (
-        patch("dynastore.tasks.get_loaded_task_types", return_value=["test_placeholder"]),
-        patch("dynastore.tasks.get_task_instance", return_value=instance),
-        # No runner handles the placeholder → it should be silently excluded,
-        # not crash the refresh.
-        patch("dynastore.modules.tasks.runners.get_runners", return_value=[]),
-    ):
-        await cap.refresh()  # must not raise
 
-    assert "test_placeholder" not in cap.async_types
-    assert "test_placeholder" not in cap.sync_types
+@pytest.mark.asyncio
+async def test_routing_admits_multi_target():
+    """A task with multiple targets is claimable from any of them."""
+    cfg = TaskRoutingConfig(
+        routing={"t_a": ["catalog", "worker"]},
+    )
+    for svc in ("catalog", "worker"):
+        cap = await _refresh_with(
+            routing_cfg=cfg,
+            service_name=svc,
+            loaded_types=["t_a"],
+            async_handles={"t_a"},
+            sync_handles=set(),
+        )
+        assert cap.async_types == ["t_a"], f"failed for service={svc!r}"
+
+
+@pytest.mark.asyncio
+async def test_missing_routing_entry_treated_as_open():
+    """Task types absent from the routing map remain open to any service."""
+    cfg = TaskRoutingConfig(
+        routing={"t_a": ["maps"]},  # only t_a is pinned
+    )
+    cap = await _refresh_with(
+        routing_cfg=cfg,
+        service_name="catalog",
+        loaded_types=["t_a", "t_b"],
+        async_handles={"t_a", "t_b"},
+        sync_handles=set(),
+    )
+    # t_a is filtered out (pinned to maps); t_b is open
+    assert cap.async_types == ["t_b"]
+
+
+@pytest.mark.asyncio
+async def test_empty_target_list_treated_as_open():
+    """An explicit empty list is the same as a missing key — open to all."""
+    cfg = TaskRoutingConfig(
+        routing={"t_a": []},
+    )
+    cap = await _refresh_with(
+        routing_cfg=cfg,
+        service_name="catalog",
+        loaded_types=["t_a"],
+        async_handles={"t_a"},
+        sync_handles=set(),
+    )
+    assert cap.async_types == ["t_a"]

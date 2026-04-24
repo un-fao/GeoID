@@ -221,21 +221,14 @@ async def test_successful_provision_marks_ready():
 
 
 # ---------------------------------------------------------------------------
-# Protocol-gate declaration — regression guard
+# Note: the legacy ``@requires(StorageProtocol)`` / ``are_protocols_satisfied``
+# gate was removed in favour of operator-controlled service-affinity routing
+# (TaskRoutingConfig). The two tests that asserted that gate were dropped:
+# placement is now a deployment concern, not a source-level declaration.
+# Hard top-level imports of runtime deps in the task module + the routing
+# config combine to deliver the same outcome (wrong-SCOPE services can't
+# load the task class, so it never enters get_loaded_task_types()).
 # ---------------------------------------------------------------------------
-
-
-def test_provisioning_task_declares_storage_protocol():
-    """ProvisioningTask must declare StorageProtocol as required (prevents wrong service claiming it)."""
-    from dynastore.models.protocols import StorageProtocol
-    assert StorageProtocol in ProvisioningTask.required_protocols
-
-
-def test_provisioning_task_unsatisfied_without_storage():
-    """ProvisioningTask.are_protocols_satisfied() returns False when StorageProtocol unavailable."""
-    task = ProvisioningTask()
-    with patch("dynastore.tools.discovery.get_all_protocols", return_value=[]):
-        assert task.are_protocols_satisfied() is False
 
 
 # ---------------------------------------------------------------------------

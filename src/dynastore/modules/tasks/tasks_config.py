@@ -1,6 +1,6 @@
 # dynastore/modules/tasks/tasks_config.py
 import os
-from typing import ClassVar, Optional
+from typing import ClassVar, Dict, List, Optional
 from pydantic import Field
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 
@@ -25,5 +25,41 @@ class TasksPluginConfig(PluginConfig):
             "creates new rows or fails to mark the row terminal. The pg_cron "
             "reaper SQL is rebuilt at startup; live changes only take effect "
             "on the next service restart."
+        ),
+    )
+
+
+class TaskRoutingConfig(PluginConfig):
+    """Service-affinity routing for the global task queue.
+
+    Sibling to ``CollectionRoutingConfig`` but for the tasks tier. Maps
+    ``task_type`` → ordered list of service names allowed to claim it.
+    Empty/missing entry → any service whose runner can handle the task may
+    claim (legacy behaviour).
+
+    Each process compares the configured service names against its own
+    ``service_name`` resolved from ``${DYNASTORE_CONFIG_ROOT}/instance.json``
+    (see ``modules/db_config/instance.py``).  Per-deployment defaults are
+    seeded by dropping a JSON file into ``${DYNASTORE_CONFIG_ROOT}/defaults/``;
+    runtime changes go through the standard ``PUT /configs/classes/
+    TaskRoutingConfig`` admin route and trigger the apply-handler that
+    re-narrows the dispatcher's CapabilityMap.
+    """
+
+    routing: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description=(
+            "task_type → list of logical service names. Missing key or empty "
+            "list = any capable service may claim. Set per deployment via the "
+            "JSON files mounted into ${DYNASTORE_CONFIG_ROOT}/defaults/."
+        ),
+    )
+
+    routing_disabled: bool = Field(
+        default=False,
+        description=(
+            "Operator kill-switch — when true, the routing filter is a no-op "
+            "and any service claims anything its CapabilityMap accepts. Use "
+            "for emergency triage."
         ),
     )

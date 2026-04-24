@@ -1,0 +1,187 @@
+"""Unit tests for the JSON-defaults bootstrap (``config_seeder.py``).
+
+Black-box: we patch ``DEFAULTS_DIR`` to a tmp folder, mock the advisory-lock
+helper (no real PG), and assert the right ``set_config`` calls. Tests do NOT
+reload the module — that mutates global state and breaks parallel test workers.
+"""
+from __future__ import annotations
+
+import json
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from dynastore.modules.db_config import config_seeder as seeder
+from dynastore.modules.tasks.tasks_config import TaskRoutingConfig
+
+
+@asynccontextmanager
+async def _fake_lock(_engine, _key):
+    yield object()  # any non-None value = "we hold it"
+
+
+def _write_seed(dir_, name, payload):
+    dir_.mkdir(parents=True, exist_ok=True)
+    (dir_ / name).write_text(json.dumps(payload))
+
+
+@pytest.mark.asyncio
+async def test_no_defaults_dir_is_noop(monkeypatch, tmp_path):
+    monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "nope")
+    # No defaults/ subfolder — silent no-op.
+    await seeder.seed_default_configs(engine=object())
+
+
+@pytest.mark.asyncio
+async def test_no_files_is_noop(monkeypatch, tmp_path):
+    (tmp_path / "defaults").mkdir()
+    monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
+    await seeder.seed_default_configs(engine=object())
+
+
+@pytest.mark.asyncio
+async def test_applies_when_no_existing_config(monkeypatch, tmp_path):
+    _write_seed(tmp_path / "defaults", "task-routing.json", {
+        "class_key": "TaskRoutingConfig",
+        "value": {"enabled": True, "routing": {"t_a": ["catalog"]}},
+    })
+    monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
+
+    config_mgr = AsyncMock()
+    config_mgr.list_configs = AsyncMock(return_value={})
+    config_mgr.set_config = AsyncMock()
+
+    with patch("dynastore.tools.discovery.get_protocol", return_value=config_mgr), \
+         patch.object(seeder, "acquire_startup_lock", _fake_lock):
+        await seeder.seed_default_configs(engine=object())
+
+    config_mgr.set_config.assert_awaited_once()
+    cls_arg, cfg_arg = config_mgr.set_config.await_args.args
+    assert cls_arg is TaskRoutingConfig
+    assert isinstance(cfg_arg, TaskRoutingConfig)
+    assert cfg_arg.routing == {"t_a": ["catalog"]}
+
+
+@pytest.mark.asyncio
+async def test_skip_when_existing_no_override(monkeypatch, tmp_path):
+    _write_seed(tmp_path / "defaults", "task-routing.json", {
+        "class_key": "TaskRoutingConfig",
+        "value": {"enabled": True, "routing": {"t_a": ["maps"]}},
+    })
+    monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
+
+    config_mgr = AsyncMock()
+    config_mgr.list_configs = AsyncMock(
+        return_value={TaskRoutingConfig: TaskRoutingConfig()},
+    )
+    config_mgr.set_config = AsyncMock()
+
+    with patch("dynastore.tools.discovery.get_protocol", return_value=config_mgr), \
+         patch.object(seeder, "acquire_startup_lock", _fake_lock):
+        await seeder.seed_default_configs(engine=object())
+
+    config_mgr.set_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_override_forces_apply(monkeypatch, tmp_path):
+    _write_seed(tmp_path / "defaults", "task-routing.json", {
+        "class_key": "TaskRoutingConfig",
+        "value": {"enabled": True, "routing": {"t_a": ["maps"]}},
+        "override": True,
+    })
+    monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
+
+    config_mgr = AsyncMock()
+    config_mgr.list_configs = AsyncMock(
+        return_value={TaskRoutingConfig: TaskRoutingConfig()},
+    )
+    config_mgr.set_config = AsyncMock()
+
+    with patch("dynastore.tools.discovery.get_protocol", return_value=config_mgr), \
+         patch.object(seeder, "acquire_startup_lock", _fake_lock):
+        await seeder.seed_default_configs(engine=object())
+
+    config_mgr.set_config.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_lexical_overlay_last_wins(monkeypatch, tmp_path):
+    _write_seed(tmp_path / "defaults", "10-base.json", {
+        "class_key": "TaskRoutingConfig",
+        "value": {"enabled": True, "routing": {"t_a": ["catalog"]}},
+    })
+    _write_seed(tmp_path / "defaults", "20-overlay.json", {
+        "class_key": "TaskRoutingConfig",
+        "value": {"enabled": True, "routing": {"t_a": ["maps"]}},
+    })
+    monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
+
+    config_mgr = AsyncMock()
+    config_mgr.list_configs = AsyncMock(return_value={})
+    config_mgr.set_config = AsyncMock()
+
+    with patch("dynastore.tools.discovery.get_protocol", return_value=config_mgr), \
+         patch.object(seeder, "acquire_startup_lock", _fake_lock):
+        await seeder.seed_default_configs(engine=object())
+
+    config_mgr.set_config.assert_awaited_once()
+    _, cfg_arg = config_mgr.set_config.await_args.args
+    assert cfg_arg.routing == {"t_a": ["maps"]}
+
+
+@pytest.mark.asyncio
+async def test_unknown_class_key_skipped(monkeypatch, tmp_path, caplog):
+    _write_seed(tmp_path / "defaults", "bogus.json", {
+        "class_key": "NoSuchPluginConfig",
+        "value": {"x": 1},
+    })
+    monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
+
+    config_mgr = AsyncMock()
+    config_mgr.list_configs = AsyncMock(return_value={})
+    config_mgr.set_config = AsyncMock()
+
+    caplog.set_level("WARNING")
+    with patch("dynastore.tools.discovery.get_protocol", return_value=config_mgr), \
+         patch.object(seeder, "acquire_startup_lock", _fake_lock):
+        await seeder.seed_default_configs(engine=object())
+
+    config_mgr.set_config.assert_not_awaited()
+    assert any("unknown class_key" in r.message.lower() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_malformed_json_skipped(monkeypatch, tmp_path):
+    (tmp_path / "defaults").mkdir()
+    (tmp_path / "defaults" / "bad.json").write_text("{not json")
+    monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
+
+    config_mgr = AsyncMock()
+    config_mgr.list_configs = AsyncMock(return_value={})
+    config_mgr.set_config = AsyncMock()
+
+    with patch("dynastore.tools.discovery.get_protocol", return_value=config_mgr), \
+         patch.object(seeder, "acquire_startup_lock", _fake_lock):
+        await seeder.seed_default_configs(engine=object())
+
+    config_mgr.set_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_protocol_registered_returns(monkeypatch, tmp_path, caplog):
+    _write_seed(tmp_path / "defaults", "task-routing.json", {
+        "class_key": "TaskRoutingConfig",
+        "value": {"enabled": True},
+    })
+    monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
+
+    caplog.set_level("WARNING")
+    with patch("dynastore.tools.discovery.get_protocol", return_value=None):
+        await seeder.seed_default_configs(engine=object())
+
+    assert any(
+        "PlatformConfigsProtocol not registered" in r.message
+        for r in caplog.records
+    )

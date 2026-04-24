@@ -1,0 +1,12 @@
+{
+  "class_key": "TaskRoutingConfig",
+  "value": {
+    "enabled": true,
+    "routing": {
+      "elasticsearch_index":     ["catalog"],
+      "gcp_provision_catalog":   ["catalog"],
+      "tile_preseed":            ["maps"],
+      "export_features":         ["worker"]
+    }
+  }
+}

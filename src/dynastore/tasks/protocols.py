@@ -17,10 +17,9 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import abc
-from typing import Protocol, AsyncGenerator, TypeVar, Generic, runtime_checkable, Any, List, Callable, Optional
+from typing import Protocol, AsyncGenerator, TypeVar, Generic, runtime_checkable, Any
 from contextlib import asynccontextmanager
 from dynastore.modules.protocols import HasConfigService
-from dynastore.tools.plugin import ProtocolPlugin
 
 DefinitionType = TypeVar('DefinitionType', covariant=True)
 PayloadType = TypeVar('PayloadType', contravariant=True)
@@ -31,6 +30,11 @@ ReturnType = TypeVar('ReturnType', covariant=True)
 class TaskProtocol(HasConfigService, Protocol, Generic[DefinitionType, PayloadType, ReturnType]):
     """
     Defines the contract for a DynaStore Background Task.
+
+    Service-affinity placement (which service may claim a given task_type)
+    is controlled by ``TaskRoutingConfig`` — see
+    ``modules/tasks/tasks_config.py``. There is intentionally no
+    source-level routing decoration: routing is deployment, not code.
     """
 
     priority: int = 0
@@ -53,7 +57,7 @@ class TaskProtocol(HasConfigService, Protocol, Generic[DefinitionType, PayloadTy
         # Skip abstract classes and Protocols
         if cls.__name__.endswith("Protocol") or abc.ABC in cls.__bases__ or getattr(cls, "__is_protocol__", False):
             return
-        
+
         try:
             from dynastore.tasks import _register_task
             _register_task(cls)
@@ -68,33 +72,9 @@ class TaskProtocol(HasConfigService, Protocol, Generic[DefinitionType, PayloadTy
         """
         return getattr(cls, "_registered_name", cls.__name__.lower())
 
-    required_protocols: tuple[type, ...] = ()
-
-    def are_protocols_satisfied(self) -> bool:
-        """Return True if every required protocol has at least one provider installed on this service.
-
-        Uses get_all_protocols() (includes is_available=False providers) rather than
-        get_protocol() (active-only) so that a temporarily unavailable module (e.g. GCP
-        client failed to init) does not cause the service to stop claiming task types it
-        owns — the task will fail and retry on this same service instead of being routed
-        to a service that fundamentally lacks the module.
-        """
-        if not self.required_protocols:
-            return True
-        from dynastore.tools.discovery import get_all_protocols
-        return all(len(get_all_protocols(p)) > 0 for p in self.required_protocols)
-
     @abc.abstractmethod
     async def run(self, payload: PayloadType) -> ReturnType:
         """
         Executes the task's logic.
         """
         ...
-
-
-def requires(*protocols: type):
-    """Class decorator: declare protocols this task requires to be present for dispatch."""
-    def decorator(cls):
-        cls.required_protocols = protocols
-        return cls
-    return decorator

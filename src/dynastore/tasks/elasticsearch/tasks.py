@@ -7,8 +7,7 @@ from pydantic import BaseModel
 # the CapabilityMap doesn't list these tasks as claimable there.
 import opensearchpy  # noqa: F401
 
-from dynastore.tasks.protocols import TaskProtocol, requires
-from dynastore.models.protocols import IndexerProtocol
+from dynastore.tasks.protocols import TaskProtocol
 from dynastore.modules.tasks.models import TaskPayload
 
 logger = logging.getLogger(__name__)
@@ -21,7 +20,6 @@ class ElasticsearchIndexInputs(BaseModel):
     item_id: Optional[str] = None
     payload: Dict[str, Any]
 
-@requires(IndexerProtocol)
 class ElasticsearchIndexTask(TaskProtocol):
     priority: int = 100
     """
@@ -66,7 +64,6 @@ class ElasticsearchDeleteInputs(BaseModel):
     entity_type: str
     entity_id: str
 
-@requires(IndexerProtocol)
 class ElasticsearchDeleteTask(TaskProtocol):
     priority: int = 100
     """

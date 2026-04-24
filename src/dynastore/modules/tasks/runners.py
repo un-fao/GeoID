@@ -603,23 +603,59 @@ class CapabilityMap:
         self._lock = asyncio.Lock()
 
     async def refresh(self) -> None:
-        """Rebuild capability map from current runners and loaded task types."""
-        from dynastore.tasks import get_loaded_task_types, get_task_instance
-        from dynastore.tools.discovery import get_all_protocols
+        """Rebuild capability map from current runners, loaded task types,
+        and the cached ``TaskRoutingConfig`` (service-affinity narrowing).
+
+        Filtering precedence:
+
+        1. ``get_loaded_task_types()`` — the task class actually imported
+           on this process. Hard top-level imports of runtime deps mean
+           a service without the dep won't even register the task.
+        2. ``runner.can_handle(task_type)`` — at least one runner of the
+           required execution mode admits the type.
+        3. ``TaskRoutingConfig.routing[task_type]`` — if non-empty, this
+           process's ``service_name`` must appear in the list.
+
+        Step 3 is the operator-controlled intent gate. Missing/empty
+        routing entry preserves legacy "any capable service may claim"
+        behaviour.
+        """
+        from dynastore.tasks import get_loaded_task_types
+        from dynastore.modules.tasks.dispatcher import _SERVICE_NAME
+
+        # Resolve cached TaskRoutingConfig — best-effort. When the config
+        # registry isn't ready (early startup, tests) we fall back to "no
+        # routing", which preserves legacy behaviour.
+        routing: Dict[str, List[str]] = {}
+        routing_disabled: bool = False
+        try:
+            from dynastore.tools.discovery import get_protocol
+            from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
+            from dynastore.modules.tasks.tasks_config import TaskRoutingConfig
+
+            config_mgr = get_protocol(PlatformConfigsProtocol)
+            if config_mgr is not None:
+                cfg = await config_mgr.get_config(TaskRoutingConfig)
+                if isinstance(cfg, TaskRoutingConfig) and cfg.enabled:
+                    routing = cfg.routing or {}
+                    routing_disabled = cfg.routing_disabled
+        except Exception as exc:  # noqa: BLE001 — non-fatal, log and continue
+            logger.debug(
+                "CapabilityMap: TaskRoutingConfig not yet available (%s) — "
+                "service-affinity routing skipped this refresh.", exc,
+            )
+
+        def _routed_to_me(task_type: str) -> bool:
+            if routing_disabled or _SERVICE_NAME is None:
+                return True
+            targets = routing.get(task_type)
+            return not targets or _SERVICE_NAME in targets
+
         async with self._lock:
             self._async_types.clear()
             self._sync_types.clear()
             for task_type in get_loaded_task_types():
-                instance = get_task_instance(task_type)
-                if instance is not None and not instance.are_protocols_satisfied():
-                    missing = [
-                        p.__name__ for p in instance.required_protocols
-                        if len(get_all_protocols(p)) == 0
-                    ]
-                    logger.warning(
-                        "CapabilityMap: skipping '%s' — required protocols unavailable: %s",
-                        task_type, missing,
-                    )
+                if not _routed_to_me(task_type):
                     continue
                 for runner in get_runners(TaskExecutionMode.ASYNCHRONOUS):
                     if runner.can_handle(task_type):
@@ -630,8 +666,10 @@ class CapabilityMap:
                         self._sync_types.add(task_type)
                         break
             logger.info(
-                f"CapabilityMap refreshed: async={sorted(self._async_types)}, "
-                f"sync={sorted(self._sync_types)}"
+                "CapabilityMap refreshed (service=%r, routing_disabled=%s, "
+                "routing_keys=%d): async=%s, sync=%s",
+                _SERVICE_NAME, routing_disabled, len(routing),
+                sorted(self._async_types), sorted(self._sync_types),
             )
 
     @property

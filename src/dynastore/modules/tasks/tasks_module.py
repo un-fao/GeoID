@@ -541,7 +541,17 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
                 # fail_task read the same module-level value at runtime.
                 from dynastore.tools.discovery import get_protocol
                 from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
-                from dynastore.modules.tasks.tasks_config import TasksPluginConfig
+                from dynastore.modules.tasks.tasks_config import TasksPluginConfig, TaskRoutingConfig
+
+                # Apply per-deployment JSON defaults (idempotent, advisory-locked)
+                # before reading any config — so the seed values are visible to
+                # the very first ``get_config`` call below. Safe no-op when the
+                # ``defaults/`` folder isn't present (e.g. local dev / tests).
+                from dynastore.modules.db_config.config_seeder import seed_default_configs
+                try:
+                    await seed_default_configs(engine)
+                except Exception as e:  # noqa: BLE001 — never fail boot on seeds
+                    logger.warning(f"TasksModule: config seeder skipped due to error: {e}")
 
                 poll_interval = 30.0
                 hard_cap = get_hard_retry_cap()
@@ -555,6 +565,19 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
                             set_hard_retry_cap(hard_cap)
                     except Exception as e:
                         logger.warning(f"TasksModule: Failed to load TasksPluginConfig, defaulting to {poll_interval}s / hard_cap={hard_cap}: {e}")
+
+                # TaskRoutingConfig is consumed lazily by CapabilityMap.refresh()
+                # via PlatformConfigsProtocol; nothing to load eagerly here.
+                # Register an apply-handler so live PUT /configs updates trigger
+                # a re-narrowing of the dispatcher's capability set without
+                # process restart.
+                from dynastore.modules.tasks.runners import capability_map as _capability_map
+
+                async def _on_routing_change(_cfg, _catalog_id, _collection_id, _conn):
+                    logger.info("TaskRoutingConfig changed — refreshing CapabilityMap.")
+                    await _capability_map.refresh()
+
+                TaskRoutingConfig.register_apply_handler(_on_routing_change)
 
                 logger.info(f"TasksModule: hard_retry_cap = {hard_cap} (circuit breaker)")
 

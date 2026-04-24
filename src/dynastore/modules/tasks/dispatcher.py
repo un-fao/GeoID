@@ -85,6 +85,25 @@ _RUNNER_ID = _runner_id()
 
 
 # ---------------------------------------------------------------------------
+# Service identity (logical service name for task service-affinity routing)
+# ---------------------------------------------------------------------------
+# Loaded from ${DYNASTORE_CONFIG_ROOT}/instance.json — see
+# modules/db_config/instance.py.  When None (file missing or no service_name
+# key), the dispatcher claims any task its CapabilityMap accepts (legacy
+# behaviour, fully backward-compatible).
+
+from dynastore.modules.db_config.instance import get_service_name as _get_service_name
+
+_SERVICE_NAME: Optional[str] = _get_service_name()
+if _SERVICE_NAME:
+    logger.info("Dispatcher: service_name=%r (from instance.json)", _SERVICE_NAME)
+else:
+    logger.info(
+        "Dispatcher: no service_name configured — service-affinity routing inactive."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Batched heartbeat — one coroutine per dispatcher, one UPDATE per interval
 # ---------------------------------------------------------------------------
 
