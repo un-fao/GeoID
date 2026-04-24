@@ -785,10 +785,25 @@ class CatalogService(CatalogsProtocol):
         # (like GCP provisioning) can see the committed 'catalog' row.
         await signal_bus.emit("AFTER_CATALOG_CREATION", identifier=catalog_model.id)
 
-        result = await _get_catalog_query.execute(
-            get_catalog_engine(db_resource), id=catalog_model.id
+        # Re-fetch through ``get_catalog_model`` so the returned Catalog
+        # carries metadata merged from the split tables — ``Catalog.model_validate``
+        # of the raw ``catalog.catalogs`` row would yield ``title=None`` /
+        # ``description=None`` etc. since those columns were dropped from the
+        # registry in M2.5b and now live in ``catalog_metadata_core`` /
+        # ``_stac`` (router-direct upsert above).
+        merged = await self.get_catalog_model(
+            catalog_model.id,
+            ctx=DriverContext(db_resource=db_resource) if db_resource else None,
         )
-        return Catalog.model_validate(result)
+        if merged is None:
+            # Fallback: registry row missing despite the INSERT above is a
+            # genuine consistency violation — fall back to the original
+            # technical-row hydration so the caller still gets *some* model.
+            result = await _get_catalog_query.execute(
+                get_catalog_engine(db_resource), id=catalog_model.id
+            )
+            return Catalog.model_validate(result)
+        return merged
 
     def _unpack_catalog_row(
         self,
