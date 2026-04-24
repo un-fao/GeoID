@@ -270,6 +270,27 @@ async def lifespan(app_state: object):
                     await stack.enter_async_context(lifespan_manager)
                     logger.warning(f"DEBUG: Lifespan for module '{config.cls.__name__}' entered successfully.")
                 except Exception as e:
+                    # Wrong-SCOPE soft-skip: ModuleNotFoundError at lifespan
+                    # entry means the deployment didn't pip-install the
+                    # extras the module's runtime needs (e.g. `db` requires
+                    # asyncpg, which is excluded by sync-only worker SCOPEs
+                    # like worker_task_ingestion).  Treat the same as the
+                    # __init__-time ImportError gate above: warn and skip,
+                    # even for "foundational" priority<20 modules.  The
+                    # protocol the missing module would have provided
+                    # (e.g. DatabaseProtocol from DBService) is expected to
+                    # come from a sibling registered for this SCOPE
+                    # (e.g. DatastoreModule providing the sync engine).
+                    if isinstance(e, ModuleNotFoundError):
+                        logger.warning(
+                            "Skipping lifespan for module '%s' — required "
+                            "runtime dep missing (%s).  This is expected "
+                            "when SCOPE excludes the module's extras; "
+                            "downstream protocol consumers must come from "
+                            "another registered module.",
+                            config.cls.__name__, e,
+                        )
+                        continue
                     logger.error(f"Failed to enter lifespan for module '{config.cls.__name__}'", exc_info=True)
                     # Low-priority modules (< 20) are foundational — abort hard on failure
                     if getattr(config.cls, "priority", 100) < 20:
