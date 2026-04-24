@@ -21,12 +21,10 @@ import re
 import os
 import asyncio
 import itertools
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Type
+from typing import Optional
 
 from dynastore.modules.catalog.asset_service import Asset, AssetBase
 from dynastore.modules.catalog.models import CoreAssetReferenceType
-from pydantic import BaseModel
 
 from dynastore.modules.catalog.tools import recalculate_and_update_extents
 from dynastore.modules.db_config.query_executor import DbEngine
@@ -35,8 +33,6 @@ from dynastore.models.driver_context import DriverContext
 # Import Ingestion Configuration
 from dynastore.tasks.ingestion.ingestion_config import IngestionPluginConfig
 from dynastore.tasks.ingestion.ingestion_models import TaskIngestionRequest
-from dynastore.tasks.reporters import ReportingInterface
-from .reporters_impl import DatabaseStatusReporter
 from .reporters import _ingestion_reporter_registry
 from dynastore.tasks.tools import initialize_reporters
 from .operations import initialize_operations, run_pre_operations, run_post_operations
@@ -255,13 +251,21 @@ async def run_ingestion_task(
             elif mapping.geometry_wkb:
                 wkb = _get_raw_val(mapping.geometry_wkb)
                 if wkb:
-                    from shapely.wkb import loads
-                    from shapely.geometry import mapping as shapely_mapping
+                    if isinstance(wkb, dict):
+                        # GDAL/OGR already decoded the geometry to GeoJSON dict.
+                        geometry = wkb
+                    else:
+                        from shapely.wkb import loads
+                        from shapely.geometry import mapping as shapely_mapping
 
-                    try:
-                        geometry = shapely_mapping(loads(wkb))
-                    except Exception:
-                        pass
+                        try:
+                            geometry = shapely_mapping(loads(wkb))
+                        except Exception:
+                            pass
+                # If geometry_wkb column produced nothing, fall through to the
+                # standard ``geometry`` key (e.g. GDAL stores it there).
+                if geometry is None:
+                    geometry = raw.get("geometry")
             else:
                 # Fallback: check if 'geometry' is already present (e.g. GeoJSON/Fiona)
                 geometry = raw.get("geometry")
