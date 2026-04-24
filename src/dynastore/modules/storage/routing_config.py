@@ -156,6 +156,23 @@ def derive_supported_operations(capabilities: FrozenSet[str]) -> FrozenSet[str]:
     return frozenset(ops)
 
 
+def _items_search_caps() -> FrozenSet[str]:
+    """Storage-tier capability strings that qualify a driver for the
+    items-tier ``operations[SEARCH]`` operation.
+
+    Lazy: imports the storage ``Capability`` enum on first call so this
+    module stays importable when a stripped-down dependency set is
+    loaded (e.g. tests that don't pull the storage protocols).
+    """
+    from dynastore.models.protocols.storage_driver import Capability
+
+    return frozenset({
+        Capability.FULLTEXT,
+        Capability.SPATIAL_FILTER,
+        Capability.ATTRIBUTE_FILTER,
+    })
+
+
 # ---------------------------------------------------------------------------
 # Config models
 # ---------------------------------------------------------------------------
@@ -358,6 +375,42 @@ class CollectionRoutingConfig(PluginConfig):
             logger.debug(
                 "CollectionRoutingConfig: read-time self-register skipped "
                 "(%s); apply-handler will populate on next write.", exc,
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _augment_items_with_discoverable_indexers_searchers(
+        self,
+    ) -> "CollectionRoutingConfig":
+        """Items-tier augmentation: top-level ``operations`` (not
+        ``metadata.operations``).  Auto-folds discoverable
+        :class:`ItemIndexer` drivers into ``operations[INDEX]`` and
+        :class:`CollectionItemsStore` drivers declaring storage
+        ``Capability.{FULLTEXT, SPATIAL_FILTER, ATTRIBUTE_FILTER}``
+        into ``operations[SEARCH]``.
+
+        Closes the symmetric gap to PR #49 — that PR augmented the
+        metadata-tier; this hook now also fills the items-tier so a
+        deployed `ItemsElasticsearchDriver` shows up under
+        ``operations[INDEX]`` / ``operations[SEARCH]`` without
+        requiring an operator PUT.
+        """
+        from dynastore.models.protocols.indexer import ItemIndexer
+        from dynastore.models.protocols.storage_driver import (
+            CollectionItemsStore,
+        )
+
+        try:
+            _self_register_indexers_into(self.operations, ItemIndexer)
+            _self_register_searchers_into(
+                self.operations, CollectionItemsStore,
+                search_caps=_items_search_caps(),
+            )
+        except Exception as exc:
+            logger.debug(
+                "CollectionRoutingConfig: items-tier read-time self-"
+                "register skipped (%s); apply-handler will populate on "
+                "next write.", exc,
             )
         return self
 
@@ -635,32 +688,39 @@ def _self_register_indexers_into(
 def _self_register_searchers_into(
     target_ops: Dict[str, List["OperationDriverEntry"]],
     marker_proto: type,
+    *,
+    search_caps: Optional[FrozenSet[str]] = None,
 ) -> None:
     """Auto-append every installed driver declaring a SEARCH-family
-    metadata capability to ``target_ops[SEARCH]``.
+    capability to ``target_ops[SEARCH]``.
 
-    The SEARCH operation is umbrella for keyword/fulltext, vector kNN,
-    and exact pk lookup; any of the four
-    :class:`MetadataCapability` constants
-    (``SEARCH``, ``SEARCH_FULLTEXT``, ``SEARCH_VECTOR``, ``SEARCH_EXACT``)
-    qualifies a driver to be the SEARCH provider.
+    Tier-scoped via two parameters:
 
-    Mirrors :func:`_self_register_indexers_into` for the SEARCH op:
-    tier-scoped via ``marker_proto`` (the metadata-store base for the
-    relevant tier — ``CatalogMetadataStore`` for catalog routing,
-    ``CollectionMetadataStore`` for collection routing).  Idempotent —
-    drivers already listed under ``operations[SEARCH]`` are not
-    re-appended (operator-supplied entries with custom hints survive).
+    - ``marker_proto`` — the structural Protocol to discover against
+      (e.g. ``CatalogMetadataStore`` for catalog routing,
+      ``CollectionMetadataStore`` for collection-tier metadata routing,
+      ``CollectionItemsStore`` for items-tier routing).
+    - ``search_caps`` — the set of capability strings that qualify a
+      driver as a SEARCH provider.  When ``None`` (default) the
+      metadata-tier set is used (``MetadataCapability.SEARCH``,
+      ``SEARCH_FULLTEXT``, ``SEARCH_VECTOR``, ``SEARCH_EXACT``).
+      Items-tier callers pass the storage ``Capability`` set
+      (``FULLTEXT``, ``SPATIAL_FILTER``, ``ATTRIBUTE_FILTER``) via the
+      module-level :data:`ITEMS_SEARCH_CAPS` constant.
+
+    Idempotent — drivers already listed under ``operations[SEARCH]`` are
+    not re-appended (operator-supplied entries with custom hints survive).
     """
-    from dynastore.models.protocols.metadata_driver import MetadataCapability
     from dynastore.tools.discovery import get_protocols
 
-    search_caps: FrozenSet[str] = frozenset({
-        MetadataCapability.SEARCH,
-        MetadataCapability.SEARCH_FULLTEXT,
-        MetadataCapability.SEARCH_VECTOR,
-        MetadataCapability.SEARCH_EXACT,
-    })
+    if search_caps is None:
+        from dynastore.models.protocols.metadata_driver import MetadataCapability
+        search_caps = frozenset({
+            MetadataCapability.SEARCH,
+            MetadataCapability.SEARCH_FULLTEXT,
+            MetadataCapability.SEARCH_VECTOR,
+            MetadataCapability.SEARCH_EXACT,
+        })
     listed = {entry.driver_id for entry in target_ops.get(Operation.SEARCH, [])}
     for driver in get_protocols(marker_proto):
         driver_caps = getattr(driver, "capabilities", frozenset())
@@ -797,6 +857,18 @@ async def _on_apply_routing_config(
     # validator on CollectionRoutingConfig.
     _self_register_indexers_into(config.metadata.operations, CollectionIndexer)
     _self_register_searchers_into(config.metadata.operations, CollectionMetadataStore)
+
+    # Items-tier: auto-register ItemIndexer drivers + items-tier SEARCH-capable
+    # CollectionItemsStore drivers under the TOP-LEVEL config.operations.  Mirror
+    # of the second model_validator on CollectionRoutingConfig — apply-handler
+    # parity so operator PUTs also pick up auto-augmentation.
+    from dynastore.models.protocols.indexer import ItemIndexer
+
+    _self_register_indexers_into(config.operations, ItemIndexer)
+    _self_register_searchers_into(
+        config.operations, CollectionItemsStore,
+        search_caps=_items_search_caps(),
+    )
 
     # Call ensure_storage() on metadata READ drivers (idempotent, catalog-scoped).
     if catalog_id:
