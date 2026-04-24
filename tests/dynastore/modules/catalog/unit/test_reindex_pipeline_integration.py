@@ -40,6 +40,18 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+# Fire-and-forget ``asyncio.create_task`` paths in the router under test
+# can leave a pending Future at teardown if any awaited link in the
+# listener chain never resolves; the per-test SIGALRM timeout below
+# guarantees we get a stack trace in seconds instead of stalling the
+# whole xdist worker (and the job) for the full 45-min runner timeout.
+# ``xdist_group`` keeps both tests on one worker so they don't race a
+# sibling test that monkeypatches the same ``event_service`` singleton.
+pytestmark = [
+    pytest.mark.timeout(30, method="signal"),
+    pytest.mark.xdist_group("reindex_pipeline_integration"),
+]
+
 
 # ---------------------------------------------------------------------------
 # Fixture: a routing-config override that pins LogCatalogIndexer on INDEX
