@@ -29,7 +29,7 @@ This service implements CatalogsProtocol and provides:
 import logging
 import json
 import uuid
-from typing import List, Optional, Any, Dict, Union, Set, Callable, Tuple, TYPE_CHECKING
+from typing import List, Optional, Any, Dict, FrozenSet, Union, Set, Callable, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
@@ -285,6 +285,20 @@ def _extract_update_payload(
         out[out_key] = dumped
 
     return out
+
+
+# Fields owned exclusively by ``catalog.catalogs`` (technical registry
+# row).  CatalogMetadata sidecar drivers (PG core/stac, ES indexer …) may
+# carry stale snapshots of these — e.g. CatalogElasticsearchDriver indexes
+# the full payload at create time but isn't re-indexed when
+# ``update_provisioning_status`` flips the row.  ``_unpack_catalog_row``
+# refuses to let any router overlay shadow these fields.
+_CONTROL_PLANE_CATALOG_FIELDS: FrozenSet[str] = frozenset({
+    "id",
+    "physical_schema",
+    "provisioning_status",
+    "deleted_at",
+})
 
 
 # --- Queries ---
@@ -820,14 +834,23 @@ class CatalogService(CatalogsProtocol):
                     data[key] = None
 
         # Router overlay.  Router-supplied keys overwrite any columns
-        # left on the row dict.  Special-case ``conforms_to`` which in
-        # the router envelope carries its snake-case form, but Catalog
-        # consumes ``conformsTo`` via Pydantic alias — we fill both so
-        # either spelling resolves after validation.
+        # left on the row dict — EXCEPT control-plane fields owned
+        # exclusively by ``catalog.catalogs``.  Metadata-tier drivers
+        # (e.g. CatalogElasticsearchDriver indexes a snapshot of the
+        # full metadata payload) can carry stale copies of these fields
+        # because freshness updates only mutate the row, not the
+        # metadata sidecars.  Control-plane fields are authoritative on
+        # the row; never let an overlay shadow them.
         if router_metadata:
             for key, value in router_metadata.items():
+                if key in _CONTROL_PLANE_CATALOG_FIELDS:
+                    continue
                 data[key] = value
             if router_metadata.get("conforms_to"):
+                # Special-case ``conforms_to`` which in the router envelope
+                # carries its snake-case form, but Catalog consumes
+                # ``conformsTo`` via Pydantic alias — fill both so either
+                # spelling resolves after validation.
                 data["conformsTo"] = router_metadata["conforms_to"]
 
         return Catalog.model_validate(data)

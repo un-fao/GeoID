@@ -125,6 +125,49 @@ def test_unpack_returns_none_for_empty_row_regardless_of_router():
     assert svc._unpack_catalog_row(None, router_metadata={"title": "T"}) is None
 
 
+def test_unpack_router_metadata_cannot_shadow_control_plane_fields():
+    """Regression: ``provisioning_status`` (and other control-plane fields)
+    on ``catalog.catalogs`` MUST NOT be overwritten by a router overlay.
+
+    A metadata-tier driver such as ``CatalogElasticsearchDriver`` indexes
+    a snapshot of the full payload at create time and re-emits it on
+    read.  ``update_provisioning_status`` only mutates the row, never the
+    sidecars — so the ES doc ages with a stale ``"provisioning"`` value
+    forever, and a naive ``data[key] = value`` overlay would resurrect
+    the stale field on every read, surfacing as a 409 from
+    ``_require_catalog_ready`` even though the row is ``"ready"``.
+
+    Same hazard for ``physical_schema`` (driver could leak an old schema
+    name from a deleted-and-recreated catalog) and ``deleted_at`` /
+    ``id`` (identity).
+    """
+    svc = _make_service_instance()
+    row = _FakeRow({
+        "id": "cat", "type": "Catalog", "physical_schema": "t_alpha",
+        "title": None, "description": None, "keywords": None, "license": None,
+        "conforms_to": None, "links": [], "assets": {}, "extra_metadata": {},
+        "stac_version": "1.1.0", "stac_extensions": [],
+        "provisioning_status": "ready",
+        "deleted_at": None,
+    })
+    # Stale ES-shaped payload that includes control-plane fields the
+    # sidecar driver should not own.
+    router_metadata = {
+        "title": {"en": "Router title"},      # legitimately overlaid
+        "provisioning_status": "provisioning",  # MUST be ignored
+        "physical_schema": "t_OLD",             # MUST be ignored
+        "id": "WRONG_ID",                       # MUST be ignored
+        "deleted_at": "2020-01-01T00:00:00Z",  # MUST be ignored
+    }
+    cat = svc._unpack_catalog_row(row, router_metadata=router_metadata)
+    assert cat is not None
+    # Legitimate metadata overlay landed.
+    assert cat.title.model_dump(exclude_none=True) == {"en": "Router title"}
+    # Control-plane fields preserved from the row, not the overlay.
+    assert cat.provisioning_status == "ready"
+    assert cat.id == "cat"
+
+
 # ---------------------------------------------------------------------------
 # _resolve_catalog_router_metadata — degrade-on-error
 # ---------------------------------------------------------------------------
