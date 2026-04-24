@@ -50,14 +50,27 @@ async def _on_apply_es_collection_config(
     collection_id: Optional[str],
     db_resource: Optional[Any],
 ) -> None:
-    """Invalidate the cached resolver entry for the affected
-    ``(catalog_id, collection_id)`` so a fresh override (or revert to
-    inherit) takes effect on the next write event without waiting for
-    the 60s TTL.
+    """Apply the per-collection ES override.
 
-    Falls quiet when the resolver hasn't been imported yet (e.g. apply
-    fired during a config write that arrived before the ES module
-    finished its lifespan); the TTL is the safety net.
+    Two effects happen on every collection-tier write:
+
+    1. The cached resolver entry for ``(catalog_id, collection_id)`` is
+       invalidated so the next call to :func:`is_collection_obfuscated`
+       returns the new value without waiting for the 60s TTL.
+    2. When the operator wrote an *explicit* override (``True`` or
+       ``False`` — not ``None``), a single-collection reindex is
+       dispatched in the matching mode so historical items in this
+       collection are moved into the right ES index.  Reverting to
+       ``obfuscated=None`` (inherit) is intentionally NOT auto-reindexed
+       — the catalog-tier flag is unchanged so the existing index
+       contents already match the catalog default; an operator who
+       changes the catalog flag triggers the catalog-wide reindex
+       through ``ElasticsearchCatalogConfig._on_apply``.
+
+    Both effects are best-effort.  Cache invalidation failure falls
+    back on the 60s TTL.  Reindex-dispatch failure leaves historical
+    items in their pre-apply index — the operator can re-trigger via
+    the dedicated ``elasticsearch_bulk_reindex_collection`` task.
     """
     if not catalog_id or not collection_id:
         return
@@ -71,6 +84,50 @@ async def _on_apply_es_collection_config(
         logger.debug(
             "ElasticsearchCollectionConfig: cache_invalidate failed for "
             "%s/%s (%s) — TTL expiry will still propagate within ~60s",
+            catalog_id, collection_id, exc,
+        )
+
+    if config.obfuscated is None:
+        # Reverted to inherit — catalog-tier unchanged means existing
+        # indexed items already match the effective state.  No reindex.
+        logger.info(
+            "ElasticsearchCollectionConfig: %s/%s reverted to inherit "
+            "catalog default; cache invalidated, no reindex dispatched.",
+            catalog_id, collection_id,
+        )
+        return
+
+    from dynastore.modules.elasticsearch.module import ElasticsearchModule
+
+    es_module = get_protocol(ElasticsearchModule)
+    if es_module is None:
+        logger.debug(
+            "ElasticsearchCollectionConfig: ElasticsearchModule not "
+            "registered in this process — skipping reindex dispatch for "
+            "%s/%s. Operator can re-trigger via the bulk reindex task.",
+            catalog_id, collection_id,
+        )
+        return
+
+    mode = "obfuscated" if config.obfuscated else "catalog"
+    try:
+        await es_module.bulk_reindex(
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            mode=mode,
+            db_resource=db_resource,
+        )
+        logger.info(
+            "ElasticsearchCollectionConfig: dispatched single-collection "
+            "reindex for %s/%s in %s mode after apply.",
+            catalog_id, collection_id, mode,
+        )
+    except Exception as exc:
+        logger.warning(
+            "ElasticsearchCollectionConfig: failed to dispatch reindex "
+            "for %s/%s (%s) — items in the pre-apply index will remain "
+            "stale until a manual elasticsearch_bulk_reindex_collection "
+            "task is fired.",
             catalog_id, collection_id, exc,
         )
 
