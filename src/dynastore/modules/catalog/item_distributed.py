@@ -242,9 +242,14 @@ class ItemDistributedMixin(_Host):
             )
             valid_to = processing_context.get("valid_to")
 
-            from asyncpg import Range
-
-            validity = Range(valid_from, valid_to, lower_inc=True, upper_inc=False)
+            # Driver-agnostic tstzrange wrapper — sync workers don't ship
+            # asyncpg.  See ``pg_sidecars.attributes._make_tstzrange``.
+            from dynastore.modules.storage.drivers.pg_sidecars.attributes import (
+                _make_tstzrange,
+            )
+            validity = _make_tstzrange(
+                valid_from, valid_to, lower_inc=True, upper_inc=False,
+            )
 
             # Only write validity to the hub row when the hub table actually has
             # the column — i.e. when partitioning is enabled and "validity" is a
