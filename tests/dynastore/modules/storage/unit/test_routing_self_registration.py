@@ -160,7 +160,9 @@ def test_apply_handlers_invoke_indexer_self_registration():
 
     calls: list[type] = []
 
-    def _spy(target_ops, marker_proto):
+    def _spy(target_ops, marker_proto, **_kwargs):
+        # Accept arbitrary kwargs (e.g. ``search_caps`` on the searcher
+        # helper) so the spy works for both helper signatures.
         calls.append(marker_proto)
 
     # Empty operations so _validate_routing_entries has nothing to check
@@ -194,8 +196,12 @@ def test_apply_handlers_invoke_indexer_self_registration():
         AssetIndexer,
         CatalogIndexer,
         CollectionIndexer,
+        ItemIndexer,
     )
-    assert calls == [CollectionIndexer, AssetIndexer, CatalogIndexer]
+    # Order: collection-tier metadata (CollectionIndexer), then items-tier
+    # (ItemIndexer — added by the items-tier validator/apply-handler in
+    # PR #5x), then asset, then catalog.
+    assert calls == [CollectionIndexer, ItemIndexer, AssetIndexer, CatalogIndexer]
 
 
 def test_end_to_end_marker_to_INDEX_entry_via_real_apply_handler():
@@ -443,6 +449,68 @@ def test_collection_routing_validator_augments_metadata_INDEX_and_SEARCH():
     assert "_ColES" in search_ids
 
 
+def test_collection_routing_validator_augments_items_tier_INDEX_and_SEARCH():
+    """The SECOND model_validator on CollectionRoutingConfig augments the
+    TOP-LEVEL `operations` (items-tier) — separate from the
+    metadata-tier validator which augments `metadata.operations`.
+
+    Discoverable ItemIndexer drivers land in `operations[INDEX]`;
+    CollectionItemsStore drivers declaring storage SEARCH-family caps
+    (FULLTEXT / SPATIAL_FILTER / ATTRIBUTE_FILTER) land in
+    `operations[SEARCH]`."""
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    from dynastore.models.protocols.storage_driver import Capability
+
+    class _ItemsES:
+        is_item_indexer: ClassVar[bool] = True
+        capabilities = frozenset({Capability.FULLTEXT, Capability.READ})
+
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_ItemsES()]):
+        cfg = CollectionRoutingConfig()
+
+    # Top-level operations augmented (NOT metadata.operations).
+    top_index = {e.driver_id for e in cfg.operations.get(Operation.INDEX, [])}
+    top_search = {e.driver_id for e in cfg.operations.get(Operation.SEARCH, [])}
+    assert "_ItemsES" in top_index
+    assert "_ItemsES" in top_search
+    # Default WRITE/READ entries unchanged.
+    write_ids = {e.driver_id for e in cfg.operations[Operation.WRITE]}
+    assert write_ids == {"ItemsPostgresqlDriver", "_ItemsES"} or \
+           "ItemsPostgresqlDriver" in write_ids
+
+
+def test_collection_items_tier_search_caps_filter():
+    """Items-tier SEARCH gate uses storage Capability (FULLTEXT,
+    SPATIAL_FILTER, ATTRIBUTE_FILTER) — NOT MetadataCapability.SEARCH.
+    A driver with only metadata SEARCH caps must NOT land in items-
+    tier `operations[SEARCH]`."""
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    from dynastore.models.protocols.metadata_driver import MetadataCapability
+    from dynastore.models.protocols.storage_driver import Capability
+
+    class _MetadataOnlySearcher:
+        # Has metadata SEARCH caps but NOT storage SEARCH caps.
+        is_item_indexer: ClassVar[bool] = False
+        capabilities = frozenset({MetadataCapability.SEARCH})
+
+    class _StorageSpatialSearcher:
+        is_item_indexer: ClassVar[bool] = False
+        capabilities = frozenset({Capability.SPATIAL_FILTER})
+
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_MetadataOnlySearcher(), _StorageSpatialSearcher()]):
+        cfg = CollectionRoutingConfig()
+
+    top_search = {e.driver_id for e in cfg.operations.get(Operation.SEARCH, [])}
+    assert "_StorageSpatialSearcher" in top_search
+    assert "_MetadataOnlySearcher" not in top_search
+
+
 def test_asset_routing_validator_augments_INDEX_only():
     """AssetRoutingConfig validator augments INDEX but NOT SEARCH —
     assets aren't search-addressable the way collection items are."""
@@ -651,7 +719,9 @@ def test_apply_handlers_invoke_searcher_self_registration():
 
     calls: list[type] = []
 
-    def _spy(target_ops, marker_proto):
+    def _spy(target_ops, marker_proto, **_kwargs):
+        # Accept arbitrary kwargs (e.g. ``search_caps`` on the searcher
+        # helper) so the spy works for both helper signatures.
         calls.append(marker_proto)
 
     coll = CollectionRoutingConfig()
@@ -683,5 +753,8 @@ def test_apply_handlers_invoke_searcher_self_registration():
         CatalogMetadataStore,
         CollectionMetadataStore,
     )
-    # Collection and catalog tiers call the searcher; asset tier does not.
-    assert calls == [CollectionMetadataStore, CatalogMetadataStore]
+    from dynastore.models.protocols.storage_driver import CollectionItemsStore
+    # Order: collection-tier metadata, then items-tier (added by the
+    # items-tier hook in PR #5x), then catalog-tier.  Asset tier still
+    # doesn't call the searcher (no SEARCH op for assets).
+    assert calls == [CollectionMetadataStore, CollectionItemsStore, CatalogMetadataStore]
