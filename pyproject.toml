@@ -506,6 +506,14 @@ root = "src/dynastore/modules/gdal"
 reportMissingImports = "none"
 
 [[tool.pyright.executionEnvironments]]
+root = "src/dynastore/tasks/gdal"
+reportMissingImports = "none"
+
+[[tool.pyright.executionEnvironments]]
+root = "src/dynastore/tasks/ingestion/readers"
+reportMissingImports = "none"
+
+[[tool.pyright.executionEnvironments]]
 root = "src/dynastore/extensions/coverages"
 reportMissingImports = "none"
 
