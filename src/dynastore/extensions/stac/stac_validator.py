@@ -33,7 +33,43 @@ from typing import Any, Dict, List, Optional
 
 import pystac
 
+from dynastore.models.localization import _is_valid_lang_key
+
 logger = logging.getLogger(__name__)
+
+
+def _coerce_for_stac_validation(value: Any, lang: str = "en") -> Any:
+    """Recursively coerce an internal payload into the shape STAC validators expect.
+
+    Two transforms:
+
+    * **Internationalized dicts** — values like ``{"en": "ESA", "fr": "ASE"}``
+      (where every key is a valid language code) are flattened to a single
+      string using *lang* with an ``en`` / first-available fallback.  STAC
+      core fields (``links[].title``, ``providers[].name``, ``license``, …)
+      are scalars, so the i18n shape trips both pystac and stac-pydantic.
+    * **datetime / date** — pystac calls ``len()`` on temporal extents and
+      assumes ISO strings.  Internal payloads coming from ``model_dump()``
+      still hold ``datetime`` objects.
+
+    Containers are walked recursively; everything else is returned as-is.
+    """
+    if isinstance(value, dict):
+        if value and all(
+            isinstance(k, str) and _is_valid_lang_key(k) for k in value.keys()
+        ):
+            picked = (
+                value.get(lang)
+                or value.get("en")
+                or next(iter(value.values()), None)
+            )
+            return _coerce_for_stac_validation(picked, lang)
+        return {k: _coerce_for_stac_validation(v, lang) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_coerce_for_stac_validation(v, lang) for v in value]
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
 
 # --- Capability detection ---
 
@@ -86,11 +122,12 @@ def validate_stac_item(
         Empty list on success; list of validation messages otherwise.
     """
     warnings: List[str] = []
+    coerced = _coerce_for_stac_validation(item_dict)
 
     # 1. pystac core + extension JSON-Schema validation
     if PYSTAC_VALIDATION_AVAILABLE and _PYSTAC_VALIDATOR is not None:
         try:
-            stac_item = pystac.Item.from_dict(item_dict)
+            stac_item = pystac.Item.from_dict(coerced)
             stac_item.validate()
         except Exception as exc:
             msg = f"pystac validation: {exc}"
@@ -103,7 +140,7 @@ def validate_stac_item(
     if STAC_PYDANTIC_AVAILABLE:
         try:
             from dynastore.tools.json import CustomJSONEncoder
-            json_safe = json.loads(json.dumps(item_dict, cls=CustomJSONEncoder))
+            json_safe = json.loads(json.dumps(coerced, cls=CustomJSONEncoder))
             sp_item = StacPydanticItem(**json_safe)
             _sp_validate_extensions(sp_item)
         except Exception as exc:
@@ -138,11 +175,12 @@ def validate_stac_collection(
         Empty list on success; list of validation messages otherwise.
     """
     warnings: List[str] = []
+    coerced = _coerce_for_stac_validation(collection_dict)
 
     # 1. pystac core + extension JSON-Schema validation
     if PYSTAC_VALIDATION_AVAILABLE and _PYSTAC_VALIDATOR is not None:
         try:
-            stac_coll = pystac.Collection.from_dict(collection_dict)
+            stac_coll = pystac.Collection.from_dict(coerced)
             stac_coll.validate()
         except Exception as exc:
             msg = f"pystac validation: {exc}"
@@ -155,7 +193,7 @@ def validate_stac_collection(
     if STAC_PYDANTIC_AVAILABLE:
         try:
             from dynastore.tools.json import CustomJSONEncoder
-            json_safe = json.loads(json.dumps(collection_dict, cls=CustomJSONEncoder))
+            json_safe = json.loads(json.dumps(coerced, cls=CustomJSONEncoder))
             sp_coll = StacPydanticCollection(**json_safe)
             _sp_validate_extensions(sp_coll)
         except Exception as exc:
