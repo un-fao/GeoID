@@ -4,6 +4,16 @@ import re
 from typing import Any, Dict, Literal, Optional
 from contextlib import asynccontextmanager
 
+# Hard runtime dep — fail entry-point load on services without ``opensearch-py``
+# installed (i.e. SCOPEs that don't include ``module_elasticsearch``).  Without
+# this, the module imports cleanly via lazy ``opensearchpy`` calls inside method
+# bodies and registers as an ``IndexerProtocol`` provider, which makes the
+# CapabilityMap mark ``elasticsearch_index`` claimable on services that cannot
+# actually run it (tools, etc.).  Failing the import here makes the framework
+# fall back to ``_register_definition_only_placeholders`` and keep these tasks
+# off that service's claim list.
+import opensearchpy  # noqa: F401
+
 from dynastore.modules import ModuleProtocol
 from dynastore.models.protocols.event_bus import EventBusProtocol
 from dynastore.tools.discovery import get_protocol

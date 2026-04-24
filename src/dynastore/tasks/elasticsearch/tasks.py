@@ -2,6 +2,11 @@ import logging
 from typing import Any, Dict, Optional
 from pydantic import BaseModel
 
+# Hard runtime dep — see modules/elasticsearch/module.py for rationale.
+# Forces entry-point load to fail on services without ``opensearch-py`` so
+# the CapabilityMap doesn't list these tasks as claimable there.
+import opensearchpy  # noqa: F401
+
 from dynastore.tasks.protocols import TaskProtocol, requires
 from dynastore.models.protocols import IndexerProtocol
 from dynastore.modules.tasks.models import TaskPayload
