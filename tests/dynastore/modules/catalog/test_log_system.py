@@ -4,6 +4,11 @@ from dynastore.tools.discovery import get_protocol
 from dynastore.modules.db_config.query_executor import managed_transaction, DQLQuery, ResultHandler
 from dynastore.tools.protocol_helpers import get_engine
 
+# Serialize with the rest of the app_lifespan suite — parallel CatalogModule
+# startups race on advisory locks, and the log-event assertion sees zero rows
+# because the writer module skipped lifespan on the losing worker.
+pytestmark = [pytest.mark.xdist_group("catalog_lifespan")]
+
 @pytest.mark.asyncio
 @pytest.mark.enable_modules("db_config", "db", "catalog", "stats")
 async def test_system_logs_creation(app_lifespan):

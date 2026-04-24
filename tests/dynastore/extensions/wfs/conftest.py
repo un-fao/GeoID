@@ -2,6 +2,16 @@ import pytest
 from dynastore.tools.identifiers import generate_id_hex
 
 
+# Serialize all WFS tests onto a single xdist worker. Without this, parallel
+# workers race on CatalogModule lifespan startup (DDL + advisory locks),
+# producing flaky LockNotAvailableError / "core protocols UNRESOLVED" failures
+# that surface as wrong-status-code asserts (500/422) or 180s pytest-timeouts.
+def pytest_collection_modifyitems(config, items):
+    for item in items:
+        if "/extensions/wfs/" in item.nodeid.replace("\\", "/"):
+            item.add_marker(pytest.mark.xdist_group("catalog_lifespan"))
+
+
 @pytest.fixture
 def catalog_id(data_id):
     # Use unique ID per test to avoid partition overlapping issues during rapid create/delete
