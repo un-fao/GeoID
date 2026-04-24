@@ -259,7 +259,7 @@ class CatalogElasticsearchDriver(TypedDriver[CatalogElasticsearchDriverConfig]):
             index=self._index_name(),
             id=catalog_id,
             body=doc,
-            refresh="wait_for",
+            params={"refresh": "wait_for"},
         )
 
     async def delete_catalog_metadata(
@@ -280,13 +280,13 @@ class CatalogElasticsearchDriver(TypedDriver[CatalogElasticsearchDriverConfig]):
                     index=index_name,
                     id=catalog_id,
                     body={"doc": {"_deleted": True}},
-                    refresh="wait_for",
+                    params={"refresh": "wait_for"},
                 )
             else:
                 await client.delete(
                     index=index_name,
                     id=catalog_id,
-                    refresh="wait_for",
+                    params={"refresh": "wait_for"},
                 )
         except Exception as e:
             logger.debug(
