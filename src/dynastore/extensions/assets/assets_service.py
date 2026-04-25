@@ -41,6 +41,7 @@ from dynastore.models.protocols.asset_process import (
     AssetProcessProtocol,
 )
 from dynastore.tools.protocol_helpers import get_engine
+from dynastore.extensions.tools.catalog_readiness import require_catalog_ready
 from dynastore.extensions.tools.exception_handlers import handle_exception
 from fastapi import Depends
 from dynastore.modules.catalog.catalog_module import CatalogModule
@@ -503,6 +504,7 @@ class AssetService(ExtensionProtocol):
         asset_in: AssetBase, catalog_id: str = Path(..., description="The catalog ID")
     ):
         """Creates a new asset at the catalog level."""
+        await require_catalog_ready(catalog_id)
         try:
             return await self.assets.create_asset(
                 catalog_id=catalog_id, asset=asset_in, collection_id=None
@@ -557,6 +559,7 @@ class AssetService(ExtensionProtocol):
         asset_id: str = Path(..., description="The asset ID"),
     ):
         """Updates the metadata of an existing catalog asset. All other fields are immutable."""
+        await require_catalog_ready(catalog_id)
         try:
             return await self.assets.update_asset(
                 catalog_id=catalog_id, asset_id=asset_id, update=asset_in
@@ -623,6 +626,7 @@ class AssetService(ExtensionProtocol):
         collection_id: str = Path(..., description="The collection ID"),
     ):
         """Creates a new asset associated with a specific collection."""
+        await require_catalog_ready(catalog_id)
         # Ensure the asset object has the correct collection linkage if passed, or override
         # We rely on arguments passed to create_asset, but asset_in might have conflicting info?
         # AssetBase doesn't have collection_id, so it's fine.
@@ -688,6 +692,7 @@ class AssetService(ExtensionProtocol):
         asset_id: str = Path(..., description="The asset ID"),
     ):
         """Updates the metadata of an existing collection asset. All other fields are immutable."""
+        await require_catalog_ready(catalog_id)
         try:
             return await self.assets.update_asset(
                 catalog_id=catalog_id,
@@ -873,6 +878,7 @@ class AssetService(ExtensionProtocol):
         Poll ``GET /assets/catalogs/{catalog_id}/upload/{ticket_id}/status``
         to confirm registration.
         """
+        await require_catalog_ready(catalog_id)
         provider = self.upload_provider
         if not provider:
             raise HTTPException(
@@ -943,6 +949,7 @@ class AssetService(ExtensionProtocol):
         under the collection's path prefix.  The ``collection_id`` from the
         path takes precedence.
         """
+        await require_catalog_ready(catalog_id)
         provider = self.upload_provider
         if not provider:
             raise HTTPException(

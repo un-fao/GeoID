@@ -25,6 +25,7 @@ from fastapi.responses import Response
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 
 from dynastore.extensions.protocols import ExtensionProtocol
+from dynastore.extensions.tools.catalog_readiness import require_catalog_ready
 from dynastore.extensions.tools.conflict_handler import conflict_to_409
 from dynastore.extensions.tools.exception_handlers import handle_exception
 import dynastore.modules.catalog.catalog_module as catalog_manager
@@ -741,6 +742,7 @@ class ConfigsService(ExtensionProtocol):
         Overrides the configuration for a specific plugin at the Collection level.
         This writes to the 'collection_configs' table.
         """
+        await require_catalog_ready(catalog_id)
         try:
             cls = require_config_class(plugin_id)
             config_model = cls.model_validate(body)
@@ -807,6 +809,7 @@ class ConfigsService(ExtensionProtocol):
         """
         Overrides the configuration for a plugin at the Catalog level.
         """
+        await require_catalog_ready(catalog_id)
         try:
             cls = require_config_class(plugin_id)
             config_model = cls.model_validate(body)

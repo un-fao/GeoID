@@ -116,64 +116,18 @@ class OGCServiceMixin:
         *,
         catalogs_svc: Optional[CatalogsProtocol] = None,
     ) -> Any:
-        """Return the catalog model iff ``provisioning_status == 'ready'``.
+        """Thin wrapper around :func:`extensions.tools.catalog_readiness.require_catalog_ready`.
 
-        Mutation endpoints (create collection, add item, update catalog,
-        …) MUST call this before operating on ``catalog_id``.  When the
-        provisioning task has not yet completed (or has failed) the
-        backing storage doesn't exist, so any downstream write would
-        either 500 deep inside a driver or — worse — silently half-
-        succeed and corrupt state.  Failing fast with a clear 409
-        surfaces the real state to the client.
-
-        Raises:
-
-        - ``HTTPException(404)``  — catalog doesn't exist
-        - ``HTTPException(409)``  — provisioning still in flight
-          (status ``'provisioning'``) or has terminally failed
-          (status ``'failed'``).  The detail explains which and hints
-          at the retry / cleanup path.
+        Kept on the mixin for back-compat with existing OGC-extension
+        call sites; non-OGC extensions (assets, configs, processes, …)
+        should import the free function directly so they don't have to
+        inherit from :class:`OGCServiceMixin`.
         """
-        svc = catalogs_svc if catalogs_svc is not None else await self._get_catalogs_service()
-        catalog = await svc.get_catalog_model(catalog_id)
-        if catalog is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Catalog '{catalog_id}' not found.",
-            )
+        from dynastore.extensions.tools.catalog_readiness import require_catalog_ready
 
-        status_value = getattr(catalog, "provisioning_status", "ready") or "ready"
-        if status_value == "ready":
-            return catalog
-
-        if status_value == "provisioning":
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Catalog '{catalog_id}' is still provisioning — retry "
-                    f"in a moment.  Poll GET /stac/catalogs/{catalog_id} "
-                    f"until provisioning_status = 'ready'."
-                ),
-            )
-        if status_value == "failed":
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Catalog '{catalog_id}' provisioning failed — the "
-                    f"backing storage was never created.  Delete the "
-                    f"catalog (DELETE /stac/catalogs/{catalog_id}) and "
-                    f"recreate it after resolving the underlying cause."
-                ),
-            )
-        # Unknown state value — be loud rather than silently proceed.
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Catalog '{catalog_id}' is in an unknown provisioning "
-                f"state '{status_value}' — cannot proceed with this "
-                f"operation."
-            ),
-        )
+        if catalogs_svc is None:
+            catalogs_svc = await self._get_catalogs_service()
+        return await require_catalog_ready(catalog_id, catalogs_svc=catalogs_svc)
 
     # ------------------------------------------------------------------
     # Standard OGC endpoint handlers
