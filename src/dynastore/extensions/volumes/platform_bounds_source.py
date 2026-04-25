@@ -1,9 +1,14 @@
-"""Platform-wired factory for SidecarBoundsSource.
+"""Platform-wired factories for SidecarBoundsSource and SidecarGeometryFetcher.
 
 Not auto-registered — a deployment opts in by calling
 ``register_sidecar_bounds_source()`` during startup. Keeping the
 registration explicit avoids imposing PostGIS + geometries-sidecar
 assumptions on every /volumes/* caller.
+
+``register_sidecar_bounds_source()`` registers BOTH the bounds source
+(for tileset.json index building) AND the geometry fetcher (for tile
+content generation). Both share the same connection factory and table
+resolvers.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ from typing import Optional
 
 from dynastore.extensions.volumes.config import VolumesConfig
 from dynastore.models.protocols import CatalogsProtocol, DatabaseProtocol
+from dynastore.modules.volumes.geometry_fetcher import SidecarGeometryFetcher
 from dynastore.modules.volumes.sidecar_bounds import SidecarBoundsSource
 from dynastore.tools.discovery import get_protocol, register_plugin
 
@@ -23,7 +29,7 @@ logger = logging.getLogger(__name__)
 def register_sidecar_bounds_source(
     *, volumes_config: Optional[VolumesConfig] = None,
 ) -> None:
-    """Register a SidecarBoundsSource against the BoundsSourceProtocol.
+    """Register SidecarBoundsSource + SidecarGeometryFetcher.
 
     Resolves the platform's DatabaseProtocol + CatalogsProtocol at call
     time — both must already be registered. Table-name conventions
@@ -76,3 +82,13 @@ def register_sidecar_bounds_source(
     )
     register_plugin(source)
     logger.info("SidecarBoundsSource registered against BoundsSourceProtocol")
+
+    fetcher = SidecarGeometryFetcher(
+        connection_factory=_connection_factory,
+        schema_resolver=_resolve_schema,
+        hub_table_for_collection=_hub_table,
+        geometries_table_for_collection=_geometries_table,
+        height_column=cfg.default_height_attr,
+    )
+    register_plugin(fetcher)
+    logger.info("SidecarGeometryFetcher registered against GeometryFetcherProtocol")

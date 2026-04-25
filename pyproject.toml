@@ -72,6 +72,7 @@ extension_template = ["dynastore[extension_base]", "attrs>=25.3.0", "aiohttp>=3.
 extension_processes = ["dynastore[extension_base]", "jsonschema"]
 extension_features = ["dynastore[extension_base,geospatial_core]", "pygeofilter[backend-sqlalchemy]"]
 extension_tiles = ["dynastore[extension_base,module_tiles]"]
+extension_volumes = ["dynastore[extension_base]", "shapely>=2.0"]
 extension_tasks = ["dynastore[extension_base,module_tasks]"]
 extension_proxy = ["dynastore[extension_base,module_proxy]"]
 extension_gdal = ["dynastore[extension_base,module_gdal]"]

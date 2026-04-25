@@ -1,8 +1,9 @@
-"""HTTP endpoint tests for the Volumes (3D GeoVolumes) service (Phase 5c)."""
+"""HTTP endpoint tests for the Volumes (3D GeoVolumes) service."""
 
 from __future__ import annotations
 
 import json
+import struct
 
 import pytest
 
@@ -10,6 +11,11 @@ import pytest
 def _build_service():
     from dynastore.extensions.volumes.volumes_service import VolumesService
     return VolumesService()
+
+
+# ---------------------------------------------------------------------------
+# tileset.json
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -35,14 +41,10 @@ async def test_tileset_json_returns_valid_skeleton():
 
 @pytest.mark.asyncio
 async def test_tileset_json_template_points_at_tiles_subpath():
-    """The empty-skeleton root has a [0]*12 box, but its content URI template
-    (used once non-empty bounds arrive in Phase 5d) must already target
-    the b3dm subpath."""
     from dynastore.extensions.volumes.config import VolumesConfig
     from dynastore.modules.volumes.bounds import FeatureBounds
     from dynastore.modules.volumes.tileset_builder import build_tileset
 
-    # Drive the same template construction the handler uses.
     base = "http://ex/volumes/catalogs/c/collections/l/3dtiles"
     ts = build_tileset(
         [FeatureBounds("f", 0, 0, 0, 1, 1, 1)],
@@ -54,39 +56,7 @@ async def test_tileset_json_template_points_at_tiles_subpath():
 
 
 @pytest.mark.asyncio
-async def test_b3dm_returns_501_pending_phase5b():
-    from unittest.mock import MagicMock
-
-    from fastapi import HTTPException, Request
-
-    svc = _build_service()
-    request = MagicMock(spec=Request)
-    with pytest.raises(HTTPException) as exc:
-        await svc.get_tile_b3dm("c", "l", "0", request)
-    assert exc.value.status_code == 501
-
-
-@pytest.mark.asyncio
-async def test_metadata_emits_self_and_data_links():
-    from unittest.mock import MagicMock
-
-    from fastapi import Request
-
-    svc = _build_service()
-    request = MagicMock(spec=Request)
-    request.url = "http://ex/volumes/catalogs/c/collections/l/3dtiles/metadata"
-
-    payload = await svc.get_volumes_metadata("c", "l", request)
-    assert payload["title"].startswith("3D GeoVolumes")
-    rels = {lk["rel"] for lk in payload["links"]}
-    assert rels == {"self", "data"}
-    data_link = next(lk for lk in payload["links"] if lk["rel"] == "data")
-    assert data_link["href"].endswith("/tileset.json")
-
-
-@pytest.mark.asyncio
 async def test_tileset_json_uses_registered_bounds_source(monkeypatch):
-    """When a BoundsSourceProtocol is registered, its output is used."""
     import json
     from unittest.mock import MagicMock
     from fastapi import Request
@@ -94,6 +64,8 @@ async def test_tileset_json_uses_registered_bounds_source(monkeypatch):
     from dynastore.extensions.volumes.volumes_service import VolumesService
     from dynastore.modules.volumes.bounds import FeatureBounds
     import dynastore.extensions.volumes.volumes_service as mod
+
+    mod._TILESET_CACHE.clear()
 
     class _Source:
         async def get_bounds(self, catalog_id, collection_id, *, limit=None):
@@ -111,14 +83,12 @@ async def test_tileset_json_uses_registered_bounds_source(monkeypatch):
         body += chunk if isinstance(chunk, bytes) else chunk.encode()
 
     doc = json.loads(body.decode())
-    # Single feature -> root is a leaf with content URI pointing at the b3dm subpath.
     assert "content" in doc["root"]
     assert doc["root"]["content"]["uri"].endswith(".b3dm")
 
 
 @pytest.mark.asyncio
 async def test_tileset_json_falls_back_to_empty_source(monkeypatch):
-    """No registered BoundsSourceProtocol -> EmptyBoundsSource -> skeleton."""
     import json
     from unittest.mock import MagicMock
     from fastapi import Request
@@ -126,6 +96,7 @@ async def test_tileset_json_falls_back_to_empty_source(monkeypatch):
     from dynastore.extensions.volumes.volumes_service import VolumesService
     import dynastore.extensions.volumes.volumes_service as mod
 
+    mod._TILESET_CACHE.clear()
     monkeypatch.setattr(mod, "get_protocol", lambda proto: None)
 
     svc = VolumesService()
@@ -138,6 +109,236 @@ async def test_tileset_json_falls_back_to_empty_source(monkeypatch):
         body += chunk if isinstance(chunk, bytes) else chunk.encode()
 
     doc = json.loads(body.decode())
-    # Empty bounds -> skeleton with [0]*12 box and no content URI.
     assert doc["root"]["boundingVolume"]["box"] == [0.0] * 12
     assert "content" not in doc["root"]
+
+
+# ---------------------------------------------------------------------------
+# Tile cache: second call returns cached tileset
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tileset_cached_after_first_build(monkeypatch):
+    import dynastore.extensions.volumes.volumes_service as mod
+
+    call_count = 0
+
+    class _CountingSource:
+        async def get_bounds(self, catalog_id, collection_id, *, limit=None):
+            nonlocal call_count
+            call_count += 1
+            return []
+
+    monkeypatch.setattr(mod, "get_protocol", lambda proto: _CountingSource())
+    # Clear any pre-existing cache entry.
+    mod._TILESET_CACHE.clear()
+
+    from unittest.mock import MagicMock
+    from fastapi import Request
+    from dynastore.extensions.volumes.volumes_service import VolumesService
+
+    svc = VolumesService()
+    req = MagicMock(spec=Request)
+    req.url = "http://ex/volumes/catalogs/cc/collections/ll/3dtiles/tileset.json"
+
+    await svc.get_tileset_json("cc", "ll", req)
+    await svc.get_tileset_json("cc", "ll", req)
+
+    assert call_count == 1, "bounds source should only be called once (cache hit on second)"
+
+    mod._TILESET_CACHE.clear()
+
+
+# ---------------------------------------------------------------------------
+# B3DM tile endpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_tile_b3dm_returns_bytes_response(monkeypatch):
+    from unittest.mock import MagicMock
+    from fastapi import Request
+
+    import dynastore.extensions.volumes.volumes_service as mod
+    from dynastore.modules.volumes.bounds import FeatureBounds
+    from dynastore.models.protocols.geometry_fetcher import FeatureGeometry
+
+    pytest.importorskip("shapely")
+
+    import shapely.wkb
+    from shapely.geometry import Polygon
+
+    poly = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    wkb = shapely.wkb.dumps(poly)
+
+    class _BoundsSource:
+        async def get_bounds(self, cat, col, *, limit=None):
+            return [FeatureBounds("f1", 0, 0, 0, 1, 1, 1)]
+
+    class _Fetcher:
+        async def get_geometries(self, cat, col, ids):
+            return [FeatureGeometry("f1", wkb, height=3.0)]
+
+    def _fake_get_protocol(proto):
+        from dynastore.models.protocols.bounds_source import BoundsSourceProtocol
+        from dynastore.models.protocols.geometry_fetcher import GeometryFetcherProtocol
+        if proto is BoundsSourceProtocol:
+            return _BoundsSource()
+        if proto is GeometryFetcherProtocol:
+            return _Fetcher()
+        return None
+
+    monkeypatch.setattr(mod, "get_protocol", _fake_get_protocol)
+    mod._TILESET_CACHE.clear()
+
+    svc = mod.VolumesService()
+    req = MagicMock(spec=Request)
+    req.url = "http://ex/volumes/catalogs/c/collections/col/3dtiles/tileset.json"
+
+    # Build tileset so the cache is populated with correct tile_ids.
+    await svc.get_tileset_json("c", "col", req)
+
+    # Retrieve the root tile_id from the cached tileset.
+    root = mod._TILESET_CACHE[("c", "col")][1]["root"]
+    content_uri = root.get("content", {}).get("uri", "")
+    tile_id = content_uri.rsplit("/", 1)[-1].split(".")[0]
+
+    req2 = MagicMock(spec=Request)
+    req2.url = f"http://ex/volumes/catalogs/c/collections/col/3dtiles/tiles/{tile_id}.b3dm"
+
+    response = await svc.get_tile_b3dm("c", "col", tile_id, req2)
+    assert response.media_type == "application/octet-stream"
+    assert len(response.body) > 28  # header alone is 28 bytes
+    assert response.body[:4] == b"b3dm"
+
+    mod._TILESET_CACHE.clear()
+
+
+# ---------------------------------------------------------------------------
+# GLB tile endpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_tile_glb_returns_gltf_binary(monkeypatch):
+    from unittest.mock import MagicMock
+    from fastapi import Request
+
+    import dynastore.extensions.volumes.volumes_service as mod
+    from dynastore.modules.volumes.bounds import FeatureBounds
+    from dynastore.models.protocols.geometry_fetcher import FeatureGeometry
+
+    pytest.importorskip("shapely")
+
+    import shapely.wkb
+    from shapely.geometry import Polygon
+
+    poly = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    wkb = shapely.wkb.dumps(poly)
+
+    class _BoundsSource:
+        async def get_bounds(self, cat, col, *, limit=None):
+            return [FeatureBounds("g1", 0, 0, 0, 1, 1, 1)]
+
+    class _Fetcher:
+        async def get_geometries(self, cat, col, ids):
+            return [FeatureGeometry("g1", wkb, height=2.0)]
+
+    def _fake_get_protocol(proto):
+        from dynastore.models.protocols.bounds_source import BoundsSourceProtocol
+        from dynastore.models.protocols.geometry_fetcher import GeometryFetcherProtocol
+        if proto is BoundsSourceProtocol:
+            return _BoundsSource()
+        if proto is GeometryFetcherProtocol:
+            return _Fetcher()
+        return None
+
+    monkeypatch.setattr(mod, "get_protocol", _fake_get_protocol)
+    mod._TILESET_CACHE.clear()
+
+    svc = mod.VolumesService()
+    req = MagicMock(spec=Request)
+    req.url = "http://ex/volumes/catalogs/c/collections/col2/3dtiles/tileset.json"
+    await svc.get_tileset_json("c", "col2", req)
+
+    root = mod._TILESET_CACHE[("c", "col2")][1]["root"]
+    content_uri = root.get("content", {}).get("uri", "")
+    tile_id = content_uri.rsplit("/", 1)[-1].split(".")[0]
+
+    req2 = MagicMock(spec=Request)
+    req2.url = f"http://ex/volumes/catalogs/c/collections/col2/3dtiles/tiles/{tile_id}.glb"
+
+    response = await svc.get_tile_glb("c", "col2", tile_id, req2)
+    assert response.media_type == "model/gltf-binary"
+    assert response.body[:4] == b"glTF"
+
+    mod._TILESET_CACHE.clear()
+
+
+# ---------------------------------------------------------------------------
+# 404 for unknown tile_id
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_b3dm_returns_404_for_unknown_tile(monkeypatch):
+    from unittest.mock import MagicMock
+    from fastapi import HTTPException, Request
+
+    import dynastore.extensions.volumes.volumes_service as mod
+
+    monkeypatch.setattr(mod, "get_protocol", lambda proto: None)
+    mod._TILESET_CACHE.clear()
+
+    svc = mod.VolumesService()
+    req = MagicMock(spec=Request)
+    req.url = "http://ex/volumes/catalogs/c/collections/empty/3dtiles/tileset.json"
+    await svc.get_tileset_json("c", "empty", req)
+
+    req2 = MagicMock(spec=Request)
+    req2.url = "http://ex/volumes/catalogs/c/collections/empty/3dtiles/tiles/999.b3dm"
+
+    with pytest.raises(HTTPException) as exc:
+        await svc.get_tile_b3dm("c", "empty", "999", req2)
+    assert exc.value.status_code == 404
+
+    mod._TILESET_CACHE.clear()
+
+
+# ---------------------------------------------------------------------------
+# metadata
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_metadata_emits_self_and_data_links():
+    from unittest.mock import MagicMock
+    from fastapi import Request
+
+    svc = _build_service()
+    request = MagicMock(spec=Request)
+    request.url = "http://ex/volumes/catalogs/c/collections/l/3dtiles/metadata"
+
+    payload = await svc.get_volumes_metadata("c", "l", request)
+    assert payload["title"].startswith("3D GeoVolumes")
+    rels = {lk["rel"] for lk in payload["links"]}
+    assert rels == {"self", "data"}
+    data_link = next(lk for lk in payload["links"] if lk["rel"] == "data")
+    assert data_link["href"].endswith("/tileset.json")
+
+
+@pytest.mark.asyncio
+async def test_metadata_exposes_new_config_fields():
+    from unittest.mock import MagicMock
+    from fastapi import Request
+
+    svc = _build_service()
+    request = MagicMock(spec=Request)
+    request.url = "http://ex/volumes/catalogs/c/collections/l/3dtiles/metadata"
+
+    payload = await svc.get_volumes_metadata("c", "l", request)
+    cfg = payload["config"]
+    assert "default_extrusion_height" in cfg
+    assert "supported_formats" in cfg
+    assert isinstance(cfg["supported_formats"], list)
