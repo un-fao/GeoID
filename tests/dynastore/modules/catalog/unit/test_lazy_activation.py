@@ -16,10 +16,15 @@ from dynastore.tools.discovery import get_protocol
 from dynastore.tools.protocol_helpers import get_engine
 from tests.dynastore.test_utils import generate_test_id
 
+pytestmark = [
+    pytest.mark.enable_modules(
+        "db_config", "db", "catalog", "stac", "collection_postgresql", "catalog_postgresql"
+    ),
+]
 
-@pytest.mark.enable_modules("db_config", "db", "catalog", "stac", "collection_postgresql", "catalog_postgresql")
+
 @pytest.mark.asyncio
-async def test_create_collection_is_pending(app_lifespan, data_id):
+async def test_create_collection_is_pending(app_lifespan_module, data_id):
     """POST /collections leaves the collection in pending state.
 
     `is_active` must return False; `physical_table` must still be None
@@ -44,9 +49,8 @@ async def test_create_collection_is_pending(app_lifespan, data_id):
     assert active is False, "freshly created collection must be pending"
 
 
-@pytest.mark.enable_modules("db_config", "db", "catalog", "stac", "collection_postgresql", "catalog_postgresql")
 @pytest.mark.asyncio
-async def test_pending_collection_items_returns_empty(app_lifespan, data_id):
+async def test_pending_collection_items_returns_empty(app_lifespan_module, data_id):
     """GET /items on a pending collection returns 200 empty FeatureCollection.
 
     OGC API Features Part 1 Requirement 26 — successful items request
@@ -80,9 +84,8 @@ async def test_pending_collection_items_returns_empty(app_lifespan, data_id):
     assert response.total_count in (0, None)
 
 
-@pytest.mark.enable_modules("db_config", "db", "catalog", "stac", "collection_postgresql", "catalog_postgresql")
 @pytest.mark.asyncio
-async def test_first_insert_activates_collection(app_lifespan, data_id):
+async def test_first_insert_activates_collection(app_lifespan_module, data_id):
     """First POST /items triggers activation transparently.
 
     After the insert, `is_active` flips to True and the collection is
@@ -121,9 +124,8 @@ async def test_first_insert_activates_collection(app_lifespan, data_id):
     assert await catalogs.is_active(catalog_id, collection_id) is True
 
 
-@pytest.mark.enable_modules("db_config", "db", "catalog", "stac", "collection_postgresql", "catalog_postgresql")
 @pytest.mark.asyncio
-async def test_activate_collection_is_idempotent(app_lifespan, data_id):
+async def test_activate_collection_is_idempotent(app_lifespan_module, data_id):
     """Calling activate_collection twice is a no-op on the second call."""
     catalog_id = f"cat_idem_{data_id}"
     collection_id = f"col_idem_{generate_test_id()}"
@@ -148,9 +150,8 @@ async def test_activate_collection_is_idempotent(app_lifespan, data_id):
     assert await catalogs.is_active(catalog_id, collection_id) is True
 
 
-@pytest.mark.enable_modules("db_config", "db", "catalog", "stac", "collection_postgresql", "catalog_postgresql")
 @pytest.mark.asyncio
-async def test_concurrent_first_inserts_both_succeed(app_lifespan, data_id):
+async def test_concurrent_first_inserts_both_succeed(app_lifespan_module, data_id):
     """Two parallel first-inserts on a fresh collection both commit.
 
     ensure_storage is idempotent; the routing pin is serialised by a

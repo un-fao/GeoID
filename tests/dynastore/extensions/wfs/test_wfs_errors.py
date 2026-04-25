@@ -4,12 +4,18 @@ from dynastore.models.protocols import CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.driver_context import DriverContext
 
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.enable_modules(
+        "db_config", "db", "catalog", "stac", "collection_postgresql", "catalog_postgresql"
+    ),
+    pytest.mark.enable_extensions("features", "configs", "wfs", "assets", "stac"),
+]
+
 
 @pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "stac", "collection_postgresql", "catalog_postgresql")
-@pytest.mark.enable_extensions("features", "configs", "wfs", "assets", "stac")
 async def test_get_feature_missing_table(
-    in_process_client, setup_collection, setup_catalog, db_engine
+    in_process_client_module, setup_collection, setup_catalog, db_engine
 ):
     catalog_id = setup_catalog
     collection_id = setup_collection
@@ -22,7 +28,7 @@ async def test_get_feature_missing_table(
         "typenames": f"{catalog_id}:{collection_id}",
         "outputformat": "application/json",
     }
-    r = await in_process_client.get(wfs_url, params=params)
+    r = await in_process_client_module.get(wfs_url, params=params)
     if r.status_code != 200:
         print(f"DEBUG: Initial WFS Error: {r.text}")
     assert r.status_code == 200
@@ -45,14 +51,14 @@ async def test_get_feature_missing_table(
         "geometry": {"type": "Point", "coordinates": [0, 0]},
         "properties": {"asset_code": "TEST"},
     }
-    r = await in_process_client.post(
+    r = await in_process_client_module.post(
         f"/features/catalogs/{catalog_id}/collections/{collection_id}/items",
         json=item_data,
     )
     assert r.status_code == 201
 
     # Verify table now exists and has 1 feature
-    r = await in_process_client.get(wfs_url, params=params)
+    r = await in_process_client_module.get(wfs_url, params=params)
     assert r.status_code == 200
     assert len(r.json()["features"]) == 1
 
@@ -84,7 +90,7 @@ async def test_get_feature_missing_table(
     # Now call WFS again. It should NOT fail anymore.
     # It should return 200 OK with an empty feature collection if the collection exists in catalog but table is missing.
 
-    r = await in_process_client.get(wfs_url, params=params)
+    r = await in_process_client_module.get(wfs_url, params=params)
     assert r.status_code == 200
     # Manual check to avoid JSONDecodeError in test environment
     content = r.text
@@ -98,15 +104,13 @@ async def test_get_feature_missing_table(
 
     # Finally, test that a non-existent catalog returns 404 or 400 (ValueError)
     bad_wfs_url = "/wfs/non_existent_catalog"
-    r = await in_process_client.get(bad_wfs_url, params=params)
+    r = await in_process_client_module.get(bad_wfs_url, params=params)
     assert r.status_code in [400, 404]
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "stac", "collection_postgresql", "catalog_postgresql")
-@pytest.mark.enable_extensions("features", "configs", "wfs", "assets", "stac")
 async def test_describe_feature_type_missing_table(
-    in_process_client, setup_collection, setup_catalog, db_engine
+    in_process_client_module, setup_collection, setup_catalog, db_engine
 ):
     catalog_id = setup_catalog
     collection_id = setup_collection
@@ -118,7 +122,7 @@ async def test_describe_feature_type_missing_table(
     wfs_url = f"/wfs/{catalog_id}"
     params = {"service": "WFS", "request": "DescribeFeatureType", "typename": typename}
 
-    r = await in_process_client.get(wfs_url, params=params)
+    r = await in_process_client_module.get(wfs_url, params=params)
 
     # It should return 200 OK with an XSD
     assert r.status_code == 200

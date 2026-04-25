@@ -6,11 +6,16 @@ from typing import List
 
 logger = logging.getLogger(__name__)
 
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.enable_modules(
+        "db_config", "db", "catalog", "stac", "collection_postgresql", "catalog_postgresql"
+    ),
+    pytest.mark.enable_extensions("features", "configs", "wfs", "assets", "stac"),
+]
 
-@pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "stac", "collection_postgresql", "catalog_postgresql")
-@pytest.mark.enable_extensions("features", "configs", "wfs", "assets", "stac")
-async def test_wfs_streaming_basic(in_process_client, setup_catalog, setup_collection):
+
+async def test_wfs_streaming_basic(in_process_client_module_module, setup_catalog, setup_collection):
     catalog_id = setup_catalog
     collection_id = setup_collection
 
@@ -33,14 +38,11 @@ async def test_wfs_streaming_basic(in_process_client, setup_catalog, setup_colle
     # Ingest data via Features API
     # Note: Using features extension endpoint
     url = f"/features/catalogs/{catalog_id}/collections/{collection_id}/items"
-    response = await in_process_client.post(url, json=features)
+    response = await in_process_client_module.post(url, json=features)
     assert response.status_code == 201
 
 
-@pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "stac", "collection_postgresql", "catalog_postgresql")
-@pytest.mark.enable_extensions("features", "configs", "wfs", "assets", "stac")
-async def test_wfs_hits(in_process_client, setup_catalog, setup_collection):
+async def test_wfs_hits(in_process_client_module, setup_catalog, setup_collection):
     catalog_id = setup_catalog
     collection_id = setup_collection
 
@@ -56,7 +58,7 @@ async def test_wfs_hits(in_process_client, setup_catalog, setup_collection):
             for i in range(5)
         ],
     }
-    await in_process_client.post(
+    await in_process_client_module.post(
         f"/features/catalogs/{catalog_id}/collections/{collection_id}/items",
         json=features,
     )
@@ -71,18 +73,15 @@ async def test_wfs_hits(in_process_client, setup_catalog, setup_collection):
         "resultType": "hits",
     }
 
-    response_hits = await in_process_client.get(wfs_url, params=params_hits)
+    response_hits = await in_process_client_module.get(wfs_url, params=params_hits)
     assert response_hits.status_code == 200
     content_hits = response_hits.text
     assert 'numberMatched="5"' in content_hits
     assert 'numberReturned="0"' in content_hits
 
 
-@pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "stac", "collection_postgresql", "catalog_postgresql")
-@pytest.mark.enable_extensions("features", "configs", "wfs", "assets", "stac")
 async def test_wfs_streaming_geojson(
-    in_process_client, setup_catalog, setup_collection
+    in_process_client_module, setup_catalog, setup_collection
 ):
     catalog_id = setup_catalog
     collection_id = setup_collection
@@ -98,7 +97,7 @@ async def test_wfs_streaming_geojson(
             for i in range(5)
         ],
     }
-    await in_process_client.post(
+    await in_process_client_module.post(
         f"/features/catalogs/{catalog_id}/collections/{collection_id}/items",
         json=features,
     )
@@ -114,16 +113,13 @@ async def test_wfs_streaming_geojson(
         "outputFormat": "application/json",
     }
 
-    response_geojson = await in_process_client.get(wfs_url, params=params_geojson)
+    response_geojson = await in_process_client_module.get(wfs_url, params=params_geojson)
     assert response_geojson.status_code == 200
     geojson_data = response_geojson.json()
     assert len(geojson_data["features"]) == 5
 
 
-@pytest.mark.asyncio
-@pytest.mark.enable_modules("db_config", "db", "catalog", "stac", "collection_postgresql", "catalog_postgresql")
-@pytest.mark.enable_extensions("features", "configs", "wfs", "assets", "stac")
-async def test_wfs_buffered_gml(in_process_client, setup_catalog, setup_collection):
+async def test_wfs_buffered_gml(in_process_client_module, setup_catalog, setup_collection):
     catalog_id = setup_catalog
     collection_id = setup_collection
     # Ingest some data
@@ -138,7 +134,7 @@ async def test_wfs_buffered_gml(in_process_client, setup_catalog, setup_collecti
             for i in range(5)
         ],
     }
-    await in_process_client.post(
+    await in_process_client_module.post(
         f"/features/catalogs/{catalog_id}/collections/{collection_id}/items",
         json=features,
     )
@@ -154,6 +150,6 @@ async def test_wfs_buffered_gml(in_process_client, setup_catalog, setup_collecti
         "outputFormat": "application/gml+xml; version=3.2",
     }
 
-    response_gml = await in_process_client.get(wfs_url, params=params_gml)
+    response_gml = await in_process_client_module.get(wfs_url, params=params_gml)
     assert response_gml.status_code == 200
     assert 'numberMatched="5"' in response_gml.text

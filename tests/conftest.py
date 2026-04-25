@@ -348,6 +348,37 @@ async def sysadmin_in_process_client(app_lifespan):
         yield client
 
 
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def in_process_client_module(app_lifespan_module):
+    """Module-scoped HTTP client backed by app_lifespan_module (one bootstrap per file)."""
+    from httpx import AsyncClient, ASGITransport
+
+    transport = ASGITransport(app=app_lifespan_module.app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def sysadmin_in_process_client_module(app_lifespan_module):
+    """Module-scoped sysadmin HTTP client backed by app_lifespan_module."""
+    from httpx import AsyncClient, ASGITransport
+    from dynastore.tools.discovery import get_protocol
+    from dynastore.models.protocols import AuthenticatorProtocol
+
+    iam_svc = get_protocol(AuthenticatorProtocol)
+    headers = {}
+
+    if iam_svc:
+        token = await _mint_test_jwt(iam_svc, roles=["sysadmin"])
+        headers = {"Authorization": f"Bearer {token}"}
+
+    transport = ASGITransport(app=app_lifespan_module.app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=headers
+    ) as client:
+        yield client
+
+
 @pytest_asyncio.fixture(loop_scope="function")
 async def authenticated_api_client(app_lifespan, base_url):
     """

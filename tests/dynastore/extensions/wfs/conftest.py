@@ -53,29 +53,24 @@ def config_data():
 
 
 @pytest.fixture
-async def setup_catalog(in_process_client, catalog_data, catalog_id):
-    # Cleanup with hard delete to avoid duplicate key constraints
-    # await in_process_client.delete(f"/features/catalogs/{catalog_id}?force=true")
-    # Create
-    r = await in_process_client.post("/features/catalogs", json=catalog_data)
+async def setup_catalog(in_process_client_module, catalog_data, catalog_id):
+    r = await in_process_client_module.post("/features/catalogs", json=catalog_data)
     assert r.status_code == 201
     yield catalog_id
-    await in_process_client.delete(f"/features/catalogs/{catalog_id}?force=true")
+    await in_process_client_module.delete(f"/features/catalogs/{catalog_id}?force=true")
 
 
 @pytest.fixture
 async def setup_collection(
-    in_process_client, setup_catalog, collection_data, collection_id, config_data
+    in_process_client_module, setup_catalog, collection_data, collection_id, config_data
 ):
     catalog_id = setup_catalog
-    # Create
-    r = await in_process_client.post(
+    r = await in_process_client_module.post(
         f"/features/catalogs/{catalog_id}/collections", json=collection_data
     )
     assert r.status_code == 201
 
-    # Configure
-    r = await in_process_client.put(
+    r = await in_process_client_module.put(
         f"/configs/catalogs/{catalog_id}/collections/{collection_id}/classes/CollectionPluginConfig",
         json=config_data,
     )
