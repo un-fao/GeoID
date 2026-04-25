@@ -28,11 +28,26 @@ from dynastore.models.driver_context import DriverContext
 
 
 # Enable extensions required for these tests
-# Enable extensions required for these tests
 pytestmark = [
     pytest.mark.enable_extensions("tiles", "dwh", "features"),
-    pytest.mark.enable_modules("db_config", "db", "catalog", "stats", "tiles", "collection_postgresql", "catalog_postgresql"),
+    # 'stac' MODULE (not extension) registers CollectionStacPostgresqlDriver
+    # and provisions the collection_metadata_stac sidecar at lifespan DDL time.
+    # The collection-write code path always touches that sidecar, so omitting
+    # it here causes setup_collection to 500 on the first POST /collections.
+    pytest.mark.enable_modules(
+        "db_config", "db", "catalog", "stats", "stac", "tiles",
+        "collection_postgresql", "catalog_postgresql",
+    ),
 ]
+
+
+async def _activate(catalogs, catalog_id: str, collection_id: str, conn) -> None:
+    """Lazy-activation pin: get_features_query needs a resolved physical_table,
+    which only exists after activation. Production gets it on the first
+    POST /items; tests don't insert, so we trigger it explicitly."""
+    await catalogs.activate_collection(
+        catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
+    )
 
 
 @pytest.mark.asyncio
@@ -43,17 +58,18 @@ async def test_mvt_query_transformation(catalog_id, collection_id, db_engine, ap
     # Get ItemsProtocol
     items_svc = get_protocol(ItemsProtocol)
     assert items_svc is not None
-    
+
     # Verify MVT transformer is registered
     transformers = get_protocols(QueryTransformProtocol)
     mvt_transformer = next((t for t in transformers if t.transform_id == "mvt"), None)
     assert mvt_transformer is not None, "MVTQueryTransform should be registered"
-    
+
     # Get collection config
     from dynastore.models.protocols import CatalogsProtocol
     catalogs = get_protocol(CatalogsProtocol)
-    
+
     async with db_engine.begin() as conn:
+        await _activate(catalogs, catalog_id, collection_id, conn)
         col_config = await catalogs.get_collection_config(
             catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
         )
@@ -105,10 +121,11 @@ async def test_dwh_join_transformation(catalog_id, collection_id, db_engine, app
     catalogs = get_protocol(CatalogsProtocol)
     
     async with db_engine.begin() as conn:
+        await _activate(catalogs, catalog_id, collection_id, conn)
         col_config = await catalogs.get_collection_config(
             catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
         )
-        
+
         # Build QueryRequest with DWH join context
         request = QueryRequest(
             select=[
@@ -127,9 +144,11 @@ async def test_dwh_join_transformation(catalog_id, collection_id, db_engine, app
             "dwh_join_column": "admin_code",
         }
         
-        # Apply transformations
+        # Apply transformations. Pass db_resource so storage resolution
+        # sees the activation we just did inside this same transaction.
         sql, params = await items_svc._apply_query_transformations(
-            request, context, catalog_id, collection_id, col_config
+            request, context, catalog_id, collection_id, col_config,
+            db_resource=conn,
         )
         
         # Verify DWH transformation was applied
@@ -172,10 +191,11 @@ async def test_no_transformation_when_not_applicable(catalog_id, collection_id, 
     catalogs = get_protocol(CatalogsProtocol)
     
     async with db_engine.begin() as conn:
+        await _activate(catalogs, catalog_id, collection_id, conn)
         col_config = await catalogs.get_collection_config(
             catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
         )
-        
+
         # Build standard GeoJSON query (no MVT, no DWH)
         params = {
             "geom_format": "WKB",  # Not MVT
