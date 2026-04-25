@@ -61,6 +61,7 @@ _STANDARD_PATTERNS: Dict[str, str] = {
     "OGC API EDR": r"ogcapi-edr",
     "OGC Dimensions": r"ogc-dimensions",
     "OGC API Styles": r"ogcapi-styles",
+    "OGC API Moving Features": r"ogcapi-movingfeatures",
 }
 
 # Standards in the OGC REST API family that DynaStore could potentially implement
