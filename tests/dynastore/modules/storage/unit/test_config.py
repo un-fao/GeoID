@@ -329,7 +329,17 @@ class TestMetadataRoutingConfig:
     def test_default_embedded_metadata_is_empty(self):
         cfg = CollectionRoutingConfig()
         assert isinstance(cfg.metadata, MetadataRoutingConfig)
-        assert cfg.metadata.operations == {}
+        # Validators auto-fold globally-registered indexer/search drivers
+        # (entries marked source='auto'); the test guards against
+        # operator-explicit defaults leaking into a fresh config — filter
+        # auto entries out so the result is independent of which other tests
+        # happened to register drivers in the same xdist worker.
+        operator_explicit = {
+            op: [e for e in entries if getattr(e, "source", None) != "auto"]
+            for op, entries in cfg.metadata.operations.items()
+        }
+        operator_explicit = {op: v for op, v in operator_explicit.items() if v}
+        assert operator_explicit == {}
 
 
 class TestMetadataRoutingSnapshot:

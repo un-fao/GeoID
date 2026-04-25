@@ -45,8 +45,15 @@ async def test_list_users_pagination(sysadmin_in_process_client: AsyncClient):
 @MARKER
 @pytest.mark.asyncio
 async def test_get_unknown_user_404(sysadmin_in_process_client: AsyncClient):
-    """GET /admin/users/{id} — nonexistent user returns 404."""
-    r = await sysadmin_in_process_client.get("/admin/users/nonexistent_user_xyz_abc")
+    """GET /admin/users/{id} — nonexistent user returns 404.
+
+    The route declares ``principal_id: UUID`` so a non-UUID path segment
+    fails FastAPI path validation with 422 before reaching the handler.
+    Use a well-formed UUID that won't exist in IAM to exercise the 404 path.
+    """
+    import uuid
+    nonexistent = str(uuid.uuid4())
+    r = await sysadmin_in_process_client.get(f"/admin/users/{nonexistent}")
     assert r.status_code == 404
 
 
