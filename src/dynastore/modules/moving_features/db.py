@@ -19,7 +19,7 @@
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import List, Optional
 
 from dynastore.modules.db_config.query_executor import DbResource, DQLQuery, ResultHandler

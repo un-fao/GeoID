@@ -180,7 +180,6 @@ class MovingFeaturesService(protocols.ExtensionProtocol, OGCServiceMixin, Moving
         offset: int = Query(0, ge=0),
     ) -> JSONResponse:
         validate_sql_identifier(catalog_id)
-        await self._require_catalog_ready(catalog_id)
         catalogs_svc = await self._get_catalogs_service()
         collections = await catalogs_svc.list_collections(
             catalog_id, limit=limit, offset=offset
@@ -340,6 +339,26 @@ class MovingFeaturesService(protocols.ExtensionProtocol, OGCServiceMixin, Moving
         feature = await mf_db.get_moving_feature(conn, catalog_id, mf_id)
         if not feature or feature.collection_id != collection_id:
             raise HTTPException(status_code=404, detail="Moving feature not found.")
+
+        from dynastore.modules.db_config.partition_tools import ensure_partition_exists
+
+        try:
+            await ensure_partition_exists(
+                conn,
+                table_name="temporal_geometries",
+                schema="moving_features",
+                strategy="LIST",
+                partition_value=catalog_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to ensure partition for catalog '%s': %s", catalog_id, exc, exc_info=True
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not prepare database for catalog '{catalog_id}'.",
+            )
+
         created = await mf_db.create_temporal_geometry(conn, catalog_id, mf_id, tg)
         if not created:
             raise HTTPException(status_code=500, detail="Failed to create temporal geometry sequence.")

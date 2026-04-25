@@ -98,6 +98,3 @@ class MovingFeature(MovingFeatureCreate):
     model_config = ConfigDict(from_attributes=True)
 
 
-class MovingFeatureWithSequences(MovingFeature):
-    """Moving feature with its embedded temporal geometry sequences."""
-    tg_sequences: List[TemporalGeometry] = Field(default_factory=list)
