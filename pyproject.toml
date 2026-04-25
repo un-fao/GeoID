@@ -95,6 +95,8 @@ extension_geoid = ["dynastore[extension_base,extension_web]", "user-agents>=2.2.
 extension_maps = ["dynastore[extension_base,geospatial_core,mvt]", "GDAL==3.12.3"]
 extension_coverages = ["dynastore[extension_base,geospatial_core]"]
 extension_dggs = ["dynastore[extension_base,geospatial_core]", "h3>=4.1.0", "s2sphere>=0.2.5"]
+module_coverages_netcdf = ["netCDF4>=1.6.0", "xarray>=2024.0.0"]
+module_coverages_zarr = ["zarr>=2.18.0", "xarray>=2024.0.0"]
 extension_dwh = ["dynastore[extension_base,dwh]"]
 extension_dimensions = ["dynastore[extension_base]", "ogc-dimensions @ git+https://github.com/ccancellieri/ogc-dimensions.git@main#subdirectory=reference-implementation"]
 

@@ -1,6 +1,6 @@
-"""Streaming NetCDF-4 writer with CF-1.8 conventions.
+"""Streaming Zarr writer — emits a ZIP-wrapped Zarr store.
 
-Uses xarray as the high-level API and netCDF4 as the I/O engine.
+Uses xarray as the high-level API and zarr as the store backend.
 Imports are deferred so the module is usable without those packages.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, Iterable, Iterator, List, Tuple
 
 
-def write_netcdf(
+def write_zarr(
     *,
     width: int,
     height: int,
@@ -17,20 +17,26 @@ def write_netcdf(
     crs: str,
     band_names: List[str],
     tiles: Iterable[Tuple[int, int, Any]],
+    chunk_size: int = 256,
     chunk_bytes: int = 1 << 20,
 ) -> Iterator[bytes]:
-    """Yield NetCDF-4 file bytes with CF conventions.
+    """Yield a ZIP-wrapped Zarr store as a byte stream.
 
     Tiles are consumed into a full in-memory numpy array before encoding.
     Each tile is ``(col_off, row_off, ndarray)`` where the array is 2-D
     ``(h, w)`` for a single band or 3-D ``(bands, h, w)`` for multi-band.
     Band iteration is driven by the order of entries in ``band_names``.
+
+    ``chunk_size`` controls the Zarr chunk shape along both spatial axes.
+    Smaller chunks improve random-access performance; larger chunks improve
+    sequential read throughput.
     """
     import os
     import tempfile
 
     import numpy as np
     import xarray as xr
+    import zarr
 
     # One float32 accumulation buffer per band
     data: dict[str, np.ndarray] = {
@@ -58,11 +64,12 @@ def write_netcdf(
 
     data_vars: dict[str, xr.DataArray] = {}
     for name, arr2d in data.items():
+        chunks = {"lat": min(chunk_size, height), "lon": min(chunk_size, width)}
         da = xr.DataArray(
             arr2d,
             dims=["lat", "lon"],
             coords={"lat": lats, "lon": lons},
-        )
+        ).chunk(chunks)
         da.attrs["grid_mapping"] = "crs"
         data_vars[name] = da
 
@@ -80,15 +87,24 @@ def write_netcdf(
         "long_name": "latitude",
         "axis": "Y",
     }
-    # Grid-mapping scalar variable stores CRS metadata
     ds["crs"] = xr.DataArray(np.int32(0))
     ds["crs"].attrs["grid_mapping_name"] = "latitude_longitude"
     ds["crs"].attrs["crs_wkt"] = crs
 
-    tf = tempfile.NamedTemporaryFile(prefix="cov-", suffix=".nc", delete=False)
+    tf = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
     tf.close()
     try:
-        ds.to_netcdf(tf.name, engine="netcdf4", format="NETCDF4")
+        # ZipStore lives at zarr.storage.ZipStore in zarr 3.x;
+        # zarr.ZipStore is the legacy alias that zarr 2.x and 3.x both export.
+        try:
+            from zarr.storage import ZipStore
+        except ImportError:
+            from zarr import ZipStore  # type: ignore[no-redef]
+
+        store = ZipStore(tf.name, mode="w")
+        ds.to_zarr(store=store, mode="w", consolidated=True)
+        store.close()
+
         with open(tf.name, "rb") as fh:
             while True:
                 chunk = fh.read(chunk_bytes)
