@@ -22,10 +22,10 @@ on:
     outputs:
       tests_passed:
         description: "'true' if all tests passed"
-        value: ${{ jobs.test.outputs.tests_passed }}
+        value: ${{ jobs.aggregate.outputs.tests_passed }}
       artifact_name:
         description: "Name of the uploaded test badge artifact"
-        value: ${{ jobs.test.outputs.artifact_name }}
+        value: ${{ jobs.aggregate.outputs.artifact_name }}
 
 # ── Jobs ──────────────────────────────────────────────────────────────────────
 jobs:
@@ -36,18 +36,24 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Build the `tester` stage of the canonical Dockerfile — same image used
-      # by the test job. Override SCOPE with the `typecheck` extra so pyright
-      # can resolve every optional code path (duckdb, pyiceberg, morecantile…)
-      # that the runtime `all` extra intentionally omits.
-      - name: Build tester image
-        run: |
-          docker build \
-            --file src/dynastore/docker/Dockerfile \
-            --target tester \
-            --build-arg SCOPE=typecheck \
-            --tag dynastore-tester:ci \
-            .
+      - uses: docker/setup-buildx-action@v3
+
+      # Build the `tester` stage of the canonical Dockerfile. Override SCOPE
+      # with the `typecheck` extra so pyright can resolve every optional code
+      # path (duckdb, pyiceberg, morecantile…) that the runtime `all` extra
+      # intentionally omits. GHA layer cache scope is per-target+SCOPE since
+      # the typecheck SCOPE differs from unit/integration jobs.
+      - name: Build tester image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/dynastore/docker/Dockerfile
+          target: tester
+          build-args: SCOPE=typecheck
+          tags: dynastore-tester:ci
+          load: true
+          cache-from: type=gha,scope=tester-typecheck
+          cache-to: type=gha,mode=max,scope=tester-typecheck
 
       - name: Run Pyright
         run: |
@@ -56,29 +62,38 @@ jobs:
             dynastore-tester:ci \
             /opt/venv/bin/pyright src/dynastore/ --warnings
 
-  test:
+  unit-tests:
     runs-on: ubuntu-22.04
-    # Belt-and-braces timeout. ``pytest-timeout`` in pytest.ini is the
-    # primary defence against individual-test hangs; this job-level
-    # ``timeout-minutes`` catches hangs that escape pytest (docker-compose
-    # build stuck, pytest bootstrap stalled, etc.). 45min is ~3x the
-    # historical norm; any run approaching it is a genuine infra issue.
-    # Static config — no untrusted-input interpolation.
-    timeout-minutes: 45
+    # pytest-timeout in pytest.ini is the primary defence against individual-test
+    # hangs; this job timeout catches hangs that escape pytest (compose build
+    # stuck, bootstrap stalled). 30min on unit alone is ~6x the post-fix norm.
+    timeout-minutes: 30
     permissions:
       contents: read
       checks: write
       pull-requests: write
-
-    outputs:
-      tests_passed: ${{ steps.set-result.outputs.tests_passed }}
-      artifact_name: ${{ steps.set-artifact.outputs.name }}
-
     steps:
       - uses: actions/checkout@v6
 
-      - name: Build test infrastructure
-        run: docker compose -f src/dynastore/docker/docker-compose.test.yml build
+      - uses: docker/setup-buildx-action@v3
+
+      # Pre-build the tester image with GHA layer cache; docker compose then
+      # picks it up via the cached image without rebuilding. Cache scope=tester
+      # is shared with integration-tests so warm runs land in seconds.
+      - name: Build test-runner image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/dynastore/docker/Dockerfile
+          target: tester
+          build-args: SCOPE=all
+          tags: geoid-test-runner:ci
+          load: true
+          cache-from: type=gha,scope=tester
+          cache-to: type=gha,mode=max,scope=tester
+
+      - name: Build test infrastructure (compose)
+        run: docker compose -f src/dynastore/docker/docker-compose.test.yml build test-runner db
 
       - name: Run unit tests
         id: unit
@@ -103,14 +118,63 @@ jobs:
           output-path: 'unit-badge.svg'
           label: 'Unit Tests'
 
+      - name: Upload unit artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-test-output
+          path: |
+            unit-test-results.xml
+            unit-badge.svg
+          if-no-files-found: warn
+
+  integration-tests:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    # inputs.run_integration is only set for workflow_dispatch / workflow_call.
+    # For push/pull_request it is undefined (''), so the comparison evaluates
+    # != 'false' as true. Skip only when the caller explicitly passes false.
+    if: ${{ inputs.run_integration != 'false' }}
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Same scope=tester cache as unit-tests — when both jobs run in parallel
+      # the second to finish a layer warms the other's next run.
+      - name: Build test-runner image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/dynastore/docker/Dockerfile
+          target: tester
+          build-args: SCOPE=all
+          tags: geoid-test-runner:ci
+          load: true
+          cache-from: type=gha,scope=tester
+          cache-to: type=gha,mode=max,scope=tester
+
+      - name: Build catalog/worker image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/dynastore/docker/Dockerfile
+          target: builder
+          build-args: SCOPE=all
+          tags: geoid-builder:ci
+          load: true
+          cache-from: type=gha,scope=builder
+          cache-to: type=gha,mode=max,scope=builder
+
+      - name: Build test infrastructure (compose)
+        run: docker compose -f src/dynastore/docker/docker-compose.test.yml build
+
       - name: Run integration tests
         id: integration
-        # inputs.run_integration is only set for workflow_dispatch / workflow_call.
-        # For push/pull_request it is undefined (''), which GitHub Actions coerces
-        # to false in a boolean comparison — so `!= false` would evaluate to false
-        # and the step would be silently skipped.  Use a string comparison instead:
-        # 'false' only when the caller explicitly passes run_integration=false.
-        if: ${{ inputs.run_integration != 'false' }}
         run: |
           docker compose -f src/dynastore/docker/docker-compose.test.yml run --rm test-runner \
             /opt/venv/bin/pytest tests/ \
@@ -125,9 +189,7 @@ jobs:
 
       - name: Report integration tests
         uses: dorny/test-reporter@v3
-        # Only report when the integration step actually ran (produced an XML).
-        # When the step is skipped the file does not exist and dorny would fail.
-        if: always() && steps.integration.outcome != 'skipped'
+        if: always()
         with:
           name: Integration Tests
           path: './test-results.xml'
@@ -135,12 +197,51 @@ jobs:
           fail-on-error: 'false'
 
       - name: Generate integration badge
-        if: always() && steps.integration.outcome != 'skipped'
+        if: always()
         uses: ./.github/actions/test-badge
         with:
           junit-xml-path: './test-results.xml'
           output-path: 'integration-badge.svg'
           label: 'Integration Tests'
+
+      - name: Upload integration artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-test-output
+          path: |
+            test-results.xml
+            integration-badge.svg
+          if-no-files-found: warn
+
+  aggregate:
+    # Fan-in: combine unit + integration artifacts, generate the test report
+    # JSON, upload the badge bundle, and surface workflow_call outputs.
+    # Runs even when integration is skipped so callers still get outputs.
+    runs-on: ubuntu-22.04
+    needs: [unit-tests, integration-tests]
+    if: always()
+    permissions:
+      contents: read
+    outputs:
+      tests_passed: ${{ steps.set-result.outputs.tests_passed }}
+      artifact_name: ${{ steps.set-artifact.outputs.name }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download unit artifacts
+        if: needs.unit-tests.result != 'skipped'
+        uses: actions/download-artifact@v5
+        with:
+          name: unit-test-output
+          path: .
+
+      - name: Download integration artifacts
+        if: needs.integration-tests.result != 'skipped'
+        uses: actions/download-artifact@v5
+        with:
+          name: integration-test-output
+          path: .
 
       - name: Generate test report JSON
         if: always()
@@ -153,7 +254,9 @@ jobs:
       - name: Set artifact name
         id: set-artifact
         if: always()
-        run: echo "name=test-badges-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: echo "name=test-badges-${RUN_ID}" >> "$GITHUB_OUTPUT"
 
       - name: Upload badges
         if: always()
@@ -164,14 +267,17 @@ jobs:
             unit-badge.svg
             integration-badge.svg
             test-results.json
+          if-no-files-found: warn
 
       - name: Set result
         id: set-result
         if: always()
+        env:
+          UNIT_RESULT: ${{ needs.unit-tests.result }}
+          INTEGRATION_RESULT: ${{ needs.integration-tests.result }}
         run: |
-          if [[ "${{ steps.unit.outcome }}" == "success" && \
-                ("${{ steps.integration.outcome }}" == "success" || \
-                 "${{ steps.integration.outcome }}" == "skipped") ]]; then
+          if [[ "$UNIT_RESULT" == "success" && \
+                ( "$INTEGRATION_RESULT" == "success" || "$INTEGRATION_RESULT" == "skipped" ) ]]; then
             echo "tests_passed=true" >> "$GITHUB_OUTPUT"
           else
             echo "tests_passed=false" >> "$GITHUB_OUTPUT"
