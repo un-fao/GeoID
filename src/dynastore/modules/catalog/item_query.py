@@ -279,7 +279,8 @@ class ItemQueryMixin:
             **params,
         }
         sql, bind_params = await self._apply_query_transformations(
-            query_request, context, catalog_id, collection_id, col_config
+            query_request, context, catalog_id, collection_id, col_config,
+            db_resource=conn,
         )
 
         # 3. Apply param suffixing for multi-collection queries
@@ -337,6 +338,7 @@ class ItemQueryMixin:
         catalog_id: str,
         collection_id: str,
         col_config: ItemsPostgresqlDriverConfig,
+        db_resource: Optional[DbResource] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Applies registered query transformations and generates optimized SQL.
@@ -402,9 +404,14 @@ class ItemQueryMixin:
                 # Re-raise as ValueError so it can be caught and returned as 400
                 raise ValueError(f"Invalid CQL filter: {e}")
 
-        # Resolve physical storage and generate SQL
-        phys_schema = await self._resolve_physical_schema(catalog_id)
-        phys_table = await self._resolve_physical_table(catalog_id, collection_id)
+        # Resolve physical storage and generate SQL.  Thread the caller's
+        # in-flight conn through so resolution shares the warm transaction
+        # state (avoids cold per-pod routing-config lookups that surfaced
+        # as intermittent 400 "Could not resolve storage").
+        phys_schema = await self._resolve_physical_schema(catalog_id, db_resource=db_resource)
+        phys_table = await self._resolve_physical_table(
+            catalog_id, collection_id, db_resource=db_resource,
+        )
         if not phys_schema or not phys_table:
             raise ValueError(
                 f"Could not resolve storage for {catalog_id}:{collection_id}"
@@ -483,7 +490,8 @@ class ItemQueryMixin:
                 "col_config": col_config,
             }
             sql, params = await self._apply_query_transformations(
-                request, query_ctx, catalog_id, collection_id, col_config
+                request, query_ctx, catalog_id, collection_id, col_config,
+                db_resource=conn,
             )
 
             result = await _run_query(conn, text(sql), params)
@@ -643,7 +651,8 @@ class ItemQueryMixin:
                 **(request.raw_params or {}),
             }
             sql, params = await self._apply_query_transformations(
-                request, context, catalog_id, collection_id, col_config
+                request, context, catalog_id, collection_id, col_config,
+                db_resource=conn,
             )
 
             total_count = None
@@ -694,7 +703,8 @@ class ItemQueryMixin:
                 **(request.raw_params or {}),
             }
             sql, params = await self._apply_query_transformations(
-                request, context, catalog_id, collection_id, col_config
+                request, context, catalog_id, collection_id, col_config,
+                db_resource=conn,
             )
 
             params.update({
