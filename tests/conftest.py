@@ -247,6 +247,27 @@ def pytest_runtest_setup(item):
         except Exception as e:
             pytest.skip(f"GCP credentials not available ({e}) — skipping GCP test.")
 
+    if item.get_closest_marker("elasticsearch"):
+        # Opt-in via DYNASTORE_RUN_ELASTICSEARCH_TESTS=true. ES container being
+        # reachable is not enough — the test app must explicitly enable the
+        # ElasticsearchModule, which the default test fixture does not. Setting
+        # the env var asserts the caller's stack is fully wired (ES + module).
+        if os.getenv("DYNASTORE_RUN_ELASTICSEARCH_TESTS", "").lower() not in ("1", "true", "yes"):
+            pytest.skip(
+                "Elasticsearch tests require explicit opt-in: set "
+                "DYNASTORE_RUN_ELASTICSEARCH_TESTS=true (and ensure the test "
+                "stack enables ElasticsearchModule)."
+            )
+
+    if item.get_closest_marker("idp"):
+        # Same opt-in pattern: an Identity Provider running on :8080 is not
+        # enough; the test must wire IamModule against it.
+        if os.getenv("DYNASTORE_RUN_IDP_TESTS", "").lower() not in ("1", "true", "yes"):
+            pytest.skip(
+                "Identity-provider tests require explicit opt-in: set "
+                "DYNASTORE_RUN_IDP_TESTS=true."
+            )
+
 
 @pytest.fixture(scope="session", autouse=True)
 def wait_for_db(request):

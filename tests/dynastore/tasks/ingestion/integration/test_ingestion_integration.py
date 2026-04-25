@@ -254,7 +254,7 @@ async def test_csv_ingestion(task_app_state, test_data_loader, data_id):
             "driver:postgresql",
             catalog_id=catalog_id,
             collection_id=collection_id,
-            db_resource=conn,
+            ctx=DriverContext(db_resource=conn),
         )
         if config.partitioning:
             config.partitioning.enabled = False
@@ -263,7 +263,7 @@ async def test_csv_ingestion(task_app_state, test_data_loader, data_id):
             config,
             catalog_id=catalog_id,
             collection_id=collection_id,
-            db_resource=conn,
+            ctx=DriverContext(db_resource=conn),
         )
 
         phys_schema = await catalogs.resolve_physical_schema(
