@@ -1078,6 +1078,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         engine=Depends(get_async_engine),
         language: str = Depends(get_language),
         catalog_id: Optional[str] = None,
+        f: str = Query("geojson", description="Output format: 'geojson' or 'geoparquet'"),
     ):
         # Path param overrides body when present (new canonical path includes catalog_id)
         if catalog_id:
@@ -1090,6 +1091,20 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             )
             rows, count, aggregations = await search_items(
                 conn, search_request, stac_config
+            )
+
+        from dynastore.models.shared_models import OutputFormatEnum
+        if f in (OutputFormatEnum.GEOPARQUET, "geoparquet", "parquet"):
+            from dynastore.tools.file_io import write_geoparquet
+            from fastapi.responses import StreamingResponse
+
+            def _geoparquet_stream():
+                yield from write_geoparquet(iter(rows), srid=4326)
+
+            return StreamingResponse(
+                content=_geoparquet_stream(),
+                media_type="application/geoparquet",
+                headers={"Content-Disposition": 'attachment; filename="search.parquet"'},
             )
 
         # Release connection before PySTAC processing

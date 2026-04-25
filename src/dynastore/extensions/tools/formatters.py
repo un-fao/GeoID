@@ -39,7 +39,7 @@ from datetime import datetime, timezone
 from typing import AsyncIterator, Union, Generator, Iterator
 from dynastore.tools.json import orjson_default
 # Use the real file writers instead of placeholders
-from dynastore.tools.file_io import write_csv, write_geopackage, write_parquet, write_shapefile, write_geojson
+from dynastore.tools.file_io import write_csv, write_geopackage, write_geoparquet, write_parquet, write_shapefile, write_geojson
 
 
 logger = logging.getLogger(__name__)
@@ -87,6 +87,11 @@ format_map = {
     OutputFormatEnum.PARQUET: {
         "writer": write_parquet,
         "media_type": "application/octet-stream",
+        "extension": "parquet"
+    },
+    OutputFormatEnum.GEOPARQUET: {
+        "writer": write_geoparquet,
+        "media_type": "application/geoparquet",
         "extension": "parquet"
     },
     OutputFormatEnum.GEOJSON: {
