@@ -9,9 +9,31 @@ from dynastore.modules.catalog.config_service import (
 from dynastore.modules.storage.driver_config import (
     ItemsPostgresqlDriverConfig,
 )
+from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
+    GeometriesSidecarConfig,
+)
+from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+    FeatureAttributeSidecarConfig,
+)
 
 PG_DRIVER_PLUGIN_ID = ItemsPostgresqlDriverConfig
 from dynastore.modules.db_config.exceptions import ImmutableConfigError
+
+
+def _config_with_sidecars(h3_resolutions=None):
+    """Build a config with explicit sidecars.
+
+    M1b.2 changed ItemsPostgresqlDriverConfig.sidecars default from
+    [geometries, attributes] to []; the PG driver now resolves defaults
+    lazily at first use. Tests that need to assert mutations against a
+    known sidecar set must populate it explicitly.
+    """
+    return ItemsPostgresqlDriverConfig(
+        sidecars=[
+            GeometriesSidecarConfig(h3_resolutions=h3_resolutions or [10]),
+            FeatureAttributeSidecarConfig(),
+        ],
+    )
 
 
 def _pin_all(config):
@@ -44,13 +66,8 @@ async def test_collection_config_immutability(
 
     config_manager = get_protocol(ConfigsProtocol)
 
-    # 2. Set initial config
-    initial_config = ItemsPostgresqlDriverConfig()
-
-    # Configure geometry sidecar
-    for sidecar in initial_config.sidecars:
-        if sidecar.sidecar_type == "geometries":
-            sidecar.h3_resolutions = [10]
+    # 2. Set initial config (explicit sidecars — see _config_with_sidecars docstring)
+    initial_config = _config_with_sidecars(h3_resolutions=[10])
 
     await config_manager.set_config(
         PG_DRIVER_PLUGIN_ID,
@@ -120,11 +137,8 @@ async def test_platform_config_immutability(app_lifespan):
     await platform_manager.delete_config(plugin_id)
 
     try:
-        # 1. Set initial platform config
-        initial_config = ItemsPostgresqlDriverConfig()
-        for sidecar in initial_config.sidecars:
-            if sidecar.sidecar_type == "geometries":
-                sidecar.h3_resolutions = [10]
+        # 1. Set initial platform config (explicit sidecars — see _config_with_sidecars)
+        initial_config = _config_with_sidecars(h3_resolutions=[10])
 
         await platform_manager.set_config(plugin_id, _pin_all(initial_config))
 
@@ -176,10 +190,7 @@ async def test_config_deletion(
         PG_DRIVER_PLUGIN_ID, catalog_id=catalog_id, collection_id=collection_id
     )
 
-    col_config = ItemsPostgresqlDriverConfig()
-    for sidecar in col_config.sidecars:
-        if sidecar.sidecar_type == "geometries":
-            sidecar.h3_resolutions = [15]
+    col_config = _config_with_sidecars(h3_resolutions=[15])
 
     # Partitioning is enabled if we want, but let's stick to resolutions for this test
     await config_manager.set_config(
