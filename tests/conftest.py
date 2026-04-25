@@ -27,6 +27,33 @@ if "DATABASE_URL" not in os.environ:
         "postgresql://testuser:testpassword@localhost:54320/gis_dev"
     )
 
+
+def _worker_db_url(base_url: str) -> str:
+    """
+    Per-xdist-worker DB URL: ``gis_dev`` -> ``gis_dev_<worker_id>``.
+
+    Returns base_url unchanged outside xdist. Each xdist worker uses its own
+    Postgres database (cloned from the master at session start) so that DDL
+    operations (CREATE/DROP SCHEMA, ALTER TABLE) on one worker cannot block
+    queries on another. Eliminates the cross-worker pg_namespace lock
+    contention that caused 180s pytest-timeout cascades on CI.
+    """
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if not worker:
+        return base_url
+    from urllib.parse import urlparse, urlunparse
+
+    p = urlparse(base_url)
+    base_db = p.path.lstrip("/")
+    if not base_db:
+        return base_url
+    return urlunparse(p._replace(path=f"/{base_db}_{worker}"))
+
+
+# Apply worker-suffix at module import so any early reader (e.g. cleanup_db
+# capturing DATABASE_URL at import) sees the per-worker DB.
+os.environ["DATABASE_URL"] = _worker_db_url(os.environ["DATABASE_URL"])
+
 import json
 from tests.dynastore.test_utils import generate_test_id
 import pytest
@@ -36,20 +63,107 @@ from httpx import AsyncClient
 from typing import Any, Union
 
 
+async def _ensure_worker_db():
+    """
+    Create the per-xdist-worker DB by cloning the master ``gis_dev`` TEMPLATE.
+
+    Serialized across workers via a Postgres advisory lock so that simultaneous
+    clones don't fail with "source database is being accessed by other users".
+    Connections to the source are terminated before clone (workers themselves
+    do not connect to the source — only stragglers from a previous interrupted
+    run, the controller's cleanup_db, or pgAdmin sessions).
+    """
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if not worker:
+        return
+    import asyncpg
+    from urllib.parse import urlparse
+
+    base = os.environ["DATABASE_URL"]
+    # Strip the worker suffix to get the source DB name (we re-applied
+    # _worker_db_url at import time, so DATABASE_URL ends with _gw0 etc.).
+    p = urlparse(base)
+    suffixed = p.path.lstrip("/")
+    if not suffixed.endswith(f"_{worker}"):
+        return
+    source_db = suffixed[: -(len(worker) + 1)]
+    worker_db = suffixed
+    admin_url = base.replace(f"/{suffixed}", "/postgres")
+
+    conn = await asyncpg.connect(admin_url)
+    try:
+        # Cross-worker advisory lock so CREATE DATABASE TEMPLATE serializes.
+        await conn.execute("SELECT pg_advisory_lock(8472001)")
+        try:
+            await conn.execute(
+                f'DROP DATABASE IF EXISTS "{worker_db}" WITH (FORCE)'
+            )
+            await conn.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = $1 AND pid <> pg_backend_pid()",
+                source_db,
+            )
+            await conn.execute(
+                f'CREATE DATABASE "{worker_db}" TEMPLATE "{source_db}"'
+            )
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock(8472001)")
+    finally:
+        await conn.close()
+
+
+async def _drop_worker_db():
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if not worker:
+        return
+    import asyncpg
+    from urllib.parse import urlparse
+
+    base = os.environ["DATABASE_URL"]
+    p = urlparse(base)
+    suffixed = p.path.lstrip("/")
+    if not suffixed.endswith(f"_{worker}"):
+        return
+    admin_url = base.replace(f"/{suffixed}", "/postgres")
+    try:
+        conn = await asyncpg.connect(admin_url)
+        try:
+            await conn.execute(
+                f'DROP DATABASE IF EXISTS "{suffixed}" WITH (FORCE)'
+            )
+        finally:
+            await conn.close()
+    except Exception:
+        pass  # best-effort teardown
+
+
+def pytest_sessionstart(session):
+    """Per-worker DB provisioning. No-op outside xdist."""
+    if not os.environ.get("PYTEST_XDIST_WORKER"):
+        return
+    import asyncio
+
+    asyncio.run(_ensure_worker_db())
+
+
 def pytest_sessionfinish(session, exitstatus):
     """
     Run database cleanup after the full test session.
 
-    With xdist: pytest calls this in the controller process after ALL workers
-    have finished — the only safe place to truncate shared tables without
-    racing against in-progress tests.
+    With xdist: workers drop their own per-worker DBs; the controller runs the
+    final shared-state cleanup pass on the master gis_dev DB.
 
-    Without xdist: called in the main process after all tests finish.
+    Without xdist: called in the main process after all tests finish; runs
+    cleanup_db on the single shared DB.
     """
     import asyncio
 
-    # Workers report their own sessionfinish; skip them — only the controller runs cleanup.
     if os.environ.get("PYTEST_XDIST_WORKER"):
+        # Worker drops its own per-worker DB.
+        try:
+            asyncio.run(_drop_worker_db())
+        except Exception as e:
+            print(f"[POST-SESSION] Worker DB drop warning (non-fatal): {e}")
         return
 
     try:
@@ -654,12 +768,15 @@ async def reset_dynastore_state(engine=None):
 
 @pytest.fixture
 def db_url():
-    """Returns the database URL for the test environment."""
-    # Force port 54320 as per user instruction, unless valid override exists.
-    # The user explicitly stated "the right port is 54320".
+    """Returns the database URL for the test environment.
+
+    Under xdist this resolves to a per-worker DB (gis_dev_<worker>) so each
+    worker's DDL operations are isolated.
+    """
+    # DATABASE_URL was worker-suffixed at module import via _worker_db_url(),
+    # so this returns gis_dev_gw0 etc. under xdist, gis_dev otherwise.
     default_url = "postgresql://testuser:testpassword@localhost:54320/gis_dev"
-    url = os.getenv("DATABASE_URL", default_url)
-    return url
+    return os.getenv("DATABASE_URL", default_url)
 
 
 @pytest_asyncio.fixture(loop_scope="function")
