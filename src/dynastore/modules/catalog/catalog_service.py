@@ -43,6 +43,7 @@ from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     DbResource,
     ResultHandler,
+    managed_nested_transaction,
     managed_transaction,
 )
 from dynastore.modules.catalog.models import (
@@ -1371,10 +1372,19 @@ class CatalogService(CatalogsProtocol):
                 #   archive_catalog_events_s_abc12345
                 #   monthly_cleanup_logs_s_abc12345
                 #   prune_s_abc12345_events
+                #
+                # Wrap in a SAVEPOINT so a permission/visibility failure on
+                # ``cron.job`` (e.g. role lacks SELECT/DELETE on it) doesn't
+                # abort the outer delete transaction.  Without the savepoint
+                # the asyncpg connection enters InFailedSQLTransactionError
+                # and every subsequent statement (the actual catalogs DELETE,
+                # event emission) fails with HTTP 500 even though the cron
+                # cleanup is truly non-fatal.
                 try:
-                    deleted_jobs = await _delete_tenant_cron_jobs_query.execute(
-                        conn, pattern=f"%{physical_schema}%"
-                    )
+                    async with managed_nested_transaction(conn) as nested:
+                        deleted_jobs = await _delete_tenant_cron_jobs_query.execute(
+                            nested, pattern=f"%{physical_schema}%"
+                        )
                     if deleted_jobs:
                         logger.info(
                             f"Removed {deleted_jobs} cron job(s) for schema {physical_schema}"
