@@ -21,6 +21,7 @@ from dynastore.modules.catalog.models import Catalog
 
 pytestmark = [
     pytest.mark.asyncio,
+    pytest.mark.xdist_group("catalog_lifespan"),
     pytest.mark.enable_extensions("web", "logs", "features", "stac"),
     # 'stac' MODULE (not extension) registers CollectionStacPostgresqlDriver +
     # creates the collection_metadata_stac sidecar table at lifespan DDL time;

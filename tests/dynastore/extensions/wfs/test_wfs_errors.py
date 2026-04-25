@@ -6,6 +6,7 @@ from dynastore.models.driver_context import DriverContext
 
 pytestmark = [
     pytest.mark.asyncio,
+    pytest.mark.xdist_group("catalog_lifespan"),
     pytest.mark.enable_modules(
         "db_config", "db", "catalog", "stac", "collection_postgresql", "catalog_postgresql"
     ),
@@ -13,7 +14,6 @@ pytestmark = [
 ]
 
 
-@pytest.mark.asyncio
 async def test_get_feature_missing_table(
     in_process_client_module, setup_collection, setup_catalog, db_engine
 ):
@@ -108,7 +108,6 @@ async def test_get_feature_missing_table(
     assert r.status_code in [400, 404]
 
 
-@pytest.mark.asyncio
 async def test_describe_feature_type_missing_table(
     in_process_client_module, setup_collection, setup_catalog, db_engine
 ):

@@ -7,9 +7,13 @@ from dynastore.models.protocols.items import ItemsProtocol
 from dynastore.models.protocols.collections import CollectionsProtocol
 from dynastore.tools.discovery import get_protocol
 
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.xdist_group("catalog_lifespan"),
+]
 
-@pytest.mark.asyncio
-async def test_catalogs_protocol_composition(app_lifespan):
+
+async def test_catalogs_protocol_composition(app_lifespan_module):
     """Verify that the CatalogsProtocol correctly inherits and exposes sub-protocols."""
     from dynastore.modules import get_protocol
 
@@ -31,8 +35,7 @@ async def test_catalogs_protocol_composition(app_lifespan):
     assert hasattr(catalogs_svc.items, "get_item")
 
 
-@pytest.mark.asyncio
-async def test_logical_item_retrieval(app_lifespan):
+async def test_logical_item_retrieval(app_lifespan_module):
     """Verify that logical item retrieval works without manual schema/table resolution."""
     from dynastore.modules import get_protocol
 
@@ -118,7 +121,6 @@ async def test_logical_item_retrieval(app_lifespan):
     await catalogs_svc.delete_catalog(catalog_id, force=True)
 
 
-@pytest.mark.asyncio
 async def test_removed_methods_not_in_protocol():
     """Verify that internal methods are no longer part of the public protocol."""
     # Note: typing.Protocol doesn't enforce absence at runtime if the object has the method,

@@ -19,7 +19,12 @@ from dynastore.modules import get_protocol
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.modules.catalog.models import Catalog, Collection
 
-@pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.xdist_group("catalog_lifespan"),
+]
+
+
 async def test_multilanguage_validation_conflicts(app_lifespan_module):
     """Tests that providing multilanguage dict with specific lang raises ValueError."""
     catalogs = get_protocol(CatalogsProtocol)
@@ -48,7 +53,6 @@ async def test_multilanguage_validation_conflicts(app_lifespan_module):
     await catalogs.delete_catalog(catalog_id, force=True)
 
 
-@pytest.mark.asyncio
 async def test_convenience_methods(app_lifespan_module):
     """Tests create_catalog_localized and create_catalog_multilanguage."""
     catalogs = get_protocol(CatalogsProtocol)
@@ -85,7 +89,6 @@ async def test_convenience_methods(app_lifespan_module):
     await catalogs.delete_catalog(catalog_id, force=True)
 
 
-@pytest.mark.asyncio
 async def test_language_deletion(app_lifespan_module):
     """Tests delete_catalog_language and delete_collection_language."""
     catalogs = get_protocol(CatalogsProtocol)
@@ -131,7 +134,6 @@ async def test_language_deletion(app_lifespan_module):
     await catalogs.delete_catalog(catalog_id, force=True)
 
 
-@pytest.mark.asyncio
 async def test_protocol_delegation(app_lifespan_module):
     """Tests that CatalogsProtocol correctly delegates to assets, configs, and localization."""
     catalogs = get_protocol(CatalogsProtocol)

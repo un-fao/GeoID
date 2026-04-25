@@ -50,14 +50,24 @@ class DatastoreModule(ModuleProtocol, DatabaseProtocol):
 
     @property
     def engine(self) -> Any:
+        """DatabaseProtocol implementation.
+
+        Prefers the async engine when both are present.  This module is
+        designed for sync workers, but on the catalog service the
+        ``module_storage_iceberg`` driver pulls ``pyiceberg[sql-postgres]``
+        which transitively installs ``psycopg2-binary``.  That lets this
+        module's entry-point class load and its lifespan create a sync
+        engine alongside the async one.  Without this preference order,
+        ``protocol_helpers.get_engine()`` (priority-sorted; this module
+        is priority=7 vs DBService priority=10) would return the sync
+        engine and break async-only call sites such as
+        ``ItemService.stream_items`` (``stream_conn.stream(...)`` requires
+        ``AsyncConnection``).
         """
-        DatabaseProtocol implementation.
-        Returns the first available database engine (sync or async).
-        """
-        engine = getattr(self.app_state, "sync_engine", None)
+        engine = getattr(self.app_state, "engine", None)
         if engine:
             return engine
-        engine = getattr(self.app_state, "engine", None)
+        engine = getattr(self.app_state, "sync_engine", None)
         if engine:
             return engine
         raise RuntimeError("No database engine available (sync or async).")
