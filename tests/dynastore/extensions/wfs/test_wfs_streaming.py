@@ -15,7 +15,7 @@ pytestmark = [
 ]
 
 
-async def test_wfs_streaming_basic(in_process_client_module_module, setup_catalog, setup_collection):
+async def test_wfs_streaming_basic(in_process_client_module, setup_catalog, setup_collection):
     catalog_id = setup_catalog
     collection_id = setup_collection
 
