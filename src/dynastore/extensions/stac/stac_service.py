@@ -305,6 +305,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             # Virtual STAC Endpoints
             ("/virtual/assets/catalogs/{catalog_id}/collections/{collection_id}", "get_virtual_asset_list", ["GET"], {"response_class": _J}),
             ("/virtual/assets/{asset_code}/catalogs/{catalog_id}/collections/{collection_id}", "get_virtual_asset_collection", ["GET"], {"response_class": _J}),
+            ("/virtual/assets/{asset_id}/catalogs/{catalog_id}/collections", "get_virtual_asset_collections", ["GET"], {"response_class": _J}),
             ("/virtual/assets/{asset_id}/catalogs/{catalog_id}/collections/{collection_id}/items", "get_virtual_asset_items", ["GET"], {"response_class": _J}),
             ("/catalogs/{catalog_id}/collections/{collection_id}/assets/{asset_code}/source", "resolve_asset_source", ["GET"], {}),
             ("/virtual/hierarchy/{hierarchy_id}/catalogs/{catalog_id}/collections/{collection_id}", "get_virtual_hierarchy_collection", ["GET"], {"response_class": _J}),

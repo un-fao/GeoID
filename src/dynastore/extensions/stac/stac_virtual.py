@@ -234,6 +234,104 @@ class StacVirtualMixin(_Host):
 
         return JSONResponse(content=collection.to_dict())
 
+    async def get_virtual_asset_collections(
+        self,
+        catalog_id: str,
+        asset_id: str,
+        request: Request,
+        engine=Depends(get_async_engine),
+        limit: int = Query(10, ge=1, le=1000),
+        offset: int = Query(0, ge=0),
+    ):
+        """Lists every collection in *catalog_id* where *asset_id* has rows,
+        rendered as virtual STAC child collections of the asset.
+
+        Each child link points at the existing
+        ``/virtual/assets/{asset_id}/catalogs/{cat}/collections/{coll}``
+        endpoint, where the items view is filtered by ``asset_id``.
+        """
+        catalog_id = validate_sql_identifier(catalog_id)
+        asset_id = validate_sql_identifier(asset_id)
+        catalogs_svc = await self._get_catalogs_service()
+
+        async with managed_transaction(engine) as conn:
+            phys_schema = await catalogs_svc.resolve_physical_schema(
+                catalog_id, ctx=DriverContext(db_resource=conn)
+            )
+            if not phys_schema:
+                raise HTTPException(
+                    status_code=404, detail=f"Catalog '{catalog_id}' not found."
+                )
+
+            # Distinct collection_ids in the catalog where the asset has
+            # at least one non-deleted row.  One-off query — no equivalent
+            # method on AssetsProtocol (search_assets is partition-scoped
+            # and requires a target collection_id).
+            sql = (
+                f'SELECT DISTINCT collection_id '
+                f'FROM "{phys_schema}".assets '
+                f'WHERE catalog_id = :catalog_id '
+                f'  AND asset_id = :asset_id '
+                f'  AND deleted_at IS NULL '
+                f'  AND collection_id IS NOT NULL '
+                f'ORDER BY collection_id '
+                f'LIMIT :limit OFFSET :offset'
+            )
+            rows = await cast(AsyncConnection, conn).execute(
+                text(sql),
+                {
+                    "catalog_id": catalog_id,
+                    "asset_id": asset_id,
+                    "limit": limit,
+                    "offset": offset,
+                },
+            )
+            collection_ids = [r[0] for r in rows.fetchall()]
+
+        base_url = get_url(request, remove_qp=True)
+        assets_root = f"{get_root_url(request)}/stac/virtual/assets"
+
+        virtual_cat = pystac.Catalog(
+            id=f"{asset_id}_collections",
+            description=(
+                f"Virtual collections in catalog '{catalog_id}' that "
+                f"contain asset '{asset_id}'."
+            ),
+            title=f"Collections of asset {asset_id} in {catalog_id}",
+        )
+        virtual_cat.set_self_href(base_url)
+
+        for coll_id in collection_ids:
+            child_href = (
+                f"{assets_root}/{asset_id}/catalogs/{catalog_id}"
+                f"/collections/{coll_id}"
+            )
+            virtual_cat.add_link(
+                pystac.Link(
+                    rel="child",
+                    target=child_href,
+                    title=coll_id,
+                    media_type="application/json",
+                )
+            )
+
+        if len(collection_ids) == limit:
+            virtual_cat.add_link(
+                pystac.Link(
+                    rel="next",
+                    target=f"{base_url}?offset={offset + limit}&limit={limit}",
+                )
+            )
+        if offset > 0:
+            virtual_cat.add_link(
+                pystac.Link(
+                    rel="prev",
+                    target=f"{base_url}?offset={max(0, offset - limit)}&limit={limit}",
+                )
+            )
+
+        return JSONResponse(content=virtual_cat.to_dict())
+
     async def get_virtual_asset_items(
         self,
         catalog_id: str,
