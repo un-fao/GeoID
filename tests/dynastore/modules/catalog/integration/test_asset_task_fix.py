@@ -6,16 +6,17 @@ from dynastore.extensions.assets.assets_service import AssetService
 from dynastore.modules.catalog.asset_tasks_spi import AssetTasksSPI
 from dynastore.modules.catalog.asset_service import Asset, AssetTypeEnum
 from dynastore.tasks import TaskConfig
-from dynastore.modules.processes.models import Process
+from dynastore.modules.processes.models import Process, ProcessScope
 
 class DummyAssetTask(AssetTasksSPI):
     @staticmethod
     def get_process_definition() -> Process:
         return Process(
-            id="dummy", 
-            title="Dummy", 
-            description="Dummy", 
+            id="dummy",
+            title="Dummy",
+            description="Dummy",
             version="1.0.0",
+            scopes=[ProcessScope.COLLECTION],
             inputs={},
             outputs={}
         )

@@ -104,6 +104,14 @@ async def test_asset_spi_task_discovery(app_lifespan, catalog_obj, catalog_id):
         await await_all_background_tasks()
         await catalogs.create_catalog(catalog_obj)
 
+        # Force-import gdalinfo_task so unittest.mock.patch can resolve its
+        # 'gdal_module' attribute via the dotted path. The gdal package's
+        # __init__.py is intentionally empty (osgeo is optional in some
+        # SCOPEs) so the submodule isn't bound until first import.
+        try:
+            import dynastore.tasks.gdal.gdalinfo_task  # noqa: F401
+        except ImportError as _e:
+            pytest.skip(f"GDAL python bindings not installed: {_e}")
         with patch("dynastore.tasks.gdal.gdalinfo_task.gdal_module") as mock_gdal_module:
             mock_gdal_module.GDAL_AVAILABLE = True
             mock_gdal_module.get_raster_info = MagicMock(return_value={"driver": "GTiff", "width": 100, "height": 100})
