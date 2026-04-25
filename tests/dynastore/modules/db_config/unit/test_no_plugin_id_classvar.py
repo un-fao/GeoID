@@ -125,6 +125,7 @@ def test_no_plugin_infix_in_config_class_key():
         "StylesPluginConfig",
         "SecurityPluginConfig",
         "JoinsPluginConfig",      # joins extension — exposure config, candidate for rename
+        "IngestionPluginConfig",  # tasks/ingestion — candidate for rename
     }
 
     bad = [
