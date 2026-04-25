@@ -708,12 +708,27 @@ class CatalogService(CatalogsProtocol):
             # split tables via the router-direct upsert below.  The
             # legacy metadata columns on ``catalog.catalogs`` were
             # retired by the M2.5b DROP COLUMN; they are not touched here.
-            await _create_catalog_strict_query.execute(
+            inserted_rows = await _create_catalog_strict_query.execute(
                 conn,
                 id=catalog_model.id,
                 physical_schema=physical_schema,
                 provisioning_status=catalog_model.provisioning_status,
             )
+            if not inserted_rows:
+                # ON CONFLICT DO NOTHING produced rowcount=0 — the row already
+                # exists. Surface as a conflict the HTTP layer can map to 409.
+                # ensure_catalog_exists() pre-checks existence and only calls
+                # create_catalog when the row is missing, so the only callers
+                # that see this path are explicit POSTs of duplicates.
+                from sqlalchemy.exc import IntegrityError
+
+                raise IntegrityError(
+                    statement=f"INSERT catalog '{catalog_model.id}'",
+                    params=None,
+                    orig=Exception(
+                        f"Catalog '{catalog_model.id}' already exists"
+                    ),
+                )
 
             # Catalog metadata persistence — router-direct.
             #
