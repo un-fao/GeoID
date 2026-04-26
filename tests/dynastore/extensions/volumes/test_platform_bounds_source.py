@@ -2,11 +2,11 @@ from unittest.mock import patch
 
 
 def test_register_sidecar_bounds_source_calls_register_plugin():
-    """Just confirms the wiring hooks into the platform's discovery layer.
+    """Confirms both a BoundsSourceProtocol and a GeometryFetcherProtocol
+    are registered against the platform's discovery layer.
 
     End-to-end DB test is deferred to integration fixtures; this unit
-    test ensures the factory call succeeds without runtime errors when
-    DatabaseProtocol/CatalogsProtocol are monkey-patched.
+    test ensures the factory call succeeds without runtime errors.
     """
     import dynastore.extensions.volumes.platform_bounds_source as mod
     registered = []
@@ -14,7 +14,11 @@ def test_register_sidecar_bounds_source_calls_register_plugin():
         mod, "register_plugin", side_effect=lambda obj: registered.append(obj),
     ):
         mod.register_sidecar_bounds_source()
-    assert len(registered) == 1
-    # Registered object satisfies the protocol structurally.
+
+    assert len(registered) == 2
+
     from dynastore.models.protocols.bounds_source import BoundsSourceProtocol
-    assert isinstance(registered[0], BoundsSourceProtocol)
+    from dynastore.models.protocols.geometry_fetcher import GeometryFetcherProtocol
+
+    assert any(isinstance(r, BoundsSourceProtocol) for r in registered)
+    assert any(isinstance(r, GeometryFetcherProtocol) for r in registered)

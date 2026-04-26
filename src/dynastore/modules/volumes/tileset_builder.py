@@ -9,7 +9,7 @@ service layer (Phase 5c) will rewrite with real tile URLs.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from dynastore.extensions.volumes.config import VolumesConfig
 from dynastore.modules.volumes.bounds import FeatureBounds, merge_bounds
@@ -148,3 +148,29 @@ def _bbox_to_box(b: FeatureBounds) -> List[float]:
 
 def _zero_box() -> List[float]:
     return [0.0] * 12
+
+
+def find_leaf(root: Dict[str, Any], tile_id: str) -> Optional[Dict[str, Any]]:
+    """Return the leaf node at path *tile_id*, or ``None``.
+
+    *tile_id* is the underscore-joined path produced by ``_build_subtree``
+    (e.g. ``"0_1_0"`` = root → child[1] → child[0]). The leading ``"0"``
+    is the root marker used by ``_build_subtree``'s initial ``path=[0]``.
+
+    Walks in O(depth) by decoding the path directly rather than scanning
+    the whole tree.
+    """
+    parts = tile_id.split("_")
+    if not parts or parts[0] != "0":
+        return None
+    node = root
+    for part in parts[1:]:
+        children = node.get("children", [])
+        try:
+            idx = int(part)
+        except ValueError:
+            return None
+        if idx >= len(children):
+            return None
+        node = children[idx]
+    return node if "content" in node else None

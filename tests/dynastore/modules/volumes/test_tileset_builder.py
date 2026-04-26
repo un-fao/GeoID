@@ -1,6 +1,6 @@
 from dynastore.extensions.volumes.config import VolumesConfig
 from dynastore.modules.volumes.bounds import FeatureBounds
-from dynastore.modules.volumes.tileset_builder import build_tileset
+from dynastore.modules.volumes.tileset_builder import build_tileset, find_leaf
 
 
 def test_empty_bounds_emits_skeleton():
@@ -78,3 +78,49 @@ def test_content_uri_template_is_formatted():
     ts = build_tileset(b, VolumesConfig(), content_uri_template="X/{tile_id}.bin")
     assert ts["root"]["content"]["uri"].startswith("X/")
     assert ts["root"]["content"]["uri"].endswith(".bin")
+
+
+# ---------------------------------------------------------------------------
+# find_leaf
+# ---------------------------------------------------------------------------
+
+
+def test_find_leaf_root_single_feature():
+    b = [FeatureBounds("f", 0, 0, 0, 1, 1, 1)]
+    ts = build_tileset(b, VolumesConfig())
+    leaf = find_leaf(ts["root"], "0")
+    assert leaf is not None
+    assert leaf["_feature_ids"] == ["f"]
+
+
+def test_find_leaf_child_path():
+    b = [
+        FeatureBounds("left", 0, 0, 0, 1, 1, 1),
+        FeatureBounds("right", 10, 0, 0, 11, 1, 1),
+    ]
+    cfg = VolumesConfig(max_features_per_tile=1)
+    ts = build_tileset(b, cfg)
+    # Both children are leaves; one has tile_id "0_0", other "0_1".
+    leaf0 = find_leaf(ts["root"], "0_0")
+    leaf1 = find_leaf(ts["root"], "0_1")
+    assert leaf0 is not None and leaf1 is not None
+    assert set(leaf0["_feature_ids"] + leaf1["_feature_ids"]) == {"left", "right"}
+
+
+def test_find_leaf_unknown_tile_id_returns_none():
+    b = [FeatureBounds("f", 0, 0, 0, 1, 1, 1)]
+    ts = build_tileset(b, VolumesConfig())
+    assert find_leaf(ts["root"], "999") is None
+    assert find_leaf(ts["root"], "0_0_0") is None
+
+
+def test_find_leaf_empty_tree_returns_none():
+    ts = build_tileset([], VolumesConfig())
+    assert find_leaf(ts["root"], "0") is None  # empty root has no content
+
+
+def test_find_leaf_invalid_path_returns_none():
+    b = [FeatureBounds("f", 0, 0, 0, 1, 1, 1)]
+    ts = build_tileset(b, VolumesConfig())
+    assert find_leaf(ts["root"], "bad_path") is None
+    assert find_leaf(ts["root"], "") is None
