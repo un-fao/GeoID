@@ -94,6 +94,7 @@ extension_gcp_bucket = ["dynastore[extension_base,module_gcp]"]
 extension_geoid = ["dynastore[extension_base,extension_web]", "user-agents>=2.2.0"]
 extension_maps = ["dynastore[extension_base,geospatial_core,mvt]", "GDAL==3.12.3"]
 extension_coverages = ["dynastore[extension_base,geospatial_core]"]
+extension_edr = ["dynastore[extension_base,geospatial_core]"]
 extension_dggs = ["dynastore[extension_base,geospatial_core]", "h3>=4.1.0", "s2sphere>=0.2.5"]
 module_coverages_netcdf = ["netCDF4>=1.6.0", "xarray>=2024.0.0"]
 module_coverages_zarr = ["zarr>=2.18.0", "xarray>=2024.0.0"]
@@ -170,6 +171,7 @@ auth = ["dynastore[extension_auth]"]
 template = ["dynastore[extension_template]"]
 dimensions = ["dynastore[extension_dimensions]"]
 notebooks = ["dynastore[extension_notebooks]"]
+edr = ["dynastore[extension_edr]"]
 
 # ==========================================================================
 # PRIMITIVES
@@ -455,6 +457,7 @@ tiles = "dynastore.extensions.tiles.tiles_service:TilesService"
 dimensions = "dynastore.extensions.dimensions.dimensions_extension:DimensionsExtension"
 records = "dynastore.extensions.records.records_service:RecordsService"
 coverages = "dynastore.extensions.coverages.coverages_service:CoveragesService"
+edr = "dynastore.extensions.edr.edr_service:EDRService"
 moving_features = "dynastore.extensions.moving_features.mf_service:MovingFeaturesService"
 dggs = "dynastore.extensions.dggs.dggs_service:DGGSService"
 

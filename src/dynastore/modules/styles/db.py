@@ -177,6 +177,7 @@ async def list_all_styles(
     return [_enrich_style_from_row(row) for row in raw_rows]
 
 
+
 async def update_style(
     conn: DbResource, catalog_id: str, style_id: str, style_data: StyleUpdate
 ) -> Optional[Style]:
