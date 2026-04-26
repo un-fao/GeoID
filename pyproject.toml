@@ -56,6 +56,7 @@ module_cache = ["valkey>=6.0", "msgpack>=1.0"]
 module_tasks = []
 module_proxy = []
 module_styles = []
+module_moving_features = []
 module_stats = []
 module_notebooks = ["httpx", "python-dotenv"]
 
@@ -76,6 +77,7 @@ extension_tasks = ["dynastore[extension_base,module_tasks]"]
 extension_proxy = ["dynastore[extension_base,module_proxy]"]
 extension_gdal = ["dynastore[extension_base,module_gdal]"]
 extension_styles = ["dynastore[extension_base,module_styles]"]
+extension_moving_features = ["dynastore[extension_base,module_moving_features]"]
 extension_iam = ["dynastore[extension_base,module_iam]"]
 extension_logs = ["dynastore[extension_base]", "httpx"]
 extension_configs = ["dynastore[extension_base]"]
@@ -93,6 +95,7 @@ extension_geoid = ["dynastore[extension_base,extension_web]", "user-agents>=2.2.
 extension_maps = ["dynastore[extension_base,geospatial_core,mvt]", "GDAL==3.12.3"]
 extension_coverages = ["dynastore[extension_base,geospatial_core]"]
 extension_edr = ["dynastore[extension_base,geospatial_core]"]
+extension_dggs = ["dynastore[extension_base,geospatial_core]", "h3>=4.1.0", "s2sphere>=0.2.5"]
 extension_dwh = ["dynastore[extension_base,dwh]"]
 extension_dimensions = ["dynastore[extension_base]", "ogc-dimensions @ git+https://github.com/ccancellieri/ogc-dimensions.git@main#subdirectory=reference-implementation"]
 
@@ -153,6 +156,7 @@ geoid = ["dynastore[web_core,extension_geoid]"]
 processes = ["dynastore[extension_processes]"]
 features = ["dynastore[extension_features]"]
 styles = ["dynastore[module_styles,extension_styles]"]
+moving_features = ["dynastore[module_moving_features,extension_moving_features]"]
 tiles = ["dynastore[module_tiles,extension_tiles]"]
 tasks = ["dynastore[module_tasks,extension_tasks]"]
 proxy = ["dynastore[module_proxy,extension_proxy]"]
@@ -201,11 +205,21 @@ db_sync = ["dynastore[db_config,datastore]"]
 #
 # ==========================================================================
 core = ["dynastore[db_async,web,configs,events,storage,cache]"]
-catalog_grp = ["dynastore[geospatial_core,catalog,features,stac,assets,search,extension_records]"]
+# catalog_grp split: data layer (needed by maps for collection reads + /features)
+# vs public catalog routers (stac/assets/search/records — not on maps).
+catalog_data_grp = ["dynastore[geospatial_core,catalog,features]"]
+catalog_routes_grp = ["dynastore[stac,assets,search,extension_records]"]
+catalog_grp = ["dynastore[catalog_data_grp,catalog_routes_grp]"]
 maps_grp = ["dynastore[styles,maps,extension_wfs,tiles,crs,gdal,extension_coverages]"]
-google_grp = ["dynastore[gcp,extension_dwh]"]
+# google_grp split: dwh is rendering input (BQ joins also live here),
+# gcp is the bucket-admin router (not on maps).
+dwh_grp = ["dynastore[extension_dwh]"]
+gcp_routes_grp = ["dynastore[gcp]"]
+google_grp = ["dynastore[gcp_routes_grp,dwh_grp]"]
 auth_grp = ["dynastore[iam,auth,extension_admin]"]
-tools_grp = ["dynastore[extension_httpx,template,dimensions,notebooks]"]
+# tools_grp split: core proxy/template vs route-heavy dimensions/notebooks.
+tools_core_grp = ["dynastore[extension_httpx,template]"]
+tools_grp = ["dynastore[tools_core_grp,dimensions,notebooks]"]
 monitor_grp = ["dynastore[stats,logs]"]
 index_grp = ["dynastore[elasticsearch,task_elasticsearch_indexer_deps]"]
 # drivers_grp — all storage/asset/metadata drivers (both collection and asset domains)
@@ -261,8 +275,11 @@ worker_task_elasticsearch_indexer = ["dynastore[task_base,elasticsearch,task_ela
 #   │                   + processes               ... NO auth  │
 #   │                   (tools_grp on dedicated tools service) │
 #   │  api_catalog    = api_open + auth_grp      ... WITH auth │
-#   │  api_maps_open  = core + catalog + google + maps         │
-#   │                   + tools + monitor         ... NO auth  │
+#   │  api_maps_open  = core + catalog_data + maps + dwh       │
+#   │                   + tools_core + es-cat    ... NO auth   │
+#   │                   (vector producer + raster renderer;    │
+#   │                    no stac/assets/search/records/stats/  │
+#   │                    logs/gcp/dimensions/notebooks)        │
 #   │  api_maps       = api_maps_open + auth_grp ... WITH auth │
 #   │  api_features   = core + catalog_grp        ... NO auth  │
 #   │  api_full       = api_catalog + maps_grp                 │
@@ -290,10 +307,14 @@ worker_task_elasticsearch_indexer = ["dynastore[task_base,elasticsearch,task_ela
 api_open = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,catalog_task_gcp_provision,catalog_task_gcs_storage_event,catalog_task_gcp_catalog_cleanup]"]
 # api_catalog: api_open + auth (most common production deployment)
 api_catalog = ["dynastore[api_open,auth_grp]"]
-# api_maps: maps/tiles/styles service — WITH auth (kept for reference / future use)
-api_maps = ["dynastore[core,catalog_grp,google_grp,maps_grp,tools_grp,monitor_grp,auth_grp,module_catalog_elasticsearch]"]
-# api_maps_open: maps service WITHOUT auth — public tile/style serving
-api_maps_open = ["dynastore[core,catalog_grp,google_grp,maps_grp,tools_grp,monitor_grp,module_catalog_elasticsearch]"]
+# api_maps_open: vector producer + raster renderer, no auth.
+# Surface limited to: /maps /tiles /styles /wfs /features /coverages /crs /gdal /dwh /joins
+# (plus ALWAYS_ON: /configs /web /events /admin /iam /auth /tools /template /httpx).
+# Excluded vs. legacy: catalog_routes_grp (stac/assets/search/records),
+# gcp_routes_grp, monitor_grp (stats/logs), dimensions, notebooks.
+api_maps_open = ["dynastore[core,catalog_data_grp,maps_grp,dwh_grp,tools_core_grp,module_catalog_elasticsearch]"]
+# api_maps: same surface WITH auth (kept for reference / future use)
+api_maps = ["dynastore[api_maps_open,auth_grp]"]
 # api_features: lightweight local-dev service — OGC Features + STAC, no GCP/tools/index
 api_features = ["dynastore[core,catalog_grp]"]
 # api_full: all features (local dev or monolithic deployments)
@@ -319,8 +340,9 @@ scope_geoid = ["dynastore[scope_catalog,extension_geoid,auth_grp]"]
 scope_worker = ["dynastore[core,module_catalog,gcp,extension_dwh,index_grp,tasks,ingestion,worker_task_export_features,worker_task_dwh_join,worker_task_tiles_preseed,worker_task_gdal,worker_task_dimensions_materialize,catalog_task_gcp_provision,catalog_task_gcs_storage_event,catalog_task_gcp_catalog_cleanup]"]
 # scope_tools: proxy + template tools service — no auth
 scope_tools = ["dynastore[core,template,notebooks,cache,dimensions,proxy]"]
-# scope_maps: map tiles/styles service — no auth
-scope_maps = ["dynastore[core,catalog_grp,google_grp,maps_grp,monitor_grp,module_cache,notebooks,index_grp,drivers_grp]"]
+# scope_maps: vector producer + raster renderer (local docker), no auth.
+# Mirrors api_maps_open + module_cache + drivers_grp so local data reads work.
+scope_maps = ["dynastore[core,catalog_data_grp,maps_grp,dwh_grp,tools_core_grp,module_cache,module_catalog_elasticsearch,drivers_grp]"]
 
 # ==========================================================================
 # DEVELOPMENT & TESTING
@@ -356,6 +378,7 @@ gcp = "dynastore.modules.gcp.gcp_module:GCPModule"
 tiles = "dynastore.modules.tiles.tiles_module:TilesModule"
 datastore = "dynastore.modules.datastore.datastore_service:DatastoreModule"
 styles = "dynastore.modules.styles.styles_module:StylesModule"
+moving_features = "dynastore.modules.moving_features.mf_module:MovingFeaturesModule"
 db_config = "dynastore.modules.db_config.db_config_service:DBConfigModule"
 iam = "dynastore.modules.iam.module:IamModule"
 db = "dynastore.modules.db.db_service:DBService"
@@ -433,6 +456,8 @@ dimensions = "dynastore.extensions.dimensions.dimensions_extension:DimensionsExt
 records = "dynastore.extensions.records.records_service:RecordsService"
 coverages = "dynastore.extensions.coverages.coverages_service:CoveragesService"
 edr = "dynastore.extensions.edr.edr_service:EDRService"
+moving_features = "dynastore.extensions.moving_features.mf_service:MovingFeaturesService"
+dggs = "dynastore.extensions.dggs.dggs_service:DGGSService"
 
 [project.entry-points."dynastore.tasks"]
 gdal = "dynastore.tasks.gdal.gdalinfo_task:GdalInfoTask"

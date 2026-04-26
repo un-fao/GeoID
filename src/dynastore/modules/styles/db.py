@@ -105,7 +105,7 @@ def _enrich_style_from_row(row: dict, root_url: str = "") -> Optional[Style]:
 
 async def create_style(
     conn: DbResource, catalog_id: str, collection_id: str, style_data: StyleCreate
-) -> Optional[Style]:
+) -> Style:
     """Creates a new style record."""
     style_dict = style_data.model_dump(exclude={"links"})
     style_dict["stylesheets"] = json.dumps(
@@ -113,7 +113,17 @@ async def create_style(
     )
     params = {"catalog_id": catalog_id, "collection_id": collection_id, **style_dict}
     raw_row = await _create_style_query.execute(conn, **params)
-    return _enrich_style_from_row(raw_row)
+    enriched = _enrich_style_from_row(raw_row)
+    if enriched is None:
+        # The INSERT … RETURNING just succeeded — a None enrichment means the
+        # row failed to validate against the Style model, which is a code bug,
+        # not a runtime "missing row" condition.
+        raise RuntimeError(
+            f"create_style: row enrichment returned None for "
+            f"catalog={catalog_id} collection={collection_id} "
+            f"style_id={style_data.style_id}"
+        )
+    return enriched
 
 
 async def get_style_by_id(
@@ -145,7 +155,7 @@ async def list_styles_for_collection(
     collection_id: str,
     limit: int = 100,
     offset: int = 0,
-) -> List[Optional[Style]]:
+) -> List[Style]:
     """Lists styles for a specific collection (paginated)."""
     raw_rows = await _list_styles_query.execute(
         conn,
@@ -154,7 +164,7 @@ async def list_styles_for_collection(
         limit=limit,
         offset=offset,
     )
-    return [_enrich_style_from_row(row) for row in raw_rows]
+    return [s for s in (_enrich_style_from_row(row) for row in raw_rows) if s is not None]
 
 
 async def list_all_styles(
@@ -165,6 +175,7 @@ async def list_all_styles(
     """Lists styles across all catalogs and collections (cross-partition, paginated)."""
     raw_rows = await _list_all_styles_query.execute(conn, limit=limit, offset=offset)
     return [_enrich_style_from_row(row) for row in raw_rows]
+
 
 
 async def update_style(

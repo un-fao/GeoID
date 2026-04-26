@@ -35,8 +35,19 @@ async def test_create_collection_attaches_asset_trigger_integration(app_lifespan
     
     # 3. Verify Trigger Existence in Database
     async with managed_transaction(app_lifespan.engine) as conn:
+        # Lazy-activation: a freshly-created collection has no physical_table
+        # assigned until the first POST /items (or explicit activate). The
+        # asset cleanup trigger is attached at activation time, so without
+        # this call resolve_physical_table returns None and the test asserts
+        # against `None_attributes`. Activate inside this transaction first.
+        from dynastore.models.driver_context import DriverContext
+        await catalogs.activate_collection(
+            catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
+        )
         # Resolve the physical table name (may differ from collection_id).
-        phys_table = await catalogs.resolve_physical_table(catalog_id, collection_id)
+        phys_table = await catalogs.resolve_physical_table(
+            catalog_id, collection_id, db_resource=conn,
+        )
         # Sidecar table is named {physical_table}_attributes
         sidecar_table = f"{phys_table}_attributes"
         

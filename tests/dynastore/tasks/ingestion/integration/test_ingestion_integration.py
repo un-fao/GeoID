@@ -249,9 +249,14 @@ async def test_csv_ingestion(task_app_state, test_data_loader, data_id):
         await catalogs.create_collection(catalog_id, col_def, ctx=DriverContext(db_resource=conn))
 
         # FORCE DISABLE PARTITIONING & DROP TABLE
+        # The legacy "driver:postgresql" string key was retired in the
+        # April-2026 configs-API reshape; identity is now the config class.
+        from dynastore.modules.storage.driver_config import (
+            ItemsPostgresqlDriverConfig as _PgDriverConfig,
+        )
         configs = get_protocol(ConfigsProtocol)
         config = await configs.get_config(
-            "driver:postgresql",
+            _PgDriverConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
             ctx=DriverContext(db_resource=conn),
@@ -259,7 +264,7 @@ async def test_csv_ingestion(task_app_state, test_data_loader, data_id):
         if config.partitioning:
             config.partitioning.enabled = False
         await configs.set_config(
-            "driver:postgresql",
+            _PgDriverConfig,
             config,
             catalog_id=catalog_id,
             collection_id=collection_id,
