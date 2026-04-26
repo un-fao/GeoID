@@ -500,6 +500,52 @@ def write_parquet(
                 yield chunk
 
 
+def write_geoparquet(
+    records: Generator[Feature, None, None],
+    srid: int,
+    chunk_size: int = 1000,
+    encoding: str = "utf-8",
+) -> Generator[bytes, None, None]:
+    """Writes records as a GeoParquet 1.0-compliant Parquet file.
+
+    Uses geopandas.to_parquet() so the output includes the required ``geo``
+    metadata in the Parquet file schema (geometry types, CRS, WKB encoding).
+    Clients such as GDAL, DuckDB, and QGIS can read it as GeoParquet directly.
+
+    Unlike write_parquet (which stores geometry as raw WKB bytes without geo
+    metadata), this function produces a spec-compliant GeoParquet 1.0 file.
+    """
+    import geopandas as gpd
+
+    processed_records_gen = _process_records_for_writing(records)
+    record_chunks = _iterate_chunks(processed_records_gen, chunk_size=chunk_size)
+
+    gdfs: list = []
+    for chunk in record_chunks:
+        gdf = _prepare_gdf_chunk_for_writing(chunk, srid)
+        if not gdf.empty:
+            gdfs.append(gdf)
+
+    if not gdfs:
+        return
+
+    if len(gdfs) == 1:
+        full_gdf = gdfs[0]
+    else:
+        import pandas as pd
+        full_gdf = gpd.GeoDataFrame(
+            pd.concat(gdfs, ignore_index=True), crs=f"EPSG:{srid}"
+        )
+
+    with tempfile.NamedTemporaryFile(
+        suffix=".parquet", dir=_ensure_temp_dir(), delete=True
+    ) as tmpfile:
+        full_gdf.to_parquet(tmpfile.name, index=False)
+        tmpfile.seek(0)
+        while data := tmpfile.read(8192):
+            yield data
+
+
 def write_geopackage(
     records: Generator[Feature, None, None],
     srid: int,

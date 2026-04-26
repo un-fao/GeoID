@@ -15,6 +15,7 @@ from dynastore.tools.file_io import (
     _sanitize,
     write_geojson,
     write_geopackage,
+    write_geoparquet,
     write_parquet,
     write_shapefile,
 )
@@ -181,6 +182,84 @@ def test_write_parquet_empty_records():
     """Empty generator should produce no output (no writer created)."""
     chunks = list(write_parquet([], srid=4326))
     assert chunks == []
+
+
+# ---------------------------------------------------------------------------
+# write_geoparquet
+# ---------------------------------------------------------------------------
+
+
+def test_write_geoparquet_returns_valid_parquet():
+    """GeoParquet output must start with PAR1 magic bytes."""
+    records = _make_point_records(3)
+    chunks = list(write_geoparquet(records, srid=4326))
+    full = b"".join(chunks)
+    assert full[:4] == b"PAR1", "Output should be a valid Parquet file"
+
+
+def test_write_geoparquet_has_geo_metadata():
+    """GeoParquet output must embed the 'geo' key in Parquet file metadata."""
+    import pyarrow.parquet as pq
+    import io
+
+    records = _make_point_records(3)
+    full = b"".join(write_geoparquet(records, srid=4326))
+
+    pf = pq.ParquetFile(io.BytesIO(full))
+    meta = pf.schema_arrow.metadata
+    assert meta is not None, "Parquet file must have metadata"
+    assert b"geo" in meta, "GeoParquet 'geo' metadata key must be present"
+
+
+def test_write_geoparquet_geo_metadata_content():
+    """The 'geo' metadata must reference the geometry column and WKB encoding."""
+    import json
+    import pyarrow.parquet as pq
+    import io
+
+    records = _make_point_records(2)
+    full = b"".join(write_geoparquet(records, srid=4326))
+
+    pf = pq.ParquetFile(io.BytesIO(full))
+    geo_meta = json.loads(pf.schema_arrow.metadata[b"geo"])
+
+    assert "primary_column" in geo_meta
+    geom_col = geo_meta["primary_column"]
+    assert geom_col in geo_meta.get("columns", {})
+    col_meta = geo_meta["columns"][geom_col]
+    assert col_meta.get("encoding") == "WKB"
+
+
+def test_write_geoparquet_roundtrip():
+    """Data written as GeoParquet must be readable back by geopandas."""
+    import geopandas as gpd
+    import io
+
+    records = _make_point_records(5)
+    full = b"".join(write_geoparquet(records, srid=4326))
+
+    gdf = gpd.read_parquet(io.BytesIO(full))
+    assert len(gdf) == 5
+    assert gdf.crs is not None
+    assert gdf.geometry.geom_type.iloc[0] == "Point"
+
+
+def test_write_geoparquet_empty_records():
+    """Empty input should produce no output."""
+    chunks = list(write_geoparquet([], srid=4326))
+    assert chunks == []
+
+
+def test_write_geoparquet_multiple_chunks():
+    """Records spanning multiple chunks should all appear in output."""
+    import geopandas as gpd
+    import io
+
+    records = _make_point_records(7)
+    # chunk_size=3 forces multiple chunks
+    full = b"".join(write_geoparquet(records, srid=4326, chunk_size=3))
+    gdf = gpd.read_parquet(io.BytesIO(full))
+    assert len(gdf) == 7
 
 
 # ---------------------------------------------------------------------------
