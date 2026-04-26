@@ -31,6 +31,9 @@ A key innovation is the database architecture, which leverages advanced features
 - [The DGGS Extension](docs/components/dggs.md)
 - [The EDR Extension](docs/components/edr.md)
 - [The Moving Features Extension](docs/components/moving_features.md)
+- [The Coverages Extension](docs/components/coverages.md)
+- [The Records Extension](docs/components/records.md)
+- [The Styles Extension](docs/components/styles.md)
 
 **Part 3: Extending & Contributing**
 - [Contributing & Plugin Naming Convention](docs/contributing.md)
