@@ -251,26 +251,34 @@ class AdminService(ExtensionProtocol):
         catalog_users = []
 
         for p in all_principals:
-            if p.provider and p.subject_id:
-                try:
-                    roles = await mgr.storage.get_identity_roles(
+            if not (p.provider and p.subject_id):
+                continue
+            try:
+                roles = await mgr.storage.get_identity_roles(
+                    provider=p.provider,
+                    subject_id=p.subject_id,
+                    schema=schema,
+                )
+            except Exception as e:
+                # Don't silently swallow — log so future storage-method drift
+                # (e.g. renamed/missing methods) surfaces instead of returning
+                # an empty list.
+                logger.warning(
+                    "Failed to fetch roles for principal %s (%s:%s) in schema %s: %s",
+                    p.id, p.provider, p.subject_id, schema, e,
+                )
+                continue
+            if roles:
+                catalog_users.append(
+                    PrincipalResponse(
+                        id=str(p.id),
                         provider=p.provider,
                         subject_id=p.subject_id,
-                        schema=schema,
+                        display_name=p.display_name,
+                        roles=roles,
+                        is_active=p.is_active,
                     )
-                    if roles:
-                        catalog_users.append(
-                            PrincipalResponse(
-                                id=str(p.id),
-                                provider=p.provider,
-                                subject_id=p.subject_id,
-                                display_name=p.display_name,
-                                roles=roles,
-                                is_active=p.is_active,
-                            )
-                        )
-                except Exception:
-                    pass
+                )
 
         return catalog_users
 
