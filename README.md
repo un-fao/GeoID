@@ -34,6 +34,8 @@ A key innovation is the database architecture, which leverages advanced features
 - [The Coverages Extension](docs/components/coverages.md)
 - [The Records Extension](docs/components/records.md)
 - [The Styles Extension](docs/components/styles.md)
+- [The 3D GeoVolumes Extension](docs/components/volumes.md)
+- [The Joins Extension](docs/components/joins.md)
 
 **Part 3: Extending & Contributing**
 - [Contributing & Plugin Naming Convention](docs/contributing.md)
