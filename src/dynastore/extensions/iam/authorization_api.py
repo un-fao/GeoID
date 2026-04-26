@@ -248,14 +248,6 @@ async def get_my_catalogs(request: Request):
         provider, subject_id, schema="iam"
     )
 
-    # NOTE: this loop probes EVERY catalog the system has via the
-    # `for catalog in all_catalogs` iteration below. The admin sibling
-    # `get_user_catalogs` (line ~437) correctly drives its loop from
-    # `storage.get_catalogs_for_identity(...)` instead — much cheaper
-    # and the right semantic. Aligning this self-service endpoint to
-    # the same pattern is a separate change; not pulling it into the
-    # silent-except sweep.
-
     result = []
 
     # Add global access if exists
@@ -267,23 +259,20 @@ async def get_my_catalogs(request: Request):
             )
         )
 
-    # 1. Get all catalogs
     catalog_module = await get_catalogs_protocol()
-    all_catalogs = await catalog_module.list_catalogs(ctx=DriverContext(db_resource=cast(Any, catalog_module).engine))
+    catalog_ids = await storage.get_catalogs_for_identity(provider, subject_id)
 
-    for catalog in all_catalogs:
-        # Get roles for this catalog
+    for cat_id in catalog_ids:
         try:
-            # Re-fetch catalog_module if needed or use the existing one
             catalog_schema = await catalog_module.resolve_physical_schema(
-                catalog.id, ctx=DriverContext(db_resource=cast(Any, catalog_module).engine)
+                cat_id, ctx=DriverContext(db_resource=cast(Any, catalog_module).engine)
             )
             catalog_roles = await storage.get_identity_roles(
                 provider, subject_id, schema=catalog_schema
             )
             if catalog_roles:
                 result.append(
-                    CatalogAccessResponse(catalog_id=catalog.id, roles=catalog_roles)
+                    CatalogAccessResponse(catalog_id=cat_id, roles=catalog_roles)
                 )
         except Exception:
             # One bad catalog must not nuke "list my catalogs", but log so
@@ -291,7 +280,7 @@ async def get_my_catalogs(request: Request):
             # as "user has access to nothing" with no breadcrumb.
             logger.warning(
                 "get_my_catalogs: failed for catalog=%s identity=%s:%s; skipping",
-                catalog.id, provider, subject_id,
+                cat_id, provider, subject_id,
                 exc_info=True,
             )
             continue
