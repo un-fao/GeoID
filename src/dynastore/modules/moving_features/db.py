@@ -201,7 +201,7 @@ async def list_moving_features(
         limit=limit,
         offset=offset,
     )
-    return [_mf_from_row(r) for r in rows if r]
+    return [mf for mf in (_mf_from_row(r) for r in rows if r) if mf is not None]
 
 
 async def delete_moving_feature(
@@ -258,7 +258,7 @@ async def list_temporal_geometries(
         )
     else:
         rows = await _list_tg_query.execute(conn, catalog_id=catalog_id, mf_id=str(mf_id))
-    return [_tg_from_row(r) for r in rows if r]
+    return [tg for tg in (_tg_from_row(r) for r in rows if r) if tg is not None]
 
 
 async def delete_temporal_geometries_by_mf(

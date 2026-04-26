@@ -22,9 +22,9 @@ Implements the following endpoints:
     GET /dggs/dggs-list/{dggsId}                               DGGRS metadata
     GET /dggs/collections                                       DGGS-enabled collections
     GET /dggs/catalogs/{catalog_id}/collections/{collection_id}/dggs
-        Aggregate collection features into H3 zones
+        Aggregate collection features into DGGS zones
     GET /dggs/catalogs/{catalog_id}/collections/{collection_id}/dggs/{zoneId}
-        Features aggregated within a specific H3 zone
+        Features aggregated within a specific DGGS zone
 """
 
 import logging
@@ -39,13 +39,11 @@ from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.tools.ogc_policies import register_ogc_public_access_policy
 from dynastore.extensions.tools.url import get_root_url
 from dynastore.models.shared_models import Link
+from dynastore.modules.dggs import h3_indexer, s2_indexer
 from dynastore.modules.dggs.aggregator import aggregate_features
 from dynastore.modules.dggs.h3_indexer import (
     H3_MAX_RESOLUTION,
     H3_MIN_RESOLUTION,
-    bbox_to_cells,
-    get_resolution,
-    is_valid_cell,
     parse_bbox,
 )
 from dynastore.modules.dggs.models import (
@@ -59,8 +57,14 @@ from dynastore.modules.dggs.zone_query import (
     build_query_for_zone,
     build_query_for_zone_indexed,
 )
+from dynastore.modules.dggs.s2_indexer import S2_MAX_LEVEL, S2_MIN_LEVEL
 
 logger = logging.getLogger(__name__)
+
+# S2 levels go 0-30; H3 resolutions go 0-15.
+# The zone-level query parameter uses the widest range; each DGGRS validates internally.
+_ZONE_LEVEL_MAX = max(H3_MAX_RESOLUTION, S2_MAX_LEVEL)
+_ZONE_LEVEL_MIN = min(H3_MIN_RESOLUTION, S2_MIN_LEVEL)
 
 
 def _parse_parameter_names(parameter_name: Optional[str]) -> Optional[Set[str]]:
@@ -90,7 +94,22 @@ _H3_DGGRS = DGGRSInfo(
     links=[],
 )
 
-_SUPPORTED_DGGRS: dict = {"H3": _H3_DGGRS}
+_S2_DGGRS = DGGRSInfo(
+    id="S2",
+    title="Google S2 Geometry Hierarchical Grid",
+    description=(
+        "The S2 Discrete Global Grid Reference System uses a hierarchical quadrilateral "
+        "tessellation of the sphere at 31 levels (0–30), based on a space-filling curve "
+        "on the faces of a projected cube. It provides exact spatial indexing with "
+        "compact integer cell IDs."
+    ),
+    uri="https://s2geometry.io/",
+    maxRefinementLevel=S2_MAX_LEVEL,
+    defaultRefinementLevel=10,
+    links=[],
+)
+
+_SUPPORTED_DGGRS: dict = {"H3": _H3_DGGRS, "S2": _S2_DGGRS}
 
 
 class DGGSService(ExtensionProtocol, OGCServiceMixin):
@@ -228,12 +247,7 @@ class DGGSService(ExtensionProtocol, OGCServiceMixin):
     # ------------------------------------------------------------------
 
     async def get_collections(self, request: Request) -> dict:
-        """List all collections accessible via DGGS endpoints.
-
-        Returns the same collection list as the STAC/Features extension but
-        scoped to the /dggs namespace, so clients can discover which collections
-        support DGGS data retrieval.
-        """
+        """List all collections accessible via DGGS endpoints."""
         catalogs_svc = await self._get_catalogs_service()
         try:
             catalogs = await catalogs_svc.list_catalogs()
@@ -246,13 +260,21 @@ class DGGSService(ExtensionProtocol, OGCServiceMixin):
         root_url = get_root_url(request)
         result = []
         for catalog in catalogs or []:
-            catalog_id = getattr(catalog, "id", None) or catalog.get("id", "")
+            # list_catalogs may return Catalog models or dicts depending on
+            # the protocol implementation — handle both.
+            catalog_id = (
+                getattr(catalog, "id", None)
+                or (catalog.get("id", "") if isinstance(catalog, dict) else "")
+            )
             try:
                 collections = await catalogs_svc.list_collections(catalog_id)
             except Exception:
                 continue
             for col in collections or []:
-                col_id = getattr(col, "id", None) or col.get("id", "")
+                col_id = (
+                    getattr(col, "id", None)
+                    or (col.get("id", "") if isinstance(col, dict) else "")
+                )
                 result.append(
                     {
                         "id": col_id,
@@ -285,9 +307,9 @@ class DGGSService(ExtensionProtocol, OGCServiceMixin):
         zone_level: Optional[int] = Query(
             None,
             alias="zone-level",
-            ge=H3_MIN_RESOLUTION,
-            le=H3_MAX_RESOLUTION,
-            description="H3 resolution level (0-15). Defaults to DGGSConfig.default_resolution.",
+            ge=_ZONE_LEVEL_MIN,
+            le=_ZONE_LEVEL_MAX,
+            description="Resolution/level (H3: 0-15, S2: 0-30). Defaults to DGGSConfig.default_resolution.",
         ),
         bbox: Optional[str] = Query(
             None,
@@ -305,13 +327,13 @@ class DGGSService(ExtensionProtocol, OGCServiceMixin):
         dggs_id: str = Query(
             "H3",
             alias="dggs-id",
-            description="DGGRS identifier (currently only 'H3' is supported)",
+            description="DGGRS identifier: 'H3' or 'S2'",
         ),
     ) -> DGGSFeatureCollection:
-        """Retrieve collection features aggregated into H3 DGGS zones.
+        """Retrieve collection features aggregated into DGGS zones.
 
         Queries PostGIS for features in the requested bbox/datetime, then
-        aggregates them on-the-fly into H3 hexagons at the requested resolution.
+        aggregates them on-the-fly into cells at the requested resolution.
         """
         dggs_id = dggs_id.upper()
         if dggs_id not in _SUPPORTED_DGGRS:
@@ -364,19 +386,14 @@ class DGGSService(ExtensionProtocol, OGCServiceMixin):
         dggs_id: str = Query(
             "H3",
             alias="dggs-id",
-            description="DGGRS identifier (currently only 'H3' is supported)",
+            description="DGGRS identifier: 'H3' or 'S2'",
         ),
     ) -> DGGSFeatureCollection:
-        """Retrieve data aggregated within a specific H3 zone.
+        """Retrieve data aggregated within a specific DGGS zone.
 
-        The zoneId must be a valid H3 cell index. Features intersecting the
-        zone's bounding box are fetched from PostGIS and aggregated into the
-        single requested cell.
-
-        Note: features whose centroid falls inside the bbox but outside the
-        exact H3 hexagon boundary will map to a neighbouring cell and be
-        excluded from the result. This is expected behaviour for centroid-based
-        aggregation at high resolutions.
+        The zoneId must be a valid cell token for the requested DGGRS.
+        Features intersecting the zone's bounding box are fetched from PostGIS
+        and aggregated into the single requested cell.
         """
         dggs_id = dggs_id.upper()
         if dggs_id not in _SUPPORTED_DGGRS:
@@ -385,29 +402,56 @@ class DGGSService(ExtensionProtocol, OGCServiceMixin):
                 detail=f"Unsupported DGGRS '{dggs_id}'. Supported: {list(_SUPPORTED_DGGRS)}",
             )
 
-        if not is_valid_cell(zoneId):
+        # Validate zone ID and extract resolution using the correct indexer.
+        if dggs_id == "H3":
+            valid = h3_indexer.is_valid_cell(zoneId)
+            resolution = h3_indexer.get_resolution(zoneId) if valid else 0
+            sidecar_field = f"h3_res{resolution}"
+            cell_int = h3_indexer.cell_str_to_int(zoneId) if valid else 0
+        else:  # S2
+            valid = s2_indexer.is_valid_cell(zoneId)
+            resolution = s2_indexer.get_level(zoneId) if valid else 0
+            sidecar_field = f"s2_res{resolution}"
+            cell_int = s2_indexer.cell_str_to_int(zoneId) if valid else 0
+
+        if not valid:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid H3 zone ID: {zoneId!r}",
+                detail=f"Invalid {dggs_id} zone ID: {zoneId!r}",
             )
 
-        resolution = get_resolution(zoneId)
         config = await self._get_dggs_config(catalog_id, collection_id)
 
-        if await self._has_h3_field(catalog_id, collection_id, resolution):
+        if await self._has_sidecar_field(catalog_id, collection_id, sidecar_field):
             # Preferred: exact B-tree EQ on pre-computed sidecar column.
             query = build_query_for_zone_indexed(
-                zoneId,
+                sidecar_field=sidecar_field,
+                cell_int=cell_int,
                 datetime_str=datetime,
                 limit=config.max_features_per_request,
             )
-        else:
-            # Fallback: GIST bbox scan (may overselect near hexagon edges).
+        elif dggs_id == "H3":
+            # Fallback for H3: GIST bbox scan derived from H3 polygon.
             query = build_query_for_zone(
                 zoneId,
                 datetime_str=datetime,
                 limit=config.max_features_per_request,
             )
+        else:
+            # Fallback for S2: derive bbox from S2 cell polygon.
+            polygon = s2_indexer.cell_to_geojson_polygon(zoneId)
+            coords = polygon["coordinates"][0]
+            lngs = [c[0] for c in coords]
+            lats = [c[1] for c in coords]
+            query = build_query_for_bbox(
+                xmin=min(lngs),
+                ymin=min(lats),
+                xmax=max(lngs),
+                ymax=max(lats),
+                datetime_str=datetime,
+                limit=config.max_features_per_request,
+            )
+
         features = await self._fetch_features(catalog_id, collection_id, query)
 
         param_names = _parse_parameter_names(parameter_name)
@@ -427,13 +471,13 @@ class DGGSService(ExtensionProtocol, OGCServiceMixin):
     # Helpers
     # ------------------------------------------------------------------
 
-    async def _has_h3_field(
+    async def _has_sidecar_field(
         self,
         catalog_id: str,
         collection_id: str,
-        resolution: int,
+        sidecar_field: str,
     ) -> bool:
-        """Return True if the collection's geometry sidecar has ``h3_res{resolution}`` pre-computed.
+        """Return True if the collection's geometry sidecar has *sidecar_field* pre-computed.
 
         When True, :func:`build_query_for_zone_indexed` can be used instead of the
         bbox fallback, giving exact B-tree indexed lookups.
@@ -446,7 +490,7 @@ class DGGSService(ExtensionProtocol, OGCServiceMixin):
             if not items_svc:
                 return False
             fields = await items_svc.get_collection_fields(catalog_id, collection_id)
-            return f"h3_res{resolution}" in (fields or {})
+            return sidecar_field in (fields or {})
         except Exception:
             return False
 
