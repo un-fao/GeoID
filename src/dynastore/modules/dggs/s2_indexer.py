@@ -107,6 +107,27 @@ def cell_int_to_str(val: int) -> str:
     return s2.CellId(val).to_token()
 
 
+def rect_bound_for_cell(token: str) -> Tuple[float, float, float, float]:
+    """Return (xmin, ymin, xmax, ymax) bounding box for an S2 cell.
+
+    Uses ``Cell.get_rect_bound()`` which correctly handles cells that cross
+    the antimeridian or contain a pole, unlike computing min/max on vertices.
+    Returns the full longitude range [-180, 180] for antimeridian-crossing cells.
+    """
+    s2 = _require_s2()
+    cell = s2.Cell(s2.CellId.from_token(token))
+    rect = cell.get_rect_bound()
+    lat_lo = rect.lat_lo().degrees
+    lat_hi = rect.lat_hi().degrees
+    lng_lo = rect.lng_lo().degrees
+    lng_hi = rect.lng_hi().degrees
+    # LatLngRect is always normalised: lng_lo <= lng_hi unless it wraps.
+    # If the cell crosses the antimeridian, use the full longitude range.
+    if lng_lo > lng_hi:
+        lng_lo, lng_hi = -180.0, 180.0
+    return lng_lo, lat_lo, lng_hi, lat_hi
+
+
 def bbox_to_cells(
     xmin: float,
     ymin: float,
@@ -114,7 +135,11 @@ def bbox_to_cells(
     ymax: float,
     level: int,
 ) -> Set[str]:
-    """Return the set of S2 cells that cover the given WGS-84 bounding box at *level*."""
+    """Return the set of S2 cells that cover the given WGS-84 bounding box at *level*.
+
+    ``max_cells`` is set high to ensure complete coverage at the requested level;
+    the default of 8 can cause the coverer to promote to coarser cells for large regions.
+    """
     s2 = _require_s2()
     p1 = s2.LatLng.from_degrees(ymin, xmin)
     p2 = s2.LatLng.from_degrees(ymax, xmax)
@@ -122,6 +147,7 @@ def bbox_to_cells(
     coverer = s2.RegionCoverer()
     coverer.min_level = level
     coverer.max_level = level
+    coverer.max_cells = 1_000_000
     covering = coverer.get_covering(rect)
     return {c.to_token() for c in covering}
 

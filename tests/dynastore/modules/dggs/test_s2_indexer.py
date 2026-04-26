@@ -141,3 +141,34 @@ def test_cell_str_to_int_invalid():
 def test_constants():
     assert S2_MIN_LEVEL == 0
     assert S2_MAX_LEVEL == 30
+
+
+# ---------------------------------------------------------------------------
+# rect_bound_for_cell
+# ---------------------------------------------------------------------------
+
+def test_rect_bound_for_cell_normal():
+    from dynastore.modules.dggs.s2_indexer import rect_bound_for_cell
+    token = latlng_to_cell(FAO_LAT, FAO_LNG, 10)
+    xmin, ymin, xmax, ymax = rect_bound_for_cell(token)
+    assert xmin < xmax
+    assert ymin < ymax
+    assert -180 <= xmin <= 180
+    assert -180 <= xmax <= 180
+    assert -90 <= ymin <= 90
+    assert -90 <= ymax <= 90
+    # FAO cell must contain FAO coordinates
+    assert xmin <= FAO_LNG <= xmax
+    assert ymin <= FAO_LAT <= ymax
+
+
+def test_rect_bound_all_cells_valid_bounds():
+    """Spot-check that rect_bound_for_cell never returns xmin > xmax after antimeridian clamp."""
+    from dynastore.modules.dggs.s2_indexer import rect_bound_for_cell
+    test_points = [(0, 0), (0, 180), (0, -180), (90, 0), (-90, 0), (45, 170), (-45, -170)]
+    for lat, lng in test_points:
+        # Clamp lat to valid range
+        lat = max(-89.9, min(89.9, lat))
+        token = latlng_to_cell(lat, lng, 5)
+        xmin, ymin, xmax, ymax = rect_bound_for_cell(token)
+        assert xmin <= xmax, f"Invalid bbox for token {token}: xmin={xmin} xmax={xmax}"

@@ -404,21 +404,23 @@ class DGGSService(ExtensionProtocol, OGCServiceMixin):
 
         # Validate zone ID and extract resolution using the correct indexer.
         if dggs_id == "H3":
-            valid = h3_indexer.is_valid_cell(zoneId)
-            resolution = h3_indexer.get_resolution(zoneId) if valid else 0
+            if not h3_indexer.is_valid_cell(zoneId):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid H3 zone ID: {zoneId!r}",
+                )
+            resolution = h3_indexer.get_resolution(zoneId)
             sidecar_field = f"h3_res{resolution}"
-            cell_int = h3_indexer.cell_str_to_int(zoneId) if valid else 0
+            cell_int = h3_indexer.cell_str_to_int(zoneId)
         else:  # S2
-            valid = s2_indexer.is_valid_cell(zoneId)
-            resolution = s2_indexer.get_level(zoneId) if valid else 0
+            if not s2_indexer.is_valid_cell(zoneId):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid S2 zone ID: {zoneId!r}",
+                )
+            resolution = s2_indexer.get_level(zoneId)
             sidecar_field = f"s2_res{resolution}"
-            cell_int = s2_indexer.cell_str_to_int(zoneId) if valid else 0
-
-        if not valid:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid {dggs_id} zone ID: {zoneId!r}",
-            )
+            cell_int = s2_indexer.cell_str_to_int(zoneId)
 
         config = await self._get_dggs_config(catalog_id, collection_id)
 
@@ -438,16 +440,15 @@ class DGGSService(ExtensionProtocol, OGCServiceMixin):
                 limit=config.max_features_per_request,
             )
         else:
-            # Fallback for S2: derive bbox from S2 cell polygon.
-            polygon = s2_indexer.cell_to_geojson_polygon(zoneId)
-            coords = polygon["coordinates"][0]
-            lngs = [c[0] for c in coords]
-            lats = [c[1] for c in coords]
+            # Fallback for S2: derive bbox from S2 cell's rect bound.
+            # Using get_rect_bound() instead of vertex min/max correctly handles
+            # cells that cross the antimeridian or contain a pole.
+            xmin, ymin, xmax, ymax = s2_indexer.rect_bound_for_cell(zoneId)
             query = build_query_for_bbox(
-                xmin=min(lngs),
-                ymin=min(lats),
-                xmax=max(lngs),
-                ymax=max(lats),
+                xmin=xmin,
+                ymin=ymin,
+                xmax=xmax,
+                ymax=ymax,
                 datetime_str=datetime,
                 limit=config.max_features_per_request,
             )
