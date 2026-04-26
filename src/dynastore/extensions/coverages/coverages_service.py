@@ -90,6 +90,75 @@ def _stream_coverage_geotiff(href: str, subset):
         ds.close()
 
 
+def _stream_coverage_netcdf(href: str, subset, *, band_names: list):
+    """Stream a NetCDF-4 response by reading the source raster at ``href``."""
+    from dynastore.modules.coverages.reader import read_window_iter
+    from dynastore.modules.coverages.window import RasterGeoRef, resolve_window
+    from dynastore.modules.coverages.writers.netcdf import write_netcdf
+    from dynastore.modules.gdal.service import open_raster_vsi
+
+    req = parse_subset(subset)
+    ds = open_raster_vsi(href)
+    try:
+        t = ds.transform
+        ref = RasterGeoRef(
+            width=ds.width, height=ds.height,
+            origin_x=t.c, origin_y=t.f,
+            pixel_x=t.a, pixel_y=t.e,
+            crs=str(ds.crs),
+            axis_order=("Lon", "Lat"),
+        )
+        box = resolve_window(req, ref)
+        west = ref.origin_x + ref.pixel_x * box.col_off
+        east = ref.origin_x + ref.pixel_x * (box.col_off + box.width)
+        north = ref.origin_y + ref.pixel_y * box.row_off
+        south = ref.origin_y + ref.pixel_y * (box.row_off + box.height)
+        bbox = [west, min(south, north), east, max(south, north)]
+        tiles = ((0, 0, block) for block in read_window_iter(ds, box))
+        yield from write_netcdf(
+            width=box.width, height=box.height,
+            bbox=bbox, crs=str(ds.crs),
+            band_names=band_names, tiles=tiles,
+        )
+    finally:
+        ds.close()
+
+
+def _stream_coverage_zarr(href: str, subset, *, band_names: list, chunk_size: int = 256):
+    """Stream a ZIP-wrapped Zarr response by reading the source raster at ``href``."""
+    from dynastore.modules.coverages.reader import read_window_iter
+    from dynastore.modules.coverages.window import RasterGeoRef, resolve_window
+    from dynastore.modules.coverages.writers.zarr import write_zarr
+    from dynastore.modules.gdal.service import open_raster_vsi
+
+    req = parse_subset(subset)
+    ds = open_raster_vsi(href)
+    try:
+        t = ds.transform
+        ref = RasterGeoRef(
+            width=ds.width, height=ds.height,
+            origin_x=t.c, origin_y=t.f,
+            pixel_x=t.a, pixel_y=t.e,
+            crs=str(ds.crs),
+            axis_order=("Lon", "Lat"),
+        )
+        box = resolve_window(req, ref)
+        west = ref.origin_x + ref.pixel_x * box.col_off
+        east = ref.origin_x + ref.pixel_x * (box.col_off + box.width)
+        north = ref.origin_y + ref.pixel_y * box.row_off
+        south = ref.origin_y + ref.pixel_y * (box.row_off + box.height)
+        bbox = [west, min(south, north), east, max(south, north)]
+        tiles = ((0, 0, block) for block in read_window_iter(ds, box))
+        yield from write_zarr(
+            width=box.width, height=box.height,
+            bbox=bbox, crs=str(ds.crs),
+            band_names=band_names, tiles=tiles,
+            chunk_size=chunk_size,
+        )
+    finally:
+        ds.close()
+
+
 def _resolve_format(f) -> str:
     if f is None:
         return "geotiff"
@@ -279,10 +348,13 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
             rt = build_rangetype(item) or {"type": "DataRecord", "field": []}
             gen = write_coveragejson(ds, rt, iter([]))
         elif fmt == "netcdf":
-            raise HTTPException(
-                status_code=503,
-                detail="NetCDF streaming not yet wired end-to-end.",
-            )
+            rt = build_rangetype(item) or {"type": "DataRecord", "field": []}
+            band_names = [f["name"] for f in rt.get("field", [])] or ["band"]
+            gen = _stream_coverage_netcdf(href, subset=subset, band_names=band_names)
+        elif fmt == "zarr":
+            rt = build_rangetype(item) or {"type": "DataRecord", "field": []}
+            band_names = [f["name"] for f in rt.get("field", [])] or ["band"]
+            gen = _stream_coverage_zarr(href, subset=subset, band_names=band_names)
         else:  # pragma: no cover - guarded by _resolve_format above
             raise HTTPException(status_code=415, detail=f"Unsupported format: {fmt!r}")
         return StreamingResponse(gen, media_type=MEDIA_TYPE_FOR[fmt])
