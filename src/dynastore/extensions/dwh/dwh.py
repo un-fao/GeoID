@@ -56,6 +56,7 @@ from shapely import wkb
 import hashlib
 import json
 import dynastore.modules.tiles.tiles_module as tms_manager
+from dynastore.modules.tiles.tiles_module import TileStorageProtocol
 from dynastore.modules.tiles.tms_definitions import BUILTIN_TILE_MATRIX_SETS
 
 # --- App Setup & Configuration ---
@@ -337,8 +338,7 @@ class DwhService(ExtensionProtocol):
             ).hexdigest()[:12]
             cache_id = f"{req.collection}@dwh-{query_hash}"
 
-            storage_priority = ["bucket", "pg"]
-            provider = tms_manager.get_storage_provider(storage_priority)
+            provider = get_protocol(TileStorageProtocol)
 
             if provider:
                 try:

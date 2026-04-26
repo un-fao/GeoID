@@ -13,10 +13,13 @@
 #    limitations under the License.
 
 import logging
+import os
+import shutil
+import tempfile
 from typing import Optional, Any, Dict
 from dynastore.tools.cache import cached, cache_clear
 from datetime import timedelta
-from dynastore.modules.tiles.tiles_module import TileStorageSPI, register_named_tile_storage
+from dynastore.modules.tiles.tiles_module import TileStorageProtocol, TileArchiveStorageProtocol
 from dynastore.modules.concurrency import run_in_thread
 from dynastore.models.protocols import StorageProtocol, CloudStorageClientProtocol, CloudIdentityProtocol
 from dynastore.modules import get_protocol
@@ -24,8 +27,8 @@ from dynastore.modules.gcp.tools.signed_urls import generate_gcs_signed_url
 
 logger = logging.getLogger(__name__)
 
-@register_named_tile_storage("bucket")
-class TileBucketPreseedStorage(TileStorageSPI):
+
+class TileBucketPreseedStorage(TileStorageProtocol):
     """
     GCS-based tile storage provider.
     """
@@ -204,3 +207,74 @@ class TileBucketPreseedStorage(TileStorageSPI):
         await run_in_thread(_delete_all)
         # Clear existence cache
         cache_clear(self.check_tile_exists)
+
+
+class StorageBackedTileArchive(TileArchiveStorageProtocol):
+    """PMTiles archive storage backed by any StorageProtocol provider."""
+
+    def _get_storage(self) -> StorageProtocol:
+        provider = get_protocol(StorageProtocol)
+        if not provider:
+            raise RuntimeError("StorageProtocol is not registered.")
+        return provider
+
+    async def _archive_path(self, catalog_id: str, collection_id: str, tms_id: str) -> Optional[str]:
+        storage = self._get_storage()
+        bucket_name = await storage.get_storage_identifier(catalog_id)
+        if not bucket_name:
+            return None
+        return f"gs://{bucket_name}/pmtiles/{collection_id}/{tms_id}.pmtiles"
+
+    async def save_archive(self, catalog_id: str, collection_id: str, tms_id: str, data_file: Any) -> str:
+        storage = self._get_storage()
+        bucket_name = await storage.ensure_storage_for_catalog(catalog_id)
+        if not bucket_name:
+            raise RuntimeError(f"No storage bucket available for catalog '{catalog_id}'.")
+        target_path = f"gs://{bucket_name}/pmtiles/{collection_id}/{tms_id}.pmtiles"
+        with tempfile.NamedTemporaryFile(suffix=".pmtiles", delete=False) as tmp:
+            shutil.copyfileobj(data_file, tmp)
+            tmp_path = tmp.name
+        try:
+            await storage.upload_file(tmp_path, target_path, "application/vnd.pmtiles")
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        logger.info("PMTiles archive saved: %s", target_path)
+        return target_path
+
+    @cached(maxsize=512, namespace="pmtiles_archive_exists")
+    async def archive_exists(self, catalog_id: str, collection_id: str, tms_id: str) -> bool:
+        path = await self._archive_path(catalog_id, collection_id, tms_id)
+        if not path:
+            return False
+        return await self._get_storage().file_exists(path)
+
+    async def get_tile_from_archive(self, catalog_id: str, collection_id: str, tms_id: str, z: int, x: int, y: int) -> Optional[bytes]:
+        try:
+            from apmtiles import AsyncPMTilesReader  # type: ignore[import]
+        except ImportError:
+            logger.error("apmtiles not installed; cannot read PMTiles archives.")
+            return None
+        path = await self._archive_path(catalog_id, collection_id, tms_id)
+        if not path:
+            return None
+        storage = self._get_storage()
+        async def _range_read(offset: int, length: int) -> bytes:
+            return await storage.download_bytes_range(path, offset, length)
+        try:
+            reader = AsyncPMTilesReader(_range_read)
+            return await reader.get_tile(z, x, y)
+        except Exception as exc:
+            logger.warning("Failed reading tile %d/%d/%d from PMTiles %s: %s", z, x, y, path, exc)
+            return None
+
+    async def delete_archive(self, catalog_id: str, collection_id: str, tms_id: str) -> bool:
+        path = await self._archive_path(catalog_id, collection_id, tms_id)
+        if not path:
+            return False
+        await self._get_storage().delete_file(path)
+        cache_clear(self.archive_exists)
+        logger.info("PMTiles archive deleted: %s", path)
+        return True

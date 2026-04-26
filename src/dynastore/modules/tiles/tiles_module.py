@@ -19,14 +19,14 @@
 import logging
 import hashlib
 from contextlib import asynccontextmanager
-from typing import Optional, List, Dict, Any, Protocol, Type, Tuple, Callable, Awaitable
-from abc import abstractmethod
+from typing import Optional, List, Dict, Any, Protocol, BinaryIO, runtime_checkable
 from dynastore.tools.cache import cached
 from dynastore.models.driver_context import DriverContext
 from dynastore.modules import (
     ModuleProtocol,
     get_protocol,
 )
+from dynastore.tools.discovery import register_plugin, unregister_plugin
 from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
 from dynastore.modules.db_config.query_executor import (
     DDLQuery,
@@ -36,6 +36,7 @@ from dynastore.modules.db_config.query_executor import (
     managed_transaction,
 )
 from dynastore.modules.db_config.partition_tools import ensure_partition_exists
+from dynastore.modules.db_config.locking_tools import check_table_exists
 from dynastore.tools.protocol_helpers import get_engine
 from dynastore.modules.db_config import maintenance_tools
 from sqlalchemy import text
@@ -52,11 +53,8 @@ from dynastore.modules.catalog.catalog_module import (
     CatalogEventType,
     register_event_listener as register_catalog_event_listener,
 )
-import asyncio
 
 logger = logging.getLogger(__name__)
-
-_active_storage_provider: Optional["TileStorageSPI"] = None
 
 # --- DDL Definitions (in Python) ---
 
@@ -151,17 +149,17 @@ class TilesModule(ModuleProtocol, DatabaseProtocol):
                 await DDLQuery(TILE_MATRIX_SETS_DDL).execute(conn)
                 await DDLQuery(TILE_MATRIX_SETS_COMMENT_DDL).execute(conn)
 
-            # Boot-time storage selection
-            # We pick the first available encountered storage service from a default or configured priority
-            # For simplicity, we use the default ["bucket", "pg"] or could fetch from a global platform config
-            global _active_storage_provider
-            _active_storage_provider = get_storage_provider(["bucket", "pg"])
-            if _active_storage_provider:
-                logger.info(
-                    f"TilesModule: Selected active storage provider: {type(_active_storage_provider).__name__}"
-                )
-            else:
-                logger.warning("TilesModule: No storage provider found during boot.")
+            # Register PG tile storage as fallback if no higher-priority provider (e.g. GCS) registered yet
+            if get_protocol(TileStorageProtocol) is None:
+                self._pg_tile_storage = TilePGPreseedStorage()
+                register_plugin(self._pg_tile_storage)
+                logger.info("TilesModule: Registered TilePGPreseedStorage as fallback.")
+
+            # Register PG archive storage as fallback if no higher-priority provider registered yet
+            if get_protocol(TileArchiveStorageProtocol) is None:
+                self._pg_tile_archive = PGTileArchive()
+                register_plugin(self._pg_tile_archive)
+                logger.info("TilesModule: Registered PGTileArchive as fallback.")
 
             logger.info("TilesModule: Initialization complete.")
         except Exception as e:
@@ -171,17 +169,25 @@ class TilesModule(ModuleProtocol, DatabaseProtocol):
 
         yield
 
+        # --- SHUTDOWN ---
+        for attr in ("_pg_tile_storage", "_pg_tile_archive"):
+            obj = getattr(self, attr, None)
+            if obj is not None:
+                unregister_plugin(obj)
+                setattr(self, attr, None)
+
         # --- REGISTER LISTENERS ---
         # Register in-process listeners to cleanup tile resources when a collection deletion event occurs.
         logger.info("TilesModule: Registering event listeners.")
         register_listeners()
 
 
-# --- Tile Storage SPI & Registry ---
+# --- Tile Storage Protocols ---
 
 
-class TileStorageSPI(Protocol):
-    """Protocol for tile storage providers (Processors/SPI)."""
+@runtime_checkable
+class TileStorageProtocol(Protocol):
+    """Protocol for per-tile MVT cache providers."""
 
     async def save_tile(
         self,
@@ -253,67 +259,11 @@ class TileStorageSPI(Protocol):
         ...
 
 
-_TILE_STORAGE_REGISTRY: List[Tuple[int, Type[TileStorageSPI]]] = []
+# Backwards-compat alias — callers that still use TileStorageSPI continue to work.
+TileStorageSPI = TileStorageProtocol
 
 
-def register_tiles_storage(priority: int = 100):
-    """Decorator to register a tile storage provider with a priority."""
-
-    def decorator(cls: Type[TileStorageSPI]):
-        _TILE_STORAGE_REGISTRY.append((priority, cls))
-        _TILE_STORAGE_REGISTRY.sort(
-            key=lambda x: x[0]
-        )  # Sort by priority (asc? desc? usually highest priority wins, let's say lower int = higher priority or reverse? Standard is typical lowest int first in sorted list. Let's use 0 = Top Priority)
-        # Wait, usually sorting is ascending. So 0 comes before 100.
-        # If we want priority behavior: we iterate and take the first one that works? Or we want specific one?
-        # The prompt said "storage_priority: List[str] (Default: ['bucket', 'pg'])".
-        # This implies we look up by NAME.
-        # So the registry should probably be a Dict mapping name -> class, and the Config defines the priority order.
-        # Let's adjust the registry to be name-based.
-        return cls
-
-    return decorator
-
-
-_NAMED_STORAGE_REGISTRY: Dict[str, Type[TileStorageSPI]] = {}
-
-
-def register_named_tile_storage(name: str):
-    """Decorator to register a tile storage provider by name."""
-
-    def decorator(cls: Type[TileStorageSPI]):
-        _NAMED_STORAGE_REGISTRY[name] = cls
-        logger.info(f"Registered Tile Storage Provider: '{name}' -> {cls.__name__}")
-        return cls
-
-    return decorator
-
-
-def get_storage_provider(
-    priority_list: List[str] = ["bucket", "pg"],
-) -> Optional[TileStorageSPI]:
-    """
-    Returns the first available storage provider instance from the priority list.
-    """
-    for name in priority_list:
-        provider_cls = _NAMED_STORAGE_REGISTRY.get(name)
-        if provider_cls:
-            try:
-                return provider_cls()
-            except Exception as e:
-                logger.warning(
-                    f"Failed to instantiate tile storage provider '{name}': {e}"
-                )
-    return None
-
-
-def get_active_storage_provider() -> Optional[TileStorageSPI]:
-    """Returns the one storage provider selected at boot time."""
-    return _active_storage_provider
-
-
-@register_named_tile_storage("pg")
-class TilePGPreseedStorage(TileStorageSPI):
+class TilePGPreseedStorage(TileStorageProtocol):
     """Default Postgres-based tile storage, using catalog-specific schemas."""
 
     engine: DbResource
@@ -544,19 +494,6 @@ class TilePGPreseedStorage(TileStorageSPI):
                 exc_info=True,
             )
 
-
-def clear_registry():
-    """
-    Clears the named storage registry and internal active provider.
-    Re-registers core providers ('pg').
-    Useful for test isolation.
-    """
-    _NAMED_STORAGE_REGISTRY.clear()
-    global _active_storage_provider
-    _active_storage_provider = None
-    # Re-register core 'pg' provider
-    _NAMED_STORAGE_REGISTRY["pg"] = TilePGPreseedStorage
-    logger.info("TilesModule: Storage registry cleared and core providers re-registered.")
 
 # --- Internal Query Objects ---
 
@@ -992,36 +929,18 @@ async def invalidate_collection_tiles(catalog_id: str, collection_id: str):
     get_collection_source_srid.cache_clear()
     get_tile_resolution_params.cache_clear()
 
-    # 2. Clear physical providers
-    providers_to_clean = []
-    for name, provider_cls in _NAMED_STORAGE_REGISTRY.items():
-        try:
-            providers_to_clean.append(provider_cls())
-        except Exception as e:
-            logger.warning(
-                f"Failed to instantiate tile storage provider '{name}' for invalidation: {e}"
-            )
-
-    if not providers_to_clean:
-        logger.warning("No tile storage providers found to execute invalidation.")
+    # 2. Clear physical provider
+    provider = get_protocol(TileStorageProtocol)
+    if provider is None:
+        logger.warning("No TileStorageProtocol registered — skipping physical invalidation.")
         return
-
-    cleanup_tasks = [
-        provider.delete_tiles_for_collection(catalog_id, collection_id)
-        for provider in providers_to_clean
-    ]
-    results = await asyncio.gather(*cleanup_tasks, return_exceptions=True)
-
-    for i, result in enumerate(results):
-        provider_name = type(providers_to_clean[i]).__name__
-        if isinstance(result, Exception):
-            logger.error(
-                f"Error during tile invalidation for provider '{provider_name}': {result}"
-            )
-        else:
-            logger.info(
-                f"Provider '{provider_name}' successfully invalidated {result} tile records for collection '{collection_id}'."
-            )
+    try:
+        result = await provider.delete_tiles_for_collection(catalog_id, collection_id)
+        logger.info(
+            f"TileStorageProtocol: invalidated {result} tile records for collection '{collection_id}'."
+        )
+    except Exception as exc:
+        logger.error(f"Error during tile invalidation: {exc}")
 
 
 async def invalidate_catalog_tiles(catalog_id: str):
@@ -1037,21 +956,13 @@ async def invalidate_catalog_tiles(catalog_id: str):
     get_collection_source_srid.cache_clear()
     get_tile_resolution_params.cache_clear()
 
-    # 2. Clear physical providers
-    providers_to_clean = []
-    for name, provider_cls in _NAMED_STORAGE_REGISTRY.items():
+    # 2. Clear physical provider
+    provider = get_protocol(TileStorageProtocol)
+    if provider is not None:
         try:
-            providers_to_clean.append(provider_cls())
-        except Exception as e:
-            logger.warning(
-                f"Failed to instantiate tile storage provider '{name}' for catalog invalidation: {e}"
-            )
-
-    cleanup_tasks = [
-        provider.delete_storage_for_catalog(catalog_id)
-        for provider in providers_to_clean
-    ]
-    await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+            await provider.delete_storage_for_catalog(catalog_id)
+        except Exception as exc:
+            logger.error(f"Error during catalog tile invalidation: {exc}")
 
 
 # --- Event Handlers & Listeners ---
@@ -1087,3 +998,200 @@ def register_listeners():
     register_catalog_event_listener(
         CatalogEventType.CATALOG_HARD_DELETION, on_catalog_hard_deletion
     )
+
+
+# ---------------------------------------------------------------------------
+# TileArchiveStorageProtocol — PMTiles archive-level storage
+# ---------------------------------------------------------------------------
+
+
+
+@runtime_checkable
+class TileArchiveStorageProtocol(Protocol):
+    """Protocol for PMTiles archive-level tile storage.
+
+    Separate from TileStorageProtocol (per-tile MVT cache) — different granularity.
+    Implementations register via register_plugin(); callers use
+    get_protocol(TileArchiveStorageProtocol).
+    """
+
+    async def save_archive(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        tms_id: str,
+        data_file: BinaryIO,
+    ) -> str:
+        """Save a PMTiles archive. Returns storage URI."""
+        ...
+
+    async def archive_exists(
+        self, catalog_id: str, collection_id: str, tms_id: str
+    ) -> bool:
+        """Return True when an archive exists for this (catalog, collection, tms)."""
+        ...
+
+    async def get_tile_from_archive(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        tms_id: str,
+        z: int,
+        x: int,
+        y: int,
+    ) -> Optional[bytes]:
+        """Extract a single MVT tile from the archive. None if tile absent."""
+        ...
+
+    async def delete_archive(
+        self, catalog_id: str, collection_id: str, tms_id: str
+    ) -> bool:
+        """Delete the archive. Returns True on success."""
+        ...
+
+
+# DDL for the PG fallback pmtiles_archives table (per-catalog schema)
+_PMTILES_ARCHIVE_DDL = """
+CREATE TABLE IF NOT EXISTS "{schema}".pmtiles_archives (
+    collection_id VARCHAR NOT NULL,
+    tms_id        VARCHAR NOT NULL,
+    data          BYTEA   NOT NULL,
+    n_tiles       INTEGER,
+    min_zoom      INTEGER,
+    max_zoom      INTEGER,
+    created_at    TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (collection_id, tms_id)
+);
+"""
+
+
+async def ensure_pmtiles_archive_storage_exists(conn: DbResource, schema: str) -> None:
+    """Idempotent DDL guard: creates pmtiles_archives if it does not yet exist."""
+    if await check_table_exists(conn, "pmtiles_archives", schema=schema):
+        return
+    await DDLQuery(_PMTILES_ARCHIVE_DDL.format(schema=schema)).execute(conn)
+
+
+class PGTileArchive(TileArchiveStorageProtocol):
+    """PG BYTEA archive store. On-premise fallback only.
+
+    ⚠ get_tile_from_archive downloads the full archive per call —
+    suitable only for small datasets. Production deployments should prefer
+    StorageBackedTileArchive (GCS / S3) which uses range-reads.
+    """
+
+    def __init__(self):
+        self.engine: DbResource = _get_engine()
+        catalogs = get_protocol(CatalogsProtocol)
+        if catalogs is None:
+            raise RuntimeError("CatalogsProtocol is not registered")
+        self.catalogs = catalogs
+
+    async def _get_schema(self, catalog_id: str) -> str:
+        catalogs = get_protocol(CatalogsProtocol)
+        phys_schema = (
+            await catalogs.resolve_physical_schema(catalog_id) if catalogs else None
+        )
+        return phys_schema or catalog_id
+
+    async def save_archive(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        tms_id: str,
+        data_file: BinaryIO,
+    ) -> str:
+        data = data_file.read()
+        schema = await self._get_schema(catalog_id)
+        sql = f"""
+            INSERT INTO "{schema}".pmtiles_archives
+                (collection_id, tms_id, data)
+            VALUES (:collection_id, :tms_id, :data)
+            ON CONFLICT (collection_id, tms_id)
+            DO UPDATE SET data = EXCLUDED.data, created_at = NOW();
+        """
+        async with managed_transaction(self.engine) as conn:
+            await ensure_pmtiles_archive_storage_exists(conn, schema)
+            await DDLQuery(sql).execute(
+                conn, collection_id=collection_id, tms_id=tms_id, data=data
+            )
+        return f"pg://{catalog_id}/{collection_id}/{tms_id}.pmtiles"
+
+    @cached(maxsize=512, namespace="pg_pmtiles_archive_exists")
+    async def archive_exists(
+        self, catalog_id: str, collection_id: str, tms_id: str
+    ) -> bool:
+        schema = await self._get_schema(catalog_id)
+        sql = f"""
+            SELECT EXISTS (
+                SELECT 1 FROM "{schema}".pmtiles_archives
+                WHERE collection_id=:collection_id AND tms_id=:tms_id
+            );
+        """
+        try:
+            async with managed_transaction(self.engine) as conn:
+                return await DQLQuery(sql, result_handler=ResultHandler.SCALAR).execute(
+                    conn, collection_id=collection_id, tms_id=tms_id
+                ) or False
+        except Exception as exc:
+            if "42P01" in str(exc):
+                return False
+            raise
+
+    async def get_tile_from_archive(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        tms_id: str,
+        z: int,
+        x: int,
+        y: int,
+    ) -> Optional[bytes]:
+        schema = await self._get_schema(catalog_id)
+        sql = f"""
+            SELECT data FROM "{schema}".pmtiles_archives
+            WHERE collection_id=:collection_id AND tms_id=:tms_id;
+        """
+        try:
+            async with managed_transaction(self.engine) as conn:
+                data: Optional[bytes] = await DQLQuery(
+                    sql, result_handler=ResultHandler.SCALAR_ONE_OR_NONE
+                ).execute(conn, collection_id=collection_id, tms_id=tms_id)
+        except Exception as exc:
+            if "42P01" in str(exc):
+                return None
+            raise
+
+        if data is None:
+            return None
+
+        try:
+            from pmtiles.reader import Reader, MemorySource  # type: ignore[import]
+
+            reader = Reader(MemorySource(data))
+            return reader.get(z, x, y)
+        except Exception:
+            logger.warning(
+                f"PGTileArchive: failed to extract tile z={z} x={x} y={y} "
+                f"from archive for {collection_id}/{tms_id}"
+            )
+            return None
+
+    async def delete_archive(
+        self, catalog_id: str, collection_id: str, tms_id: str
+    ) -> bool:
+        schema = await self._get_schema(catalog_id)
+        sql = f"""
+            DELETE FROM "{schema}".pmtiles_archives
+            WHERE collection_id=:collection_id AND tms_id=:tms_id;
+        """
+        try:
+            async with managed_transaction(self.engine) as conn:
+                await DDLQuery(sql).execute(
+                    conn, collection_id=collection_id, tms_id=tms_id
+                )
+            return True
+        except Exception as exc:
+            if "42P01" in str(exc):
+                return False
+            raise

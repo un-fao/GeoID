@@ -57,10 +57,10 @@ from dynastore.extensions.web import expose_web_page
 import os
 
 from dynastore.modules.tiles import tiles_db
+from dynastore.modules.tiles.tiles_module import TileStorageProtocol, TileArchiveStorageProtocol
 from dynastore.tools.cache import cached
 from dynastore.modules.tiles.tiles_config import (
     TilesConfig,
-    TilesPreseedConfig,
 )
 from dynastore.modules.tiles.tiles_models import (
     TileMatrixSetList,
@@ -530,9 +530,6 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
             cache_enabled = await self._is_cache_enabled(
                 config_manager, dataset, requested_cols_list, tiles_config
             )
-            storage_priority = await self._resolve_storage_priority(
-                config_manager, dataset
-            )
 
             # 3. Cache Key & Pre-seed Check
             params_hash = self._generate_params_hash(
@@ -559,7 +556,7 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
                     f"{cache_id}@{params_hash}" if params_hash else cache_id
                 )
 
-                provider = tms_manager.get_storage_provider(storage_priority)
+                provider = get_protocol(TileStorageProtocol)
                 if provider:
                     # If refresh_cache is True, invalidate the tile first
                     if refresh_cache:
@@ -631,7 +628,28 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
                 logger.info(f"No valid collections found for {dataset}/{collections}")
                 return self._finalize_response(request, b"")
 
-            # Retrieve MVT content — L1 in-process cache, then PostGIS on miss
+            # L2 cache miss — try PMTiles archive fallback before hitting PostGIS
+            if effective_cache_enabled and not disable_cache:
+                archive_storage = get_protocol(TileArchiveStorageProtocol)
+                if archive_storage:
+                    single_col = (
+                        requested_cols_list[0] if len(requested_cols_list) == 1 else None
+                    )
+                    if single_col and await archive_storage.archive_exists(
+                        dataset, single_col, tileMatrixSetId
+                    ):
+                        tile_bytes = await archive_storage.get_tile_from_archive(
+                            dataset, single_col, tileMatrixSetId, z, x, y
+                        )
+                        if tile_bytes is not None:
+                            from fastapi.responses import Response as FResponse
+                            return FResponse(
+                                content=tile_bytes,
+                                media_type="application/vnd.mapbox-vector-tile",
+                                headers={"X-Tile-Source": "pmtiles-archive"},
+                            )
+
+            # Retrieve MVT content — PostGIS generation
             mvt_content = await self._generate_mvt(
                 conn,
                 resolved_collections,
@@ -658,7 +676,7 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
                 effective_cache_id = (
                     f"{cache_id}@{params_hash}" if params_hash else cache_id
                 )
-                provider = tms_manager.get_storage_provider(storage_priority)
+                provider = get_protocol(TileStorageProtocol)
                 if provider:
                     background_tasks.add_task(
                         provider.save_tile,
@@ -760,18 +778,6 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
             )
             return getattr(coll_config, "cache_on_demand", catalog_cache)
         return catalog_cache
-
-    @staticmethod
-    async def _resolve_storage_priority(config_manager, dataset: str) -> List[str]:
-        preseed_config = await config_manager.get_config(
-            TilesPreseedConfig, dataset
-        )
-        if (
-            isinstance(preseed_config, TilesPreseedConfig)
-            and preseed_config.storage_priority
-        ):
-            return preseed_config.storage_priority
-        return ["bucket", "pg"]
 
     @staticmethod
     def _generate_params_hash(*args) -> Optional[str]:

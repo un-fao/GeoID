@@ -267,6 +267,17 @@ class BucketService:
 
         await run_in_thread(blob.delete)
 
+
+    async def download_bytes_range(self, path: str, offset: int, length: int) -> bytes:
+        """StorageProtocol: Efficient GCS byte-range download using blob.download_as_bytes."""
+        if not path.startswith("gs://"):
+            raise ValueError(f"Invalid GCS path: {path}")
+        bucket_name, blob_name = path[5:].split("/", 1)
+        blob = self.storage_client.bucket(bucket_name).blob(blob_name)
+        return await run_in_thread(
+            blob.download_as_bytes, start=offset, end=offset + length - 1
+        )
+
     async def update_bucket_config(
         self, catalog_id: str, config: GcpCatalogBucketConfig
     ):

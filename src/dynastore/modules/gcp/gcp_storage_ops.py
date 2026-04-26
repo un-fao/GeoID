@@ -78,6 +78,10 @@ class GcpStorageOpsMixin:
         """StorageProtocol: Deletes a file from storage."""
         return await self.get_bucket_service().delete_file(path)
 
+    async def download_bytes_range(self, path: str, offset: int, length: int) -> bytes:
+        """StorageProtocol: Efficient GCS byte-range download."""
+        return await self.get_bucket_service().download_bytes_range(path, offset, length)
+
     async def ensure_storage_for_catalog(
         self, catalog_id: str, conn: Optional[Any] = None
     ) -> Optional[str]:
