@@ -25,6 +25,7 @@ from contextlib import asynccontextmanager
 from dynastore.extensions import ExtensionProtocol
 from dynastore.modules import get_protocol
 from dynastore.modules.iam.iam_service import IamService
+from dynastore.models.protocols.catalogs import CatalogsProtocol
 from dynastore.models.protocols.policies import Policy, Role, Principal
 
 from .models import (
@@ -43,6 +44,27 @@ def _iam() -> IamService:
     if mgr is None:
         raise HTTPException(status_code=503, detail="Auth service not available.")
     return mgr
+
+
+async def _assert_catalog_exists(catalog_id: str) -> None:
+    """Raise 404 if ``catalog_id`` does not resolve to a known catalog.
+
+    Required because ``IamService.resolve_schema`` is intentionally lenient:
+    on an unknown catalog it logs a warning and falls back to the global
+    ``iam`` schema (so middleware-style auth checks still work in degraded
+    states). Admin endpoints that *write* catalog-scoped roles, or list
+    catalog users, must instead reject unknown catalogs explicitly —
+    otherwise an operator typo silently mutates global IAM state or returns
+    the global user list.
+    """
+    catalogs = get_protocol(CatalogsProtocol)
+    if catalogs is None:
+        # No catalogs service → can't validate; let resolve_schema's
+        # fallback path run. This matches IamService's own posture.
+        return
+    model = await catalogs.get_catalog_model(catalog_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
 
 
 class AdminService(ExtensionProtocol):
@@ -211,6 +233,7 @@ class AdminService(ExtensionProtocol):
             raise HTTPException(status_code=404, detail="Principal not found.")
         if not p.provider or not p.subject_id:
             raise HTTPException(status_code=400, detail="Principal has no identity provider link.")
+        await _assert_catalog_exists(catalog_id)
         try:
             await mgr.storage.grant_roles(
                 provider=p.provider,
@@ -229,6 +252,7 @@ class AdminService(ExtensionProtocol):
             raise HTTPException(status_code=404, detail="Principal not found.")
         if not p.provider or not p.subject_id:
             raise HTTPException(status_code=400, detail="Principal has no identity provider link.")
+        await _assert_catalog_exists(catalog_id)
         try:
             await mgr.storage.revoke_role(
                 provider=p.provider,
@@ -242,10 +266,8 @@ class AdminService(ExtensionProtocol):
     @router.get("/catalogs/{catalog_id}/users", summary="List users assigned to a catalog")
     async def list_catalog_users(catalog_id: str):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
-        try:
-            schema = await mgr.resolve_schema(catalog_id)
-        except Exception:
-            raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
+        await _assert_catalog_exists(catalog_id)
+        schema = await mgr.resolve_schema(catalog_id)
 
         all_principals = await mgr.list_principals(limit=10000, offset=0)
         catalog_users = []
