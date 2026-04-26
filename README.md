@@ -28,6 +28,9 @@ A key innovation is the database architecture, which leverages advanced features
 - [Elasticsearch Integration](docs/components/elasticsearch.md)
 - [The Maps Extension](docs/components/maps.md)
 - [The Tiles Extension](docs/components/tiles.md)
+- [The DGGS Extension](docs/components/dggs.md)
+- [The EDR Extension](docs/components/edr.md)
+- [The Moving Features Extension](docs/components/moving_features.md)
 
 **Part 3: Extending & Contributing**
 - [Contributing & Plugin Naming Convention](docs/contributing.md)
