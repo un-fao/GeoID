@@ -9,13 +9,35 @@ from typing import Any, Dict, List, Tuple
 def parse_wkt_polygon_bbox(wkt: str) -> Tuple[float, float, float, float]:
     """Extract bounding box from WKT POLYGON → (min_lon, min_lat, max_lon, max_lat).
 
-    Pure Python; handles POLYGON and MULTIPOLYGON geometries.
+    Pure Python; handles 2D and 3D POLYGON / MULTIPOLYGON geometries.
+    Parses each vertex as a whitespace-separated token tuple and takes only
+    the first two ordinates (X=lon, Y=lat), ignoring any Z value.
     """
-    coord_pairs = re.findall(r"([+-]?\d+(?:\.\d+)?)\s+([+-]?\d+(?:\.\d+)?)", wkt)
-    if not coord_pairs:
+    inner = re.sub(r"[A-Za-z]+\s*", "", wkt)  # strip keyword prefixes
+    tokens = re.findall(r"[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?", inner)
+    if not tokens:
         raise ValueError(f"Cannot extract coordinates from WKT: {wkt!r}")
-    lons = [float(p[0]) for p in coord_pairs]
-    lats = [float(p[1]) for p in coord_pairs]
+
+    # Determine ordinate count (2D vs 3D) by peeking at vertex token density.
+    # Strategy: split by vertex separator (comma in WKT rings) and count
+    # space-delimited numbers per vertex to detect Z ordinates.
+    vertex_strs = re.split(r",", re.sub(r"[()A-Za-z]", " ", wkt))
+    dim = 2
+    for vs in vertex_strs:
+        parts = vs.split()
+        num_parts = sum(1 for p in parts if re.match(r"^[+-]?\d+(?:\.\d+)?", p))
+        if num_parts >= 3:
+            dim = 3
+            break
+
+    lons: List[float] = []
+    lats: List[float] = []
+    for i in range(0, len(tokens) - dim + 1, dim):
+        lons.append(float(tokens[i]))
+        lats.append(float(tokens[i + 1]))
+
+    if not lons:
+        raise ValueError(f"Cannot extract coordinates from WKT: {wkt!r}")
     return min(lons), min(lats), max(lons), max(lats)
 
 

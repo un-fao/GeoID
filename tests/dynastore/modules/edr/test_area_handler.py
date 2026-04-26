@@ -23,6 +23,13 @@ def test_parse_polygon_global():
     assert bbox == (-180.0, -90.0, 180.0, 90.0)
 
 
+def test_parse_3d_polygon_ignores_z():
+    bbox = parse_wkt_polygon_bbox(
+        "POLYGON((10 20 100, 30 20 100, 30 40 100, 10 40 100, 10 20 100))"
+    )
+    assert bbox == (10.0, 20.0, 30.0, 40.0)
+
+
 def test_parse_rejects_empty():
     with pytest.raises(ValueError, match="Cannot extract coordinates"):
         parse_wkt_polygon_bbox("")

@@ -81,10 +81,13 @@ def _asset_href(item: dict) -> str:
     raise HTTPException(status_code=404, detail="No asset href on EDR item.")
 
 
-def _band_names_from_item(item: dict) -> List[str]:
-    from dynastore.modules.edr.parameter_metadata import _select_bands
+def _resolve_band_names(item: dict, requested_params: Optional[List[str]]) -> List[str]:
+    """Return filtered band names from STAC raster:bands metadata."""
+    from dynastore.modules.edr.parameter_metadata import _select_bands, filter_parameters
 
     bands = _select_bands(item)
+    if requested_params:
+        bands = filter_parameters(bands, requested_params)
     if not bands:
         return ["value"]
     return [b.get("name", f"band_{i + 1}") for i, b in enumerate(bands)]
@@ -264,6 +267,7 @@ class EDRService(ExtensionProtocol, OGCServiceMixin):
                 detail=f"Collection {collection_id!r} not found in catalog {catalog_id!r}.",
             )
 
+        await self._require_catalog_ready(catalog_id)
         base_url = get_root_url(request).rstrip("/")
         from dynastore.modules.edr.collection_metadata import build_edr_collection
 
@@ -298,11 +302,7 @@ class EDRService(ExtensionProtocol, OGCServiceMixin):
             extract_point_values,
             parse_wkt_point,
         )
-        from dynastore.modules.edr.parameter_metadata import (
-            _select_bands,
-            build_parameters,
-            filter_parameters,
-        )
+        from dynastore.modules.edr.parameter_metadata import build_parameters
 
         try:
             lon, lat = parse_wkt_point(coords)
@@ -310,6 +310,7 @@ class EDRService(ExtensionProtocol, OGCServiceMixin):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         fmt = _resolve_edr_format(f)
+        await self._require_catalog_ready(catalog_id)
         item = await self._get_item_for_datetime(catalog_id, collection_id, datetime)
         if item is None:
             raise HTTPException(
@@ -323,15 +324,7 @@ class EDRService(ExtensionProtocol, OGCServiceMixin):
             if parameter_name
             else None
         )
-        bands = _select_bands(item)
-        if requested_params:
-            bands = filter_parameters(bands, requested_params)
-        band_names = (
-            [b.get("name", f"band_{i + 1}") for i, b in enumerate(bands)]
-            if bands
-            else ["value"]
-        )
-
+        band_names = _resolve_band_names(item, requested_params)
         values = extract_point_values(href, lon, lat)
         dt = _item_datetime(item)
         parameters = build_parameters(item)
@@ -339,9 +332,7 @@ class EDRService(ExtensionProtocol, OGCServiceMixin):
             parameters = {k: v for k, v in parameters.items() if k in requested_params}
 
         if fmt == "covjson":
-            from dynastore.modules.edr.output.coveragejson import (
-                write_position_coveragejson,
-            )
+            from dynastore.modules.edr.output.coveragejson import write_position_coveragejson
 
             gen = write_position_coveragejson(lon, lat, dt, parameters, values, band_names)
             return StreamingResponse(gen, media_type=_COVJSON_MEDIA_TYPE)
@@ -368,18 +359,20 @@ class EDRService(ExtensionProtocol, OGCServiceMixin):
             extract_area_values,
             parse_wkt_polygon_bbox,
         )
-        from dynastore.modules.edr.parameter_metadata import (
-            _select_bands,
-            build_parameters,
-            filter_parameters,
-        )
+        from dynastore.modules.edr.parameter_metadata import build_parameters
 
         try:
             bbox = parse_wkt_polygon_bbox(coords)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        _resolve_edr_format(f)  # validate
+        fmt = _resolve_edr_format(f)
+        if fmt != "covjson":
+            raise HTTPException(
+                status_code=415,
+                detail="Area queries only support CoverageJSON output.",
+            )
+        await self._require_catalog_ready(catalog_id)
         item = await self._get_item_for_datetime(catalog_id, collection_id, datetime)
         if item is None:
             raise HTTPException(
@@ -393,15 +386,7 @@ class EDRService(ExtensionProtocol, OGCServiceMixin):
             if parameter_name
             else None
         )
-        bands = _select_bands(item)
-        if requested_params:
-            bands = filter_parameters(bands, requested_params)
-        band_names = (
-            [b.get("name", f"band_{i + 1}") for i, b in enumerate(bands)]
-            if bands
-            else ["value"]
-        )
-
+        band_names = _resolve_band_names(item, requested_params)
         _, _, band_arrays = extract_area_values(href, bbox)
 
         parameters = build_parameters(item)
@@ -430,18 +415,20 @@ class EDRService(ExtensionProtocol, OGCServiceMixin):
         """Extract a bounding-box coverage subset (cube query)."""
         from dynastore.modules.edr.query_handlers.area import extract_area_values
         from dynastore.modules.edr.query_handlers.cube import parse_cube_bbox
-        from dynastore.modules.edr.parameter_metadata import (
-            _select_bands,
-            build_parameters,
-            filter_parameters,
-        )
+        from dynastore.modules.edr.parameter_metadata import build_parameters
 
         try:
             parsed_bbox = parse_cube_bbox(bbox)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        _resolve_edr_format(f)
+        fmt = _resolve_edr_format(f)
+        if fmt != "covjson":
+            raise HTTPException(
+                status_code=415,
+                detail="Cube queries only support CoverageJSON output.",
+            )
+        await self._require_catalog_ready(catalog_id)
         item = await self._get_item_for_datetime(catalog_id, collection_id, datetime)
         if item is None:
             raise HTTPException(
@@ -455,15 +442,7 @@ class EDRService(ExtensionProtocol, OGCServiceMixin):
             if parameter_name
             else None
         )
-        bands = _select_bands(item)
-        if requested_params:
-            bands = filter_parameters(bands, requested_params)
-        band_names = (
-            [b.get("name", f"band_{i + 1}") for i, b in enumerate(bands)]
-            if bands
-            else ["value"]
-        )
-
+        band_names = _resolve_band_names(item, requested_params)
         _, _, band_arrays = extract_area_values(href, parsed_bbox)
 
         parameters = build_parameters(item)

@@ -56,3 +56,39 @@ def test_edr_conformance_uris_are_set():
     from dynastore.extensions.edr.edr_service import OGC_API_EDR_URIS
     assert any("ogcapi-edr" in uri for uri in OGC_API_EDR_URIS)
     assert len(OGC_API_EDR_URIS) >= 4
+
+
+def test_resolve_band_names_no_filter():
+    from dynastore.extensions.edr.edr_service import _resolve_band_names
+    item = {
+        "assets": {
+            "data": {
+                "raster:bands": [
+                    {"name": "temperature"},
+                    {"name": "humidity"},
+                ]
+            }
+        }
+    }
+    assert _resolve_band_names(item, None) == ["temperature", "humidity"]
+
+
+def test_resolve_band_names_with_filter():
+    from dynastore.extensions.edr.edr_service import _resolve_band_names
+    item = {
+        "assets": {
+            "data": {
+                "raster:bands": [
+                    {"name": "temperature"},
+                    {"name": "humidity"},
+                    {"name": "wind"},
+                ]
+            }
+        }
+    }
+    assert _resolve_band_names(item, ["temperature", "wind"]) == ["temperature", "wind"]
+
+
+def test_resolve_band_names_empty_item_returns_value_sentinel():
+    from dynastore.extensions.edr.edr_service import _resolve_band_names
+    assert _resolve_band_names({}, None) == ["value"]
