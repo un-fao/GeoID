@@ -42,7 +42,7 @@ module_collection_elasticsearch = ["dynastore[module_elasticsearch]"]
 module_catalog_elasticsearch = ["dynastore[module_elasticsearch]"]
 module_stac = []
 module_catalog = ["dynastore[geospatial_core]", "sqlalchemy>=2.0.0"]
-module_gcp = ["gcloud-aio-storage==9.6.0", "google-cloud-bigquery==3.24.0", "google-cloud-run", "google-cloud-storage>=3.1.0", "google-cloud-pubsub", "gcsfs>=2024.5.0", "charset-normalizer", "httpx"]
+module_gcp = ["gcloud-aio-storage==9.6.0", "google-cloud-bigquery==3.24.0", "google-cloud-run", "google-cloud-storage>=3.1.0", "google-cloud-pubsub", "gcsfs>=2024.5.0", "charset-normalizer", "httpx", "pmtiles>=3.2.0", "apmtiles>=0.1"]
 module_datastore = ["dynastore[db_sync]", "psycopg2-binary>=2.9.7"]
 module_db_config = ["sqlalchemy", "geoalchemy2", "h3>=4.4.2", "s2sphere>=0.2.5", "python-dateutil"]
 module_iam = ["pydantic[email]", "PyJWT>=2.0.0"]
@@ -51,7 +51,7 @@ module_crs = ["dynastore[geospatial_core]", "pyproj>=3.0.0"]
 module_events = ["psycopg[binary,pool]"]
 module_elasticsearch = ["opensearch-py[async]", "httpx"]
 module_gdal = ["dynastore[geospatial_core]", "GDAL==3.12.3"]
-module_tiles = ["dynastore[geospatial_core]"]
+module_tiles = ["dynastore[geospatial_core]", "pmtiles>=3.2.0"]
 module_cache = ["valkey>=6.0", "msgpack>=1.0"]
 module_tasks = []
 module_proxy = []
@@ -130,7 +130,6 @@ task_ingestion_deps = ["dynastore[geospatial,module_gcp]"]
 task_dwh_join_deps = ["dynastore[dwh]"]
 task_export_features_deps = ["dynastore[geospatial_core,stac]"]
 task_tiles_preseed_deps = ["dynastore[geospatial_core]", "morecantile>=7.0.3,<8"]
-task_tiles_export_deps = ["dynastore[geospatial_core]", "morecantile>=7.0.3,<8", "pmtiles>=3.2.0"]
 task_dimensions_materialize_deps = ["dynastore[extension_dimensions]"]
 
 # ---- Catalog-hosted lightweight tasks (async-db, in-process).
@@ -243,7 +242,6 @@ worker_task_dwh_join = ["dynastore[task_base,dwh]"]
 worker_task_ingestion = ["dynastore[ingestion,catalog_grp,google_grp,gdal]"]
 worker_task_export_features = ["dynastore[task_base,stac,geospatial_core]"]
 worker_task_tiles_preseed = ["dynastore[task_base,tiles,crs]", "morecantile>=7.0.3,<8"]
-worker_task_tiles_export = ["dynastore[task_base,tiles,crs]", "morecantile>=7.0.3,<8", "pmtiles>=3.2.0"]
 worker_task_gdal = ["dynastore[task_base,gdal]"]
 worker_task_dimensions_materialize = ["dynastore[task_base,extension_dimensions]"]
 worker_task_elasticsearch_indexer = ["dynastore[task_base,elasticsearch,task_elasticsearch_indexer_deps]"]
@@ -342,7 +340,7 @@ scope_catalog = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,pr
 # scope_geoid: catalog + geoid UI + auth/iam — maps to geospatial-auth in cloud
 scope_geoid = ["dynastore[scope_catalog,extension_geoid,auth_grp]"]
 # scope_worker: background task processor — headless Cloud Run job runner
-scope_worker = ["dynastore[core,module_catalog,gcp,extension_dwh,index_grp,tasks,ingestion,worker_task_export_features,worker_task_dwh_join,worker_task_tiles_preseed,worker_task_tiles_export,worker_task_gdal,worker_task_dimensions_materialize,catalog_task_gcp_provision,catalog_task_gcs_storage_event,catalog_task_gcp_catalog_cleanup]"]
+scope_worker = ["dynastore[core,module_catalog,gcp,extension_dwh,index_grp,tasks,ingestion,worker_task_export_features,worker_task_dwh_join,worker_task_tiles_preseed,worker_task_gdal,worker_task_dimensions_materialize,catalog_task_gcp_provision,catalog_task_gcs_storage_event,catalog_task_gcp_catalog_cleanup]"]
 # scope_tools: proxy + template tools service — no auth
 scope_tools = ["dynastore[core,template,notebooks,cache,dimensions,proxy]"]
 # scope_maps: vector producer + raster renderer (local docker), no auth.
@@ -357,7 +355,7 @@ all = ["dynastore[api_full,geoid_service,worker_service]"]
 # referenced anywhere in src/. Pyright/mypy need these resolvable to clear
 # `reportMissingImports` on optional code paths (duckdb, pyiceberg, morecantile,
 # …). Not for runtime: keep service images on `all` to stay slim.
-typecheck = ["dynastore[all,drivers_grp,task_tiles_preseed_deps,task_tiles_export_deps,extension_template]"]
+typecheck = ["dynastore[all,drivers_grp,task_tiles_preseed_deps,extension_template]"]
 test = ["pytest>=8.0.0", "pytest-asyncio>=0.23.5", "pytest-cov>=4.1.0", "pytest-xdist>=3.5.0", "pytest-timeout>=2.3.0", "requests>=2.31.0", "orjson>=3.9.15"]
 notebooks_test = ["dynastore[test]", "nbval>=0.11", "ipykernel>=6.29", "jupyter-client>=8.6", "httpx>=0.27", "python-dotenv>=1.0"]
 lite_build = ["jupyterlite-core>=0.4", "jupyterlite-pyodide-kernel>=0.4"]
@@ -473,7 +471,6 @@ ingestion = "dynastore.tasks.ingestion.ingestion_task:IngestionTask"
 dwh_join = "dynastore.tasks.dwh_join.dwh_join_export_task:DwhJoinExportTask"
 export_features = "dynastore.tasks.export_features.export_features_task:ExportFeaturesTask"
 tiles_preseed = "dynastore.tasks.tiles_preseed.task:TilePreseedTask"
-tiles_export = "dynastore.tasks.tiles_export.task:TilesExportTask"
 dimensions_materialize = "dynastore.tasks.dimensions_materialize.task:DimensionsMaterializeTask"
 gcs_storage_event = "dynastore.tasks.gcp.gcs_storage_event_task:GcsStorageEventTask"
 gcp_catalog_cleanup = "dynastore.tasks.gcp.gcp_catalog_cleanup_task:GcpCatalogCleanupTask"

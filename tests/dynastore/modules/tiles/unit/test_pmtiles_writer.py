@@ -4,8 +4,6 @@ import io
 import json
 import struct
 
-import pytest
-
 from dynastore.modules.tiles.writers.pmtiles_writer import (
     _serialize_directory,
     _write_varint,
@@ -246,3 +244,77 @@ class TestWritePMTiles:
         buf = io.BytesIO()
         stats = write_pmtiles([(0, 0, 0, b"hello")], buf)
         assert stats["total_bytes"] == len(buf.getvalue())
+
+class TestWritePmtilesFromEntries:
+    """Tests for the two-phase write_pmtiles_from_entries() helper."""
+
+    def test_basic_roundtrip(self):
+        """Entries + data source produces a valid PMTiles v3 archive."""
+        from dynastore.modules.tiles.writers.pmtiles_writer import (
+            write_pmtiles_from_entries, TileEntry, zxy_to_tileid,
+        )
+        tile_a = b"tile-data-a"
+        tile_b = b"tile-data-b"
+
+        data_src = io.BytesIO(tile_a + tile_b)
+        entries = [
+            TileEntry(tile_id=zxy_to_tileid(0, 0, 0), offset=0, length=len(tile_a)),
+            TileEntry(tile_id=zxy_to_tileid(1, 0, 0), offset=len(tile_a), length=len(tile_b)),
+        ]
+        output = io.BytesIO()
+        stats = write_pmtiles_from_entries(
+            entries, data_src, output,
+            metadata={}, min_zoom=0, max_zoom=1,
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+        )
+
+        data = output.getvalue()
+        assert data[:7] == b"PMTiles", "magic bytes must be present"
+        assert data[7] == 3, "version must be 3"
+        assert stats["n_tiles"] == 2
+
+    def test_empty_entries_produces_valid_archive(self):
+        """Zero entries still produces a structurally valid archive."""
+        from dynastore.modules.tiles.writers.pmtiles_writer import write_pmtiles_from_entries
+        output = io.BytesIO()
+        stats = write_pmtiles_from_entries(
+            [], io.BytesIO(), output,
+            metadata={}, min_zoom=0, max_zoom=0,
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+        )
+        data = output.getvalue()
+        assert data[:7] == b"PMTiles"
+        assert stats["n_tiles"] == 0
+
+    def test_output_consistent_with_write_pmtiles(self):
+        """write_pmtiles_from_entries and write_pmtiles produce archives with the same tile count."""
+        from dynastore.modules.tiles.writers.pmtiles_writer import (
+            write_pmtiles, write_pmtiles_from_entries, TileEntry, zxy_to_tileid,
+        )
+        tiles = [
+            (0, 0, 0, b"mvt-0"),
+            (1, 0, 0, b"mvt-1"),
+            (1, 1, 0, b"mvt-2"),
+        ]
+        # write_pmtiles reference
+        ref_buf = io.BytesIO()
+        ref_stats = write_pmtiles(tiles, ref_buf)
+
+        # write_pmtiles_from_entries path
+        raw = b"".join(d for _, _, _, d in tiles)
+        data_src = io.BytesIO(raw)
+        offset = 0
+        entries = []
+        for z, x, y, d in tiles:
+            entries.append(TileEntry(tile_id=zxy_to_tileid(z, x, y), offset=offset, length=len(d)))
+            offset += len(d)
+        entries.sort(key=lambda e: e.tile_id)
+
+        out_buf = io.BytesIO()
+        out_stats = write_pmtiles_from_entries(
+            entries, data_src, out_buf,
+            metadata={}, min_zoom=0, max_zoom=1,
+            bbox=(-180.0, -90.0, 180.0, 90.0),
+        )
+
+        assert out_stats["n_tiles"] == ref_stats["n_tiles"] == len(tiles)

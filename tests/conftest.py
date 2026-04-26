@@ -773,13 +773,12 @@ async def reset_dynastore_state(engine=None):
     clear_if_cached(config_service, "_catalog_config_cache")
     clear_if_cached(config_service, "_collection_config_cache")
 
-    # Tiles module cleanup (clear_registry resets _active_storage_provider too)
+    # Tiles module cleanup
     clear_if_cached(tiles_module, "get_tile_resolution_params")
     clear_if_cached(tiles_module, "get_collection_source_srid")
     clear_if_cached(tiles_module, "get_custom_tms")
     clear_if_cached(tiles_module, "list_custom_tms")
     clear_if_cached(tiles_module, "resolve_srid")
-    tiles_module.clear_registry()
     clear_if_cached(tiles_module.TilePGPreseedStorage, "check_tile_exists")
 
     # GCP module caches

@@ -20,7 +20,7 @@
 Storage-related protocol definitions.
 """
 
-from typing import Protocol, Optional, Any, Dict, runtime_checkable
+from typing import Protocol, Optional, Any, runtime_checkable
 
 @runtime_checkable
 class StorageProtocol(Protocol):
@@ -79,3 +79,16 @@ class StorageProtocol(Protocol):
     async def apply_storage_config(self, catalog_id: str, config: Any) -> None:
         """Applies storage-related configuration changes to the live resource (e.g., CORS, Lifecycle)."""
         ...
+
+    async def download_bytes_range(self, path: str, offset: int, length: int) -> bytes:
+        """Download a byte range from storage.
+
+        Default: download full file to a temp file and slice — correct but inefficient.
+        Providers should override this with an efficient range-read (GCS, S3).
+        """
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=True) as tmp:
+            await self.download_file(path, tmp.name)
+            with open(tmp.name, "rb") as f:
+                f.seek(offset)
+                return f.read(length)

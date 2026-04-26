@@ -13,7 +13,7 @@
 #    limitations under the License.
 
 from pydantic import BaseModel, Field
-from typing import Optional, List, Tuple
+from typing import Literal, Optional, List, Tuple
 
 class TilePreseedRequest(BaseModel):
     """
@@ -27,3 +27,7 @@ class TilePreseedRequest(BaseModel):
     collection_id: Optional[str] = Field(None, description="Optional collection identifier. If omitted, applies to all pre-seed enabled collections in the catalog.")
     tms_ids: Optional[List[str]] = Field(None, description="List of TMS IDs to process. Overrides configuration if provided.")
     formats: Optional[List[str]] = Field(None, description="List of formats to generate. Overrides configuration if provided.")
+    output_format: Literal["mvt", "pmtiles"] = Field(
+        "mvt",
+        description="Output format: 'mvt' stores individual tiles; 'pmtiles' builds a PMTiles v3 archive.",
+    )

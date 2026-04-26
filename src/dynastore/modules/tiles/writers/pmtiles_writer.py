@@ -258,12 +258,27 @@ def write_pmtiles(
             n_empty += 1
 
     raw.sort(key=lambda t: t[0])
+    stats = _write_pmtiles_from_raw(raw, output, metadata, min_zoom, max_zoom, bbox)
+    stats["n_empty_tiles"] = n_empty
+    return stats
 
+
+def _write_pmtiles_from_raw(
+    raw: "List[Tuple[int, bytes]]",
+    output: BinaryIO,
+    metadata: "Dict[str, Any]",
+    min_zoom: int,
+    max_zoom: int,
+    bbox: "Tuple[float, float, float, float]",
+) -> "Dict[str, int]":
+    """Core PMTiles v3 writer. *raw* is a list of (tile_id, data) pairs, already sorted.
+
+    Returns dict with ``n_tiles`` and ``total_bytes``; caller adds ``n_empty_tiles``.
+    """
     # Prefer the pmtiles library when available.
     if _PMTILES_LIB_AVAILABLE:
         try:
             stats = _write_pmtiles_via_lib(raw, output, metadata, min_zoom, max_zoom, bbox)
-            stats["n_empty_tiles"] = n_empty
             logger.debug("PMTiles archive written via pmtiles library (%d tiles)", len(raw))
             return stats
         except Exception as exc:
@@ -297,7 +312,6 @@ def write_pmtiles(
             chunk = dir_entries[i : i + leaf_size]
             leaf_bytes = _serialize_directory(chunk)
             leaves_bytes_parts.append(leaf_bytes)
-            # run_length == 0  →  entry points to a leaf directory, not tile data
             root_entries.append(
                 _Entry(
                     tile_id=chunk[0].tile_id,
@@ -361,4 +375,47 @@ def write_pmtiles(
     output.write(tile_data_bytes)
 
     total = _HEADER_SIZE + root_dir_length + metadata_length + leaf_dirs_length + tile_data_length
-    return {"n_tiles": len(dir_entries), "n_empty_tiles": n_empty, "total_bytes": total}
+    return {"n_tiles": len(dir_entries), "total_bytes": total}
+
+
+
+# ---------------------------------------------------------------------------
+# Two-phase archive builder — no in-memory tile accumulation
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TileEntry:
+    """Lightweight metadata record for a single tile in a two-phase PMTiles build."""
+    tile_id: int
+    offset: int
+    length: int
+
+
+def write_pmtiles_from_entries(
+    entries: "List[TileEntry]",
+    data_source: BinaryIO,
+    output: BinaryIO,
+    *,
+    metadata: "Dict[str, Any]",
+    min_zoom: int,
+    max_zoom: int,
+    bbox: "Tuple[float, float, float, float]",
+) -> "Dict[str, int]":
+    """Build a PMTiles v3 archive from pre-collected TileEntry records.
+
+    Unlike write_pmtiles() which accumulates all tile bytes in memory, this
+    helper reads each tile by (tile_id, offset, length) from *data_source* —
+    disk-backed and memory-efficient for large tile sets.
+
+    *entries* must already be sorted by tile_id (Hilbert order).
+    """
+    # Build the (tile_id, data) pairs by seeking into the data_source file.
+    # Skips entries whose tile data is empty.
+    raw: List[Tuple[int, bytes]] = []
+    for entry in entries:
+        data_source.seek(entry.offset)
+        data = data_source.read(entry.length)
+        if data:
+            raw.append((entry.tile_id, data))
+    # entries are pre-sorted by tile_id — the list is already in Hilbert order.
+    return _write_pmtiles_from_raw(raw, output, metadata, min_zoom, max_zoom, bbox)

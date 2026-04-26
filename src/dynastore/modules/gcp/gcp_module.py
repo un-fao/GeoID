@@ -375,13 +375,29 @@ class GCPModule(
             )
             register_plugin(self._asset_download_process)
 
+            # Register GCS-backed tile storage providers
+            from dynastore.modules.gcp.tiles_storage import (
+                TileBucketPreseedStorage,
+                StorageBackedTileArchive,
+            )
+            self._tile_bucket_storage = TileBucketPreseedStorage()
+            self._tile_archive_storage = StorageBackedTileArchive()
+            register_plugin(self._tile_bucket_storage)
+            register_plugin(self._tile_archive_storage)
+
             yield
         finally:
             logger.info("GCP Module: Exiting lifespan - closing all clients.")
             # Unregister BigQuery plugins
             from dynastore.tools.discovery import unregister_plugin
 
-            for attr in ("_bq_service", "_bq_collection_enricher", "_asset_download_process"):
+            for attr in (
+                "_bq_service",
+                "_bq_collection_enricher",
+                "_asset_download_process",
+                "_tile_bucket_storage",
+                "_tile_archive_storage",
+            ):
                 obj = getattr(self, attr, None)
                 if obj:
                     unregister_plugin(obj)
