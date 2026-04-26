@@ -10,10 +10,14 @@ map of what's wired and how the pieces relate.
 |---|---|---|---|
 | Records | `/records` | `extensions/records/` | Core, OAS 3.0/3.1, GeoJSON encoding |
 | Web | `/web` | `extensions/web/` | OAS 3.0 + 3.1 (`?f=oas31` on `/api`) |
-| Maps | `/maps` | `extensions/maps/` | PNG default, JPEG + GeoTIFF (`?f=jpeg|geotiff` on `/map`) |
+| Maps | `/maps` | `extensions/maps/` | PNG default, JPEG + GeoTIFF; raster tiling (tilesets-map); see [maps.md](maps.md) |
+| Tiles | `/tiles` | `extensions/tiles/` | MVT/PBF, TMS 2.0, two-level cache (L1 LRU + L2 GCS/PostGIS); see [tiles.md](tiles.md) |
 | Styles | `/styles` | `extensions/styles/` | Core, manage-styles, style-info, MapboxGL, SLD-1.0/1.1, HTML, JSON; content-negotiated `/stylesheet`, `/metadata`, `/legend`, root `/styles` list |
-| Coverages | `/coverages` | `extensions/coverages/` | Core, geodata-coverage, JSON, HTML, subset/bbox/datetime, GeoTIFF/NetCDF/CoverageJSON encodings |
+| Coverages | `/coverages` | `extensions/coverages/` | Core, geodata-coverage, JSON, HTML, subset/bbox/datetime, GeoTIFF/NetCDF-4/Zarr/CoverageJSON encodings |
 | Processes | `/processes` | `extensions/processes/` | Part 1 Core, ogc-process-description, JSON, job-list, dismiss; sync (`Prefer: respond-sync`) + async dispatch |
+| EDR | `/edr` | `extensions/edr/` | EDR 1.1 core/collections/queries; position (Point CoverageJSON+GeoJSON), area/cube (Grid CoverageJSON); reads raster assets via GDAL VSI; see [edr.md](edr.md) |
+| DGGS | `/dggs` | `extensions/dggs/` | DGGS Part 1 core/data-retrieval/zone-query; H3 + S2 DGGRS; in-process zone aggregation; sidecar fast-path; see [dggs.md](dggs.md) |
+| Moving Features | `/movingfeatures` | `extensions/moving_features/` | MF Part 1 core/mf-collection/tgsequence; partitioned PG storage; append+delete; temporal geometry filter; see [moving_features.md](moving_features.md) |
 | 3D GeoVolumes | `/volumes` | `extensions/volumes/` | Draft URIs (core, 3dtiles, tileset); `tileset.json` from `BoundsSourceProtocol` (pluggable — empty default or sidecar-backed opt-in), `/tiles/{id}.b3dm` 501 pending writer phase, `/metadata` |
 | Joins | `/join` | `extensions/joins/` | Draft URI (core); discriminated `secondary` (NamedSecondarySpec / BigQuerySecondarySpec); both sides resolved via `resolve_drivers("READ", ..., hint="features")`; CQL2 on primary via `primary_filter` → `QueryRequest.cql_filter` |
 
