@@ -62,22 +62,24 @@ def pack_b3dm(
     else:
         batch_table_json = b""
 
-    total = (
-        _HEADER_SIZE
-        + len(feat_table_json)
-        + len(batch_table_json)
-        + len(glb_bytes)
-    )
+    # Header is 28 bytes (≡ 4 mod 8).  feat/batch tables are each padded to
+    # multiples of 8, so the GLB would land at offset 4 mod 8 — violating the
+    # B3DM spec requirement that the GLB payload starts on an 8-byte boundary.
+    # We absorb the 4-byte gap in featureTableBinary (zero-filled padding).
+    pre_glb = _HEADER_SIZE + len(feat_table_json) + len(batch_table_json)
+    feat_table_binary = bytes((8 - pre_glb % 8) % 8)
+
+    total = pre_glb + len(feat_table_binary) + len(glb_bytes)
 
     header = struct.pack(
         "<4sIIIIII",
         _B3DM_MAGIC,
-        1,                          # version
+        1,                              # version
         total,
         len(feat_table_json),
-        0,                          # featureTableBinaryByteLength
+        len(feat_table_binary),         # alignment padding
         len(batch_table_json),
-        0,                          # batchTableBinaryByteLength
+        0,                              # batchTableBinaryByteLength
     )
 
-    return header + feat_table_json + batch_table_json + glb_bytes
+    return header + feat_table_json + feat_table_binary + batch_table_json + glb_bytes

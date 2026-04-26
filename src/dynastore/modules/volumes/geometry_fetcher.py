@@ -35,16 +35,15 @@ class GeometryQuerySpec:
     height_column: Optional[str] = None
 
 
-def _escape_literal(s: str) -> str:
-    """Escape a string value for embedding in a PostgreSQL string literal."""
-    return s.replace("'", "''")
-
-
 def build_geometry_query(spec: GeometryQuerySpec) -> str:
     """Return SQL that fetches WKB geometry + height for ``spec.feature_ids``.
 
     Columns returned per row: ``feature_id``, ``geom_wkb``, ``height``.
     Rows where the geometry is NULL are excluded.
+
+    The feature-ID filter uses a ``$1::text[]`` parameter placeholder; callers
+    must pass ``list(spec.feature_ids)`` as the first bind parameter so that
+    feature IDs are never interpolated into the SQL string.
     """
     hub = f'"{spec.schema}"."{spec.hub_table}"'
     geoms = f'"{spec.schema}"."{spec.geometries_table}"'
@@ -54,10 +53,6 @@ def build_geometry_query(spec: GeometryQuerySpec) -> str:
             "SELECT NULL::text AS feature_id, NULL::bytea AS geom_wkb, "
             "0.0::float AS height WHERE false"
         )
-
-    ids_literal = ", ".join(
-        f"'{_escape_literal(fid)}'::text" for fid in spec.feature_ids
-    )
 
     if spec.height_column:
         height_expr = f'COALESCE(h."{spec.height_column}"::float, 0.0)'
@@ -73,7 +68,7 @@ def build_geometry_query(spec: GeometryQuerySpec) -> str:
         f"JOIN {geoms} g "
         f'ON h."{spec.feature_id_column}" = g."{spec.feature_id_column}" '
         f'WHERE g."{spec.geom_column}" IS NOT NULL '
-        f"  AND h.\"{spec.feature_id_column}\" = ANY(ARRAY[{ids_literal}])"
+        f'  AND h."{spec.feature_id_column}" = ANY($1::text[])'
     )
 
 
@@ -157,7 +152,7 @@ class SidecarGeometryFetcher:
         sql = build_geometry_query(spec)
 
         async with self._connect() as conn:
-            rows = await conn.execute(sql)
+            rows = await conn.execute(sql, list(spec.feature_ids))
             if hasattr(rows, "__aiter__"):
                 rows = [r async for r in rows]
             elif hasattr(rows, "fetchall"):

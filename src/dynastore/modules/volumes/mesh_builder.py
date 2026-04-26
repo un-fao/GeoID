@@ -20,9 +20,12 @@ Dependencies: shapely >= 2.0 (via geopandas).
 
 from __future__ import annotations
 
+import logging
 import struct
 from dataclasses import dataclass, field
 from typing import List, Sequence, Tuple
+
+logger = logging.getLogger(__name__)
 
 try:
     import shapely
@@ -70,7 +73,7 @@ class _MeshAccumulator:
 
     def to_buffers(self) -> MeshBuffers:
         if not self.verts:
-            return _empty_buffers()
+            return empty_mesh()
 
         n = len(self.verts)
         pos_buf = bytearray(n * 12)  # 3 × float32 per vertex
@@ -99,7 +102,7 @@ class _MeshAccumulator:
         )
 
 
-def _empty_buffers() -> MeshBuffers:
+def empty_mesh() -> MeshBuffers:
     return MeshBuffers(
         positions=b"",
         indices=b"",
@@ -203,8 +206,7 @@ def build_mesh_from_geometries(
         try:
             geom = shapely.wkb.loads(fg.geom_wkb)
         except Exception as exc:
-            import logging
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "Skipping feature %r: WKB parse failed: %s", fg.feature_id, exc
             )
             continue

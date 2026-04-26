@@ -41,8 +41,8 @@ from dynastore.models.protocols.bounds_source import (
 )
 from dynastore.models.protocols.geometry_fetcher import GeometryFetcherProtocol
 from dynastore.modules.volumes.mesh_builder import (
-    _empty_buffers,
     build_mesh_from_geometries,
+    empty_mesh,
 )
 from dynastore.modules.volumes.tileset_builder import build_tileset, find_leaf
 from dynastore.modules.volumes.writers.b3dm import pack_b3dm
@@ -61,6 +61,7 @@ OGC_API_VOLUMES_URIS = [
 
 # Module-level BSP-tree cache: (catalog_id, collection_id) → (expires_at, tileset_dict)
 _TILESET_CACHE: Dict[Tuple[str, str], Tuple[float, Dict[str, Any]]] = {}
+_TILESET_CACHE_MAX = 256  # entries; evicts soonest-expiring when full
 
 
 def _cache_get(catalog_id: str, collection_id: str) -> Optional[Dict[str, Any]]:
@@ -80,6 +81,10 @@ def _cache_set(
     tileset: Dict[str, Any],
     ttl_s: int,
 ) -> None:
+    if len(_TILESET_CACHE) >= _TILESET_CACHE_MAX:
+        # Evict the entry with the soonest expiry to bound memory usage.
+        oldest_key = min(_TILESET_CACHE, key=lambda k: _TILESET_CACHE[k][0])
+        _TILESET_CACHE.pop(oldest_key, None)
     _TILESET_CACHE[(catalog_id, collection_id)] = (
         time.monotonic() + ttl_s,
         tileset,
@@ -255,7 +260,7 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
         cfg: VolumesConfig,
     ) -> bytes:
         if not feature_ids:
-            return pack_glb(_empty_buffers())
+            return pack_glb(empty_mesh())
 
         fetcher: Optional[GeometryFetcherProtocol] = get_protocol(GeometryFetcherProtocol)
         if fetcher is None:
@@ -263,7 +268,7 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
                 "No GeometryFetcherProtocol registered; returning empty tile for %s/%s",
                 catalog_id, collection_id,
             )
-            return pack_glb(_empty_buffers())
+            return pack_glb(empty_mesh())
 
         geometries = await fetcher.get_geometries(catalog_id, collection_id, feature_ids)
         mesh = build_mesh_from_geometries(

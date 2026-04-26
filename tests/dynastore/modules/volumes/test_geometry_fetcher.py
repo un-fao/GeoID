@@ -6,26 +6,12 @@ import pytest
 
 from dynastore.modules.volumes.geometry_fetcher import (
     GeometryQuerySpec,
-    _escape_literal,
     build_geometry_query,
     row_to_feature_geometry,
     rows_to_geometries,
     SidecarGeometryFetcher,
 )
 from dynastore.models.protocols.geometry_fetcher import FeatureGeometry
-
-
-# ---------------------------------------------------------------------------
-# _escape_literal
-# ---------------------------------------------------------------------------
-
-
-def test_escape_literal_single_quote():
-    assert _escape_literal("it's") == "it''s"
-
-
-def test_escape_literal_no_special():
-    assert _escape_literal("abc123") == "abc123"
 
 
 # ---------------------------------------------------------------------------
@@ -43,8 +29,10 @@ def test_build_geometry_query_basic():
     sql = build_geometry_query(spec)
     assert "ST_AsBinary" in sql
     assert "ST_Force3D" in sql
-    assert "'f1'::text" in sql
-    assert "'f2'::text" in sql
+    # feature IDs must be passed as a bind parameter, never embedded in SQL
+    assert "$1::text[]" in sql
+    assert "f1" not in sql
+    assert "f2" not in sql
     assert '"tenant"."buildings"' in sql
     assert '"tenant"."buildings_geometries"' in sql
     # geom_column must be double-quoted consistently with other columns
@@ -85,17 +73,6 @@ def test_build_geometry_query_empty_ids_returns_false_clause():
     )
     sql = build_geometry_query(spec)
     assert "WHERE false" in sql
-
-
-def test_build_geometry_query_single_quote_in_id():
-    spec = GeometryQuerySpec(
-        schema="s",
-        hub_table="h",
-        geometries_table="h_geometries",
-        feature_ids=["it's"],
-    )
-    sql = build_geometry_query(spec)
-    assert "it''s" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -178,8 +155,9 @@ async def test_sidecar_geometry_fetcher_queries_db():
     fake_rows = [{"feature_id": "f1", "geom_wkb": wkb, "height": 3.0}]
 
     class _FakeConn:
-        async def execute(self, sql):
-            assert "'f1'" in sql
+        async def execute(self, sql, params=None):
+            assert "$1::text[]" in sql
+            assert params == ["f1"]
             return fake_rows
 
     @asynccontextmanager

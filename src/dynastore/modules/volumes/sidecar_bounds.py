@@ -64,8 +64,8 @@ def build_bounds_query(spec: BoundsQuerySpec) -> str:
     hub = f'"{spec.schema}"."{spec.hub_table}"'
     geoms = f'"{spec.schema}"."{spec.geometries_table}"'
 
-    zmin_expr = f"ST_ZMin(ST_Force3D(g.{spec.geom_column}))"
-    zmax_expr = f"ST_ZMax(ST_Force3D(g.{spec.geom_column}))"
+    zmin_expr = f'ST_ZMin(ST_Force3D(g."{spec.geom_column}"))'
+    zmax_expr = f'ST_ZMax(ST_Force3D(g."{spec.geom_column}"))'
     if spec.height_column:
         # 2D feature → ST_ZMin/ST_ZMax on ST_Force3D return 0. Widen the
         # z range to [0, height_col] when the hub carries a height column.
@@ -78,16 +78,16 @@ def build_bounds_query(spec: BoundsQuerySpec) -> str:
     sql = (
         "SELECT "
         f'h."{spec.feature_id_column}" AS feature_id, '
-        f"ST_XMin(g.{spec.geom_column}) AS min_x, "
-        f"ST_YMin(g.{spec.geom_column}) AS min_y, "
+        f'ST_XMin(g."{spec.geom_column}") AS min_x, '
+        f'ST_YMin(g."{spec.geom_column}") AS min_y, '
         f"{zmin_expr} AS min_z, "
-        f"ST_XMax(g.{spec.geom_column}) AS max_x, "
-        f"ST_YMax(g.{spec.geom_column}) AS max_y, "
+        f'ST_XMax(g."{spec.geom_column}") AS max_x, '
+        f'ST_YMax(g."{spec.geom_column}") AS max_y, '
         f"{zmax_expr} AS max_z "
         f"FROM {hub} h "
         f"JOIN {geoms} g "
         f'ON h."{spec.feature_id_column}" = g."{spec.feature_id_column}" '
-        f"WHERE g.{spec.geom_column} IS NOT NULL"
+        f'WHERE g."{spec.geom_column}" IS NOT NULL'
     )
     if spec.limit is not None:
         sql += f" LIMIT {int(spec.limit)}"

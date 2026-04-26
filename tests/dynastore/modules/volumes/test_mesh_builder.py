@@ -15,7 +15,7 @@ from dynastore.models.protocols.geometry_fetcher import FeatureGeometry
 from dynastore.modules.volumes.mesh_builder import (
     MeshBuffers,
     _MeshAccumulator,
-    _empty_buffers,
+    empty_mesh,
     _fan_triangulate,
     _extrude_ring,
     _extrude_polygon,

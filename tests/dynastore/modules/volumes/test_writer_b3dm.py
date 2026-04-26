@@ -114,3 +114,24 @@ def test_pack_b3dm_feature_table_json_8byte_aligned():
     data = pack_b3dm(b"glb", feature_ids=["a"])
     hdr = _parse_header(data)
     assert hdr["featureTableJSONByteLength"] % 8 == 0
+
+
+def test_pack_b3dm_glb_starts_at_8_byte_boundary():
+    """GLB payload must start at an 8-byte boundary from the tile start
+    (B3DM spec §6.1).  Header is 28 bytes so the combined table sections
+    must bridge the 4-byte gap."""
+    glb = b"\xab" * 16
+    for fids in ([], ["x"], ["id1", "id2", "id3"]):
+        data = pack_b3dm(glb, feature_ids=fids)
+        hdr = _parse_header(data)
+        glb_offset = (
+            _HEADER_SIZE
+            + hdr["featureTableJSONByteLength"]
+            + hdr["featureTableBinaryByteLength"]
+            + hdr["batchTableJSONByteLength"]
+            + hdr["batchTableBinaryByteLength"]
+        )
+        assert glb_offset % 8 == 0, (
+            f"GLB starts at byte {glb_offset} (not 8-aligned) with fids={fids!r}"
+        )
+        assert data[glb_offset:] == glb

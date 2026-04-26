@@ -25,8 +25,8 @@ def test_query_emits_schema_qualified_join():
     sql = build_bounds_query(spec)
     assert '"tenant1"."assets"' in sql
     assert '"tenant1"."assets_geometries"' in sql
-    assert "ST_XMin(g.geom)" in sql
-    assert 'WHERE g.geom IS NOT NULL' in sql
+    assert 'ST_XMin(g."geom")' in sql
+    assert 'WHERE g."geom" IS NOT NULL' in sql
     # Default feature id is geoid.
     assert 'h."geoid" AS feature_id' in sql
     assert "LIMIT" not in sql  # no limit by default
