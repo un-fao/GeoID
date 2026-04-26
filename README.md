@@ -26,6 +26,8 @@ A key innovation is the database architecture, which leverages advanced features
 - [The STAC Extension](docs/components/stac.md)
 - [The Legacy WFS Extension](docs/components/wfs.md)
 - [Elasticsearch Integration](docs/components/elasticsearch.md)
+- [The Maps Extension](docs/components/maps.md)
+- [The Tiles Extension](docs/components/tiles.md)
 
 **Part 3: Extending & Contributing**
 - [Contributing & Plugin Naming Convention](docs/contributing.md)
