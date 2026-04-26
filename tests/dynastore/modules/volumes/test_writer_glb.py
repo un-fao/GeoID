@@ -7,7 +7,7 @@ import struct
 
 import pytest
 
-from dynastore.modules.volumes.mesh_builder import MeshBuffers, _empty_buffers
+from dynastore.modules.volumes.mesh_builder import MeshBuffers, empty_mesh
 from dynastore.modules.volumes.writers.glb import (
     _CHUNK_BIN,
     _CHUNK_JSON,
@@ -75,7 +75,7 @@ def test_empty_glb_has_json_chunk():
 
 
 def test_pack_glb_empty_mesh_returns_valid_glb():
-    buf = _empty_buffers()
+    buf = empty_mesh()
     data = pack_glb(buf)
     magic, version, length = _parse_glb_header(data)
     assert magic == _GLB_MAGIC
@@ -148,3 +148,16 @@ def test_pack_glb_bufferviews_non_overlapping():
     bvs = doc["bufferViews"]
     assert bvs[0]["byteOffset"] == 0
     assert bvs[1]["byteOffset"] == bvs[0]["byteLength"]
+
+
+def test_pack_glb_buffer_byte_length_is_logical_not_padded():
+    """buffers[0].byteLength must be the logical size (pos+idx), not the
+    padded BIN chunk length — per glTF 2.0 spec §5.1.2."""
+    mesh = _make_triangle_mesh()
+    data = pack_glb(mesh)
+    json_chunk_len, _ = struct.unpack_from("<II", data, 12)
+    json_bytes = data[20:20 + json_chunk_len]
+    doc = json.loads(json_bytes.decode("utf-8").strip())
+    bvs = doc["bufferViews"]
+    expected_logical = bvs[0]["byteLength"] + bvs[1]["byteLength"]
+    assert doc["buffers"][0]["byteLength"] == expected_logical

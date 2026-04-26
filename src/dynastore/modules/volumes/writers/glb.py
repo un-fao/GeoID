@@ -108,7 +108,7 @@ def pack_glb(mesh: MeshBuffers, *, title: str = "tile") -> bytes:
                 "target": 34963,  # ELEMENT_ARRAY_BUFFER
             },
         ],
-        "buffers": [{"byteLength": len(bin_data)}],
+        "buffers": [{"byteLength": pos_byte_length + idx_byte_length}],
     }
 
     json_bytes = _pad4(json.dumps(gltf, separators=(",", ":")).encode("utf-8"),
