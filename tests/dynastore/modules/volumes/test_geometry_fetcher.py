@@ -47,6 +47,8 @@ def test_build_geometry_query_basic():
     assert "'f2'::text" in sql
     assert '"tenant"."buildings"' in sql
     assert '"tenant"."buildings_geometries"' in sql
+    # geom_column must be double-quoted consistently with other columns
+    assert '"geom"' in sql
 
 
 def test_build_geometry_query_with_height_column():

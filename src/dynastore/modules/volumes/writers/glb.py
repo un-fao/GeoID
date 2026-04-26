@@ -55,7 +55,7 @@ def pack_glb(mesh: MeshBuffers, *, title: str = "tile") -> bytes:
     indices   = mesh.indices     # uint32 per index
 
     # Buffer layout: [positions][indices]
-    bin_data = _pad4(positions + indices, pad_byte=0x00)
+    bin_data = _pad4(b"".join([positions, indices]), pad_byte=0x00)
 
     pos_byte_length = len(positions)
     idx_byte_length = len(indices)

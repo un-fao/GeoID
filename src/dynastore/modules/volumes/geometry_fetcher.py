@@ -67,12 +67,12 @@ def build_geometry_query(spec: GeometryQuerySpec) -> str:
     return (
         "SELECT "
         f'h."{spec.feature_id_column}" AS feature_id, '
-        f"ST_AsBinary(ST_Force3D(g.{spec.geom_column})) AS geom_wkb, "
+        f'ST_AsBinary(ST_Force3D(g."{spec.geom_column}")) AS geom_wkb, '
         f"{height_expr} AS height "
         f"FROM {hub} h "
         f"JOIN {geoms} g "
         f'ON h."{spec.feature_id_column}" = g."{spec.feature_id_column}" '
-        f"WHERE g.{spec.geom_column} IS NOT NULL "
+        f'WHERE g."{spec.geom_column}" IS NOT NULL '
         f"  AND h.\"{spec.feature_id_column}\" = ANY(ARRAY[{ids_literal}])"
     )
 

@@ -72,21 +72,30 @@ class _MeshAccumulator:
         if not self.verts:
             return _empty_buffers()
 
-        pos_data = struct.pack(f"<{len(self.verts) * 3}f",
-                               *[v for xyz in self.verts for v in xyz])
-        idx_data = struct.pack(f"<{len(self.tris) * 3}I",
-                               *[i for tri in self.tris for i in tri])
+        n = len(self.verts)
+        pos_buf = bytearray(n * 12)  # 3 × float32 per vertex
+        min_x = min_y = min_z = float("inf")
+        max_x = max_y = max_z = -float("inf")
+        for i, (x, y, z) in enumerate(self.verts):
+            struct.pack_into("<3f", pos_buf, i * 12, x, y, z)
+            if x < min_x: min_x = x
+            if y < min_y: min_y = y
+            if z < min_z: min_z = z
+            if x > max_x: max_x = x
+            if y > max_y: max_y = y
+            if z > max_z: max_z = z
 
-        xs = [v[0] for v in self.verts]
-        ys = [v[1] for v in self.verts]
-        zs = [v[2] for v in self.verts]
+        idx_buf = bytearray(len(self.tris) * 12)  # 3 × uint32 per triangle
+        for i, (a, b, c) in enumerate(self.tris):
+            struct.pack_into("<3I", idx_buf, i * 12, a, b, c)
+
         return MeshBuffers(
-            positions=pos_data,
-            indices=idx_data,
-            vertex_count=len(self.verts),
+            positions=bytes(pos_buf),
+            indices=bytes(idx_buf),
+            vertex_count=n,
             index_count=len(self.tris) * 3,
-            min_pos=(min(xs), min(ys), min(zs)),
-            max_pos=(max(xs), max(ys), max(zs)),
+            min_pos=(min_x, min_y, min_z),
+            max_pos=(max_x, max_y, max_z),
         )
 
 

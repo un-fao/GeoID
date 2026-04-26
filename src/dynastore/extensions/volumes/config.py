@@ -6,7 +6,7 @@ at runtime via PlatformConfigsProtocol.
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Literal
 
 from pydantic import Field
 
@@ -28,4 +28,4 @@ class VolumesConfig(PluginConfig):
     default_extrusion_height: float = Field(default=10.0, gt=0)
     # Tile content formats advertised in tileset.json content URIs.
     # First entry is the primary format; "glb" uses direct glTF 2.0 (3D Tiles 1.1).
-    supported_formats: List[str] = Field(default=["b3dm", "glb"])
+    supported_formats: List[Literal["b3dm", "glb"]] = Field(default=["b3dm", "glb"])

@@ -10,15 +10,15 @@ Tile content pipeline:
   1. The BSP tree (tileset dict with ``_feature_ids`` per leaf) is built
      once per (catalog_id, collection_id) and cached in ``_TILESET_CACHE``
      for ``VolumesConfig.on_demand_cache_ttl_s`` seconds.
-  2. A tile request walks the BSP tree by ``tile_id`` path to extract the
-     leaf's feature IDs.
-  3. ``GeometryFetcherProtocol`` (registered at startup) retrieves WKB
-     geometries + height attrs from PostGIS for those IDs.
-  4. ``mesh_builder`` converts them to a triangle mesh; ``writers/glb``
-     packs GLB bytes; ``writers/b3dm`` wraps in B3DM when requested.
+  2. A tile request calls ``_resolve_tile`` which does ONE BSP lookup via
+     ``find_leaf`` (O(depth) path decode), ONE config fetch, and ONE
+     geometry DB round-trip.
+  3. ``GeometryFetcherProtocol`` retrieves WKB geometries + height attrs.
+  4. ``mesh_builder`` converts them; ``writers/glb`` packs GLB bytes;
+     ``writers/b3dm`` wraps in B3DM when requested.
 
 Draft spec — URIs verified against the OGC 3D GeoVolumes 1.0 working
-draft snapshot at Phase 5 spec authorship.
+draft at Phase 5 spec authorship.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import asynccontextmanager
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
@@ -40,8 +40,11 @@ from dynastore.models.protocols.bounds_source import (
     EmptyBoundsSource,
 )
 from dynastore.models.protocols.geometry_fetcher import GeometryFetcherProtocol
-from dynastore.modules.volumes.mesh_builder import build_mesh_from_geometries
-from dynastore.modules.volumes.tileset_builder import build_tileset
+from dynastore.modules.volumes.mesh_builder import (
+    _empty_buffers,
+    build_mesh_from_geometries,
+)
+from dynastore.modules.volumes.tileset_builder import build_tileset, find_leaf
 from dynastore.modules.volumes.writers.b3dm import pack_b3dm
 from dynastore.modules.volumes.writers.glb import pack_glb
 from dynastore.modules.volumes.writers.tileset_json import write_tileset_json
@@ -61,10 +64,14 @@ _TILESET_CACHE: Dict[Tuple[str, str], Tuple[float, Dict[str, Any]]] = {}
 
 
 def _cache_get(catalog_id: str, collection_id: str) -> Optional[Dict[str, Any]]:
-    entry = _TILESET_CACHE.get((catalog_id, collection_id))
-    if entry and time.monotonic() < entry[0]:
-        return entry[1]
-    return None
+    key = (catalog_id, collection_id)
+    entry = _TILESET_CACHE.get(key)
+    if entry is None:
+        return None
+    if time.monotonic() >= entry[0]:
+        _TILESET_CACHE.pop(key, None)  # evict expired entry
+        return None
+    return entry[1]
 
 
 def _cache_set(
@@ -77,25 +84,6 @@ def _cache_set(
         time.monotonic() + ttl_s,
         tileset,
     )
-
-
-def _find_leaf(
-    node: Dict[str, Any],
-    tile_id: str,
-    path: str = "0",
-) -> Optional[Dict[str, Any]]:
-    """Walk the BSP tree to find the leaf whose tile_id path matches *tile_id*."""
-    if path == tile_id:
-        if "content" in node:
-            return node
-        return None
-    children = node.get("children", [])
-    for i, child in enumerate(children):
-        child_path = f"{path}_{i}"
-        result = _find_leaf(child, tile_id, child_path)
-        if result is not None:
-            return result
-    return None
 
 
 class VolumesService(ExtensionProtocol, OGCServiceMixin):
@@ -162,15 +150,22 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
     async def get_tile_b3dm(
         self, catalog_id: str, collection_id: str, tile_id: str, request: Request,
     ) -> Response:
-        glb_bytes = await self._build_tile_glb(catalog_id, collection_id, tile_id, request)
-        feature_ids = await self._tile_feature_ids(catalog_id, collection_id, tile_id, request)
-        b3dm = pack_b3dm(glb_bytes, feature_ids=feature_ids)
-        return Response(content=b3dm, media_type="application/octet-stream")
+        cfg = await self._get_volumes_config(catalog_id, collection_id)
+        feature_ids, glb_bytes = await self._resolve_tile(
+            catalog_id, collection_id, tile_id, request, cfg,
+        )
+        return Response(
+            content=pack_b3dm(glb_bytes, feature_ids=feature_ids),
+            media_type="application/octet-stream",
+        )
 
     async def get_tile_glb(
         self, catalog_id: str, collection_id: str, tile_id: str, request: Request,
     ) -> Response:
-        glb_bytes = await self._build_tile_glb(catalog_id, collection_id, tile_id, request)
+        cfg = await self._get_volumes_config(catalog_id, collection_id)
+        _, glb_bytes = await self._resolve_tile(
+            catalog_id, collection_id, tile_id, request, cfg,
+        )
         return Response(content=glb_bytes, media_type="model/gltf-binary")
 
     # ------------------------------------------------------------------
@@ -232,44 +227,42 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
         _cache_set(catalog_id, collection_id, tileset, cfg.on_demand_cache_ttl_s)
         return tileset
 
-    async def _tile_feature_ids(
+    async def _resolve_tile(
         self,
         catalog_id: str,
         collection_id: str,
         tile_id: str,
         request: Request,
-    ):
-        cfg = await self._get_volumes_config(catalog_id, collection_id)
+        cfg: VolumesConfig,
+    ) -> Tuple[List[str], bytes]:
+        """Resolve a tile_id to (feature_ids, glb_bytes) in one pass.
+
+        Single config fetch + single BSP lookup + single geometry DB call.
+        """
         tileset = await self._get_or_build_tileset(catalog_id, collection_id, cfg, request)
-        leaf = _find_leaf(tileset["root"], tile_id)
+        leaf = find_leaf(tileset["root"], tile_id)
         if leaf is None:
             raise HTTPException(status_code=404, detail=f"Tile {tile_id!r} not found")
-        return leaf.get("_feature_ids", [])
+        feature_ids: List[str] = leaf.get("_feature_ids", [])
+        glb_bytes = await self._geometry_to_glb(catalog_id, collection_id, feature_ids, cfg)
+        return feature_ids, glb_bytes
 
-    async def _build_tile_glb(
+    async def _geometry_to_glb(
         self,
         catalog_id: str,
         collection_id: str,
-        tile_id: str,
-        request: Request,
+        feature_ids: List[str],
+        cfg: VolumesConfig,
     ) -> bytes:
-        feature_ids = await self._tile_feature_ids(
-            catalog_id, collection_id, tile_id, request
-        )
-
         if not feature_ids:
-            from dynastore.modules.volumes.mesh_builder import _empty_buffers
             return pack_glb(_empty_buffers())
 
-        cfg = await self._get_volumes_config(catalog_id, collection_id)
         fetcher: Optional[GeometryFetcherProtocol] = get_protocol(GeometryFetcherProtocol)
-
         if fetcher is None:
             logger.warning(
-                "No GeometryFetcherProtocol registered; returning empty tile for %s/%s/%s",
-                catalog_id, collection_id, tile_id,
+                "No GeometryFetcherProtocol registered; returning empty tile for %s/%s",
+                catalog_id, collection_id,
             )
-            from dynastore.modules.volumes.mesh_builder import _empty_buffers
             return pack_glb(_empty_buffers())
 
         geometries = await fetcher.get_geometries(catalog_id, collection_id, feature_ids)
