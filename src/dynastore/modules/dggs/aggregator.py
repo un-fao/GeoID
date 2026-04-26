@@ -12,37 +12,59 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Aggregate PostGIS features into H3 cells on-the-fly."""
+"""Aggregate PostGIS features into DGGS cells (H3 or S2) on-the-fly."""
 
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set
 
-from dynastore.modules.dggs.h3_indexer import (
-    cell_int_to_str,
-    cell_to_geojson_polygon,
-    latlng_to_cell,
-)
+from dynastore.modules.dggs import h3_indexer, s2_indexer
 from dynastore.modules.dggs.models import DGGSFeature, DGGSFeatureCollection, ZoneProperties
 
 
-def _cell_from_stored_index(feature: Any, resolution: int) -> Optional[str]:
-    """Read a pre-computed H3 cell from the geometry sidecar column ``h3_res{resolution}``.
+def _sidecar_key(dggs_id: str, resolution: int) -> str:
+    """Return the geometry sidecar column name for the given DGGRS and resolution."""
+    prefix = "h3" if dggs_id.upper() == "H3" else "s2"
+    return f"{prefix}_res{resolution}"
 
-    The geometry sidecar stores H3 indices as BIGINT (``int(cell_hex, 16)``).
-    This function checks ``feature.properties`` for the key ``h3_res{resolution}``
-    and converts the integer back to the canonical hex string cell ID.
+
+def _cell_int_to_str(dggs_id: str, val: int) -> str:
+    """Convert a BIGINT cell value from the sidecar to a canonical cell string."""
+    if dggs_id.upper() == "H3":
+        return h3_indexer.cell_int_to_str(val)
+    return s2_indexer.cell_int_to_str(val)
+
+
+def _latlng_to_cell(dggs_id: str, lat: float, lng: float, resolution: int) -> str:
+    """Convert a centroid to a cell ID using the appropriate DGGRS indexer."""
+    if dggs_id.upper() == "H3":
+        return h3_indexer.latlng_to_cell(lat, lng, resolution)
+    return s2_indexer.latlng_to_cell(lat, lng, resolution)
+
+
+def _cell_to_geojson_polygon(dggs_id: str, cell: str) -> Dict[str, Any]:
+    """Return the GeoJSON Polygon boundary for a cell."""
+    if dggs_id.upper() == "H3":
+        return h3_indexer.cell_to_geojson_polygon(cell)
+    return s2_indexer.cell_to_geojson_polygon(cell)
+
+
+def _cell_from_stored_index(feature: Any, resolution: int, dggs_id: str) -> Optional[str]:
+    """Read a pre-computed cell ID from the geometry sidecar column ``{prefix}_res{resolution}``.
+
+    The geometry sidecar stores H3 indices as BIGINT (``int(cell_hex, 16)``) and S2 indices
+    as BIGINT (``CellId.id()``).  This function checks ``feature.properties`` for the
+    appropriate sidecar key and converts the integer back to the canonical cell string.
 
     Returns None if the key is absent or the value is not a valid integer,
     triggering the fallback centroid-computation path.
     """
-    key = f"h3_res{resolution}"
+    key = _sidecar_key(dggs_id, resolution)
     props = _get_properties(feature)
     val = props.get(key)
     if val is None:
         return None
     try:
-        int_val = int(val)
-        return cell_int_to_str(int_val)
+        return _cell_int_to_str(dggs_id, int(val))
     except (TypeError, ValueError):
         return None
 
@@ -114,39 +136,37 @@ def aggregate_features(
     parameter_names: Optional[Set[str]] = None,
     dggs_id: str = "H3",
 ) -> DGGSFeatureCollection:
-    """Aggregate a list of GeoJSON features into H3 cells at *resolution*.
+    """Aggregate a list of GeoJSON features into DGGS cells at *resolution*.
 
     For each feature:
-    1. Extract centroid (lat, lng)
-    2. Compute H3 cell at *resolution*
+    1. Check for a pre-computed cell ID in the geometry sidecar (fast path)
+    2. Fall back to extracting centroid and computing the cell on-the-fly
     3. Count features per cell and compute per-property numeric averages
 
     Args:
         features: List of GeoJSON feature objects (Pydantic models or dicts).
-        resolution: H3 resolution level (0-15).
+        resolution: DGGRS resolution/level (H3: 0-15, S2: 0-30).
         parameter_names: If set, only include these property names in aggregation.
-        dggs_id: DGGRS identifier to embed in the response.
+        dggs_id: DGGRS identifier — ``"H3"`` or ``"S2"``.
 
     Returns:
-        DGGSFeatureCollection with one feature per occupied H3 cell.
+        DGGSFeatureCollection with one feature per occupied cell.
     """
     cell_counts: Dict[str, int] = defaultdict(int)
     cell_sums: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
     cell_numeric_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
     for feature in features:
-        # Fast path: read pre-computed H3 index from the geometry sidecar column
-        # (stored as BIGINT in h3_res{N}; only available if the collection's
-        # GeometriesSidecarConfig includes the requested resolution).
-        cell = _cell_from_stored_index(feature, resolution)
+        # Fast path: read pre-computed cell index from the geometry sidecar column.
+        cell = _cell_from_stored_index(feature, resolution, dggs_id)
         if cell is None:
-            # Slow path: extract centroid and compute H3 on-the-fly.
+            # Slow path: extract centroid and compute cell on-the-fly.
             centroid = _extract_centroid(feature)
             if centroid is None:
                 continue
             lat, lng = centroid
             try:
-                cell = latlng_to_cell(lat, lng, resolution)
+                cell = _latlng_to_cell(dggs_id, lat, lng, resolution)
             except Exception:
                 continue
 
@@ -169,7 +189,7 @@ def aggregate_features(
         dggs_features.append(
             DGGSFeature(
                 id=cell,
-                geometry=cell_to_geojson_polygon(cell),
+                geometry=_cell_to_geojson_polygon(dggs_id, cell),
                 properties=ZoneProperties(
                     **{"zone-id": cell, "resolution": resolution, "count": count, "values": avgs}
                 ),

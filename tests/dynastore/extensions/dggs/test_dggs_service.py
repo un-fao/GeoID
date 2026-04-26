@@ -48,9 +48,17 @@ def test_dggrs_info_h3():
     assert _H3_DGGRS.defaultRefinementLevel >= 0
 
 
-def test_supported_dggrs_contains_h3():
+def test_dggrs_info_s2():
+    from dynastore.extensions.dggs.dggs_service import _S2_DGGRS
+    assert _S2_DGGRS.id == "S2"
+    assert _S2_DGGRS.maxRefinementLevel == 30
+    assert _S2_DGGRS.defaultRefinementLevel >= 0
+
+
+def test_supported_dggrs_contains_h3_and_s2():
     from dynastore.extensions.dggs.dggs_service import _SUPPORTED_DGGRS
     assert "H3" in _SUPPORTED_DGGRS
+    assert "S2" in _SUPPORTED_DGGRS
 
 
 @pytest.mark.asyncio
@@ -83,7 +91,7 @@ async def test_get_dggrs_data_invalid_bbox():
 
 
 @pytest.mark.asyncio
-async def test_get_dggs_zone_invalid_id():
+async def test_get_dggs_zone_invalid_h3_id():
     from dynastore.extensions.dggs.dggs_service import DGGSService
     svc = DGGSService.__new__(DGGSService)
     request = MagicMock()
@@ -96,6 +104,24 @@ async def test_get_dggs_zone_invalid_id():
             datetime=None,
             parameter_name=None,
             dggs_id="H3",
+        )
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_get_dggs_zone_invalid_s2_id():
+    from dynastore.extensions.dggs.dggs_service import DGGSService
+    svc = DGGSService.__new__(DGGSService)
+    request = MagicMock()
+    with pytest.raises(HTTPException) as exc_info:
+        await svc.get_dggs_zone(
+            catalog_id="cat1",
+            collection_id="col1",
+            zoneId="not-valid-s2-token",
+            request=request,
+            datetime=None,
+            parameter_name=None,
+            dggs_id="S2",
         )
     assert exc_info.value.status_code == 400
 
@@ -114,17 +140,16 @@ async def test_get_dggs_data_unsupported_dggs():
             bbox=None,
             datetime=None,
             parameter_name=None,
-            dggs_id="S2",
+            dggs_id="UNSUPPORTED_GRID",
         )
     assert exc_info.value.status_code == 400
 
 
 @pytest.mark.asyncio
-async def test_get_dggs_data_calls_fetch_and_aggregates():
+async def test_get_dggs_data_calls_fetch_and_aggregates_h3():
     from dynastore.extensions.dggs.dggs_service import DGGSService
 
     svc = DGGSService.__new__(DGGSService)
-    # Stub config and catalogs service
     svc._ogc_configs_protocol = None
     svc._ogc_catalogs_protocol = None
 
@@ -156,4 +181,46 @@ async def test_get_dggs_data_calls_fetch_and_aggregates():
 
     assert result.dggsId == "H3"
     assert result.zoneLevel == 5
+    assert len(result.features) == 1
+
+
+s2sphere = pytest.importorskip("s2sphere", reason="s2sphere package not installed")
+
+
+@pytest.mark.asyncio
+async def test_get_dggs_data_calls_fetch_and_aggregates_s2():
+    from dynastore.extensions.dggs.dggs_service import DGGSService
+
+    svc = DGGSService.__new__(DGGSService)
+    svc._ogc_configs_protocol = None
+    svc._ogc_catalogs_protocol = None
+
+    mock_feature = {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [12.48, 41.88]},
+        "properties": {"value": 7.0},
+    }
+
+    fake_config = type("C", (), {
+        "default_resolution": 10,
+        "max_resolution": 20,
+        "max_features_per_request": 1000,
+    })()
+
+    with patch.object(svc, "_get_dggs_config", new_callable=AsyncMock, return_value=fake_config), \
+         patch.object(svc, "_fetch_features", new_callable=AsyncMock, return_value=[mock_feature]):
+        request = MagicMock()
+        result = await svc.get_dggs_data(
+            catalog_id="cat1",
+            collection_id="col1",
+            request=request,
+            zone_level=10,
+            bbox=None,
+            datetime=None,
+            parameter_name=None,
+            dggs_id="S2",
+        )
+
+    assert result.dggsId == "S2"
+    assert result.zoneLevel == 10
     assert len(result.features) == 1

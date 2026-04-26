@@ -18,18 +18,13 @@ from typing import Optional, Tuple
 
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.dggs.h3_indexer import (
-    cell_str_to_int,
     cell_to_geojson_polygon,
-    get_resolution,
     is_valid_cell,
 )
 
 
 def bbox_for_zone(zone_id: str) -> Tuple[float, float, float, float]:
-    """Return (xmin, ymin, xmax, ymax) bounding box for an H3 cell.
-
-    Derives the bbox from the cell's boundary vertices.
-    """
+    """Return (xmin, ymin, xmax, ymax) bounding box for an H3 cell."""
     if not is_valid_cell(zone_id):
         raise ValueError(f"Invalid H3 zone ID: {zone_id!r}")
     polygon = cell_to_geojson_polygon(zone_id)
@@ -81,33 +76,31 @@ def build_query_for_bbox(
 
 
 def build_query_for_zone_indexed(
-    zone_id: str,
+    sidecar_field: str,
+    cell_int: int,
     datetime_str: Optional[str] = None,
     limit: int = 10_000,
 ) -> QueryRequest:
-    """Build a QueryRequest using an exact H3 cell equality filter on the pre-computed index.
+    """Build a QueryRequest using an exact cell equality filter on a pre-computed sidecar index.
 
-    This is the **preferred** path when the geometry sidecar has ``h3_res{N}``
-    pre-computed (i.e. ``GeometriesSidecarConfig.h3_resolutions`` includes the
-    zone's resolution).  It uses a B-tree EQ lookup on the BIGINT index column
-    instead of a GIST bbox scan, which is:
+    Works for any DGGRS whose sidecar stores cell IDs as BIGINT (H3: ``h3_res{N}``,
+    S2: ``s2_res{N}``).  Uses a B-tree EQ lookup instead of a GIST bbox scan, which is:
 
-    * Exact — no bbox overselection; every returned feature is guaranteed to
-      belong to ``zone_id``.
+    * Exact — no bbox overselection; every returned feature is guaranteed to belong
+      to the requested cell.
     * Fast — integer B-tree equality vs. spatial index overlap.
 
-    The caller must verify that the collection actually has ``h3_res{resolution}``
-    as a queryable field before calling this function (see
-    :meth:`DGGSService._has_h3_field`).  Use :func:`build_query_for_zone` as the
-    fallback when the index column is not available.
+    The caller must verify that the sidecar column exists before calling this function
+    (see :meth:`DGGSService._has_sidecar_field`).  Use :func:`build_query_for_zone` /
+    :func:`build_query_for_bbox` as the fallback when the index column is not available.
+
+    Args:
+        sidecar_field: Column name in the geometry sidecar, e.g. ``h3_res5`` or ``s2_res10``.
+        cell_int: Cell ID as BIGINT (``cell_str_to_int(zone_id)`` for H3/S2).
     """
-    if not is_valid_cell(zone_id):
-        raise ValueError(f"Invalid H3 zone ID: {zone_id!r}")
-    resolution = get_resolution(zone_id)
-    cell_int = cell_str_to_int(zone_id)
     return _build_query(
-        h3_field=f"h3_res{resolution}",
-        h3_cell_int=cell_int,
+        sidecar_field=sidecar_field,
+        sidecar_cell_int=cell_int,
         datetime_str=datetime_str,
         limit=limit,
     )
@@ -126,8 +119,8 @@ def _build_query(
     ymin: Optional[float] = None,
     xmax: Optional[float] = None,
     ymax: Optional[float] = None,
-    h3_field: Optional[str] = None,
-    h3_cell_int: Optional[int] = None,
+    sidecar_field: Optional[str] = None,
+    sidecar_cell_int: Optional[int] = None,
     datetime_str: Optional[str] = None,
     limit: int = 10_000,
 ) -> QueryRequest:
@@ -135,17 +128,17 @@ def _build_query(
 
     filters = []
 
-    if h3_field is not None and h3_cell_int is not None:
+    if sidecar_field is not None and sidecar_cell_int is not None:
         # Preferred path: exact B-tree equality on pre-computed sidecar column.
         filters.append(
             FilterCondition(
-                field=h3_field,
+                field=sidecar_field,
                 operator=FilterOperator.EQ,
-                value=h3_cell_int,
+                value=sidecar_cell_int,
             )
         )
     elif all(v is not None for v in [xmin, ymin, xmax, ymax]):
-        # Fallback path: GIST bbox scan (may overselect near hexagon edges).
+        # Fallback path: GIST bbox scan (may overselect near cell edges).
         ewkt = (
             f"SRID=4326;POLYGON(({xmin} {ymin},{xmax} {ymin},"
             f"{xmax} {ymax},{xmin} {ymax},{xmin} {ymin}))"
