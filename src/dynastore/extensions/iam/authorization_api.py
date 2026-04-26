@@ -22,6 +22,8 @@ Simplified IAG REST API Endpoints (v2.1)
 Email-based authorization management with self-service and admin endpoints.
 """
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, EmailStr
 from typing import List, Optional, Dict, Any, cast
@@ -32,6 +34,8 @@ from dynastore.models.protocols import CatalogsProtocol
 from dynastore.models.protocols.authentication import AuthenticatorProtocol
 from dynastore.extensions.tools.exception_handlers import http_errors
 from dynastore.models.driver_context import DriverContext
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/admin", tags=["Authorization Management"])
@@ -160,6 +164,15 @@ async def get_me(request: Request):
         # stanza is still useful for display.
         roles = []
     except Exception:
+        # Don't break the page on a transient storage error, but DO log so
+        # operators see "user has no roles" caused by a storage-layer fault
+        # instead of a real grant gap. Without this, a DB outage manifests
+        # as silent permission stripping in the UI.
+        logger.warning(
+            "get_me: failed to fetch global roles for %s:%s; returning empty",
+            provider, subject_id,
+            exc_info=True,
+        )
         roles = []
 
     return {
@@ -235,8 +248,13 @@ async def get_my_catalogs(request: Request):
         provider, subject_id, schema="iam"
     )
 
-    # Get catalog-specific access
-    catalog_ids = await storage.get_catalogs_for_identity(provider, subject_id)
+    # NOTE: this loop probes EVERY catalog the system has via the
+    # `for catalog in all_catalogs` iteration below. The admin sibling
+    # `get_user_catalogs` (line ~437) correctly drives its loop from
+    # `storage.get_catalogs_for_identity(...)` instead — much cheaper
+    # and the right semantic. Aligning this self-service endpoint to
+    # the same pattern is a separate change; not pulling it into the
+    # silent-except sweep.
 
     result = []
 
@@ -268,6 +286,14 @@ async def get_my_catalogs(request: Request):
                     CatalogAccessResponse(catalog_id=catalog.id, roles=catalog_roles)
                 )
         except Exception:
+            # One bad catalog must not nuke "list my catalogs", but log so
+            # a systemic problem (DB outage, missing schema) doesn't appear
+            # as "user has access to nothing" with no breadcrumb.
+            logger.warning(
+                "get_my_catalogs: failed for catalog=%s identity=%s:%s; skipping",
+                catalog.id, provider, subject_id,
+                exc_info=True,
+            )
             continue
 
     return result
@@ -450,6 +476,12 @@ async def get_user_catalogs(email: EmailStr):
                     CatalogAccessResponse(catalog_id=cat_id, roles=catalog_roles)
                 )
         except Exception:
+            # Admin "list user catalogs" — same logging stance as get_my_catalogs.
+            logger.warning(
+                "get_user_catalogs: failed for catalog=%s identity=%s:%s; skipping",
+                cat_id, provider, subject_id,
+                exc_info=True,
+            )
             continue
 
     return result
