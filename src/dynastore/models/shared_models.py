@@ -579,6 +579,7 @@ class OutputFormatEnum(str, Enum):
     GEOPACKAGE = "gpkg"
     SHAPEFILE = "shp"
     PARQUET = "parquet"
+    GEOPARQUET = "geoparquet"
     GML = "gml"
 
 
