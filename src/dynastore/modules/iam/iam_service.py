@@ -484,6 +484,10 @@ class IamService:
                     roles=principal.roles,
                     catalog_schema=catalog_schema,
                 )
+                # Storage row never carries roles (D12 — grants live in
+                # `*.grants`). Echo the just-applied roles on the returned
+                # object so callers see the as-granted state.
+                created.roles = list(principal.roles)
         return created
 
     async def get_principal(

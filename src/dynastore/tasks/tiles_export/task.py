@@ -15,7 +15,7 @@
 import io
 import logging
 import uuid
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, cast
 
 import morecantile
 
@@ -191,6 +191,11 @@ class TilesExportTask(
                     raise ValueError(
                         f"Failed to convert TMS {request.tms_id!r} to morecantile: {exc}"
                     )
+            # Both code paths above leave tms_def structurally compatible with
+            # the local ``TileMatrixSet`` (same OGC ``tileMatrices`` shape) and
+            # carrying morecantile's ``.tiles()`` / ``.crs`` API. Narrow for the
+            # typechecker.
+            tms_def = cast(morecantile.TileMatrixSet, tms_def)
 
             # Resolve collection metadata and SRID.
             meta = await tiles_module.get_tile_resolution_params(

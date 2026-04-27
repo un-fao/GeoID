@@ -19,10 +19,12 @@
 # dynastore/modules/tiles/tiles_db.py
 
 import logging
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Union
 from sqlalchemy import text
 from shapely.geometry import box
 from shapely import wkb
+
+import morecantile
 
 from dynastore.modules.db_config.query_executor import (
     DQLExecutor,
@@ -48,7 +50,10 @@ check_srid_query = text(
 
 
 def _calculate_tile_envelope_wkb(
-    tms_def: TileMatrixSet, matrix_id: str, x: int, y: int
+    tms_def: Union[TileMatrixSet, "morecantile.TileMatrixSet"],
+    matrix_id: str,
+    x: int,
+    y: int,
 ) -> bytes:
     """
     Calculates the exact bounding box for the tile using Shapely and returns WKB.
@@ -175,7 +180,7 @@ async def _build_collection_subquery(
 async def get_features_as_mvt_filtered(
     conn,
     resolved_collections: List[Dict[str, Any]],
-    tms_def: TileMatrixSet,
+    tms_def: Union[TileMatrixSet, "morecantile.TileMatrixSet"],
     target_srid: int,
     z: str,
     x: int,
