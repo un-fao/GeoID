@@ -25,7 +25,7 @@ import logging
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Any, ClassVar, Dict, Optional, Callable, cast
 
 from fastapi import APIRouter, FastAPI, Response, HTTPException, Request, Query, Header
@@ -1628,6 +1628,92 @@ async function demoAction(action) {
 
             summary = get_conformance_summary()
             return summary.model_dump()
+
+        @self.router.get("/lite/api/contents/{contents_path:path}", include_in_schema=False)
+        async def serve_jupyterlite_contents(contents_path: str):
+            """Serve JupyterLite contents API from the notebooks database.
+
+            The JupyterLite service worker (scope /web/lite/) intercepts
+            requests to /api/contents/ and falls back to the network when
+            files are absent from its cache.  This route answers those
+            fallback requests so the lab can open DB-stored notebooks.
+            """
+            from dynastore.modules.notebooks import notebooks_module as nb_svc
+            from dynastore.modules.db_config.exceptions import ResourceNotFoundError
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            # Strip trailing slashes and the all.json suffix for normalisation
+            path = contents_path.rstrip("/")
+            is_all_json = path.endswith("/all.json") or path == "all.json"
+            if is_all_json:
+                path = path[: -len("all.json")].rstrip("/")
+
+            # Root directory listing → just the "platform" directory
+            if path == "":
+                try:
+                    _items, _total = await nb_svc.list_platform_notebooks(limit=1)
+                except Exception:
+                    _total = 0
+                entries = []
+                if _total:
+                    entries.append({
+                        "name": "platform", "path": "platform",
+                        "type": "directory", "format": "json",
+                        "writable": False, "created": now_iso,
+                        "last_modified": now_iso, "content": None,
+                        "mimetype": None, "size": None,
+                    })
+                return JSONResponse(entries, headers={"Cache-Control": "no-cache"})
+
+            # Platform directory listing
+            if path == "platform":
+                try:
+                    items, _ = await nb_svc.list_platform_notebooks(limit=200)
+                except Exception:
+                    items = []
+                content = []
+                for nb in items:
+                    nb_d = nb if isinstance(nb, dict) else nb.model_dump()
+                    nid = nb_d.get("notebook_id", "")
+                    upd = nb_d.get("updated_at")
+                    ts = upd.isoformat() if upd is not None else now_iso
+                    content.append({
+                        "name": f"{nid}.ipynb", "path": f"platform/{nid}.ipynb",
+                        "type": "notebook", "format": "json", "writable": False,
+                        "created": ts, "last_modified": ts,
+                        "content": None, "mimetype": None, "size": None,
+                    })
+                if is_all_json:
+                    return JSONResponse(content, headers={"Cache-Control": "no-cache"})
+                return JSONResponse({
+                    "name": "platform", "path": "platform",
+                    "type": "directory", "format": "json",
+                    "writable": False, "created": now_iso, "last_modified": now_iso,
+                    "content": content, "mimetype": None, "size": None,
+                }, headers={"Cache-Control": "no-cache"})
+
+            # Individual notebook file: platform/{notebook_id}.ipynb
+            parts = path.split("/")
+            if len(parts) == 2 and parts[0] == "platform" and parts[1].endswith(".ipynb"):
+                notebook_id = parts[1][:-6]
+                try:
+                    nb = await nb_svc.get_platform_notebook(notebook_id)
+                    nb_d = nb if isinstance(nb, dict) else nb.model_dump()
+                    nb_content = nb_d.get("content") or {}
+                    upd = nb_d.get("updated_at")
+                    ts = upd.isoformat() if upd is not None else now_iso
+                    return JSONResponse({
+                        "name": f"{notebook_id}.ipynb",
+                        "path": f"platform/{notebook_id}.ipynb",
+                        "type": "notebook", "format": "json",
+                        "writable": False, "created": ts, "last_modified": ts,
+                        "content": nb_content, "mimetype": None, "size": None,
+                    }, headers={"Cache-Control": "no-cache"})
+                except (ResourceNotFoundError, Exception):
+                    raise HTTPException(status_code=404, detail="Notebook not found")
+
+            raise HTTPException(status_code=404, detail="Not found")
 
         @self.router.get("/{prefix}/{filename:path}", include_in_schema=False)
         async def serve_static_content(prefix: str, filename: str):
