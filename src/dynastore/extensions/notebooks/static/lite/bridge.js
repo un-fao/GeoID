@@ -263,6 +263,65 @@
         stacItems: null
     };
 
+    // --- Kernel context injection ---
+    // window.pyodideReadyPromise is never set by current JupyterLite (Pyodide runs
+    // in a per-kernel Worker, not the main thread). Use the JupyterLab kernel
+    // manager API instead: connectTo() + requestExecute().
+    const _injectedKernels = new Set();
+
+    async function _injectContextIntoKernel(kernels, model) {
+        const id = model && model.id;
+        if (!id || _injectedKernels.has(id)) return;
+        _injectedKernels.add(id);
+        const ctx = window.DYNASTORE_CONTEXT;
+        if (!ctx || !ctx.baseUrl) return;
+        const safeBase = (ctx.baseUrl || '').replace(/'/g, "\\'");
+        const safeCatalog = (ctx.catalogCode || '').replace(/'/g, "\\'");
+        const stacJson = JSON.stringify(ctx.stacItems || {}).replace(/'/g, "\\'");
+        const code = [
+            'import json, os',
+            'try:',
+            '    import pyodide_http; pyodide_http.patch_all()',
+            'except ImportError: pass',
+            "os.environ['DYNASTORE_BASE_URL'] = '" + safeBase + "'",
+            "os.environ['DYNASTORE_CATALOG'] = '" + safeCatalog + "'",
+            'try:',
+            "    STAC_CONTEXT = json.loads('" + stacJson + "')",
+            "    print(f\"DynaStore: base={os.environ['DYNASTORE_BASE_URL']}\")",
+            'except Exception as e:',
+            '    STAC_CONTEXT = {}',
+        ].join('\n');
+        let conn;
+        try {
+            conn = kernels.connectTo({ model });
+            const future = conn.requestExecute({ code, silent: true, store_history: false });
+            await future.done;
+            console.log('[Bridge] Context injected into kernel', id);
+        } catch (e) {
+            _injectedKernels.delete(id);
+            console.warn('[Bridge] Failed to inject into kernel', id, e);
+        } finally {
+            if (conn) try { conn.dispose(); } catch (_) {}
+        }
+    }
+
+    function _watchKernels(app) {
+        const kernels = app.serviceManager && app.serviceManager.kernels;
+        if (!kernels) return;
+        try {
+            for (const model of kernels.running()) _injectContextIntoKernel(kernels, model);
+        } catch (e) {}
+        try {
+            kernels.runningChanged.connect(function() {
+                try {
+                    for (const model of kernels.running()) _injectContextIntoKernel(kernels, model);
+                } catch (e2) {}
+            });
+        } catch (e) {
+            console.warn('[Bridge] kernels.runningChanged subscription failed:', e);
+        }
+    }
+
     // Kick off seeding as soon as the app is ready. This is independent of
     // INIT_CONTEXT so notebooks appear even before host posts auth context.
     (async function bootSeed() {
@@ -273,6 +332,7 @@
         }
         window.DYNASTORE_JUPYTER_APP = app;
         await seedNotebooksViaContentsManager(app);
+        _watchKernels(app);
         // Refresh file browser if present (/tree/ build) so seeded files show.
         try {
             if (app.commands.hasCommand('filebrowser:refresh')) {
@@ -304,47 +364,14 @@
             window.DYNASTORE_CONTEXT.baseUrl = baseUrl || '';
             window.DYNASTORE_CONTEXT.stacItems = stacItems;
 
-            // Inject into Python when Pyodide is ready
-            if (window.pyodideReadyPromise) {
-                try {
-                    const pyodide = await window.pyodideReadyPromise;
-
-                    const stacJson = JSON.stringify(stacItems || {});
-                    const safeBase = (baseUrl || '').replace(/'/g, "\\'");
-                    const safeCatalog = (catalogCode || '').replace(/'/g, "\\'");
-
-                    pyodide.runPython(`
-import json
-import os
-
-# Patch HTTP for Pyodide (must run before httpx import)
-try:
-    import pyodide_http
-    pyodide_http.patch_all()
-except ImportError:
-    pass
-
-os.environ['DYNASTORE_BASE_URL'] = '${safeBase}'
-os.environ['DYNASTORE_CATALOG'] = '${safeCatalog}'
-
-try:
-    STAC_CONTEXT = json.loads('${stacJson}')
-    print(f"DynaStore Context: catalog={os.environ['DYNASTORE_CATALOG']}, base={os.environ['DYNASTORE_BASE_URL']}")
-except Exception as e:
-    STAC_CONTEXT = {}
-    print(f"Warning: STAC context parse error: {e}")
-`);
-                    console.log("[Bridge] Python environment configured.");
-                    window.parent.postMessage({ type: 'NOTEBOOK_READY' }, '*');
-                } catch (e) {
-                    console.error("[Bridge] Failed to configure Python environment", e);
-                }
-            } else {
-                // Pyodide hasn't exposed its ready promise yet — this is normal
-                // during boot; the host guards against repeated READY signals.
-                console.debug("[Bridge] pyodideReadyPromise not found yet; signalling READY anyway.");
-                window.parent.postMessage({ type: 'NOTEBOOK_READY' }, '*');
+            // Inject env vars into all running kernels with updated context.
+            // Clears the injection cache so a second INIT_CONTEXT (e.g. auth
+            // token refresh) re-propagates to every kernel.
+            if (window.DYNASTORE_JUPYTER_APP) {
+                _injectedKernels.clear();
+                _watchKernels(window.DYNASTORE_JUPYTER_APP);
             }
+            window.parent.postMessage({ type: 'NOTEBOOK_READY' }, '*');
         }
 
         // --- LOAD_NOTEBOOK: write one notebook into the shim + optionally open it ---
