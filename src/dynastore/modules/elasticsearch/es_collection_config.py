@@ -109,18 +109,16 @@ async def _on_apply_es_collection_config(
         )
         return
 
-    mode = "obfuscated" if config.obfuscated else "catalog"
     try:
         await es_module.bulk_reindex(
             catalog_id=catalog_id,
             collection_id=collection_id,
-            mode=mode,
             db_resource=db_resource,
         )
         logger.info(
             "ElasticsearchCollectionConfig: dispatched single-collection "
-            "reindex for %s/%s in %s mode after apply.",
-            catalog_id, collection_id, mode,
+            "reindex for %s/%s after apply (regular driver target).",
+            catalog_id, collection_id,
         )
     except Exception as exc:
         logger.warning(
