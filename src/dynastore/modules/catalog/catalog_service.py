@@ -102,9 +102,20 @@ def _build_tenant_core_ddl_batch(schema: str) -> "DDLBatch":
     The domain-scoped metadata tables (``collection_metadata_core`` +
     ``collection_metadata_stac``) are created by
     :func:`ensure_tenant_metadata_domain_tables` — not in this batch.
+
+    The IAM-side tenant tables (``roles``, ``role_hierarchy``, ``grants``)
+    are also added here so the unified-grants model is available before
+    any per-tenant lifecycle hook (e.g. STAC, GCP) needs to issue grants
+    or look up authorization. Default role rows are seeded by
+    :func:`_seed_tenant_iam_defaults` after the batch runs.
     """
     from dynastore.modules.db_config.query_executor import DDLBatch
     from dynastore.modules.db_config.locking_tools import check_table_exists
+    from dynastore.modules.iam.iam_queries import (
+        CREATE_ROLES_TABLE,
+        CREATE_ROLE_HIERARCHY_TABLE,
+        CREATE_GRANTS_TABLE,
+    )
 
     def _check_sentinel(conn):
         return check_table_exists(conn, "collection_configs", schema)
@@ -114,9 +125,38 @@ def _build_tenant_core_ddl_batch(schema: str) -> "DDLBatch":
         sentinel=DDLQuery(tenant_configs_sql, check_query=_check_sentinel),
         steps=[
             DDLQuery(TENANT_COLLECTIONS_DDL),
+            CREATE_ROLES_TABLE,
+            CREATE_ROLE_HIERARCHY_TABLE,
+            CREATE_GRANTS_TABLE,
             DDLQuery(tenant_configs_sql, check_query=_check_sentinel),
         ],
     )
+
+
+async def _seed_tenant_iam_defaults(conn: DbResource, schema: str) -> None:
+    """Seed the four default tenant roles + base hierarchy edge.
+
+    Runs after :func:`_build_tenant_core_ddl_batch` so the
+    ``{schema}.roles`` and ``{schema}.role_hierarchy`` tables already
+    exist. Uses ``ON CONFLICT (id) DO NOTHING`` so a tenant admin can
+    rename / restructure the seeded roles without subsequent provisioning
+    passes clobbering their changes (D3 — tenants own role definitions).
+
+    The seed roles are policy-free in PR-1: the per-tenant policy
+    registry (D11) is deferred to PR-2 and the unified ``grants`` table
+    is the only thing the resolver evaluates today. Roles still
+    function as grant targets — they just don't carry permissions
+    until the policy registry lands.
+    """
+    from dynastore.modules.iam.iam_queries import (
+        SEED_TENANT_DEFAULT_ROLES_SQL,
+        SEED_TENANT_ROLE_HIERARCHY_SQL,
+    )
+
+    validate_sql_identifier(schema)
+
+    await DDLQuery(SEED_TENANT_DEFAULT_ROLES_SQL).execute(conn, schema=schema)
+    await DDLQuery(SEED_TENANT_ROLE_HIERARCHY_SQL).execute(conn, schema=schema)
 
 
 # --- Helpers ---
@@ -686,6 +726,12 @@ class CatalogService(CatalogsProtocol):
             await _build_tenant_core_ddl_batch(physical_schema).execute(
                 conn, schema=physical_schema
             )
+
+            # 2b. Seed default IAM roles + base hierarchy edge.
+            # Idempotent (ON CONFLICT DO NOTHING); runs after the batch
+            # so {schema}.roles + {schema}.role_hierarchy exist. Defers
+            # any per-permission policy wiring to PR-2 (D11).
+            await _seed_tenant_iam_defaults(conn, physical_schema)
 
             # 3. Per-tenant collection-metadata CORE table.  STAC sidecar
             # (when StacModule is loaded) attaches via lifecycle_registry

@@ -197,10 +197,10 @@ class IamService:
         """
         Get effective permissions for an identity in a catalog.
 
-        Uses simplified IAG v2.1:
-        1. Get global roles from catalog.identity_roles
-        2. Get catalog roles from {tenant}.identity_roles
-        3. Merge and create runtime Principal
+        Roles are resolved via the unified grants table (one query
+        across platform ∪ catalog scopes). Authorization metadata and
+        custom policies live on the platform `iam.principals` row, so
+        they're fetched once and apply uniformly.
 
         Args:
             identity: Identity dict with provider and sub
@@ -217,44 +217,34 @@ class IamService:
             logger.warning("Invalid identity: missing provider or sub")
             return None
 
-        # 1. Get global roles from catalog schema
-        global_roles = await self.storage.get_identity_roles(
-            provider=provider, subject_id=subject_id, schema="iam", conn=conn
-        )
-
-        # 2. Get catalog-specific roles
         catalog_schema = await self._resolve_schema(catalog_id, conn)
-        catalog_roles = await self.storage.get_identity_roles(
-            provider=provider, subject_id=subject_id, schema=catalog_schema, conn=conn
-        )
 
-        # 3. Get authorization metadata (optional)
-        # Prefer catalog-specific metadata over global
+        # 1. Resolve roles in one shot — platform grants ∪ catalog grants
+        #    for the resolved tenant schema (or platform-only when
+        #    catalog_schema falls back to "iam").
+        effective_roles = await self.storage.get_identity_roles(
+            provider=provider,
+            subject_id=subject_id,
+            catalog_schema=catalog_schema if catalog_schema != "iam" else None,
+            conn=conn,
+        ) or []
+
+        # 2. Authorization metadata + custom policies live on the
+        #    platform principal row (D12 — no per-tenant principals).
         auth_metadata = await self.storage.get_identity_authorization(
-            provider=provider, subject_id=subject_id, schema=catalog_schema, conn=conn
+            provider=provider, subject_id=subject_id, conn=conn
         )
 
-        if not auth_metadata:
-            auth_metadata = await self.storage.get_identity_authorization(
-                provider=provider, subject_id=subject_id, schema="iam", conn=conn
-            )
-
-        # 4. If no roles and no metadata, user has no access
-        if not global_roles and not catalog_roles and not auth_metadata:
+        # 3. If no roles and no metadata, user has no access
+        if not effective_roles and not auth_metadata:
             return None
 
-        # 5. Merge roles
-        effective_roles = list(set((global_roles or []) + (catalog_roles or [])))
+        # 4. Custom policies — platform-only row (D12).
+        custom_policies = await self.storage.get_identity_policies(
+            provider=provider, subject_id=subject_id, conn=conn
+        ) or []
 
-        # 6. Get custom policies (optional)
-        global_policies = await self.storage.get_identity_policies(
-            provider=provider, subject_id=subject_id, schema="iam", conn=conn
-        )
-        catalog_policies = await self.storage.get_identity_policies(
-            provider=provider, subject_id=subject_id, schema=catalog_schema, conn=conn
-        )
-
-        # 7. Build runtime Principal
+        # 5. Build runtime Principal
         return Principal(
             provider=provider,
             subject_id=subject_id,
@@ -264,7 +254,7 @@ class IamService:
             is_active=auth_metadata.get("is_active", True) if auth_metadata else True,
             valid_until=auth_metadata.get("valid_until") if auth_metadata else None,
             roles=effective_roles,
-            custom_policies=(global_policies or []) + (catalog_policies or []),
+            custom_policies=custom_policies,
             attributes=auth_metadata.get("attributes", {}) if auth_metadata else {},
         )
 
@@ -367,8 +357,13 @@ class IamService:
         ]
         assigned_roles = realm_roles if realm_roles else [DefaultRole.USER.value]
 
+        # Allocate the principal UUID up-front so we can pass it to
+        # downstream calls without re-narrowing the model's
+        # ``Optional[Union[UUID, str]]`` field — the model validator
+        # would synthesize one anyway.
+        new_principal_id: UUID = uuid4()
         new_principal = Principal(
-            id=uuid4(),
+            id=new_principal_id,
             provider=provider,
             subject_id=subject_id,
             display_name=email,
@@ -378,18 +373,22 @@ class IamService:
             attributes=attributes,
         )
 
-        # Resolve schema
-        schema = await self._resolve_schema(catalog_id)
-
-        # Create principal
-        await self.storage.create_principal(new_principal, schema=schema)
-
-        # Create identity link
+        # Principal + identity link are platform-global (D12); the
+        # storage layer hardcodes `iam` internally, no `schema=`.
+        await self.storage.create_principal(new_principal)
         await self.storage.create_identity_link(
-            principal_id=new_principal.id,
+            principal_id=new_principal_id,
             provider=provider,
             subject_id=subject_id,
-            schema=schema,
+        )
+
+        # Grants land at the right scope: catalog-scoped when we have
+        # a real catalog, platform-scoped for `_system_` / no catalog.
+        catalog_schema = await self._resolve_schema(catalog_id)
+        await self._apply_role_grants(
+            principal_id=new_principal_id,
+            roles=assigned_roles,
+            catalog_schema=catalog_schema,
         )
 
         logger.info(
@@ -398,10 +397,47 @@ class IamService:
 
         return new_principal
 
+    async def _apply_role_grants(
+        self,
+        principal_id: UUID,
+        roles: List[str],
+        catalog_schema: str,
+        granted_by: Optional[UUID] = None,
+    ) -> None:
+        """Issue role grants at the right scope.
+
+        Platform schema (`iam`) grants go to `iam.grants`; everything
+        else lands in `{catalog_schema}.grants`. Caller is responsible
+        for deciding which roles belong at which scope — this helper
+        just routes the grant to the correct storage facade.
+        """
+        if not roles:
+            return
+        if catalog_schema == "iam":
+            for role_name in roles:
+                await self.storage.grant_platform_role(
+                    principal_id=principal_id,
+                    role_name=role_name,
+                    granted_by=granted_by,
+                )
+        else:
+            for role_name in roles:
+                await self.storage.grant_catalog_role(
+                    principal_id=principal_id,
+                    role_name=role_name,
+                    catalog_schema=catalog_schema,
+                    granted_by=granted_by,
+                )
+
     async def _register_new_principal(
         self, identity: Dict[str, Any], schema: str
     ) -> Principal:
-        """Helper to onboard a valid identity into a new tenant context."""
+        """Helper to onboard a valid identity into a new tenant context.
+
+        `schema` is retained for caller compatibility (it's also where
+        the default role grant should land); the principal + link are
+        always written to the platform `iam` schema (D12).
+        """
         attributes: Dict[str, Any] = {"source": "auto_registration"}
         if identity.get("is_service_account"):
             attributes["service_account"] = True
@@ -416,62 +452,61 @@ class IamService:
             roles=["viewer"],  # Default role
             attributes=attributes,
         )
-        return await self.storage.create_principal_link(new_p, identity, schema)
+        created = await self.storage.create_principal_link(new_p, identity)
+        # Default-role grant at the requested scope.
+        await self._apply_role_grants(
+            principal_id=created.id,
+            roles=new_p.roles or [],
+            catalog_schema=schema,
+        )
+        return created
 
     # --- Principal Management (CRUD) ---
 
     async def create_principal(
         self, principal: Principal, catalog_id: Optional[str] = None
     ) -> Principal:
-        schema = await self._resolve_schema(catalog_id)
-        # 1. Create legacy principal (now with better identifier mapping in storage)
-        created = await self.storage.create_principal(principal, schema=schema)
+        # Principal + identity link are platform-global (D12). The
+        # `catalog_id` argument only influences where role grants land.
+        created = await self.storage.create_principal(principal)
 
-        # 2. Sync to identity systems for uniform resolution
         if principal.provider and principal.subject_id:
-            # A. Sync to v2 Identity Links (needed by get_principal_by_identity)
             await self.storage.create_identity_link(
                 provider=principal.provider,
                 subject_id=principal.subject_id,
                 principal_id=created.id,
-                schema=schema,
             )
 
-            # Grant roles
             if principal.roles:
-                await self.storage.grant_roles(
-                    provider=principal.provider,
-                    subject_id=principal.subject_id,
+                catalog_schema = await self._resolve_schema(catalog_id)
+                await self._apply_role_grants(
+                    principal_id=created.id,
                     roles=principal.roles,
-                    schema=schema,
+                    catalog_schema=catalog_schema,
                 )
         return created
 
     async def get_principal(
         self, principal_id: UUID, catalog_id: Optional[str] = None
     ) -> Optional[Principal]:
-        schema = await self._resolve_schema(catalog_id)
-        return await self.storage.get_principal(principal_id, schema=schema)
+        # Principals are platform-global (D12); `catalog_id` ignored
+        # except for callers that still expect the kwarg.
+        return await self.storage.get_principal(principal_id)
 
     async def update_principal(
         self, principal: Principal, catalog_id: Optional[str] = None
     ) -> Optional[Principal]:
-        schema = await self._resolve_schema(catalog_id)
-        return await self.storage.update_principal(principal, schema=schema)
+        return await self.storage.update_principal(principal)
 
     async def delete_principal(
         self, principal_id: UUID, catalog_id: Optional[str] = None
     ) -> bool:
-        schema = await self._resolve_schema(catalog_id)
-        return await self.storage.delete_principal(principal_id, schema=schema)
+        return await self.storage.delete_principal(principal_id)
 
     async def list_principals(
         self, limit: int = 100, offset: int = 0, catalog_id: Optional[str] = None
     ) -> List[Principal]:
-        schema = await self._resolve_schema(catalog_id)
-        return await self.storage.list_principals(
-            limit=limit, offset=offset, schema=schema
-        )
+        return await self.storage.list_principals(limit=limit, offset=offset)
 
     async def search_principals(
         self,
@@ -571,41 +606,38 @@ class IamService:
         email: Optional[str] = None,
         catalog_id: Optional[str] = None,
     ) -> bool:
-        """Creates an identity link for a principal."""
-        schema = await self._resolve_schema(catalog_id)
+        """Creates an identity link for a principal.
 
-        # 1. Create link in storage
+        Identity links are platform-global (D12). The `catalog_id`
+        argument is honored only for routing grants of the principal's
+        existing role list to the right scope (platform vs. catalog).
+        """
         success = await self.storage.create_identity_link(
-            principal_id, provider, subject_id, email, schema=schema
+            principal_id, provider, subject_id, email
         )
 
         if success:
-            # Sync roles to identity tables if principal has roles
-            principal = await self.storage.get_principal(principal_id, schema=schema)
+            principal = await self.storage.get_principal(principal_id)
             if principal and principal.roles:
-                await self.storage.grant_roles(
-                    provider=provider,
-                    subject_id=subject_id,
+                catalog_schema = await self._resolve_schema(catalog_id)
+                await self._apply_role_grants(
+                    principal_id=principal_id,
                     roles=principal.roles,
-                    schema=schema,
+                    catalog_schema=catalog_schema,
                 )
         return success
 
     async def list_identity_links(
         self, principal_id: UUID, catalog_id: Optional[str] = None
     ):
-        """Lists all identity links for a principal."""
-        schema = await self._resolve_schema(catalog_id)
-        return await self.storage.list_identity_links(principal_id, schema=schema)
+        """Lists all identity links for a principal (platform-global)."""
+        return await self.storage.list_identity_links(principal_id)
 
     async def delete_identity_link(
         self, provider: str, subject_id: str, catalog_id: Optional[str] = None
     ) -> bool:
-        """Deletes an identity link."""
-        schema = await self._resolve_schema(catalog_id)
-        return await self.storage.delete_identity_link(
-            provider, subject_id, schema=schema
-        )
+        """Deletes an identity link (platform-global)."""
+        return await self.storage.delete_identity_link(provider, subject_id)
 
     async def run_maintenance(self, catalog_id: Optional[str] = None) -> dict:
         """Runs maintenance (pruning) for the specified catalog/schema."""
@@ -661,10 +693,27 @@ class IamService:
                         if not roles:
                             roles = ["user"]  # Default role if none assigned
 
-                        effective_roles = await self.storage.get_role_hierarchy(
-                            roles, schema=schema
+                        # Expand hierarchy in BOTH scopes — platform-only roles
+                        # (e.g. ``sysadmin``) live in ``iam.role_hierarchy``;
+                        # catalog-scope roles (admin/editor/...) live in
+                        # ``{catalog_schema}.role_hierarchy``. The principal
+                        # may carry both at once (D1: scope intrinsic to role,
+                        # D6: one grants table per scope), so we must union
+                        # the two expansions to avoid silently dropping a
+                        # parent chain on a catalog request.
+                        platform_expanded = await self.storage.get_role_hierarchy(
+                            roles, schema="iam"
                         )
-                        return list(set(effective_roles)), principal
+                        if schema and schema != "iam":
+                            tenant_expanded = await self.storage.get_role_hierarchy(
+                                roles, schema=schema
+                            )
+                        else:
+                            tenant_expanded = []
+                        effective_roles = list(
+                            set(platform_expanded) | set(tenant_expanded)
+                        )
+                        return effective_roles, principal
                     else:
                         logger.debug(
                             "Principal not found for identity via provider %s", provider_id
@@ -690,15 +739,28 @@ class IamService:
                 roles = payload.get("roles", ["user"])
                 if isinstance(roles, str):
                     roles = [roles]
-                effective_roles = await self.storage.get_role_hierarchy(
-                    roles, schema=schema
+                # Same dual-scope expansion as the OAuth/identity branch — the
+                # internal HS256 fallback can also carry platform + catalog
+                # roles in a single payload (test fixtures sign sysadmin +
+                # editor for cross-scope smoke tests).
+                platform_expanded = await self.storage.get_role_hierarchy(
+                    roles, schema="iam"
+                )
+                if schema and schema != "iam":
+                    tenant_expanded = await self.storage.get_role_hierarchy(
+                        roles, schema=schema
+                    )
+                else:
+                    tenant_expanded = []
+                effective_roles = list(
+                    set(platform_expanded) | set(tenant_expanded)
                 )
                 principal = Principal(
                     subject_id=payload.get("sub"),
                     provider="internal",
                     roles=roles,
                 )
-                return list(set(effective_roles)), principal
+                return effective_roles, principal
         except Exception as e:
             logger.debug("Internal HS256 fallback failed: %s", e)
 

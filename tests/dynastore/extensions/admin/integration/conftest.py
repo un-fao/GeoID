@@ -63,12 +63,11 @@ async def created_principal(sysadmin_in_process_client: AsyncClient) -> CreatedP
     )
     db = get_protocol(DatabaseProtocol)
     async with managed_transaction(db.engine) as conn:
-        await storage.create_principal(principal, schema="iam", conn=conn)
+        await storage.create_principal(principal, conn=conn)
         await storage.create_identity_link(
             provider="local",
             subject_id=subject_id,
             principal_id=principal_id,
-            schema="iam",
             conn=conn,
         )
 

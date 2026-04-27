@@ -73,27 +73,32 @@ class IdentityProviderProtocol(Protocol):
 class AuthorizationStorageProtocol(Protocol):
     """
     Interface for persistence of IAG entities (Principals, Roles).
-    Must be schema-aware for Multi-Tenancy.
+
+    Principals and identity_links are platform-global (live in `iam`);
+    role grants are scope-aware via the per-scope `grants` tables.
     """
 
-    async def get_principal_by_identity(self, provider: str, subject_id: str, schema: str) -> Optional[Principal]:
+    async def get_principal_by_identity(self, provider: str, subject_id: str) -> Optional[Principal]:
         """
-        Resolves an external Identity (e.g., 'bob@fao.org') to an internal Principal 
-        within a specific tenant schema (e.g., 'catalog_a').
-        """
-        ...
-
-    async def create_principal_link(self, principal: Principal, identity: Dict[str, Any], schema: str) -> Principal:
-        """
-        Registers a new Principal in the schema and links it to the Identity.
-        Used for 'Auto-Registration' or 'Invite' flows.
+        Resolves an external Identity (e.g., 'bob@fao.org') to an internal Principal.
+        Principals are platform-global (no per-tenant lookup).
         """
         ...
 
-    async def get_effective_roles(self, principal_id: str, schema: str) -> List[str]:
+    async def create_principal_link(self, principal: Principal, identity: Dict[str, Any]) -> Principal:
         """
-        Returns the flattened list of Role IDs for a principal, 
-        resolving inheritance (e.g., Admin -> Editor -> Viewer).
+        Registers a new Principal and links it to the Identity. Used for
+        'Auto-Registration' or 'Invite' flows. Principal + identity link
+        both land in the platform `iam` schema.
+        """
+        ...
+
+    async def get_effective_roles(self, principal_id: str, catalog_schema: Optional[str] = None) -> List[str]:
+        """
+        Returns the flattened list of Role names for a principal — platform
+        roles unioned with catalog-scoped roles when `catalog_schema` is
+        provided (else platform-only). Inheritance resolution
+        (Admin -> Editor -> Viewer) lives next to the role definitions.
         """
         ...
 
