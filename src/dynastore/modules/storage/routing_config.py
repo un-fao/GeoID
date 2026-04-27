@@ -1218,8 +1218,10 @@ async def get_active_transformers(
             logger.debug(
                 "get_active_transformers: routing lists '%s' for entity=%s "
                 "catalog=%s collection=%s but no EntityTransformProtocol "
-                "implementer registered; skipping.",
+                "implementer registered with that class name; skipping. "
+                "Available: %s",
                 entry.driver_id, entity, catalog_id, collection_id,
+                sorted(by_driver_id),
             )
             continue
         chain.append(transformer)

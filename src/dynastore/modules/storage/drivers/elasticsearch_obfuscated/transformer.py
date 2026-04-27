@@ -62,8 +62,6 @@ class ObfuscatedEntityTransformer:
     independently of where the helpers live.
     """
 
-    transform_id: str = "obfuscated"
-
     async def transform_for_index(
         self,
         entity: Any,

@@ -42,15 +42,18 @@ EntityKind = Literal["item", "collection", "catalog", "asset"]
 class EntityTransformProtocol(Protocol):
     """A driver that mutates entities on the way to / from storage.
 
-    Implementers MUST set ``transform_id`` to a stable string used in
-    routing config entries.
+    Identity is the implementer's class name — same convention as
+    :class:`IndexerProtocol` / :class:`SearchProtocol` and as used by
+    ``_self_register_indexers_into`` / ``_self_register_searchers_into``.
+    ``_self_register_transformers_into`` writes
+    ``type(transformer).__name__`` into ``OperationDriverEntry.driver_id``;
+    ``get_active_transformers`` resolves entries back to instances by
+    class name.
 
     The transform should be a pure function — no I/O side effects, no
     mutation of inputs in place. The chain runtime composes transformers,
     so non-pure behavior breaks composition guarantees.
     """
-
-    transform_id: str
 
     async def transform_for_index(
         self,

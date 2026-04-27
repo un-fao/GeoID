@@ -758,3 +758,75 @@ def test_apply_handlers_invoke_searcher_self_registration():
     # items-tier hook in PR #5x), then catalog-tier.  Asset tier still
     # doesn't call the searcher (no SEARCH op for assets).
     assert calls == [CollectionMetadataStore, CollectionItemsStore, CatalogMetadataStore]
+
+
+# ---------------------------------------------------------------------------
+# Transformer self-registration parity (sister to indexer / searcher helpers)
+# ---------------------------------------------------------------------------
+
+
+def test_transformer_helper_picks_up_entity_transform_protocol_implementers():
+    """Any registered EntityTransformProtocol implementer lands in
+    operations[TRANSFORM] keyed by class name (matching indexer/searcher
+    convention)."""
+    from unittest.mock import patch
+
+    from dynastore.modules.storage.routing_config import (
+        _self_register_transformers_into,
+    )
+
+    class TransformerOne:
+        async def transform_for_index(self, entity, **_): return entity
+        async def restore_from_index(self, doc, **_): return doc
+
+    class TransformerTwo:
+        async def transform_for_index(self, entity, **_): return entity
+        async def restore_from_index(self, doc, **_): return doc
+
+    target_ops: dict = {}
+    fake_pool = [TransformerOne(), TransformerTwo()]
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: fake_pool):
+        _self_register_transformers_into(target_ops)
+
+    ids = {e.driver_id for e in target_ops.get(Operation.TRANSFORM, [])}
+    assert ids == {"TransformerOne", "TransformerTwo"}
+
+
+def test_transformer_helper_idempotent_and_preserves_operator_entry():
+    """Repeated calls are no-ops; an operator-supplied entry survives."""
+    from unittest.mock import patch
+
+    from dynastore.modules.storage.routing_config import (
+        _self_register_transformers_into,
+    )
+
+    class CustomTransformer:
+        async def transform_for_index(self, entity, **_): return entity
+        async def restore_from_index(self, doc, **_): return doc
+
+    op_entry = OperationDriverEntry(driver_id="CustomTransformer", hints={"operator"})
+    target_ops: dict = {Operation.TRANSFORM: [op_entry]}
+
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [CustomTransformer()]):
+        _self_register_transformers_into(target_ops)
+        _self_register_transformers_into(target_ops)
+
+    assert len(target_ops[Operation.TRANSFORM]) == 1
+    assert target_ops[Operation.TRANSFORM][0].hints == {"operator"}
+
+
+def test_transformer_helper_no_op_when_no_implementers():
+    """Empty discovery → operations[TRANSFORM] stays absent (no implicit empty key)."""
+    from unittest.mock import patch
+
+    from dynastore.modules.storage.routing_config import (
+        _self_register_transformers_into,
+    )
+
+    target_ops: dict = {}
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: []):
+        _self_register_transformers_into(target_ops)
+    assert target_ops.get(Operation.TRANSFORM, []) == []

@@ -69,7 +69,7 @@ async def apply_transform_chain(
             logger.warning(
                 "transform_runtime: transformer '%s' failed at "
                 "transform_for_index for catalog=%s collection=%s entity_kind=%s: %s",
-                getattr(transformer, "transform_id", type(transformer).__name__),
+                type(transformer).__name__,
                 catalog_id, collection_id, entity_kind, exc,
             )
             raise
@@ -104,7 +104,7 @@ async def restore_transform_chain(
             logger.warning(
                 "transform_runtime: transformer '%s' failed at "
                 "restore_from_index for catalog=%s collection=%s entity_kind=%s: %s",
-                getattr(transformer, "transform_id", type(transformer).__name__),
+                type(transformer).__name__,
                 catalog_id, collection_id, entity_kind, exc,
             )
             raise
