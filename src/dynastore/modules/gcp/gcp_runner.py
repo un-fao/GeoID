@@ -16,6 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
+import asyncio
 import logging
 import os
 from datetime import datetime, timezone, timedelta
@@ -27,7 +28,6 @@ from dynastore.modules.tasks.runners import RunnerProtocol
 from dynastore.modules.tasks.models import (
     Task,
     TaskCreate,
-    TaskUpdate,
     TaskExecutionMode,
     RunnerContext,
     DEFERRED_COMPLETION,
@@ -42,6 +42,46 @@ logger = logging.getLogger(__name__)
 # job startup + run; the in-job heartbeat (main_task.py) extends it while the
 # job runs, and the pg_cron reaper resets the row if the lease lapses.
 _DEFAULT_TASK_TIMEOUT_SECONDS = int(os.getenv("TASK_TIMEOUT", "3600"))
+
+# Short lease used for the REST-path INSERT-as-claimed flow.  Long enough for
+# the Cloud Run RunJob API call + container cold start + main_task.py taking
+# ownership and extending the lease via its own heartbeat.  Short enough that
+# if the spawner pod dies between INSERT and RunJob the reaper releases the
+# row promptly without a 1-hour wait.
+_SPAWN_LEASE_SECONDS = int(os.getenv("GCP_RUNNER_SPAWN_LEASE", "60"))
+
+# Bounded retry around RunJob — handles transient Cloud Run control-plane
+# blips without surfacing them as task failures.  Exhausted retries fall back
+# to fail_task(retry=True) so the platform-wide hard_retry_cap remains the
+# circuit breaker.
+_RUNJOB_MAX_ATTEMPTS = 3
+_RUNJOB_BACKOFF_BASE_SECONDS = 1.0
+
+
+def _is_transient_runjob_error(exc: BaseException) -> bool:
+    """True for Cloud Run control-plane errors worth retrying with backoff.
+
+    Conservative: anything that smells like 4xx (auth, bad args, not found)
+    is treated as permanent.  google.api_core.exceptions defines a
+    *Transient* hierarchy but importing google here on every error widens
+    the worker import surface — match by class name instead so the runner
+    stays import-light.
+    """
+    name = type(exc).__name__
+    if name in {
+        "ServiceUnavailable",       # 503
+        "InternalServerError",      # 500
+        "DeadlineExceeded",         # 504
+        "GatewayTimeout",
+        "TooManyRequests",          # 429
+        "RetryError",
+        "ConnectionError",
+        "TimeoutError",
+    }:
+        return True
+    if isinstance(exc, (ConnectionError, TimeoutError, asyncio.TimeoutError)):
+        return True
+    return False
 
 
 class GcpJobRunner(RunnerProtocol, ProtocolPlugin[Any]):
@@ -91,8 +131,22 @@ class GcpJobRunner(RunnerProtocol, ProtocolPlugin[Any]):
         """Dispatch the task to a Cloud Run Job.
 
         Returns either the freshly-created :class:`Task` (REST path) or
-        :data:`DEFERRED_COMPLETION` (dispatcher path). On Cloud Run trigger
-        failure, the row is marked FAILED and the exception is re-raised.
+        :data:`DEFERRED_COMPLETION` (dispatcher path).
+
+        REST path INSERTs the row directly as ACTIVE with this runner as
+        owner_id and a short spawn lease, so the on_task_insert trigger
+        (``WHEN NEW.status = 'PENDING'``) does not fire and no dispatcher
+        pod can claim the row before the Cloud Run Job is launched.  This
+        closes the REST↔dispatcher race that previously spawned two Cloud
+        Run executions per task.
+
+        Dispatcher path uses ``claim_for_dispatch`` to take ownership only
+        if the row is unowned or owned by another GcpJobRunner — defends
+        against any future regression that re-opens the producer-side race.
+
+        On Cloud Run trigger failure: bounded exp-backoff retry on
+        transient errors, then fail_task(retry=True) — the platform-wide
+        hard_retry_cap remains the circuit breaker.
         """
         from dynastore.modules.gcp.tools.jobs import (
             load_job_config,
@@ -128,27 +182,40 @@ class GcpJobRunner(RunnerProtocol, ProtocolPlugin[Any]):
         task_lease = timedelta(seconds=_DEFAULT_TASK_TIMEOUT_SECONDS)
         new_locked_until = datetime.now(timezone.utc) + task_lease
 
+        existing_task: Optional[Task] = None
+
         if claimed_task_id is not None:
-            # Dispatcher path: extend lease on the existing row.
+            # Dispatcher path: take ownership conditionally.  If the row is
+            # owned by a non-GcpJobRunner peer (or already terminal) we got
+            # raced — return DEFERRED_COMPLETION without spawning so we do
+            # not double-fire.
             import uuid
             task_id_uuid = uuid.UUID(str(claimed_task_id))
-            await tasks_module.update_task(
+            claimed = await tasks_module.claim_for_dispatch(
                 context.engine,
                 task_id_uuid,
-                TaskUpdate(
-                    owner_id=owner_id,
-                    locked_until=new_locked_until,
-                ),
-                schema=context.db_schema,
+                owner_id=owner_id,
+                locked_until=new_locked_until,
+                expected_owner_prefix="gcp_cloud_run_",
             )
+            if not claimed:
+                logger.warning(
+                    "GcpJobRunner: dispatcher-path race detected — task '%s' "
+                    "already owned by a non-GcpJobRunner worker. Skipping Cloud "
+                    "Run dispatch (no double-spawn).",
+                    task_id_uuid,
+                )
+                return DEFERRED_COMPLETION
             task_id_for_payload = task_id_uuid
-            existing_task = None  # not needed; dispatcher already has the row
             logger.info(
                 f"GcpJobRunner: dispatcher-path reuse of task '{task_id_uuid}' for "
                 f"job '{job_name}' (execution_id={execution_id}, lease={task_lease.total_seconds():.0f}s)."
             )
         else:
-            # REST path: create a fresh PENDING row and immediately mark ACTIVE.
+            # REST path: born claimed.  INSERT with status='ACTIVE',
+            # owner_id, locked_until set in one statement so the
+            # on_task_insert trigger does not fire and no dispatcher pod
+            # can claim the row out from under us before Cloud Run starts.
             # Honour the Cloud Run job's MAX_RETRIES env (capped at job-level
             # rather than the column default of 3) so a single misbehaving job
             # cannot loop more than once by default.
@@ -166,8 +233,17 @@ class GcpJobRunner(RunnerProtocol, ProtocolPlugin[Any]):
                 max_retries=job_max_retries if job_max_retries is not None else 3,
                 dedup_key=dedup_key,
             )
+            spawn_lease_until = (
+                datetime.now(timezone.utc)
+                + timedelta(seconds=_SPAWN_LEASE_SECONDS)
+            )
             new_task = await tasks_module.create_task(
-                context.engine, task_create_request, schema=context.db_schema
+                context.engine,
+                task_create_request,
+                schema=context.db_schema,
+                initial_status="ACTIVE",
+                owner_id=owner_id,
+                locked_until=spawn_lease_until,
             )
             if new_task is None:
                 logger.info(
@@ -176,21 +252,12 @@ class GcpJobRunner(RunnerProtocol, ProtocolPlugin[Any]):
                 )
                 return None
 
-            from dynastore.models.tasks import TaskStatusEnum
-            update_data = TaskUpdate(
-                status=TaskStatusEnum.ACTIVE,
-                owner_id=owner_id,
-                locked_until=new_locked_until,
-            )
-            await tasks_module.update_task(
-                context.engine, new_task.task_id, update_data, schema=context.db_schema
-            )
             task_id_for_payload = new_task.task_id
             existing_task = new_task
             logger.info(
-                f"GcpJobRunner: REST-path created task '{new_task.task_id}' for "
+                f"GcpJobRunner: REST-path born-claimed task '{new_task.task_id}' for "
                 f"job '{job_name}' (execution_id={execution_id}, "
-                f"lease={task_lease.total_seconds():.0f}s, "
+                f"spawn_lease={_SPAWN_LEASE_SECONDS}s, "
                 f"max_retries={job_max_retries if job_max_retries is not None else 'default'})."
             )
 
@@ -217,30 +284,65 @@ class GcpJobRunner(RunnerProtocol, ProtocolPlugin[Any]):
             )
 
         args = [context.task_type, payload.model_dump_json(), "--schema", context.db_schema]
-        try:
-            await run_cloud_run_job_async(
-                job_name=job_name,
-                args=args,
-                env_vars={"DYNASTORE_EXECUTION_ID": execution_id},
-            )
-        except Exception as e:
-            logger.error(
-                f"Failed to trigger Cloud Run job '{job_name}' for task '{task_id_for_payload}': {e}",
-                exc_info=True,
-            )
-            from dynastore.models.tasks import TaskStatusEnum
-            await tasks_module.update_task(
-                conn=context.engine,
-                task_id=task_id_for_payload,
-                update_data=TaskUpdate(
-                    status=TaskStatusEnum.FAILED,
-                    error_message=str(e),
-                ),
-                schema=context.db_schema,
-            )
-            raise
-        finally:
-            logger.info(f"Dispatched Cloud Run job '{job_name}'.")
+        env_vars = {"DYNASTORE_EXECUTION_ID": execution_id}
+
+        last_exc: Optional[BaseException] = None
+        for attempt in range(1, _RUNJOB_MAX_ATTEMPTS + 1):
+            try:
+                await run_cloud_run_job_async(
+                    job_name=job_name, args=args, env_vars=env_vars,
+                )
+                last_exc = None
+                break
+            except Exception as e:
+                last_exc = e
+                if not _is_transient_runjob_error(e):
+                    logger.error(
+                        "GcpJobRunner: permanent RunJob error for '%s' task '%s' "
+                        "on attempt %d/%d: %s",
+                        job_name, task_id_for_payload, attempt,
+                        _RUNJOB_MAX_ATTEMPTS, e,
+                    )
+                    break
+                if attempt < _RUNJOB_MAX_ATTEMPTS:
+                    backoff = _RUNJOB_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
+                    logger.warning(
+                        "GcpJobRunner: transient RunJob error for '%s' task '%s' "
+                        "on attempt %d/%d: %s — retrying in %.1fs",
+                        job_name, task_id_for_payload, attempt,
+                        _RUNJOB_MAX_ATTEMPTS, e, backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                else:
+                    logger.error(
+                        "GcpJobRunner: transient RunJob error for '%s' task '%s' "
+                        "exhausted %d attempts: %s",
+                        job_name, task_id_for_payload, _RUNJOB_MAX_ATTEMPTS, e,
+                    )
+
+        if last_exc is not None:
+            # Spawn failed — release the row to PENDING with retry_count++ so
+            # the dispatcher (or a different runner) picks it up.  fail_task
+            # handles the hard_retry_cap circuit breaker centrally; we never
+            # write a transient FAILED on the spawner side.
+            from dynastore.modules.tasks.tasks_module import fail_task
+            try:
+                await fail_task(
+                    context.engine,
+                    task_id_for_payload,
+                    datetime.now(timezone.utc),
+                    f"GcpJobRunner: failed to trigger Cloud Run job '{job_name}': {last_exc}",
+                    retry=_is_transient_runjob_error(last_exc),
+                )
+            except Exception as release_err:  # noqa: BLE001 — diagnostic
+                logger.error(
+                    "GcpJobRunner: failed to release task '%s' after RunJob "
+                    "failure: %s (original error: %s)",
+                    task_id_for_payload, release_err, last_exc,
+                )
+            raise last_exc
+
+        logger.info(f"Dispatched Cloud Run job '{job_name}'.")
 
         # Dispatcher path: tell the dispatcher the row is being handled
         # asynchronously by the Cloud Run Job container — it will write

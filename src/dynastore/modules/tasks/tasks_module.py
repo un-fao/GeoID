@@ -936,6 +936,9 @@ async def create_task(
     task_data: TaskCreate,
     schema: str,
     initial_status: str = "PENDING",
+    *,
+    owner_id: Optional[str] = None,
+    locked_until: Optional[datetime] = None,
 ) -> Optional[Task]:
     """
     Creates a new task in the global tasks table with schema_name = `schema`.
@@ -943,6 +946,15 @@ async def create_task(
     Pass initial_status='RUNNING' to bypass the dispatcher queue (e.g. for
     audit tasks created by BackgroundRunner that are already being executed
     in-process and must not be re-claimed by the dispatcher).
+
+    Pass `owner_id` and `locked_until` together with `initial_status='ACTIVE'`
+    to INSERT a row that is *born claimed* — same effect as create_task →
+    claim_by_id, but in a single statement and without firing the
+    `notify_task_ready` trigger (which only fires `WHEN NEW.status =
+    'PENDING'`). Used by GcpJobRunner's REST path to close the
+    REST↔dispatcher race window where a freshly-created PENDING row could
+    be claimed by a dispatcher pod between INSERT and the subsequent
+    update_task(ACTIVE), spawning a duplicate Cloud Run Job.
 
     Dedup: if `task_data.dedup_key` is set, a pre-check rejects insert when
     a non-terminal task already carries the same (schema_name, dedup_key) —
@@ -970,41 +982,22 @@ async def create_task(
             if existing:
                 return None
 
-        # max_retries: caller may override the column DEFAULT (3) per-row.
-        # Cloud Run Job runners pass the job's MAX_RETRIES env so a long-running
-        # ingestion job is capped at the deploy-time intent (typically 1) rather
-        # than a generic 3-retry default.
-        if task_data.max_retries is None:
-            sql = f"""
-                INSERT INTO {task_schema}.tasks
-                    (task_id, schema_name, scope, caller_id, task_type, type,
-                     execution_mode, inputs, timestamp, collection_id, dedup_key,
-                     status)
-                VALUES
-                    (:task_id, :schema_name, :scope, :caller_id, :task_type, :type,
-                     :execution_mode, :inputs, :timestamp, :collection_id, :dedup_key,
-                     :status)
-                RETURNING *;
-            """
-        else:
-            sql = f"""
-                INSERT INTO {task_schema}.tasks
-                    (task_id, schema_name, scope, caller_id, task_type, type,
-                     execution_mode, inputs, timestamp, collection_id, dedup_key,
-                     status, max_retries)
-                VALUES
-                    (:task_id, :schema_name, :scope, :caller_id, :task_type, :type,
-                     :execution_mode, :inputs, :timestamp, :collection_id, :dedup_key,
-                     :status, :max_retries)
-                RETURNING *;
-            """
-
         from dynastore.tools.correlation import _INTERNAL_KEY, get_correlation_id
         inputs = dict(task_data.inputs) if task_data.inputs else {}
         cid = get_correlation_id()
         if cid is not None:
             inputs[_INTERNAL_KEY] = cid
 
+        # Always-present columns + values.
+        # max_retries: caller may override the column DEFAULT (3) per-row.
+        # Cloud Run Job runners pass the job's MAX_RETRIES env so a long-running
+        # ingestion job is capped at the deploy-time intent (typically 1) rather
+        # than a generic 3-retry default.
+        cols: List[str] = [
+            "task_id", "schema_name", "scope", "caller_id", "task_type", "type",
+            "execution_mode", "inputs", "timestamp", "collection_id", "dedup_key",
+            "status",
+        ]
         insert_kwargs: Dict[str, Any] = dict(
             task_id=task_id,
             schema_name=schema,
@@ -1020,7 +1013,30 @@ async def create_task(
             status=initial_status,
         )
         if task_data.max_retries is not None:
+            cols.append("max_retries")
             insert_kwargs["max_retries"] = task_data.max_retries
+        if owner_id is not None:
+            cols.append("owner_id")
+            insert_kwargs["owner_id"] = owner_id
+        if locked_until is not None:
+            cols.append("locked_until")
+            insert_kwargs["locked_until"] = locked_until
+        # Stamp ACTIVE timing fields so the row looks identical to one
+        # claim_batch / claim_by_id would have produced.
+        if initial_status == "ACTIVE":
+            sql_extra = ", started_at, last_heartbeat_at"
+            values_extra = ", NOW(), NOW()"
+        else:
+            sql_extra = ""
+            values_extra = ""
+        col_list = ", ".join(cols)
+        bind_list = ", ".join(f":{c}" for c in cols)
+        sql = (
+            f"INSERT INTO {task_schema}.tasks "
+            f"({col_list}{sql_extra}) "
+            f"VALUES ({bind_list}{values_extra}) "
+            f"RETURNING *;"
+        )
 
         task_dict = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
             conn, **insert_kwargs,
@@ -1511,6 +1527,52 @@ async def claim_by_id(
         return await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
             conn, task_id=task_id, locked_until=locked_until, owner_id=owner_id,
         )
+
+
+async def claim_for_dispatch(
+    engine: DbResource,
+    task_id: uuid.UUID,
+    owner_id: str,
+    locked_until: datetime,
+    expected_owner_prefix: Optional[str] = None,
+) -> bool:
+    """Conditionally take ownership of an ACTIVE task without a fresh claim.
+
+    Used by runners on the dispatcher path to extend the lease and stamp
+    themselves as owner *only if* the row is unowned or owned by a peer of
+    the same runner family (matched by ``expected_owner_prefix`` LIKE).
+    Returns True when the UPDATE matched a row, False otherwise — callers
+    should treat False as "another worker already owns this task; do not
+    spawn the side-effect (e.g. Cloud Run Job)".
+
+    Belt-and-suspenders against any future regression that re-opens a
+    create→claim race on the producing side.
+    """
+    task_schema = get_task_schema()
+    sql = f"""
+        UPDATE {task_schema}.tasks
+        SET owner_id = :owner_id,
+            locked_until = :locked_until,
+            last_heartbeat_at = NOW()
+        WHERE task_id = :task_id
+          AND status = 'ACTIVE'
+          AND (
+              owner_id IS NULL
+              OR (:expected_owner_prefix IS NOT NULL
+                  AND owner_id LIKE :expected_owner_prefix || '%')
+              OR owner_id = :owner_id
+          )
+        RETURNING task_id;
+    """
+    async with managed_transaction(engine) as conn:
+        row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
+            conn,
+            task_id=task_id,
+            owner_id=owner_id,
+            locked_until=locked_until,
+            expected_owner_prefix=expected_owner_prefix,
+        )
+    return row is not None
 
 
 async def reset_task_to_pending(
