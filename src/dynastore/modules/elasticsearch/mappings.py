@@ -254,14 +254,13 @@ def get_all_index_names(prefix: str) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Tenant feature index mapping (formerly "obfuscated geoid index")
+# Tenant items index mapping (used by the obfuscated driver)
 #
-# Used when a catalog routes writes to the `elasticsearch_obfuscated` driver.
 # Stores the full feature (geometry + properties + external_id) in a single
-# index per tenant (catalog). Access is gated by:
-#   - the DENY policy applied when ElasticsearchCatalogConfig.obfuscated=True
-#   - the tenant-first search contract (requires catalog_id + (geoid OR
-#     (external_id AND collection_id)) — see extensions/search).
+# index per tenant (catalog). Access is gated by the DENY policy applied
+# when the obfuscated driver is active, plus the tenant-first search
+# contract enforced in the dedicated obfuscated extension (requires
+# catalog_id + (geoid OR (external_id AND collection_id))).
 #
 # Docs that would exceed the ES 10MB per-doc limit are shrunk by the
 # `simplify_to_fit` helper in tools/geometry_simplify.py, which records a
@@ -285,31 +284,39 @@ TENANT_FEATURE_MAPPING: Dict[str, Any] = {
     },
 }
 
-# Legacy alias — the 3-field mapping used by existing deployments. Referenced
-# during bootstrap to detect indexes that need to be recreated with
-# TENANT_FEATURE_MAPPING.
-GEOID_OBFUSCATED_MAPPING_LEGACY: Dict[str, Any] = {
-    "dynamic": False,
-    "properties": {
-        "geoid":         {"type": "keyword"},
-        "catalog_id":    {"type": "keyword"},
-        "collection_id": {"type": "keyword"},
-    },
-}
 
+def get_tenant_items_index(prefix: str, catalog_id: str) -> str:
+    """Per-tenant regular items index. Owned by the items ES driver."""
+    return f"{prefix}-items-{catalog_id}"
+
+
+def get_public_items_alias(prefix: str) -> str:
+    """Platform-wide alias spanning all per-tenant regular items indexes.
+
+    Used by OGC discovery search routes. Membership is managed by the
+    items driver's `ensure_storage` (add) and routing-config
+    apply-handler (remove on driver removal).
+    """
+    return f"{prefix}-items-public"
+
+
+# ---------------------------------------------------------------------------
+# DEPRECATED — to be deleted in PR-2 of feat/es-unified-tenant-index when the
+# obfuscated driver moves to its own sibling subpackage. Kept for the duration
+# of PR-1 only because callers in tasks/elasticsearch_indexer/tasks.py and
+# extensions/search/search_service.py still import this helper. Those callers
+# are deleted/relocated in PR-2 / PR-3; this stub goes away with them.
+#
+# Per the architectural principle: obfuscation must not pollute platform
+# mappings. This is a transitional symbol, NOT a permanent helper.
+# ---------------------------------------------------------------------------
 
 def get_obfuscated_index_name(prefix: str, catalog_id: str) -> str:
-    """Return the tenant feature index name for a catalog.
-
-    The physical name is kept as `{prefix}-geoid-{catalog_id}` for
-    backward compatibility with existing deployments, even though the
-    index now stores full features.
+    """[DEPRECATED — removed in PR-2] Per-tenant index name used by the
+    obfuscated indexer path. Computed inline at each callsite once the
+    obfuscated driver moves to its own subpackage.
     """
     return f"{prefix}-geoid-{catalog_id}"
-
-
-# Semantic alias so new call sites read clearly.
-get_tenant_feature_index_name = get_obfuscated_index_name
 
 
 def build_tenant_feature_doc(

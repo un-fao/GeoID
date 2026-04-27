@@ -224,6 +224,50 @@ class ElasticsearchModule(ModuleProtocol):
                     exc,
                 )
 
+        # Ensure platform-wide shared indexes + the regular-items alias exist.
+        # Per-tenant indexes (dynastore-items-{cat}) are created on demand by
+        # the regular items driver's ensure_storage; the platform creates only
+        # the shared collection/catalog indexes here so reads against them
+        # never hit "index_not_found_exception" before the first write.
+        if es is not None:
+            from dynastore.modules.elasticsearch.aliases import (
+                ensure_public_alias_exists,
+            )
+            from dynastore.modules.elasticsearch.mappings import (
+                CATALOG_MAPPING,
+                COLLECTION_MAPPING,
+            )
+
+            for shared_name, mapping in (
+                (f"{es_client.get_index_prefix()}-collections", COLLECTION_MAPPING),
+                (f"{es_client.get_index_prefix()}-catalogs",    CATALOG_MAPPING),
+            ):
+                try:
+                    if not await es.indices.exists(index=shared_name):
+                        await es.indices.create(
+                            index=shared_name, body={"mappings": mapping},
+                        )
+                        logger.info(
+                            "ElasticsearchModule: Created shared index '%s'.",
+                            shared_name,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "ElasticsearchModule: Could not ensure shared index "
+                        "'%s': %s", shared_name, exc,
+                    )
+
+            # Public items alias is created lazily on first member-add by the
+            # regular items driver — call here just so the deferral is logged
+            # at startup for operator visibility.
+            try:
+                await ensure_public_alias_exists()
+            except Exception as exc:
+                logger.warning(
+                    "ElasticsearchModule: ensure_public_alias_exists raised: %s",
+                    exc,
+                )
+
         # Auto-provision the logs dashboard into OpenSearch Dashboards / Kibana.
         # No-op when KIBANA_UPSTREAM_URL is unset; never raises.
         from dynastore.modules.elasticsearch.dashboards_provisioner import (

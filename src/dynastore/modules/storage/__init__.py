@@ -66,7 +66,10 @@ from dynastore.modules.storage.schema_types import (
     OgcFeaturesSchemaExtension,
     ConfigScopeMixin,
 )
-from dynastore.modules.storage.entity_transform_pipeline import EntityTransformPipeline
+from dynastore.modules.storage.transform_runtime import (
+    apply_transform_chain,
+    restore_transform_chain,
+)
 from dynastore.modules.storage.errors import ReadOnlyDriverError, SoftDeleteNotSupportedError
 from dynastore.modules.storage.router import (
     ResolvedDriver,
@@ -120,8 +123,9 @@ __all__ = [
     # Write policy
     "CollectionWritePolicy",
     "WriteConflictPolicy",
-    # Enricher / transform pipeline
-    "EntityTransformPipeline",
+    # Entity-transform chain runtime (operates on routing operations[TRANSFORM])
+    "apply_transform_chain",
+    "restore_transform_chain",
     # Routing configs
     "CollectionRoutingConfig",
     "AssetRoutingConfig",
