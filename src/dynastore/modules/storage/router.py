@@ -296,6 +296,31 @@ async def get_asset_write_drivers(
     return cast(List["ResolvedDriver[_ADP]"], result)
 
 
+async def get_asset_index_drivers(
+    catalog_id: str,
+    collection_id: Optional[str] = None,
+    *,
+    hint: Optional[str] = None,
+) -> "List[ResolvedDriver[AssetStore]]":
+    """Multi-driver resolution for asset INDEX fan-out.
+
+    INDEX is auto-augmented at config-validation time with every discoverable
+    ``AssetIndexer`` driver — which is how ``AssetElasticsearchDriver`` gets
+    picked up without explicit operator config. Used by ``AssetService`` to
+    fan secondary writes out to indexer-only drivers (those that opt into
+    ``AssetIndexer`` but are not pinned under WRITE).
+    """
+    from dynastore.models.protocols.asset_driver import AssetStore as _ADP
+    result = await resolve_drivers(
+        Operation.INDEX,
+        catalog_id,
+        collection_id,
+        hint=hint,
+        routing_plugin_cls=AssetRoutingConfig,
+    )
+    return cast(List["ResolvedDriver[_ADP]"], result)
+
+
 # ---------------------------------------------------------------------------
 # Cache invalidation
 # ---------------------------------------------------------------------------

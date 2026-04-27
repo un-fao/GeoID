@@ -530,9 +530,14 @@ class AssetService(AssetsProtocol):
     ) -> List["ResolvedDriver"]:
         """Return non-primary WRITE asset drivers for fan-out.
 
-        Uses ``AssetRoutingConfig`` via the router — the primary
-        (first) WRITE driver is excluded since the caller handles it
-        separately.
+        Reads only ``AssetRoutingConfig.operations[WRITE]`` — operator-pinned
+        multi-writes. The first entry is the primary (the caller handles it
+        directly); the rest are returned here.
+
+        ``operations[INDEX]`` (auto-augmented with discoverable ``AssetIndexer``
+        drivers like ``AssetElasticsearchDriver``) is **not** folded in here —
+        indexer drivers are driven by ``AssetEntitySyncSubscriber`` via the
+        events bus, decoupling sync writers from indexer fan-out.
 
         Returns :class:`ResolvedDriver` instances (preserving ``on_failure``
         and ``write_mode``) instead of raw driver objects.
@@ -825,7 +830,8 @@ class AssetService(AssetsProtocol):
 
         if self._event_emitter:
             await self._event_emitter(
-                AssetEventType.ASSET_CREATED, created.model_dump()
+                AssetEventType.ASSET_CREATED, created.model_dump(),
+                db_resource=db_resource,
             )
         return created
 
@@ -880,7 +886,8 @@ class AssetService(AssetsProtocol):
 
         if self._event_emitter:
             await self._event_emitter(
-                AssetEventType.ASSET_UPDATED, updated.model_dump()
+                AssetEventType.ASSET_UPDATED, updated.model_dump(),
+                db_resource=db_resource,
             )
         return updated
 
@@ -973,7 +980,9 @@ class AssetService(AssetsProtocol):
                 else AssetEventType.ASSET_DELETED
             )
             for a in asset_rows:
-                await self._event_emitter(event_type, dict(a))
+                await self._event_emitter(
+                    event_type, dict(a), db_resource=db_resource,
+                )
 
         return rowcount
 

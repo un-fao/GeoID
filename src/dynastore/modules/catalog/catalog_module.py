@@ -44,6 +44,7 @@ from dynastore.modules import ModuleProtocol
 from dynastore.modules.db_config.query_executor import (
     managed_transaction,
     DDLQuery,
+    DbResource,
 )
 from dynastore.modules.db_config.maintenance_tools import (
     ensure_schema_exists,
@@ -92,8 +93,18 @@ _ASSET_EVENT_MAP = {
 }
 
 
-async def _asset_event_bridge(event_type: AssetEventType, data: dict) -> None:
-    """Bridge AssetService events to CatalogEventType for secondary drivers."""
+async def _asset_event_bridge(
+    event_type: AssetEventType,
+    data: dict,
+    db_resource: Optional[DbResource] = None,
+) -> None:
+    """Bridge AssetService events to CatalogEventType.
+
+    When ``db_resource`` is supplied, the event is also persisted to the
+    global events outbox in the same transaction as the asset write — making
+    it replayable for async subscribers (bucket annotation, reverse cascade,
+    etc.). Without ``db_resource`` only in-process sync listeners fire.
+    """
     catalog_event = _ASSET_EVENT_MAP.get(event_type)
     if catalog_event:
         await emit_event(
@@ -102,6 +113,7 @@ async def _asset_event_bridge(event_type: AssetEventType, data: dict) -> None:
             collection_id=data.get("collection_id"),
             asset_id=data.get("asset_id"),
             payload=data,
+            db_resource=db_resource,
         )
 
 
@@ -221,6 +233,14 @@ class CatalogModule(ModuleProtocol):
                 register_plugin(svc)
 
             logger.info("Initialized CatalogModule services.")
+
+            # Wire AssetEntitySyncSubscriber to drive AssetIndexer fan-out
+            # from the events bus. Replaces the legacy per-driver listener
+            # blocks (one less coupling between drivers and the events bus).
+            from dynastore.modules.catalog.asset_sync import (
+                register_asset_entity_sync_subscriber,
+            )
+            register_asset_entity_sync_subscriber()
 
             # 4. Initialize Storage & Schemas
             # Hub/sidecar creation is handled by ItemsPostgresqlDriver.ensure_storage()

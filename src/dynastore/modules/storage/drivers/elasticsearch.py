@@ -35,8 +35,9 @@ Three drivers:
 
 * ``AssetElasticsearchDriver``  (driver_id ``"elasticsearch_assets"``)
   Indexes asset metadata into per-catalog ``{prefix}-assets-{catalog_id}`` indices.
-  Listens for ``CatalogEventType.ASSET_*`` events (when wired) and supports
-  direct programmatic indexing via ``index_asset()`` / ``delete_asset()``.
+  Driven by ``AssetRoutingConfig.operations[INDEX]`` via ``AssetService``'s
+  secondary-driver fan-out, plus direct programmatic indexing via
+  ``index_asset()`` / ``delete_asset()``.
 
 All drivers register as async event listeners, checking
 ``StorageRoutingConfig.secondary_drivers`` before acting.
@@ -1619,9 +1620,10 @@ class AssetElasticsearchDriver(
 
     Lifecycle wiring
     ----------------
-    Event listeners for ``CatalogEventType.ASSET_*`` are registered at
-    lifespan if available.  The driver also exposes ``index_asset()``
-    and ``delete_asset()`` for direct programmatic use.
+    No lifespan-time wiring is required.  Asset writes flow through the
+    ``AssetIndexer`` route in ``AssetRoutingConfig.operations[INDEX]`` —
+    invoked by ``AssetService``'s secondary-driver fan-out — and through
+    direct programmatic calls to ``index_asset()`` / ``delete_asset()``.
 
     Registered as ``storage_elasticsearch_assets`` via entry points.
     """
@@ -1648,22 +1650,11 @@ class AssetElasticsearchDriver(
 
     @asynccontextmanager
     async def lifespan(self, app_state: object):
-        from dynastore.models.protocols.events import EventsProtocol
-        from dynastore.tools.discovery import get_protocol
-        from dynastore.modules.catalog.event_service import CatalogEventType
-
-        events = get_protocol(EventsProtocol)
-        if events:
-            for etype, handler in [
-                (CatalogEventType.ASSET_CREATION, self._on_asset_upsert),
-                (CatalogEventType.ASSET_UPDATE, self._on_asset_upsert),
-                (CatalogEventType.ASSET_DELETION, self._on_asset_delete),
-                (CatalogEventType.ASSET_HARD_DELETION, self._on_asset_delete),
-            ]:
-                decorator = events.async_event_listener(etype)
-                if decorator:
-                    decorator(handler)
-            logger.info("AssetElasticsearchDriver: event listeners registered.")
+        # Asset writes flow exclusively through the AssetIndexer route in
+        # AssetRoutingConfig.operations[INDEX] — invoked by AssetService's
+        # secondary-driver fan-out. The previous CatalogEventType.ASSET_*
+        # listener path was retired to eliminate a dual-write race against
+        # the same index.
         yield
 
     # ------------------------------------------------------------------
@@ -1870,50 +1861,6 @@ class AssetElasticsearchDriver(
         raise NotImplementedError(
             "AssetElasticsearchDriver.export_entities: not supported."
         )
-
-    # ------------------------------------------------------------------
-    # Event handlers (fired when CatalogEventType.ASSET_* events are emitted)
-    # ------------------------------------------------------------------
-
-    async def _on_asset_upsert(
-        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None,
-        asset_id: Optional[str] = None, payload=None, **kwargs,
-    ):
-        if not catalog_id or not asset_id:
-            return
-        if not await self._is_secondary_for(type(self).__name__, catalog_id, collection_id):
-            return
-        try:
-            doc = payload if isinstance(payload, dict) else {}
-            doc.setdefault("asset_id", asset_id)
-            doc.setdefault("catalog_id", catalog_id)
-            if collection_id:
-                doc.setdefault("collection_id", collection_id)
-            await self.index_asset(catalog_id, doc)
-        except Exception as e:
-            logger.error(
-                "AssetsDriver: index failed for %s/%s: %s",
-                catalog_id, asset_id, e,
-            )
-
-    async def _on_asset_delete(
-        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None,
-        asset_id: Optional[str] = None, payload=None, **kwargs,
-    ):
-        if not asset_id:
-            _val = (payload if isinstance(payload, dict) else {}).get("asset_id")
-            asset_id = str(_val) if _val is not None else None
-        if not catalog_id or not asset_id:
-            return
-        if not await self._is_secondary_for(type(self).__name__, catalog_id, collection_id):
-            return
-        try:
-            await self.delete_asset(catalog_id, asset_id)
-        except Exception as e:
-            logger.error(
-                "AssetsDriver: delete failed for %s/%s: %s",
-                catalog_id, asset_id, e,
-            )
 
     # ------------------------------------------------------------------
     # AssetStore read methods
