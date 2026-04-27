@@ -188,7 +188,7 @@ driver_cfg = {
     ],
 }
 r = client.put(
-    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/configs/ItemsPostgresqlDriverConfig",
+    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/classes/ItemsPostgresqlDriverConfig",
     content=json.dumps(driver_cfg),
 )
 assert r.status_code in (200, 201, 204), r.text[:400]
@@ -358,7 +358,7 @@ pg_cfg = {
     # default VECTOR collection → geometry + attributes sidecars auto-injected
 }
 r = client.put(
-    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/configs/ItemsPostgresqlDriverConfig",
+    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/classes/ItemsPostgresqlDriverConfig",
     content=json.dumps(pg_cfg),
 )
 assert r.status_code in (200, 201, 204), r.text[:400]
