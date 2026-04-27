@@ -48,13 +48,18 @@ def _serialize_localized(value) -> Optional[str]:
 
 
 async def seed_platform_notebook(conn: DbResource, notebook: PlatformNotebookCreate) -> None:
-    """Insert a platform notebook only if it does not already exist."""
+    """Insert or update a platform notebook (always syncs content from package on deploy)."""
     query = text("""
         INSERT INTO notebooks.platform_notebooks
             (notebook_id, title, description, tags, content, metadata, registered_by, owner_type)
         VALUES
             (:notebook_id, :title, :description, :tags, :content, :metadata, :registered_by, :owner_type)
-        ON CONFLICT (notebook_id) DO NOTHING
+        ON CONFLICT (notebook_id) DO UPDATE SET
+            title       = EXCLUDED.title,
+            description = EXCLUDED.description,
+            tags        = EXCLUDED.tags,
+            content     = EXCLUDED.content,
+            metadata    = EXCLUDED.metadata
     """)
     params = {
         "notebook_id": notebook.notebook_id,
@@ -77,7 +82,7 @@ async def seed_platform_notebooks(conn: DbResource) -> int:
     for entry in entries:
         await seed_platform_notebook(conn, entry)
     if entries:
-        logger.info("Seeded %d platform notebook(s) (ON CONFLICT DO NOTHING).", len(entries))
+        logger.info("Seeded/updated %d platform notebook(s).", len(entries))
     return len(entries)
 
 
