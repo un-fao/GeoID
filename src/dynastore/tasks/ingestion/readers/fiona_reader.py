@@ -50,13 +50,16 @@ class FionaReader(SourceReaderProtocol):
         uri: str,
         *,
         encoding: str = "utf-8",
+        content_type: str | None = None,  # noqa: ARG002 — forwarded by registry, unused here
         **opts: Any,
     ) -> Iterator[Iterable[dict]]:
         with fiona.open(uri, "r", encoding=encoding) as reader:
             logger.info("FionaReader: opened %r via fiona", uri)
             yield reader
 
-    def feature_count(self, uri: str) -> int | None:
+    def feature_count(
+        self, uri: str, *, content_type: str | None = None,  # noqa: ARG002
+    ) -> int | None:
         try:
             with fiona.open(uri, "r") as src:
                 return len(src)

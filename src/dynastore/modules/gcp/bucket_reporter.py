@@ -165,6 +165,12 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
             return
         logger.info(f"GCS Detailed Reporter enabled for task {task_id}.")
 
+        # Fail-fast: confirm the report bucket exists before the task burns
+        # cycles ingesting features only to find at finish time that we
+        # cannot persist the report.  Catches typos like
+        # ``gs://dd88971-test-catalog-20/...`` (extra ``d``) up-front.
+        self._assert_report_bucket_exists()
+
         report_path = insert_before_extension(self.report_path, f"_config")
         model = {
             "task_id": self.task_id,
@@ -177,6 +183,41 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
         self._upload_to_gcs(
             report_path, content=json.dumps(model, indent=2, cls=CustomJSONEncoder)
         )
+
+    def _assert_report_bucket_exists(self) -> None:
+        """Raise a clear error if the configured ``report_file_path``
+        points at a non-existent bucket.
+
+        Without this check the task runs to completion and only
+        attempts the upload at ``task_finished`` — at which point the
+        underlying GCS 404 surfaces as a deep ``InvalidResponse``
+        traceback that buries the (usually trivial) cause: a typo in
+        the bucket name.
+        """
+        if not self._storage_client or not self.report_path.startswith("gs://"):
+            return
+        bucket_name = self.report_path[len("gs://"):].split("/", 1)[0]
+        if not bucket_name:
+            raise ValueError(
+                f"GcsDetailedReporter: report_file_path {self.report_path!r} "
+                "is missing a bucket name."
+            )
+        try:
+            exists = self._storage_client.bucket(bucket_name).exists()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "GcsDetailedReporter: cannot verify bucket %r (%s); "
+                "deferring failure to upload time.", bucket_name, exc,
+            )
+            return
+        if not exists:
+            raise FileNotFoundError(
+                f"GcsDetailedReporter: GCS bucket {bucket_name!r} (resolved "
+                f"from report_file_path={self.report_path!r}) does not exist "
+                "or is not accessible to this service account.  Check the "
+                "bucket name (common typos: leading/trailing characters) "
+                "and the runner's IAM permissions."
+            )
 
     async def process_batch_outcome(self, batch_results: List[Dict[str, Any]]):
         if not self.config:

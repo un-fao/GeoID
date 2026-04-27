@@ -85,27 +85,62 @@ class BucketManager:
             raise RuntimeError("ConfigsProtocol not available.")
         return mgr
 
+    # Max length of a GCS bucket name (excluding the dot-style 222-char
+    # form, which we don't use).  See
+    # https://cloud.google.com/storage/docs/buckets#naming
+    GCS_BUCKET_NAME_MAX_LEN: int = 63
+
     def generate_bucket_name(self, catalog_id: str, physical_schema: Optional[str] = None) -> str:
         """Generates the deterministic GCS bucket name for a catalog.
 
-        Format: {6-char project hash}-{physical schema}
-        e.g.  ab12cd-s_2ka8fbc3
+        Format: ``{project_id}-{identifier}`` where *identifier* is the
+        physical schema (preferred) or the catalog_id, lowercased and
+        with underscores translated to dashes.
 
-        The 6-char project hash gives sufficient global uniqueness across GCP projects
-        (1 in ~16M collision chance). The physical schema is already short (10 chars,
-        e.g. s_2ka8fbc3) so the full name is ≤ 18 chars — well within the 63-char limit.
-        The bucket name is identical to the DB schema name for easy cross-reference.
+        Examples (project ``fao-aip-geospatial-review``):
+
+            generate_bucket_name("test_catalog_19")
+                -> "fao-aip-geospatial-review-test-catalog-19"
+            generate_bucket_name("c", physical_schema="s_2ka8fbc3")
+                -> "fao-aip-geospatial-review-s-2ka8fbc3"
+
+        Why use the project ID instead of a 6-char hash:
+        - Globally unique without an opaque hex prefix (project IDs
+          themselves are globally unique across GCP).
+        - Human-recognisable in logs and the GCS console — typing
+          ``gs://fao-aip-geospatial-review-test-catalog-20/...`` is far
+          less typo-prone than ``gs://d88971-test-catalog-20/...``.
+
+        Length safety: GCS bucket names are capped at 63 characters.  If
+        ``{project_id}-{identifier}`` overruns, we truncate the
+        identifier and append a stable 8-char hash of the original
+        identifier so the name remains deterministic and collision-
+        resistant.
+
+        Backwards compatibility: existing buckets are unaffected — their
+        names are persisted in ``catalogs.bucket_name`` and looked up
+        via :func:`gcp_db.get_bucket_for_catalog_query`.  Only newly
+        provisioned catalogs use this scheme.
         """
         import hashlib
         if not self.project_id:
             raise RuntimeError("GCP Project ID not available.")
-        proj_hash = hashlib.sha1(self.project_id.encode()).hexdigest()[:6]
+        prefix = self.project_id.lower()
         identifier = (physical_schema or catalog_id).lower().replace("_", "-")
-        bucket_name = f"{proj_hash}-{identifier}"
-        # Safety check — should never exceed limit with our short schema names
-        if len(bucket_name) > 63:
+        bucket_name = f"{prefix}-{identifier}"
+        if len(bucket_name) > self.GCS_BUCKET_NAME_MAX_LEN:
+            # Reserve room for: prefix + '-' + truncated_id + '-' + 8-char hash
             id_hash = hashlib.sha1(identifier.encode()).hexdigest()[:8]
-            bucket_name = f"{proj_hash}-{identifier[:54]}-{id_hash}"
+            max_id = self.GCS_BUCKET_NAME_MAX_LEN - len(prefix) - 2 - len(id_hash)
+            if max_id < 1:
+                # Defensive: project_id alone is too long (unlikely — GCP
+                # caps project IDs at 30 chars).  Fall back to a hash of
+                # the project ID to guarantee a valid bucket name.
+                proj_hash = hashlib.sha1(prefix.encode()).hexdigest()[:8]
+                max_id = self.GCS_BUCKET_NAME_MAX_LEN - len(proj_hash) - 2 - len(id_hash)
+                bucket_name = f"{proj_hash}-{identifier[:max_id]}-{id_hash}"
+            else:
+                bucket_name = f"{prefix}-{identifier[:max_id]}-{id_hash}"
         return bucket_name
 
     async def get_storage_identifier(self, catalog_id: str) -> Optional[str]:
