@@ -30,11 +30,13 @@ Upload flows
 ~~~~~~~~~~~~
 **Event-driven backends (GCS, S3)**::
 
-    from dynastore.models.protocols import AssetUploadProtocol
-    from dynastore.modules import get_protocol
+    from dynastore.modules.storage.router import get_asset_upload_driver
     from dynastore.modules.catalog.asset_service import AssetUploadDefinition, AssetTypeEnum
 
-    upload = get_protocol(AssetUploadProtocol)
+    # Routed lookup: respects AssetRoutingConfig.operations[UPLOAD] per
+    # catalog/collection. Falls back to first-registered backend when no
+    # UPLOAD entry resolves (matches the legacy get_protocol behaviour).
+    upload = await get_asset_upload_driver(catalog_id="imagery_catalog")
 
     ticket = await upload.initiate_upload(
         catalog_id="imagery_catalog",

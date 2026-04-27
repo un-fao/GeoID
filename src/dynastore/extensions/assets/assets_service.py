@@ -482,9 +482,17 @@ class AssetService(ExtensionProtocol):
 
         Prefer :meth:`resolve_upload_driver` which honours per-catalog
         ``AssetRoutingConfig.operations[UPLOAD]`` and supports a hint for
-        backend selection. This property is preserved for backward-compat
-        callers that don't have catalog scope at hand.
+        backend selection. Kept only for external callers that don't have
+        catalog scope at hand and accept the legacy first-match semantics.
         """
+        import warnings
+        warnings.warn(
+            "AssetService.upload_provider is deprecated; use "
+            "resolve_upload_driver(catalog_id, collection_id) for per-catalog "
+            "upload-backend routing.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         from dynastore.modules import get_protocol as _gp
         return _gp(AssetUploadProtocol)
 

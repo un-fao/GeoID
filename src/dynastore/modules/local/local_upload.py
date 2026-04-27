@@ -22,8 +22,11 @@ Local-disk upload backend — server-side file receive + asset registration.
 Upload flow
 -----------
 1. Client calls ``POST /assets/catalogs/{id}/upload`` (or the collection variant).
-2. ``assets_service.py`` discovers this module via ``get_protocol(AssetUploadProtocol)``
-   and calls ``initiate_upload`` → returns ``UploadTicket(backend="local", method="POST",
+2. ``assets_service.py`` resolves the upload backend via
+   ``router.get_asset_upload_driver(catalog_id, collection_id)`` (which honours
+   ``AssetRoutingConfig.operations[UPLOAD]`` and falls back to the first-
+   registered backend) and calls ``initiate_upload`` → returns
+   ``UploadTicket(backend="local", method="POST",
    upload_url="/local-upload/{ticket_id}")``.
 3. Client POSTs the file (multipart) to ``/local-upload/{ticket_id}``.
 4. The endpoint streams bytes to ``STAGING_DIR/{ticket_id}/{filename}``, then calls
@@ -67,8 +70,11 @@ class LocalUploadModule:
     status is already ``COMPLETED``.
 
     An instance of this class is registered as a plugin during ``lifespan`` so
-    that ``get_protocol(AssetUploadProtocol)`` discovers it.  The upload endpoint
-    is added directly to the FastAPI app during the same lifespan phase.
+    it appears in ``AssetRoutingConfig.operations[UPLOAD]`` (auto-augmented
+    from discoverable ``AssetUploadProtocol`` impls). Operators select it for
+    a given catalog by pinning ``"LocalUploadModule"`` in routing config.
+    The upload endpoint is added directly to the FastAPI app during the same
+    lifespan phase.
     """
 
     def __init__(

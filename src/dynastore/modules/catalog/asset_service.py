@@ -103,10 +103,11 @@ Upload flow (GCS)
 -----------------
 ::
 
-    from dynastore.models.protocols import AssetUploadProtocol
-    from dynastore.modules import get_protocol
+    from dynastore.modules.storage.router import get_asset_upload_driver
 
-    upload = get_protocol(AssetUploadProtocol)
+    # Per-catalog UPLOAD routing — see AssetRoutingConfig.operations[UPLOAD].
+    # Falls back to first-registered backend if no UPLOAD entry resolves.
+    upload = await get_asset_upload_driver(catalog_id="imagery_catalog")
     ticket = await upload.initiate_upload(
         catalog_id="imagery_catalog",
         asset_def=AssetUploadDefinition(
