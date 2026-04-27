@@ -18,8 +18,8 @@ map of what's wired and how the pieces relate.
 | EDR | `/edr` | `extensions/edr/` | EDR 1.1 core/collections/queries; position (Point CoverageJSON+GeoJSON), area/cube (Grid CoverageJSON); reads raster assets via GDAL VSI; see [edr.md](edr.md) |
 | DGGS | `/dggs` | `extensions/dggs/` | DGGS Part 1 core/data-retrieval/zone-query; H3 + S2 DGGRS; in-process zone aggregation; sidecar fast-path; see [dggs.md](dggs.md) |
 | Moving Features | `/movingfeatures` | `extensions/moving_features/` | MF Part 1 core/mf-collection/tgsequence; partitioned PG storage; append+delete; temporal geometry filter; see [moving_features.md](moving_features.md) |
-| 3D GeoVolumes | `/volumes` | `extensions/volumes/` | Draft URIs (core, 3dtiles, tileset); `tileset.json` from `BoundsSourceProtocol` (pluggable — empty default or sidecar-backed opt-in), `/tiles/{id}.b3dm` 501 pending writer phase, `/metadata` |
-| Joins | `/join` | `extensions/joins/` | Draft URI (core); discriminated `secondary` (NamedSecondarySpec / BigQuerySecondarySpec); both sides resolved via `resolve_drivers("READ", ..., hint="features")`; CQL2 on primary via `primary_filter` → `QueryRequest.cql_filter` |
+| 3D GeoVolumes | `/volumes` | `extensions/volumes/` | Draft URIs (core, 3dtiles, tileset); `tileset.json` from `BoundsSourceProtocol` (pluggable — empty default or sidecar-backed opt-in); B3DM + GLB tile content via PostGIS sidecar; see [volumes.md](volumes.md) |
+| Joins | `/join` | `extensions/joins/` | Draft URI (core); discriminated `secondary` (NamedSecondarySpec / BigQuerySecondarySpec); both sides resolved via `resolve_drivers("READ", ..., hint="features")`; CQL2 on primary via `primary_filter`; legacy `/dwh` tiled join coexists; see [joins.md](joins.md) |
 
 The legacy `/dwh/*` extension (tile-join MVT/PBF surface) lives at
 `extensions/dwh/` and remains supported. `/join/*` is the OGC-conformant
