@@ -105,20 +105,12 @@ class PolicyService:
         Evaluates if the given principal can perform 'action' on 'resource'.
         Delegates to the evaluation engine (evaluate_access).
 
-        Sysadmin short-circuit: a principal carrying the ``sysadmin`` role
-        is granted every action on every resource without consulting the
-        policy engine. This mirrors the guard-layer semantics in
-        ``dynastore.modules.iam.authorization.default.DefaultAuthorizer``
-        (sysadmin short-circuits before reaching ALLOW policy checks)
-        and is the convention used elsewhere in the codebase — e.g.
-        privilege-elevation guards in extensions/iam/guards.py.
-        Without this, OGC process execution (which gates on
-        ``Action.EXECUTE`` via ``check_permission``) 403s for any sysadmin
-        caller unless someone remembers to seed a wildcard ALLOW policy.
+        Note: this method MUST NOT pattern-match on role names (D4 — no
+        hardcoded role identifiers). The historical sysadmin
+        short-circuit lives in ``IamMiddleware``'s privilege-elevation
+        guard (see ``extensions/iam/guards.py``); permission decisions
+        here flow exclusively through role → policy → permission.
         """
-        if principal.roles and "sysadmin" in principal.roles:
-            return True
-
         # 1. Collect all roles and identity IDs to check
         identities = []
         if principal.subject_id:

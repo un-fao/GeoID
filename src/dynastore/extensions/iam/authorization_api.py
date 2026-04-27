@@ -20,6 +20,13 @@
 Simplified IAG REST API Endpoints (v2.1)
 
 Email-based authorization management with self-service and admin endpoints.
+
+All role-management calls go through the unified grants model: platform
+grants live in `iam.grants`, catalog grants live in `{catalog_schema}.grants`.
+The legacy `schema=` parameter has been replaced by explicit
+``list_platform_roles`` / ``list_catalog_roles`` / ``grant_platform_role`` /
+``grant_catalog_role`` / ``revoke_platform_role`` / ``revoke_catalog_role``
+facades on the storage layer.
 """
 
 import logging
@@ -27,6 +34,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, EmailStr
 from typing import List, Optional, Dict, Any, cast
+from uuid import UUID
 from datetime import datetime
 
 from dynastore.modules import get_protocol
@@ -137,12 +145,25 @@ async def resolve_catalog_schema(catalog_id: str) -> str:
         raise HTTPException(status_code=404, detail=f"Catalog not found: {catalog_id}")
 
 
+async def _resolve_principal_id(storage, provider: str, subject_id: str) -> UUID:
+    """Resolve `(provider, subject_id)` to a principal_id, or 404."""
+    principal = await storage.get_principal_by_identity(
+        provider=provider, subject_id=subject_id
+    )
+    if principal is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No principal for identity {provider}:{subject_id}",
+        )
+    return principal.id
+
+
 # --- Self-Service Endpoints ---
 
 
 @me_router.get("")
 async def get_me(request: Request):
-    """Return the current principal along with their global roles.
+    """Return the current principal along with their platform roles.
 
     A single call the admin UI uses to decide which pages to show — avoids
     round-tripping ``/me/available-roles`` and ``/me/roles/global`` on every
@@ -157,7 +178,8 @@ async def get_me(request: Request):
     roles: List[str] = []
     try:
         storage = await get_storage()
-        roles = await storage.get_identity_roles(provider, subject_id, schema="iam")
+        # No catalog_schema → platform grants only.
+        roles = await storage.get_identity_roles(provider, subject_id)
     except HTTPException:
         # get_storage() raises 500 if authenticator not wired — degrade to
         # empty roles rather than breaking the endpoint. The principal
@@ -169,7 +191,7 @@ async def get_me(request: Request):
         # instead of a real grant gap. Without this, a DB outage manifests
         # as silent permission stripping in the UI.
         logger.warning(
-            "get_me: failed to fetch global roles for %s:%s; returning empty",
+            "get_me: failed to fetch platform roles for %s:%s; returning empty",
             provider, subject_id,
             exc_info=True,
         )
@@ -190,7 +212,11 @@ async def get_available_roles(
     request: Request,
     catalog_id: Optional[str] = None,
 ):
-    """List roles available in the system (self-service discovery)."""
+    """List role definitions visible to the caller.
+
+    With no `catalog_id`, returns the platform role registry (`iam.roles`).
+    With a `catalog_id`, returns that tenant's role registry.
+    """
     storage = await get_storage()
     await get_current_identity(request)  # Require authentication
 
@@ -210,29 +236,38 @@ async def get_available_roles(
 
 @me_router.get("/roles/global", response_model=List[str])
 async def get_my_global_roles(request: Request):
-    """Get my global roles."""
+    """Get my platform-scope roles."""
     storage = await get_storage()
     identity = await get_current_identity(request)
     provider = identity.get("provider")
     subject_id = identity.get("sub")
 
-    roles = await storage.get_identity_roles(provider, subject_id, schema="iam")
-    return roles
+    # Platform-only view: no catalog_schema.
+    return await storage.get_identity_roles(provider, subject_id)
 
 
 @me_router.get("/roles/catalogs/{catalog_id}", response_model=List[str])
 async def get_my_catalog_roles(request: Request, catalog_id: str):
-    """Get my roles in a specific catalog."""
+    """Get my roles in a specific catalog (catalog-scope only).
+
+    Reports the roles granted in `{catalog_schema}.grants` — platform
+    grants are intentionally excluded so the caller sees the
+    catalog-local picture.
+    """
     storage = await get_storage()
     identity = await get_current_identity(request)
     provider = identity.get("provider")
     subject_id = identity.get("sub")
     catalog_schema = await resolve_catalog_schema(catalog_id)
 
-    roles = await storage.get_identity_roles(
-        provider, subject_id, schema=catalog_schema
+    principal = await storage.get_principal_by_identity(
+        provider=provider, subject_id=subject_id
     )
-    return roles
+    if principal is None:
+        return []
+    return await storage.list_catalog_roles(
+        principal_id=principal.id, catalog_schema=catalog_schema
+    )
 
 
 @me_router.get("/catalogs", response_model=List[CatalogAccessResponse])
@@ -243,21 +278,20 @@ async def get_my_catalogs(request: Request):
     provider = identity.get("provider")
     subject_id = identity.get("sub")
 
-    # Get global roles
-    global_roles = await storage.get_identity_roles(
-        provider, subject_id, schema="iam"
-    )
+    result: List[CatalogAccessResponse] = []
 
-    result = []
-
-    # Add global access if exists
-    if global_roles:
+    # Platform-scope grants surface as the "*" entry.
+    platform_roles = await storage.get_identity_roles(provider, subject_id)
+    if platform_roles:
         result.append(
-            CatalogAccessResponse(
-                catalog_id="*",  # Global
-                roles=global_roles,
-            )
+            CatalogAccessResponse(catalog_id="*", roles=platform_roles)
         )
+
+    principal = await storage.get_principal_by_identity(
+        provider=provider, subject_id=subject_id
+    )
+    if principal is None:
+        return result
 
     catalog_module = await get_catalogs_protocol()
     catalog_ids = await storage.get_catalogs_for_identity(provider, subject_id)
@@ -267,8 +301,8 @@ async def get_my_catalogs(request: Request):
             catalog_schema = await catalog_module.resolve_physical_schema(
                 cat_id, ctx=DriverContext(db_resource=cast(Any, catalog_module).engine)
             )
-            catalog_roles = await storage.get_identity_roles(
-                provider, subject_id, schema=catalog_schema
+            catalog_roles = await storage.list_catalog_roles(
+                principal_id=principal.id, catalog_schema=catalog_schema
             )
             if catalog_roles:
                 result.append(
@@ -297,26 +331,25 @@ async def get_my_effective_authorization(request: Request, catalog_id: str):
     subject_id = identity.get("sub")
     email = identity.get("email", "unknown@example.com")
 
-    # Get global and catalog roles
-    catalog_schema = await resolve_catalog_schema(catalog_id)
-    global_roles = await storage.get_identity_roles(
-        provider, subject_id, schema="iam"
-    )
-    catalog_roles = await storage.get_identity_roles(
-        provider, subject_id, schema=catalog_schema
-    )
-
-    # Get authorization metadata (prefer catalog over global)
-    auth = await storage.get_identity_authorization(
-        provider, subject_id, schema=catalog_schema
-    )
-    if not auth:
-        auth = await storage.get_identity_authorization(
-            provider, subject_id, schema="iam"
-        )
-
     if not provider or not subject_id:
         raise HTTPException(status_code=401, detail="Identity missing provider/subject")
+
+    catalog_schema = await resolve_catalog_schema(catalog_id)
+
+    principal = await storage.get_principal_by_identity(
+        provider=provider, subject_id=subject_id
+    )
+
+    global_roles: List[str] = []
+    catalog_roles: List[str] = []
+    if principal is not None:
+        global_roles = await storage.list_platform_roles(principal_id=principal.id)
+        catalog_roles = await storage.list_catalog_roles(
+            principal_id=principal.id, catalog_schema=catalog_schema
+        )
+
+    # Authorization metadata lives on the platform principal row (D12).
+    auth = await storage.get_identity_authorization(provider, subject_id)
 
     return EffectiveAuthorizationResponse(
         email=email,
@@ -324,7 +357,7 @@ async def get_my_effective_authorization(request: Request, catalog_id: str):
         subject_id=subject_id,
         global_roles=global_roles,
         catalog_roles=catalog_roles,
-        effective_roles=global_roles + catalog_roles,
+        effective_roles=list({*global_roles, *catalog_roles}),
         is_active=auth.get("is_active", True) if auth else True,
         valid_until=auth.get("valid_until") if auth else None,
     )
@@ -335,44 +368,51 @@ async def get_my_effective_authorization(request: Request, catalog_id: str):
 
 @router.post("/users/{email}/roles/global", status_code=201)
 async def grant_global_roles(email: EmailStr, request: RoleGrantRequest):
-    """Grant global roles to a user (admin only)."""
+    """Grant platform-scope roles to a user (admin only)."""
     storage = await get_storage()
 
     async with http_errors({ValueError: 404}):
         provider, subject_id = await storage.resolve_identity(email)
 
-    await storage.grant_roles(
-        provider=provider,
-        subject_id=subject_id,
-        roles=request.roles,
-        schema="iam",
-        granted_by=request.granted_by,
-    )
+    principal_id = await _resolve_principal_id(storage, provider, subject_id)
+    granted_by_uuid: Optional[UUID] = None
+    if request.granted_by:
+        try:
+            granted_by_uuid = UUID(request.granted_by)
+        except (TypeError, ValueError):
+            granted_by_uuid = None
 
-    return {"message": f"Granted global roles to {email}", "roles": request.roles}
+    for role_name in request.roles:
+        await storage.grant_platform_role(
+            principal_id=principal_id,
+            role_name=role_name,
+            granted_by=granted_by_uuid,
+        )
+
+    return {"message": f"Granted platform roles to {email}", "roles": request.roles}
 
 
 @router.get("/users/{email}/roles/global", response_model=List[str])
 async def get_user_global_roles(email: EmailStr):
-    """Get global roles for a user (admin only)."""
+    """Get platform-scope roles for a user (admin only)."""
     storage = await get_storage()
 
     async with http_errors({ValueError: 404}):
         provider, subject_id = await storage.resolve_identity(email)
 
-    roles = await storage.get_identity_roles(provider, subject_id, schema="iam")
-    return roles
+    return await storage.get_identity_roles(provider, subject_id)
 
 
 @router.delete("/users/{email}/roles/global/{role}", status_code=204)
 async def revoke_global_role(email: EmailStr, role: str):
-    """Revoke a global role from a user (admin only)."""
+    """Revoke a platform-scope role from a user (admin only)."""
     storage = await get_storage()
 
     async with http_errors({ValueError: 404}):
         provider, subject_id = await storage.resolve_identity(email)
 
-    await storage.revoke_role(provider, subject_id, role, schema="iam")
+    principal_id = await _resolve_principal_id(storage, provider, subject_id)
+    await storage.revoke_platform_role(principal_id=principal_id, role_name=role)
     return None
 
 
@@ -380,20 +420,28 @@ async def revoke_global_role(email: EmailStr, role: str):
 async def grant_catalog_roles(
     email: EmailStr, catalog_id: str, request: RoleGrantRequest
 ):
-    """Grant catalog-specific roles to a user (admin only)."""
+    """Grant catalog-scope roles to a user (admin only)."""
     storage = await get_storage()
     catalog_schema = await resolve_catalog_schema(catalog_id)
 
     async with http_errors({ValueError: 404}):
         provider, subject_id = await storage.resolve_identity(email)
 
-    await storage.grant_roles(
-        provider=provider,
-        subject_id=subject_id,
-        roles=request.roles,
-        schema=catalog_schema,
-        granted_by=request.granted_by,
-    )
+    principal_id = await _resolve_principal_id(storage, provider, subject_id)
+    granted_by_uuid: Optional[UUID] = None
+    if request.granted_by:
+        try:
+            granted_by_uuid = UUID(request.granted_by)
+        except (TypeError, ValueError):
+            granted_by_uuid = None
+
+    for role_name in request.roles:
+        await storage.grant_catalog_role(
+            principal_id=principal_id,
+            role_name=role_name,
+            catalog_schema=catalog_schema,
+            granted_by=granted_by_uuid,
+        )
 
     return {
         "message": f"Granted catalog roles to {email}",
@@ -404,29 +452,36 @@ async def grant_catalog_roles(
 
 @router.get("/users/{email}/roles/catalogs/{catalog_id}", response_model=List[str])
 async def get_user_catalog_roles(email: EmailStr, catalog_id: str):
-    """Get catalog-specific roles for a user (admin only)."""
+    """Get catalog-scope roles for a user (admin only)."""
     storage = await get_storage()
     catalog_schema = await resolve_catalog_schema(catalog_id)
 
     async with http_errors({ValueError: 404}):
         provider, subject_id = await storage.resolve_identity(email)
 
-    roles = await storage.get_identity_roles(
-        provider, subject_id, schema=catalog_schema
+    principal = await storage.get_principal_by_identity(
+        provider=provider, subject_id=subject_id
     )
-    return roles
+    if principal is None:
+        return []
+    return await storage.list_catalog_roles(
+        principal_id=principal.id, catalog_schema=catalog_schema
+    )
 
 
 @router.delete("/users/{email}/roles/catalogs/{catalog_id}/{role}", status_code=204)
 async def revoke_catalog_role(email: EmailStr, catalog_id: str, role: str):
-    """Revoke a catalog-specific role from a user (admin only)."""
+    """Revoke a catalog-scope role from a user (admin only)."""
     storage = await get_storage()
     catalog_schema = await resolve_catalog_schema(catalog_id)
 
     async with http_errors({ValueError: 404}):
         provider, subject_id = await storage.resolve_identity(email)
 
-    await storage.revoke_role(provider, subject_id, role, schema=catalog_schema)
+    principal_id = await _resolve_principal_id(storage, provider, subject_id)
+    await storage.revoke_catalog_role(
+        principal_id=principal_id, role_name=role, catalog_schema=catalog_schema
+    )
     return None
 
 
@@ -439,26 +494,28 @@ async def get_user_catalogs(email: EmailStr):
     async with http_errors({ValueError: 404}):
         provider, subject_id = await storage.resolve_identity(email)
 
-    result = []
+    result: List[CatalogAccessResponse] = []
 
-    # Get global roles
-    global_roles = await storage.get_identity_roles(
-        provider, subject_id, schema="iam"
-    )
+    # Platform-scope grants surface as the "*" entry.
+    global_roles = await storage.get_identity_roles(provider, subject_id)
     if global_roles:
         result.append(CatalogAccessResponse(catalog_id="*", roles=global_roles))
 
-    # 2. Get specific catalogs from storage discovery
+    principal = await storage.get_principal_by_identity(
+        provider=provider, subject_id=subject_id
+    )
+    if principal is None:
+        return result
+
     catalog_ids = await storage.get_catalogs_for_identity(provider, subject_id)
-    
+
     for cat_id in catalog_ids:
-        # Get roles for this catalog
         try:
             catalog_schema = await catalog_module.resolve_physical_schema(
                 cat_id, ctx=DriverContext(db_resource=cast(Any, catalog_module).engine)
             )
-            catalog_roles = await storage.get_identity_roles(
-                provider, subject_id, schema=catalog_schema
+            catalog_roles = await storage.list_catalog_roles(
+                principal_id=principal.id, catalog_schema=catalog_schema
             )
             if catalog_roles:
                 result.append(
@@ -488,25 +545,23 @@ async def get_user_effective_authorization(email: EmailStr, catalog_id: str):
     async with http_errors({ValueError: 404}):
         provider, subject_id = await storage.resolve_identity(email)
 
-    # Get global and catalog roles
-    global_roles = await storage.get_identity_roles(
-        provider, subject_id, schema="iam"
-    )
-    catalog_roles = await storage.get_identity_roles(
-        provider, subject_id, schema=catalog_schema
-    )
-
-    # Get authorization metadata
-    auth = await storage.get_identity_authorization(
-        provider, subject_id, schema=catalog_schema
-    )
-    if not auth:
-        auth = await storage.get_identity_authorization(
-            provider, subject_id, schema="iam"
-        )
-
     if not provider or not subject_id:
         raise HTTPException(status_code=401, detail="Identity missing provider/subject")
+
+    principal = await storage.get_principal_by_identity(
+        provider=provider, subject_id=subject_id
+    )
+
+    global_roles: List[str] = []
+    catalog_roles: List[str] = []
+    if principal is not None:
+        global_roles = await storage.list_platform_roles(principal_id=principal.id)
+        catalog_roles = await storage.list_catalog_roles(
+            principal_id=principal.id, catalog_schema=catalog_schema
+        )
+
+    # Authorization metadata lives on the platform principal row (D12).
+    auth = await storage.get_identity_authorization(provider, subject_id)
 
     return EffectiveAuthorizationResponse(
         email=email,
@@ -514,7 +569,7 @@ async def get_user_effective_authorization(email: EmailStr, catalog_id: str):
         subject_id=subject_id,
         global_roles=global_roles,
         catalog_roles=catalog_roles,
-        effective_roles=global_roles + catalog_roles,
+        effective_roles=list({*global_roles, *catalog_roles}),
         is_active=auth.get("is_active", True) if auth else True,
         valid_until=auth.get("valid_until") if auth else None,
     )
@@ -526,5 +581,4 @@ async def get_catalog_users(catalog_id: str):
     storage = await get_storage()
     catalog_schema = await resolve_catalog_schema(catalog_id)
 
-    users = await storage.get_catalog_users(schema=catalog_schema)
-    return users
+    return await storage.get_catalog_users(catalog_schema=catalog_schema)

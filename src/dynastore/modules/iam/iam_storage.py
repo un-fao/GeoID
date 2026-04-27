@@ -1,23 +1,22 @@
 #    Copyright 2025 FAO
-# 
+#
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
 #    You may obtain a copy of the License at
-# 
+#
 #        http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 #    Unless required by applicable law or agreed to in writing, software
 #    distributed under the License is distributed on an "AS IS" BASIS,
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
-# 
+#
 #    Author: Carlo Cancellieri (ccancellieri@gmail.com)
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import abc
-from datetime import datetime
 from typing import List, Any, Optional
 from uuid import UUID
 from .models import Principal, Role, RefreshToken
@@ -27,7 +26,17 @@ from .models import Principal, Role, RefreshToken
 class AbstractIamStorage(abc.ABC):
     """
     Abstract interface for IAM storage.
-    
+
+    Scope conventions:
+    - **Principals & identity_links** are platform-global. They live only in
+      the `iam` schema; the storage layer hardcodes the schema internally
+      (no `schema=` parameter on these methods).
+    - **Roles** are per-scope: platform roles in `iam`, tenant-defined roles
+      in each catalog schema. Methods that touch the role registry still
+      take `schema=` because the same logical method writes to either scope.
+    - **Refresh tokens & audit log** stay platform-only with the legacy
+      `schema=` default for now (M2.5-style hard cut not in scope here).
+
     The 'conn' parameter is typed as Optional[Any] to allow for:
     1. SQL implementations receiving a DbResource/Connection for transactions.
     2. NoSQL/Memory implementations ignoring it or receiving a different client type.
@@ -35,33 +44,38 @@ class AbstractIamStorage(abc.ABC):
     """
 
     # No initialize() or shutdown() - use lifespan() if needed.
-    
-    @abc.abstractmethod
-    async def create_principal(self, principal: Principal, conn: Optional[Any] = None, schema: str = "iam") -> Principal: ...
-    
-    @abc.abstractmethod
-    async def get_principal(self, principal_id: UUID, conn: Optional[Any] = None, schema: str = "iam") -> Optional[Principal]: ...
-    
-    @abc.abstractmethod
-    async def update_principal(self, principal: Principal, conn: Optional[Any] = None, schema: str = "iam") -> Optional[Principal]: ...
 
     @abc.abstractmethod
-    async def get_principal_by_identifier(self, identifier: str, conn: Optional[Any] = None, schema: str = "iam") -> Optional[Principal]: ...
-    
-    @abc.abstractmethod
-    async def delete_principal(self, principal_id: UUID, conn: Optional[Any] = None, schema: str = "iam") -> bool: ...
+    async def create_principal(self, principal: Principal, conn: Optional[Any] = None) -> Principal: ...
 
     @abc.abstractmethod
-    async def get_principal_id_by_identifier(self, identifier: str, conn: Optional[Any] = None, schema: str = "iam") -> Optional[UUID]: ...
+    async def get_principal(self, principal_id: UUID, conn: Optional[Any] = None) -> Optional[Principal]: ...
 
     @abc.abstractmethod
-    async def list_principals(self, offset: int, limit: int, conn: Optional[Any] = None, schema: str = "iam") -> List[Principal]: ...
+    async def update_principal(self, principal: Principal, conn: Optional[Any] = None) -> Optional[Principal]: ...
+
+    @abc.abstractmethod
+    async def get_principal_by_identifier(self, identifier: str, conn: Optional[Any] = None) -> Optional[Principal]: ...
+
+    @abc.abstractmethod
+    async def delete_principal(self, principal_id: UUID, conn: Optional[Any] = None) -> bool: ...
+
+    @abc.abstractmethod
+    async def get_principal_id_by_identifier(self, identifier: str, conn: Optional[Any] = None) -> Optional[UUID]: ...
+
+    @abc.abstractmethod
+    async def list_principals(self, offset: int, limit: int, conn: Optional[Any] = None) -> List[Principal]: ...
 
     # --- Search & Management Extensions ---
 
     @abc.abstractmethod
     async def search_principals(self, identifier: Optional[str] = None, role: Optional[str] = None, limit: int = 100, offset: int = 0, conn: Optional[Any] = None, schema: str = "iam") -> List[Principal]:
-        """Search principals by identifier pattern or role."""
+        """Search principals by identifier pattern or role.
+
+        `schema` selects which `grants` table the optional role filter
+        joins through (platform `iam.grants` vs. a tenant's grants).
+        Principals always come from `iam.principals`.
+        """
         ...
 
     # --- Role & Hierarchy Management ---
@@ -108,14 +122,14 @@ class AbstractIamStorage(abc.ABC):
 
     @abc.abstractmethod
     async def get_catalogs_for_identity(self, provider: str, subject_id: str) -> List[str]:
-        """Get list of catalog IDs where an identity has roles."""
+        """Get list of catalog IDs where an identity has at least one grant."""
         ...
 
     @abc.abstractmethod
     async def get_principal_by_identity(
-        self, provider: str, subject_id: str, schema: str, conn: Optional[Any] = None
+        self, provider: str, subject_id: str, conn: Optional[Any] = None
     ) -> Optional[Principal]:
-        """Resolves an external identity to a principal."""
+        """Resolves an external identity to a principal (platform-global)."""
         ...
 
     @abc.abstractmethod
@@ -126,7 +140,6 @@ class AbstractIamStorage(abc.ABC):
         subject_id: str,
         email: Optional[str] = None,
         conn: Optional[Any] = None,
-        schema: str = "iam",
     ) -> bool:
-        """Links a principal to an external identity."""
+        """Links a principal to an external identity (platform-global)."""
         ...

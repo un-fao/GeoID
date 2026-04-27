@@ -24,16 +24,20 @@ from .models import Principal, Role, RefreshToken, IdentityLink, Policy
 
 # --- Queries (IAM Tables) ---
 
-# V2: Principals (Enhanced)
+# Principals — platform-global (lives only in `iam` schema).
+#
+# Role grants no longer live on this table. They live in a single
+# unified `grants` table per scope: platform grants in `iam.grants`,
+# catalog grants in `{catalog_schema}.grants`. The old `roles JSONB`
+# column has been removed (hard cut, no migration).
 CREATE_PRINCIPALS_TABLE = DDLQuery("""
     CREATE TABLE IF NOT EXISTS {schema}.principals (
         id UUID PRIMARY KEY,
         identifier VARCHAR(512),
-        display_name VARCHAR(255), -- V2
+        display_name VARCHAR(255),
         is_active BOOLEAN DEFAULT TRUE,
         valid_from TIMESTAMPTZ DEFAULT NOW(),
         valid_until TIMESTAMPTZ,
-        roles JSONB DEFAULT '[]'::jsonb,
         custom_policies JSONB DEFAULT '[]'::jsonb,
         attributes JSONB DEFAULT '{}'::jsonb,
         metadata JSONB DEFAULT '{}'::jsonb,
@@ -44,7 +48,9 @@ CREATE_PRINCIPALS_TABLE = DDLQuery("""
     );
 """)
 
-# V2: Identity Links
+# Identity Links — platform-only. Lives in `iam.identity_links`.
+# Tenant schemas never carry their own copy; identity is global,
+# only grants are scope-specific.
 CREATE_IDENTITY_LINKS_TABLE = DDLQuery("""
     CREATE TABLE IF NOT EXISTS {schema}.identity_links (
         provider VARCHAR(64) NOT NULL,
@@ -57,15 +63,17 @@ CREATE_IDENTITY_LINKS_TABLE = DDLQuery("""
     );
 """)
 
-# V2: Dynamic Roles
+# Roles — per-scope registry. Exists in `iam` (platform roles) and
+# in every catalog schema (tenant-owned roles). Same shape; tenants
+# may define, rename, delete their own roles freely after bootstrap.
 CREATE_ROLES_TABLE = DDLQuery("""
     CREATE TABLE IF NOT EXISTS {schema}.roles (
-        id VARCHAR(128) PRIMARY KEY, -- Renamed from name or separate ID? Assuming ID=Name for simplicity in transition
+        id VARCHAR(128) PRIMARY KEY,
         name VARCHAR(128) NOT NULL,
         description TEXT,
         level INTEGER DEFAULT 0,
-        parent_roles JSONB DEFAULT '[]'::jsonb, -- V2 Inheritance
-        policies JSONB DEFAULT '[]'::jsonb, -- V2 Policy Links
+        parent_roles JSONB DEFAULT '[]'::jsonb,
+        policies JSONB DEFAULT '[]'::jsonb,
         metadata JSONB DEFAULT '{}'::jsonb,
         created_at TIMESTAMPTZ DEFAULT NOW()
     );
@@ -79,6 +87,64 @@ CREATE_ROLE_HIERARCHY_TABLE = DDLQuery("""
     );
 """)
 
+# Unified grants table — single source of truth for "who can do what".
+#
+# Created in every scope: `iam.grants` (platform) and
+# `{catalog_schema}.grants` (per tenant). Same shape; only the set of
+# valid `subject_kind` values differs (catalogs may scope to
+# collection/item/asset; the platform schema only sees principal/catalog).
+#
+# Columns:
+#   subject_kind  who/what is being granted (principal | catalog
+#                 | collection | item | asset)
+#   subject_ref   the subject's stable id (UUID-as-text for principal,
+#                 catalog_id/collection_id/... otherwise)
+#   object_kind   what is granted (role | policy)
+#   object_ref    the object's stable id (role_name | policy_id)
+#   effect        allow | deny — D9 deny precedence
+#   valid_from    grant becomes active at this time (default: NOW())
+#   valid_until   grant becomes inactive at this time (NULL = never)
+#   conditions    JSONB — predicate to evaluate at request time (PR-2+)
+#   quota         JSONB — quota / rate-limit spec (PR-2+, no-op in PR-1)
+#   granted_by    UUID of the principal who issued the grant
+#   granted_at    timestamp the grant was issued
+#
+# No FKs into `roles` or `policies`: platform grants may reference
+# platform roles, catalog grants may reference catalog roles, and
+# resolution-time validation logs and skips dangling object refs.
+# Cross-schema FKs would block `DROP SCHEMA … CASCADE` on tenant
+# eviction; we trade FK safety for tenant-cleanup simplicity.
+CREATE_GRANTS_TABLE = DDLQuery("""
+    CREATE TABLE IF NOT EXISTS {schema}.grants (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        subject_kind VARCHAR(32) NOT NULL,
+        subject_ref VARCHAR(256) NOT NULL,
+        object_kind VARCHAR(32) NOT NULL,
+        object_ref VARCHAR(256) NOT NULL,
+        effect VARCHAR(8) NOT NULL DEFAULT 'allow'
+            CHECK (effect IN ('allow','deny')),
+        valid_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        valid_until TIMESTAMPTZ,
+        conditions JSONB,
+        quota JSONB,
+        granted_by UUID,
+        granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (subject_kind, subject_ref, object_kind, object_ref, effect)
+    );
+    CREATE INDEX IF NOT EXISTS idx_grants_subject
+        ON {schema}.grants (subject_kind, subject_ref);
+    CREATE INDEX IF NOT EXISTS idx_grants_object
+        ON {schema}.grants (object_kind, object_ref);
+    CREATE INDEX IF NOT EXISTS idx_grants_validity
+        ON {schema}.grants (valid_until) WHERE valid_until IS NOT NULL;
+""")
+
+# Policies — platform-only for PR-1 (lives in `iam.policies`).
+#
+# Per-tenant policy registries (D11) are deferred to PR-2: changing
+# the partitioned policies layout has 24-file blast radius and the
+# plan explicitly flags this as revisitable. Tenant roles can still
+# reference platform policies, which covers the PR-1 surface.
 CREATE_POLICIES_TABLE = DDLQuery("""
     CREATE TABLE IF NOT EXISTS {schema}.policies (
         id VARCHAR(128) NOT NULL,
@@ -152,14 +218,13 @@ INSERT_PRINCIPAL = DQLQuery(
     # duplicate-identifier unique-constraint as a 401.
     """
     INSERT INTO {schema}.principals
-    (id, identifier, display_name, is_active, valid_until, roles, custom_policies, attributes, metadata, policy)
+    (id, identifier, display_name, is_active, valid_until, custom_policies, attributes, metadata, policy)
     VALUES
-    (:id, :identifier, :display_name, :is_active, :valid_until, :roles, :custom_policies, :attributes, :metadata, :policy)
+    (:id, :identifier, :display_name, :is_active, :valid_until, :custom_policies, :attributes, :metadata, :policy)
     ON CONFLICT (identifier) DO UPDATE SET
         display_name = EXCLUDED.display_name,
         is_active = EXCLUDED.is_active,
         valid_until = EXCLUDED.valid_until,
-        roles = EXCLUDED.roles,
         custom_policies = EXCLUDED.custom_policies,
         attributes = EXCLUDED.attributes,
         metadata = EXCLUDED.metadata,
@@ -176,7 +241,6 @@ UPDATE_PRINCIPAL = DQLQuery(
     SET identifier = :identifier,
         display_name = :display_name,
         metadata = :metadata,
-        roles = :roles,
         policy = :policy,
         custom_policies = :custom_policies,
         attributes = :attributes
@@ -295,6 +359,45 @@ INSERT_ROLE_HIERARCHY = DQLQuery(
     result_handler=ResultHandler.ROWCOUNT,
 )
 
+# Tenant default role seeds. Inserted with ON CONFLICT DO NOTHING so a
+# tenant admin can rename/restructure these without the next provisioning
+# pass clobbering their changes (D3 — tenants own their role definitions).
+#
+# D5 chain of authority: admin → editor (admin inherits editor's policies
+# via role_hierarchy). `allUsers` and `unauthenticated` are read-only
+# floors — no inheritance, no policies seeded here. Per-permission policy
+# wiring lives on `iam.policies` and ships in PR-2 with the per-tenant
+# policy registry; PR-1 keeps the seed roles policy-free so the unified
+# grants table is the only thing the resolver evaluates.
+SEED_TENANT_DEFAULT_ROLES_SQL = """
+    INSERT INTO {schema}.roles
+        (id, name, description, level, parent_roles, policies, metadata)
+    VALUES
+        ('admin', 'admin',
+         'Tenant administrator — manages roles, grants, and members.',
+         100, '[]'::jsonb, '[]'::jsonb,
+         '{"seed": true, "scope": "catalog"}'::jsonb),
+        ('editor', 'editor',
+         'Catalog editor — creates and updates content.',
+         50,  '[]'::jsonb, '[]'::jsonb,
+         '{"seed": true, "scope": "catalog"}'::jsonb),
+        ('allUsers', 'allUsers',
+         'Read-only floor for any authenticated user.',
+         10,  '[]'::jsonb, '[]'::jsonb,
+         '{"seed": true, "scope": "catalog"}'::jsonb),
+        ('unauthenticated', 'unauthenticated',
+         'Read-only floor for anonymous (unauthenticated) requests.',
+         0,   '[]'::jsonb, '[]'::jsonb,
+         '{"seed": true, "scope": "catalog"}'::jsonb)
+    ON CONFLICT (id) DO NOTHING;
+"""
+
+SEED_TENANT_ROLE_HIERARCHY_SQL = """
+    INSERT INTO {schema}.role_hierarchy (parent_role, child_role)
+    VALUES ('admin', 'editor')
+    ON CONFLICT DO NOTHING;
+"""
+
 DELETE_ROLE_HIERARCHY = DQLQuery(
     "DELETE FROM {schema}.role_hierarchy WHERE parent_role = :parent_role AND child_role = :child_role;",
     result_handler=ResultHandler.ROWCOUNT,
@@ -320,19 +423,6 @@ DELETE_ROLE = DQLQuery(
     result_handler=ResultHandler.ROWCOUNT,
 )
 
-REMOVE_ROLE_FROM_PRINCIPALS = DQLQuery(
-    """
-    UPDATE {schema}.principals
-    SET roles = (
-        SELECT jsonb_agg(r)
-        FROM jsonb_array_elements(roles) r
-        WHERE r #>> '{}' != :role_name
-    )
-    WHERE roles ? :role_name;
-    """,
-    result_handler=ResultHandler.ROWCOUNT,
-)
-
 # Recursive CTE to find all child roles (descendants)
 GET_FULL_ROLE_HIERARCHY = DQLQuery(
     """
@@ -351,28 +441,163 @@ GET_FULL_ROLE_HIERARCHY = DQLQuery(
     post_processor=lambda rows: [row["child_role"] for row in rows],
 )
 
-GET_EFFECTIVE_ROLES = DQLQuery(
+# --- Unified grants DML ---
+#
+# These primitives operate on `{schema}.grants`. Catalog-scoped grants
+# pass the tenant schema; platform-scoped grants pass `iam`. Storage
+# facades wrap these to expose role-friendly entry points
+# (grant_platform_role, grant_catalog_role, …).
+
+INSERT_GRANT = DQLQuery(
     """
-    WITH RECURSIVE hierarchy AS (
-        -- Base case: Direct roles assigned to the principal
-        SELECT role_id FROM (
-            SELECT jsonb_array_elements_text(roles) as role_id
-            FROM {schema}.principals
-            WHERE id = CAST(:principal_id AS uuid)
-        ) initial_roles
-
-        UNION
-
-        -- Recursive step: Find parent roles (Inheritance)
-        SELECT p.parent_id
-        FROM hierarchy h
-        JOIN {schema}.roles r ON r.id = h.role_id
-        CROSS JOIN LATERAL jsonb_array_elements_text(r.parent_roles) as p(parent_id)
+    INSERT INTO {schema}.grants (
+        subject_kind, subject_ref, object_kind, object_ref, effect,
+        valid_from, valid_until, conditions, quota, granted_by
     )
-    SELECT DISTINCT role_id FROM hierarchy;
+    VALUES (
+        :subject_kind, :subject_ref, :object_kind, :object_ref, :effect,
+        COALESCE(:valid_from, NOW()), :valid_until,
+        CAST(:conditions AS jsonb), CAST(:quota AS jsonb), :granted_by
+    )
+    ON CONFLICT (subject_kind, subject_ref, object_kind, object_ref, effect)
+    DO UPDATE SET
+        valid_from  = EXCLUDED.valid_from,
+        valid_until = EXCLUDED.valid_until,
+        conditions  = EXCLUDED.conditions,
+        quota       = EXCLUDED.quota,
+        granted_by  = EXCLUDED.granted_by,
+        granted_at  = NOW()
+    RETURNING id;
+    """,
+    result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
+)
+
+DELETE_GRANT_BY_ID = DQLQuery(
+    "DELETE FROM {schema}.grants WHERE id = :id;",
+    result_handler=ResultHandler.ROWCOUNT,
+)
+
+DELETE_GRANTS_BY_MATCH = DQLQuery(
+    """
+    DELETE FROM {schema}.grants
+    WHERE subject_kind = :subject_kind
+      AND subject_ref  = :subject_ref
+      AND object_kind  = :object_kind
+      AND object_ref   = :object_ref
+      AND effect       = :effect;
+    """,
+    result_handler=ResultHandler.ROWCOUNT,
+)
+
+LIST_GRANTS_FOR_SUBJECT = DQLQuery(
+    """
+    SELECT id, subject_kind, subject_ref, object_kind, object_ref, effect,
+           valid_from, valid_until, conditions, quota, granted_by, granted_at
+    FROM {schema}.grants
+    WHERE subject_kind = :subject_kind AND subject_ref = :subject_ref
+    ORDER BY object_kind, object_ref;
     """,
     result_handler=ResultHandler.ALL_DICTS,
-    post_processor=lambda rows: [row["role_id"] for row in rows],
+)
+
+LIST_GRANTS_FOR_OBJECT = DQLQuery(
+    """
+    SELECT id, subject_kind, subject_ref, object_kind, object_ref, effect,
+           valid_from, valid_until, conditions, quota, granted_by, granted_at
+    FROM {schema}.grants
+    WHERE object_kind = :object_kind AND object_ref = :object_ref
+    ORDER BY subject_kind, subject_ref;
+    """,
+    result_handler=ResultHandler.ALL_DICTS,
+)
+
+# Used by the `?cascade=true` precheck on role/policy-definition delete.
+COUNT_GRANTS_FOR_OBJECT = DQLQuery(
+    """
+    SELECT COUNT(*) FROM {schema}.grants
+    WHERE object_kind = :object_kind AND object_ref = :object_ref;
+    """,
+    result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
+)
+
+# --- Role-scoped read facades over the unified grants table ---
+#
+# These are simple specializations of LIST_GRANTS_FOR_SUBJECT that
+# project to a flat list of role names — preserving the prior public
+# storage surface (`list_platform_roles`, `list_catalog_roles`).
+LIST_ROLE_NAMES_FOR_PRINCIPAL = DQLQuery(
+    """
+    SELECT object_ref AS role_name
+    FROM {schema}.grants
+    WHERE subject_kind = 'principal'
+      AND subject_ref  = :principal_id
+      AND object_kind  = 'role'
+      AND effect       = 'allow'
+      AND valid_from <= NOW()
+      AND (valid_until IS NULL OR NOW() < valid_until)
+    ORDER BY object_ref;
+    """,
+    result_handler=ResultHandler.ALL_DICTS,
+    post_processor=lambda rows: [row["role_name"] for row in rows],
+)
+
+# Role lookup by identity. Joins the grants table against the
+# *platform* identity_links (`iam.identity_links`) — principals are
+# platform-global; only their grants are tenant-scoped.
+LIST_ROLE_NAMES_FOR_IDENTITY = DQLQuery(
+    """
+    SELECT g.object_ref AS role_name
+    FROM {schema}.grants g
+    JOIN iam.identity_links l
+      ON l.principal_id::text = g.subject_ref
+    WHERE g.subject_kind = 'principal'
+      AND g.object_kind  = 'role'
+      AND g.effect       = 'allow'
+      AND g.valid_from <= NOW()
+      AND (g.valid_until IS NULL OR NOW() < g.valid_until)
+      AND l.provider   = :provider
+      AND l.subject_id = :subject_id
+    ORDER BY g.object_ref;
+    """,
+    result_handler=ResultHandler.ALL_DICTS,
+    post_processor=lambda rows: [row["role_name"] for row in rows],
+)
+
+# Resolver — direct grants for a principal in one scope.
+#
+# PR-1 only exercises principal-as-subject + role/policy-as-object,
+# but the projection includes every column needed to evaluate
+# effect/time/conditions/quota in PR-2+. Resource-scoped subjects
+# (catalog/collection/item/asset) are computed in Python by the
+# storage layer using `LIST_GRANTS_FOR_SUBJECT` per prefix, so this
+# query stays simple and reusable across scopes.
+LIST_TIMEACTIVE_GRANTS_FOR_PRINCIPAL = DQLQuery(
+    """
+    SELECT id, subject_kind, subject_ref, object_kind, object_ref, effect,
+           valid_from, valid_until, conditions, quota, granted_by, granted_at
+    FROM {schema}.grants
+    WHERE subject_kind = 'principal'
+      AND subject_ref  = :principal_id
+      AND valid_from <= NOW()
+      AND (valid_until IS NULL OR NOW() < valid_until);
+    """,
+    result_handler=ResultHandler.ALL_DICTS,
+)
+
+# Catalog users — distinct principals with at least one grant in the
+# tenant's grants table. Joins against platform `iam.principals` /
+# `iam.identity_links` to surface the same shape as before.
+LIST_CATALOG_USERS = DQLQuery(
+    """
+    SELECT DISTINCT p.id, p.identifier, p.display_name, p.is_active,
+                    l.provider, l.subject_id
+    FROM {schema}.grants g
+    JOIN iam.principals p ON p.id::text = g.subject_ref
+    LEFT JOIN iam.identity_links l ON l.principal_id = p.id
+    WHERE g.subject_kind = 'principal'
+    ORDER BY p.display_name;
+    """,
+    result_handler=ResultHandler.ALL_DICTS,
 )
 
 INSERT_REFRESH_TOKEN = DQLQuery(
@@ -476,6 +701,21 @@ def build_search_principals_query(
     offset: int,
     schema: str = "iam",
 ):
+    """Build a Principal search query.
+
+    The legacy `role` filter searched a JSONB column on `principals`
+    that no longer exists. Role-based search now joins the unified
+    grants table, projecting `subject_kind='principal' AND
+    object_kind='role'`:
+
+    - For schema == "iam" (or any schema with platform grants), we
+      filter through `iam.grants`.
+    - For a tenant schema, we filter through that schema's
+      `grants` table.
+
+    Mixing platform + catalog filtering in one search is a separate
+    concern; admin search is per-scope today.
+    """
     clauses = []
     params: Dict[str, Any] = {"limit": limit, "offset": offset}
 
@@ -485,17 +725,26 @@ def build_search_principals_query(
         )
         params["identifier_pattern"] = f"%{identifier}%"
 
-    # V1/V2 Role filtering: Check both JSON array and Metadata
+    # Role filter via the unified grants table (replaces the dropped
+    # JSONB column). Joins on subject_ref::text = principal_id.
+    join_clause = ""
     if role:
-        clauses.append("(metadata->>'role' = :role OR roles ? :role)")
         params["role"] = role
+        join_clause = (
+            f"JOIN {schema}.grants g "
+            f"ON g.subject_kind = 'principal' "
+            f"AND g.subject_ref = p.id::text "
+            f"AND g.object_kind = 'role' "
+            f"AND g.object_ref = :role"
+        )
 
     where_clause = " AND ".join(clauses) if clauses else "1=1"
 
     sql = f"""
-        SELECT * FROM {schema}.principals
+        SELECT DISTINCT p.* FROM {schema}.principals p
+        {join_clause}
         WHERE {where_clause}
-        ORDER BY created_at DESC
+        ORDER BY p.created_at DESC
         LIMIT :limit OFFSET :offset;
     """
     return DQLQuery(

@@ -206,103 +206,163 @@ class AdminService(ExtensionProtocol):
             for p in results
         ]
 
-    @router.post("/principals/{principal_id}/roles", summary="Assign global role to principal", status_code=204)
-    async def assign_global_role(principal_id: UUID, body: AssignRoleRequest):  # type: ignore[reportGeneralTypeIssues]
-        mgr = _iam()
-        p = await mgr.get_principal(principal_id)
-        if not p:
-            raise HTTPException(status_code=404, detail="Principal not found.")
-        if body.role not in p.roles:
-            p.roles = list(p.roles) + [body.role]
-        await mgr.update_principal(p)
+    # ---- Platform-scope role grants (D6 — `iam.grants`) -----------------
 
-    @router.delete("/principals/{principal_id}/roles/{role_name}", status_code=204, summary="Remove global role")
-    async def remove_global_role(principal_id: UUID, role_name: str):  # type: ignore[reportGeneralTypeIssues]
+    @router.post(
+        "/platform/principals/{principal_id}/roles",
+        status_code=204,
+        summary="Grant a platform-scope role to a principal",
+    )
+    async def grant_platform_role(principal_id: UUID, body: AssignRoleRequest):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
         p = await mgr.get_principal(principal_id)
         if not p:
             raise HTTPException(status_code=404, detail="Principal not found.")
-        p.roles = [r for r in (p.roles or []) if r != role_name]
-        await mgr.update_principal(p)
-
-    @router.post("/principals/{principal_id}/catalogs/{catalog_id}/roles", status_code=204, summary="Assign catalog-scoped role")
-    async def assign_catalog_role(principal_id: UUID, catalog_id: str, body: AssignRoleRequest):  # type: ignore[reportGeneralTypeIssues]
-        mgr = _iam()
-        p = await mgr.get_principal(principal_id)
-        if not p:
-            raise HTTPException(status_code=404, detail="Principal not found.")
-        if not p.provider or not p.subject_id:
-            raise HTTPException(status_code=400, detail="Principal has no identity provider link.")
-        await _assert_catalog_exists(catalog_id)
         try:
-            await mgr.storage.grant_roles(
-                provider=p.provider,
-                subject_id=p.subject_id,
-                roles=[body.role],
-                schema=await mgr.resolve_schema(catalog_id),
+            await mgr.storage.grant_platform_role(
+                principal_id=principal_id,
+                role_name=body.role,
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    @router.delete("/principals/{principal_id}/catalogs/{catalog_id}/roles/{role_name}", status_code=204)
-    async def remove_catalog_role(principal_id: UUID, catalog_id: str, role_name: str):  # type: ignore[reportGeneralTypeIssues]
+    @router.delete(
+        "/platform/principals/{principal_id}/roles/{role_name}",
+        status_code=204,
+        summary="Revoke a platform-scope role from a principal",
+    )
+    async def revoke_platform_role(principal_id: UUID, role_name: str):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
         p = await mgr.get_principal(principal_id)
         if not p:
             raise HTTPException(status_code=404, detail="Principal not found.")
-        if not p.provider or not p.subject_id:
-            raise HTTPException(status_code=400, detail="Principal has no identity provider link.")
-        await _assert_catalog_exists(catalog_id)
         try:
-            await mgr.storage.revoke_role(
-                provider=p.provider,
-                subject_id=p.subject_id,
+            await mgr.storage.revoke_platform_role(
+                principal_id=principal_id,
                 role_name=role_name,
-                schema=await mgr.resolve_schema(catalog_id),
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
+    @router.get(
+        "/platform/principals/{principal_id}/roles",
+        summary="List platform-scope roles for a principal",
+    )
+    async def list_platform_roles(principal_id: UUID):  # type: ignore[reportGeneralTypeIssues]
+        mgr = _iam()
+        p = await mgr.get_principal(principal_id)
+        if not p:
+            raise HTTPException(status_code=404, detail="Principal not found.")
+        return await mgr.storage.list_platform_roles(principal_id=principal_id)
+
+    # ---- Catalog-scope role grants (D6 — `{catalog_schema}.grants`) -----
+
+    @router.post(
+        "/catalogs/{catalog_id}/principals/{principal_id}/roles",
+        status_code=204,
+        summary="Grant a catalog-scope role to a principal",
+    )
+    async def grant_catalog_role(
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
+        principal_id: UUID,
+        body: AssignRoleRequest,
+    ):
+        mgr = _iam()
+        await _assert_catalog_exists(catalog_id)
+        p = await mgr.get_principal(principal_id)
+        if not p:
+            raise HTTPException(status_code=404, detail="Principal not found.")
+        try:
+            await mgr.storage.grant_catalog_role(
+                principal_id=principal_id,
+                role_name=body.role,
+                catalog_schema=await mgr.resolve_schema(catalog_id),
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.delete(
+        "/catalogs/{catalog_id}/principals/{principal_id}/roles/{role_name}",
+        status_code=204,
+        summary="Revoke a catalog-scope role from a principal",
+    )
+    async def revoke_catalog_role(
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
+        principal_id: UUID,
+        role_name: str,
+    ):
+        mgr = _iam()
+        await _assert_catalog_exists(catalog_id)
+        p = await mgr.get_principal(principal_id)
+        if not p:
+            raise HTTPException(status_code=404, detail="Principal not found.")
+        try:
+            await mgr.storage.revoke_catalog_role(
+                principal_id=principal_id,
+                role_name=role_name,
+                catalog_schema=await mgr.resolve_schema(catalog_id),
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.get(
+        "/catalogs/{catalog_id}/principals/{principal_id}/roles",
+        summary="List catalog-scope roles for a principal",
+    )
+    async def list_catalog_roles_for_principal(
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
+        principal_id: UUID,
+    ):
+        mgr = _iam()
+        await _assert_catalog_exists(catalog_id)
+        p = await mgr.get_principal(principal_id)
+        if not p:
+            raise HTTPException(status_code=404, detail="Principal not found.")
+        return await mgr.storage.list_catalog_roles(
+            principal_id=principal_id,
+            catalog_schema=await mgr.resolve_schema(catalog_id),
+        )
 
     @router.get("/catalogs/{catalog_id}/users", summary="List users assigned to a catalog")
     async def list_catalog_users(catalog_id: str):  # type: ignore[reportGeneralTypeIssues]
         mgr = _iam()
         await _assert_catalog_exists(catalog_id)
-        schema = await mgr.resolve_schema(catalog_id)
+        catalog_schema = await mgr.resolve_schema(catalog_id)
 
-        all_principals = await mgr.list_principals(limit=10000, offset=0)
-        catalog_users = []
+        # Storage primitive returns a row per principal that holds at
+        # least one grant in the tenant's `grants` table.
+        users = await mgr.storage.get_catalog_users(catalog_schema=catalog_schema)
+        if not users:
+            return []
 
-        for p in all_principals:
-            if not (p.provider and p.subject_id):
+        # Hydrate each user with their actual catalog-scope role list so the
+        # admin UI can render the same shape it used to receive.
+        result = []
+        for u in users:
+            principal_id = u.get("id")
+            if not principal_id:
                 continue
             try:
-                roles = await mgr.storage.get_identity_roles(
-                    provider=p.provider,
-                    subject_id=p.subject_id,
-                    schema=schema,
+                roles = await mgr.storage.list_catalog_roles(
+                    principal_id=principal_id, catalog_schema=catalog_schema
                 )
             except Exception as e:
-                # Don't silently swallow — log so future storage-method drift
-                # (e.g. renamed/missing methods) surfaces instead of returning
-                # an empty list.
                 logger.warning(
-                    "Failed to fetch roles for principal %s (%s:%s) in schema %s: %s",
-                    p.id, p.provider, p.subject_id, schema, e,
+                    "Failed to fetch catalog roles for principal %s in schema %s: %s",
+                    principal_id, catalog_schema, e,
                 )
                 continue
-            if roles:
-                catalog_users.append(
-                    PrincipalResponse(
-                        id=str(p.id),
-                        provider=p.provider,
-                        subject_id=p.subject_id,
-                        display_name=p.display_name,
-                        roles=roles,
-                        is_active=p.is_active,
-                    )
+            result.append(
+                PrincipalResponse(
+                    id=str(principal_id),
+                    provider=u.get("provider"),
+                    subject_id=u.get("subject_id"),
+                    display_name=u.get("display_name"),
+                    roles=roles,
+                    is_active=u.get("is_active", True),
                 )
-
-        return catalog_users
+            )
+        return result
 
     # -------------------------------------------------------------------------
     # Role Management (/admin/roles)

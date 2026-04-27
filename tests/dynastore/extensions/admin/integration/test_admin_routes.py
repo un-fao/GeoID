@@ -7,8 +7,14 @@ Covers read-only admin endpoints exercised by the sysadmin client:
 - GET /admin/roles              — list roles
 - GET /admin/policies           — list policies
 - GET /admin/catalogs/{id}/users           — list users assigned to a catalog
-- POST   /admin/principals/{pid}/catalogs/{cid}/roles            — assign
-- DELETE /admin/principals/{pid}/catalogs/{cid}/roles/{role}     — remove
+
+Scope-first role-grant endpoints (Option B unified grants model):
+- POST /admin/platform/principals/{pid}/roles                   — grant platform role
+- DELETE /admin/platform/principals/{pid}/roles/{role}          — revoke platform role
+- GET /admin/platform/principals/{pid}/roles                    — list platform roles
+- POST /admin/catalogs/{cid}/principals/{pid}/roles             — grant catalog role
+- DELETE /admin/catalogs/{cid}/principals/{pid}/roles/{role}    — revoke catalog role
+- GET /admin/catalogs/{cid}/principals/{pid}/roles              — list catalog roles
 
 Write operations (create/update/delete) are tested for basic acceptance
 (status 201/204) to exercise the route handlers without asserting
@@ -139,22 +145,27 @@ async def test_list_policies_returns_200(sysadmin_in_process_client: AsyncClient
 
 
 # ---------------------------------------------------------------------------
-# Catalog users + catalog-scoped role assignment
+# Catalog users + scope-first role assignment (Option B unified grants model)
 #
-# These pin down the API surface of the admin endpoints for catalog-role
-# management:
+# These pin down the API surface of the admin endpoints for role management.
+# The URL convention is **scope-first**:
+#   POST   /admin/platform/principals/{pid}/roles                    (D6 — iam.grants)
+#   POST   /admin/catalogs/{cid}/principals/{pid}/roles              (D6 — {schema}.grants)
+#   DELETE /admin/platform/principals/{pid}/roles/{role}
+#   DELETE /admin/catalogs/{cid}/principals/{pid}/roles/{role}
+#   GET    /admin/platform/principals/{pid}/roles
+#   GET    /admin/catalogs/{cid}/principals/{pid}/roles
+#
+# Behaviour pinned:
 #  - Unknown catalog ⇒ 404 (handler pre-checks via CatalogsProtocol).
 #  - Unknown principal ⇒ 404.
-#  - Round-trip: POST /catalogs/{cat}/roles ⇒ 204; GET /catalogs/{cat}/users
-#    includes the principal; DELETE /catalogs/{cat}/roles/{role} ⇒ 204.
-#
-# These tests do NOT assert that the role is actually *scoped* to the
-# catalog at the storage layer. ``postgres_iam_storage.{get_identity_roles,
-# grant_roles, revoke_role}`` currently accept ``schema=`` but route to
-# the global ``iam.principals.roles`` JSONB regardless. Resolving that —
-# either by honoring ``schema=`` or by removing the parameter and dropping
-# catalog-role scoping — is a separate architectural follow-up; these
-# tests will gain a scoping assertion when it lands.
+#  - Round-trip: POST a catalog grant ⇒ 204; GET /admin/catalogs/{cid}/users
+#    includes the principal; DELETE the grant ⇒ 204.
+#  - **Linchpin scoping**: a grant against catalog A is invisible from
+#    catalog B's role-list endpoint (the bug PR #65 left in place).
+#    Tenants own their role definitions, so seed roles (admin/editor/
+#    allUsers/unauthenticated) are present in every fresh catalog and can
+#    be granted directly without first POSTing a role definition.
 # ---------------------------------------------------------------------------
 
 
@@ -183,24 +194,24 @@ async def test_list_catalog_users_unknown_catalog_404(
 
 @MARKER
 @pytest.mark.asyncio
-async def test_assign_catalog_role_unknown_principal_404(
+async def test_grant_catalog_role_unknown_principal_404(
     sysadmin_in_process_client: AsyncClient, setup_catalogs
 ):
-    """POST /admin/principals/{bogus_uuid}/catalogs/{cat}/roles — 404."""
+    """POST /admin/catalogs/{cid}/principals/{bogus_uuid}/roles — 404."""
     nonexistent = str(uuid.uuid4())
     r = await sysadmin_in_process_client.post(
-        f"/admin/principals/{nonexistent}/catalogs/{setup_catalogs[0]}/roles",
-        json={"role": "Editor"},
+        f"/admin/catalogs/{setup_catalogs[0]}/principals/{nonexistent}/roles",
+        json={"role": "editor"},
     )
     assert r.status_code == 404
 
 
 @MARKER
 @pytest.mark.asyncio
-async def test_assign_catalog_role_unknown_catalog_404(
+async def test_grant_catalog_role_unknown_catalog_404(
     sysadmin_in_process_client: AsyncClient, created_principal: CreatedPrincipal
 ):
-    """POST /admin/principals/{pid}/catalogs/{bogus}/roles — 404.
+    """POST /admin/catalogs/{bogus}/principals/{pid}/roles — 404.
 
     The handler pre-checks catalog existence via ``CatalogsProtocol``
     before touching IAM storage, so an unknown catalog short-circuits
@@ -209,8 +220,8 @@ async def test_assign_catalog_role_unknown_catalog_404(
     """
     bogus = f"nonexistent_{uuid.uuid4().hex[:8]}"
     r = await sysadmin_in_process_client.post(
-        f"/admin/principals/{created_principal.principal_id}/catalogs/{bogus}/roles",
-        json={"role": "Editor"},
+        f"/admin/catalogs/{bogus}/principals/{created_principal.principal_id}/roles",
+        json={"role": "editor"},
     )
     assert r.status_code == 404, (
         f"Expected 404 for unknown catalog, got {r.status_code}: {r.text}"
@@ -219,18 +230,18 @@ async def test_assign_catalog_role_unknown_catalog_404(
 
 @MARKER
 @pytest.mark.asyncio
-async def test_remove_catalog_role_unknown_catalog_404(
+async def test_revoke_catalog_role_unknown_catalog_404(
     sysadmin_in_process_client: AsyncClient, created_principal: CreatedPrincipal
 ):
-    """DELETE /admin/principals/{pid}/catalogs/{bogus}/roles/{role} — 404.
+    """DELETE /admin/catalogs/{bogus}/principals/{pid}/roles/{role} — 404.
 
     Same pre-check as the POST counterpart; an unknown catalog must not
     silently revoke against the global ``iam`` schema.
     """
     bogus = f"nonexistent_{uuid.uuid4().hex[:8]}"
     r = await sysadmin_in_process_client.delete(
-        f"/admin/principals/{created_principal.principal_id}"
-        f"/catalogs/{bogus}/roles/Editor"
+        f"/admin/catalogs/{bogus}"
+        f"/principals/{created_principal.principal_id}/roles/editor"
     )
     assert r.status_code == 404, (
         f"Expected 404 for unknown catalog, got {r.status_code}: {r.text}"
@@ -239,34 +250,189 @@ async def test_remove_catalog_role_unknown_catalog_404(
 
 @MARKER
 @pytest.mark.asyncio
-async def test_assign_and_remove_catalog_role_round_trip(
+async def test_grant_and_revoke_catalog_role_round_trip(
     sysadmin_in_process_client: AsyncClient,
     setup_catalogs,
     created_principal: CreatedPrincipal,
 ):
-    """Round-trip: assign a catalog-scoped role, see the principal in
-    the catalog-users listing, then remove the role."""
+    """Round-trip: grant a catalog-scoped role, see the principal in
+    the catalog-users listing and the per-principal role list, then revoke."""
     catalog_id = setup_catalogs[0]
+    pid = created_principal.principal_id
 
-    # Assign
+    # Grant
     r = await sysadmin_in_process_client.post(
-        f"/admin/principals/{created_principal.principal_id}/catalogs/{catalog_id}/roles",
-        json={"role": "Editor"},
+        f"/admin/catalogs/{catalog_id}/principals/{pid}/roles",
+        json={"role": "editor"},
     )
-    assert r.status_code == 204, f"Assign failed: {r.status_code} {r.text}"
+    assert r.status_code == 204, f"Grant failed: {r.status_code} {r.text}"
 
     # Listing should now include the principal
     r = await sysadmin_in_process_client.get(f"/admin/catalogs/{catalog_id}/users")
     assert r.status_code == 200
     user_ids = [u.get("id") for u in r.json()]
-    assert created_principal.principal_id in user_ids, (
-        f"Principal {created_principal.principal_id} not in catalog-users "
-        f"after assign; got {user_ids}"
+    assert pid in user_ids, (
+        f"Principal {pid} not in catalog-users after grant; got {user_ids}"
     )
 
-    # Remove
-    r = await sysadmin_in_process_client.delete(
-        f"/admin/principals/{created_principal.principal_id}"
-        f"/catalogs/{catalog_id}/roles/Editor"
+    # Per-principal role list reports the grant
+    r = await sysadmin_in_process_client.get(
+        f"/admin/catalogs/{catalog_id}/principals/{pid}/roles"
     )
-    assert r.status_code == 204, f"Remove failed: {r.status_code} {r.text}"
+    assert r.status_code == 200, r.text
+    assert "editor" in r.json(), f"Expected 'editor' in roles, got {r.json()}"
+
+    # Revoke
+    r = await sysadmin_in_process_client.delete(
+        f"/admin/catalogs/{catalog_id}/principals/{pid}/roles/editor"
+    )
+    assert r.status_code == 204, f"Revoke failed: {r.status_code} {r.text}"
+
+    # Per-principal role list no longer reports the grant
+    r = await sysadmin_in_process_client.get(
+        f"/admin/catalogs/{catalog_id}/principals/{pid}/roles"
+    )
+    assert r.status_code == 200
+    assert "editor" not in r.json(), (
+        f"Expected 'editor' to be absent after revoke; got {r.json()}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Linchpin scoping tests — the bug PR #65 left untouched
+# ---------------------------------------------------------------------------
+
+
+@MARKER
+@pytest.mark.asyncio
+async def test_catalog_role_grant_does_not_leak_across_catalogs(
+    sysadmin_in_process_client: AsyncClient,
+    setup_catalogs,
+    created_principal: CreatedPrincipal,
+):
+    """Grant `editor` on catalog A; catalog B's role list MUST NOT include it.
+
+    This is the linchpin scoping assertion. Before Option B, the storage
+    layer accepted ``schema=`` but ignored it and persisted role grants
+    on the global ``iam.principals.roles`` JSONB column — so a grant on
+    catalog A was visible from catalog B. With the per-tenant
+    ``{catalog_schema}.grants`` table, that leak is structurally
+    impossible.
+    """
+    catalog_a, catalog_b = setup_catalogs[0], setup_catalogs[1]
+    pid = created_principal.principal_id
+
+    # Grant on catalog A only
+    r = await sysadmin_in_process_client.post(
+        f"/admin/catalogs/{catalog_a}/principals/{pid}/roles",
+        json={"role": "editor"},
+    )
+    assert r.status_code == 204, f"Grant on A failed: {r.status_code} {r.text}"
+
+    try:
+        # Catalog A reports the role
+        r_a = await sysadmin_in_process_client.get(
+            f"/admin/catalogs/{catalog_a}/principals/{pid}/roles"
+        )
+        assert r_a.status_code == 200, r_a.text
+        assert "editor" in r_a.json(), (
+            f"Catalog A should have 'editor' grant; got {r_a.json()}"
+        )
+
+        # Catalog B does NOT report the role — this is the linchpin
+        r_b = await sysadmin_in_process_client.get(
+            f"/admin/catalogs/{catalog_b}/principals/{pid}/roles"
+        )
+        assert r_b.status_code == 200, r_b.text
+        assert "editor" not in r_b.json(), (
+            f"Catalog B leaked grant from catalog A; got {r_b.json()}"
+        )
+
+        # Catalog B's user listing also excludes the principal
+        r_users_b = await sysadmin_in_process_client.get(
+            f"/admin/catalogs/{catalog_b}/users"
+        )
+        assert r_users_b.status_code == 200
+        user_ids_b = [u.get("id") for u in r_users_b.json()]
+        assert pid not in user_ids_b, (
+            f"Principal {pid} leaked into catalog B's user list; got {user_ids_b}"
+        )
+    finally:
+        # Clean up so the round-trip test can reuse the principal cleanly.
+        await sysadmin_in_process_client.delete(
+            f"/admin/catalogs/{catalog_a}/principals/{pid}/roles/editor"
+        )
+
+
+@MARKER
+@pytest.mark.asyncio
+async def test_platform_role_grant_round_trip(
+    sysadmin_in_process_client: AsyncClient,
+    created_principal: CreatedPrincipal,
+):
+    """Round-trip a platform-scope role grant via /admin/platform/...
+
+    Platform grants live in ``iam.grants`` and are visible regardless of
+    the request's catalog context. The seeded ``sysadmin`` role is a
+    platform-only role per D1 + D5.
+    """
+    pid = created_principal.principal_id
+
+    r = await sysadmin_in_process_client.post(
+        f"/admin/platform/principals/{pid}/roles",
+        json={"role": "sysadmin"},
+    )
+    assert r.status_code == 204, f"Platform grant failed: {r.status_code} {r.text}"
+
+    try:
+        r_list = await sysadmin_in_process_client.get(
+            f"/admin/platform/principals/{pid}/roles"
+        )
+        assert r_list.status_code == 200, r_list.text
+        assert "sysadmin" in r_list.json(), (
+            f"Platform role list should include 'sysadmin'; got {r_list.json()}"
+        )
+    finally:
+        r_del = await sysadmin_in_process_client.delete(
+            f"/admin/platform/principals/{pid}/roles/sysadmin"
+        )
+        assert r_del.status_code == 204, (
+            f"Platform revoke failed: {r_del.status_code} {r_del.text}"
+        )
+
+
+@MARKER
+@pytest.mark.asyncio
+async def test_platform_grant_does_not_appear_in_catalog_role_list(
+    sysadmin_in_process_client: AsyncClient,
+    setup_catalogs,
+    created_principal: CreatedPrincipal,
+):
+    """Platform grants must not surface in any catalog's per-principal role list.
+
+    `Principal.roles` (the middleware-resolved view) is platform ∪ catalog,
+    but the *catalog-scope* admin endpoint must report only catalog-scope
+    grants. A leak in either direction breaks D1 (scope intrinsic to role)
+    and D6 (one grants table per scope).
+    """
+    catalog_id = setup_catalogs[0]
+    pid = created_principal.principal_id
+
+    r = await sysadmin_in_process_client.post(
+        f"/admin/platform/principals/{pid}/roles",
+        json={"role": "sysadmin"},
+    )
+    assert r.status_code == 204, r.text
+
+    try:
+        r_cat = await sysadmin_in_process_client.get(
+            f"/admin/catalogs/{catalog_id}/principals/{pid}/roles"
+        )
+        assert r_cat.status_code == 200, r_cat.text
+        assert "sysadmin" not in r_cat.json(), (
+            f"Catalog role list leaked platform grant; got {r_cat.json()}"
+        )
+    finally:
+        await sysadmin_in_process_client.delete(
+            f"/admin/platform/principals/{pid}/roles/sysadmin"
+        )
