@@ -267,12 +267,21 @@ def _apply_catalog_scope_driver_configs(client: httpx.Client):
     driver_id references the implementation class name (``ItemsPostgresqlDriver``),
     not an alias.
     """
+    # The configs API path scheme is `/configs/.../classes/{plugin_id}`,
+    # not `/configs/.../configs/{class_key}` (that path returned 404 silently
+    # before the fix and the conftest was a no-op — the notebooks themselves
+    # set the same defaults via `/bulk`, so tests still passed).
     base = f"/configs/catalogs/{CATALOG_ID}"
-    r1 = client.put(f"{base}/configs/ItemsPostgresqlDriverConfig", json={
+    r1 = client.put(f"{base}/classes/ItemsPostgresqlDriverConfig", json={
         "enabled": True,
         "collection_type": "VECTOR",
     })
-    r2 = client.put(f"{base}/configs/CollectionRoutingConfig", json={
+    if r1.status_code not in (200, 201, 204):
+        print(
+            f"[conftest] WARN ItemsPostgresqlDriverConfig PUT returned {r1.status_code}: {r1.text[:200]}",
+            flush=True,
+        )
+    r2 = client.put(f"{base}/classes/CollectionRoutingConfig", json={
         "enabled": True,
         "operations": {
             "WRITE": [{"driver_id": "ItemsPostgresqlDriver", "hints": [], "on_failure": "fatal"}],
@@ -288,7 +297,7 @@ def _apply_catalog_scope_driver_configs(client: httpx.Client):
     # runs (e.g. with an old driver_id). Collection-scope overrides shadow the
     # catalog-scope config above and would cause "driver not registered" errors.
     coll_base = f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}"
-    client.delete(f"{coll_base}/configs/CollectionRoutingConfig")
+    client.delete(f"{coll_base}/classes/CollectionRoutingConfig")
 
 
 def _delete_catalog(client: httpx.Client):
