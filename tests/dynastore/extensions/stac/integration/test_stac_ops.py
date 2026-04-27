@@ -2,7 +2,7 @@ import pytest
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("stac", "assets", "features", "config")
+@pytest.mark.enable_extensions("stac", "assets", "features")
 async def test_stac_catalog_lifecycle(sysadmin_in_process_client, in_process_client, catalog_data, catalog_id):
 
     # Ensure cleanup first
@@ -23,7 +23,7 @@ async def test_stac_catalog_lifecycle(sysadmin_in_process_client, in_process_cli
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("stac", "assets", "features", "config")
+@pytest.mark.enable_extensions("stac", "assets", "features")
 async def test_stac_collection_lifecycle(
     in_process_client, setup_catalog, collection_data, collection_id
 ):
@@ -44,7 +44,7 @@ async def test_stac_collection_lifecycle(
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("stac", "assets", "features", "config")
+@pytest.mark.enable_extensions("stac", "assets", "features")
 async def test_stac_item_lifecycle(
     in_process_client, setup_catalog, setup_collection, item_raw_data, item_id
 ):
@@ -140,7 +140,7 @@ async def test_stac_item_lifecycle(
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("stac", "assets", "features", "config")
+@pytest.mark.enable_extensions("stac", "assets", "features")
 async def test_stac_catalog_conflict_409(sysadmin_in_process_client, in_process_client, catalog_data, catalog_id):
     """Test that creating a duplicate catalog returns 409 Conflict."""
     # Pre-clean
@@ -161,7 +161,7 @@ async def test_stac_catalog_conflict_409(sysadmin_in_process_client, in_process_
 
 @pytest.mark.asyncio
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("stac", "assets", "features", "config")
+@pytest.mark.enable_extensions("stac", "assets", "features")
 async def test_stac_collection_conflict_409(
     in_process_client, setup_catalog, collection_data, collection_id
 ):

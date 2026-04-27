@@ -4,7 +4,7 @@ from tests.dynastore.test_utils import generate_test_id
 
 @pytest.mark.asyncio
 @pytest.mark.enable_modules("db_config", "db", "catalog", "tiles")
-@pytest.mark.enable_extensions("tiles", "assets", "features", "configs")
+@pytest.mark.enable_extensions("tiles", "assets", "features")
 async def test_tiles_with_non_existent_collection(in_process_client: AsyncClient):
     """
     Reproduces the TypeError: object Response can't be used in 'await' expression

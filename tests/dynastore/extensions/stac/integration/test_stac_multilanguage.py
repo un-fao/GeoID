@@ -2,7 +2,7 @@ import pytest
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("stac", "assets", "features", "configs", "logs")
+@pytest.mark.enable_extensions("stac", "assets", "features", "logs")
 async def test_create_catalog_with_language(sysadmin_in_process_client, catalog_id):
     """Test creating a catalog with language-specific input."""
     # Create with English
@@ -22,7 +22,7 @@ async def test_create_catalog_with_language(sysadmin_in_process_client, catalog_
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("stac", "assets", "features", "configs", "logs")
+@pytest.mark.enable_extensions("stac", "assets", "features", "logs")
 async def test_add_french_translation_to_catalog(sysadmin_in_process_client, in_process_client, catalog_id):
     """Test adding a French translation to an existing catalog."""
     # Create with English
@@ -60,7 +60,7 @@ async def test_add_french_translation_to_catalog(sysadmin_in_process_client, in_
     assert data["title"] == "Titre Français"
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("stac", "assets", "features", "configs", "logs")
+@pytest.mark.enable_extensions("stac", "assets", "features", "logs")
 async def test_create_collection_with_language(in_process_client, setup_catalog, collection_id):
     """Test creating a collection with language-specific input."""
     catalog_id = setup_catalog
@@ -88,7 +88,7 @@ async def test_create_collection_with_language(in_process_client, setup_catalog,
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("stac", "assets", "features", "configs", "logs")
+@pytest.mark.enable_extensions("stac", "assets", "features", "logs")
 async def test_multilingual_collection_update(in_process_client, setup_catalog, collection_id):
     """Test updating a collection with multiple languages."""
     catalog_id = setup_catalog
@@ -142,7 +142,7 @@ async def test_multilingual_collection_update(in_process_client, setup_catalog, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("stac", "assets", "features", "configs", "logs")
+@pytest.mark.enable_extensions("stac", "assets", "features", "logs")
 async def test_language_conflict_detection(sysadmin_in_process_client, catalog_id):
     """Test that conflicting language parameters return an error."""
     payload = {
@@ -164,7 +164,7 @@ async def test_language_conflict_detection(sysadmin_in_process_client, catalog_i
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("stac", "assets", "features", "configs", "logs")
+@pytest.mark.enable_extensions("stac", "assets", "features", "logs")
 async def test_accept_language_header_only(sysadmin_in_process_client, in_process_client, catalog_id):
     """Test using Accept-Language header without query param."""
     payload = {
@@ -192,7 +192,7 @@ async def test_accept_language_header_only(sysadmin_in_process_client, in_proces
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("stac", "assets", "features", "configs", "logs")
+@pytest.mark.enable_extensions("stac", "assets", "features", "logs")
 async def test_keywords_localization(sysadmin_in_process_client, in_process_client, catalog_id, collection_id):
     """Test that keywords are properly localized."""
     payload = {

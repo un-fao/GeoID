@@ -26,7 +26,7 @@ from dynastore.models.protocols import DatabaseProtocol
 from dynastore.modules.db_config.query_executor import managed_transaction
 
 
-MARKER = pytest.mark.enable_extensions("admin", "features", "config", "iam")
+MARKER = pytest.mark.enable_extensions("features")
 
 EXPECTED_SEED_ROLES = {"admin", "editor", "allUsers", "unauthenticated"}
 

@@ -37,7 +37,7 @@ from dynastore.modules.db_config.query_executor import managed_transaction
 from dynastore.models.protocols import DatabaseProtocol
 
 
-MARKER = pytest.mark.enable_extensions("admin", "features", "config", "iam")
+MARKER = pytest.mark.enable_extensions("features")
 
 
 async def _new_principal() -> Principal:

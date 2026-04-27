@@ -16,7 +16,7 @@ import pytest
 from httpx import AsyncClient
 
 
-MARKER = pytest.mark.enable_extensions("stac", "assets", "features", "config", "search")
+MARKER = pytest.mark.enable_extensions("stac", "assets", "features", "search")
 ES_MARKER = pytest.mark.elasticsearch
 
 

@@ -4,7 +4,7 @@ from httpx import AsyncClient
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("stac", "assets", "features", "config")
+@pytest.mark.enable_extensions("stac", "assets", "features")
 async def test_stac_search_filters(in_process_client, setup_catalog, setup_collection):
     catalog_id = setup_catalog
     collection_id = setup_collection

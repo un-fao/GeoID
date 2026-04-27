@@ -15,7 +15,7 @@ from dynastore.models.driver_context import DriverContext
 @pytest.mark.asyncio
 @pytest.mark.xdist_group(name="serial")
 @pytest.mark.enable_modules("db_config", "db", "catalog", "stac", "tiles", "tasks", "crs", "collection_postgresql", "catalog_postgresql")
-@pytest.mark.enable_extensions("tiles", "assets", "features", "configs")
+@pytest.mark.enable_extensions("tiles", "assets", "features")
 # @pytest.mark.skip(reason="WIP")
 async def test_tile_preseed_task_run_integration(app_lifespan, in_process_client):
     """

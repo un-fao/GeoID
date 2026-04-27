@@ -3,7 +3,7 @@ from httpx import AsyncClient
 from tests.dynastore.test_utils import generate_test_id
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("features", "assets", "config")
+@pytest.mark.enable_extensions("features", "assets")
 async def test_item_properties_serialization_alignment(sysadmin_in_process_client: AsyncClient, test_data_loader):
     """
     Verifies that item properties are correctly serialized and NOT null when queried via OGC Features.

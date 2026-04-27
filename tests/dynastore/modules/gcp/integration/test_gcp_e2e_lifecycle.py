@@ -167,10 +167,7 @@ async def test_dispatcher_claims_gcp_provision_exclusively(
     "db_config", "db", "catalog", "stac", "processes", "tasks",
     "proxy", "gcp", "iam", "collection_postgresql", "catalog_postgresql",
 )
-@pytest.mark.enable_extensions(
-    "stac", "assets", "features", "configs", "processes", "web",
-    "gcp_bucket", "tiles", "iam",
-)
+@pytest.mark.enable_extensions("stac", "assets", "features", "processes", "gcp_bucket", "tiles")
 @pytest.mark.enable_tasks("gcp_provision", "gcp_catalog_cleanup", "ingestion")
 async def test_gcp_end_to_end_lifecycle(
     sysadmin_in_process_client, in_process_client, app_lifespan, base_url,

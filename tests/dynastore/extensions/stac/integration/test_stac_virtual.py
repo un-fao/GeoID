@@ -3,9 +3,7 @@ from tests.dynastore.test_utils import generate_test_id
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions(
-    "stac", "assets", "features", "configs", "processes", "web"
-)
+@pytest.mark.enable_extensions("stac", "assets", "features", "processes")
 @pytest.mark.enable_modules(
     "db_config", "db", "catalog", "stac", "processes", "tasks", "proxy", "gcp", "iam", "collection_postgresql", "catalog_postgresql"
 )

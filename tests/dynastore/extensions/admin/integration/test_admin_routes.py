@@ -29,7 +29,7 @@ from httpx import AsyncClient
 from .conftest import CreatedPrincipal
 
 
-MARKER = pytest.mark.enable_extensions("admin", "features", "config", "iam")
+MARKER = pytest.mark.enable_extensions("features")
 
 
 # ---------------------------------------------------------------------------
