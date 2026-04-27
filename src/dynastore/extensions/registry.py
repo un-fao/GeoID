@@ -119,14 +119,31 @@ def discover_extensions():
 def instantiate_extensions(app: Any, include_only: Optional[List[str]] = None):
     """
     Instantiates all discovered extensions.
+
+    ``include_only`` narrows instantiation for test isolation. The set is
+    automatically unioned with ``ALWAYS_ON_EXTENSIONS`` so callers do not
+    have to spell out the always-on extensions (``iam``, ``auth``,
+    ``configs``, ``web``, ``admin``, ``tools``, ``template``, ``httpx``,
+    ``documentation``) every time. Production callers pass ``None`` and
+    load everything that was discovered.
     """
+    from dynastore.extensions.tools.exposure_mixin import ALWAYS_ON_EXTENSIONS
+
     extensions_to_load = _DYNASTORE_EXTENSIONS.keys()
 
     # If filtering is requested (e.g. for tests), apply it
     if include_only is not None:
-        target_names = {name.lower().replace("_", "-") for name in include_only}
+        # ALWAYS_ON extensions are an unconditional invariant: enforced at
+        # runtime via the exposure-control matrix in production. Tests that
+        # narrow ``include_only`` for instantiation isolation must still see
+        # them, so union them in here rather than asking every test marker
+        # to repeat the same nine names.
+        target_names = {
+            name.lower().replace("_", "-")
+            for name in (set(include_only) | ALWAYS_ON_EXTENSIONS)
+        }
         extensions_to_load = [
-            name for name in extensions_to_load 
+            name for name in extensions_to_load
             if name.lower().replace("_", "-") in target_names
         ]
     

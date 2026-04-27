@@ -2,7 +2,7 @@ import pytest
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("features", "assets", "config")
+@pytest.mark.enable_extensions("features", "assets")
 async def test_features_patch_operations(
     in_process_client, catalog_data, catalog_id, collection_data, collection_id
 ):

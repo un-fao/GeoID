@@ -27,9 +27,7 @@ from tests.dynastore.test_utils import generate_test_id
 
 
 @pytest.mark.enable_modules("db_config", "db", "catalog", "stats", "iam")
-@pytest.mark.enable_extensions(
-    "stac", "assets", "features", "configs", "logs", "iam"
-)
+@pytest.mark.enable_extensions("stac", "assets", "features", "logs")
 @pytest.mark.asyncio
 @pytest.mark.xdist_group(name="serial")
 async def test_landing_page_respects_language_param(sysadmin_in_process_client):

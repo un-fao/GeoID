@@ -4,7 +4,7 @@ from dynastore.models.driver_context import DriverContext
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("stac", "assets", "features", "config")
+@pytest.mark.enable_extensions("stac", "assets", "features")
 async def test_stac_external_metadata_flow(
     in_process_client, setup_catalog, collection_data, collection_id
 ):
@@ -108,7 +108,7 @@ async def test_stac_external_metadata_flow(
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("stac", "assets", "features", "config")
+@pytest.mark.enable_extensions("stac", "assets", "features")
 async def test_stac_metadata_pruning_verification(
     in_process_client, setup_catalog, setup_collection, app_lifespan
 ):

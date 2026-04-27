@@ -20,7 +20,7 @@ from dynastore.models.driver_context import DriverContext
     "db_config", "db", "catalog", "stac", "tiles", "tasks", "crs",
     "collection_postgresql", "catalog_postgresql",
 )
-@pytest.mark.enable_extensions("tiles", "assets", "features", "configs")
+@pytest.mark.enable_extensions("tiles", "assets", "features")
 async def test_tiles_export_task_run_integration(app_lifespan, in_process_client):
     """
     Integration test for TilesExportTask.

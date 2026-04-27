@@ -9,7 +9,7 @@ from dynastore.modules import get_protocol
 
 @pytest.mark.asyncio
 @pytest.mark.enable_modules("db_config", "db", "catalog", "gcp")
-@pytest.mark.enable_extensions("gcp", "configs")
+@pytest.mark.enable_extensions("gcp")
 async def test_bucket_config_hook_trigger(app_lifespan, catalog_obj):
     """
     Integration test to verify that PUTing a config via /configs/catalogs/{id}/plugins/{plugin_id}
@@ -55,7 +55,7 @@ async def test_bucket_config_hook_trigger(app_lifespan, catalog_obj):
 
 @pytest.mark.asyncio
 @pytest.mark.enable_modules("db_config", "db", "catalog", "gcp")
-@pytest.mark.enable_extensions("gcp", "configs")
+@pytest.mark.enable_extensions("gcp")
 async def test_eventing_config_hook_trigger(app_lifespan, catalog_obj):
     """
     Verify that updating eventing config triggers the GCPModule.apply_eventing_config hook.

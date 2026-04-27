@@ -6,7 +6,7 @@ from tests.dynastore.test_utils import generate_test_id
 # Increase timeout for the endpoint specifically if needed, 
 # or use a custom client with longer timeout.
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("features", "assets", "stac", "config")
+@pytest.mark.enable_extensions("features", "assets", "stac")
 async def test_bulk_item_creation_success(sysadmin_in_process_client: AsyncClient, test_data_loader):
     catalog_id = f"c_{generate_test_id()}"
     collection_id = "test_bulk_collection"
@@ -47,7 +47,7 @@ async def test_bulk_item_creation_success(sysadmin_in_process_client: AsyncClien
     assert len(items_data["features"]) == 2
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("features", "assets", "stac", "config")
+@pytest.mark.enable_extensions("features", "assets", "stac")
 async def test_bulk_item_creation_atomicity(sysadmin_in_process_client: AsyncClient, test_data_loader):
     catalog_id = f"c_{generate_test_id()}"
     collection_id = "test_atomic_collection"
@@ -85,7 +85,7 @@ async def test_bulk_item_creation_atomicity(sysadmin_in_process_client: AsyncCli
     assert len(items_data.get("features", [])) == 0
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("features", "assets", "stac", "config")
+@pytest.mark.enable_extensions("features", "assets", "stac")
 async def test_single_feature_post_returns_geojson(sysadmin_in_process_client: AsyncClient, test_data_loader):
     """POST /items with a single Feature must return a valid GeoJSON Feature (not a string repr)."""
     catalog_id = f"c_{generate_test_id()}"
@@ -130,7 +130,7 @@ async def test_single_feature_post_returns_geojson(sysadmin_in_process_client: A
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("features", "assets", "stac", "config")
+@pytest.mark.enable_extensions("features", "assets", "stac")
 async def test_feature_collection_post_returns_ids(sysadmin_in_process_client: AsyncClient, test_data_loader):
     """POST /items with a FeatureCollection must return a BulkCreationResponse with ids."""
     catalog_id = f"c_{generate_test_id()}"
@@ -178,7 +178,7 @@ async def test_feature_collection_post_returns_ids(sysadmin_in_process_client: A
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("features", "assets", "stac", "config")
+@pytest.mark.enable_extensions("features", "assets", "stac")
 async def test_single_item_creation_with_extra_fields(sysadmin_in_process_client: AsyncClient, test_data_loader):
     catalog_id = f"c_{generate_test_id()}"
     collection_id = "test_fix_collection"
@@ -208,7 +208,7 @@ async def test_single_item_creation_with_extra_fields(sysadmin_in_process_client
     assert "Location" in response.headers
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("features", "assets", "stac", "config")
+@pytest.mark.enable_extensions("features", "assets", "stac")
 async def test_filter_with_unknown_property(sysadmin_in_process_client: AsyncClient, test_data_loader):
     catalog_id = f"c_{generate_test_id()}"
     collection_id = "test_filter_collection"

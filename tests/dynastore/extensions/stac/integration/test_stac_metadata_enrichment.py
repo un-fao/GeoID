@@ -4,7 +4,7 @@ from tests.dynastore.test_utils import generate_test_id
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("stac", "assets", "features", "configs")
+@pytest.mark.enable_extensions("stac", "assets", "features")
 async def test_stac_metadata_enrichment_vector(sysadmin_in_process_client, in_process_client, test_data_loader):
     """
     Test that a virtual asset collection is enriched with Vector GDAL/OGR metadata.
@@ -94,7 +94,7 @@ async def test_stac_metadata_enrichment_vector(sysadmin_in_process_client, in_pr
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("stac", "assets", "features", "configs")
+@pytest.mark.enable_extensions("stac", "assets", "features")
 async def test_stac_metadata_enrichment_raster(sysadmin_in_process_client, in_process_client, test_data_loader):
     """
     Test that a virtual asset collection is enriched with Raster GDAL metadata.

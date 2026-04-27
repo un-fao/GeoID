@@ -13,7 +13,7 @@ import pytest
 from httpx import AsyncClient
 
 
-MARKER = pytest.mark.enable_extensions("stac", "assets", "features", "config")
+MARKER = pytest.mark.enable_extensions("stac", "assets", "features")
 
 
 # ---------------------------------------------------------------------------

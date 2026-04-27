@@ -2,7 +2,7 @@ import pytest
 
 
 @pytest.mark.asyncio
-@pytest.mark.enable_extensions("stac", "assets", "features", "config")
+@pytest.mark.enable_extensions("stac", "assets", "features")
 async def test_stac_patch_operations(
     sysadmin_in_process_client, in_process_client, catalog_data, catalog_id, collection_data, collection_id
 ):
