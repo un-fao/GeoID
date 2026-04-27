@@ -40,6 +40,43 @@ from .operations import initialize_operations, run_pre_operations, run_post_oper
 logger = logging.getLogger(__name__)
 
 
+def _resolve_source_content_type(asset: Asset) -> Optional[str]:
+    """Best-effort MIME-type lookup used by reader resolution.
+
+    1. ``asset.metadata['content_type']`` — populated by
+       :func:`BucketService._prepare_blob_metadata` for every new GCS
+       upload, so the happy path is one in-memory dict read.
+    2. For legacy assets whose metadata pre-dates the injection (or
+       non-GCS uploads), do a single ``storage.objects.get`` to read
+       the blob's native ``contentType`` header.  Only attempted for
+       ``gs://`` URIs and behind a try/except so a bad path / missing
+       creds never blocks the task.
+    """
+    md = asset.metadata or {}
+    ct = md.get("content_type") or md.get("contentType")
+    if ct:
+        return ct
+    if not asset.uri.startswith("gs://"):
+        return None
+    try:
+        from google.cloud import storage
+
+        bucket_name, _, object_name = asset.uri[len("gs://"):].partition("/")
+        if not bucket_name or not object_name:
+            return None
+        client = storage.Client()
+        blob = client.bucket(bucket_name).get_blob(object_name)
+        if blob is None:
+            return None
+        return blob.content_type
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "ingestion: GCS HEAD for %r failed (%s); reader resolution will "
+            "rely on URI suffix only.", asset.uri, exc,
+        )
+        return None
+
+
 async def run_ingestion_task(
     engine: DbEngine,
     task_id: str,
@@ -183,14 +220,24 @@ async def run_ingestion_task(
 
         source_file_path = asset.uri
         asset_id = asset.asset_id
+        # MIME hint used by reader resolution when the URI itself carries
+        # no recognisable suffix (legacy bare-filename uploads).  Source
+        # of truth: the asset row's metadata; falls back to a single GCS
+        # object HEAD for legacy rows whose metadata pre-dates the
+        # ``content_type`` injection in ``_prepare_blob_metadata``.
+        source_content_type = _resolve_source_content_type(asset)
 
         # --- Process and Ingest Features ---
         total_features = None
         try:
             from dynastore.tasks.ingestion.readers import resolve_reader
 
-            _count_reader = resolve_reader(source_file_path)()
-            total_features = _count_reader.feature_count(source_file_path)
+            _count_reader = resolve_reader(
+                source_file_path, content_type=source_content_type,
+            )()
+            total_features = _count_reader.feature_count(
+                source_file_path, content_type=source_content_type,
+            )
             if total_features is not None:
                 logger.info(f"Source file contains {total_features} features.")
                 await asyncio.gather(
@@ -328,15 +375,20 @@ async def run_ingestion_task(
         # Arrow/Parquet driver.
         from dynastore.tasks.ingestion.readers import resolve_reader
 
-        reader_cls = resolve_reader(source_file_path)
+        reader_cls = resolve_reader(
+            source_file_path, content_type=source_content_type,
+        )
         reader_inst = reader_cls()
         logger.info(
-            "ingestion: source %r → reader '%s'",
-            source_file_path, reader_cls.reader_id or reader_cls.__name__,
+            "ingestion: source %r (content_type=%r) → reader '%s'",
+            source_file_path, source_content_type,
+            reader_cls.reader_id or reader_cls.__name__,
         )
 
         with reader_inst.open(
-            source_file_path, encoding=task_request.encoding,
+            source_file_path,
+            encoding=task_request.encoding,
+            content_type=source_content_type,
         ) as reader:
             sliced_reader = itertools.islice(
                 reader,

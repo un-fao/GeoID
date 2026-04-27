@@ -45,26 +45,30 @@ class ReaderRegistry:
         return list(cls._registered)
 
     @classmethod
-    def resolve(cls, uri: str) -> Type[SourceReaderProtocol]:
+    def resolve(
+        cls, uri: str, *, content_type: str | None = None,
+    ) -> Type[SourceReaderProtocol]:
         """Highest-priority reader (= lowest priority value) whose
-        ``can_read(uri)`` is True.  Raises :class:`LookupError` with a
-        list of every candidate considered to keep diagnostics actionable.
+        ``can_read(uri, content_type=...)`` is True.  Raises
+        :class:`LookupError` with a list of every candidate considered
+        to keep diagnostics actionable.
+
+        *content_type* is forwarded to each reader's ``can_read`` so
+        readers can honour a MIME hint when the URI suffix is unknown.
         """
         for reader_cls in cls._registered:
             try:
-                if reader_cls.can_read(uri):
+                if reader_cls.can_read(uri, content_type=content_type):
                     return reader_cls
             except Exception as exc:  # noqa: BLE001 — defensive
                 logger.warning(
                     "ReaderRegistry: %s.can_read(%r) raised %s; skipping",
                     reader_cls.reader_id or reader_cls.__name__, uri, exc,
                 )
-        considered = [
-            f"{c.reader_id or c.__name__}(extensions={c.extensions})"
-            for c in cls._registered
-        ]
+        considered = [c.describe() for c in cls._registered]
         raise LookupError(
-            f"No registered reader matches URI {uri!r}.  "
+            f"No registered reader matches URI {uri!r} "
+            f"(content_type={content_type!r}).  "
             f"Considered: {considered or '<empty registry>'}"
         )
 

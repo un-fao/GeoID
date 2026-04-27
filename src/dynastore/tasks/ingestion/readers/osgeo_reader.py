@@ -80,22 +80,47 @@ class GdalOsgeoReader(SourceReaderProtocol):
     )
 
     @classmethod
-    def can_read(cls, uri: str) -> bool:
+    def can_read(cls, uri: str, *, content_type: str | None = None) -> bool:
         u = uri.lower()
-        return any(u.endswith(ext) for ext in cls.KNOWN_EXT)
+        if any(u.endswith(ext) for ext in cls.KNOWN_EXT):
+            return True
+        # MIME fallback only when the URI has no suffix at all — see the
+        # base ``SourceReaderProtocol.can_read`` rationale.  Legacy
+        # bare-URI assets (e.g. uploaded with filename ``aoi_oasis``)
+        # can still be resolved via the ingestion-task's content_type.
+        from .base import _uri_has_recognisable_suffix
+        if _uri_has_recognisable_suffix(uri):
+            return False
+        from dynastore.tools.mime import ext_from_content_type
+        derived = ext_from_content_type(content_type)
+        if derived and derived.lower() in cls.KNOWN_EXT:
+            return True
+        return False
+
+    @classmethod
+    def describe(cls) -> str:
+        return f"{cls.reader_id}(known_extensions={cls.KNOWN_EXT})"
 
     # ------------------------------------------------------------------
     # URI prep
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _to_gdal_uri(uri: str) -> str:
+    def _to_gdal_uri(uri: str, *, is_zip: bool | None = None) -> str:
         """Normalize the URI for GDAL.  Translates ``gs://`` and wraps
-        zipped shapefiles with ``/vsizip/`` when needed."""
+        zipped shapefiles with ``/vsizip/`` when needed.
+
+        *is_zip* lets the caller force the ``/vsizip/`` wrap when the
+        URI itself lacks the ``.zip`` suffix (e.g. an asset uploaded
+        with a bare filename, where the caller knows the content_type
+        is ``application/zip``).
+        """
         out = _to_vsigs(uri)
-        if out.lower().endswith(".zip"):
+        if is_zip is None:
+            is_zip = out.lower().endswith(".zip")
+        if is_zip:
             # ESRI shapefile (or other) shipped as a zip.  GDAL needs
-            # ``/vsizip//vsigs/<bucket>/<key>.zip`` to descend into it.
+            # ``/vsizip//vsigs/<bucket>/<key>[.zip]`` to descend into it.
             out = "/vsizip/" + out
         return out
 
@@ -103,8 +128,10 @@ class GdalOsgeoReader(SourceReaderProtocol):
     # Open / iterate
     # ------------------------------------------------------------------
 
-    def feature_count(self, uri: str) -> int | None:
-        path = self._to_gdal_uri(uri)
+    def feature_count(self, uri: str, *, content_type: str | None = None) -> int | None:
+        from dynastore.tools.mime import ext_from_content_type
+        is_zip = (ext_from_content_type(content_type) or "").lower() == ".zip"
+        path = self._to_gdal_uri(uri, is_zip=is_zip or None)
         ds = ogr.Open(path)
         if ds is None:
             return None
@@ -124,9 +151,12 @@ class GdalOsgeoReader(SourceReaderProtocol):
         uri: str,
         *,
         encoding: str = "utf-8",
+        content_type: str | None = None,
         **opts: Any,
     ) -> Iterator[Iterable[dict]]:
-        path = self._to_gdal_uri(uri)
+        from dynastore.tools.mime import ext_from_content_type
+        is_zip = (ext_from_content_type(content_type) or "").lower() == ".zip"
+        path = self._to_gdal_uri(uri, is_zip=is_zip or None)
         # OGR doesn't honour `encoding=` directly — set via config option.
         # Most modern drivers (Parquet, FGB, GeoJSON, GPKG) are UTF-8 by
         # spec; this only matters for shapefile dbf / CSV.

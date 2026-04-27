@@ -318,6 +318,12 @@ class BucketService(ExtensionProtocol):
         # System-critical metadata is added last to ensure it's always present.
         final_metadata["asset_id"] = request.asset.asset_id
         final_metadata["asset_type"] = request.asset.asset_type.value
+        # Persist the upload's content_type into custom metadata so it
+        # propagates to the asset row via the OBJECT_FINALIZE event,
+        # giving the ingestion task a MIME hint when the URI itself
+        # carries an unknown suffix.
+        if request.content_type:
+            final_metadata["content_type"] = request.content_type
 
         return {
             k: str(v) if not isinstance(v, str) else v

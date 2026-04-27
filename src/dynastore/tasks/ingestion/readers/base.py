@@ -14,9 +14,25 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, ClassVar, ContextManager, Iterable, Tuple, Type
+from pathlib import PurePosixPath
+from typing import Any, ClassVar, ContextManager, Iterable, Optional, Tuple, Type
+
+from dynastore.tools.mime import ext_from_content_type
 
 logger = logging.getLogger(__name__)
+
+
+def _uri_has_recognisable_suffix(uri: str) -> bool:
+    """True iff the URI ends in something that LOOKS like a file extension.
+
+    Used to decide whether a reader should fall back to a MIME hint.
+    Falling back when the URI already has a suffix would let a
+    higher-priority reader steal a match that semantically belongs to
+    another reader (e.g. `.geojson` URI + accidental `application/zip`
+    content_type pulling in a zip-only reader).
+    """
+    last = uri.rsplit("/", 1)[-1].rsplit("?", 1)[0].rsplit("#", 1)[0]
+    return bool(PurePosixPath(last).suffix)
 
 
 class SourceReaderProtocol:
@@ -40,18 +56,44 @@ class SourceReaderProtocol:
     reader_id: ClassVar[str] = ""
 
     @classmethod
-    def can_read(cls, uri: str) -> bool:
-        """Cheap match — lowercased URI ends with one of ``cls.extensions``."""
+    def can_read(cls, uri: str, *, content_type: Optional[str] = None) -> bool:
+        """Cheap match.
+
+        Primary signal: lowercased *uri* ends with one of
+        ``cls.extensions``.  When the URI carries **no suffix at all**
+        (e.g. uploaded with a bare filename like ``aoi_oasis``), fall
+        back to the extension derived from *content_type* — this lets
+        ingestion recover legacy bare-URI assets without a re-upload.
+
+        The MIME fallback is intentionally NOT used when the URI has
+        a suffix that simply doesn't match this reader: that suffix
+        belongs to another reader by design and stealing the match via
+        a coincidental content_type would re-introduce the very kind
+        of priority confusion the registry is meant to prevent.
+        """
         if not cls.extensions:
             return False
         u = uri.lower()
-        return any(u.endswith(ext) for ext in cls.extensions)
+        if any(u.endswith(ext) for ext in cls.extensions):
+            return True
+        if _uri_has_recognisable_suffix(uri):
+            return False
+        derived = ext_from_content_type(content_type)
+        if derived and derived.lower() in cls.extensions:
+            return True
+        return False
+
+    @classmethod
+    def describe(cls) -> str:
+        """Human-readable summary used in registry error messages."""
+        return f"{cls.reader_id or cls.__name__}(extensions={cls.extensions})"
 
     def open(
         self,
         uri: str,
         *,
         encoding: str = "utf-8",
+        content_type: Optional[str] = None,
         **opts: Any,
     ) -> ContextManager[Iterable[dict]]:
         """Open the source and return a ctx-mgr yielding dict-shaped records.
@@ -60,12 +102,21 @@ class SourceReaderProtocol:
         (GeoJSON-shaped or WKB-bytes — whatever the downstream
         ``prepare_record_for_upsert`` expects).  Implementations should
         also expose a ``len()``-able if cheap, for progress reporting.
+
+        *content_type* is forwarded so subclasses can wrap zipped sources
+        (``/vsizip/``) when the URI lacks a recognisable suffix.
         """
         raise NotImplementedError
 
-    def feature_count(self, uri: str) -> int | None:
+    def feature_count(
+        self, uri: str, *, content_type: Optional[str] = None,
+    ) -> int | None:
         """Best-effort feature count for progress reporting; ``None`` if
-        unknown without a full scan.  Default skips the count."""
+        unknown without a full scan.  Default skips the count.
+
+        *content_type* is forwarded so subclasses can wrap zipped sources
+        (``/vsizip/``) when the URI lacks a recognisable suffix.
+        """
         return None
 
 
@@ -82,12 +133,18 @@ def register_reader(cls: Type[SourceReaderProtocol]) -> Type[SourceReaderProtoco
     return cls
 
 
-def resolve_reader(uri: str) -> Type[SourceReaderProtocol]:
+def resolve_reader(
+    uri: str, *, content_type: Optional[str] = None,
+) -> Type[SourceReaderProtocol]:
     """Return the highest-priority registered reader whose ``can_read(uri)``
     matches.  Raises :class:`LookupError` if no reader matches.
+
+    *content_type* is an optional MIME hint used to recover when the
+    URI itself carries no recognisable suffix (e.g. an asset uploaded
+    with a bare filename).
     """
     from .registry import ReaderRegistry
-    return ReaderRegistry.resolve(uri)
+    return ReaderRegistry.resolve(uri, content_type=content_type)
 
 
 def _to_vsigs(uri: str) -> str:
