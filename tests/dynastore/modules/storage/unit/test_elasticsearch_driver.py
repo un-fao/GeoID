@@ -480,6 +480,141 @@ class TestReadEntitiesScopesByCollection:
         ]
 
 
+class TestWriteEntitiesTenantIndex:
+    """End-to-end behaviour of the rewritten write_entities path."""
+
+    @staticmethod
+    def _feature(item_id="f1", external_id=None):
+        from dynastore.models.ogc import Feature
+        return Feature.model_validate({
+            "id": item_id,
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+            "properties": (
+                {"ext_id": external_id} if external_id is not None else {}
+            ),
+        })
+
+    @pytest.mark.asyncio
+    async def test_default_policy_writes_with_routing_and_tracking_fields(self):
+        from dynastore.modules.storage.driver_config import (
+            CollectionWritePolicy, WriteConflictPolicy,
+        )
+
+        es = _StubEs(exists=True)
+        policy = CollectionWritePolicy(on_conflict=WriteConflictPolicy.UPDATE)
+        with patch(
+            "dynastore.modules.elasticsearch.client.get_client", return_value=es,
+        ), patch(
+            "dynastore.modules.elasticsearch.client.get_index_prefix",
+            return_value="dynastore",
+        ), patch.object(
+            ItemsElasticsearchDriver, "_resolve_write_policy",
+            AsyncMock(return_value=policy),
+        ), patch.object(
+            ItemsElasticsearchDriver, "_enforce_field_constraints",
+            AsyncMock(return_value=None),
+        ):
+            driver = ItemsElasticsearchDriver()
+            written = await driver.write_entities(
+                "cat1", "col1",
+                [self._feature("f1"), self._feature("f2")],
+                context={
+                    "asset_id": "asset-7",
+                    "valid_from": "2026-04-27T00:00:00Z",
+                    "valid_to": None,
+                },
+            )
+
+        assert len(written) == 2
+        assert len(es.bulk_calls) == 1
+        body = es.bulk_calls[0]["body"]
+        # body alternates [action, doc, action, doc]
+        assert len(body) == 4
+        for action_idx in (0, 2):
+            action = body[action_idx]["index"]
+            assert action["_index"] == "dynastore-items-cat1"
+            assert action["routing"] == "col1"
+        for doc_idx in (1, 3):
+            doc = body[doc_idx]
+            assert doc["collection"] == "col1"
+            assert doc["_asset_id"] == "asset-7"
+            assert doc["_valid_from"] == "2026-04-27T00:00:00Z"
+            # _valid_to is None in context → key skipped
+            assert "_valid_to" not in doc
+        assert es.bulk_calls[0]["params"] == {"refresh": "false"}
+
+    @pytest.mark.asyncio
+    async def test_refuse_policy_skips_existing_external_id(self):
+        from dynastore.modules.storage.driver_config import (
+            CollectionWritePolicy, WriteConflictPolicy,
+        )
+
+        es = _StubEs(exists=True)
+        es.count_result = {"count": 1}
+        policy = CollectionWritePolicy(
+            on_conflict=WriteConflictPolicy.REFUSE,
+            external_id_field="properties.ext_id",
+        )
+        with patch(
+            "dynastore.modules.elasticsearch.client.get_client", return_value=es,
+        ), patch(
+            "dynastore.modules.elasticsearch.client.get_index_prefix",
+            return_value="dynastore",
+        ), patch.object(
+            ItemsElasticsearchDriver, "_resolve_write_policy",
+            AsyncMock(return_value=policy),
+        ), patch.object(
+            ItemsElasticsearchDriver, "_enforce_field_constraints",
+            AsyncMock(return_value=None),
+        ):
+            driver = ItemsElasticsearchDriver()
+            written = await driver.write_entities(
+                "cat1", "col1",
+                [self._feature("f1", external_id="EXT-1")],
+            )
+
+        # Skipped — no bulk call, no written entries.
+        assert written == []
+        assert es.bulk_calls == []
+
+    @pytest.mark.asyncio
+    async def test_new_version_policy_appends_timestamp_to_doc_id(self):
+        from dynastore.modules.storage.driver_config import (
+            CollectionWritePolicy, WriteConflictPolicy,
+        )
+
+        es = _StubEs(exists=True)
+        policy = CollectionWritePolicy(
+            on_conflict=WriteConflictPolicy.NEW_VERSION,
+            external_id_field="properties.ext_id",
+        )
+        with patch(
+            "dynastore.modules.elasticsearch.client.get_client", return_value=es,
+        ), patch(
+            "dynastore.modules.elasticsearch.client.get_index_prefix",
+            return_value="dynastore",
+        ), patch.object(
+            ItemsElasticsearchDriver, "_resolve_write_policy",
+            AsyncMock(return_value=policy),
+        ), patch.object(
+            ItemsElasticsearchDriver, "_enforce_field_constraints",
+            AsyncMock(return_value=None),
+        ):
+            driver = ItemsElasticsearchDriver()
+            await driver.write_entities(
+                "cat1", "col1",
+                [self._feature("f1", external_id="EXT-1")],
+            )
+
+        body = es.bulk_calls[0]["body"]
+        action_id = body[0]["index"]["_id"]
+        # doc id should be EXT-1 followed by an underscore + 14-digit-ish
+        # timestamp suffix (YYYYMMDDTHHMMSS + microseconds).
+        assert action_id.startswith("EXT-1_")
+        assert len(action_id) > len("EXT-1_")
+
+
 class TestLocationReportsTenantIndex:
     @pytest.mark.asyncio
     async def test_includes_routing_in_canonical_uri(self):
