@@ -328,8 +328,13 @@
                 watchConn.statusChanged.connect(function(kernel, status) {
                     if (status === 'restarting' || status === 'autorestarting') {
                         _injectedKernels.delete(id);
+                    } else if (status === 'starting' && !_injectedKernels.has(id)) {
+                        // Queue injection during 'starting' so our execute_request
+                        // is buffered ahead of any cells JupyterLab queues at idle.
+                        // This wins the race with "Restart and Run All".
+                        _injectContextIntoKernel(kernels, model);
                     } else if (status === 'idle' && !_injectedKernels.has(id)) {
-                        // Kernel finished restarting — re-inject context.
+                        // Fallback: first startup or kernels that skip 'starting'.
                         _injectContextIntoKernel(kernels, model);
                     } else if (status === 'dead' || status === 'terminating') {
                         _injectedKernels.delete(id);
