@@ -158,11 +158,14 @@ def test_to_gdal_uri_explicit_is_zip_wraps_bare_uri():
     from dynastore.tasks.ingestion.readers.osgeo_reader import GdalOsgeoReader
 
     bare = "gs://bucket/collections/x/aoi_oasis"
+    # Bare URI + is_zip=True → curly-brace form so GDAL doesn't try to
+    # autodetect the archive extension.
     assert GdalOsgeoReader._to_gdal_uri(bare, is_zip=True) == \
-        "/vsizip//vsigs/bucket/collections/x/aoi_oasis"
+        "/vsizip/{/vsigs/bucket/collections/x/aoi_oasis}/"
 
     # Default (is_zip=None) still keys off URI suffix.
     assert GdalOsgeoReader._to_gdal_uri(bare) == \
         "/vsigs/bucket/collections/x/aoi_oasis"
+    # URI with .zip suffix uses the simple prefix form (autodetect works).
     assert GdalOsgeoReader._to_gdal_uri(bare + ".zip") == \
         "/vsizip//vsigs/bucket/collections/x/aoi_oasis.zip"
