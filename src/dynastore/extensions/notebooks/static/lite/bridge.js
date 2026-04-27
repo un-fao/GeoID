@@ -268,6 +268,10 @@
     // in a per-kernel Worker, not the main thread). Use the JupyterLab kernel
     // manager API instead: connectTo() + requestExecute().
     const _injectedKernels = new Set();
+    // Persistent connections kept alive solely to watch statusChanged (restart detection).
+    const _kernelWatchConns = new Map();
+    // Guard: subscribe to kernels.runningChanged only once.
+    let _runningChangedConnected = false;
 
     async function _injectContextIntoKernel(kernels, model) {
         const id = model && model.id;
@@ -291,9 +295,12 @@
             'except Exception as e:',
             '    STAC_CONTEXT = {}',
         ].join('\n');
-        let conn;
+        // Reuse the persistent watcher connection when available to avoid
+        // creating an extra KernelConnection just for execution.
+        let conn = _kernelWatchConns.get(id);
+        let ownedConn = !conn;
+        if (!conn) conn = kernels.connectTo({ model });
         try {
-            conn = kernels.connectTo({ model });
             const future = conn.requestExecute({ code, silent: true, store_history: false });
             await future.done;
             console.log('[Bridge] Context injected into kernel', id);
@@ -301,24 +308,62 @@
             _injectedKernels.delete(id);
             console.warn('[Bridge] Failed to inject into kernel', id, e);
         } finally {
-            if (conn) try { conn.dispose(); } catch (_) {}
+            if (ownedConn) try { conn.dispose(); } catch (_) {}
         }
     }
 
     function _watchKernels(app) {
         const kernels = app.serviceManager && app.serviceManager.kernels;
         if (!kernels) return;
+
+        // Establish a persistent watcher connection for each kernel so we can
+        // detect restarts via statusChanged and clear _injectedKernels.
+        function _ensureWatcher(model) {
+            const id = model && model.id;
+            if (!id || _kernelWatchConns.has(id)) return;
+            let watchConn;
+            try {
+                watchConn = kernels.connectTo({ model });
+                _kernelWatchConns.set(id, watchConn);
+                watchConn.statusChanged.connect(function(kernel, status) {
+                    if (status === 'restarting' || status === 'autorestarting') {
+                        _injectedKernels.delete(id);
+                    } else if (status === 'idle' && !_injectedKernels.has(id)) {
+                        // Kernel finished restarting — re-inject context.
+                        _injectContextIntoKernel(kernels, model);
+                    } else if (status === 'dead' || status === 'terminating') {
+                        _injectedKernels.delete(id);
+                        _kernelWatchConns.delete(id);
+                        try { watchConn.dispose(); } catch (_) {}
+                    }
+                });
+            } catch (e) {
+                console.warn('[Bridge] Failed to set up watcher for kernel', id, e);
+                _kernelWatchConns.delete(id);
+                if (watchConn) try { watchConn.dispose(); } catch (_) {}
+            }
+        }
+
         try {
-            for (const model of kernels.running()) _injectContextIntoKernel(kernels, model);
+            for (const model of kernels.running()) {
+                _ensureWatcher(model);
+                _injectContextIntoKernel(kernels, model);
+            }
         } catch (e) {}
-        try {
-            kernels.runningChanged.connect(function() {
-                try {
-                    for (const model of kernels.running()) _injectContextIntoKernel(kernels, model);
-                } catch (e2) {}
-            });
-        } catch (e) {
-            console.warn('[Bridge] kernels.runningChanged subscription failed:', e);
+        if (!_runningChangedConnected) {
+            try {
+                kernels.runningChanged.connect(function() {
+                    try {
+                        for (const model of kernels.running()) {
+                            _ensureWatcher(model);
+                            _injectContextIntoKernel(kernels, model);
+                        }
+                    } catch (e2) {}
+                });
+                _runningChangedConnected = true;
+            } catch (e) {
+                console.warn('[Bridge] kernels.runningChanged subscription failed:', e);
+            }
         }
     }
 
