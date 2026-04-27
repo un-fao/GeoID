@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 try:
-    from pmtiles.writer import Writer as _PMTilesWriter
+    from pmtiles.writer import Writer as _PMTilesWriter  # type: ignore[import]
     from pmtiles.tile import zxy_to_tileid as _lib_zxy_to_tileid  # type: ignore[import]
     _PMTILES_LIB_AVAILABLE = True
 except ImportError:

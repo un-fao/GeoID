@@ -39,7 +39,8 @@ def latlng_to_cell(lat: float, lng: float, level: int) -> str:
             f"S2 level must be between {S2_MIN_LEVEL} and {S2_MAX_LEVEL}, got {level}"
         )
     latlng = s2.LatLng.from_degrees(lat, lng)
-    return s2.CellId.from_lat_lng(latlng).parent(level).to_token()
+    cell = s2.CellId.from_lat_lng(latlng).parent(level)
+    return cell.to_token()  # type: ignore[union-attr]
 
 
 def cell_to_geojson_polygon(token: str) -> Dict[str, Any]:
