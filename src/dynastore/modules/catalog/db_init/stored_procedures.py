@@ -98,10 +98,8 @@ BEGIN
 
     -- If remaining_count is NULL (no rows found), then proceed
     IF remaining_count IS NULL THEN
-        -- Delete from assets table if it matches the collection scope.
-        -- Note: using asset_id (logical) not id (PK) to match assets table if that's the intention
-        -- In init.sql it was deleted by asset_id and collection_id. 
-        EXECUTE format('DELETE FROM %I.assets WHERE id = $1 AND collection_id = $2', TG_TABLE_SCHEMA)
+        -- assets PK is (collection_id, asset_id); pass both so the planner can prune the partition.
+        EXECUTE format('DELETE FROM %I.assets WHERE asset_id = $1 AND collection_id = $2', TG_TABLE_SCHEMA)
         USING asset_id_val, target_collection_id;
     END IF;
 
