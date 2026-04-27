@@ -205,6 +205,12 @@ class TestWritePMTiles:
         data = buf.getvalue()
         h = _parse_header(data)
         meta_bytes = data[h["metadata_offset"] : h["metadata_offset"] + h["metadata_length"]]
+        # internal_compression: 1=NONE (built-in writer path), 2=GZIP
+        # (protomaps `pmtiles` library path — its Writer.finalize gzip-wraps
+        # the JSON metadata regardless of header tile_compression).
+        if h["internal_compression"] == 2:
+            import gzip
+            meta_bytes = gzip.decompress(meta_bytes)
         meta = json.loads(meta_bytes.decode("utf-8"))
         assert meta["name"] == "test"
         assert meta["format"] == "pbf"
