@@ -170,6 +170,7 @@ def test_write_geojson_empty_records():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.xdist_group("file_io_parquet")
 def test_write_parquet_returns_bytes():
     records = _make_point_records(3)
     chunks = list(write_parquet(records, srid=4326))
@@ -189,6 +190,7 @@ def test_write_parquet_empty_records():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.xdist_group("file_io_parquet")
 def test_write_geoparquet_returns_valid_parquet():
     """GeoParquet output must start with PAR1 magic bytes."""
     records = _make_point_records(3)
@@ -197,6 +199,7 @@ def test_write_geoparquet_returns_valid_parquet():
     assert full[:4] == b"PAR1", "Output should be a valid Parquet file"
 
 
+@pytest.mark.xdist_group("file_io_parquet")
 def test_write_geoparquet_has_geo_metadata():
     """GeoParquet output must embed the 'geo' key in Parquet file metadata."""
     import pyarrow.parquet as pq
@@ -211,6 +214,7 @@ def test_write_geoparquet_has_geo_metadata():
     assert b"geo" in meta, "GeoParquet 'geo' metadata key must be present"
 
 
+@pytest.mark.xdist_group("file_io_parquet")
 def test_write_geoparquet_geo_metadata_content():
     """The 'geo' metadata must reference the geometry column and WKB encoding."""
     import json
@@ -230,6 +234,7 @@ def test_write_geoparquet_geo_metadata_content():
     assert col_meta.get("encoding") == "WKB"
 
 
+@pytest.mark.xdist_group("file_io_parquet")
 def test_write_geoparquet_roundtrip():
     """Data written as GeoParquet must be readable back by geopandas."""
     import geopandas as gpd
@@ -250,6 +255,7 @@ def test_write_geoparquet_empty_records():
     assert chunks == []
 
 
+@pytest.mark.xdist_group("file_io_parquet")
 def test_write_geoparquet_multiple_chunks():
     """Records spanning multiple chunks should all appear in output."""
     import geopandas as gpd
