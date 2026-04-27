@@ -93,8 +93,7 @@ ARG BUILD_JUPYTERLITE=false
 # the system libgdal so it inherits every driver the base image ships.
 RUN --mount=type=cache,target=/root/.cache/pip \
     ${VENV_PATH}/bin/pip install --upgrade pip setuptools wheel && \
-    ${VENV_PATH}/bin/pip install --use-deprecated=legacy-resolver \
-        --no-binary fiona ".[${SCOPE}]" uvicorn gunicorn
+    ${VENV_PATH}/bin/pip install --no-binary fiona ".[${SCOPE}]" uvicorn gunicorn
 
 # Startup scripts ship as package data under dynastore/scripts/ (SSOT). Copy
 # from site-packages so this step is identical across every Dockerfile that
