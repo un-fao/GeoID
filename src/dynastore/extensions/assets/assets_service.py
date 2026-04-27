@@ -478,9 +478,33 @@ class AssetService(ExtensionProtocol):
 
     @property
     def upload_provider(self) -> Optional[AssetUploadProtocol]:
-        """Returns the active AssetUploadProtocol implementation, or None if unavailable."""
+        """Deprecated. Returns the first-registered ``AssetUploadProtocol`` impl.
+
+        Prefer :meth:`resolve_upload_driver` which honours per-catalog
+        ``AssetRoutingConfig.operations[UPLOAD]`` and supports a hint for
+        backend selection. This property is preserved for backward-compat
+        callers that don't have catalog scope at hand.
+        """
         from dynastore.modules import get_protocol as _gp
         return _gp(AssetUploadProtocol)
+
+    async def resolve_upload_driver(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        hint: Optional[str] = None,
+    ) -> Optional[AssetUploadProtocol]:
+        """Resolve the upload backend for a given catalog/collection.
+
+        Picks via ``AssetRoutingConfig.operations[UPLOAD]`` (auto-augmented
+        with all discoverable ``AssetUploadProtocol`` impls) with first-match
+        fallback when no UPLOAD entries resolve.
+        """
+        from dynastore.modules.storage.router import get_asset_upload_driver
+        return await get_asset_upload_driver(
+            catalog_id, collection_id, hint=hint,
+        )
 
     # =============================================================================
     #  CATALOG LEVEL OPERATIONS
@@ -879,7 +903,7 @@ class AssetService(ExtensionProtocol):
         to confirm registration.
         """
         await require_catalog_ready(catalog_id)
-        provider = self.upload_provider
+        provider = await self.resolve_upload_driver(catalog_id, collection_id=None)
         if not provider:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -950,7 +974,7 @@ class AssetService(ExtensionProtocol):
         path takes precedence.
         """
         await require_catalog_ready(catalog_id)
-        provider = self.upload_provider
+        provider = await self.resolve_upload_driver(catalog_id, collection_id=collection_id)
         if not provider:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -997,7 +1021,7 @@ class AssetService(ExtensionProtocol):
         | `failed`    | Upload or registration failed; see ``error`` field.                             |
         | `cancelled` | Session expired or explicitly cancelled.                                        |
         """
-        provider = self.upload_provider
+        provider = await self.resolve_upload_driver(catalog_id)
         if not provider:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

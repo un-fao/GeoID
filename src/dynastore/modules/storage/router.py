@@ -321,6 +321,53 @@ async def get_asset_index_drivers(
     return cast(List["ResolvedDriver[_ADP]"], result)
 
 
+async def get_asset_upload_driver(
+    catalog_id: str,
+    collection_id: Optional[str] = None,
+    *,
+    hint: Optional[str] = None,
+):
+    """Single-driver resolution for asset UPLOAD.
+
+    Reads ``AssetRoutingConfig.operations[UPLOAD]`` (auto-augmented with
+    every discoverable ``AssetUploadProtocol`` impl) and returns the first
+    matching backend instance. Falls back to the first registered
+    ``AssetUploadProtocol`` impl when no UPLOAD entries resolve — preserves
+    the previous ``get_protocol(AssetUploadProtocol)`` behaviour for
+    deployments that haven't configured per-catalog upload routing.
+
+    Returns ``None`` only when no backend is registered at all.
+    """
+    from dynastore.models.protocols.asset_upload import AssetUploadProtocol
+    from dynastore.tools.discovery import get_protocol, get_protocols
+
+    # Try the routing-config waterfall first.
+    try:
+        resolved_ids = await _resolve_driver_ids_cached(
+            AssetRoutingConfig, catalog_id, collection_id,
+            Operation.UPLOAD, hint,
+        )
+    except Exception as exc:
+        logger.debug(
+            "Asset upload routing resolution skipped (%s); falling back to "
+            "first-registered backend.", exc,
+        )
+        resolved_ids = []
+
+    impls_by_class = {type(d).__name__: d for d in get_protocols(AssetUploadProtocol)}
+    for driver_id, _on_failure, _write_mode in resolved_ids:
+        impl = impls_by_class.get(driver_id)
+        if impl is not None:
+            return impl
+        logger.warning(
+            "Asset upload driver '%s' configured but not registered; trying "
+            "next entry.", driver_id,
+        )
+
+    # Fallback: first-registered backend (matches legacy get_protocol behaviour).
+    return get_protocol(AssetUploadProtocol)
+
+
 # ---------------------------------------------------------------------------
 # Cache invalidation
 # ---------------------------------------------------------------------------

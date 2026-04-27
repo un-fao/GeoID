@@ -74,6 +74,16 @@ class Operation(StrEnum):
     - READ   : single-driver for browsing/pagination (streaming)
     - SEARCH : single-driver for filtered queries (bbox, attributes, fulltext)
 
+    Asset routing (``AssetRoutingConfig.operations``):
+    - WRITE / READ : as above (single-primary + secondaries via INDEX/event sync)
+    - INDEX  : auto-augmented with discoverable ``AssetIndexer`` drivers,
+               fanned out asynchronously by ``AssetEntitySyncSubscriber``.
+    - UPLOAD : single-driver pick of the ``AssetUploadProtocol`` impl that
+               handles ``initiate_upload``/``get_upload_status`` for this
+               catalog/collection (auto-augmented from discoverable
+               ``AssetUploadProtocol`` impls; operator config can pin a
+               specific backend).
+
     Metadata routing (``CollectionRoutingConfig.metadata.operations``):
     - READ      : first-match metadata driver (CollectionMetadataStore)
     - TRANSFORM : ordered transform chain — storage drivers that enrich metadata
@@ -94,6 +104,7 @@ class Operation(StrEnum):
     TRANSFORM = "TRANSFORM"
     INDEX = "INDEX"
     BACKUP = "BACKUP"
+    UPLOAD = "UPLOAD"
 
 
 class WriteMode(StrEnum):
@@ -436,17 +447,20 @@ class AssetRoutingConfig(PluginConfig):
         description=(
             "Operation → ordered driver list for asset drivers. "
             "``operations[INDEX]`` is auto-augmented at validation time "
-            "with discoverable AssetIndexer drivers."
+            "with discoverable AssetIndexer drivers; ``operations[UPLOAD]`` "
+            "with discoverable AssetUploadProtocol impls."
         ),
     )
 
     @model_validator(mode="after")
     def _augment_with_discoverable_indexers(self) -> "AssetRoutingConfig":
         """Asset tier has no SEARCH op today (assets aren't searchable
-        the way collection items / catalogs are), so only INDEX is
-        augmented.  Mirrors :meth:`CatalogRoutingConfig._augment_*`."""
+        the way collection items / catalogs are), so only INDEX + UPLOAD
+        are augmented.  Mirrors :meth:`CatalogRoutingConfig._augment_*`."""
         try:
             _self_register_indexers_into(self.operations, AssetIndexer)
+            from dynastore.models.protocols.asset_upload import AssetUploadProtocol
+            _self_register_upload_into(self.operations, AssetUploadProtocol)
         except Exception as exc:
             logger.debug(
                 "AssetRoutingConfig: read-time self-register skipped "
@@ -685,6 +699,45 @@ def _self_register_indexers_into(
         )
 
 
+def _self_register_upload_into(
+    target_ops: Dict[str, List["OperationDriverEntry"]],
+    marker_proto: type,
+) -> None:
+    """Auto-append every installed driver satisfying ``marker_proto`` to
+    ``target_ops[UPLOAD]`` with single-driver semantics
+    (``write_mode=sync``, ``on_failure=fatal``).
+
+    UPLOAD is single-driver per request — the first entry wins unless the
+    caller passes a ``hint``.  Multiple registered backends (e.g. GCS +
+    local FS) coexist; operator config decides which one is selected for
+    each catalog / collection by reordering the entries or pinning one.
+
+    Idempotent: drivers already listed under ``operations[UPLOAD]`` are
+    not re-appended (operator-supplied entries with custom hints survive).
+    """
+    from dynastore.tools.discovery import get_protocols
+
+    listed = {entry.driver_id for entry in target_ops.get(Operation.UPLOAD, [])}
+    for driver in get_protocols(marker_proto):
+        driver_id = type(driver).__name__
+        if driver_id in listed:
+            continue
+        target_ops.setdefault(Operation.UPLOAD, []).append(
+            OperationDriverEntry(
+                driver_id=driver_id,
+                on_failure=FailurePolicy.FATAL,
+                write_mode=WriteMode.SYNC,
+                source="auto",
+            )
+        )
+        listed.add(driver_id)
+        logger.info(
+            "Routing config self-registration: appended %s upload driver "
+            "'%s' to operations[UPLOAD] (write_mode=sync, on_failure=fatal, source=auto)",
+            marker_proto.__name__, driver_id,
+        )
+
+
 def _self_register_searchers_into(
     target_ops: Dict[str, List["OperationDriverEntry"]],
     marker_proto: type,
@@ -910,6 +963,10 @@ async def _on_apply_asset_routing_config(
 
     # Auto-register installed AssetIndexer drivers under operations[INDEX].
     _self_register_indexers_into(config.operations, AssetIndexer)
+
+    # Auto-register installed AssetUploadProtocol impls under operations[UPLOAD].
+    from dynastore.models.protocols.asset_upload import AssetUploadProtocol
+    _self_register_upload_into(config.operations, AssetUploadProtocol)
 
     # Invalidate router cache
     try:
