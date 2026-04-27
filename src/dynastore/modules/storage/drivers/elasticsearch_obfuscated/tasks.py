@@ -27,10 +27,10 @@ deployment dropping the ``[obfuscated]`` extras group also drops the task
 registrations from ``CapabilityMap`` automatically.
 
 Bulk reindex (``BulkCatalogReindexTask`` / ``BulkCollectionReindexTask``)
-remains in :mod:`dynastore.tasks.elasticsearch_indexer.tasks` because its
-``mode`` parameter still toggles between regular and obfuscated paths;
-that toggle is removed in PR-2b when the regular driver retargets to
-``dynastore-items-{cat}`` and the bulk task drops its ``mode`` field.
+in :mod:`dynastore.tasks.elasticsearch_indexer.tasks` is regular-driver
+only — the obfuscated driver does not ship a bulk reindex (the
+fresh-start cutover protocol drops state and re-ingests instead). If
+needed it would belong here in the subpackage.
 """
 
 from __future__ import annotations

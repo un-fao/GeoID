@@ -1,5 +1,4 @@
 import logging
-import json
 import re
 from typing import Any, Dict, Literal, Optional
 from contextlib import asynccontextmanager
@@ -334,20 +333,17 @@ class ElasticsearchModule(ModuleProtocol):
         logger.info("ElasticsearchModule: Enabling obfuscated mode for catalog '%s'.", catalog_id)
         await self._apply_obfuscated_policy(catalog_id)
         await self._ensure_obfuscated_index(catalog_id)
-        from dynastore.tasks.elasticsearch_indexer.tasks import BulkCatalogReindexInputs
-        await self._dispatch_task(
-            task_type="elasticsearch_bulk_reindex_catalog",
-            inputs=BulkCatalogReindexInputs(
-                catalog_id=catalog_id,
-                mode="obfuscated",
-            ).model_dump(),
-            db_resource=db_resource,
-        )
+        # Bulk reindex of obfuscated data is no longer supported by the
+        # shared task — the obfuscated driver requires a fresh-start
+        # cutover instead. Toggling obfuscation only flips the DENY
+        # policy + ensures the obfuscated index exists; existing items
+        # stay where they are.
 
     async def disable_obfuscated_mode(self, catalog_id: str, db_resource=None) -> None:
         """
-        Remove the DENY access policy and dispatch a bulk reindex task (STAC mode)
-        to re-populate the STAC items index for collections with search_index=True.
+        Remove the DENY access policy and dispatch a bulk reindex task
+        targeting the per-tenant items index so historical items become
+        discoverable again under the regular driver.
 
         Called by on_apply when obfuscated=False is written.
         """
@@ -358,7 +354,6 @@ class ElasticsearchModule(ModuleProtocol):
             task_type="elasticsearch_bulk_reindex_catalog",
             inputs=BulkCatalogReindexInputs(
                 catalog_id=catalog_id,
-                mode="catalog",
             ).model_dump(),
             db_resource=db_resource,
         )
@@ -868,7 +863,6 @@ class ElasticsearchModule(ModuleProtocol):
         self,
         catalog_id: str,
         collection_id: Optional[str] = None,
-        mode: Literal["catalog", "obfuscated"] = "catalog",
         db_resource: Optional[Any] = None,
     ) -> Dict[str, Any]:
         if collection_id:
@@ -878,7 +872,6 @@ class ElasticsearchModule(ModuleProtocol):
                 inputs=BulkCollectionReindexInputs(
                     catalog_id=catalog_id,
                     collection_id=collection_id,
-                    mode=mode,
                 ).model_dump(),
                 db_resource=db_resource,
             )
@@ -888,11 +881,10 @@ class ElasticsearchModule(ModuleProtocol):
                 task_type="elasticsearch_bulk_reindex_catalog",
                 inputs=BulkCatalogReindexInputs(
                     catalog_id=catalog_id,
-                    mode=mode,
                 ).model_dump(),
                 db_resource=db_resource,
             )
-        return {"catalog_id": catalog_id, "collection_id": collection_id, "mode": mode, "status": "dispatched"}
+        return {"catalog_id": catalog_id, "collection_id": collection_id, "status": "dispatched"}
 
     async def ensure_index(
         self,

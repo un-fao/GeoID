@@ -236,3 +236,260 @@ class TestQueryRequestToEs:
         result = ItemsElasticsearchDriver._query_request_to_es(request)
         must = result["query"]["bool"]["must"]
         assert len(must) == 2
+
+
+# ---------------------------------------------------------------------------
+# Tenant-index behavior (PR-2b)
+# ---------------------------------------------------------------------------
+
+
+class _StubIndices:
+    def __init__(self):
+        self.exists_calls: list = []
+        self.create_calls: list = []
+        self.delete_calls: list = []
+        self.exists_result = False
+
+    async def exists(self, *, index, **kwargs):
+        self.exists_calls.append({"index": index, "kwargs": kwargs})
+        return self.exists_result
+
+    async def create(self, *, index, body=None, **kwargs):
+        self.create_calls.append({"index": index, "body": body, "kwargs": kwargs})
+
+    async def delete(self, *, index, params=None, **kwargs):
+        self.delete_calls.append({"index": index, "params": params, "kwargs": kwargs})
+
+
+class _StubEs:
+    def __init__(self, exists=False):
+        self.indices = _StubIndices()
+        self.indices.exists_result = exists
+        self.bulk_calls: list = []
+        self.delete_calls: list = []
+        self.delete_by_query_calls: list = []
+        self.get_calls: list = []
+        self.search_calls: list = []
+        self.count_result = {"count": 0}
+
+    async def bulk(self, *, body, params=None, **kwargs):
+        self.bulk_calls.append({"body": body, "params": params, "kwargs": kwargs})
+        return {"items": []}
+
+    async def delete(self, *, index, id, params=None, **kwargs):
+        self.delete_calls.append({"index": index, "id": id, "params": params})
+
+    async def delete_by_query(self, *, index, body, params=None, **kwargs):
+        self.delete_by_query_calls.append({
+            "index": index, "body": body, "params": params,
+        })
+
+    async def get(self, *, index, id, params=None, **kwargs):
+        self.get_calls.append({"index": index, "id": id, "params": params})
+        return {"_source": {
+            "id": id, "type": "Feature", "collection": "col1",
+            "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+            "properties": {},
+        }}
+
+    async def search(self, *, index, body=None, params=None, **kwargs):
+        self.search_calls.append({"index": index, "body": body, "params": params})
+        return {"hits": {"hits": []}}
+
+    async def count(self, *, body=None, index=None, params=None, **kwargs):
+        return self.count_result
+
+
+class TestEnsureStorageTenantIndex:
+    @pytest.mark.asyncio
+    async def test_creates_tenant_index_and_adds_to_alias(self):
+        es = _StubEs(exists=False)
+        added: list = []
+
+        async def _add(index_name):
+            added.append(index_name)
+
+        with patch(
+            "dynastore.modules.elasticsearch.client.get_client", return_value=es,
+        ), patch(
+            "dynastore.modules.elasticsearch.client.get_index_prefix",
+            return_value="dynastore",
+        ), patch(
+            "dynastore.modules.elasticsearch.aliases.add_index_to_public_alias",
+            new=_add,
+        ):
+            driver = ItemsElasticsearchDriver()
+            await driver.ensure_storage("cat1")
+
+        assert es.indices.create_calls == [{
+            "index": "dynastore-items-cat1",
+            "body": {"mappings": es.indices.create_calls[0]["body"]["mappings"]},
+            "kwargs": {},
+        }]
+        assert added == ["dynastore-items-cat1"]
+
+    @pytest.mark.asyncio
+    async def test_idempotent_when_index_exists(self):
+        es = _StubEs(exists=True)
+        added: list = []
+
+        async def _add(index_name):
+            added.append(index_name)
+
+        with patch(
+            "dynastore.modules.elasticsearch.client.get_client", return_value=es,
+        ), patch(
+            "dynastore.modules.elasticsearch.client.get_index_prefix",
+            return_value="dynastore",
+        ), patch(
+            "dynastore.modules.elasticsearch.aliases.add_index_to_public_alias",
+            new=_add,
+        ):
+            driver = ItemsElasticsearchDriver()
+            await driver.ensure_storage("cat1")
+
+        # No create when exists; alias add still called (idempotent itself).
+        assert es.indices.create_calls == []
+        assert added == ["dynastore-items-cat1"]
+
+
+class TestDeleteEntitiesUsesRouting:
+    @pytest.mark.asyncio
+    async def test_per_id_delete_with_routing(self):
+        es = _StubEs(exists=True)
+        with patch(
+            "dynastore.modules.elasticsearch.client.get_client", return_value=es,
+        ), patch(
+            "dynastore.modules.elasticsearch.client.get_index_prefix",
+            return_value="dynastore",
+        ):
+            driver = ItemsElasticsearchDriver()
+            n = await driver.delete_entities("cat1", "col1", ["a", "b"])
+
+        assert n == 2
+        assert es.delete_calls == [
+            {"index": "dynastore-items-cat1", "id": "a",
+             "params": {"routing": "col1", "ignore": "404"}},
+            {"index": "dynastore-items-cat1", "id": "b",
+             "params": {"routing": "col1", "ignore": "404"}},
+        ]
+
+
+class TestDropStorageScopes:
+    @pytest.mark.asyncio
+    async def test_collection_drop_uses_delete_by_query(self):
+        es = _StubEs(exists=True)
+        removed: list = []
+
+        async def _remove(index_name):
+            removed.append(index_name)
+
+        with patch(
+            "dynastore.modules.elasticsearch.client.get_client", return_value=es,
+        ), patch(
+            "dynastore.modules.elasticsearch.client.get_index_prefix",
+            return_value="dynastore",
+        ), patch(
+            "dynastore.modules.elasticsearch.aliases.remove_index_from_public_alias",
+            new=_remove,
+        ):
+            driver = ItemsElasticsearchDriver()
+            await driver.drop_storage("cat1", "col1")
+
+        assert removed == []  # alias untouched on collection-scope drop
+        assert es.delete_by_query_calls == [{
+            "index": "dynastore-items-cat1",
+            "body": {"query": {"term": {"collection": "col1"}}},
+            "params": {"routing": "col1", "refresh": "false"},
+        }]
+        assert es.indices.delete_calls == []
+
+    @pytest.mark.asyncio
+    async def test_catalog_drop_removes_from_alias_then_deletes_index(self):
+        es = _StubEs(exists=True)
+        removed: list = []
+
+        async def _remove(index_name):
+            removed.append(index_name)
+
+        with patch(
+            "dynastore.modules.elasticsearch.client.get_client", return_value=es,
+        ), patch(
+            "dynastore.modules.elasticsearch.client.get_index_prefix",
+            return_value="dynastore",
+        ), patch(
+            "dynastore.modules.elasticsearch.aliases.remove_index_from_public_alias",
+            new=_remove,
+        ):
+            driver = ItemsElasticsearchDriver()
+            await driver.drop_storage("cat1")
+
+        assert removed == ["dynastore-items-cat1"]
+        assert es.indices.delete_calls == [{
+            "index": "dynastore-items-cat1",
+            "params": {"ignore_unavailable": "true"},
+            "kwargs": {},
+        }]
+
+
+class TestReadEntitiesScopesByCollection:
+    @pytest.mark.asyncio
+    async def test_by_id_uses_routing(self):
+        es = _StubEs(exists=True)
+        with patch(
+            "dynastore.modules.elasticsearch.client.get_client", return_value=es,
+        ), patch(
+            "dynastore.modules.elasticsearch.client.get_index_prefix",
+            return_value="dynastore",
+        ):
+            driver = ItemsElasticsearchDriver()
+            results = []
+            async for f in driver.read_entities("cat1", "col1", entity_ids=["x"]):
+                results.append(f)
+
+        assert es.get_calls == [{
+            "index": "dynastore-items-cat1", "id": "x",
+            "params": {"routing": "col1"},
+        }]
+        assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_query_path_filters_by_collection_term(self):
+        es = _StubEs(exists=True)
+        with patch(
+            "dynastore.modules.elasticsearch.client.get_client", return_value=es,
+        ), patch(
+            "dynastore.modules.elasticsearch.client.get_index_prefix",
+            return_value="dynastore",
+        ):
+            driver = ItemsElasticsearchDriver()
+            collected = []
+            async for f in driver.read_entities(
+                "cat1", "col1", limit=10, offset=0,
+            ):
+                collected.append(f)
+
+        assert es.search_calls
+        call = es.search_calls[0]
+        assert call["index"] == "dynastore-items-cat1"
+        assert call["params"]["routing"] == "col1"
+        # Body wraps the base match_all in a bool with a collection filter.
+        body_query = call["body"]["query"]
+        assert body_query["bool"]["filter"] == [
+            {"term": {"collection": "col1"}},
+        ]
+
+
+class TestLocationReportsTenantIndex:
+    @pytest.mark.asyncio
+    async def test_includes_routing_in_canonical_uri(self):
+        with patch(
+            "dynastore.modules.elasticsearch.client.get_index_prefix",
+            return_value="dynastore",
+        ):
+            driver = ItemsElasticsearchDriver()
+            loc = await driver.location("cat1", "col1")
+
+        assert loc.identifiers["index"] == "dynastore-items-cat1"
+        assert loc.identifiers["routing"] == "col1"
+        assert loc.canonical_uri == "es://dynastore-items-cat1?routing=col1"
