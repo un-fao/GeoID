@@ -1652,16 +1652,28 @@ async function demoAction(action) {
             # Root directory listing → just the "platform" directory
             if path == "":
                 try:
-                    _items, _total = await nb_svc.list_platform_notebooks(limit=1)
+                    items, _total = await nb_svc.list_platform_notebooks(limit=200)
                 except Exception:
-                    _total = 0
+                    items, _total = [], 0
+                nb_entries = []
+                for nb in items:
+                    nb_d = nb if isinstance(nb, dict) else nb.model_dump()
+                    nid = nb_d.get("notebook_id", "")
+                    upd = nb_d.get("updated_at")
+                    ts = upd.isoformat() if upd is not None else now_iso
+                    nb_entries.append({
+                        "name": f"{nid}.ipynb", "path": f"platform/{nid}.ipynb",
+                        "type": "notebook", "format": "json", "writable": False,
+                        "created": ts, "last_modified": ts,
+                        "content": None, "mimetype": None, "size": None,
+                    })
                 entries = []
                 if _total:
                     entries.append({
                         "name": "platform", "path": "platform",
                         "type": "directory", "format": "json",
                         "writable": False, "created": now_iso,
-                        "last_modified": now_iso, "content": None,
+                        "last_modified": now_iso, "content": nb_entries,
                         "mimetype": None, "size": None,
                     })
                 return JSONResponse(entries, headers={"Cache-Control": "no-cache"})
