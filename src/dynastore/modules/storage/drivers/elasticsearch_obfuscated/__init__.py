@@ -25,14 +25,14 @@ Disabling the obfuscation feature in a deployment = removing the
 needs to change.
 """
 
+from dynastore.modules.storage.drivers.elasticsearch_obfuscated.driver import (
+    ItemsElasticsearchObfuscatedDriver,
+)
 from dynastore.modules.storage.drivers.elasticsearch_obfuscated.transformer import (
     ObfuscatedEntityTransformer,
 )
 
 __all__ = [
+    "ItemsElasticsearchObfuscatedDriver",
     "ObfuscatedEntityTransformer",
-    # NOTE: Driver class (ItemsElasticsearchObfuscatedDriver) is currently still
-    # in modules/storage/drivers/elasticsearch.py — to be moved here in the
-    # remainder of PR-2 of feat/es-unified-tenant-index. Once moved, add to
-    # this __all__ + import.
 ]

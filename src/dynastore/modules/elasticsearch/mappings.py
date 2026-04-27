@@ -253,38 +253,6 @@ def get_all_index_names(prefix: str) -> List[Dict[str, Any]]:
     ]
 
 
-# ---------------------------------------------------------------------------
-# Tenant items index mapping (used by the obfuscated driver)
-#
-# Stores the full feature (geometry + properties + external_id) in a single
-# index per tenant (catalog). Access is gated by the DENY policy applied
-# when the obfuscated driver is active, plus the tenant-first search
-# contract enforced in the dedicated obfuscated extension (requires
-# catalog_id + (geoid OR (external_id AND collection_id))).
-#
-# Docs that would exceed the ES 10MB per-doc limit are shrunk by the
-# `simplify_to_fit` helper in tools/geometry_simplify.py, which records a
-# `simplification_factor` and `simplification_mode` on the stored doc.
-# ---------------------------------------------------------------------------
-
-TENANT_FEATURE_MAPPING: Dict[str, Any] = {
-    "dynamic": False,  # reject unknown top-level fields (typos, smuggling)
-    "properties": {
-        "geoid":                 {"type": "keyword"},
-        "catalog_id":            {"type": "keyword"},
-        "collection_id":         {"type": "keyword"},
-        "external_id":           {"type": "keyword"},
-        "geometry":              {"type": "geo_shape"},
-        "bbox":                  {"type": "float"},
-        "simplification_factor": {"type": "float"},
-        "simplification_mode":   {"type": "keyword"},
-        # Tenant attributes live under a dynamic sub-tree so new fields
-        # are indexed without mapping updates.
-        "properties":            {"type": "object", "dynamic": True},
-    },
-}
-
-
 def get_tenant_items_index(prefix: str, catalog_id: str) -> str:
     """Per-tenant regular items index. Owned by the items ES driver."""
     return f"{prefix}-items-{catalog_id}"
@@ -298,75 +266,6 @@ def get_public_items_alias(prefix: str) -> str:
     apply-handler (remove on driver removal).
     """
     return f"{prefix}-items-public"
-
-
-# ---------------------------------------------------------------------------
-# DEPRECATED — to be deleted in PR-2 of feat/es-unified-tenant-index when the
-# obfuscated driver moves to its own sibling subpackage. Kept for the duration
-# of PR-1 only because callers in tasks/elasticsearch_indexer/tasks.py and
-# extensions/search/search_service.py still import this helper. Those callers
-# are deleted/relocated in PR-2 / PR-3; this stub goes away with them.
-#
-# Per the architectural principle: obfuscation must not pollute platform
-# mappings. This is a transitional symbol, NOT a permanent helper.
-# ---------------------------------------------------------------------------
-
-def get_obfuscated_index_name(prefix: str, catalog_id: str) -> str:
-    """[DEPRECATED — removed in PR-2] Per-tenant index name used by the
-    obfuscated indexer path. Computed inline at each callsite once the
-    obfuscated driver moves to its own subpackage.
-    """
-    return f"{prefix}-geoid-{catalog_id}"
-
-
-def build_tenant_feature_doc(
-    item: Any,
-    *,
-    catalog_id: str,
-    collection_id: str,
-    external_id: Any = None,
-) -> Dict[str, Any]:
-    """Build a `TENANT_FEATURE_MAPPING`-shaped doc from a Feature/dict.
-
-    Accepts a Feature pydantic model, a STAC item dict, or a GeoJSON
-    Feature dict. Pulls `geoid` from the item's `id`, `geometry` and
-    `bbox` from the GeoJSON shape, and copies any non-internal
-    `properties` (keys starting with `_` are skipped — those are
-    SFEOS-internal tracking fields like `_external_id`).
-    """
-    if hasattr(item, "model_dump"):
-        src = item.model_dump(by_alias=True, exclude_none=True)
-    elif isinstance(item, dict):
-        src = item
-    else:
-        src = dict(item)
-
-    geoid = src.get("id") or src.get("geoid")
-    raw_props = src.get("properties") or {}
-    props = {k: v for k, v in raw_props.items() if not str(k).startswith("_")}
-
-    doc: Dict[str, Any] = {
-        "geoid": geoid,
-        "catalog_id": catalog_id,
-        "collection_id": collection_id,
-    }
-
-    ext = external_id if external_id is not None else src.get("_external_id")
-    if ext is not None:
-        doc["external_id"] = str(ext)
-
-    geom = src.get("geometry")
-    if geom is not None:
-        doc["geometry"] = geom
-
-    bbox = src.get("bbox")
-    if bbox is not None:
-        doc["bbox"] = list(bbox)
-
-    if props:
-        doc["properties"] = props
-
-    return doc
 
 
 def get_assets_index_name(prefix: str, catalog_id: str) -> str:

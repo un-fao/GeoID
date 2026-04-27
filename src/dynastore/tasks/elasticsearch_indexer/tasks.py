@@ -59,16 +59,6 @@ class BulkCollectionReindexInputs(BaseModel):
     driver: Optional[str] = None
 
 
-class ObfuscatedIndexInputs(BaseModel):
-    geoid: str
-    catalog_id: str
-    collection_id: str
-
-
-class ObfuscatedDeleteInputs(BaseModel):
-    geoid: str
-    catalog_id: str
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -100,9 +90,11 @@ async def _reindex_collection(
     Stream all items in a collection from AlloyDB and bulk-index into ES.
     Returns the number of documents indexed.
     """
-    from dynastore.modules.elasticsearch.mappings import (
-        TENANT_FEATURE_MAPPING,
+    from dynastore.modules.storage.drivers.elasticsearch_obfuscated.doc_builder import (
         build_tenant_feature_doc,
+    )
+    from dynastore.modules.storage.drivers.elasticsearch_obfuscated.mappings import (
+        TENANT_FEATURE_MAPPING,
     )
     from dynastore.tools.geometry_simplify import simplify_to_fit
 
@@ -212,13 +204,13 @@ class BulkCatalogReindexTask(TaskProtocol):
     task_type = "elasticsearch_bulk_reindex_catalog"
 
     async def run(self, payload: TaskPayload) -> Dict[str, Any]:
-        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-        from dynastore.modules.elasticsearch.mappings import (
-            get_index_name,
-            get_obfuscated_index_name,
-            TENANT_FEATURE_MAPPING,
-        )
         from dynastore.models.protocols import CatalogsProtocol
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
+        from dynastore.modules.elasticsearch.mappings import get_index_name
+        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.mappings import (
+            TENANT_FEATURE_MAPPING,
+            get_obfuscated_index_name,
+        )
         from dynastore.tools.discovery import get_protocol
 
         inputs = BulkCatalogReindexInputs.model_validate(payload.inputs)
@@ -301,13 +293,13 @@ class BulkCollectionReindexTask(TaskProtocol):
     task_type = "elasticsearch_bulk_reindex_collection"
 
     async def run(self, payload: TaskPayload) -> Dict[str, Any]:
-        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-        from dynastore.modules.elasticsearch.mappings import (
-            get_index_name,
-            get_obfuscated_index_name,
-            TENANT_FEATURE_MAPPING,
-        )
         from dynastore.models.protocols import CatalogsProtocol
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
+        from dynastore.modules.elasticsearch.mappings import get_index_name
+        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.mappings import (
+            TENANT_FEATURE_MAPPING,
+            get_obfuscated_index_name,
+        )
         from dynastore.tools.discovery import get_protocol
 
         inputs = BulkCollectionReindexInputs.model_validate(payload.inputs)
@@ -341,98 +333,3 @@ class BulkCollectionReindexTask(TaskProtocol):
             "status": "done",
         }
 
-
-# ---------------------------------------------------------------------------
-# Task: ObfuscatedIndexTask  (per-item, incremental)
-# ---------------------------------------------------------------------------
-
-class ObfuscatedIndexTask(TaskProtocol):
-    """
-    Index a single item as a full tenant-feature doc into the per-tenant
-    index ``{prefix}-geoid-{catalog_id}``. Dispatched per-item by
-    ElasticsearchModule event handlers when the catalog has obfuscated=True.
-
-    The full feature is fetched via ``CatalogsProtocol`` so the dispatcher
-    only needs to send identifiers. Geometry simplification is applied
-    via ``simplify_to_fit`` to honour the ES 10MB per-doc limit.
-    """
-
-    task_type = "elasticsearch_obfuscated_index"
-
-    async def run(self, payload: TaskPayload) -> Dict[str, Any]:
-        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-        from dynastore.modules.elasticsearch.mappings import (
-            get_obfuscated_index_name,
-            TENANT_FEATURE_MAPPING,
-            build_tenant_feature_doc,
-        )
-        from dynastore.models.protocols.item_crud import ItemCrudProtocol
-        from dynastore.tools.discovery import get_protocol
-        from dynastore.tools.geometry_simplify import simplify_to_fit
-
-        inputs = ObfuscatedIndexInputs.model_validate(payload.inputs)
-        index_name = get_obfuscated_index_name(_get_index_prefix(), inputs.catalog_id)
-
-        es = _build_es_client()
-        if not await es.indices.exists(index=index_name):
-            await es.indices.create(
-                index=index_name,
-                body={"mappings": TENANT_FEATURE_MAPPING},
-            )
-
-        # Fetch the full feature so we can persist geometry + properties.
-        feature: Any = {"id": inputs.geoid}
-        items_proto = get_protocol(ItemCrudProtocol)
-        if items_proto:
-            try:
-                fetched = await items_proto.get_item(
-                    inputs.catalog_id, inputs.collection_id, inputs.geoid,
-                )
-                if fetched is not None:
-                    feature = fetched
-            except Exception as e:
-                logger.warning(
-                    "ObfuscatedIndexTask: get_item(%s/%s/%s) failed (%s); "
-                    "indexing geoid-only stub.",
-                    inputs.catalog_id, inputs.collection_id, inputs.geoid, e,
-                )
-
-        doc = build_tenant_feature_doc(
-            feature, catalog_id=inputs.catalog_id, collection_id=inputs.collection_id,
-        )
-        doc, factor, mode = simplify_to_fit(doc)
-        doc["simplification_factor"] = factor
-        doc["simplification_mode"] = mode
-
-        await es.index(index=index_name, id=inputs.geoid, body=doc)
-        return {"geoid": inputs.geoid, "index": index_name, "status": "indexed"}
-
-
-# ---------------------------------------------------------------------------
-# Task: ObfuscatedDeleteTask  (per-item, incremental)
-# ---------------------------------------------------------------------------
-
-class ObfuscatedDeleteTask(TaskProtocol):
-    """
-    Remove a single geoid document from the obfuscated index.
-    Safe to run even if the catalog is not obfuscated (no-op via NotFoundError).
-    """
-
-    task_type = "elasticsearch_obfuscated_delete"
-
-    async def run(self, payload: TaskPayload) -> Dict[str, Any]:
-        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-        from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
-
-        from opensearchpy.exceptions import NotFoundError
-
-        inputs = ObfuscatedDeleteInputs.model_validate(payload.inputs)
-        index_name = get_obfuscated_index_name(_get_index_prefix(), inputs.catalog_id)
-
-        es = _build_es_client()
-        try:
-            await es.delete(index=index_name, id=inputs.geoid)
-        except NotFoundError:
-            pass  # safe: document may not be in the obfuscated index
-
-        return {"geoid": inputs.geoid, "index": index_name, "status": "deleted"}

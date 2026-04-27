@@ -453,7 +453,7 @@ class ElasticsearchModule(ModuleProtocol):
         already dispatches a bulk reindex after this returns.
         """
         from dynastore.modules.elasticsearch import client as es_client
-        from dynastore.modules.elasticsearch.mappings import (
+        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.mappings import (
             TENANT_FEATURE_MAPPING,
             get_obfuscated_index_name,
         )
@@ -658,7 +658,9 @@ class ElasticsearchModule(ModuleProtocol):
             is_collection_obfuscated,
         )
         if await is_collection_obfuscated(catalog_id, collection_id):
-            from dynastore.tasks.elasticsearch_indexer.tasks import ObfuscatedIndexInputs
+            from dynastore.modules.storage.drivers.elasticsearch_obfuscated.tasks import (
+                ObfuscatedIndexInputs,
+            )
             await self._dispatch_task(
                 task_type="elasticsearch_obfuscated_index",
                 inputs=ObfuscatedIndexInputs(
@@ -708,7 +710,9 @@ class ElasticsearchModule(ModuleProtocol):
             is_collection_obfuscated,
         )
         if await is_collection_obfuscated(catalog_id, collection_id):
-            from dynastore.tasks.elasticsearch_indexer.tasks import ObfuscatedIndexInputs
+            from dynastore.modules.storage.drivers.elasticsearch_obfuscated.tasks import (
+                ObfuscatedIndexInputs,
+            )
             for item_doc in items_subset:
                 item_id = item_doc.get("id")
                 if not item_id:
@@ -768,7 +772,9 @@ class ElasticsearchModule(ModuleProtocol):
         )
 
         # Delete from the obfuscated geoid index (no-op if catalog is not obfuscated).
-        from dynastore.tasks.elasticsearch_indexer.tasks import ObfuscatedDeleteInputs
+        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.tasks import (
+            ObfuscatedDeleteInputs,
+        )
         await self._dispatch_task(
             task_type="elasticsearch_obfuscated_delete",
             inputs=ObfuscatedDeleteInputs(
@@ -827,7 +833,9 @@ class ElasticsearchModule(ModuleProtocol):
         collection_id: str,
         db_resource: Optional[Any] = None,
     ) -> None:
-        from dynastore.tasks.elasticsearch_indexer.tasks import ObfuscatedIndexInputs
+        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.tasks import (
+                ObfuscatedIndexInputs,
+            )
         await self._dispatch_task(
             task_type="elasticsearch_obfuscated_index",
             inputs=ObfuscatedIndexInputs(
@@ -844,7 +852,9 @@ class ElasticsearchModule(ModuleProtocol):
         catalog_id: str,
         db_resource: Optional[Any] = None,
     ) -> None:
-        from dynastore.tasks.elasticsearch_indexer.tasks import ObfuscatedDeleteInputs
+        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.tasks import (
+            ObfuscatedDeleteInputs,
+        )
         await self._dispatch_task(
             task_type="elasticsearch_obfuscated_delete",
             inputs=ObfuscatedDeleteInputs(

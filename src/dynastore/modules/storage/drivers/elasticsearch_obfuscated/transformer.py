@@ -54,12 +54,8 @@ class ObfuscatedEntityTransformer:
     ``external_id`` and simplification metadata surfaced into
     properties) — matching what the regular STAC item readers expect.
 
-    Currently delegates to platform helpers
-    (``modules.elasticsearch.mappings.build_tenant_feature_doc`` and
-    ``tools.geometry_simplify.simplify_to_fit``); both will move into
-    this subpackage in the remainder of PR-2 of
-    feat/es-unified-tenant-index. The transformer surface is stable
-    independently of where the helpers live.
+    Delegates to the subpackage-private :func:`build_tenant_feature_doc`
+    plus :func:`dynastore.tools.geometry_simplify.simplify_to_fit`.
     """
 
     async def transform_for_index(
@@ -81,9 +77,9 @@ class ObfuscatedEntityTransformer:
         if entity_kind != "item":
             return entity
 
-        # Helpers currently live in their original locations; will be moved
-        # into this subpackage in PR-2 (mappings.py + doc_builder.py).
-        from dynastore.modules.elasticsearch.mappings import build_tenant_feature_doc
+        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.doc_builder import (
+            build_tenant_feature_doc,
+        )
         from dynastore.tools.geometry_simplify import simplify_to_fit
 
         # build_tenant_feature_doc accepts a Feature/dict and lifts geoid /

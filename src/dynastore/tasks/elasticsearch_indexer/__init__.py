@@ -3,14 +3,10 @@ from typing import ClassVar
 from dynastore.tools.discovery import register_plugin
 
 from .tasks import (
-    BulkCatalogReindexTask,
-    BulkCollectionReindexTask,
-    ObfuscatedIndexTask,
-    ObfuscatedDeleteTask,
     BulkCatalogReindexInputs,
+    BulkCatalogReindexTask,
     BulkCollectionReindexInputs,
-    ObfuscatedIndexInputs,
-    ObfuscatedDeleteInputs,
+    BulkCollectionReindexTask,
 )
 
 
@@ -36,12 +32,8 @@ register_plugin(_IndexerTasksConsumerRole())
 
 
 __all__ = [
-    "BulkCatalogReindexTask",
-    "BulkCollectionReindexTask",
-    "ObfuscatedIndexTask",
-    "ObfuscatedDeleteTask",
     "BulkCatalogReindexInputs",
+    "BulkCatalogReindexTask",
     "BulkCollectionReindexInputs",
-    "ObfuscatedIndexInputs",
-    "ObfuscatedDeleteInputs",
+    "BulkCollectionReindexTask",
 ]

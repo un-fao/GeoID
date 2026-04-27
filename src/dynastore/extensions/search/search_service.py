@@ -21,7 +21,10 @@ from contextlib import asynccontextmanager
 from dynastore.extensions import ExtensionProtocol
 
 from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-from dynastore.modules.elasticsearch.mappings import get_index_name, get_obfuscated_index_name
+from dynastore.modules.elasticsearch.mappings import get_index_name
+from dynastore.modules.storage.drivers.elasticsearch_obfuscated.mappings import (
+    get_obfuscated_index_name,
+)
 from .search_models import (
     CatalogSearchBody,
     GeoidCollection,

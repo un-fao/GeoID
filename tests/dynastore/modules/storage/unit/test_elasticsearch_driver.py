@@ -3,8 +3,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from dynastore.modules.storage.drivers.elasticsearch import (
     ItemsElasticsearchDriver,
-    ItemsElasticsearchObfuscatedDriver,
     _ElasticsearchBase,
+)
+from dynastore.modules.storage.drivers.elasticsearch_obfuscated import (
+    ItemsElasticsearchObfuscatedDriver,
 )
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols.storage_driver import Capability
