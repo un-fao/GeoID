@@ -501,12 +501,18 @@ def write_parquet(
 
 
 def write_geoparquet(
-    records: Generator[Feature, None, None],
+    records: Iterable[Feature],
     srid: int,
     chunk_size: int = 1000,
     encoding: str = "utf-8",
 ) -> Generator[bytes, None, None]:
     """Writes records as a GeoParquet 1.0-compliant Parquet file.
+
+    Accepts any iterable (lists, generators, raw iterators) — the function
+    only consumes ``records`` once, never reaches for Generator-specific
+    ``.send()`` / ``.throw()`` / ``.close()``. Widening the type lets
+    callers pass ``iter(rows)`` (Iterator) or a list directly without a
+    spurious ``reportArgumentType``.
 
     Uses geopandas.to_parquet() so the output includes the required ``geo``
     metadata in the Parquet file schema (geometry types, CRS, WKB encoding).

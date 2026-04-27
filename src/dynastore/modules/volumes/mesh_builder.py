@@ -23,9 +23,21 @@ from __future__ import annotations
 import logging
 import struct
 from dataclasses import dataclass, field
-from typing import List, Sequence, Tuple
+from typing import TYPE_CHECKING, List, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Static-typing-only imports: pyright follows this branch for type narrowing
+# even when the runtime ``try/except`` below cannot resolve shapely
+# (extension_volumes is optional). Without this, ``isinstance(geom, Polygon)``
+# would not narrow ``geom`` from ``BaseGeometry`` and downstream ``.geoms``
+# accesses fail with reportAttributeAccessIssue.
+if TYPE_CHECKING:
+    from shapely.geometry import (
+        GeometryCollection,
+        MultiPolygon,
+        Polygon,
+    )
 
 try:
     import shapely
@@ -165,7 +177,7 @@ def _extrude_ring(ring_xy: Sequence[Tuple[float, float]],
         acc.add_triangle(top[i], bot[j], top[j])
 
 
-def _extrude_polygon(polygon: "Polygon",  # type: ignore[name-defined]
+def _extrude_polygon(polygon: Polygon,
                      z_base: float,
                      extrusion_height: float,
                      acc: _MeshAccumulator) -> None:
@@ -211,7 +223,7 @@ def build_mesh_from_geometries(
             )
             continue
 
-        polys: List["Polygon"] = []  # type: ignore[name-defined]
+        polys: List[Polygon] = []
         if isinstance(geom, Polygon):
             polys = [geom]
         elif isinstance(geom, MultiPolygon):

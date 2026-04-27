@@ -198,7 +198,11 @@ class EDRService(ExtensionProtocol, OGCServiceMixin):
     # ------------------------------------------------------------------
 
     async def get_landing_page(self, request: Request) -> em.EDRLandingPage:
-        return await self.ogc_landing_page_handler(request)
+        # The shared OGC handler returns the base ``LandingPage``; re-validate
+        # through ``EDRLandingPage`` so the EDR-specific defaults for title /
+        # description apply when the underlying landing page omits them.
+        base = await self.ogc_landing_page_handler(request)
+        return em.EDRLandingPage(**base.model_dump())
 
     async def get_conformance(self, request: Request) -> em.Conformance:
         return await self.ogc_conformance_handler(request)
