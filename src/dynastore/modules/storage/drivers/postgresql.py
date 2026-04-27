@@ -1166,17 +1166,31 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         catalog_id: str,
         collection_id: str,
     ) -> "StorageLocation":
-        """Return typed physical storage coordinates for this collection."""
+        """Return typed physical storage coordinates for this collection.
+
+        Raises ValueError when no ``physical_table`` is set on the driver
+        config.  Synthesizing ``collection_id`` here masks lifecycle gaps:
+        ``ItemQueryMixin._apply_query_transformations`` consults
+        ``resolve_physical_table`` directly and gets ``None``, then raises
+        the opaque "Could not resolve storage" error from a deeper frame.
+        Failing here keeps the two resolution paths in agreement —
+        callers like ``tiles_module.get_tile_resolution_params`` already
+        catch ValueError and surface an empty meta (→ 204 tile).
+        """
         from dynastore.modules.storage.storage_location import StorageLocation
 
         schema = await self._resolve_schema(catalog_id)
         table = await self.resolve_physical_table(catalog_id, collection_id)
-        table_ref = table or collection_id
+        if not table:
+            raise ValueError(
+                f"No physical_table configured for {catalog_id}/{collection_id} "
+                f"on driver {type(self).__name__}"
+            )
         return StorageLocation(
             backend="postgresql",
-            canonical_uri=f"postgresql://{schema}.{table_ref}",
-            identifiers={"schema": schema, "table": table_ref},
-            display_label=f"{schema}.{table_ref}",
+            canonical_uri=f"postgresql://{schema}.{table}",
+            identifiers={"schema": schema, "table": table},
+            display_label=f"{schema}.{table}",
         )
 
     # --- Internal helpers ---

@@ -413,8 +413,14 @@ class ItemQueryMixin:
             catalog_id, collection_id, db_resource=db_resource,
         )
         if not phys_schema or not phys_table:
+            # Name the missing leg so a real failure on review tells us
+            # whether the catalog row's physical_schema is unset, the
+            # driver config's physical_table is unset, or both — without
+            # this, every miss surfaced as the same opaque 500.
             raise ValueError(
-                f"Could not resolve storage for {catalog_id}:{collection_id}"
+                f"Could not resolve storage for {catalog_id}:{collection_id} "
+                f"(phys_schema={phys_schema!r}, phys_table={phys_table!r}, "
+                f"db_resource={'passed' if db_resource is not None else 'absent'})"
             )
 
         optimizer = QueryOptimizer(col_config)

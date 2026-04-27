@@ -145,14 +145,28 @@ async def _build_collection_subquery(
     # 3. Get Query from ItemService
     # We pass tile_wkb via params so GeometrySidecar can use it as bind param
 
-    sql, bind_params = await items_svc.get_features_query(
-        conn,
-        catalog_id=catalog_id,
-        collection_id=collection_id,
-        col_config=col_config,
-        params=params,
-        param_suffix=f"_{index_i}",
-    )
+    try:
+        sql, bind_params = await items_svc.get_features_query(
+            conn,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            col_config=col_config,
+            params=params,
+            param_suffix=f"_{index_i}",
+        )
+    except ValueError as exc:
+        # Storage resolution failed mid-pipeline (e.g. driver config has no
+        # physical_table, or catalog row's physical_schema is null).  The
+        # tile-resolution-params cache may have served a non-empty meta
+        # because driver.location() previously synthesized fallbacks; the
+        # deeper resolver disagrees.  Treat as "no features for this
+        # collection in this tile" so the caller can still emit a valid
+        # (possibly-empty) MVT for the remaining collections.
+        logger.warning(
+            "Skipping collection %s/%s in tile: %s",
+            catalog_id, collection_id, exc,
+        )
+        return None, {}
 
     # Return raw SQL (ItemService query now uses :tile_wkb bind param instead of join)
     return sql.rstrip(";"), bind_params

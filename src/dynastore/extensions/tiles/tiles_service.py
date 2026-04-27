@@ -736,20 +736,29 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
         simplification_algorithm,
     ) -> Optional[bytes]:
         """PostGIS MVT generation — L1 in-process cache above the storage provider L2."""
-        return await tiles_db.get_features_as_mvt_filtered(
-            conn=conn,
-            resolved_collections=resolved_collections,
-            tms_def=tms_def,
-            target_srid=target_srid,
-            z=z,
-            x=x,
-            y=y,
-            datetime_str=datetime_str,
-            cql_filter=cql_filter,
-            subset_params=subset_params,  # type: ignore[arg-type]
-            simplification=simplification,
-            simplification_algorithm=simplification_algorithm,
-        )
+        try:
+            return await tiles_db.get_features_as_mvt_filtered(
+                conn=conn,
+                resolved_collections=resolved_collections,
+                tms_def=tms_def,
+                target_srid=target_srid,
+                z=z,
+                x=x,
+                y=y,
+                datetime_str=datetime_str,
+                cql_filter=cql_filter,
+                subset_params=subset_params,  # type: ignore[arg-type]
+                simplification=simplification,
+                simplification_algorithm=simplification_algorithm,
+            )
+        except ValueError as exc:
+            # Belt-and-suspenders: tiles_db._build_collection_subquery already
+            # catches ValueError per-collection, but any storage-resolution
+            # ValueError that escapes here would otherwise become an opaque
+            # 500.  Returning None becomes a 204 upstream and — because the
+            # @cached condition rejects None — does not poison the L1 cache.
+            logger.warning("MVT generation skipped (storage unresolved): %s", exc)
+            return None
 
     @staticmethod
     async def _resolve_request_config(

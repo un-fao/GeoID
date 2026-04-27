@@ -106,6 +106,51 @@ async def test_get_features_as_mvt_filtered_query_structure():
             assert "SELECT ST_AsMVT" in sql_query
 
 
+@pytest.mark.asyncio
+async def test_build_collection_subquery_swallows_value_error(caplog):
+    """If items_svc.get_features_query raises ValueError (storage unresolved
+    mid-pipeline — e.g. driver config has no physical_table, or catalog row's
+    physical_schema is null), _build_collection_subquery must return
+    (None, {}) and log a warning, not propagate.  Callers filter out None
+    subqueries; the tile route then produces a valid (possibly-empty) MVT
+    instead of a 500."""
+    conn = AsyncMock()
+
+    with patch("dynastore.tools.discovery.get_protocol") as mock_get_proto:
+        mock_items = AsyncMock()
+        mock_items.get_features_query = AsyncMock(
+            side_effect=ValueError(
+                "Could not resolve storage for cat:col "
+                "(phys_schema=None, phys_table='t_x', db_resource=passed)"
+            )
+        )
+        mock_get_proto.return_value = mock_items
+
+        col_config = MagicMock()
+        with caplog.at_level(logging.WARNING):
+            sql, params = await tiles_db._build_collection_subquery(
+                conn,
+                catalog_id="cat",
+                collection_id="col",
+                col_config=col_config,
+                source_srid=4326,
+                target_srid=3857,
+                simplification_by_zoom={},
+                z="0",
+                x=0,
+                y=0,
+                index_i=0,
+                tile_wkb=b"\\x00",
+            )
+
+    assert sql is None
+    assert params == {}
+    assert any(
+        "Skipping collection cat/col in tile" in rec.message
+        for rec in caplog.records
+    )
+
+
 if __name__ == "__main__":
     import asyncio
 

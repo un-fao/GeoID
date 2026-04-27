@@ -262,3 +262,32 @@ class TestLocation:
             assert loc.backend == "postgresql"
             assert loc.identifiers["schema"] == "my_schema"
             assert loc.identifiers["table"] == "my_table"
+
+    @pytest.mark.asyncio
+    async def test_location_raises_when_physical_table_unset(self):
+        """Driver config with no physical_table must raise instead of
+        silently using collection_id — the silent fallback hid lifecycle
+        gaps (collection registered but not activated) until the deeper
+        resolver in _apply_query_transformations raised the opaque
+        'Could not resolve storage' from a frame far from the cause."""
+        driver = ItemsPostgresqlDriver()
+        with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
+            mock_catalogs = AsyncMock()
+            mock_catalogs.resolve_physical_schema = AsyncMock(return_value="my_schema")
+
+            mock_configs = AsyncMock()
+            mock_configs.get_config = AsyncMock(
+                return_value=ItemsPostgresqlDriverConfig(physical_table=None)
+            )
+
+            def side_effect(proto):
+                name = proto.__name__ if hasattr(proto, "__name__") else str(proto)
+                if "Catalogs" in name:
+                    return mock_catalogs
+                if "Configs" in name:
+                    return mock_configs
+                return None
+
+            mock_gp.side_effect = side_effect
+            with pytest.raises(ValueError, match="No physical_table configured"):
+                await driver.location("cat1", "col1")

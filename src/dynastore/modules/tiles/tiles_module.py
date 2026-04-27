@@ -851,7 +851,7 @@ async def get_collection_source_srid(
         return srid
 
 
-@cached(maxsize=1024, namespace="tiles_resolution_params")
+@cached(maxsize=1024, ttl=120, jitter=15, namespace="tiles_resolution_params")
 async def get_tile_resolution_params(
     catalog_id: str, collection_id: str
 ) -> Dict[str, Any]:
