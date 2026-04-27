@@ -114,15 +114,26 @@ class GdalOsgeoReader(SourceReaderProtocol):
         URI itself lacks the ``.zip`` suffix (e.g. an asset uploaded
         with a bare filename, where the caller knows the content_type
         is ``application/zip``).
+
+        When the underlying object's path lacks a recognised archive
+        extension we use GDAL's curly-brace notation
+        ``/vsizip/{<archive-path>}/`` which tells the driver explicitly
+        where the archive ends — no extension-based autodetection.
+        See https://gdal.org/user/virtual_file_systems.html#vsizip-zip-archives
         """
         out = _to_vsigs(uri)
         if is_zip is None:
             is_zip = out.lower().endswith(".zip")
-        if is_zip:
-            # ESRI shapefile (or other) shipped as a zip.  GDAL needs
-            # ``/vsizip//vsigs/<bucket>/<key>[.zip]`` to descend into it.
-            out = "/vsizip/" + out
-        return out
+        if not is_zip:
+            return out
+        # GDAL autodetects the archive boundary on these extensions.
+        if out.lower().endswith((".zip", ".kmz", ".ods", ".xlsx")):
+            return "/vsizip/" + out
+        # Bare-filename ZIP (e.g. ``/vsigs/<bucket>/.../aoi_oasis``):
+        # use curly-brace form so GDAL doesn't try to autodetect.
+        # Trailing slash leaves the inner path empty so the driver
+        # discovers .shp / .gpkg etc. itself.
+        return "/vsizip/{" + out + "}/"
 
     # ------------------------------------------------------------------
     # Open / iterate
