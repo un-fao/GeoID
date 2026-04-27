@@ -120,6 +120,11 @@ async def lifespan(app: FastAPI):
     # The outer context manager initializes foundational modules.
     # They populate `app.state` with core services. TasksModule.lifespan
     # already manages task singletons and the dispatcher internally.
+    # Expose the FastAPI app on app.state so modules that legitimately
+    # need to register top-level HTTP routes (e.g. LocalUploadModule's
+    # /local-upload, /local-download endpoints) can reach it without
+    # being promoted to extensions.
+    app.state.app = app
     async with modules.lifespan(app.state):
         logger.info("--- [main.py] Modules are active. ---")
         # Extensions can now reliably access services from modules and task instances.

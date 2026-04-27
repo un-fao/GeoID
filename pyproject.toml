@@ -46,6 +46,7 @@ module_gcp = ["gcloud-aio-storage==9.6.0", "google-cloud-bigquery==3.24.0", "goo
 module_datastore = ["dynastore[db_sync]", "psycopg2-binary>=2.9.7"]
 module_db_config = ["sqlalchemy", "geoalchemy2", "h3>=4.4.2", "s2sphere>=0.2.5", "python-dateutil"]
 module_iam = ["pydantic[email]", "PyJWT>=2.0.0"]
+module_local = ["python-multipart>=0.0.9"]
 module_db = ["dynastore[db_async]", "sqlalchemy[asyncio]", "asyncpg"]
 module_crs = ["dynastore[geospatial_core]", "pyproj>=3.0.0"]
 module_events = ["psycopg[binary,pool]"]
@@ -212,7 +213,7 @@ core = ["dynastore[db_async,web,configs,events,storage,cache]"]
 # vs public catalog routers (stac/assets/search/records — not on maps).
 catalog_data_grp = ["dynastore[geospatial_core,catalog,features]"]
 catalog_routes_grp = ["dynastore[stac,assets,search,extension_records]"]
-catalog_grp = ["dynastore[catalog_data_grp,catalog_routes_grp]"]
+catalog_grp = ["dynastore[catalog_data_grp,catalog_routes_grp,module_local]"]
 maps_grp = ["dynastore[styles,maps,extension_wfs,tiles,crs,gdal,extension_coverages]"]
 # google_grp split: dwh is rendering input (BQ joins also live here),
 # gcp is the bucket-admin router (not on maps).
@@ -382,6 +383,7 @@ tiles = "dynastore.modules.tiles.tiles_module:TilesModule"
 datastore = "dynastore.modules.datastore.datastore_service:DatastoreModule"
 styles = "dynastore.modules.styles.styles_module:StylesModule"
 moving_features = "dynastore.modules.moving_features.mf_module:MovingFeaturesModule"
+local_upload = "dynastore.modules.local.local_upload:LocalUploadModule"
 db_config = "dynastore.modules.db_config.db_config_service:DBConfigModule"
 iam = "dynastore.modules.iam.module:IamModule"
 db = "dynastore.modules.db.db_service:DBService"

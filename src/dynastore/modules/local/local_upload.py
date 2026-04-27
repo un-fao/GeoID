@@ -55,12 +55,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Optional
 
+from dynastore.modules.protocols import ModuleProtocol
+
 logger = logging.getLogger(__name__)
 
 _TICKET_TTL_HOURS = 1
 
 
-class LocalUploadModule:
+class LocalUploadModule(ModuleProtocol):
     """
     Implements ``AssetUploadProtocol`` for on-premise / local-disk deployments.
 
@@ -76,6 +78,10 @@ class LocalUploadModule:
     The upload endpoint is added directly to the FastAPI app during the same
     lifespan phase.
     """
+
+    # Non-foundational: a missing python-multipart or path-write failure
+    # should disable local upload but never abort the catalog.
+    priority: int = 50
 
     def __init__(
         self,
@@ -98,7 +104,7 @@ class LocalUploadModule:
     # -------------------------------------------------------------------------
 
     @asynccontextmanager
-    async def lifespan(self, app: Any) -> AsyncIterator[None]:
+    async def lifespan(self, app_state: Any) -> AsyncIterator[None]:
         from dynastore.tools.discovery import register_plugin, unregister_plugin
         from dynastore.modules.local.asset_processes import LocalDownloadAssetProcess
 
@@ -108,9 +114,21 @@ class LocalUploadModule:
             f"LocalUploadModule: staging={self._staging_root}, assets={self._asset_root}"
         )
 
-        # Register the upload + download endpoints on the FastAPI app
-        self._register_route(app)
-        self._register_download_route(app)
+        # Modules receive ``app.state`` (a starlette State / SimpleNamespace),
+        # not the FastAPI app itself. ``main.py`` exposes the app via
+        # ``app.state.app`` precisely so route-registering modules like this
+        # one can reach it. Skip route registration if absent (worker
+        # contexts use ``SimpleNamespace`` with no .app — uploads aren't
+        # meaningful there).
+        fastapi_app = getattr(app_state, "app", None)
+        if fastapi_app is not None:
+            self._register_route(fastapi_app)
+            self._register_download_route(fastapi_app)
+        else:
+            logger.warning(
+                "LocalUploadModule: app.state.app missing; skipping HTTP "
+                "route registration (worker context?)."
+            )
 
         # Register the local download asset process so the parametric asset
         # router discovers it via get_protocols(AssetProcessProtocol).
@@ -125,7 +143,24 @@ class LocalUploadModule:
             logger.info("LocalUploadModule: unregistered.")
 
     def _register_route(self, app: Any) -> None:
-        """Adds ``POST /local-upload/{ticket_id}`` to the FastAPI app."""
+        """Adds ``POST /local-upload/{ticket_id}`` to the FastAPI app.
+
+        FastAPI's multipart support requires ``python-multipart``; without it
+        ``UploadFile = File(...)`` route registration raises at definition
+        time. Skip cleanly so deployments that don't ship multipart (most
+        slim API-only scopes) keep working — local upload simply isn't
+        available there.
+        """
+        try:
+            import multipart  # noqa: F401  — availability probe only
+        except ImportError:
+            logger.warning(
+                "LocalUploadModule: python-multipart not installed — skipping "
+                "POST /local-upload/{ticket_id} registration. Install the "
+                "extra to enable local file uploads."
+            )
+            return
+
         from fastapi import File, HTTPException, UploadFile, status as http_status
         from dynastore.models.protocols import UploadStatusResponse, UploadStatus
 
