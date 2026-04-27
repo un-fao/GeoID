@@ -94,6 +94,7 @@ class LocalUploadModule:
     @asynccontextmanager
     async def lifespan(self, app: Any) -> AsyncIterator[None]:
         from dynastore.tools.discovery import register_plugin, unregister_plugin
+        from dynastore.modules.local.asset_processes import LocalDownloadAssetProcess
 
         self._staging_root.mkdir(parents=True, exist_ok=True)
         self._asset_root.mkdir(parents=True, exist_ok=True)
@@ -101,13 +102,19 @@ class LocalUploadModule:
             f"LocalUploadModule: staging={self._staging_root}, assets={self._asset_root}"
         )
 
-        # Register the upload endpoint on the FastAPI app
+        # Register the upload + download endpoints on the FastAPI app
         self._register_route(app)
+        self._register_download_route(app)
 
+        # Register the local download asset process so the parametric asset
+        # router discovers it via get_protocols(AssetProcessProtocol).
+        self._download_process = LocalDownloadAssetProcess()
         register_plugin(self)
+        register_plugin(self._download_process)
         try:
             yield
         finally:
+            unregister_plugin(self._download_process)
             unregister_plugin(self)
             logger.info("LocalUploadModule: unregistered.")
 
@@ -188,6 +195,88 @@ class LocalUploadModule:
             tags=["Assets"],
         )
         logger.info("LocalUploadModule: registered POST /local-upload/{ticket_id}")
+
+    def _register_download_route(self, app: Any) -> None:
+        """Adds ``GET /local-download/{catalog_id}/{asset_id}`` to the FastAPI app.
+
+        Streams the underlying file referenced by the asset row to the
+        client. Authentication is provided by the global ``auth`` extension's
+        middleware (same protection model as ``POST /local-upload/...``); no
+        signed URLs are needed because bytes never leave the auth perimeter.
+
+        The asset's URI must start with ``file://`` and resolve to a path
+        under :attr:`_asset_root` (path-traversal guard).
+        """
+        from fastapi import HTTPException, status as http_status
+        from fastapi.responses import FileResponse
+        from urllib.parse import unquote, urlparse
+
+        asset_root = self._asset_root.resolve()
+
+        async def serve_local_asset(catalog_id: str, asset_id: str) -> FileResponse:
+            from dynastore.tools.discovery import get_protocol
+            from dynastore.models.protocols import AssetsProtocol
+
+            assets = get_protocol(AssetsProtocol)
+            if not assets:
+                raise HTTPException(
+                    status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="AssetsProtocol not available.",
+                )
+
+            asset = await assets.get_asset(
+                catalog_id=catalog_id, asset_id=asset_id, collection_id=None,
+            )
+            if asset is None:
+                raise HTTPException(
+                    status_code=http_status.HTTP_404_NOT_FOUND,
+                    detail=f"Asset '{asset_id}' not found in catalog '{catalog_id}'.",
+                )
+            if asset.owned_by != "local" or not asset.uri.startswith("file://"):
+                raise HTTPException(
+                    status_code=http_status.HTTP_409_CONFLICT,
+                    detail="Asset is not locally owned.",
+                )
+
+            parsed = urlparse(asset.uri)
+            file_path = Path(unquote(parsed.path)).resolve()
+            try:
+                file_path.relative_to(asset_root)
+            except ValueError:
+                logger.error(
+                    "LocalUploadModule: refusing to serve %s — outside asset root %s",
+                    file_path, asset_root,
+                )
+                raise HTTPException(
+                    status_code=http_status.HTTP_403_FORBIDDEN,
+                    detail="Asset path is outside the local asset store.",
+                )
+            if not file_path.is_file():
+                raise HTTPException(
+                    status_code=http_status.HTTP_404_NOT_FOUND,
+                    detail=f"Local file backing asset '{asset_id}' not found on disk.",
+                )
+
+            return FileResponse(
+                path=str(file_path),
+                filename=file_path.name,
+            )
+
+        app.add_api_route(
+            "/local-download/{catalog_id}/{asset_id}",
+            serve_local_asset,
+            methods=["GET"],
+            summary="Serve Local Asset",
+            description=(
+                "Streams the local file backing the asset. Used as the redirect "
+                "target of ``LocalDownloadAssetProcess.execute()``. Auth is "
+                "provided by the global ``auth`` middleware."
+            ),
+            tags=["Assets"],
+        )
+        logger.info(
+            "LocalUploadModule: registered GET /local-download/{catalog_id}/{asset_id}"
+        )
 
     # -------------------------------------------------------------------------
     # AssetUploadProtocol implementation
