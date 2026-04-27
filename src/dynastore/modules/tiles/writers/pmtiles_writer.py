@@ -37,8 +37,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 try:
-    from pmtiles.writer import Writer as _PMTilesWriter  # type: ignore[import]
-    from pmtiles.tile import zxy_to_tileid as _lib_zxy_to_tileid  # type: ignore[import]
+    from pmtiles.writer import Writer as _PMTilesWriter
+    from pmtiles.tile import (
+        zxy_to_tileid as _lib_zxy_to_tileid,
+        Compression as _PMTilesCompression,
+        TileType as _PMTilesType,
+    )
     _PMTILES_LIB_AVAILABLE = True
 except ImportError:
     _PMTILES_LIB_AVAILABLE = False
@@ -209,11 +213,29 @@ def _write_pmtiles_via_lib(
     max_zoom: int,
     bbox: Tuple[float, float, float, float],
 ) -> Dict[str, int]:
-    """Write using the protomaps `pmtiles` library."""
-    writer = _PMTilesWriter(output)  # type: ignore[call-arg]
+    """Write using the protomaps ``pmtiles`` library.
+
+    ``Writer.finalize(header, metadata)`` (pmtiles >= 3.x) requires a header
+    dict with the v3 fields the writer cannot infer from tile bytes alone:
+    tile_type, tile_compression, bbox in 1e-7 fixed-point, optional center.
+    The writer fills in section offsets/lengths and zoom range itself.
+    """
+    writer = _PMTilesWriter(output)
     for tile_id, data in raw:
         writer.write_tile(tile_id, data)
-    writer.finalize(metadata)
+    min_lon, min_lat, max_lon, max_lat = bbox
+    header: Dict[str, Any] = {
+        "tile_type": _PMTilesType.MVT,
+        # MVT tiles produced by ST_AsMVT are uncompressed bytes; PMTiles
+        # gzip wrapping is handled by the writer's metadata path, not here.
+        "tile_compression": _PMTilesCompression.NONE,
+        "min_lon_e7": int(min_lon * 1e7),
+        "min_lat_e7": int(min_lat * 1e7),
+        "max_lon_e7": int(max_lon * 1e7),
+        "max_lat_e7": int(max_lat * 1e7),
+        "center_zoom": (min_zoom + max_zoom) // 2,
+    }
+    writer.finalize(header, metadata)
     total = output.tell() if hasattr(output, "tell") else 0
     return {"n_tiles": len(raw), "n_empty_tiles": 0, "total_bytes": total}
 
