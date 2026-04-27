@@ -267,7 +267,12 @@
     // window.pyodideReadyPromise is never set by current JupyterLite (Pyodide runs
     // in a per-kernel Worker, not the main thread). Use the JupyterLab kernel
     // manager API instead: connectTo() + requestExecute().
-    const _injectedKernels = new Set();
+    // Maps kernel id → timestamp (ms) of last successful injection.
+    // Timestamp-based rather than boolean so the cooldown naturally expires
+    // after a kernel restart (Pyodide never emits 'restarting', so we cannot
+    // clear the flag explicitly — we rely on time passing instead).
+    const _injectedKernels = new Map();
+    const _INJECT_COOLDOWN_MS = 2000; // prevents idle-loop from our own requestExecute
     // Persistent connections kept alive solely to watch statusChanged (restart detection).
     const _kernelWatchConns = new Map();
     // Guard: subscribe to kernels.runningChanged only once.
@@ -275,8 +280,10 @@
 
     async function _injectContextIntoKernel(kernels, model) {
         const id = model && model.id;
-        if (!id || _injectedKernels.has(id)) return;
-        _injectedKernels.add(id);
+        if (!id) return;
+        const _lastTs = _injectedKernels.get(id);
+        if (_lastTs !== undefined && Date.now() - _lastTs < _INJECT_COOLDOWN_MS) return;
+        _injectedKernels.set(id, Date.now());
         const ctx = window.DYNASTORE_CONTEXT;
         if (!ctx || !ctx.baseUrl) return;
         const safeBase = (ctx.baseUrl || '').replace(/'/g, "\\'");
@@ -327,14 +334,14 @@
                 _kernelWatchConns.set(id, watchConn);
                 watchConn.statusChanged.connect(function(kernel, status) {
                     if (status === 'restarting' || status === 'autorestarting') {
+                        // Explicit restart signal: clear timestamp so next idle injects immediately.
+                        // Pyodide kernels never emit this, but standard WS kernels do.
                         _injectedKernels.delete(id);
-                    } else if (status === 'starting' && !_injectedKernels.has(id)) {
-                        // Queue injection during 'starting' so our execute_request
-                        // is buffered ahead of any cells JupyterLab queues at idle.
-                        // This wins the race with "Restart and Run All".
-                        _injectContextIntoKernel(kernels, model);
-                    } else if (status === 'idle' && !_injectedKernels.has(id)) {
-                        // Fallback: first startup or kernels that skip 'starting'.
+                    } else if (status === 'idle') {
+                        // Inject on every idle; the cooldown inside _injectContextIntoKernel
+                        // prevents an infinite loop caused by our own requestExecute → idle cycle.
+                        // Pyodide never emits 'restarting', so timestamp expiry is the only way
+                        // to detect that the kernel restarted and lost its env vars.
                         _injectContextIntoKernel(kernels, model);
                     } else if (status === 'dead' || status === 'terminating') {
                         _injectedKernels.delete(id);
