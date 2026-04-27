@@ -117,7 +117,9 @@ async def test_sidecar_delete_cascades_to_assets_row(app_lifespan, catalog_id, c
     }, lang="*", physical_table=collection_id)
 
     asset_id = f"asset_{uuid4().hex[:8]}"
-    sidecar_pk = f"sc_{uuid4().hex[:8]}"
+    # The attributes sidecar's identity column is `geoid UUID NOT NULL`
+    # (see modules/storage/drivers/pg_sidecars/attributes.py:291).
+    sidecar_geoid = uuid4()
 
     async with managed_transaction(app_lifespan.engine) as conn:
         await catalogs.activate_collection(
@@ -142,17 +144,17 @@ async def test_sidecar_delete_cascades_to_assets_row(app_lifespan, catalog_id, c
 
         await conn.execute(
             text(
-                f'INSERT INTO "{phys_schema}"."{sidecar_table}" (id, asset_id) '
-                "VALUES (:pk, :aid)"
+                f'INSERT INTO "{phys_schema}"."{sidecar_table}" (geoid, asset_id) '
+                "VALUES (:geoid, :aid)"
             ),
-            {"pk": sidecar_pk, "aid": asset_id},
+            {"geoid": sidecar_geoid, "aid": asset_id},
         )
 
         await conn.execute(
             text(
-                f'DELETE FROM "{phys_schema}"."{sidecar_table}" WHERE id = :pk'
+                f'DELETE FROM "{phys_schema}"."{sidecar_table}" WHERE geoid = :geoid'
             ),
-            {"pk": sidecar_pk},
+            {"geoid": sidecar_geoid},
         )
 
         remaining = await DQLQuery(
