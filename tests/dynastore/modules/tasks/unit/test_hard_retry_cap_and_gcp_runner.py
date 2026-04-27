@@ -201,13 +201,15 @@ def test_get_job_max_retries_round_trip_via_setter():
 async def test_gcp_runner_dispatcher_path_reuses_row_and_returns_deferred():
     """When the dispatcher claims a PENDING row and delegates to GcpJobRunner,
     the runner MUST NOT call ``create_task`` (would duplicate the row). It
-    MUST update the existing row's lease and launch one Cloud Run Job
-    execution carrying the existing ``task_id``. It MUST return
-    ``DEFERRED_COMPLETION`` so the dispatcher does not write COMPLETED ahead
-    of the job container.
+    MUST take ownership conditionally on the SAME claimed row via
+    ``claim_for_dispatch`` (belt-and-suspenders against producer-side races)
+    and launch one Cloud Run Job execution carrying the existing
+    ``task_id``. It MUST return ``DEFERRED_COMPLETION`` so the dispatcher
+    does not write COMPLETED ahead of the job container.
 
     This is the regression test for the central bug of the 2026-04-23
-    ingestion infinite-loop incident.
+    ingestion infinite-loop incident; updated to match the
+    ``claim_for_dispatch`` defense added with the no-double-spawn fix.
     """
     from dynastore.modules.gcp.gcp_runner import GcpJobRunner
 
@@ -227,14 +229,14 @@ async def test_gcp_runner_dispatcher_path_reuses_row_and_returns_deferred():
     )
 
     create_task_mock = AsyncMock()
-    update_task_mock = AsyncMock()
+    claim_mock = AsyncMock(return_value=True)
     run_job_mock = AsyncMock()
     load_job_config_mock = AsyncMock(return_value={"ingestion": "dynastore-ingestion-job"})
 
     with patch(
         "dynastore.modules.tasks.tasks_module.create_task", create_task_mock
     ), patch(
-        "dynastore.modules.tasks.tasks_module.update_task", update_task_mock
+        "dynastore.modules.tasks.tasks_module.claim_for_dispatch", claim_mock
     ), patch(
         "dynastore.modules.gcp.tools.jobs.load_job_config", load_job_config_mock
     ), patch(
@@ -247,12 +249,13 @@ async def test_gcp_runner_dispatcher_path_reuses_row_and_returns_deferred():
     # No new row created on dispatcher path.
     create_task_mock.assert_not_called()
 
-    # Lease + owner extended on the SAME claimed row.
-    update_task_mock.assert_awaited_once()
-    update_await = update_task_mock.await_args
-    assert update_await is not None
-    # update_task is a free function; call signature is (engine, task_id, ...)
-    assert update_await.args[1] == claimed_id
+    # Conditional claim_for_dispatch called with the right task_id and
+    # the gcp_cloud_run_ owner-prefix gate.
+    claim_mock.assert_awaited_once()
+    claim_await = claim_mock.await_args
+    assert claim_await is not None
+    assert claim_await.args[1] == claimed_id
+    assert claim_await.kwargs["expected_owner_prefix"] == "gcp_cloud_run_"
 
     # Exactly one Cloud Run Job execution launched, carrying the claimed id
     # in the JSON payload (positional arg index 1).
@@ -267,11 +270,17 @@ async def test_gcp_runner_dispatcher_path_reuses_row_and_returns_deferred():
 
 
 @pytest.mark.asyncio
-async def test_gcp_runner_rest_path_creates_row_and_passes_max_retries():
-    """REST-path invocation (no ``task_id`` in extra_context) must create a
-    fresh PENDING row, mark it ACTIVE, and pass the Cloud Run job's
-    ``MAX_RETRIES`` env into ``TaskCreate.max_retries`` so a long-running
-    expensive job is capped at deploy-time intent (typically 1)."""
+async def test_gcp_runner_rest_path_born_claimed_and_passes_max_retries():
+    """REST-path invocation (no ``task_id`` in extra_context) must INSERT a
+    single row already in ACTIVE status with this runner as ``owner_id`` and
+    a short spawn lease — closing the create→claim race window where a
+    dispatcher pod could otherwise claim the row and spawn a duplicate
+    Cloud Run Job between INSERT and Cloud Run trigger.
+
+    Must also pass the Cloud Run job's ``MAX_RETRIES`` env into
+    ``TaskCreate.max_retries`` so a long-running expensive job is capped at
+    deploy-time intent (typically 1).
+    """
     from dynastore.modules.gcp.gcp_runner import GcpJobRunner
     from dynastore.modules.gcp.tools import jobs as jobs_module
 
@@ -290,7 +299,7 @@ async def test_gcp_runner_rest_path_creates_row_and_passes_max_retries():
     )
 
     create_task_mock = AsyncMock(return_value=fake_task)
-    update_task_mock = AsyncMock()
+    claim_mock = AsyncMock(return_value=True)
     run_job_mock = AsyncMock()
     load_job_config_mock = AsyncMock(return_value={"ingestion": "dynastore-ingestion-job"})
 
@@ -301,7 +310,7 @@ async def test_gcp_runner_rest_path_creates_row_and_passes_max_retries():
         with patch(
             "dynastore.modules.tasks.tasks_module.create_task", create_task_mock
         ), patch(
-            "dynastore.modules.tasks.tasks_module.update_task", update_task_mock
+            "dynastore.modules.tasks.tasks_module.claim_for_dispatch", claim_mock
         ), patch(
             "dynastore.modules.gcp.tools.jobs.load_job_config", load_job_config_mock
         ), patch(
@@ -311,16 +320,20 @@ async def test_gcp_runner_rest_path_creates_row_and_passes_max_retries():
         ):
             result = await runner.run(ctx)
 
-        # One fresh row created, with max_retries from the job env.
+        # One fresh row created with the born-claimed shape: status=ACTIVE,
+        # owner_id set, locked_until set, max_retries from job env.
         create_task_mock.assert_awaited_once()
         create_await = create_task_mock.await_args
         assert create_await is not None
         task_data = create_await.args[1]  # (engine, task_data, schema)
         assert task_data.max_retries == 1
         assert task_data.task_type == "ingestion"
+        assert create_await.kwargs["initial_status"] == "ACTIVE"
+        assert create_await.kwargs["owner_id"].startswith("gcp_cloud_run_")
+        assert create_await.kwargs["locked_until"] is not None
 
-        # Row marked ACTIVE before launching the job.
-        update_task_mock.assert_awaited_once()
+        # Dispatcher path's claim_for_dispatch is NOT called on REST path.
+        claim_mock.assert_not_called()
 
         # Cloud Run Job launched with the new task_id.
         run_job_mock.assert_awaited_once()
