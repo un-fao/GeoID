@@ -1413,10 +1413,31 @@ async function demoAction(action) {
             """
             from dynastore.models.protocols import CatalogsProtocol
 
-            # Resolve caller identity
+            # Resolve caller identity. IamMiddleware has already authenticated
+            # the request and attached the resolved Principal + role list to
+            # ``request.state`` — that is the canonical, signature-validated
+            # source. Reading the Authorization header and re-decoding the
+            # JWT here would only succeed when an OIDC IdentityProvider
+            # recognises the token, which is not the case for locally-minted
+            # JWTs (e.g. test harnesses) even when the request is correctly
+            # authenticated as sysadmin.
             user_roles: List[str] = []
             principal_id: Optional[str] = None
-            if authorization and authorization.startswith("Bearer "):
+
+            state_roles = getattr(request.state, "principal_role", None)
+            if state_roles:
+                user_roles = list(state_roles) if isinstance(state_roles, list) else [state_roles]
+            state_principal = getattr(request.state, "principal", None)
+            if state_principal is not None:
+                principal_id = (
+                    str(getattr(state_principal, "id", "") or "")
+                    or getattr(state_principal, "subject_id", None)
+                ) or None
+
+            # Legacy fallback: route was originally written before the
+            # middleware populated request.state. Keep the manual path so
+            # the route works even when the middleware is bypassed.
+            if not user_roles and not principal_id and authorization and authorization.startswith("Bearer "):
                 token = authorization[7:]
                 try:
                     from dynastore.modules.iam.interfaces import IdentityProviderProtocol
