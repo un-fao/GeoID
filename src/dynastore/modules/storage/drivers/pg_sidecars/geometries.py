@@ -26,6 +26,7 @@ This module provides the GeometriesSidecar which manages:
 - Geometry validation and fixing logic
 """
 
+import hashlib
 import logging
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple, Union
@@ -1087,6 +1088,18 @@ class GeometriesSidecar(SidecarProtocol):
                 f"GeometrySidecar Processed WKB: {geom_data['wkb_hex_processed']}"
             )
             shapely_geom = geom_data.get("shapely_geom")
+
+        # Propagate the geometry-derived content_hash to the orchestrator
+        # so the hub row stores it and the CONTENT_HASH identity matcher /
+        # skip_if_unchanged_content_hash gate can resolve. process_geometry
+        # populates it on the standard path; the trusted ingestion path
+        # skips it, so derive from the final WKB to keep the invariant
+        # (hash always matches the stored geometry).
+        wkb_hex_final = geom_data.get("wkb_hex_processed")
+        if wkb_hex_final:
+            context["content_hash"] = geom_data.get("content_hash") or hashlib.sha256(
+                bytes.fromhex(wkb_hex_final)
+            ).hexdigest()
 
         # Store processed geometry
         payload[self.config.geom_column] = geom_data["wkb_hex_processed"]

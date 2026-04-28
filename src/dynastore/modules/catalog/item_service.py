@@ -549,6 +549,12 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 # Single-level partitioning today — first value is the partition key.
                 unique_partition_values.add(next(iter(partition_values.values())))
 
+            # Lift content_hash computed by the geometries sidecar onto the
+            # hub row so it persists in hub.content_hash and the matcher
+            # chain / hash gating in insert_or_update_distributed can read it.
+            if "content_hash" in item_context and "content_hash" not in hub_payload:
+                hub_payload["content_hash"] = item_context["content_hash"]
+
             prepared.append({
                 "geoid": geoid,
                 "hub_payload": hub_payload,
