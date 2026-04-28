@@ -1,4 +1,4 @@
-"""``BucketManager.generate_bucket_name`` produces project-id-prefixed,
+"""``BucketService.generate_bucket_name`` produces project-id-prefixed,
 length-safe bucket names.
 
 The previous opaque-hash scheme produced names like ``d88971-test-...``
@@ -13,13 +13,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from dynastore.modules.gcp.bucket_manager import BucketManager
+from dynastore.modules.gcp.bucket_service import BucketService
 
 
-def _make_bm(project_id: str) -> BucketManager:
-    return BucketManager(
+def _make_bm(project_id: str) -> BucketService:
+    return BucketService(
         engine=None,
-        config_manager=None,
+        config_service=None,
         storage_client=MagicMock(),
         project_id=project_id,
         region="europe-west1",
@@ -96,3 +96,45 @@ def test_missing_project_id_raises():
     bm = _make_bm("")
     with pytest.raises(RuntimeError, match="GCP Project ID not available"):
         bm.generate_bucket_name("test_catalog_19")
+
+
+def test_long_identifier_keeps_full_project_name():
+    bm = _make_bm("fao-aip-geospatial-review")  # 25 chars
+    name = bm.generate_bucket_name("x" * 100)
+    assert name.startswith("fao-aip-geospatial-review-")  # prefix preserved
+    assert len(name) <= 63
+    assert name[-9] == "-"  # 8-char hash after dash
+    assert all(c in "0123456789abcdef" for c in name[-8:])
+
+
+def test_long_project_id_truncated_with_hash():
+    # Project ID > 2/3 of 63 (42) triggers Path B truncation.
+    long_proj = "a" * 50  # exceeds project_min*2 (42)
+    bm = _make_bm(long_proj)
+    name = bm.generate_bucket_name("test_catalog_19")
+    assert len(name) <= 63
+    # Project segment should be ~1/3 budget = 21 chars: 12 readable + '-' + 8 hex
+    assert name.startswith("a" * 12 + "-")
+    proj_hash = name[:21].rsplit("-", 1)[1]
+    assert len(proj_hash) == 8
+    assert all(c in "0123456789abcdef" for c in proj_hash)
+
+
+def test_long_project_and_long_identifier_split_one_third_two_thirds():
+    long_proj = "p" * 50
+    bm = _make_bm(long_proj)
+    name = bm.generate_bucket_name("i" * 100)
+    assert len(name) <= 63
+    # Truncated project section ~21 chars (1/3 budget), identifier section ~42 chars (2/3)
+    project_section = name[:21]
+    assert project_section.startswith("p" * 12 + "-")  # 12 head + '-' + 8 hash
+    # Trailing 8 chars of full bucket are the identifier hash
+    assert name[-9] == "-"
+    assert all(c in "0123456789abcdef" for c in name[-8:])
+
+
+def test_distinct_long_identifiers_never_collide():
+    bm = _make_bm("fao-aip-geospatial-review")
+    n1 = bm.generate_bucket_name("a" * 200)
+    n2 = bm.generate_bucket_name("a" * 199 + "b")
+    assert n1 != n2
