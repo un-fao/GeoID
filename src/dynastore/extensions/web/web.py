@@ -1727,6 +1727,18 @@ async function demoAction(action) {
 
             raise HTTPException(status_code=404, detail="Not found")
 
+        @self.router.get("/lite/api/workspaces/{ws_path:path}", include_in_schema=False)
+        async def serve_jupyterlite_workspaces(ws_path: str):
+            # JupyterLab boots by GET /api/workspaces/all.json (and individual
+            # workspace IDs). We don't persist workspaces server-side — the
+            # lab keeps them in IndexedDB. Return empty payloads so the lab
+            # stops 404-spamming the access log.
+            if ws_path.rstrip("/").endswith("all.json"):
+                return JSONResponse({"workspaces": {"ids": [], "values": []}},
+                                    headers={"Cache-Control": "no-cache"})
+            return JSONResponse({"metadata": {"id": ws_path}, "data": {}},
+                                headers={"Cache-Control": "no-cache"})
+
         @self.router.get("/{prefix}/{filename:path}", include_in_schema=False)
         async def serve_static_content(prefix: str, filename: str):
             # Resolve the provider callable for this prefix
