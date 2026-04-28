@@ -46,6 +46,24 @@ from fastapi import APIRouter, FastAPI
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.models.driver_context import DriverContext
 
+# ``ogc_dimensions`` is an optional extra (extension_dimensions).
+# Imported at module top so a missing dep is caught at entry-point load time
+# (clean WARN "Skipping dynastore.extensions plugin 'dimensions': … No module
+# named 'ogc_dimensions'") instead of crashing every cold start with
+# "Failed to instantiate extension 'dimensions'". Services whose SCOPE excludes
+# extension_dimensions silently skip this extension; helpers like
+# ``get_registered_dimensions`` below already use class-name matching to avoid
+# triggering this import from the rest of the codebase.
+from ogc_dimensions.api.routes import (
+    DIMENSIONS, DimensionConfig, router as dimensions_router,
+)
+from ogc_dimensions.providers import (
+    DailyPeriodProvider,
+    IntegerRangeProvider,
+    StaticTreeProvider,
+    LeveledTreeProvider,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -558,14 +576,6 @@ class DimensionsExtension(ExtensionProtocol):
 
     def __init__(self, app: FastAPI):
         self.app = app
-
-        from ogc_dimensions.api.routes import DIMENSIONS, DimensionConfig, router as dimensions_router
-        from ogc_dimensions.providers import (
-            DailyPeriodProvider,
-            IntegerRangeProvider,
-            StaticTreeProvider,
-            LeveledTreeProvider,
-        )
 
         from .use_cases import ADMIN_NODES, INDICATOR_NODES, SPECIES_NODES
 

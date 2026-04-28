@@ -174,12 +174,18 @@ def discover_and_load_plugins(group: str) -> Dict[str, Type[Any]]:
             loaded_plugins[entry_point.name] = entry_point.load()
             logger.info(f"Successfully discovered installed {group}: {entry_point.name}")
         except ImportError as e:
-            logger.info(
+            logger.warning(
                 f"Skipping {group} plugin '{entry_point.name}': "
-                f"optional dependencies not installed — {e}"
+                f"optional dependencies not installed — {e} "
+                f"(expected when SCOPE excludes the plugin's extras; "
+                f"unexpected if the plugin should be active for this service)"
             )
         except Exception as e:
-            logger.error(f"Failed to load installed plugin '{entry_point.name}' from group '{group}': {e}")
+            logger.error(
+                f"Failed to load installed plugin '{entry_point.name}' "
+                f"from group '{group}': {e}",
+                exc_info=True,
+            )
 
     return loaded_plugins
 
