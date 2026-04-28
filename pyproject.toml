@@ -217,7 +217,7 @@ catalog_grp = ["dynastore[catalog_data_grp,catalog_routes_grp,module_local]"]
 maps_grp = ["dynastore[styles,maps,extension_wfs,tiles,crs,gdal,extension_coverages]"]
 # google_grp split: dwh is rendering input (BQ joins also live here),
 # gcp is the bucket-admin router (not on maps).
-dwh_grp = ["dynastore[extension_dwh]"]
+dwh_grp = ["dynastore[extension_dwh,module_gcp]"]
 gcp_routes_grp = ["dynastore[gcp]"]
 google_grp = ["dynastore[gcp_routes_grp,dwh_grp]"]
 auth_grp = ["dynastore[iam,auth,extension_admin]"]
