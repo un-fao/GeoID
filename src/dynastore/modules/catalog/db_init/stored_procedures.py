@@ -23,7 +23,7 @@ DECLARE
 BEGIN
     EXECUTE format(
         'SELECT collection_id FROM %I.collection_configs '
-        'WHERE class_key = ''ItemsPostgresqlDriverConfig'' '
+        'WHERE class_key = ''ItemsPostgresqlDriver'' '
         'AND config_data->>''physical_table'' = $1 LIMIT 1',
         schema_name
     )
@@ -79,7 +79,7 @@ BEGIN
     -- The collection_configs table stores driver config with physical_table in JSONB.
     EXECUTE format(
         'SELECT collection_id FROM %I.collection_configs '
-        'WHERE class_key = ''ItemsPostgresqlDriverConfig'' '
+        'WHERE class_key = ''ItemsPostgresqlDriver'' '
         'AND config_data->>''physical_table'' = $1 LIMIT 1',
         TG_TABLE_SCHEMA
     )
@@ -113,20 +113,24 @@ PLATFORM_SCHEMA_DDL = 'CREATE SCHEMA IF NOT EXISTS "platform";'
 
 
 async def ensure_stored_procedures(conn: DbResource) -> None:
-    """Ensures all required stored procedures exist in the platform schema."""
+    """Ensures all required stored procedures exist in the platform schema.
 
-    async def check_all(active_conn=None, params=None):
-        target_conn = active_conn or conn
-        return await check_function_exists(target_conn, "update_collection_extents", "platform") and \
-               await check_function_exists(target_conn, "asset_cleanup", "platform")
-
+    Always runs ``CREATE OR REPLACE FUNCTION``: the previous existence-check
+    short-circuit (``check_query=check_all``) caused stale function bodies
+    to persist across deploys when only the SQL body changed but the
+    function name did not — e.g. the ``class_key`` rename from
+    ``ItemsPostgresqlDriverConfig`` to ``ItemsPostgresqlDriver`` (driven
+    by ``TypedDriver``'s wire-key derivation) silently broke the
+    ``trg_asset_cleanup`` cascade until the function was manually dropped.
+    ``CREATE OR REPLACE FUNCTION`` is cheap and idempotent, and keeps the
+    function body in lockstep with the Python source on every deploy.
+    """
     # Ensure the platform schema exists before creating functions in it
     await DDLQuery(PLATFORM_SCHEMA_DDL).execute(conn)
 
     # Use a single DDLQuery for all procedures. DDLQuery handles splitting and atomic locking.
     await DDLQuery(
         UPDATE_COLLECTION_EXTENTS_SQL + ASSET_CLEANUP_SQL,
-        check_query=check_all,
     ).execute(conn)
 
     logger.info("Catalog stored procedures ensured.")
