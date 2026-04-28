@@ -1,9 +1,9 @@
 """Platform notebook registrations for the elasticsearch module.
 
 Registers Elasticsearch-specific pattern notebooks:
-  - storage_combo_obfuscated_es_plus_pg — PG primary + obfuscated ES search
-  - storage_combo_es_obfuscated_only    — ES obfuscated index only
-  - catalog_metadata_search             — ES/PG collection metadata search
+  - storage_combo_private_es_plus_pg — PG primary + private ES index
+  - storage_combo_private_es_only    — private ES index only
+  - catalog_metadata_search          — ES/PG collection metadata search
 
 Import this module during ElasticsearchModule lifespan (before NotebooksModule seeds).
 """
@@ -15,21 +15,21 @@ _HERE = Path(__file__).parent / "notebooks"
 _REG = "dynastore.modules.elasticsearch"
 
 register_platform_notebook(
-    notebook_id="storage_combo_obfuscated_es_plus_pg",
+    notebook_id="storage_combo_private_es_plus_pg",
     registered_by=_REG,
-    notebook_path=_HERE / "obfuscated_es_plus_pg.ipynb",
-    title={"en": "PG Primary + Obfuscated ES Search"},
-    description={"en": "Route WRITE to both PostgreSQL and obfuscated ES; READ from PG; SEARCH via obfuscated ES shared index."},
-    tags=["storage", "postgresql", "elasticsearch", "obfuscated", "routing"],
+    notebook_path=_HERE / "private_es_plus_pg.ipynb",
+    title={"en": "PG Primary + Private ES Index"},
+    description={"en": "Route WRITE to both PostgreSQL and a private ES index; READ from PG; SEARCH via the private ES index (geoid tokens only)."},
+    tags=["storage", "postgresql", "elasticsearch", "private", "routing"],
 )
 
 register_platform_notebook(
-    notebook_id="storage_combo_es_obfuscated_only",
+    notebook_id="storage_combo_private_es_only",
     registered_by=_REG,
-    notebook_path=_HERE / "es_obfuscated_only.ipynb",
-    title={"en": "ES Obfuscated Index Only"},
-    description={"en": "Write-only to a shared obfuscated Elasticsearch index per catalog. No listing or full-text search."},
-    tags=["storage", "elasticsearch", "obfuscated"],
+    notebook_path=_HERE / "private_es_only.ipynb",
+    title={"en": "Private ES Index Only"},
+    description={"en": "All operations routed to a private Elasticsearch index — only geoid tokens are stored, no item attributes persisted."},
+    tags=["storage", "elasticsearch", "private"],
 )
 
 register_platform_notebook(
