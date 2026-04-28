@@ -75,6 +75,21 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # ubuntu-22.04 runners ship with ~14 GB free; the catalog/worker images
+      # exporting from buildx tip the runner past disk capacity (observed:
+      # "no space left on device" on `#38 importing to docker`). Drop the
+      # preinstalled toolchains we don't use to recover ~25 GB before any
+      # docker work begins.
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          echo "Disk before:"
+          df -h /
+          sudo rm -rf /opt/hostedtoolcache /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+          echo "Disk after:"
+          df -h /
+
       - uses: docker/setup-buildx-action@v3
 
       # Pre-build the tester image with GHA layer cache; docker compose then
@@ -100,6 +115,7 @@ jobs:
         run: |
           docker compose -f src/dynastore/docker/docker-compose.test.yml run --rm test-runner \
             /opt/venv/bin/pytest tests/ --ignore-glob="**/integration/*" \
+            --durations=20 \
             --junitxml=/dynastore/workspace/unit-test-results.xml
 
       - name: Report unit tests
@@ -142,6 +158,19 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # See unit-tests note: integration's docker compose builds db + catalog
+      # + worker + test-runner in parallel via buildx, peaking disk usage
+      # well past the 14 GB default. Free ~25 GB up front.
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          echo "Disk before:"
+          df -h /
+          sudo rm -rf /opt/hostedtoolcache /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+          echo "Disk after:"
+          df -h /
+
       - uses: docker/setup-buildx-action@v3
 
       # Same scope=tester cache as unit-tests — when both jobs run in parallel
@@ -178,6 +207,7 @@ jobs:
         run: |
           docker compose -f src/dynastore/docker/docker-compose.test.yml run --rm test-runner \
             /opt/venv/bin/pytest tests/ \
+            --durations=20 \
             --junitxml=/dynastore/workspace/test-results.xml
 
       - name: Display Docker logs on failure
