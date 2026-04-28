@@ -1,5 +1,4 @@
 import logging
-import json
 import re
 from typing import Any, Dict, Literal, Optional
 from contextlib import asynccontextmanager
@@ -224,6 +223,50 @@ class ElasticsearchModule(ModuleProtocol):
                     exc,
                 )
 
+        # Ensure platform-wide shared indexes + the regular-items alias exist.
+        # Per-tenant indexes (dynastore-items-{cat}) are created on demand by
+        # the regular items driver's ensure_storage; the platform creates only
+        # the shared collection/catalog indexes here so reads against them
+        # never hit "index_not_found_exception" before the first write.
+        if es is not None:
+            from dynastore.modules.elasticsearch.aliases import (
+                ensure_public_alias_exists,
+            )
+            from dynastore.modules.elasticsearch.mappings import (
+                CATALOG_MAPPING,
+                COLLECTION_MAPPING,
+            )
+
+            for shared_name, mapping in (
+                (f"{es_client.get_index_prefix()}-collections", COLLECTION_MAPPING),
+                (f"{es_client.get_index_prefix()}-catalogs",    CATALOG_MAPPING),
+            ):
+                try:
+                    if not await es.indices.exists(index=shared_name):
+                        await es.indices.create(
+                            index=shared_name, body={"mappings": mapping},
+                        )
+                        logger.info(
+                            "ElasticsearchModule: Created shared index '%s'.",
+                            shared_name,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "ElasticsearchModule: Could not ensure shared index "
+                        "'%s': %s", shared_name, exc,
+                    )
+
+            # Public items alias is created lazily on first member-add by the
+            # regular items driver — call here just so the deferral is logged
+            # at startup for operator visibility.
+            try:
+                await ensure_public_alias_exists()
+            except Exception as exc:
+                logger.warning(
+                    "ElasticsearchModule: ensure_public_alias_exists raised: %s",
+                    exc,
+                )
+
         # Auto-provision the logs dashboard into OpenSearch Dashboards / Kibana.
         # No-op when KIBANA_UPSTREAM_URL is unset; never raises.
         from dynastore.modules.elasticsearch.dashboards_provisioner import (
@@ -290,20 +333,17 @@ class ElasticsearchModule(ModuleProtocol):
         logger.info("ElasticsearchModule: Enabling obfuscated mode for catalog '%s'.", catalog_id)
         await self._apply_obfuscated_policy(catalog_id)
         await self._ensure_obfuscated_index(catalog_id)
-        from dynastore.tasks.elasticsearch_indexer.tasks import BulkCatalogReindexInputs
-        await self._dispatch_task(
-            task_type="elasticsearch_bulk_reindex_catalog",
-            inputs=BulkCatalogReindexInputs(
-                catalog_id=catalog_id,
-                mode="obfuscated",
-            ).model_dump(),
-            db_resource=db_resource,
-        )
+        # Bulk reindex of obfuscated data is no longer supported by the
+        # shared task — the obfuscated driver requires a fresh-start
+        # cutover instead. Toggling obfuscation only flips the DENY
+        # policy + ensures the obfuscated index exists; existing items
+        # stay where they are.
 
     async def disable_obfuscated_mode(self, catalog_id: str, db_resource=None) -> None:
         """
-        Remove the DENY access policy and dispatch a bulk reindex task (STAC mode)
-        to re-populate the STAC items index for collections with search_index=True.
+        Remove the DENY access policy and dispatch a bulk reindex task
+        targeting the per-tenant items index so historical items become
+        discoverable again under the regular driver.
 
         Called by on_apply when obfuscated=False is written.
         """
@@ -314,7 +354,6 @@ class ElasticsearchModule(ModuleProtocol):
             task_type="elasticsearch_bulk_reindex_catalog",
             inputs=BulkCatalogReindexInputs(
                 catalog_id=catalog_id,
-                mode="catalog",
             ).model_dump(),
             db_resource=db_resource,
         )
@@ -409,7 +448,7 @@ class ElasticsearchModule(ModuleProtocol):
         already dispatches a bulk reindex after this returns.
         """
         from dynastore.modules.elasticsearch import client as es_client
-        from dynastore.modules.elasticsearch.mappings import (
+        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.mappings import (
             TENANT_FEATURE_MAPPING,
             get_obfuscated_index_name,
         )
@@ -614,7 +653,9 @@ class ElasticsearchModule(ModuleProtocol):
             is_collection_obfuscated,
         )
         if await is_collection_obfuscated(catalog_id, collection_id):
-            from dynastore.tasks.elasticsearch_indexer.tasks import ObfuscatedIndexInputs
+            from dynastore.modules.storage.drivers.elasticsearch_obfuscated.tasks import (
+                ObfuscatedIndexInputs,
+            )
             await self._dispatch_task(
                 task_type="elasticsearch_obfuscated_index",
                 inputs=ObfuscatedIndexInputs(
@@ -664,7 +705,9 @@ class ElasticsearchModule(ModuleProtocol):
             is_collection_obfuscated,
         )
         if await is_collection_obfuscated(catalog_id, collection_id):
-            from dynastore.tasks.elasticsearch_indexer.tasks import ObfuscatedIndexInputs
+            from dynastore.modules.storage.drivers.elasticsearch_obfuscated.tasks import (
+                ObfuscatedIndexInputs,
+            )
             for item_doc in items_subset:
                 item_id = item_doc.get("id")
                 if not item_id:
@@ -724,7 +767,9 @@ class ElasticsearchModule(ModuleProtocol):
         )
 
         # Delete from the obfuscated geoid index (no-op if catalog is not obfuscated).
-        from dynastore.tasks.elasticsearch_indexer.tasks import ObfuscatedDeleteInputs
+        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.tasks import (
+            ObfuscatedDeleteInputs,
+        )
         await self._dispatch_task(
             task_type="elasticsearch_obfuscated_delete",
             inputs=ObfuscatedDeleteInputs(
@@ -783,7 +828,9 @@ class ElasticsearchModule(ModuleProtocol):
         collection_id: str,
         db_resource: Optional[Any] = None,
     ) -> None:
-        from dynastore.tasks.elasticsearch_indexer.tasks import ObfuscatedIndexInputs
+        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.tasks import (
+                ObfuscatedIndexInputs,
+            )
         await self._dispatch_task(
             task_type="elasticsearch_obfuscated_index",
             inputs=ObfuscatedIndexInputs(
@@ -800,7 +847,9 @@ class ElasticsearchModule(ModuleProtocol):
         catalog_id: str,
         db_resource: Optional[Any] = None,
     ) -> None:
-        from dynastore.tasks.elasticsearch_indexer.tasks import ObfuscatedDeleteInputs
+        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.tasks import (
+            ObfuscatedDeleteInputs,
+        )
         await self._dispatch_task(
             task_type="elasticsearch_obfuscated_delete",
             inputs=ObfuscatedDeleteInputs(
@@ -814,7 +863,6 @@ class ElasticsearchModule(ModuleProtocol):
         self,
         catalog_id: str,
         collection_id: Optional[str] = None,
-        mode: Literal["catalog", "obfuscated"] = "catalog",
         db_resource: Optional[Any] = None,
     ) -> Dict[str, Any]:
         if collection_id:
@@ -824,7 +872,6 @@ class ElasticsearchModule(ModuleProtocol):
                 inputs=BulkCollectionReindexInputs(
                     catalog_id=catalog_id,
                     collection_id=collection_id,
-                    mode=mode,
                 ).model_dump(),
                 db_resource=db_resource,
             )
@@ -834,11 +881,10 @@ class ElasticsearchModule(ModuleProtocol):
                 task_type="elasticsearch_bulk_reindex_catalog",
                 inputs=BulkCatalogReindexInputs(
                     catalog_id=catalog_id,
-                    mode=mode,
                 ).model_dump(),
                 db_resource=db_resource,
             )
-        return {"catalog_id": catalog_id, "collection_id": collection_id, "mode": mode, "status": "dispatched"}
+        return {"catalog_id": catalog_id, "collection_id": collection_id, "status": "dispatched"}
 
     async def ensure_index(
         self,

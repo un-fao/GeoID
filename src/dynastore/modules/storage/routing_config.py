@@ -146,8 +146,11 @@ def derive_supported_operations(capabilities: FrozenSet[str]) -> FrozenSet[str]:
 
     Role-based driver plan additions (new ops): any driver with ``WRITE`` can
     participate in ``INDEX`` or ``BACKUP`` as an async propagation sink — the
-    role is a config assignment, not a driver-internal contract.  Drivers with
-    ``ENTITY_TRANSFORM`` can participate in ``TRANSFORM``.
+    role is a config assignment, not a driver-internal contract.
+
+    ``Operation.TRANSFORM`` participation is determined by implementing
+    :class:`EntityTransformProtocol` rather than via a Capability flag.
+    See ``modules/storage/routing_config.py:_self_register_transformers_into``.
     """
     from dynastore.models.protocols.storage_driver import Capability
 
@@ -157,7 +160,6 @@ def derive_supported_operations(capabilities: FrozenSet[str]) -> FrozenSet[str]:
         Capability.FULLTEXT: {Operation.SEARCH},
         Capability.ATTRIBUTE_FILTER: {Operation.SEARCH},
         Capability.SPATIAL_FILTER: {Operation.SEARCH},
-        Capability.ENTITY_TRANSFORM: {Operation.TRANSFORM},
         Capability.EXPORT: {Operation.BACKUP},
     }
     ops: Set[str] = set()
@@ -382,6 +384,7 @@ class CollectionRoutingConfig(PluginConfig):
             _self_register_searchers_into(
                 self.metadata.operations, CollectionMetadataStore,
             )
+            _self_register_transformers_into(self.metadata.operations)
         except Exception as exc:
             logger.debug(
                 "CollectionRoutingConfig: read-time self-register skipped "
@@ -417,6 +420,7 @@ class CollectionRoutingConfig(PluginConfig):
                 self.operations, CollectionItemsStore,
                 search_caps=_items_search_caps(),
             )
+            _self_register_transformers_into(self.operations)
         except Exception as exc:
             logger.debug(
                 "CollectionRoutingConfig: items-tier read-time self-"
@@ -461,6 +465,7 @@ class AssetRoutingConfig(PluginConfig):
             _self_register_indexers_into(self.operations, AssetIndexer)
             from dynastore.models.protocols.asset_upload import AssetUploadProtocol
             _self_register_upload_into(self.operations, AssetUploadProtocol)
+            _self_register_transformers_into(self.operations)
         except Exception as exc:
             logger.debug(
                 "AssetRoutingConfig: read-time self-register skipped "
@@ -542,6 +547,7 @@ class CatalogRoutingConfig(PluginConfig):
         try:
             _self_register_indexers_into(self.operations, CatalogIndexer)
             _self_register_searchers_into(self.operations, CatalogMetadataStore)
+            _self_register_transformers_into(self.operations)
         except Exception as exc:
             # Discovery may not be ready (e.g. test fixtures that
             # validate routing configs before plugins register).  The
@@ -1034,3 +1040,256 @@ _HandlerSig = Callable[[PluginConfig, Optional[str], Optional[str], Optional[Any
 CollectionRoutingConfig.register_apply_handler(cast(_HandlerSig, _on_apply_routing_config))
 AssetRoutingConfig.register_apply_handler(cast(_HandlerSig, _on_apply_asset_routing_config))
 CatalogRoutingConfig.register_apply_handler(cast(_HandlerSig, _on_apply_catalog_routing_config))
+
+
+# ---------------------------------------------------------------------------
+# Generic routing-active query helpers — entity-agnostic discovery layer
+# ---------------------------------------------------------------------------
+#
+# Used by every module / OGC service that needs to know which driver(s) are
+# active for a given operation on a given entity. Read the routing config
+# (single SSOT) and apply the resolution semantics documented at the top
+# of this file:
+#
+#   - INDEX:     fan-out across every listed driver (write side).
+#   - SEARCH:    single-driver. Default = first; driver_hint overrides.
+#   - TRANSFORM: ordered chain. Composition runtime in
+#                modules/storage/transform_runtime.py applies it.
+#
+# Entity-agnostic: parameterised by ``entity`` ∈ {item, collection, catalog,
+# asset}. Each entity reads from a different config:
+#
+#   item       → CollectionRoutingConfig.operations
+#   collection → CollectionRoutingConfig.metadata.operations
+#   catalog    → CatalogRoutingConfig.operations
+#   asset      → AssetRoutingConfig.operations
+# ---------------------------------------------------------------------------
+
+EntityKindLiteral = Literal["item", "collection", "catalog", "asset"]
+
+
+async def _resolve_entity_operations(
+    catalog_id: str,
+    *,
+    entity: EntityKindLiteral,
+    collection_id: Optional[str] = None,
+) -> Dict[str, List["OperationDriverEntry"]]:
+    """Return the active operations dict for the (entity, catalog, collection).
+
+    Reads the appropriate config class via ConfigsProtocol. Returns an empty
+    dict when no config is registered (caller treats as "no drivers active").
+    """
+    from dynastore.models.protocols.configs import ConfigsProtocol
+    from dynastore.tools.discovery import get_protocol
+
+    configs = get_protocol(ConfigsProtocol)
+    if not configs:
+        return {}
+
+    try:
+        if entity == "item":
+            if not collection_id:
+                return {}
+            cfg = await configs.get_config(
+                CollectionRoutingConfig,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+            )
+            if isinstance(cfg, CollectionRoutingConfig):
+                return cfg.operations
+        elif entity == "collection":
+            if not collection_id:
+                return {}
+            cfg = await configs.get_config(
+                CollectionRoutingConfig,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+            )
+            if isinstance(cfg, CollectionRoutingConfig):
+                return cfg.metadata.operations
+        elif entity == "catalog":
+            cfg = await configs.get_config(
+                CatalogRoutingConfig,
+                catalog_id=catalog_id,
+            )
+            if isinstance(cfg, CatalogRoutingConfig):
+                return cfg.operations
+        elif entity == "asset":
+            cfg = await configs.get_config(
+                AssetRoutingConfig,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+            )
+            if isinstance(cfg, AssetRoutingConfig):
+                return cfg.operations
+    except Exception as exc:
+        logger.debug(
+            "routing_config.resolve: lookup failed for entity=%s catalog=%s "
+            "collection=%s: %s",
+            entity, catalog_id, collection_id, exc,
+        )
+    return {}
+
+
+async def get_active_indexers(
+    catalog_id: str,
+    *,
+    entity: EntityKindLiteral,
+    collection_id: Optional[str] = None,
+) -> Set[str]:
+    """driver_ids of all drivers in operations[INDEX] for this entity.
+
+    Multi-driver fan-out: write side has no merge ambiguity, every listed
+    indexer fires. Returns empty set when no INDEX entries exist.
+    """
+    ops = await _resolve_entity_operations(
+        catalog_id, entity=entity, collection_id=collection_id,
+    )
+    return {entry.driver_id for entry in ops.get(Operation.INDEX, [])}
+
+
+async def get_search_driver(
+    catalog_id: str,
+    *,
+    entity: EntityKindLiteral,
+    collection_id: Optional[str] = None,
+    driver_hint: Optional[str] = None,
+) -> Optional[str]:
+    """driver_id of the driver to use for SEARCH on this entity.
+
+    Single-driver semantics: default = first entry in operations[SEARCH].
+    When ``driver_hint`` is given AND present in the routing list, returns
+    that driver. When the hint is given but NOT in the list, logs a
+    warning and falls back to the default.
+
+    Returns ``None`` when no SEARCH entry is registered.
+    """
+    ops = await _resolve_entity_operations(
+        catalog_id, entity=entity, collection_id=collection_id,
+    )
+    entries = ops.get(Operation.SEARCH, [])
+    if not entries:
+        return None
+
+    if driver_hint:
+        listed = {e.driver_id for e in entries}
+        if driver_hint in listed:
+            return driver_hint
+        logger.warning(
+            "get_search_driver: driver_hint=%r not in operations[SEARCH] "
+            "for entity=%s catalog=%s collection=%s; falling back to default. "
+            "Available: %s",
+            driver_hint, entity, catalog_id, collection_id, sorted(listed),
+        )
+
+    return entries[0].driver_id
+
+
+async def get_active_transformers(
+    catalog_id: str,
+    *,
+    entity: EntityKindLiteral,
+    collection_id: Optional[str] = None,
+) -> List[Any]:
+    """Ordered list of EntityTransformProtocol instances active for this entity.
+
+    Resolves driver_ids in operations[TRANSFORM] (in order) against the
+    discovered EntityTransformProtocol implementers. Drivers listed in
+    routing but not currently registered are skipped with a debug log.
+
+    Empty list when no TRANSFORM entries exist; the transform runtime treats
+    an empty chain as identity.
+    """
+    from dynastore.models.protocols.entity_transform import EntityTransformProtocol
+    from dynastore.tools.discovery import get_protocols
+
+    ops = await _resolve_entity_operations(
+        catalog_id, entity=entity, collection_id=collection_id,
+    )
+    entries = ops.get(Operation.TRANSFORM, [])
+    if not entries:
+        return []
+
+    by_driver_id = {type(t).__name__: t for t in get_protocols(EntityTransformProtocol)}
+    chain: List[Any] = []
+    for entry in entries:
+        transformer = by_driver_id.get(entry.driver_id)
+        if transformer is None:
+            logger.debug(
+                "get_active_transformers: routing lists '%s' for entity=%s "
+                "catalog=%s collection=%s but no EntityTransformProtocol "
+                "implementer registered with that class name; skipping. "
+                "Available: %s",
+                entry.driver_id, entity, catalog_id, collection_id,
+                sorted(by_driver_id),
+            )
+            continue
+        chain.append(transformer)
+    return chain
+
+
+def supported_operations(driver: Any) -> FrozenSet[str]:
+    """Return the set of :class:`Operation` values this driver participates in.
+
+    Combines the two discovery axes used by the platform:
+
+    1. **Capability-derived operations** — ``derive_supported_operations(
+       driver.capabilities)`` translates the driver's ``Capability`` flag set
+       into the operations those flags qualify it for (WRITE / READ / SEARCH
+       / INDEX / BACKUP).
+    2. **Protocol-derived operations** — operations whose participation is
+       expressed by implementing a Protocol rather than by setting a flag.
+       Currently only ``Operation.TRANSFORM`` (via
+       :class:`EntityTransformProtocol`); other future operations may follow
+       the same pattern when they have no variant capabilities.
+
+    The asymmetry is intentional: capabilities express variant subsets within
+    one structural type (a ``CollectionItemsStore`` may support FULLTEXT but
+    not SPATIAL_FILTER); a Protocol expresses an identity with no variants
+    (a transformer is a transformer). See
+    ``project_geoid_driver_responsibilities.md`` for the full rationale.
+
+    Drivers MAY expose a ``supported_operations`` property forwarding to
+    this helper; it is not required.
+    """
+    from dynastore.models.protocols.entity_transform import EntityTransformProtocol
+
+    caps = getattr(driver, "capabilities", frozenset())
+    ops: Set[str] = set(derive_supported_operations(caps))
+    if isinstance(driver, EntityTransformProtocol):
+        ops.add(Operation.TRANSFORM)
+    return frozenset(ops)
+
+
+def _self_register_transformers_into(
+    target_ops: Dict[str, List["OperationDriverEntry"]],
+) -> None:
+    """Auto-append every installed ``EntityTransformProtocol`` implementer
+    to ``target_ops[TRANSFORM]``.
+
+    Mirrors :func:`_self_register_indexers_into` and
+    :func:`_self_register_searchers_into`. Idempotent — drivers already
+    listed under ``operations[TRANSFORM]`` are not re-appended (operator
+    overrides survive).
+
+    Discovery is purely structural: any driver implementing
+    ``EntityTransformProtocol`` is eligible. There is no separate capability
+    flag — the protocol IS the marker.
+    """
+    from dynastore.models.protocols.entity_transform import EntityTransformProtocol
+    from dynastore.tools.discovery import get_protocols
+
+    listed = {entry.driver_id for entry in target_ops.get(Operation.TRANSFORM, [])}
+    for transformer in get_protocols(EntityTransformProtocol):
+        driver_id = type(transformer).__name__
+        if driver_id in listed:
+            continue
+        target_ops.setdefault(Operation.TRANSFORM, []).append(
+            OperationDriverEntry(driver_id=driver_id, source="auto")
+        )
+        listed.add(driver_id)
+        logger.info(
+            "Routing config self-registration: appended EntityTransformProtocol "
+            "driver '%s' to operations[TRANSFORM] (source=auto)",
+            driver_id,
+        )

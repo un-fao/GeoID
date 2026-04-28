@@ -17,34 +17,40 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-Elasticsearch Storage Drivers — delegates to SFEOS DatabaseLogic.
+Elasticsearch Storage Drivers.
 
-Reuses ``stac-fastapi-elasticsearch-opensearch`` (SFEOS) library for all ES
-operations instead of reimplementing.  This ensures full compatibility: SFEOS
-can read data written by these drivers transparently.
-
-Three drivers:
+Two drivers in this module:
 
 * ``ItemsElasticsearchDriver``  (driver_id ``"elasticsearch"``)
-  Full STAC indexing via SFEOS ``DatabaseLogic`` for items, collections, and
-  catalogs.  Supports ``stac-fastapi-core[catalogs]``.
-
-* ``ItemsElasticsearchObfuscatedDriver``  (driver_id ``"elasticsearch_obfuscated"``)
-  Stores full entity data but only allows search by geoid (``dynamic: false``).
-  Manages DENY access policies in its own lifecycle.
+  Items are written directly to a per-tenant index
+  ``{prefix}-items-{catalog_id}`` (helper :func:`get_tenant_items_index`)
+  with ``_routing=collection_id`` so a single index hosts every collection
+  of one catalog while keeping shard locality per collection.  The index
+  is enrolled in the platform alias ``{prefix}-items-public`` so OGC
+  discovery search routes can target one alias regardless of tenant.
+  Catalog and collection documents are still routed via SFEOS until the
+  dedicated ``catalog_es_driver`` / ``collection_es_driver`` modules
+  fully take over (separate, scheduled migration).
 
 * ``AssetElasticsearchDriver``  (driver_id ``"elasticsearch_assets"``)
-  Indexes asset metadata into per-catalog ``{prefix}-assets-{catalog_id}`` indices.
-  Driven by ``AssetRoutingConfig.operations[INDEX]`` via ``AssetService``'s
-  secondary-driver fan-out, plus direct programmatic indexing via
-  ``index_asset()`` / ``delete_asset()``.
+  Indexes asset metadata into per-catalog ``{prefix}-assets-{catalog_id}``
+  indices.  Driven by ``AssetRoutingConfig.operations[INDEX]`` (auto-augmented
+  with discoverable ``AssetIndexer`` impls) and dispatched via
+  ``AssetEntitySyncSubscriber`` from the events outbox — single-writer fan-out,
+  no per-driver listener block.  Direct programmatic indexing via
+  ``index_asset()`` / ``delete_asset()`` remains available.
+
+The obfuscated driver (``ItemsElasticsearchObfuscatedDriver``) lives in
+its own self-contained subpackage at
+:mod:`dynastore.modules.storage.drivers.elasticsearch_obfuscated` so the
+``[obfuscated]`` extras group can be opted in or out without touching this
+file.
 
 All drivers register as async event listeners, checking
 ``StorageRoutingConfig.secondary_drivers`` before acting.
 """
 
 import logging
-import re
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncIterator, ClassVar, Dict, FrozenSet, List, Optional, Union
 
@@ -66,9 +72,26 @@ from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
 
 logger = logging.getLogger(__name__)
 
-# One-time flag: index templates are global, not per-collection.
-# Avoids redundant template API calls on every ensure_storage().
-_templates_created: bool = False
+
+def _es_client_required() -> Any:
+    """Return the ES async client; raise if the platform module hasn't started."""
+    from dynastore.modules.elasticsearch.client import get_client
+
+    es = get_client()
+    if es is None:
+        raise RuntimeError(
+            "ES client not initialised — ElasticsearchModule.lifespan must "
+            "have started before items operations are invoked."
+        )
+    return es
+
+
+def _tenant_items_index(catalog_id: str) -> str:
+    """Resolve the per-tenant items index name for the active deployment."""
+    from dynastore.modules.elasticsearch.client import get_index_prefix
+    from dynastore.modules.elasticsearch.mappings import get_tenant_items_index
+
+    return get_tenant_items_index(get_index_prefix(), catalog_id)
 
 
 # ---------------------------------------------------------------------------
@@ -242,11 +265,19 @@ class _ElasticsearchBase:
 class ItemsElasticsearchDriver(
     TypedDriver[ItemsElasticsearchDriverConfig], _ElasticsearchBase, ModuleProtocol,
 ):
-    """SFEOS-compatible Elasticsearch storage driver.
+    """Elasticsearch storage driver for STAC items.
 
-    Delegates all ES operations to ``stac-fastapi-elasticsearch``'s
-    ``DatabaseLogic``, ensuring full read/write compatibility with SFEOS.
-    Supports items, collections, and catalogs (``stac-fastapi-core[catalogs]``).
+    Items are written directly via the async ES client to a single
+    per-tenant index ``{prefix}-items-{catalog_id}`` keyed by
+    ``_routing=collection_id`` for shard locality. The driver enrolls
+    each per-tenant index in the platform alias
+    ``{prefix}-items-public`` on first ``ensure_storage`` so OGC
+    discovery search routes can target that alias regardless of tenant.
+
+    Catalog and collection serialization on this class still flows
+    through SFEOS ``DatabaseLogic`` until the dedicated
+    ``catalog_es_driver`` / ``collection_es_driver`` modules supersede
+    those paths.
 
     Registered as ``storage_elasticsearch`` via entry points.
 
@@ -335,10 +366,11 @@ class ItemsElasticsearchDriver(
         from datetime import datetime, timezone
         from dynastore.tools.geometry_simplify import simplify_to_fit
 
-        db = self._get_db_logic()
         items = self._normalize_entities(entities)
         if not items:
             return []
+        es = _es_client_required()
+        index_name = _tenant_items_index(catalog_id)
 
         # Service-layer enforcement of FieldDefinition.required / .unique for
         # drivers (like ES) that don't advertise native REQUIRED_ENFORCEMENT /
@@ -391,7 +423,9 @@ class ItemsElasticsearchDriver(
                 from dynastore.modules.storage.driver_config import AssetConflictPolicy
                 if (
                     policy.on_asset_conflict == AssetConflictPolicy.REFUSE
-                    and await self._es_doc_exists_by_external_id(db, collection_id, external_id)
+                    and await self._es_doc_exists_by_external_id(
+                        es, index_name, collection_id, external_id,
+                    )
                 ):
                     from dynastore.modules.storage.errors import ConflictError
                     raise ConflictError(
@@ -402,7 +436,7 @@ class ItemsElasticsearchDriver(
             # Item-level check — skip this entity, continue batch.
             if policy.on_conflict == WriteConflictPolicy.REFUSE:
                 if external_id and await self._es_doc_exists_by_external_id(
-                    db, collection_id, external_id,
+                    es, index_name, collection_id, external_id,
                 ):
                     logger.debug(
                         "ES write_entities(REFUSE): external_id '%s' exists — skipped",
@@ -417,8 +451,8 @@ class ItemsElasticsearchDriver(
                 if valid_from is None:
                     stac_doc["_valid_from"] = datetime.now(timezone.utc).isoformat()
 
-            # Default (UPDATE): stable doc_id from external_id or item id.
-            # ES `exist_ok=True` (create_item) → upsert in place.
+            # Default (UPDATE): stable doc_id wins; the bulk action below
+            # uses ``index`` semantics (upsert in place).
 
             # Guard against the ES 10MB per-doc limit. For oversize docs
             # the geometry is simplified in place and the ratio is
@@ -428,25 +462,29 @@ class ItemsElasticsearchDriver(
                 stac_doc["_simplification_factor"] = factor
                 stac_doc["_simplification_mode"] = mode
 
-            prepped_item = await db.bulk_async_prep_create_item(
-                stac_doc, base_url="", exist_ok=True,
-            )
-            if prepped_item is not None:
-                prepped_bulk.append(prepped_item)
+            doc_id = stac_doc.get("id") or base_id
+            if doc_id is None:
+                logger.warning(
+                    "ES write_entities: skipping item with no id in %s/%s",
+                    catalog_id, collection_id,
+                )
+                continue
+            prepped_bulk.append({
+                "action": {"index": {
+                    "_index": index_name,
+                    "_id": str(doc_id),
+                    "routing": collection_id,
+                }},
+                "doc": stac_doc,
+            })
             written.append(item)
 
-        if len(prepped_bulk) == 1:
-            # For single items prefer direct create for cleaner error reporting.
-            await db.create_item(
-                self._feature_to_stac_item(written[0], catalog_id, collection_id)
-                if not prepped_bulk else prepped_bulk[0],
-                exist_ok=True,
-            )
-            # Re-index using the prepared doc to honour policy mutations.
-            prepped_bulk = []  # already written via create_item
-
         if prepped_bulk:
-            await db.bulk_async(collection_id, prepped_bulk, refresh=False)
+            body: list = []
+            for entry in prepped_bulk:
+                body.append(entry["action"])
+                body.append(entry["doc"])
+            await es.bulk(body=body, params={"refresh": "false"})
 
         return written
 
@@ -541,15 +579,27 @@ class ItemsElasticsearchDriver(
 
     @staticmethod
     async def _es_doc_exists_by_external_id(
-        db, collection_id: str, external_id: str,
+        es: Any, index_name: str, collection_id: str, external_id: str,
     ) -> bool:
-        """Check if any ES document with _external_id == external_id exists."""
+        """Check whether any document in the tenant index for this
+        collection carries ``_external_id == external_id``.
+
+        Uses ``_routing=collection_id`` so the count hits a single shard.
+        """
         try:
-            from stac_fastapi.sfeos_helpers.database import index_alias_by_collection_id  # type: ignore[import-not-found]
-            alias = index_alias_by_collection_id(collection_id)
-            resp = await db.client.count(
-                index=alias,
-                body={"query": {"term": {"_external_id": external_id}}},
+            resp = await es.count(
+                index=index_name,
+                body={
+                    "query": {
+                        "bool": {
+                            "filter": [
+                                {"term": {"collection": collection_id}},
+                                {"term": {"_external_id": external_id}},
+                            ]
+                        }
+                    }
+                },
+                params={"routing": collection_id},
             )
             return resp.get("count", 0) > 0
         except Exception:
@@ -593,10 +643,10 @@ class ItemsElasticsearchDriver(
         }
 
         try:
-            db = self._get_db_logic()
-            index_name = f"stac_{collection_id}"
-            mapping = await db.client.indices.get_mapping(index=index_name)
-            properties = {}
+            es = _es_client_required()
+            index_name = _tenant_items_index(catalog_id)
+            mapping = await es.indices.get_mapping(index=index_name)
+            properties: Dict[str, Any] = {}
             for idx_data in mapping.values():
                 properties = idx_data.get("mappings", {}).get("properties", {})
                 break
@@ -629,26 +679,45 @@ class ItemsElasticsearchDriver(
         offset: int = 0,
         db_resource: Optional[Any] = None,
     ) -> AsyncIterator[Feature]:
-        db = self._get_db_logic()
+        es = _es_client_required()
+        index_name = _tenant_items_index(catalog_id)
 
         if entity_ids:
             for eid in entity_ids:
                 try:
-                    doc = await db.get_one_item(collection_id, eid)
-                    yield Feature.model_validate(doc)
+                    resp = await es.get(
+                        index=index_name, id=eid,
+                        params={"routing": collection_id},
+                    )
+                    src = resp.get("_source")
+                    if src is not None:
+                        yield Feature.model_validate(src)
                 except Exception:
                     pass
         else:
-            # Use execute_search for query-based reads
-            search_body = self._query_request_to_es(request) if request else {}
+            base = self._query_request_to_es(request) if request else {"query": {"match_all": {}}}
+            # Always scope by collection so a tenant-wide index returns
+            # only this collection's hits.
+            collection_filter = {"term": {"collection": collection_id}}
+            base_query = base.get("query", {"match_all": {}})
+            scoped_query = {
+                "bool": {
+                    "must": [base_query],
+                    "filter": [collection_filter],
+                }
+            }
             size = limit if request is None or request.limit is None else request.limit
             from_ = offset if request is None or request.offset is None else request.offset
 
             try:
-                from stac_fastapi.sfeos_helpers.database import index_alias_by_collection_id  # type: ignore[import-not-found]
-                alias = index_alias_by_collection_id(collection_id)
-                resp = await db.client.search(
-                    index=alias, body=search_body, size=size, from_=from_,
+                resp = await es.search(
+                    index=index_name,
+                    body={"query": scoped_query},
+                    params={
+                        "routing": collection_id,
+                        "size": str(size),
+                        "from": str(from_),
+                    },
                 )
                 for hit in resp.get("hits", {}).get("hits", []):
                     try:
@@ -675,11 +744,15 @@ class ItemsElasticsearchDriver(
                 "ES delete_entities(soft=True): marking %d entities as deleted",
                 len(entity_ids),
             )
-        db = self._get_db_logic()
+        es = _es_client_required()
+        index_name = _tenant_items_index(catalog_id)
         deleted = 0
         for eid in entity_ids:
             try:
-                await db.delete_item(eid, collection_id)
+                await es.delete(
+                    index=index_name, id=eid,
+                    params={"routing": collection_id, "ignore": "404"},
+                )
                 deleted += 1
             except Exception:
                 pass
@@ -691,47 +764,54 @@ class ItemsElasticsearchDriver(
         collection_id: Optional[str] = None,
         **kwargs,
     ) -> None:
-        """Ensure SFEOS index templates exist (once) and create per-collection items index.
+        """Idempotently create the per-tenant items index and enrol it
+        in the platform public alias.
 
-        Global index templates are created only on first call across the process
-        lifetime (``_templates_created`` flag). Per-collection index creation is
-        idempotent — SFEOS ``create_collection_index`` is a no-op if it already exists.
+        The index ``{prefix}-items-{catalog_id}`` hosts every collection's
+        items for this catalog; collection scoping is enforced via
+        ``_routing=collection_id`` on every write/read. Membership in
+        ``{prefix}-items-public`` makes the data discoverable through OGC
+        search routes regardless of tenant.
+
+        ``collection_id`` is accepted for protocol parity but ignored —
+        the same tenant index serves all collections of the catalog.
         """
-        global _templates_created
-        from stac_fastapi.elasticsearch.database_logic import (  # type: ignore[import-not-found]
-            create_index_templates,
-            create_collection_index,
+        from dynastore.modules.elasticsearch.aliases import (
+            add_index_to_public_alias,
         )
+        from dynastore.modules.elasticsearch.mappings import ITEM_MAPPING
 
-        if not _templates_created:
-            await create_index_templates()
-            _templates_created = True
-            logger.debug("ItemsElasticsearchDriver: global index templates created.")
+        es = _es_client_required()
+        index_name = _tenant_items_index(catalog_id)
 
-        # Always ensure the collections meta-index.
-        await create_collection_index()
+        try:
+            exists = await es.indices.exists(index=index_name)
+        except Exception as exc:
+            logger.warning(
+                "ItemsElasticsearchDriver.ensure_storage: exists() failed for "
+                "'%s': %s", index_name, exc,
+            )
+            exists = False
 
-        if collection_id:
-            # Create the per-collection items index (idempotent).
-            db = self._get_db_logic()
+        if not exists:
             try:
-                from stac_fastapi.sfeos_helpers.database import index_alias_by_collection_id  # type: ignore[import-not-found]
-                index_name = index_alias_by_collection_id(collection_id)
-                if not await db.client.indices.exists(index=index_name):
-                    await db.client.indices.create(
-                        index=index_name,
-                        ignore=400,  # 400 = index already exists — safe to ignore
-                    )
-                    logger.info(
-                        "ItemsElasticsearchDriver: created items index '%s'.",
-                        index_name,
-                    )
-            except Exception as e:
-                logger.warning(
-                    "ItemsElasticsearchDriver: ensure_storage collection index "
-                    "creation failed for '%s': %s",
-                    collection_id, e,
+                await es.indices.create(
+                    index=index_name,
+                    body={"mappings": ITEM_MAPPING},
                 )
+                logger.info(
+                    "ItemsElasticsearchDriver: created tenant items index '%s'.",
+                    index_name,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "ItemsElasticsearchDriver.ensure_storage: create('%s') "
+                    "failed: %s — assuming concurrent create",
+                    index_name, exc,
+                )
+
+        # Idempotent — safe even if the index was already a member.
+        await add_index_to_public_alias(index_name)
 
     async def drop_storage(
         self,
@@ -740,17 +820,32 @@ class ItemsElasticsearchDriver(
         *,
         soft: bool = False,
     ) -> None:
-        db = self._get_db_logic()
+        from dynastore.modules.elasticsearch.aliases import (
+            remove_index_from_public_alias,
+        )
+
+        es = _es_client_required()
+        index_name = _tenant_items_index(catalog_id)
         if collection_id:
             try:
-                await db.delete_collection(collection_id)
+                await es.delete_by_query(
+                    index=index_name,
+                    body={"query": {"term": {"collection": collection_id}}},
+                    params={"routing": collection_id, "refresh": "false"},
+                )
             except Exception as e:
-                logger.warning("drop_storage collection failed: %s", e)
+                logger.warning(
+                    "drop_storage collection delete_by_query failed for %s/%s: %s",
+                    catalog_id, collection_id, e,
+                )
         else:
+            await remove_index_from_public_alias(index_name)
             try:
-                await db.delete_catalog(catalog_id)
+                await es.indices.delete(
+                    index=index_name, params={"ignore_unavailable": "true"},
+                )
             except Exception as e:
-                logger.warning("drop_storage catalog failed: %s", e)
+                logger.warning("drop_storage catalog delete failed: %s", e)
 
     async def export_entities(
         self,
@@ -894,8 +989,12 @@ class ItemsElasticsearchDriver(
                     "id": item_id,
                     "collection": collection_id,
                 })
-            db = self._get_db_logic()
-            await db.create_item(doc, exist_ok=True)
+            es = _es_client_required()
+            index_name = _tenant_items_index(catalog_id)
+            await es.index(
+                index=index_name, id=item_id, body=doc,
+                params={"routing": collection_id},
+            )
         except Exception as e:
             logger.error(
                 "ES driver: item upsert failed for %s/%s/%s: %s",
@@ -920,15 +1019,22 @@ class ItemsElasticsearchDriver(
             return
 
         try:
-            db = self._get_db_logic()
-            prepped = []
+            es = _es_client_required()
+            index_name = _tenant_items_index(catalog_id)
+            body: list = []
             for item_doc in items_subset:
                 item_doc.setdefault("collection", collection_id)
-                p = await db.bulk_async_prep_create_item(item_doc, base_url="", exist_ok=True)
-                if p is not None:
-                    prepped.append(p)
-            if prepped:
-                await db.bulk_async(collection_id, prepped, refresh=False)
+                doc_id = item_doc.get("id")
+                if doc_id is None:
+                    continue
+                body.append({"index": {
+                    "_index": index_name,
+                    "_id": str(doc_id),
+                    "routing": collection_id,
+                }})
+                body.append(item_doc)
+            if body:
+                await es.bulk(body=body, params={"refresh": "false"})
         except Exception as e:
             logger.error(
                 "ES driver: bulk upsert failed for %s/%s: %s",
@@ -947,8 +1053,12 @@ class ItemsElasticsearchDriver(
         if not await self._is_secondary_for(type(self).__name__, catalog_id, collection_id):
             return
         try:
-            db = self._get_db_logic()
-            await db.delete_item(item_id, collection_id)
+            es = _es_client_required()
+            index_name = _tenant_items_index(catalog_id)
+            await es.delete(
+                index=index_name, id=item_id,
+                params={"routing": collection_id, "ignore": "404"},
+            )
         except Exception as e:
             logger.error(
                 "ES driver: item delete failed for %s/%s/%s: %s",
@@ -1061,514 +1171,25 @@ class ItemsElasticsearchDriver(
         catalog_id: str,
         collection_id: str,
     ) -> "StorageLocation":
-        """Return typed physical storage coordinates for this collection."""
+        """Return typed physical storage coordinates for this collection.
+
+        The tenant index hosts every collection of the catalog; the
+        ``routing`` identifier records the per-collection shard key so
+        consumers can reproduce reads.
+        """
         from dynastore.modules.storage.storage_location import StorageLocation
 
-        config = await self.get_driver_config(catalog_id, collection_id)
-        prefix = config.index_prefix if config else "items_"
-        index_name = f"{prefix}{collection_id}"
+        index_name = _tenant_items_index(catalog_id)
         return StorageLocation(
             backend="elasticsearch",
-            canonical_uri=f"es://{index_name}",
-            identifiers={"index": index_name, "prefix": prefix},
-            display_label=index_name,
+            canonical_uri=f"es://{index_name}?routing={collection_id}",
+            identifiers={
+                "index": index_name,
+                "routing": collection_id,
+            },
+            display_label=f"{index_name} (routing={collection_id})",
         )
 
-
-# ---------------------------------------------------------------------------
-# ItemsElasticsearchObfuscatedDriver — geoid-only, DENY-protected
-# ---------------------------------------------------------------------------
-
-class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
-    """Tenant-scoped Elasticsearch storage driver (a.k.a. "obfuscated").
-
-    Writes the full feature (geometry + properties + external_id) into a
-    per-tenant index ``{prefix}-geoid-{catalog_id}`` shared across all
-    collections of the catalog. The mapping is `TENANT_FEATURE_MAPPING`
-    (root ``dynamic: false`` to reject smuggled fields; ``properties.*``
-    is dynamic so tenant attributes index without mapping churn).
-
-    Docs that would exceed the ES 10MB per-doc limit are shrunk by
-    `simplify_to_fit` (`tools/geometry_simplify.py`); the resulting
-    `simplification_factor` and `simplification_mode` are persisted on
-    the doc so clients can tell how much fidelity was lost.
-
-    Search is gated by the tenant-first contract enforced in
-    `extensions/search` (catalog_id required; geoid OR (external_id +
-    collection_id) — never external_id alone).
-
-    Manages DENY access policies in its own lifecycle.
-
-    Uses the raw ES client from SFEOS settings (not DatabaseLogic) since
-    the index has a custom mapping not managed by SFEOS.
-
-    Registered as ``storage_elasticsearch_obfuscated`` via entry points.
-    """
-
-    priority: int = 51
-    preferred_chunk_size: int = 500
-    capabilities: FrozenSet[str] = frozenset({
-        Capability.READ,
-        Capability.WRITE,
-        Capability.STREAMING,
-        Capability.PHYSICAL_ADDRESSING,
-    })
-    preferred_for: FrozenSet[str] = frozenset()
-    supported_hints: FrozenSet[str] = frozenset()
-
-    def is_available(self) -> bool:
-        return self._sfeos_available()
-
-    def _get_client(self):
-        """Get the async ES client from SFEOS DatabaseLogic."""
-        return self._get_db_logic().client
-
-    @asynccontextmanager
-    async def lifespan(self, app_state: object):
-        from dynastore.models.protocols.events import EventsProtocol
-        from dynastore.tools.discovery import get_protocol
-        from dynastore.modules.catalog.event_service import CatalogEventType
-
-        await self._restore_deny_policies()
-
-        events = get_protocol(EventsProtocol)
-        if events:
-            for etype, handler in [
-                (CatalogEventType.ITEM_CREATION, self._on_item_upsert),
-                (CatalogEventType.ITEM_UPDATE, self._on_item_upsert),
-                (CatalogEventType.ITEM_DELETION, self._on_item_delete),
-                (CatalogEventType.ITEM_HARD_DELETION, self._on_item_delete),
-                (CatalogEventType.BULK_ITEM_CREATION, self._on_item_bulk_upsert),
-            ]:
-                decorator = events.async_event_listener(etype)
-                if decorator:
-                    decorator(handler)
-            logger.info("ItemsElasticsearchObfuscatedDriver: event listeners registered.")
-        yield
-
-    # ------------------------------------------------------------------
-    # StorageDriverProtocol
-    # ------------------------------------------------------------------
-
-    async def write_entities(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        entities: Union[Feature, FeatureCollection, Dict[str, Any], List[Dict[str, Any]]],
-        *,
-        context: Optional[Dict[str, Any]] = None,
-        db_resource: Optional[Any] = None,
-    ) -> List[Feature]:
-        from dynastore.modules.elasticsearch.mappings import (
-            get_obfuscated_index_name, TENANT_FEATURE_MAPPING, build_tenant_feature_doc,
-        )
-        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-        from dynastore.tools.geometry_simplify import simplify_to_fit
-
-        index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
-        items = self._normalize_entities(entities)
-        es = self._get_client()
-
-        if not await es.indices.exists(index=index_name):
-            await es.indices.create(
-                index=index_name,
-                body={"mappings": TENANT_FEATURE_MAPPING},
-                ignore=400,
-            )
-
-        bulk_body: list = []
-        for item in items:
-            geoid = self._extract_item_id(item)
-            if not geoid:
-                continue
-            doc = build_tenant_feature_doc(
-                item, catalog_id=catalog_id, collection_id=collection_id,
-            )
-            doc, factor, mode = simplify_to_fit(doc)
-            doc["simplification_factor"] = factor
-            doc["simplification_mode"] = mode
-            bulk_body.append({"index": {"_index": index_name, "_id": geoid}})
-            bulk_body.append(doc)
-
-        if bulk_body:
-            await es.bulk(body=bulk_body, request_timeout=60)
-
-        return items if isinstance(items, list) else list(items)
-
-    async def read_entities(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        *,
-        entity_ids: Optional[List[str]] = None,
-        request: Optional[QueryRequest] = None,
-        context: Optional[Dict[str, Any]] = None,
-        limit: int = 100,
-        offset: int = 0,
-        db_resource: Optional[Any] = None,
-    ) -> AsyncIterator[Feature]:
-        from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
-        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-
-        if not entity_ids:
-            return
-
-        index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
-        es = self._get_client()
-
-        if not await es.indices.exists(index=index_name):
-            return
-
-        for geoid in entity_ids:
-            try:
-                resp = await es.get(index=index_name, id=geoid)
-                source = resp["_source"]
-                props = dict(source.get("properties") or {})
-                # Surface tenant-feature bookkeeping in properties so callers
-                # can detect simplification without a separate API.
-                if "external_id" in source:
-                    props["external_id"] = source["external_id"]
-                if "simplification_factor" in source:
-                    props["simplification_factor"] = source["simplification_factor"]
-                if "simplification_mode" in source:
-                    props["simplification_mode"] = source["simplification_mode"]
-                props["catalog_id"] = source.get("catalog_id", catalog_id)
-                props["collection_id"] = source.get("collection_id", collection_id)
-                yield Feature(
-                    type="Feature",
-                    id=source.get("geoid", geoid),
-                    geometry=source.get("geometry"),
-                    properties=props,
-                    bbox=source.get("bbox"),  # type: ignore[call-arg]
-                )
-            except Exception:
-                pass
-
-    async def delete_entities(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        entity_ids: List[str],
-        *,
-        soft: bool = False,
-        db_resource: Optional[Any] = None,
-    ) -> int:
-        if soft:
-            raise SoftDeleteNotSupportedError(
-                "ItemsElasticsearchObfuscatedDriver does not support soft delete."
-            )
-        from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
-        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-
-        index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
-        es = self._get_client()
-        deleted = 0
-
-        for geoid in entity_ids:
-            try:
-                await es.delete(index=index_name, id=geoid)
-                deleted += 1
-            except Exception:
-                pass
-
-        return deleted
-
-    async def ensure_storage(
-        self,
-        catalog_id: str,
-        collection_id: Optional[str] = None,
-        **kwargs,
-    ) -> None:
-        from dynastore.modules.elasticsearch.mappings import (
-            get_obfuscated_index_name, TENANT_FEATURE_MAPPING,
-        )
-        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-
-        index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
-        es = self._get_client()
-
-        if not await es.indices.exists(index=index_name):
-            await es.indices.create(
-                index=index_name,
-                body={"mappings": TENANT_FEATURE_MAPPING},
-                ignore=400,
-            )
-
-        await self._apply_deny_policy(catalog_id)
-
-    async def drop_storage(
-        self,
-        catalog_id: str,
-        collection_id: Optional[str] = None,
-        *,
-        soft: bool = False,
-    ) -> None:
-        if soft:
-            raise SoftDeleteNotSupportedError(
-                "ItemsElasticsearchObfuscatedDriver does not support soft drop."
-            )
-        from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
-        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-
-        index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
-        es = self._get_client()
-        await es.indices.delete(index=index_name, ignore_unavailable=True)
-        await self._revoke_deny_policy(catalog_id)
-
-    async def export_entities(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        *,
-        format: str = "parquet",
-        target_path: str = "",
-        db_resource: Optional[Any] = None,
-    ) -> str:
-        raise NotImplementedError(
-            "ItemsElasticsearchObfuscatedDriver.export_entities: not supported."
-        )
-
-    # ------------------------------------------------------------------
-    # Event handlers
-    # ------------------------------------------------------------------
-
-    async def _on_item_upsert(
-        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None,
-        item_id: Optional[str] = None, payload=None, **kwargs,
-    ):
-        if not catalog_id or not collection_id or not item_id:
-            return
-        if not await self._is_secondary_for(type(self).__name__, catalog_id, collection_id):
-            return
-        if await self._is_write_driver_for(type(self).__name__, catalog_id, collection_id):
-            return
-        try:
-            from dynastore.modules.elasticsearch.mappings import (
-                get_obfuscated_index_name, TENANT_FEATURE_MAPPING, build_tenant_feature_doc,
-            )
-            from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-            from dynastore.tools.geometry_simplify import simplify_to_fit
-
-            index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
-            es = self._get_client()
-
-            if not await es.indices.exists(index=index_name):
-                await es.indices.create(
-                    index=index_name,
-                    body={"mappings": TENANT_FEATURE_MAPPING},
-                    ignore=400,
-                )
-            # Event payload may carry the full STAC item; fall back to a
-            # geoid-only doc when no payload is available.
-            src = payload if isinstance(payload, dict) else {"id": item_id}
-            src.setdefault("id", item_id)
-            doc = build_tenant_feature_doc(
-                src, catalog_id=catalog_id, collection_id=collection_id,
-            )
-            doc, factor, mode = simplify_to_fit(doc)
-            doc["simplification_factor"] = factor
-            doc["simplification_mode"] = mode
-            await es.index(index=index_name, id=item_id, document=doc)
-        except Exception as e:
-            logger.error(
-                "ObfuscatedDriver: index failed for %s/%s/%s: %s",
-                catalog_id, collection_id, item_id, e,
-            )
-
-    async def _on_item_bulk_upsert(
-        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None,
-        payload=None, **kwargs,
-    ):
-        if not catalog_id or not collection_id:
-            return
-        if not await self._is_secondary_for(type(self).__name__, catalog_id, collection_id):
-            return
-        if await self._is_write_driver_for(type(self).__name__, catalog_id, collection_id):
-            return
-
-        items_subset = (payload if isinstance(payload, dict) else {}).get("items_subset", [])
-        if not items_subset:
-            return
-
-        try:
-            from dynastore.modules.elasticsearch.mappings import (
-                get_obfuscated_index_name, TENANT_FEATURE_MAPPING, build_tenant_feature_doc,
-            )
-            from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-            from dynastore.tools.geometry_simplify import simplify_to_fit
-
-            index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
-            es = self._get_client()
-
-            if not await es.indices.exists(index=index_name):
-                await es.indices.create(
-                    index=index_name,
-                    body={"mappings": TENANT_FEATURE_MAPPING},
-                    ignore=400,
-                )
-
-            bulk_body: list = []
-            for item_doc in items_subset:
-                geoid = item_doc.get("id")
-                if not geoid:
-                    continue
-                doc = build_tenant_feature_doc(
-                    item_doc, catalog_id=catalog_id, collection_id=collection_id,
-                )
-                doc, factor, mode = simplify_to_fit(doc)
-                doc["simplification_factor"] = factor
-                doc["simplification_mode"] = mode
-                bulk_body.append({"index": {"_index": index_name, "_id": geoid}})
-                bulk_body.append(doc)
-            if bulk_body:
-                await es.bulk(body=bulk_body, request_timeout=60)
-        except Exception as e:
-            logger.error(
-                "ObfuscatedDriver: bulk index failed for %s/%s: %s",
-                catalog_id, collection_id, e,
-            )
-
-    async def _on_item_delete(
-        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None,
-        item_id: Optional[str] = None, payload=None, **kwargs,
-    ):
-        if not item_id:
-            _val = (payload if isinstance(payload, dict) else {}).get("geoid")
-            item_id = str(_val) if _val is not None else None
-        if not catalog_id or not item_id:
-            return
-        if not await self._is_secondary_for(type(self).__name__, catalog_id, collection_id):
-            return
-        try:
-            from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
-            from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-
-            index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
-            es = self._get_client()
-            try:
-                await es.delete(index=index_name, id=item_id)
-            except Exception:
-                pass
-        except Exception as e:
-            logger.error("ObfuscatedDriver: delete failed for %s: %s", item_id, e)
-
-    # ------------------------------------------------------------------
-    # DENY policy management (self-contained)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    async def _apply_deny_policy(catalog_id: str) -> None:
-        from dynastore.tools.discovery import get_protocol
-        try:
-            from dynastore.models.protocols.policies import PermissionProtocol, Policy, Role
-        except ImportError:
-            return
-
-        perm = get_protocol(PermissionProtocol)
-        if not perm:
-            return
-
-        policy_id = f"obfuscated_deny_{catalog_id}"
-        deny_policy = Policy(
-            id=policy_id,
-            description=f"Blocks public access to obfuscated catalog: {catalog_id}",
-            actions=["GET"],
-            resources=[
-                f"/(catalog|stac|features|tiles|wfs|maps)/catalogs/{re.escape(catalog_id)}(/.*)?",
-            ],
-            effect="DENY",
-        )
-
-        perm.register_policy(deny_policy)
-        perm.register_role(Role(name="all_users", policies=[policy_id]))
-
-        try:
-            await perm.create_policy(deny_policy)
-        except Exception:
-            try:
-                await perm.update_policy(deny_policy)
-            except Exception as e:
-                logger.error("DENY policy persist failed for '%s': %s", catalog_id, e)
-
-    @staticmethod
-    async def _revoke_deny_policy(catalog_id: str) -> None:
-        from dynastore.tools.discovery import get_protocol
-        try:
-            from dynastore.models.protocols.policies import PermissionProtocol
-        except ImportError:
-            return
-
-        perm = get_protocol(PermissionProtocol)
-        if not perm:
-            return
-
-        try:
-            await perm.delete_policy(f"obfuscated_deny_{catalog_id}")
-        except Exception:
-            pass
-
-    async def _restore_deny_policies(self) -> None:
-        """Restore DENY policies at startup for catalogs using this driver."""
-        try:
-            from dynastore.models.protocols import CatalogsProtocol
-            from dynastore.models.protocols.configs import ConfigsProtocol
-            from dynastore.tools.discovery import get_protocol
-            from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
-
-            catalogs_proto = get_protocol(CatalogsProtocol)
-            configs = get_protocol(ConfigsProtocol)
-            if not catalogs_proto or not configs:
-                return
-
-            offset, batch = 0, 100
-            while True:
-                catalog_list = await catalogs_proto.list_catalogs(
-                    limit=batch, offset=offset,
-                )
-                if not catalog_list:
-                    break
-                for catalog in catalog_list:
-                    catalog_id = getattr(catalog, "id", None)
-                    if not catalog_id:
-                        continue
-                    try:
-                        routing = await configs.get_config(
-                            CollectionPluginConfig, catalog_id=catalog_id,
-                        )
-                        if type(self).__name__ in routing.secondary_driver_ids:  # type: ignore[attr-defined]
-                            await self._apply_deny_policy(catalog_id)
-                            logger.info(
-                                "ObfuscatedDriver: restored DENY for '%s'.",
-                                catalog_id,
-                            )
-                    except Exception:
-                        continue
-                if len(catalog_list) < batch:
-                    break
-                offset += batch
-        except Exception as e:
-            logger.warning(
-                "ObfuscatedDriver: could not restore DENY policies: %s", e,
-            )
-
-    async def location(
-        self,
-        catalog_id: str,
-        collection_id: str,
-    ) -> "StorageLocation":
-        """Return typed physical storage coordinates for this obfuscated index."""
-        from dynastore.modules.storage.storage_location import StorageLocation
-        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-        from dynastore.modules.elasticsearch.mappings import get_obfuscated_index_name
-
-        prefix = _get_index_prefix()
-        index_name = get_obfuscated_index_name(prefix, catalog_id)
-        return StorageLocation(
-            backend="elasticsearch_obfuscated",
-            canonical_uri=f"es://{index_name}",
-            identifiers={"index": index_name, "prefix": prefix, "catalog_id": catalog_id},
-            display_label=index_name,
-        )
 
 
 # ---------------------------------------------------------------------------

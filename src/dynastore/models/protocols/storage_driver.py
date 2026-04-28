@@ -135,12 +135,6 @@ class Capability:
     # Driver guarantees a single-statement atomic soft-delete (no read-modify-write).
     # A subset of SOFT_DELETE — callers that need atomicity check this constant.
 
-    # --- Entity transform pipeline ---
-    ENTITY_TRANSFORM = "entity_transform"
-    # Driver participates in the per-entity transform chain after READ.
-    # Implements EntityTransformer sub-Protocol: transform(entity, ctx) -> entity.
-    # Covers enrichment, filtering, field reshaping, gap interpolation.
-
     # --- Query fallback ---
     QUERY_FALLBACK_SOURCE = "query_fallback_source"
     # Driver can serve any query as a fallback when the primary driver

@@ -62,7 +62,11 @@ class TestApplyDispatchesReindex:
         kwargs = fake.bulk_reindex.await_args.kwargs
         assert kwargs["catalog_id"] == "cat"
         assert kwargs["collection_id"] == "col"
-        assert kwargs["mode"] == "obfuscated"
+        # mode parameter dropped in PR-2b — bulk_reindex always targets the
+        # regular per-tenant items index now. Toggling obfuscated on the
+        # config still flips the DENY policy elsewhere; the reindex itself
+        # is unconditional.
+        assert "mode" not in kwargs
 
     @pytest.mark.asyncio
     async def test_explicit_false_dispatches_catalog_mode_reindex(self, monkeypatch):
@@ -80,7 +84,7 @@ class TestApplyDispatchesReindex:
 
         fake.bulk_reindex.assert_awaited_once()
         kwargs = fake.bulk_reindex.await_args.kwargs
-        assert kwargs["mode"] == "catalog"
+        assert "mode" not in kwargs
 
     @pytest.mark.asyncio
     async def test_revert_to_inherit_does_not_dispatch_reindex(self, monkeypatch):
