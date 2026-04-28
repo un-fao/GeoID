@@ -256,9 +256,35 @@ class ElasticsearchModule(ModuleProtocol):
                         "'%s': %s", shared_name, exc,
                     )
 
-            # Public items alias is created lazily on first member-add by the
-            # regular items driver — call here just so the deferral is logged
-            # at startup for operator visibility.
+            # Public items alias name (e.g. `dynastore-items`) collides with
+            # the legacy singleton index name from before PR-B's topology
+            # rework. If a stale physical index by that name exists, ES
+            # will reject every attempt to create the alias — silently
+            # leaving search broken with `index_or_alias_not_found`.
+            # Fail-fast at startup with a clear remediation message so the
+            # operator wipes the stale index before retrying.
+            from dynastore.modules.elasticsearch.mappings import get_public_items_alias
+
+            alias_name = get_public_items_alias(es_client.get_index_prefix())
+            try:
+                exists = await es.indices.exists(index=alias_name)
+                is_alias = await es.indices.exists_alias(name=alias_name)
+            except Exception as exc:
+                logger.warning(
+                    "ElasticsearchModule: alias-collision pre-check failed for "
+                    "'%s': %s — proceeding without fail-fast", alias_name, exc,
+                )
+                exists = False
+                is_alias = True
+            if exists and not is_alias:
+                msg = (
+                    f"ElasticsearchModule: physical index '{alias_name}' "
+                    f"exists where alias is required. Delete it before "
+                    f"redeploy: DELETE /{alias_name}"
+                )
+                logger.error(msg)
+                raise RuntimeError(msg)
+
             try:
                 await ensure_public_alias_exists()
             except Exception as exc:
