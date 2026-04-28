@@ -91,9 +91,19 @@ async def get_enrichment_data(
         limit=limit,
     ):
         props = entity.properties or {}
+        # Look up the join key: prefer an explicit property, but fall back to
+        # entity.id when the join column was promoted out of properties (e.g.
+        # ItemsBigQueryDriver's row→Feature adapter excludes the id_column from
+        # properties — a join on the id column would otherwise drop every row).
         key = props.get(join_column)
+        if key is None:
+            key = getattr(entity, "id", None)
         if key is not None:
-            result[key] = dict(props)
+            row = dict(props)
+            # Surface the join column as a property too so downstream
+            # enrichment merges round-trip the value into the joined feature.
+            row.setdefault(join_column, key)
+            result[key] = row
     return result
 
 
@@ -124,7 +134,14 @@ async def enrich_features(
     """
     async for feature in feature_stream:
         props = feature.properties or {}
+        # Look up the join key: prefer an explicit property, but fall back
+        # to feature.id when the column is the feature identifier (the
+        # primary case for catalog-tier rows whose `geoid` UUID lives on
+        # feature.id and never lands in properties — see PR #110 for the
+        # symmetric fix to OGC /join's executor).
         key = props.get(join_column)
+        if key is None:
+            key = getattr(feature, "id", None)
         extra = enrichment_data.get(key) if key is not None else None
         if extra:
             merged_props = {**props, **extra}
