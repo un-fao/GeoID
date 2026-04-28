@@ -146,7 +146,14 @@ jobs:
 
   integration-tests:
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    # 25min upper bound — the suite ran in ~10 min total back when we had
+    # ~96 test files (last green main 23877686549, 2026-04-02). At 274
+    # files today the linear-scaling envelope is ~28 min on 4 vCPUs, so
+    # 25 min FORCES us to either (a) shard via matrix, (b) move to
+    # larger runners, or (c) actually fix the slow tests rather than
+    # silently letting CI grow into hours. A run that overflows 25 min
+    # = a real signal, not budget to extend.
+    timeout-minutes: 25
     # inputs.run_integration is only set for workflow_dispatch / workflow_call.
     # For push/pull_request it is undefined (''), so the comparison evaluates
     # != 'false' as true. Skip only when the caller explicitly passes false.

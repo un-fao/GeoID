@@ -4,6 +4,13 @@ services:
       file: ./compose.db.dev.yml
       service: db
     container_name: geoid_db_test
+    # The dev compose binds 54320:5432 on the host so a developer can connect
+    # via psql on a non-default port. Tests reach Postgres through the docker
+    # network using the `db` service name on internal port 5432 — they never
+    # need a host-side binding. Clearing the inherited port mapping prevents
+    # CI from racing with pre-existing port-54320 state on the runner
+    # (observed: "address already in use" on PR #108 run 25070127934 unit-tests).
+    ports: []
     env_file:
       - .env
       - path: .env.local
