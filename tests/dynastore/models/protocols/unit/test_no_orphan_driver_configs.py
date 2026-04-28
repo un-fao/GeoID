@@ -36,10 +36,7 @@ import dynastore.modules.elasticsearch.collection_es_driver  # noqa: F401
 import dynastore.modules.elasticsearch.catalog_es_driver  # noqa: F401
 import dynastore.modules.catalog.drivers.pg_asset_driver  # noqa: F401
 
-from dynastore.models.protocols.typed_driver import (
-    _ABSTRACT_BASE_NAMES,
-    _PluginDriverConfig,
-)
+from dynastore.models.protocols.typed_driver import _PluginDriverConfig
 
 
 def _all_concrete_subclasses(root: type) -> list[type]:
@@ -65,7 +62,7 @@ def _all_concrete_subclasses(root: type) -> list[type]:
             continue
         seen.add(cls)
         stack.extend(cls.__subclasses__())
-        if cls.__name__ in _ABSTRACT_BASE_NAMES:
+        if cls.__dict__.get("is_abstract_base", False):
             continue
         if "<locals>" in cls.__qualname__:
             continue  # test-local fixture, not a production driver config

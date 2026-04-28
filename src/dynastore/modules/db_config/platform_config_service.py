@@ -299,9 +299,20 @@ class PluginConfig(PersistentModel):
 
     Subclasses must be instantiable without arguments — every field requires
     a default — so defaults can be materialised on demand.
+
+    Abstract intermediate bases (``_PluginDriverConfig``, ``DriverPluginConfig``,
+    ``CollectionDriverConfig``, ``AssetDriverConfig``) declare
+    ``is_abstract_base = True`` so the composer / publisher filters can hide
+    them.  The marker is read via ``cls.__dict__.get("is_abstract_base", False)``
+    so concrete subclasses do NOT inherit the True value.
     """
 
     enabled: bool = True
+
+    # Marker for abstract intermediate bases (not concrete configs). Read via
+    # ``cls.__dict__.get("is_abstract_base", False)`` so concrete subclasses do
+    # not inherit the True value from a base that set it.
+    is_abstract_base: ClassVar[bool] = False
 
     # Optional on-apply hook declared on the subclass; auto-registered in
     # ``__init_subclass__``.  Signature: ``(config, catalog_id, collection_id, db_resource) -> None | Awaitable``.

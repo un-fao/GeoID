@@ -72,16 +72,16 @@ ConfigT = TypeVar("ConfigT", bound="_PluginDriverConfig")
 # needed — the resolved string is constant per class).
 _DRIVER_REGISTRY: Dict[Type["_PluginDriverConfig"], Type["TypedDriver[Any]"]] = {}
 
-# Names of abstract intermediate bases that are PluginConfig subclasses but
-# never published on the wire.  ``class_key()`` returns ``__qualname__`` for
-# these so ``TypedModelRegistry.register`` (called from PluginConfig's
-# ``__init_subclass__``) doesn't choke during the abstract base's creation.
-_ABSTRACT_BASE_NAMES: frozenset[str] = frozenset({
-    "_PluginDriverConfig",
-    "DriverPluginConfig",
-    "CollectionDriverConfig",
-    "AssetDriverConfig",
-})
+# Abstract intermediate bases declare ``is_abstract_base = True`` (read via
+# ``cls.__dict__.get("is_abstract_base", False)`` so concrete subclasses do
+# not inherit it).  Replaces the legacy ``_ABSTRACT_BASE_NAMES`` frozenset —
+# single source of truth lives on the classes themselves, not in a hand-
+# maintained string set in two files.
+
+
+def _is_abstract_base(cls: type) -> bool:
+    """True iff ``cls`` itself declared ``is_abstract_base = True`` in its body."""
+    return bool(cls.__dict__.get("is_abstract_base", False))
 
 
 class TypedDriver(Generic[ConfigT]):
@@ -158,6 +158,11 @@ class _PluginDriverConfig(PluginConfig):
     raw config class name onto the wire.
     """
 
+    # Marker for abstract intermediate base — hidden from the deep view and
+    # from the publish/registry paths.  Concrete subclasses do NOT inherit
+    # this (filter reads ``cls.__dict__.get("is_abstract_base", False)``).
+    is_abstract_base: ClassVar[bool] = True
+
     # Sentinel: subclasses MUST NOT set ``_class_key`` — derivation is
     # via the bound driver class, not a string override.
     _class_key: ClassVar[None] = None
@@ -183,7 +188,7 @@ class _PluginDriverConfig(PluginConfig):
         ``CollectionDriverConfig``, ``AssetDriverConfig``) always return
         ``__qualname__`` — they're abstract markers, never published.
         """
-        if cls.__name__ in _ABSTRACT_BASE_NAMES:
+        if _is_abstract_base(cls):
             return cls.__qualname__
         driver_cls = _DRIVER_REGISTRY.get(cls)
         if driver_cls is None:
@@ -196,7 +201,7 @@ class _PluginDriverConfig(PluginConfig):
         config class.  Operator-facing publish paths call this before
         relying on the wire key being the driver class name.
         """
-        if cls.__name__ in _ABSTRACT_BASE_NAMES:
+        if _is_abstract_base(cls):
             return
         if cls not in _DRIVER_REGISTRY:
             raise RuntimeError(

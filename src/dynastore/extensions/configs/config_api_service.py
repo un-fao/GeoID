@@ -46,11 +46,10 @@ logger = logging.getLogger(__name__)
 # --- Placement + relevance (inline — keeps the table next to the
 # composer that is its only consumer). -------------------------------
 
-# Abstract base configs are registered but must not surface in the tree.
-_ABSTRACT_BASES = frozenset({
-    "PluginConfig", "DriverPluginConfig",
-    "CollectionDriverConfig", "AssetDriverConfig",
-})
+# Abstract base configs are filtered via the ``is_abstract_base = True``
+# ClassVar on the class itself (read via ``cls.__dict__.get(...)`` so
+# concrete subclasses don't inherit the marker).  Single source of truth
+# lives on the class — no parallel hand-maintained name set here.
 
 # Per-class name prefixes that bucket classes into relevance tiers.
 _COLLECTION_PREFIXES = ("Items", "Asset", "Collection", "WritePolicyDefaults")
@@ -100,7 +99,7 @@ def _place(cls: Type[PluginConfig], active_scope: str) -> Optional[Tuple[str, st
     tier does not include ``active_scope``.
     """
     name = cls.__name__
-    if name in _ABSTRACT_BASES:
+    if cls.__dict__.get("is_abstract_base", False):
         return None
 
     is_catalog = name in _CATALOG_NAMES or name.startswith(_CATALOG_PREFIXES)
@@ -190,45 +189,60 @@ class ConfigApiService:
                 sources[class_key] = source
             return by_class, sources
 
-        # Resolved path — determine tier per class then materialise values.
-        collection_keys: set = set()
-        catalog_keys: set = set()
+        # Resolved path — pull each tier's per-class delta dict ONCE (3
+        # SELECTs total) then merge in memory, mirroring the waterfall in
+        # ``ConfigService.get_config`` (code defaults > platform > catalog
+        # > collection, right-most wins).  Replaces the previous per-class
+        # ``await svc.get_config(cls, ...)`` loop which fired ~N awaits per
+        # request — large win on the deep view that the dashboard hits.
+        def _to_data_map(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+            return {it["plugin_id"]: (it.get("config_data") or {}) for it in items}
+
+        collection_data: Dict[str, Dict[str, Any]] = {}
+        catalog_data: Dict[str, Dict[str, Any]] = {}
         if catalog_id and collection_id:
             r = await svc.list_configs(
                 catalog_id=catalog_id, collection_id=collection_id,
                 limit=1000, offset=0,
             )
-            collection_keys = {e["plugin_id"] for e in r.get("items", [])}
+            collection_data = _to_data_map(r.get("items", []))
         if catalog_id:
             r = await svc.list_configs(catalog_id=catalog_id, limit=1000, offset=0)
-            catalog_keys = {e["plugin_id"] for e in r.get("items", [])}
+            catalog_data = _to_data_map(r.get("items", []))
         r = await svc.list_configs(limit=1000, offset=0)
-        platform_keys = {e["plugin_id"] for e in r.get("items", [])}
+        platform_data = _to_data_map(r.get("items", []))
 
-        by_class = {}
-        sources = {}
+        by_class: Dict[str, Dict[str, Any]] = {}
+        sources: Dict[str, str] = {}
         for class_key, cls in all_classes.items():
-            if class_key in collection_keys:
+            if class_key in collection_data:
                 sources[class_key] = "collection"
-            elif class_key in catalog_keys:
+            elif class_key in catalog_data:
                 sources[class_key] = "catalog"
-            elif class_key in platform_keys:
+            elif class_key in platform_data:
                 sources[class_key] = "platform"
             else:
                 sources[class_key] = "default"
+
+            # Build the effective payload by merging deltas onto the code
+            # default model.  Tier rows are stored as deltas (only fields
+            # the caller explicitly set), so dict-update with last-wins
+            # mirrors ``ConfigService.get_config``.
             try:
-                effective = await svc.get_config(
-                    cls, catalog_id=catalog_id, collection_id=collection_id,
-                )
-                by_class[class_key] = (
-                    effective.model_dump() if effective is not None
-                    else cls().model_dump()
-                )
+                merged: Dict[str, Any] = cls().model_dump(mode="python")
             except Exception:
-                try:
-                    by_class[class_key] = cls().model_dump()
-                except Exception:
-                    by_class[class_key] = {}
+                merged = {}
+            for tier_data in (platform_data, catalog_data, collection_data):
+                delta = tier_data.get(class_key)
+                if delta:
+                    merged.update(delta)
+
+            # Round-trip through the model so defaults / coercions are applied
+            # consistently with the single-class read path.
+            try:
+                by_class[class_key] = cls.model_validate(merged).model_dump()
+            except Exception:
+                by_class[class_key] = merged or {}
         return by_class, sources
 
     # --- Tree + meta in one pass. ---
