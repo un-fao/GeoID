@@ -71,13 +71,17 @@ class ConsumerType(str, Enum):
         return obj
 
 # Columns that belong to the Hub table and must never appear in Feature.properties,
-# regardless of which sidecar is currently running.
+# regardless of which sidecar is currently running. content_hash is plumbing for
+# the CONTENT_HASH identity matcher and skip_if_unchanged_content_hash gate
+# (see CollectionWritePolicy); it is queryable at the SQL layer for write
+# policies but is not surfaced to API consumers by default.
 HUB_INTERNAL_COLUMNS: frozenset = frozenset({
     "geoid",
     "transaction_time",
     "deleted_at",
     "catalog_id",
     "collection_id",
+    "content_hash",
 })
 
 
