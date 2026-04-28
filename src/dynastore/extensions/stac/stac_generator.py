@@ -833,9 +833,21 @@ async def create_item_from_feature(
 
     # 5. Geometry and BBox
     geometry = feature.geometry.model_dump() if feature.geometry else None
-    
+
     # 6. Datetimes handling
     properties = feature.properties or {}
+
+    # Resolve i18n dicts in properties down to a single string for the
+    # requested language. Internal storage keeps Internationalized fields
+    # as ``{"en": "...", "it": "..."}`` so multiple consumers can pick
+    # their language; STAC clients receive a mono-lingual document. Reuse
+    # the same coercion the validator already applies on the write path so
+    # write/read shapes stay symmetrical (an item that round-trips through
+    # POST → GET ?lang=it returns the Italian string, not the dict).
+    if lang != "*":
+        from .stac_validator import _coerce_for_stac_validation
+        properties = _coerce_for_stac_validation(properties, lang=lang)
+
     item_dt = None
 
     # Resolve primary datetime: prefer 'datetime', then 'start_datetime', then 'valid_from', then 'created'
