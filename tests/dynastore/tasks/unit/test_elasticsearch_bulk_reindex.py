@@ -135,7 +135,7 @@ async def test_collection_reindex_targets_tenant_index_with_routing(monkeypatch)
     # Pre-reindex delete_by_query was issued with collection scope.
     assert es.delete_by_query_calls
     dbq = es.delete_by_query_calls[0]
-    assert dbq["index"] == "dynastore-items-cat1"
+    assert dbq["index"] == "dynastore-cat1-items"
     assert dbq["body"] == {"query": {"term": {"collection": "col1"}}}
     assert dbq["params"]["routing"] == "col1"
 
@@ -144,7 +144,7 @@ async def test_collection_reindex_targets_tenant_index_with_routing(monkeypatch)
     assert len(body) == 4  # 2 features × (action, doc)
     for action_idx in (0, 2):
         action = body[action_idx]["index"]
-        assert action["_index"] == "dynastore-items-cat1"
+        assert action["_index"] == "dynastore-cat1-items"
         assert action["routing"] == "col1"
     for doc_idx in (1, 3):
         doc = body[doc_idx]
@@ -229,7 +229,7 @@ async def test_catalog_reindex_iterates_collections(monkeypatch):
 
     # Pre-reindex wipe is catalog-scope (no routing).
     dbq = es.delete_by_query_calls[0]
-    assert dbq["index"] == "dynastore-items-cat1"
+    assert dbq["index"] == "dynastore-cat1-items"
     assert dbq["body"] == {"query": {"match_all": {}}}
     assert "routing" not in dbq["params"]
 

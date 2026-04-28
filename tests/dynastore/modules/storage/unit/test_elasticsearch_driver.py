@@ -322,11 +322,11 @@ class TestEnsureStorageTenantIndex:
             await driver.ensure_storage("cat1")
 
         assert es.indices.create_calls == [{
-            "index": "dynastore-items-cat1",
+            "index": "dynastore-cat1-items",
             "body": {"mappings": es.indices.create_calls[0]["body"]["mappings"]},
             "kwargs": {},
         }]
-        assert added == ["dynastore-items-cat1"]
+        assert added == ["dynastore-cat1-items"]
 
     @pytest.mark.asyncio
     async def test_idempotent_when_index_exists(self):
@@ -350,7 +350,7 @@ class TestEnsureStorageTenantIndex:
 
         # No create when exists; alias add still called (idempotent itself).
         assert es.indices.create_calls == []
-        assert added == ["dynastore-items-cat1"]
+        assert added == ["dynastore-cat1-items"]
 
 
 class TestDeleteEntitiesUsesRouting:
@@ -368,9 +368,9 @@ class TestDeleteEntitiesUsesRouting:
 
         assert n == 2
         assert es.delete_calls == [
-            {"index": "dynastore-items-cat1", "id": "a",
+            {"index": "dynastore-cat1-items", "id": "a",
              "params": {"routing": "col1", "ignore": "404"}},
-            {"index": "dynastore-items-cat1", "id": "b",
+            {"index": "dynastore-cat1-items", "id": "b",
              "params": {"routing": "col1", "ignore": "404"}},
         ]
 
@@ -398,7 +398,7 @@ class TestDropStorageScopes:
 
         assert removed == []  # alias untouched on collection-scope drop
         assert es.delete_by_query_calls == [{
-            "index": "dynastore-items-cat1",
+            "index": "dynastore-cat1-items",
             "body": {"query": {"term": {"collection": "col1"}}},
             "params": {"routing": "col1", "refresh": "false"},
         }]
@@ -424,9 +424,9 @@ class TestDropStorageScopes:
             driver = ItemsElasticsearchDriver()
             await driver.drop_storage("cat1")
 
-        assert removed == ["dynastore-items-cat1"]
+        assert removed == ["dynastore-cat1-items"]
         assert es.indices.delete_calls == [{
-            "index": "dynastore-items-cat1",
+            "index": "dynastore-cat1-items",
             "params": {"ignore_unavailable": "true"},
             "kwargs": {},
         }]
@@ -448,7 +448,7 @@ class TestReadEntitiesScopesByCollection:
                 results.append(f)
 
         assert es.get_calls == [{
-            "index": "dynastore-items-cat1", "id": "x",
+            "index": "dynastore-cat1-items", "id": "x",
             "params": {"routing": "col1"},
         }]
         assert len(results) == 1
@@ -471,7 +471,7 @@ class TestReadEntitiesScopesByCollection:
 
         assert es.search_calls
         call = es.search_calls[0]
-        assert call["index"] == "dynastore-items-cat1"
+        assert call["index"] == "dynastore-cat1-items"
         assert call["params"]["routing"] == "col1"
         # Body wraps the base match_all in a bool with a collection filter.
         body_query = call["body"]["query"]
@@ -533,7 +533,7 @@ class TestWriteEntitiesTenantIndex:
         assert len(body) == 4
         for action_idx in (0, 2):
             action = body[action_idx]["index"]
-            assert action["_index"] == "dynastore-items-cat1"
+            assert action["_index"] == "dynastore-cat1-items"
             assert action["routing"] == "col1"
         for doc_idx in (1, 3):
             doc = body[doc_idx]
@@ -625,6 +625,6 @@ class TestLocationReportsTenantIndex:
             driver = ItemsElasticsearchDriver()
             loc = await driver.location("cat1", "col1")
 
-        assert loc.identifiers["index"] == "dynastore-items-cat1"
+        assert loc.identifiers["index"] == "dynastore-cat1-items"
         assert loc.identifiers["routing"] == "col1"
-        assert loc.canonical_uri == "es://dynastore-items-cat1?routing=col1"
+        assert loc.canonical_uri == "es://dynastore-cat1-items?routing=col1"

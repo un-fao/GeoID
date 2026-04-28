@@ -1,11 +1,8 @@
-"""Index-targeting contract for SearchService.search_items / _search_generic.
+"""End-to-end index targeting through SearchService.
 
-The items writer produces per-catalog ``{prefix}-items-{catalog_id}`` indexes
-with public alias ``{prefix}-items-public`` (PR #82). The collection metadata
-writer produces per-catalog ``{prefix}_collection_metadata_{catalog_id}``
-indexes. The search service must query the indexes the writers actually
-produce — querying singletons that no driver writes raises
-``index_not_found_exception`` at runtime.
+Pins the actual index argument the service passes to ``es.search`` for
+each public method. Helper-level naming contracts live in
+``tests/dynastore/modules/elasticsearch/test_index_naming.py``.
 """
 
 import pytest
@@ -48,7 +45,7 @@ async def test_search_items_scoped_targets_per_catalog_index(monkeypatch):
 
     await svc.search_items(SearchBody(catalog_id="acme", limit=10))
 
-    assert captured["index"] == "test-items-acme"
+    assert captured["index"] == "test-acme-items"
 
 
 async def test_search_items_unscoped_targets_public_alias(monkeypatch):
@@ -58,7 +55,7 @@ async def test_search_items_unscoped_targets_public_alias(monkeypatch):
 
     await svc.search_items(SearchBody(catalog_id=None, limit=10))
 
-    assert captured["index"] == "test-items-public"
+    assert captured["index"] == "test-items"
 
 
 async def test_search_items_uses_ignore_unavailable(monkeypatch):
@@ -71,24 +68,24 @@ async def test_search_items_uses_ignore_unavailable(monkeypatch):
     assert captured["kwargs"].get("ignore_unavailable") is True
 
 
-async def test_search_collections_scoped_targets_per_catalog_metadata_index(monkeypatch):
+async def test_search_collections_targets_singleton(monkeypatch):
     svc = _service()
     fake, captured = _capturing_es()
     monkeypatch.setattr(svc, "_get_es", lambda: fake)
 
     await svc.search_collections(CatalogSearchBody(catalog_id="acme", limit=10))
 
-    assert captured["index"] == "test_collection_metadata_acme"
+    assert captured["index"] == "test-collections"
 
 
-async def test_search_collections_unscoped_targets_metadata_wildcard(monkeypatch):
+async def test_search_collections_unscoped_targets_singleton(monkeypatch):
     svc = _service()
     fake, captured = _capturing_es()
     monkeypatch.setattr(svc, "_get_es", lambda: fake)
 
     await svc.search_collections(CatalogSearchBody(catalog_id=None, limit=10))
 
-    assert captured["index"] == "test_collection_metadata_*"
+    assert captured["index"] == "test-collections"
 
 
 async def test_search_catalogs_unchanged(monkeypatch):

@@ -66,7 +66,7 @@ async def test_geoid_lookup_targets_tenant_index(monkeypatch):
 
     await svc.search_by_geoid(geoids=["g1", "g2"], catalog_id="acme", limit=10)
 
-    assert captured["index"] == "test-geoid-acme"
+    assert captured["index"] == "test-acme-private-items"
     assert captured["body"]["query"] == {"terms": {"geoid": ["g1", "g2"]}}
 
 
@@ -92,7 +92,7 @@ async def test_external_id_pair_uses_bool_filter(monkeypatch):
         catalog_id="acme", external_id="ext-42", collection_id="col-A",
     )
 
-    assert captured["index"] == "test-geoid-acme"
+    assert captured["index"] == "test-acme-private-items"
     assert captured["body"]["query"]["bool"]["filter"] == [
         {"term": {"external_id": "ext-42"}},
         {"term": {"collection_id": "col-A"}},

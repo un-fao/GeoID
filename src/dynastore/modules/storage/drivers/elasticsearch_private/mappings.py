@@ -50,7 +50,9 @@ TENANT_FEATURE_MAPPING: Dict[str, Any] = {
 
 
 def get_private_index_name(prefix: str, catalog_id: str) -> str:
-    """Per-tenant private items index. Owned by the private items
-    driver; the platform never references this naming.
+    """Per-catalog private items index. Owned by the private items
+    driver; the platform never references this naming. Catalog-first
+    naming mirrors ``get_tenant_items_index`` so all per-catalog indexes
+    cluster lexicographically.
     """
-    return f"{prefix}-geoid-{catalog_id}"
+    return f"{prefix}-{catalog_id}-private-items"

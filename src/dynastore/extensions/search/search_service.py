@@ -588,6 +588,16 @@ class SearchService(ExtensionProtocol):
     ) -> GenericCollection:
         index = get_search_index(_get_index_prefix(), entity_type, body.catalog_id)
         query = _build_generic_query(body)
+        # Singleton catalogs/collections indexes use catalog_id as the routing
+        # key; scoped requests narrow to one shard + filter by catalog_id so
+        # results never leak across catalogs even at the index level.
+        if entity_type == "collection" and body.catalog_id:
+            query = {
+                "bool": {
+                    "must": [query],
+                    "filter": [{"term": {"catalog_id": body.catalog_id}}],
+                }
+            }
 
         es_body: Dict[str, Any] = {
             "query": query,
@@ -601,8 +611,16 @@ class SearchService(ExtensionProtocol):
             except Exception:
                 pass
 
+        search_kwargs: Dict[str, Any] = {
+            "index": index,
+            "body": es_body,
+            "ignore_unavailable": True,
+        }
+        if entity_type == "collection" and body.catalog_id:
+            search_kwargs["params"] = {"routing": body.catalog_id}
+
         es = self._get_es()
-        resp = await es.search(index=index, body=es_body, ignore_unavailable=True)  # type: ignore[call-arg]
+        resp = await es.search(**search_kwargs)
 
         raw_hits = resp.get("hits", {}).get("hits", [])
         entities = [h["_source"] for h in raw_hits]
