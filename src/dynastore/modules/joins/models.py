@@ -14,6 +14,25 @@ from pydantic import BaseModel, ConfigDict, Field
 from dynastore.modules.storage.drivers.bigquery_models import BigQueryTarget
 
 
+class PrimaryFilterSpec(BaseModel):
+    """CQL2 filter applied to the primary collection stream before join.
+
+    Forwarded to the primary driver via ``QueryRequest.cql_filter``.
+    The driver is responsible for parsing CQL2 (platform standard —
+    see ``modules/tools/cql.py:parse_cql_filter``). Drivers that don't
+    support CQL2 (e.g. the current ``ItemsBigQueryDriver`` Phase
+    4a impl) treat this as a no-op.
+
+    Reused as ``BigQuerySecondarySpec.filter`` so both sides of a join
+    body speak the same OGC filter language; see
+    ``modules/joins/bq_filter.cql_to_bq_where`` for the BQ-side translator.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    cql: str = Field(..., min_length=1)
+    cql_lang: Literal["cql2-text", "cql2-json"] = "cql2-text"
+
+
 class NamedSecondarySpec(BaseModel):
     """Secondary identified by a registered collection id."""
     model_config = ConfigDict(extra="forbid")
@@ -35,6 +54,15 @@ class BigQuerySecondarySpec(BaseModel):
     driver: Literal["bigquery"] = "bigquery"
     target: BigQueryTarget = Field(
         ..., description="Fully-qualified target (project_id, dataset_id, table_name).",
+    )
+    filter: Optional[PrimaryFilterSpec] = Field(
+        default=None,
+        description=(
+            "Optional CQL2 filter applied to the BigQuery secondary BEFORE "
+            "the join. Same shape as JoinRequest.primary_filter — both "
+            "cql2-text and cql2-json accepted. Translated to a BigQuery "
+            "WHERE clause via modules/joins/bq_filter.cql_to_bq_where."
+        ),
     )
 
 
@@ -81,21 +109,6 @@ class OutputSpec(BaseModel):
 
     format: Literal["geojson", "json", "csv", "geopackage", "parquet"] = "geojson"
     encoding: str = "utf-8"
-
-
-class PrimaryFilterSpec(BaseModel):
-    """CQL2 filter applied to the primary collection stream before join.
-
-    Forwarded to the primary driver via ``QueryRequest.cql_filter``.
-    The driver is responsible for parsing CQL2 (platform standard —
-    see ``modules/tools/cql.py:parse_cql_filter``). Drivers that don't
-    support CQL2 (e.g. the current ``ItemsBigQueryDriver`` Phase
-    4a impl) treat this as a no-op.
-    """
-    model_config = ConfigDict(extra="forbid")
-
-    cql: str = Field(..., min_length=1)
-    cql_lang: Literal["cql2-text", "cql2-json"] = "cql2-text"
 
 
 class JoinRequest(BaseModel):
