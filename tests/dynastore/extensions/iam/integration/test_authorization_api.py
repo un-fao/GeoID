@@ -58,10 +58,10 @@ async def created_user_email(sysadmin_in_process_client: AsyncClient) -> str:
     from dynastore.models.protocols import DatabaseProtocol
     db = get_protocol(DatabaseProtocol)
     async with managed_transaction(db.engine) as conn:
-        await storage.create_principal(principal, schema="iam", conn=conn)
+        await storage.create_principal(principal, conn=conn)
         await storage.create_identity_link(
             provider="local", subject_id=subject_id,
-            principal_id=principal.id, schema="iam", conn=conn,
+            principal_id=principal.id, conn=conn,
         )
 
     logger.info(f"Principal {principal.id} created with email {email}")
