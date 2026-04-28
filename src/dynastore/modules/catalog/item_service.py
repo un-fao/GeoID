@@ -1139,3 +1139,26 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
         return DQLQuery.from_builder(_builder, result_handler=ResultHandler.SCALAR_ONE)
 
+    @property
+    def list_items_by_asset_id_query(self) -> DQLQuery:
+        """Query builder for listing item IDs that link to a given asset.
+
+        Used by the reverse-cascade path to enumerate dependent items
+        before deletion. Returns ``external_id`` rows since that's what
+        ``CatalogService.delete_item`` accepts.
+        """
+
+        def _builder(conn, params):
+            phys_schema = params["catalog_id"]
+            phys_table = params["collection_id"]
+            asset_id = params["asset_id"]
+
+            sql = (
+                f'SELECT external_id FROM "{phys_schema}"."{phys_table}" '
+                f"WHERE extra_metadata->'assets' ? :asset_id "
+                f"AND deleted_at IS NULL"
+            )
+            return sql, {"asset_id": asset_id}
+
+        return DQLQuery.from_builder(_builder, result_handler=ResultHandler.ALL_DICTS)
+

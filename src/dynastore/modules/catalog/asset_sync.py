@@ -18,6 +18,7 @@ import asyncio
 import logging
 from typing import Any, Dict, Optional
 
+from dynastore.modules import get_protocol
 from dynastore.modules.catalog.event_service import (
     CatalogEventType,
     async_event_listener,
@@ -140,3 +141,127 @@ def register_asset_entity_sync_subscriber() -> None:
         AssetEntitySyncSubscriber.on_asset_delete
     )
     logger.info("AssetEntitySyncSubscriber: registered on CatalogEventType.ASSET_*")
+
+
+class ItemReverseCascadeSubscriber:
+    """Reverse cascade — delete items that reference a hard-deleted asset.
+
+    Reads the ``propagate`` flag from the event payload (set by
+    ``AssetService.delete_assets`` when its caller passes
+    ``propagate=True``). If absent or False, the handler is a no-op —
+    callers must opt in. Errors are logged and never raised so a
+    bookkeeping cleanup never blocks asset deletion completion.
+
+    The dependency is encoded in items' ``extra_metadata->'assets'``
+    JSONB column, not in ``asset_references`` — the latter only carries
+    collection-level back-links today. See
+    ``ItemService.list_items_by_asset_id_query``.
+    """
+
+    @staticmethod
+    async def on_asset_hard_delete(
+        catalog_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
+        asset_id: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+        **_kwargs,
+    ) -> None:
+        del _kwargs
+        if not catalog_id or not asset_id:
+            return
+        if not isinstance(payload, dict) or not payload.get("propagate"):
+            return
+
+        from dynastore.modules.catalog.catalog_service import CatalogService
+        from dynastore.modules.db_config.query_executor import managed_transaction
+
+        catalog_svc = get_protocol(CatalogService)
+        if catalog_svc is None:
+            logger.warning(
+                "ItemReverseCascade: CatalogService unavailable for %s/%s",
+                catalog_id, asset_id,
+            )
+            return
+
+        target_collection = collection_id or payload.get("collection_id")
+        if not target_collection:
+            logger.debug(
+                "ItemReverseCascade: skipping catalog-level asset %s/%s "
+                "(no collection scope to walk)",
+                catalog_id, asset_id,
+            )
+            return
+
+        try:
+            phys_schema = await catalog_svc.resolve_physical_schema(catalog_id)
+        except Exception as exc:
+            logger.warning(
+                "ItemReverseCascade: schema resolve failed for %s: %s",
+                catalog_id, exc,
+            )
+            return
+        if not phys_schema:
+            return
+
+        try:
+            list_q = catalog_svc._item_svc.list_items_by_asset_id_query
+        except AttributeError:
+            logger.warning(
+                "ItemReverseCascade: ItemService missing list_items_by_asset_id_query"
+            )
+            return
+
+        try:
+            async with managed_transaction(catalog_svc.engine) as conn:
+                rows = await list_q.execute(
+                    conn,
+                    catalog_id=phys_schema,
+                    collection_id=target_collection,
+                    asset_id=asset_id,
+                )
+        except Exception as exc:
+            logger.warning(
+                "ItemReverseCascade: list query failed for %s/%s/%s: %s",
+                catalog_id, target_collection, asset_id, exc,
+            )
+            return
+
+        if not rows:
+            return
+
+        deleted = 0
+        for row in rows:
+            external_id = row.get("external_id") if isinstance(row, dict) else None
+            if not external_id:
+                continue
+            try:
+                await catalog_svc.delete_item(
+                    catalog_id, target_collection, external_id,
+                )
+                deleted += 1
+            except Exception as exc:
+                logger.warning(
+                    "ItemReverseCascade: delete_item failed for "
+                    "%s/%s/%s (asset %s): %s",
+                    catalog_id, target_collection, external_id, asset_id, exc,
+                )
+
+        logger.info(
+            "ItemReverseCascade: deleted %d/%d item(s) linked to asset %s/%s/%s",
+            deleted, len(rows), catalog_id, target_collection, asset_id,
+        )
+
+
+def register_item_reverse_cascade_subscriber() -> None:
+    """Register ``ItemReverseCascadeSubscriber`` on the global event bus.
+
+    Wires ``ASSET_HARD_DELETION`` only — soft-deletes preserve the row
+    so item links must remain queryable.
+    """
+    async_event_listener(CatalogEventType.ASSET_HARD_DELETION)(
+        ItemReverseCascadeSubscriber.on_asset_hard_delete
+    )
+    logger.info(
+        "ItemReverseCascadeSubscriber: registered on "
+        "CatalogEventType.ASSET_HARD_DELETION"
+    )

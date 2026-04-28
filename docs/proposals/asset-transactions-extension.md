@@ -151,13 +151,23 @@ client-side code path as `download`.
 | Class | URI | Requires |
 |---|---|---|
 | Core | `.../asset-transactions/1.0/conf/core` | Process discovery + `download` |
-| Upload | `.../asset-transactions/1.0/conf/upload` | `POST .../upload` + ticket polling |
+| Upload | `.../asset-transactions/1.0/conf/upload` | `POST .../upload` + ticket polling, OR `upload` AssetProcess at `/processes/upload/execution` |
 | Process execution | `.../asset-transactions/1.0/conf/processes` | Arbitrary `{process_id}` with `parameters_schema` |
 | Async | `.../asset-transactions/1.0/conf/async` | `type:job` + OGC Processes integration |
 | Search | `.../asset-transactions/1.0/conf/search` | `POST /assets-search` with `AssetFilter` |
+| Sync | `.../asset-transactions/1.0/conf/sync` | Asset CRUD MUST emit a sync-event consumable by downstream subscribers; reverse cascade via `DELETE .../assets/{id}?force=true&propagate=true` deletes items linked through the asset. Backends advertise per-event delivery semantics via `Asset.sync.delivery: at-least-once \| exactly-once`. Bucket-side metadata mirroring (e.g. `x-goog-meta-*`) is **advisory**, not part of this class. |
 
 A server advertises these in its `/conformance` document; clients can probe
 capability without trial-and-error.
+
+### Sync conformance — semantics
+
+The reference implementation (DynaStore) realises the `Sync` class via:
+
+- **Single-writer outbox**: `AssetService` writes the PG row and inserts an `ASSET_*` row into the `events` table in the same transaction. Downstream subscribers (`AssetEntitySyncSubscriber`, `BucketAnnotationPatcher`, `ItemReverseCascadeSubscriber`) consume from the outbox, never from a parallel listener bus — eliminating dual-writer races.
+- **Advisory mirroring**: `BucketAnnotationPatcher` patches GCS object metadata (`x-goog-meta-*`) on a best-effort basis; failures log and never raise. The asset row + outbox remain the source of truth.
+- **Reverse cascade**: `ItemReverseCascadeSubscriber` listens for `ASSET_HARD_DELETION` with `propagate=true` in the payload. It enumerates items whose `extra_metadata->'assets' ? :asset_id` and deletes them via the items API. Forward cascade (item delete → asset cleanup) is enforced by a PG trigger on the items sidecar.
+- **Disaster recovery**: an out-of-band `asset reconcile` CLI walks PG asset rows, diffs against the routed index driver, and replays missing `ASSET_UPDATE` events through the outbox so subscribers re-mirror.
 
 ## 6. STAC extension vs. new OGC API — recommendation
 

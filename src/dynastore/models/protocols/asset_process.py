@@ -48,7 +48,7 @@ from pydantic import BaseModel, ConfigDict, Field
 if TYPE_CHECKING:
     from dynastore.modules.catalog.asset_service import Asset
 
-HTTPMethod = Literal["GET", "POST", "DELETE"]
+HTTPMethod = Literal["GET", "POST", "PUT", "DELETE"]
 """HTTP verb a process is invoked with.
 
 ``GET`` for idempotent reads (download, inspect), ``POST`` for state-changing
