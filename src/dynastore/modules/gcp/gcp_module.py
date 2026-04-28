@@ -237,6 +237,23 @@ class GCPModule(
         """
         (Re)instantiates shared Google Cloud clients using current credentials.
         """
+        # Defensive: when google-cloud-storage / google-cloud-pubsub aren't
+        # installed (SCOPE excludes module_gcp), the conditional imports at the
+        # top of this file leave ``storage`` / ``pubsub_v1`` as None. Calling
+        # ``storage.Client(...)`` would then crash lifespan with
+        # ``AttributeError: 'NoneType' object has no attribute 'Client'``,
+        # which silently takes BigQueryService registration with it. Bail
+        # cleanly so other modules' lifespans still run.
+        if storage is None or pubsub_v1 is None:
+            logger.warning(
+                "GCPModule.reinitialize_clients: google-cloud-storage/pubsub "
+                "not installed; storage/BigQuery clients will be unavailable. "
+                "Add module_gcp to this service's SCOPE if it needs them."
+            )
+            self._storage_client = None
+            self._publisher_client = None
+            self._subscriber_client = None
+            return
         project_id = self.get_project_id()
         if self._credentials:
             logger.info(
