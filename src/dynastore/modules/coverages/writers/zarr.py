@@ -99,7 +99,7 @@ def write_zarr(
         try:
             from zarr.storage import ZipStore
         except ImportError:
-            from zarr import ZipStore  # type: ignore[no-redef]
+            from zarr import ZipStore  # pyright: ignore[reportAttributeAccessIssue]
 
         store = ZipStore(tf.name, mode="w")
         ds.to_zarr(store=store, mode="w", consolidated=True)
