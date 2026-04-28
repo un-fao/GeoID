@@ -252,7 +252,7 @@ class OGCTransactionMixin:
         where *was_single* is ``True`` when the caller sent a lone item
         (not wrapped in a collection/array).
         """
-        from dynastore.modules.storage.errors import SidecarRejectedError
+        from dynastore.modules.storage.errors import ConflictError, SidecarRejectedError
 
         # Determine was_single and normalise to list
         payload_type = getattr(payload, "type", None)
@@ -305,6 +305,11 @@ class OGCTransactionMixin:
                 )
             )
             created = []
+        except ConflictError as exc:
+            # on_asset_conflict=refuse_asset: duplicate detected → abort batch → 409.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            )
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)

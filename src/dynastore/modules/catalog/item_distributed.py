@@ -142,18 +142,24 @@ class ItemDistributedMixin(_Host):
                 if active_rec:
                     break
 
-        # 1.6 Additional Checks: Asset-level (batch-level) collision guard.
-        if write_policy and write_policy.on_asset_conflict is not None:
+        # 1.6 Asset-level (batch-level) collision guard.
+        # Uses active_rec from identity resolution — if a duplicate was found
+        # AND the batch policy is refuse_asset, abort the whole batch via
+        # ConflictError so the transaction rolls back and the caller returns 409.
+        if active_rec and write_policy and write_policy.on_asset_conflict is not None:
             from dynastore.modules.storage.driver_config import AssetConflictPolicy
             if write_policy.on_asset_conflict == AssetConflictPolicy.REFUSE:
-                for sidecar in sidecars:
-                    if await sidecar.check_upsert_collision(
-                        conn, phys_schema, phys_table, processing_context
-                    ):
-                        logger.warning(
-                            f"Feature rejected: Identity/Unique collision found (via {sidecar.sidecar_id})"
-                        )
-                        return None
+                matcher_name = matched_via[0] if matched_via else "unknown"
+                logger.warning(
+                    "Feature rejected: batch-level collision (refuse_asset) via matcher=%s "
+                    "geoid=%s", matcher_name, active_rec.get("geoid")
+                )
+                raise ConflictError(
+                    f"Write refused: duplicate detected via {matcher_name} "
+                    f"(geoid={active_rec.get('geoid')}); policy=refuse_asset",
+                    geoid=active_rec.get("geoid"),
+                    matcher=str(matcher_name),
+                )
 
         # 1.7 Hash gating: if enabled and an unchanged content_hash matches,
         # short-circuit the action to avoid churning identical rows.
@@ -220,7 +226,14 @@ class ItemDistributedMixin(_Host):
             logger.info(
                 "DISTRIBUTED UPSERT: identity matched and REFUSE set. Skipping."
             )
-            return None
+            external_id = processing_context.get("external_id")
+            raise SidecarRejectedError(
+                f"Feature refused by write policy for collection "
+                f"'{catalog_id}/{collection_id}'",
+                geoid=active_rec.get("geoid") if active_rec else None,
+                external_id=external_id if isinstance(external_id, str) else None,
+                reason="write_policy_refuse",
+            )
 
         else:
             # UPDATE path (WriteConflictPolicy.UPDATE)
