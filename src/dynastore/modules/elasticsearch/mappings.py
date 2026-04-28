@@ -34,24 +34,46 @@ LANGUAGE_ANALYZERS: Dict[str, str] = {
 def _localized_text_templates(field: str, ignore_above: int) -> List[Dict[str, Any]]:
     """Per-language dynamic templates for a localized text field.
 
-    For each supported locale, emit a template that matches ``*field.{lang}``
-    and assigns the language-appropriate analyzer. A trailing catch-all
-    matching the bare ``*.field`` keeps backwards compatibility with
-    documents that store an unlocalized string.
+    For each supported locale, emit two templates so both shapes get the
+    language-appropriate analyzer:
+
+    - ``{field}.{lang}`` — top-level (catalogs/collections store ``title``
+      / ``description`` directly on the document).
+    - ``*.{field}.{lang}`` — nested (STAC items wrap them under
+      ``properties``).
+
+    Without the top-level template, catalog/collection ``title.en`` would
+    fall through to the generic ``strings`` template and lose per-language
+    stemming. ES ``path_match`` treats ``*`` as a path-segment wildcard, so
+    a single pattern with ``*`` cannot match both shapes — both must be
+    enumerated explicitly.
+
+    The trailing catch-all ``*.{field}`` keeps backwards compatibility for
+    documents that store an unlocalized string under a nested path. Top-
+    level unlocalized strings keep falling through to the generic
+    ``strings`` template (intentional — preserves existing behavior).
     """
     templates: List[Dict[str, Any]] = []
     for lang, analyzer in LANGUAGE_ANALYZERS.items():
+        mapping: Dict[str, Any] = {
+            "type": "text",
+            "analyzer": analyzer,
+            "fields": {
+                "keyword": {"type": "keyword", "ignore_above": ignore_above},
+            },
+        }
         templates.append({
-            f"{field}_{lang}": {
-                "path_match": f"*{field}.{lang}",
+            f"{field}_{lang}_top": {
+                "path_match": f"{field}.{lang}",
                 "match_mapping_type": "string",
-                "mapping": {
-                    "type": "text",
-                    "analyzer": analyzer,
-                    "fields": {
-                        "keyword": {"type": "keyword", "ignore_above": ignore_above},
-                    },
-                },
+                "mapping": mapping,
+            },
+        })
+        templates.append({
+            f"{field}_{lang}_nested": {
+                "path_match": f"*.{field}.{lang}",
+                "match_mapping_type": "string",
+                "mapping": mapping,
             },
         })
     templates.append({
