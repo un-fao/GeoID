@@ -22,8 +22,8 @@ from dynastore.extensions import ExtensionProtocol
 
 from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
 from dynastore.modules.elasticsearch.mappings import get_index_name
-from dynastore.modules.storage.drivers.elasticsearch_obfuscated.mappings import (
-    get_obfuscated_index_name,
+from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
+    get_private_index_name,
 )
 from .search_models import (
     CatalogSearchBody,
@@ -400,7 +400,7 @@ class SearchService(ExtensionProtocol):
         if not catalog_id:
             raise HTTPException(
                 status_code=400,
-                detail="catalog_id is required (tenant scope) for obfuscated lookup.",
+                detail="catalog_id is required (tenant scope) for private lookup.",
             )
         has_geoids = bool(geoids)
         has_external_pair = bool(external_id) and bool(collection_id)
@@ -415,7 +415,7 @@ class SearchService(ExtensionProtocol):
                 detail="Provide geoids or (external_id, collection_id).",
             )
 
-        index = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
+        index = get_private_index_name(_get_index_prefix(), catalog_id)
 
         if has_geoids:
             query: Dict[str, Any] = {"terms": {"geoid": geoids}}
@@ -459,14 +459,14 @@ class SearchService(ExtensionProtocol):
     async def reindex_catalog(
         self,
         catalog_id: str,
-        mode: Optional[Literal["catalog", "obfuscated"]] = None,
+        mode: Optional[Literal["catalog", "private"]] = None,
         driver: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Dispatch a BulkCatalogReindexTask and return 202 + task_id.
 
         If `mode` is omitted, falls back to the catalog's indexer config
-        (obfuscated=True → "obfuscated", otherwise "catalog").
+        (private=True → "private", otherwise "catalog").
         If `driver` is provided, the task targets only that secondary driver.
         """
         from dynastore.models.protocols import DatabaseProtocol
@@ -502,7 +502,7 @@ class SearchService(ExtensionProtocol):
         self,
         catalog_id: str,
         collection_id: str,
-        mode: Optional[Literal["catalog", "obfuscated"]] = None,
+        mode: Optional[Literal["catalog", "private"]] = None,
         driver: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -545,7 +545,7 @@ class SearchService(ExtensionProtocol):
             "status": "queued",
         }
 
-    async def _resolve_mode(self, catalog_id: str) -> Literal["catalog", "obfuscated"]:
+    async def _resolve_mode(self, catalog_id: str) -> Literal["catalog", "private"]:
         """Resolve the reindex mode from the catalog's indexer config.
 
         Uses ConfigsProtocol discovery — no direct import from any module.
@@ -558,8 +558,8 @@ class SearchService(ExtensionProtocol):
             if configs_proto:
                 from dynastore.modules.elasticsearch.es_catalog_config import ElasticsearchCatalogConfig
                 cfg = await configs_proto.get_config(ElasticsearchCatalogConfig, catalog_id=catalog_id)
-                if cfg and getattr(cfg, "obfuscated", False):
-                    return "obfuscated"
+                if cfg and getattr(cfg, "private", False):
+                    return "private"
         except Exception:
             pass
         return "catalog"

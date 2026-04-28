@@ -289,7 +289,7 @@ async def post_search_collections(request: Request, body: CatalogSearchBody) -> 
 @router.get(
     "/catalogs/{catalog_id}/geoid/{geoid}",
     response_model=GeoidCollection,
-    summary="Look up a geoid in a catalog's obfuscated index.",
+    summary="Look up a geoid in a catalog's private index.",
     response_model_exclude_none=True,
 )
 async def get_geoid_scoped(
@@ -303,7 +303,7 @@ async def get_geoid_scoped(
 @router.post(
     "/catalogs/{catalog_id}/geoid",
     response_model=GeoidCollection,
-    summary="Batch geoid lookup in a catalog's obfuscated index.",
+    summary="Batch geoid lookup in a catalog's private index.",
     response_model_exclude_none=True,
 )
 async def post_geoid_scoped(
@@ -363,7 +363,7 @@ async def post_geoid(request: Request, body: GeoidSearchBody) -> GeoidCollection
 async def post_reindex_catalog_scoped(
     request: Request,
     catalog_id: str,
-    mode: Optional[Literal["catalog", "obfuscated"]] = Query(None),
+    mode: Optional[Literal["catalog", "private"]] = Query(None),
     driver: Optional[str] = Query(None, description="Hint: which secondary driver to reindex (e.g. 'elasticsearch')."),
 ) -> Dict[str, Any]:
     return await _get_search_service().reindex_catalog(catalog_id, mode=mode, driver=driver)
@@ -379,7 +379,7 @@ async def post_reindex_collection_scoped(
     request: Request,
     catalog_id: str,
     collection_id: str,
-    mode: Optional[Literal["catalog", "obfuscated"]] = Query(None),
+    mode: Optional[Literal["catalog", "private"]] = Query(None),
     driver: Optional[str] = Query(None, description="Hint: which secondary driver to reindex."),
 ) -> Dict[str, Any]:
     return await _get_search_service().reindex_collection(catalog_id, collection_id, mode=mode, driver=driver)
@@ -399,7 +399,7 @@ async def post_reindex_collection_scoped(
 async def post_reindex_catalog(
     request: Request,
     catalog_id: str,
-    mode: Optional[Literal["catalog", "obfuscated"]] = Query(None),
+    mode: Optional[Literal["catalog", "private"]] = Query(None),
 ) -> Dict[str, Any]:
     return await _get_search_service().reindex_catalog(catalog_id, mode=mode)
 
@@ -415,6 +415,6 @@ async def post_reindex_collection(
     request: Request,
     catalog_id: str,
     collection_id: str,
-    mode: Optional[Literal["catalog", "obfuscated"]] = Query(None),
+    mode: Optional[Literal["catalog", "private"]] = Query(None),
 ) -> Dict[str, Any]:
     return await _get_search_service().reindex_collection(catalog_id, collection_id, mode=mode)

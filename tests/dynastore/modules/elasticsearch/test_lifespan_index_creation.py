@@ -3,7 +3,7 @@
 Verifies the embedded hotfix introduced in PR-1 of
 feat/es-unified-tenant-index: lifespan calls ``indices.create`` for
 ``dynastore-collections`` and ``dynastore-catalogs`` when they don't
-exist, and invokes ``ensure_public_alias_exists``. No obfuscated index
+exist, and invokes ``ensure_public_alias_exists``. No private index
 or alias is touched at lifespan time.
 
 Drives the tested behaviour by exercising the same import + create
@@ -83,9 +83,9 @@ async def test_lifespan_uses_correct_mapping_per_index():
 
 
 @pytest.mark.asyncio
-async def test_lifespan_no_obfuscated_index_touched():
+async def test_lifespan_no_private_index_touched():
     """Sanity: the lifespan replay only hits the two named platform indexes —
-    no per-tenant or obfuscated naming patterns appear."""
+    no per-tenant or private naming patterns appear."""
     es = _mock_es(existing_indexes=set())
     await _replay_lifespan_index_block(es)
 
@@ -96,7 +96,7 @@ async def test_lifespan_no_obfuscated_index_touched():
     }
     for name in touched:
         assert "geoid" not in name and "obf" not in name and "items-" not in name, (
-            f"unexpected obfuscated/tenant-shaped index touched in lifespan: {name}"
+            f"unexpected private/tenant-shaped index touched in lifespan: {name}"
         )
 
 

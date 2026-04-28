@@ -13,26 +13,26 @@
 #    limitations under the License.
 
 """
-Obfuscated Elasticsearch storage driver subpackage — self-contained.
+Private Elasticsearch storage driver subpackage — self-contained.
 
 Exports the driver class plus its companion entity-transformer. The
 driver and the transformer are SEPARATE classes registered separately
 in routing-config so the transformer can be reused with non-ES indexers
 in the future.
 
-Disabling the obfuscation feature in a deployment = removing the
-``[obfuscated]`` extras group from SCOPE; nothing in the platform layer
+Disabling the private-indexing feature in a deployment = removing the
+``[private]`` extras group from SCOPE; nothing in the platform layer
 needs to change.
 """
 
-from dynastore.modules.storage.drivers.elasticsearch_obfuscated.driver import (
-    ItemsElasticsearchObfuscatedDriver,
+from dynastore.modules.storage.drivers.elasticsearch_private.driver import (
+    ItemsElasticsearchPrivateDriver,
 )
-from dynastore.modules.storage.drivers.elasticsearch_obfuscated.transformer import (
-    ObfuscatedEntityTransformer,
+from dynastore.modules.storage.drivers.elasticsearch_private.transformer import (
+    PrivateEntityTransformer,
 )
 
 __all__ = [
-    "ItemsElasticsearchObfuscatedDriver",
-    "ObfuscatedEntityTransformer",
+    "ItemsElasticsearchPrivateDriver",
+    "PrivateEntityTransformer",
 ]

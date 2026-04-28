@@ -40,10 +40,10 @@ Two drivers in this module:
   no per-driver listener block.  Direct programmatic indexing via
   ``index_asset()`` / ``delete_asset()`` remains available.
 
-The obfuscated driver (``ItemsElasticsearchObfuscatedDriver``) lives in
+The private driver (``ItemsElasticsearchPrivateDriver``) lives in
 its own self-contained subpackage at
-:mod:`dynastore.modules.storage.drivers.elasticsearch_obfuscated` so the
-``[obfuscated]`` extras group can be opted in or out without touching this
+:mod:`dynastore.modules.storage.drivers.elasticsearch_private` so the
+``[private]`` extras group can be opted in or out without touching this
 file.
 
 All drivers register as async event listeners, checking

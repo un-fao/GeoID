@@ -23,7 +23,7 @@ Item created  -->  ITEM_CREATION event
               -->  ElasticsearchIndexTask.run() indexes doc into ES
 ```
 
-For obfuscated catalogs, the module dispatches `elasticsearch_obfuscated_index`
+For private catalogs, the module dispatches `elasticsearch_private_index`
 (in `tasks/elasticsearch_indexer/`) instead — see that package's README.
 
 ## Files

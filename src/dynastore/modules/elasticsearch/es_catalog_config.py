@@ -19,11 +19,11 @@ Registered under plugin_id "elasticsearch" — visible and editable via:
     PUT /configs/catalogs/{catalog_id}/elasticsearch
 
 The on_apply hook fires immediately on every write and delegates to
-ElasticsearchModule.enable_obfuscated_mode / disable_obfuscated_mode,
+ElasticsearchModule.enable_private_mode / disable_private_mode,
 which applies the DENY access policy and dispatches a bulk reindex task.
 
 At service startup ElasticsearchModule.lifespan scans all catalogs and
-restores policies for those with obfuscated=True (since on_apply is not
+restores policies for those with private=True (since on_apply is not
 called automatically on restart).
 """
 
@@ -44,7 +44,7 @@ async def _on_apply_es_catalog_config(
 ) -> None:
     """
     Called by ConfigsService whenever ElasticsearchCatalogConfig is written.
-    Applies or revokes obfuscated mode immediately in the running process.
+    Applies or revokes private mode immediately in the running process.
     """
     if not catalog_id:
         # Platform-level default written — no per-catalog action needed.
@@ -62,10 +62,10 @@ async def _on_apply_es_catalog_config(
         )
         return
 
-    if config.obfuscated:
-        await es_module.enable_obfuscated_mode(catalog_id, db_resource=db_resource)
+    if config.private:
+        await es_module.enable_private_mode(catalog_id, db_resource=db_resource)
     else:
-        await es_module.disable_obfuscated_mode(catalog_id, db_resource=db_resource)
+        await es_module.disable_private_mode(catalog_id, db_resource=db_resource)
 
 
 class ElasticsearchCatalogConfig(PluginConfig):
@@ -74,24 +74,24 @@ class ElasticsearchCatalogConfig(PluginConfig):
 
     Editable at runtime via:
         PUT /configs/catalogs/{catalog_id}/elasticsearch
-        body: {"obfuscated": true}
+        body: {"private": true}
 
     Changes are applied immediately:
-    - obfuscated False → True :
+    - private False → True :
         • A DENY policy blocks all_users GET access across every protocol.
         • A bulk reindex task is dispatched to populate the geoid-only index.
         • Items are no longer added to the STAC items index.
-    - obfuscated True → False :
+    - private True → False :
         • The DENY policy is removed.
         • A bulk reindex task is dispatched to (re-)populate the STAC items index
           for collections that have search_index=True.
     """
     _on_apply: ClassVar[Optional[Callable]] = _on_apply_es_catalog_config
 
-    obfuscated: bool = Field(
+    private: bool = Field(
         False,
         description=(
-            "When True, items in this catalog are indexed in obfuscated mode: "
+            "When True, items in this catalog are indexed in private mode: "
             "only the geoid UUID is stored in Elasticsearch — no geometry, no "
             "attributes, no spatial search. "
             "GET access to this catalog via any protocol is denied to all_users. "

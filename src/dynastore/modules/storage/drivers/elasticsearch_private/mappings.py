@@ -13,14 +13,14 @@
 #    limitations under the License.
 
 """
-Elasticsearch index mapping + naming for the obfuscated items driver.
+Elasticsearch index mapping + naming for the private items driver.
 
 Driver-private — not imported by the platform :mod:`modules.elasticsearch.mappings`,
 which holds only platform-wide STAC mappings (catalog/collection/item/asset).
 
 Stores the full feature (geometry + properties + external_id) in a single
 index per tenant (catalog). Access is gated by the DENY policy applied
-when the obfuscated driver is active. Docs that would exceed the ES 10MB
+when the private driver is active. Docs that would exceed the ES 10MB
 per-doc limit are shrunk by ``simplify_to_fit``
 (:mod:`dynastore.tools.geometry_simplify`), which records a
 ``simplification_factor`` and ``simplification_mode`` on the stored doc.
@@ -49,8 +49,8 @@ TENANT_FEATURE_MAPPING: Dict[str, Any] = {
 }
 
 
-def get_obfuscated_index_name(prefix: str, catalog_id: str) -> str:
-    """Per-tenant obfuscated items index. Owned by the obfuscated items
+def get_private_index_name(prefix: str, catalog_id: str) -> str:
+    """Per-tenant private items index. Owned by the private items
     driver; the platform never references this naming.
     """
     return f"{prefix}-geoid-{catalog_id}"

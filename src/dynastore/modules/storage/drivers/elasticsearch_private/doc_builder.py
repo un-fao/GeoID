@@ -15,9 +15,9 @@
 """
 Build a tenant-feature doc shaped for ``TENANT_FEATURE_MAPPING``.
 
-Driver-private helper used by :class:`ObfuscatedEntityTransformer`,
-:class:`ItemsElasticsearchObfuscatedDriver` (write_entities), and the
-``ObfuscatedIndexTask`` runner. Lives in the obfuscated subpackage so the
+Driver-private helper used by :class:`PrivateEntityTransformer`,
+:class:`ItemsElasticsearchPrivateDriver` (write_entities), and the
+``PrivateIndexTask`` runner. Lives in the private subpackage so the
 platform never imports it.
 """
 

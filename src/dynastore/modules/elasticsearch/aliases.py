@@ -27,8 +27,8 @@ Membership is managed by the regular items driver:
 - On routing-config apply that removes the regular driver from a
   collection's routing → ``remove_index_from_public_alias(<tenant index>)``.
 
-This module **never** references obfuscation-specific concepts. Drivers
-that maintain their own internal aliases (e.g. the obfuscated driver)
+This module **never** references private indexing-specific concepts. Drivers
+that maintain their own internal aliases (e.g. the private driver)
 manage them in their own subpackage.
 """
 

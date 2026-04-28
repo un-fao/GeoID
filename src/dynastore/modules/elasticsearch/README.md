@@ -74,16 +74,16 @@ configuration API:
 
 ```
 PUT /configs/catalogs/{catalog_id}/elasticsearch
-{ "obfuscated": true }
+{ "private": true }
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `obfuscated` | `bool` | `false` | When `true`, items are indexed in geoid-only mode and all GET access is blocked for `all_users` via a DENY policy. |
+| `private` | `bool` | `false` | When `true`, items are indexed in geoid-only mode and all GET access is blocked for `all_users` via a DENY policy. |
 
 This config is registered via `@register_config("elasticsearch", on_apply=...)` and
 follows the same pattern as `gcp_catalog_bucket`. The `on_apply` callback fires on
-every write — toggling obfuscated mode does not require a restart.
+every write — toggling private mode does not require a restart.
 
 ## Index Design & Mappings
 
@@ -95,16 +95,16 @@ The module automatically configures and manages the following Elasticsearch indi
 | `{prefix}-collections` | Collection | `geo_shape` (spatial extent), date range (temporal) |
 | `{prefix}-items` | Item | `geo_shape` (geometry), STAC datetime, dynamic template |
 | `{prefix}-assets` | Asset | `item_id`, `asset_key`, `roles`, `href` |
-| `{prefix}-geoid-{catalog_id}` | Obfuscated item | `dynamic: false`, `geoid`, `catalog_id`, `collection_id` only |
+| `{prefix}-geoid-{catalog_id}` | Private item | `dynamic: false`, `geoid`, `catalog_id`, `collection_id` only |
 
-## GeoID Obfuscated Mode
+## GeoID Private Mode
 
-When a catalog's ES config has `obfuscated: true`:
+When a catalog's ES config has `private: true`:
 
 1. A **DENY policy** blocks all GET requests across all protocol paths for the catalog.
 2. A **geoid-only index** (`{prefix}-geoid-{catalog_id}`) is created with minimal mapping.
 3. Items are indexed as `{geoid, catalog_id, collection_id}` — no geometry, no STAC metadata.
-4. The STAC items index is **never populated** for obfuscated catalogs.
+4. The STAC items index is **never populated** for private catalogs.
 5. At startup, the module scans all catalogs and **restores in-memory DENY policies**.
 6. Geoid lookups are available via `GET /search/geoid/{geoid}` and `POST /search/geoid` (batch).
 
@@ -115,8 +115,8 @@ See `docs/components/elasticsearch.md` for the full lifecycle description.
 ### Per-item (worker, incremental)
 - `elasticsearch_index` — index a full STAC document
 - `elasticsearch_delete` — delete a document (safe on NotFoundError)
-- `elasticsearch_obfuscated_index` — index one geoid-only document
-- `elasticsearch_obfuscated_delete` — delete one geoid document
+- `elasticsearch_private_index` — index one geoid-only document
+- `elasticsearch_private_delete` — delete one geoid document
 
 ### Bulk (Cloud Run Job or worker)
 - `elasticsearch_bulk_reindex_catalog` — reindex all items in a catalog (500-doc batches)

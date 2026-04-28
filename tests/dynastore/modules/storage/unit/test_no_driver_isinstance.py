@@ -20,7 +20,7 @@ _GUARDED_DIRS = [
 ]
 
 # Pattern: isinstance(something, <DriverName>)
-_PATTERN = r"isinstance\([^,]+,\s*(?:Collection|Asset|Metadata)(?:Postgresql|Elasticsearch|ElasticsearchObfuscated|Iceberg|Duckdb)Driver\b"
+_PATTERN = r"isinstance\([^,]+,\s*(?:Collection|Asset|Metadata)(?:Postgresql|Elasticsearch|ElasticsearchPrivate|Iceberg|Duckdb)Driver\b"
 
 _REPO_ROOT = Path(__file__).parents[6]  # geoid/
 
