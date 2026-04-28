@@ -1,6 +1,6 @@
 # dynastore/modules/tasks/tasks_config.py
 import os
-from typing import ClassVar, Dict, List, Optional
+from typing import Dict, List
 from pydantic import Field
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 
@@ -61,5 +61,19 @@ class TaskRoutingConfig(PluginConfig):
             "Operator kill-switch — when true, the routing filter is a no-op "
             "and any service claims anything its CapabilityMap accepts. Use "
             "for emergency triage."
+        ),
+    )
+
+    event_consumer_services: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Logical service names that run the catalog event consumer "
+            "(durable 16-shard outbox loop in CatalogModule). Empty list = "
+            "no service consumes — events accumulate in the outbox until a "
+            "service is added. Default-empty is intentional: an unconfigured "
+            "deployment fails noisy (queue depth visible in monitoring) "
+            "rather than fails silent (connection storm everywhere). Set per "
+            "deployment via the JSON files mounted into "
+            "${DYNASTORE_CONFIG_ROOT}/defaults/."
         ),
     )

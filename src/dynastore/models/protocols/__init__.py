@@ -68,7 +68,6 @@ from dynastore.models.protocols.styles import StylesProtocol
 from dynastore.models.protocols.moving_features import MovingFeaturesProtocol
 from dynastore.models.protocols.search import SearchProtocol
 from dynastore.models.protocols.indexer import IndexerProtocol
-from dynastore.models.protocols.event_consumer import CatalogEventConsumer
 from dynastore.models.protocols.storage_driver import CollectionItemsStore
 from dynastore.models.protocols.metadata_driver import (
     CatalogMetadataStore,
@@ -170,7 +169,6 @@ __all__ = [
     "MovingFeaturesProtocol",
     "SearchProtocol",
     "IndexerProtocol",
-    "CatalogEventConsumer",
     "CollectionItemsStore",
     "CollectionMetadataStore",
     "CatalogMetadataStore",
