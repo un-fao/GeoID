@@ -605,7 +605,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                         )
                     except SidecarRejectedError as rej:
                         rejections.append({
-                            "geoid": rej.geoid or plan["geoid"],
+                            "geoid": str(rej.geoid) if rej.geoid else plan["geoid"],
                             "external_id": rej.external_id,
                             "sidecar_id": rej.sidecar_id,
                             "matcher": rej.matcher,

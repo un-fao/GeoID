@@ -230,7 +230,7 @@ class ItemDistributedMixin(_Host):
             raise SidecarRejectedError(
                 f"Feature refused by write policy for collection "
                 f"'{catalog_id}/{collection_id}'",
-                geoid=active_rec.get("geoid") if active_rec else None,
+                geoid=str(active_rec["geoid"]) if active_rec and active_rec.get("geoid") is not None else None,
                 external_id=external_id if isinstance(external_id, str) else None,
                 reason="write_policy_refuse",
             )
