@@ -5,8 +5,8 @@ from dynastore.modules.storage.drivers.elasticsearch import (
     ItemsElasticsearchDriver,
     _ElasticsearchBase,
 )
-from dynastore.modules.storage.drivers.elasticsearch_obfuscated import (
-    ItemsElasticsearchObfuscatedDriver,
+from dynastore.modules.storage.drivers.elasticsearch_private import (
+    ItemsElasticsearchPrivateDriver,
 )
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols.storage_driver import Capability
@@ -153,36 +153,36 @@ class TestItemsElasticsearchDriverMeta:
             await driver.export_entities("cat1", "col1")
 
 
-class TestItemsElasticsearchObfuscatedDriverMeta:
+class TestItemsElasticsearchPrivateDriverMeta:
     def test_driver_class_name(self):
-        driver = ItemsElasticsearchObfuscatedDriver()
-        assert type(driver).__name__ == "ItemsElasticsearchObfuscatedDriver"
+        driver = ItemsElasticsearchPrivateDriver()
+        assert type(driver).__name__ == "ItemsElasticsearchPrivateDriver"
 
     def test_priority(self):
-        driver = ItemsElasticsearchObfuscatedDriver()
+        driver = ItemsElasticsearchPrivateDriver()
         assert driver.priority == 51
 
     def test_capabilities(self):
-        driver = ItemsElasticsearchObfuscatedDriver()
+        driver = ItemsElasticsearchPrivateDriver()
         assert Capability.STREAMING in driver.capabilities
         assert Capability.FULLTEXT not in driver.capabilities
         assert Capability.SOFT_DELETE not in driver.capabilities
 
     @pytest.mark.asyncio
     async def test_export_entities_not_implemented(self):
-        driver = ItemsElasticsearchObfuscatedDriver()
+        driver = ItemsElasticsearchPrivateDriver()
         with pytest.raises(NotImplementedError):
             await driver.export_entities("cat1", "col1")
 
     @pytest.mark.asyncio
     async def test_soft_delete_raises(self):
-        driver = ItemsElasticsearchObfuscatedDriver()
+        driver = ItemsElasticsearchPrivateDriver()
         with pytest.raises(SoftDeleteNotSupportedError):
             await driver.delete_entities("cat1", "col1", ["id1"], soft=True)
 
     @pytest.mark.asyncio
     async def test_soft_drop_raises(self):
-        driver = ItemsElasticsearchObfuscatedDriver()
+        driver = ItemsElasticsearchPrivateDriver()
         with pytest.raises(SoftDeleteNotSupportedError):
             await driver.drop_storage("cat1", "col1", soft=True)
 

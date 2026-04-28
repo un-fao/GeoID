@@ -146,10 +146,10 @@ class ElasticsearchModule(ModuleProtocol):
     indexing backend via ``get_protocol(IndexerProtocol)`` without importing
     this module directly.
 
-    Per-catalog obfuscation is configured at runtime via:
-        PUT /configs/catalogs/{catalog_id}/elasticsearch  {"obfuscated": true}
+    Per-catalog private indexing is configured at runtime via:
+        PUT /configs/catalogs/{catalog_id}/elasticsearch  {"private": true}
 
-    When a catalog is obfuscated:
+    When a catalog is private:
     - Items are indexed only as {geoid, catalog_id, collection_id} in a
       dedicated geoid index — no geometry, no attributes.
     - All GET access to the catalog via any protocol is denied to all_users.
@@ -193,9 +193,9 @@ class ElasticsearchModule(ModuleProtocol):
                 "ElasticsearchModule: EventsProtocol not found. Indexing events not captured."
             )
 
-        # Restore in-memory DENY policies for all catalogs that have obfuscated=True.
+        # Restore in-memory DENY policies for all catalogs that have private=True.
         # on_apply is not called automatically on service restart, so we do it here.
-        await self._restore_obfuscated_policies()
+        await self._restore_private_policies()
 
         from dynastore.modules.elasticsearch import client as es_client
         await es_client.init()
@@ -319,36 +319,36 @@ class ElasticsearchModule(ModuleProtocol):
             logger.error("ElasticsearchModule: Failed to dispatch task %s: %s", task_type, e)
 
     # ------------------------------------------------------------------
-    # Obfuscated mode: enable / disable
+    # Private mode: enable / disable
     # ------------------------------------------------------------------
 
-    async def enable_obfuscated_mode(self, catalog_id: str, db_resource=None) -> None:
+    async def enable_private_mode(self, catalog_id: str, db_resource=None) -> None:
         """
         Apply the DENY access policy, ensure the geoid index exists, and
-        dispatch a bulk reindex task (obfuscated mode).
+        dispatch a bulk reindex task (private mode).
 
-        Called by on_apply when obfuscated=True is written, and by lifespan
+        Called by on_apply when private=True is written, and by lifespan
         to restore in-memory policies on service restart.
         """
-        logger.info("ElasticsearchModule: Enabling obfuscated mode for catalog '%s'.", catalog_id)
-        await self._apply_obfuscated_policy(catalog_id)
-        await self._ensure_obfuscated_index(catalog_id)
-        # Bulk reindex of obfuscated data is no longer supported by the
-        # shared task — the obfuscated driver requires a fresh-start
-        # cutover instead. Toggling obfuscation only flips the DENY
-        # policy + ensures the obfuscated index exists; existing items
+        logger.info("ElasticsearchModule: Enabling private mode for catalog '%s'.", catalog_id)
+        await self._apply_private_policy(catalog_id)
+        await self._ensure_private_index(catalog_id)
+        # Bulk reindex of private data is no longer supported by the
+        # shared task — the private driver requires a fresh-start
+        # cutover instead. Toggling private indexing only flips the DENY
+        # policy + ensures the private index exists; existing items
         # stay where they are.
 
-    async def disable_obfuscated_mode(self, catalog_id: str, db_resource=None) -> None:
+    async def disable_private_mode(self, catalog_id: str, db_resource=None) -> None:
         """
         Remove the DENY access policy and dispatch a bulk reindex task
         targeting the per-tenant items index so historical items become
         discoverable again under the regular driver.
 
-        Called by on_apply when obfuscated=False is written.
+        Called by on_apply when private=False is written.
         """
-        logger.info("ElasticsearchModule: Disabling obfuscated mode for catalog '%s'.", catalog_id)
-        await self._revoke_obfuscated_policy(catalog_id)
+        logger.info("ElasticsearchModule: Disabling private mode for catalog '%s'.", catalog_id)
+        await self._revoke_private_policy(catalog_id)
         from dynastore.tasks.elasticsearch_indexer.tasks import BulkCatalogReindexInputs
         await self._dispatch_task(
             task_type="elasticsearch_bulk_reindex_catalog",
@@ -362,7 +362,7 @@ class ElasticsearchModule(ModuleProtocol):
     # Access policy management
     # ------------------------------------------------------------------
 
-    async def _apply_obfuscated_policy(self, catalog_id: str) -> None:
+    async def _apply_private_policy(self, catalog_id: str) -> None:
         """Create/update a persisted DENY policy that blocks all_users GET
         access across every protocol path under the given catalog, and
         also registers it in-memory for immediate effect in this process."""
@@ -377,10 +377,10 @@ class ElasticsearchModule(ModuleProtocol):
             )
             return
 
-        policy_id = f"obfuscated_deny_{catalog_id}"
+        policy_id = f"private_deny_{catalog_id}"
         deny_policy = Policy(
             id=policy_id,
-            description=f"Blocks public access to obfuscated catalog: {catalog_id}",
+            description=f"Blocks public access to private catalog: {catalog_id}",
             actions=["GET"],
             resources=[
                 # Covers: /catalog/catalogs/X/*, /stac/catalogs/X/*,
@@ -412,7 +412,7 @@ class ElasticsearchModule(ModuleProtocol):
                     policy_id, e,
                 )
 
-    async def _revoke_obfuscated_policy(self, catalog_id: str) -> None:
+    async def _revoke_private_policy(self, catalog_id: str) -> None:
         """Remove the persisted DENY policy for the catalog.
         The in-memory copy persists until the next restart — this is
         acceptable since the policy will not be recreated at startup."""
@@ -422,7 +422,7 @@ class ElasticsearchModule(ModuleProtocol):
         if not perm:
             return
 
-        policy_id = f"obfuscated_deny_{catalog_id}"
+        policy_id = f"private_deny_{catalog_id}"
         try:
             await perm.delete_policy(policy_id)
             logger.info(
@@ -439,26 +439,26 @@ class ElasticsearchModule(ModuleProtocol):
     # ES index management
     # ------------------------------------------------------------------
 
-    async def _ensure_obfuscated_index(self, catalog_id: str) -> None:
+    async def _ensure_private_index(self, catalog_id: str) -> None:
         """Ensure the per-tenant feature ES index exists with the current mapping.
 
         If the index exists with the legacy 3-field mapping, drop it so the
         next reindex repopulates it with full features under
-        ``TENANT_FEATURE_MAPPING``. The caller (``enable_obfuscated_mode``)
+        ``TENANT_FEATURE_MAPPING``. The caller (``enable_private_mode``)
         already dispatches a bulk reindex after this returns.
         """
         from dynastore.modules.elasticsearch import client as es_client
-        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.mappings import (
+        from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
             TENANT_FEATURE_MAPPING,
-            get_obfuscated_index_name,
+            get_private_index_name,
         )
 
         es = es_client.get_client()
         if es is None:
-            logger.warning("ElasticsearchModule: ES client not initialized, skipping obfuscated index creation.")
+            logger.warning("ElasticsearchModule: ES client not initialized, skipping private index creation.")
             return
 
-        index_name = get_obfuscated_index_name(es_client.get_index_prefix(), catalog_id)
+        index_name = get_private_index_name(es_client.get_index_prefix(), catalog_id)
         try:
             if await es.indices.exists(index=index_name):
                 # Detect legacy mapping (no `geometry` field) and drop the
@@ -472,7 +472,7 @@ class ElasticsearchModule(ModuleProtocol):
                     )
                     if "geometry" not in props:
                         logger.info(
-                            "ElasticsearchModule: legacy obfuscated mapping detected on '%s', recreating.",
+                            "ElasticsearchModule: legacy private mapping detected on '%s', recreating.",
                             index_name,
                         )
                         await es.indices.delete(index=index_name, ignore_unavailable=True)  # type: ignore[call-arg]
@@ -499,10 +499,10 @@ class ElasticsearchModule(ModuleProtocol):
     # Startup: restore in-memory DENY policies
     # ------------------------------------------------------------------
 
-    async def _restore_obfuscated_policies(self) -> None:
+    async def _restore_private_policies(self) -> None:
         """
         Scan all catalogs and re-register in-memory DENY policies for those
-        with obfuscated=True. Called once at lifespan startup.
+        with private=True. Called once at lifespan startup.
 
         The persisted policies are already loaded from DB by PermissionProtocol,
         but register_policy() is needed for the current process's in-memory fast path.
@@ -536,11 +536,11 @@ class ElasticsearchModule(ModuleProtocol):
                             catalog_id, exc,
                         )
                         continue
-                    if cfg and getattr(cfg, "obfuscated", False):
-                        policy_id = f"obfuscated_deny_{catalog_id}"
+                    if cfg and getattr(cfg, "private", False):
+                        policy_id = f"private_deny_{catalog_id}"
                         deny_policy = Policy(
                             id=policy_id,
-                            description=f"Blocks public access to obfuscated catalog: {catalog_id}",
+                            description=f"Blocks public access to private catalog: {catalog_id}",
                             actions=["GET"],
                             resources=[
                                 f"/(catalog|stac|features|tiles|wfs|maps)/catalogs/{re.escape(catalog_id)}(/.*)?",
@@ -552,7 +552,7 @@ class ElasticsearchModule(ModuleProtocol):
                             Role(name="all_users", policies=[policy_id])
                         )
                         logger.info(
-                            "ElasticsearchModule: Restored DENY policy for obfuscated catalog '%s'.",
+                            "ElasticsearchModule: Restored DENY policy for private catalog '%s'.",
                             catalog_id,
                         )
                 if len(catalog_list) < batch:
@@ -560,7 +560,7 @@ class ElasticsearchModule(ModuleProtocol):
                 offset += batch
         except Exception as e:
             logger.warning(
-                "ElasticsearchModule: Could not restore obfuscated policies at startup: %s", e
+                "ElasticsearchModule: Could not restore private policies at startup: %s", e
             )
 
     # ------------------------------------------------------------------
@@ -588,8 +588,8 @@ class ElasticsearchModule(ModuleProtocol):
     async def _on_catalog_delete(self, catalog_id: Optional[str] = None, **kwargs):
         if not catalog_id:
             return
-        # Remove any obfuscated DENY policy when the catalog is hard-deleted.
-        await self._revoke_obfuscated_policy(catalog_id)
+        # Remove any private DENY policy when the catalog is hard-deleted.
+        await self._revoke_private_policy(catalog_id)
 
         from dynastore.tasks.elasticsearch.tasks import ElasticsearchDeleteInputs
         await self._dispatch_task(
@@ -645,20 +645,20 @@ class ElasticsearchModule(ModuleProtocol):
         if not catalog_id or not collection_id or not item_id:
             return
 
-        # --- Obfuscated path: index only {geoid, catalog_id, collection_id} ---
+        # --- Private path: index only {geoid, catalog_id, collection_id} ---
         # Per-collection resolver consults the collection-tier override first
-        # (ElasticsearchCollectionConfig.obfuscated) and falls back to the
-        # catalog-tier flag (ElasticsearchCatalogConfig.obfuscated).
+        # (ElasticsearchCollectionConfig.private) and falls back to the
+        # catalog-tier flag (ElasticsearchCatalogConfig.private).
         from dynastore.modules.elasticsearch.es_collection_config import (
-            is_collection_obfuscated,
+            is_collection_private,
         )
-        if await is_collection_obfuscated(catalog_id, collection_id):
-            from dynastore.modules.storage.drivers.elasticsearch_obfuscated.tasks import (
-                ObfuscatedIndexInputs,
+        if await is_collection_private(catalog_id, collection_id):
+            from dynastore.modules.storage.drivers.elasticsearch_private.tasks import (
+                PrivateIndexInputs,
             )
             await self._dispatch_task(
-                task_type="elasticsearch_obfuscated_index",
-                inputs=ObfuscatedIndexInputs(
+                task_type="elasticsearch_private_index",
+                inputs=PrivateIndexInputs(
                     geoid=item_id,
                     catalog_id=catalog_id,
                     collection_id=collection_id,
@@ -697,24 +697,24 @@ class ElasticsearchModule(ModuleProtocol):
 
         items_subset = (payload if isinstance(payload, dict) else {}).get("items_subset", [])
 
-        # --- Obfuscated path ---
+        # --- Private path ---
         # Single resolver call before the loop — every item in this bulk
         # event shares the same (catalog_id, collection_id) so the
-        # obfuscation decision is identical for the whole batch.
+        # private indexing decision is identical for the whole batch.
         from dynastore.modules.elasticsearch.es_collection_config import (
-            is_collection_obfuscated,
+            is_collection_private,
         )
-        if await is_collection_obfuscated(catalog_id, collection_id):
-            from dynastore.modules.storage.drivers.elasticsearch_obfuscated.tasks import (
-                ObfuscatedIndexInputs,
+        if await is_collection_private(catalog_id, collection_id):
+            from dynastore.modules.storage.drivers.elasticsearch_private.tasks import (
+                PrivateIndexInputs,
             )
             for item_doc in items_subset:
                 item_id = item_doc.get("id")
                 if not item_id:
                     continue
                 await self._dispatch_task(
-                    task_type="elasticsearch_obfuscated_index",
-                    inputs=ObfuscatedIndexInputs(
+                    task_type="elasticsearch_private_index",
+                    inputs=PrivateIndexInputs(
                         geoid=item_id,
                         catalog_id=catalog_id,
                         collection_id=collection_id,
@@ -766,13 +766,13 @@ class ElasticsearchModule(ModuleProtocol):
             ).model_dump(),
         )
 
-        # Delete from the obfuscated geoid index (no-op if catalog is not obfuscated).
-        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.tasks import (
-            ObfuscatedDeleteInputs,
+        # Delete from the private geoid index (no-op if catalog is not private).
+        from dynastore.modules.storage.drivers.elasticsearch_private.tasks import (
+            PrivateDeleteInputs,
         )
         await self._dispatch_task(
-            task_type="elasticsearch_obfuscated_delete",
-            inputs=ObfuscatedDeleteInputs(
+            task_type="elasticsearch_private_delete",
+            inputs=PrivateDeleteInputs(
                 geoid=item_id,
                 catalog_id=catalog_id,
             ).model_dump(),
@@ -821,19 +821,19 @@ class ElasticsearchModule(ModuleProtocol):
             db_resource=db_resource,
         )
 
-    async def index_obfuscated(
+    async def index_private(
         self,
         geoid: str,
         catalog_id: str,
         collection_id: str,
         db_resource: Optional[Any] = None,
     ) -> None:
-        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.tasks import (
-                ObfuscatedIndexInputs,
+        from dynastore.modules.storage.drivers.elasticsearch_private.tasks import (
+                PrivateIndexInputs,
             )
         await self._dispatch_task(
-            task_type="elasticsearch_obfuscated_index",
-            inputs=ObfuscatedIndexInputs(
+            task_type="elasticsearch_private_index",
+            inputs=PrivateIndexInputs(
                 geoid=geoid,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
@@ -841,18 +841,18 @@ class ElasticsearchModule(ModuleProtocol):
             db_resource=db_resource,
         )
 
-    async def delete_obfuscated(
+    async def delete_private(
         self,
         geoid: str,
         catalog_id: str,
         db_resource: Optional[Any] = None,
     ) -> None:
-        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.tasks import (
-            ObfuscatedDeleteInputs,
+        from dynastore.modules.storage.drivers.elasticsearch_private.tasks import (
+            PrivateDeleteInputs,
         )
         await self._dispatch_task(
-            task_type="elasticsearch_obfuscated_delete",
-            inputs=ObfuscatedDeleteInputs(
+            task_type="elasticsearch_private_delete",
+            inputs=PrivateDeleteInputs(
                 geoid=geoid,
                 catalog_id=catalog_id,
             ).model_dump(),
@@ -888,13 +888,13 @@ class ElasticsearchModule(ModuleProtocol):
 
     async def ensure_index(
         self,
-        entity_type: Literal["catalog", "collection", "item", "asset", "obfuscated"],
+        entity_type: Literal["catalog", "collection", "item", "asset", "private"],
         catalog_id: Optional[str] = None,
     ) -> None:
-        if entity_type == "obfuscated":
+        if entity_type == "private":
             if not catalog_id:
-                raise ValueError("catalog_id is required for obfuscated index.")
-            await self._ensure_obfuscated_index(catalog_id)
+                raise ValueError("catalog_id is required for private index.")
+            await self._ensure_private_index(catalog_id)
         else:
             # Standard indices are created on-demand by the index tasks.
             pass

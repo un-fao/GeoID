@@ -13,17 +13,17 @@
 #    limitations under the License.
 
 """
-ObfuscatedEntityTransformer — first implementer of EntityTransformProtocol.
+PrivateEntityTransformer — first implementer of EntityTransformProtocol.
 
 Reshapes a STAC item into the tenant-feature shape on the way to the
-obfuscated index, and reverses the projection on the way back out for
-clients. Pairs with :class:`ItemsElasticsearchObfuscatedDriver` (the
+private index, and reverses the projection on the way back out for
+clients. Pairs with :class:`ItemsElasticsearchPrivateDriver` (the
 indexer + searcher) but is registered separately so the same
 transformation can be reused with a different storage backend in the
 future (e.g. BigQuery) without driver-class proliferation.
 
 Discovery: implements :class:`EntityTransformProtocol`. Active when
-``ObfuscatedEntityTransformer`` is listed in
+``PrivateEntityTransformer`` is listed in
 ``operations[TRANSFORM]`` of the relevant routing config. The
 auto-augment helper ``_self_register_transformers_into`` will also
 register it automatically when the package is loaded.
@@ -39,7 +39,7 @@ from dynastore.models.protocols.entity_transform import EntityKind
 logger = logging.getLogger(__name__)
 
 
-class ObfuscatedEntityTransformer:
+class PrivateEntityTransformer:
     """Transforms STAC items into the tenant-feature shape and back.
 
     On INDEX: builds a tenant-feature doc via
@@ -69,7 +69,7 @@ class ObfuscatedEntityTransformer:
         """Build the tenant-feature doc + simplify to fit the ES doc-size limit.
 
         Only meaningful for ``entity_kind == "item"``. For other entity kinds,
-        returns the input unchanged (defensive — the obfuscated driver is
+        returns the input unchanged (defensive — the private driver is
         an items driver; the routing config should not apply this
         transformer outside that scope, but the no-op keeps things safe
         if it is mis-configured).
@@ -77,7 +77,7 @@ class ObfuscatedEntityTransformer:
         if entity_kind != "item":
             return entity
 
-        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.doc_builder import (
+        from dynastore.modules.storage.drivers.elasticsearch_private.doc_builder import (
             build_tenant_feature_doc,
         )
         from dynastore.tools.geometry_simplify import simplify_to_fit
@@ -106,7 +106,7 @@ class ObfuscatedEntityTransformer:
         """Reverse the tenant-feature projection back to a STAC-shaped Feature.
 
         Mirrors the inverse projection currently hand-coded in
-        ``ItemsElasticsearchObfuscatedDriver.read_entities``. Returned
+        ``ItemsElasticsearchPrivateDriver.read_entities``. Returned
         shape:
 
             {

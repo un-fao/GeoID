@@ -61,9 +61,9 @@ Content-Type: application/json
 
 {
   "operations": {
-    "WRITE":    [{"driver_id": "ItemsElasticsearchObfuscatedDriver"}],
-    "READ":     [{"driver_id": "ItemsElasticsearchObfuscatedDriver"}],
-    "SEARCH":   [{"driver_id": "ItemsElasticsearchObfuscatedDriver"}],
+    "WRITE":    [{"driver_id": "ItemsElasticsearchPrivateDriver"}],
+    "READ":     [{"driver_id": "ItemsElasticsearchPrivateDriver"}],
+    "SEARCH":   [{"driver_id": "ItemsElasticsearchPrivateDriver"}],
     "METADATA": [{"driver_id": "ItemsPostgresqlDriver"}]
   }
 }

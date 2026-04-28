@@ -16,19 +16,19 @@
 
 Layered on top of :class:`ElasticsearchCatalogConfig`:
 
-- ``ElasticsearchCatalogConfig.obfuscated`` is the catalog-tier default.
-- ``ElasticsearchCollectionConfig.obfuscated`` is an optional per-collection
+- ``ElasticsearchCatalogConfig.private`` is the catalog-tier default.
+- ``ElasticsearchCollectionConfig.private`` is an optional per-collection
   override.  ``None`` (default) inherits the catalog value; explicit
   ``True`` / ``False`` pins the collection regardless of the catalog flag.
 
-The resolver :func:`is_collection_obfuscated` reads the override-then-catalog
+The resolver :func:`is_collection_private` reads the override-then-catalog
 waterfall through ``ConfigsProtocol`` and returns the boolean an indexer
 dispatch path should consult per write event.
 
 This config is purely a READ surface for now — the existing classic indexer
 remains the SSOT for catalog-level reindex behaviour.  Wiring the resolver
 into the per-event dispatch (so a single collection can opt out of an
-otherwise-obfuscated catalog at write time) is a follow-up step.
+otherwise-private catalog at write time) is a follow-up step.
 """
 
 from __future__ import annotations
@@ -55,13 +55,13 @@ async def _on_apply_es_collection_config(
     Two effects happen on every collection-tier write:
 
     1. The cached resolver entry for ``(catalog_id, collection_id)`` is
-       invalidated so the next call to :func:`is_collection_obfuscated`
+       invalidated so the next call to :func:`is_collection_private`
        returns the new value without waiting for the 60s TTL.
     2. When the operator wrote an *explicit* override (``True`` or
        ``False`` — not ``None``), a single-collection reindex is
        dispatched in the matching mode so historical items in this
        collection are moved into the right ES index.  Reverting to
-       ``obfuscated=None`` (inherit) is intentionally NOT auto-reindexed
+       ``private=None`` (inherit) is intentionally NOT auto-reindexed
        — the catalog-tier flag is unchanged so the existing index
        contents already match the catalog default; an operator who
        changes the catalog flag triggers the catalog-wide reindex
@@ -78,7 +78,7 @@ async def _on_apply_es_collection_config(
         from dynastore.tools.cache import cache_invalidate
 
         cache_invalidate(
-            is_collection_obfuscated, catalog_id, collection_id,
+            is_collection_private, catalog_id, collection_id,
         )
     except Exception as exc:
         logger.debug(
@@ -87,7 +87,7 @@ async def _on_apply_es_collection_config(
             catalog_id, collection_id, exc,
         )
 
-    if config.obfuscated is None:
+    if config.private is None:
         # Reverted to inherit — catalog-tier unchanged means existing
         # indexed items already match the effective state.  No reindex.
         logger.info(
@@ -135,9 +135,9 @@ class ElasticsearchCollectionConfig(PluginConfig):
 
     Editable at runtime via:
         PUT /configs/catalogs/{catalog_id}/collections/{collection_id}/elasticsearch
-        body: {"obfuscated": true}    # or false, or omit to inherit
+        body: {"private": true}    # or false, or omit to inherit
 
-    Today this config carries one optional override (``obfuscated``);
+    Today this config carries one optional override (``private``);
     additional per-collection ES knobs can land here as needed (e.g.
     custom index name suffix, refresh-policy override).  It does NOT
     duplicate :class:`ElasticsearchCatalogConfig` — catalog-tier policy
@@ -146,13 +146,13 @@ class ElasticsearchCollectionConfig(PluginConfig):
 
     _on_apply: ClassVar[Optional[Callable]] = _on_apply_es_collection_config
 
-    obfuscated: Optional[bool] = Field(
+    private: Optional[bool] = Field(
         default=None,
         description=(
-            "Per-collection obfuscation override.  ``None`` (default) "
+            "Per-collection private indexing override.  ``None`` (default) "
             "inherits the catalog-tier ``ElasticsearchCatalogConfig."
-            "obfuscated`` flag.  ``True`` forces this collection into "
-            "the geoid-only obfuscated index regardless of the catalog "
+            "private`` flag.  ``True`` forces this collection into "
+            "the geoid-only private index regardless of the catalog "
             "default; ``False`` forces it into classic STAC indexing "
             "regardless of the catalog default.  Toggling this field "
             "invalidates the cached resolver entry for an instant effect "
@@ -175,19 +175,19 @@ from dynastore.tools.cache import cached  # noqa: E402  -- after class def to av
     maxsize=1024,
     ttl=60,
     jitter=5,
-    namespace="es_collection_obfuscated",
+    namespace="es_collection_private",
 )
-async def is_collection_obfuscated(
+async def is_collection_private(
     catalog_id: str, collection_id: str,
 ) -> bool:
     """Return ``True`` iff ``collection_id`` in ``catalog_id`` should be
-    indexed in Elasticsearch obfuscated mode.
+    indexed in Elasticsearch private mode.
 
     Resolution waterfall (highest precedence first):
 
-    1. ``ElasticsearchCollectionConfig.obfuscated`` — when not ``None``,
+    1. ``ElasticsearchCollectionConfig.private`` — when not ``None``,
        the collection-level explicit override wins.
-    2. ``ElasticsearchCatalogConfig.obfuscated`` — the catalog default.
+    2. ``ElasticsearchCatalogConfig.private`` — the catalog default.
     3. ``False`` — when no config is registered at either tier.
 
     Cached with TTL=60s ± 5s jitter; the apply handler on the
@@ -212,14 +212,14 @@ async def is_collection_obfuscated(
         )
     except Exception as exc:
         logger.debug(
-            "is_collection_obfuscated: collection-tier fetch failed for "
+            "is_collection_private: collection-tier fetch failed for "
             "%s/%s (%s) — falling through to catalog tier",
             catalog_id, collection_id, exc,
         )
         col_cfg = None
 
-    if isinstance(col_cfg, ElasticsearchCollectionConfig) and col_cfg.obfuscated is not None:
-        return col_cfg.obfuscated
+    if isinstance(col_cfg, ElasticsearchCollectionConfig) and col_cfg.private is not None:
+        return col_cfg.private
 
     try:
         cat_cfg = await configs.get_config(
@@ -227,12 +227,12 @@ async def is_collection_obfuscated(
         )
     except Exception as exc:
         logger.debug(
-            "is_collection_obfuscated: catalog-tier fetch failed for "
+            "is_collection_private: catalog-tier fetch failed for "
             "%s (%s) — defaulting to False",
             catalog_id, exc,
         )
         return False
 
     if isinstance(cat_cfg, ElasticsearchCatalogConfig):
-        return cat_cfg.obfuscated
+        return cat_cfg.private
     return False

@@ -416,7 +416,7 @@ _DRIVER_PG_PARTITIONED_EXAMPLE: Dict[str, Any] = {
 #   ES_HOST / ES_PORT / ES_USE_SSL / ES_VERIFY_CERTS / ES_API_KEY — connection
 #
 # Additional DynaStore-only indexes:
-#   {ES_INDEX_PREFIX}-geoid-{catalog_id}   — obfuscated (geoid-only) per catalog
+#   {ES_INDEX_PREFIX}-geoid-{catalog_id}   — private (geoid-only) per catalog
 #   {ES_INDEX_PREFIX}-assets-{catalog_id}  — asset metadata per catalog
 #
 # SFEOS read-only frontend env vars (ENABLE_CATALOGS_ROUTE=true):
@@ -592,14 +592,14 @@ _DRIVER_DUCKDB_GEOPARQUET_EXAMPLE: Dict[str, Any] = {
 # ---- Elasticsearch catalog config ----
 #
 # Per-catalog ES settings managed via plugin_id "elasticsearch".
-# Controls indexing mode (standard vs obfuscated) at the catalog level.
+# Controls indexing mode (standard vs private) at the catalog level.
 #
 # Standard mode: items are fully indexed into the SFEOS-compatible
 # per-collection indexes (``items_{collection_id}``) with geometry,
 # attributes, and all STAC metadata.  An external SFEOS app can serve
 # them transparently.
 #
-# Obfuscated mode: items are indexed into a separate per-catalog index
+# Private mode: items are indexed into a separate per-catalog index
 # (``{ES_INDEX_PREFIX}-geoid-{catalog_id}``) containing only the geoid
 # UUID.  A DENY policy blocks all_users GET access.  This index is NOT
 # served by the external SFEOS app — it is DynaStore-only.
@@ -607,20 +607,20 @@ _DRIVER_DUCKDB_GEOPARQUET_EXAMPLE: Dict[str, Any] = {
 _ES_CATALOG_EXAMPLE: Dict[str, Any] = {
     "summary": "Elasticsearch catalog — standard mode (SFEOS-readable)",
     "description": (
-        "Default catalog-level ES config.  ``obfuscated=false`` means items "
+        "Default catalog-level ES config.  ``private=false`` means items "
         "are fully indexed with geometry, attributes, and all STAC metadata "
         "into SFEOS-compatible per-collection indexes.  "
         "An external SFEOS instance (with ENABLE_CATALOGS_ROUTE=true, "
         "ENABLE_TRANSACTIONS_EXTENSIONS=false) can serve this catalog's "
         "items as a read-only STAC API."
     ),
-    "value": {"enabled": True, "obfuscated": False},
+    "value": {"enabled": True, "private": False},
 }
 
-_ES_CATALOG_OBFUSCATED_EXAMPLE: Dict[str, Any] = {
-    "summary": "Elasticsearch catalog — obfuscated mode (DynaStore-only)",
+_ES_CATALOG_PRIVATE_EXAMPLE: Dict[str, Any] = {
+    "summary": "Elasticsearch catalog — private mode (DynaStore-only)",
     "description": (
-        "Enables obfuscated indexing into a per-catalog index: "
+        "Enables private indexing into a per-catalog index: "
         "``{ES_INDEX_PREFIX}-geoid-{catalog_id}``.  Only the geoid UUID, "
         "catalog_id, and collection_id are stored — no geometry, no "
         "attributes, no spatial search.  GET access is denied to all_users "
@@ -628,7 +628,7 @@ _ES_CATALOG_OBFUSCATED_EXAMPLE: Dict[str, Any] = {
         "reindex.  This index is NOT visible to the external SFEOS app.  "
         "Use for sensitive catalogs where item existence must be hidden."
     ),
-    "value": {"enabled": True, "obfuscated": True},
+    "value": {"enabled": True, "private": True},
 }
 
 # ---- STAC ----

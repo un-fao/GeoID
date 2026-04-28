@@ -122,7 +122,7 @@ class TypedDriver(Generic[ConfigT]):
         super().__init_subclass__(**kwargs)
         # Register ONLY when ``TypedDriver[X]`` appears directly in this
         # subclass's __orig_bases__ — not when the bind is inherited.  Lets a
-        # specialisation (e.g. ``ItemsElasticsearchObfuscatedDriver(
+        # specialisation (e.g. ``ItemsElasticsearchPrivateDriver(
         # ItemsElasticsearchDriver)``) share the parent's config without
         # colliding on the registry.
         direct_bind = None

@@ -1,7 +1,7 @@
 """Verify ElasticsearchModule._on_item_upsert / _on_item_bulk_upsert dispatch
-to the obfuscated indexer task IFF is_collection_obfuscated() returns True.
+to the private indexer task IFF is_collection_private() returns True.
 
-These tests target item C from the per-collection obfuscation spec — the
+These tests target item C from the per-collection private indexing spec — the
 indexer dispatch refactor that makes a per-collection override actually
 take effect at write time (rather than only being readable via the
 resolver).
@@ -16,20 +16,20 @@ def _clear_resolver_cache():
     """Reset the @cached resolver between tests so a per-test stub isn't
     masked by an earlier test's cached value."""
     from dynastore.modules.elasticsearch.es_collection_config import (
-        is_collection_obfuscated,
+        is_collection_private,
     )
-    is_collection_obfuscated.cache_clear()
+    is_collection_private.cache_clear()
     yield
-    is_collection_obfuscated.cache_clear()
+    is_collection_private.cache_clear()
 
 
 def _stub_resolver(monkeypatch, return_value: bool):
-    """Replace is_collection_obfuscated at its import site inside module.py
+    """Replace is_collection_private at its import site inside module.py
     with an AsyncMock that returns ``return_value``.  Returns the mock so
     tests can assert call args."""
     import dynastore.modules.elasticsearch.es_collection_config as cfg_mod
     fake = AsyncMock(return_value=return_value)
-    monkeypatch.setattr(cfg_mod, "is_collection_obfuscated", fake)
+    monkeypatch.setattr(cfg_mod, "is_collection_private", fake)
     return fake
 
 
@@ -51,7 +51,7 @@ def _new_module():
 
 class TestOnItemUpsertDispatch:
     @pytest.mark.asyncio
-    async def test_resolver_true_dispatches_obfuscated_task(self, monkeypatch):
+    async def test_resolver_true_dispatches_private_task(self, monkeypatch):
         fake = _stub_resolver(monkeypatch, return_value=True)
         mod = _new_module()
 
@@ -62,14 +62,14 @@ class TestOnItemUpsertDispatch:
         fake.assert_awaited_once_with("cat", "col")
         assert mod._dispatch_task.await_count == 1
         kwargs = mod._dispatch_task.await_args.kwargs
-        assert kwargs["task_type"] == "elasticsearch_obfuscated_index"
+        assert kwargs["task_type"] == "elasticsearch_private_index"
         assert kwargs["inputs"] == {
             "geoid": "i1", "catalog_id": "cat", "collection_id": "col",
         }
 
     @pytest.mark.asyncio
-    async def test_resolver_false_skips_obfuscated_path(self, monkeypatch):
-        """When the resolver says False, the obfuscated task is NOT
+    async def test_resolver_false_skips_private_path(self, monkeypatch):
+        """When the resolver says False, the private task is NOT
         dispatched — control flow falls through to the classic path
         (which then exits early because the test stubs out _is_es_active)."""
         fake = _stub_resolver(monkeypatch, return_value=False)
@@ -86,7 +86,7 @@ class TestOnItemUpsertDispatch:
         )
 
         fake.assert_awaited_once_with("cat", "col")
-        # No dispatch happened — neither obfuscated nor classic.
+        # No dispatch happened — neither private nor classic.
         assert mod._dispatch_task.await_count == 0
 
     @pytest.mark.asyncio
@@ -143,7 +143,7 @@ class TestOnItemBulkUpsertDispatch:
         fake.assert_awaited_once_with("cat", "col")
         assert mod._dispatch_task.await_count == 5
         for call in mod._dispatch_task.await_args_list:
-            assert call.kwargs["task_type"] == "elasticsearch_obfuscated_index"
+            assert call.kwargs["task_type"] == "elasticsearch_private_index"
         dispatched_ids = [
             c.kwargs["inputs"]["geoid"]
             for c in mod._dispatch_task.await_args_list

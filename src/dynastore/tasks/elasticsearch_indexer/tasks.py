@@ -11,14 +11,14 @@ keyed by ``_routing=collection_id``. They are designed to be executed by
 the ``geospatial-elasticsearch-indexer`` Cloud Run Job (triggered by an
 admin reindex endpoint) and also run in the worker for smaller catalogs.
 
-Per-event obfuscated tasks (``elasticsearch_obfuscated_index`` /
-``elasticsearch_obfuscated_delete``) live in the obfuscated driver
+Per-event private tasks (``elasticsearch_private_index`` /
+``elasticsearch_private_delete``) live in the private driver
 subpackage at
-:mod:`dynastore.modules.storage.drivers.elasticsearch_obfuscated.tasks`.
-A bulk obfuscated reindex is intentionally not provided here — the
+:mod:`dynastore.modules.storage.drivers.elasticsearch_private.tasks`.
+A bulk private reindex is intentionally not provided here — the
 fresh-start cutover protocol (drop PG + delete ES indexes pre-deploy)
-makes operator-triggered bulk reindex unnecessary for the obfuscated
-driver. If one is needed it belongs in the obfuscated subpackage.
+makes operator-triggered bulk reindex unnecessary for the private
+driver. If one is needed it belongs in the private subpackage.
 """
 
 import json

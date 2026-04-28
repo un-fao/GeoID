@@ -16,7 +16,7 @@ delegates all CRUD and lifecycle operations to that driver.
 | `router.py` | `get_driver()` — cached resolution of config → driver instance |
 | `protocol.py` | Re-export of `StorageDriverProtocol` for convenience |
 | `drivers/postgresql.py` | PostgreSQL driver — wraps existing `ItemsProtocol` services |
-| `drivers/elasticsearch.py` | Elasticsearch drivers — SFEOS-backed full STAC + obfuscated |
+| `drivers/elasticsearch.py` | Elasticsearch drivers — SFEOS-backed full STAC + private |
 
 ## Public API
 
@@ -45,7 +45,7 @@ Set via `ConfigsProtocol` at platform, catalog, or collection level:
  "secondary_drivers": ["elasticsearch"]}
 
 {"primary_driver": "postgresql",
- "secondary_drivers": ["elasticsearch", "elasticsearch_obfuscated"]}
+ "secondary_drivers": ["elasticsearch", "elasticsearch_private"]}
 ```
 
 ## Drivers
@@ -60,7 +60,7 @@ query optimization, PostGIS, and streaming stay in the existing service layer.
 Delegates to SFEOS `DatabaseLogic` for full STAC compatibility. Supports items, collections,
 and catalogs. Registers as async event listener for secondary write fan-out.
 
-### Elasticsearch Obfuscated (`elasticsearch_obfuscated`)
+### Elasticsearch Private (`elasticsearch_private`)
 
 Stores `{geoid, catalog_id, collection_id}` with `dynamic: false` mapping. Only allows
 search by geoid. Self-manages DENY access policies for catalog-level access control.

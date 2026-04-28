@@ -22,7 +22,7 @@ CollectionStorageDriverProtocol implementation
     ├── IcebergStorageDriver          priority=20  (PyIceberg + PG SqlCatalog)
     ├── DuckDBStorageDriver           priority=30  (file-based analytical reads)
     ├── ElasticsearchStorageDriver    priority=50  (SFEOS DatabaseLogic)
-    └── ElasticsearchObfuscatedDriver priority=55  (geoid-only, DENY policies)
+    └── ElasticsearchPrivateDriver priority=55  (geoid-only, DENY policies)
 ```
 
 ### Key Design Decisions
@@ -370,11 +370,11 @@ Additional methods: `write_catalog()`, `delete_catalog()`, `write_collection()`,
 **Event handlers:** Registers as async event listener for catalog, collection, and item lifecycle.
 Only acts when listed in `StorageRoutingConfig.secondary_drivers`.
 
-### Elasticsearch Obfuscated Driver
+### Elasticsearch Private Driver
 
 | Property | Value |
 |----------|-------|
-| **driver_id** | `elasticsearch_obfuscated` |
+| **driver_id** | `elasticsearch_private` |
 | **priority** | 55 |
 | **capabilities** | `STREAMING` |
 | **dependencies** | `stac-fastapi-elasticsearch` (optional) |
@@ -383,9 +383,9 @@ Stores `{geoid, catalog_id, collection_id}` in a custom index with `dynamic: fal
 No geometry, no attributes, no spatial search — geoid lookup only.
 
 ```
-write_entities  → bulk index to obfuscated index
+write_entities  → bulk index to private index
 read_entities   → es.get() by geoid → Feature with null geometry
-ensure_storage  → create obfuscated index + apply DENY policy
+ensure_storage  → create private index + apply DENY policy
 drop_storage    → delete index + revoke DENY policy
 ```
 
@@ -718,7 +718,7 @@ src/dynastore/
 │       ├── postgresql.py                # PostgresStorageDriver
 │       ├── iceberg.py                   # IcebergStorageDriver
 │       ├── duckdb.py                    # DuckDBStorageDriver
-│       └── elasticsearch.py             # ES + ES Obfuscated drivers
+│       └── elasticsearch.py             # ES + ES Private drivers
 └── docs/components/
     └── storage_drivers.md               # This file
 ```

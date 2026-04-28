@@ -11,7 +11,7 @@ via `SearchProtocol` — the router has zero imports from any search implementat
 | `POST` | `/search` | Full-featured body-based item search with cursor pagination |
 | `GET/POST` | `/search/catalogs` | Keyword search over the catalog index |
 | `GET/POST` | `/search/collections` | Keyword search over the collection index |
-| `GET` | `/search/geoid/{geoid}` | Single geoid lookup in the obfuscated index |
+| `GET` | `/search/geoid/{geoid}` | Single geoid lookup in the private index |
 | `POST` | `/search/geoid` | Batch geoid lookup (`{geoids: [...], catalog_id?, limit?}`) |
 | `POST` | `/search/reindex/catalogs/{catalog_id}` | Trigger full catalog reindex (admin, 202) |
 | `POST` | `/search/reindex/catalogs/{catalog_id}/collections/{collection_id}` | Trigger single collection reindex (admin, 202) |

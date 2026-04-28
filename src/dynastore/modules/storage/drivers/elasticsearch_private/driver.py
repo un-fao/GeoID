@@ -13,7 +13,7 @@
 #    limitations under the License.
 
 """
-ItemsElasticsearchObfuscatedDriver — tenant-scoped ES storage driver.
+ItemsElasticsearchPrivateDriver — tenant-scoped ES storage driver.
 
 Writes the full feature (geometry + properties + external_id) into a
 per-tenant index whose name is owned by this subpackage
@@ -24,7 +24,7 @@ Manages DENY access policies in its own lifecycle. Reuses the shared
 SFEOS-backed helpers from :class:`_ElasticsearchBase` (parent class
 imported from the sibling regular driver module).
 
-Registered as ``storage_elasticsearch_obfuscated`` via entry points.
+Registered as ``storage_elasticsearch_private`` via entry points.
 """
 
 from __future__ import annotations
@@ -47,8 +47,8 @@ from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
 logger = logging.getLogger(__name__)
 
 
-class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
-    """Tenant-scoped Elasticsearch storage driver (a.k.a. "obfuscated").
+class ItemsElasticsearchPrivateDriver(_ElasticsearchBase, ModuleProtocol):
+    """Tenant-scoped Elasticsearch storage driver (a.k.a. "private").
 
     Writes the full feature (geometry + properties + external_id) into a
     per-tenant index ``{prefix}-geoid-{catalog_id}`` shared across all
@@ -70,7 +70,7 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
     Uses the raw ES client from SFEOS settings (not DatabaseLogic) since
     the index has a custom mapping not managed by SFEOS.
 
-    Registered as ``storage_elasticsearch_obfuscated`` via entry points.
+    Registered as ``storage_elasticsearch_private`` via entry points.
     """
 
     priority: int = 51
@@ -111,7 +111,7 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
                 decorator = events.async_event_listener(etype)
                 if decorator:
                     decorator(handler)
-            logger.info("ItemsElasticsearchObfuscatedDriver: event listeners registered.")
+            logger.info("ItemsElasticsearchPrivateDriver: event listeners registered.")
         yield
 
     # ------------------------------------------------------------------
@@ -128,16 +128,16 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> List[Feature]:
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.doc_builder import (
+        from dynastore.modules.storage.drivers.elasticsearch_private.doc_builder import (
             build_tenant_feature_doc,
         )
-        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.mappings import (
+        from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
             TENANT_FEATURE_MAPPING,
-            get_obfuscated_index_name,
+            get_private_index_name,
         )
         from dynastore.tools.geometry_simplify import simplify_to_fit
 
-        index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
+        index_name = get_private_index_name(_get_index_prefix(), catalog_id)
         items = self._normalize_entities(entities)
         es = self._get_client()
 
@@ -180,14 +180,14 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> AsyncIterator[Feature]:
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.mappings import (
-            get_obfuscated_index_name,
+        from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
+            get_private_index_name,
         )
 
         if not entity_ids:
             return
 
-        index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
+        index_name = get_private_index_name(_get_index_prefix(), catalog_id)
         es = self._get_client()
 
         if not await es.indices.exists(index=index_name):
@@ -229,14 +229,14 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
     ) -> int:
         if soft:
             raise SoftDeleteNotSupportedError(
-                "ItemsElasticsearchObfuscatedDriver does not support soft delete."
+                "ItemsElasticsearchPrivateDriver does not support soft delete."
             )
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.mappings import (
-            get_obfuscated_index_name,
+        from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
+            get_private_index_name,
         )
 
-        index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
+        index_name = get_private_index_name(_get_index_prefix(), catalog_id)
         es = self._get_client()
         deleted = 0
 
@@ -256,12 +256,12 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
         **kwargs,
     ) -> None:
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.mappings import (
+        from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
             TENANT_FEATURE_MAPPING,
-            get_obfuscated_index_name,
+            get_private_index_name,
         )
 
-        index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
+        index_name = get_private_index_name(_get_index_prefix(), catalog_id)
         es = self._get_client()
 
         if not await es.indices.exists(index=index_name):
@@ -282,14 +282,14 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
     ) -> None:
         if soft:
             raise SoftDeleteNotSupportedError(
-                "ItemsElasticsearchObfuscatedDriver does not support soft drop."
+                "ItemsElasticsearchPrivateDriver does not support soft drop."
             )
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.mappings import (
-            get_obfuscated_index_name,
+        from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
+            get_private_index_name,
         )
 
-        index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
+        index_name = get_private_index_name(_get_index_prefix(), catalog_id)
         es = self._get_client()
         await es.indices.delete(index=index_name, ignore_unavailable=True)
         await self._revoke_deny_policy(catalog_id)
@@ -304,7 +304,7 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
         db_resource: Optional[Any] = None,
     ) -> str:
         raise NotImplementedError(
-            "ItemsElasticsearchObfuscatedDriver.export_entities: not supported."
+            "ItemsElasticsearchPrivateDriver.export_entities: not supported."
         )
 
     # ------------------------------------------------------------------
@@ -323,16 +323,16 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
             return
         try:
             from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-            from dynastore.modules.storage.drivers.elasticsearch_obfuscated.doc_builder import (
+            from dynastore.modules.storage.drivers.elasticsearch_private.doc_builder import (
                 build_tenant_feature_doc,
             )
-            from dynastore.modules.storage.drivers.elasticsearch_obfuscated.mappings import (
+            from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
                 TENANT_FEATURE_MAPPING,
-                get_obfuscated_index_name,
+                get_private_index_name,
             )
             from dynastore.tools.geometry_simplify import simplify_to_fit
 
-            index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
+            index_name = get_private_index_name(_get_index_prefix(), catalog_id)
             es = self._get_client()
 
             if not await es.indices.exists(index=index_name):
@@ -354,7 +354,7 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
             await es.index(index=index_name, id=item_id, document=doc)
         except Exception as e:
             logger.error(
-                "ObfuscatedDriver: index failed for %s/%s/%s: %s",
+                "PrivateDriver: index failed for %s/%s/%s: %s",
                 catalog_id, collection_id, item_id, e,
             )
 
@@ -375,16 +375,16 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
 
         try:
             from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-            from dynastore.modules.storage.drivers.elasticsearch_obfuscated.doc_builder import (
+            from dynastore.modules.storage.drivers.elasticsearch_private.doc_builder import (
                 build_tenant_feature_doc,
             )
-            from dynastore.modules.storage.drivers.elasticsearch_obfuscated.mappings import (
+            from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
                 TENANT_FEATURE_MAPPING,
-                get_obfuscated_index_name,
+                get_private_index_name,
             )
             from dynastore.tools.geometry_simplify import simplify_to_fit
 
-            index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
+            index_name = get_private_index_name(_get_index_prefix(), catalog_id)
             es = self._get_client()
 
             if not await es.indices.exists(index=index_name):
@@ -411,7 +411,7 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
                 await es.bulk(body=bulk_body, request_timeout=60)
         except Exception as e:
             logger.error(
-                "ObfuscatedDriver: bulk index failed for %s/%s: %s",
+                "PrivateDriver: bulk index failed for %s/%s: %s",
                 catalog_id, collection_id, e,
             )
 
@@ -428,18 +428,18 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
             return
         try:
             from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-            from dynastore.modules.storage.drivers.elasticsearch_obfuscated.mappings import (
-                get_obfuscated_index_name,
+            from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
+                get_private_index_name,
             )
 
-            index_name = get_obfuscated_index_name(_get_index_prefix(), catalog_id)
+            index_name = get_private_index_name(_get_index_prefix(), catalog_id)
             es = self._get_client()
             try:
                 await es.delete(index=index_name, id=item_id)
             except Exception:
                 pass
         except Exception as e:
-            logger.error("ObfuscatedDriver: delete failed for %s: %s", item_id, e)
+            logger.error("PrivateDriver: delete failed for %s: %s", item_id, e)
 
     # ------------------------------------------------------------------
     # DENY policy management (self-contained)
@@ -457,10 +457,10 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
         if not perm:
             return
 
-        policy_id = f"obfuscated_deny_{catalog_id}"
+        policy_id = f"private_deny_{catalog_id}"
         deny_policy = Policy(
             id=policy_id,
-            description=f"Blocks public access to obfuscated catalog: {catalog_id}",
+            description=f"Blocks public access to private catalog: {catalog_id}",
             actions=["GET"],
             resources=[
                 f"/(catalog|stac|features|tiles|wfs|maps)/catalogs/{re.escape(catalog_id)}(/.*)?",
@@ -492,7 +492,7 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
             return
 
         try:
-            await perm.delete_policy(f"obfuscated_deny_{catalog_id}")
+            await perm.delete_policy(f"private_deny_{catalog_id}")
         except Exception:
             pass
 
@@ -527,7 +527,7 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
                         if type(self).__name__ in routing.secondary_driver_ids:  # type: ignore[attr-defined]
                             await self._apply_deny_policy(catalog_id)
                             logger.info(
-                                "ObfuscatedDriver: restored DENY for '%s'.",
+                                "PrivateDriver: restored DENY for '%s'.",
                                 catalog_id,
                             )
                     except Exception:
@@ -537,7 +537,7 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
                 offset += batch
         except Exception as e:
             logger.warning(
-                "ObfuscatedDriver: could not restore DENY policies: %s", e,
+                "PrivateDriver: could not restore DENY policies: %s", e,
             )
 
     async def location(
@@ -545,17 +545,17 @@ class ItemsElasticsearchObfuscatedDriver(_ElasticsearchBase, ModuleProtocol):
         catalog_id: str,
         collection_id: str,
     ) -> "StorageLocation":
-        """Return typed physical storage coordinates for this obfuscated index."""
+        """Return typed physical storage coordinates for this private index."""
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-        from dynastore.modules.storage.drivers.elasticsearch_obfuscated.mappings import (
-            get_obfuscated_index_name,
+        from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
+            get_private_index_name,
         )
         from dynastore.modules.storage.storage_location import StorageLocation
 
         prefix = _get_index_prefix()
-        index_name = get_obfuscated_index_name(prefix, catalog_id)
+        index_name = get_private_index_name(prefix, catalog_id)
         return StorageLocation(
-            backend="elasticsearch_obfuscated",
+            backend="elasticsearch_private",
             canonical_uri=f"es://{index_name}",
             identifiers={"index": index_name, "prefix": prefix, "catalog_id": catalog_id},
             display_label=index_name,

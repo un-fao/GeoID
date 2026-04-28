@@ -1,7 +1,7 @@
 """Verify _on_apply_es_collection_config dispatches a single-collection
 reindex with the right mode after an explicit override is written.
 
-Item D from the per-collection obfuscation spec — the apply-handler
+Item D from the per-collection private indexing spec — the apply-handler
 follow-up to PR #45 (config + resolver) and PR #47 (dispatch wiring).
 """
 from unittest.mock import AsyncMock, MagicMock
@@ -12,11 +12,11 @@ import pytest
 @pytest.fixture(autouse=True)
 def _clear_resolver_cache():
     from dynastore.modules.elasticsearch.es_collection_config import (
-        is_collection_obfuscated,
+        is_collection_private,
     )
-    is_collection_obfuscated.cache_clear()
+    is_collection_private.cache_clear()
     yield
-    is_collection_obfuscated.cache_clear()
+    is_collection_private.cache_clear()
 
 
 def _stub_es_module(monkeypatch, *, available: bool = True, raises: bool = False):
@@ -45,7 +45,7 @@ def _stub_es_module(monkeypatch, *, available: bool = True, raises: bool = False
 
 class TestApplyDispatchesReindex:
     @pytest.mark.asyncio
-    async def test_explicit_true_dispatches_obfuscated_reindex(self, monkeypatch):
+    async def test_explicit_true_dispatches_private_reindex(self, monkeypatch):
         from dynastore.modules.elasticsearch.es_collection_config import (
             ElasticsearchCollectionConfig,
             _on_apply_es_collection_config,
@@ -54,7 +54,7 @@ class TestApplyDispatchesReindex:
         fake = _stub_es_module(monkeypatch)
 
         await _on_apply_es_collection_config(
-            ElasticsearchCollectionConfig(obfuscated=True),
+            ElasticsearchCollectionConfig(private=True),
             catalog_id="cat", collection_id="col", db_resource=None,
         )
 
@@ -63,7 +63,7 @@ class TestApplyDispatchesReindex:
         assert kwargs["catalog_id"] == "cat"
         assert kwargs["collection_id"] == "col"
         # mode parameter dropped in PR-2b — bulk_reindex always targets the
-        # regular per-tenant items index now. Toggling obfuscated on the
+        # regular per-tenant items index now. Toggling private on the
         # config still flips the DENY policy elsewhere; the reindex itself
         # is unconditional.
         assert "mode" not in kwargs
@@ -78,7 +78,7 @@ class TestApplyDispatchesReindex:
         fake = _stub_es_module(monkeypatch)
 
         await _on_apply_es_collection_config(
-            ElasticsearchCollectionConfig(obfuscated=False),
+            ElasticsearchCollectionConfig(private=False),
             catalog_id="cat", collection_id="col2", db_resource=None,
         )
 
@@ -88,7 +88,7 @@ class TestApplyDispatchesReindex:
 
     @pytest.mark.asyncio
     async def test_revert_to_inherit_does_not_dispatch_reindex(self, monkeypatch):
-        """`obfuscated=None` is a revert-to-inherit; the catalog default is
+        """`private=None` is a revert-to-inherit; the catalog default is
         unchanged so existing index contents already match — no reindex
         dispatched.  Only the cache invalidation happens."""
         from dynastore.modules.elasticsearch.es_collection_config import (
@@ -99,7 +99,7 @@ class TestApplyDispatchesReindex:
         fake = _stub_es_module(monkeypatch)
 
         await _on_apply_es_collection_config(
-            ElasticsearchCollectionConfig(obfuscated=None),
+            ElasticsearchCollectionConfig(private=None),
             catalog_id="cat", collection_id="col3", db_resource=None,
         )
 
@@ -118,7 +118,7 @@ class TestApplyDispatchesReindex:
         # Must not raise — apply-handlers run inside config writes; a
         # crashing handler would block the write.
         await _on_apply_es_collection_config(
-            ElasticsearchCollectionConfig(obfuscated=True),
+            ElasticsearchCollectionConfig(private=True),
             catalog_id="cat", collection_id="col4", db_resource=None,
         )
 
@@ -140,7 +140,7 @@ class TestApplyDispatchesReindex:
 
         with caplog.at_level(logging.WARNING):
             await _on_apply_es_collection_config(
-                ElasticsearchCollectionConfig(obfuscated=True),
+                ElasticsearchCollectionConfig(private=True),
                 catalog_id="cat", collection_id="col5", db_resource=None,
             )
 
@@ -162,11 +162,11 @@ class TestApplyDispatchesReindex:
         fake = _stub_es_module(monkeypatch)
 
         await _on_apply_es_collection_config(
-            ElasticsearchCollectionConfig(obfuscated=True),
+            ElasticsearchCollectionConfig(private=True),
             catalog_id=None, collection_id="col", db_resource=None,
         )
         await _on_apply_es_collection_config(
-            ElasticsearchCollectionConfig(obfuscated=True),
+            ElasticsearchCollectionConfig(private=True),
             catalog_id="cat", collection_id=None, db_resource=None,
         )
 
