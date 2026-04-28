@@ -273,6 +273,42 @@ def get_assets_index_name(prefix: str, catalog_id: str) -> str:
     return f"{prefix}-assets-{catalog_id}"
 
 
+def get_collection_metadata_index(prefix: str, catalog_id: str) -> str:
+    """Per-catalog collection-metadata index. Owned by ``CollectionElasticsearchDriver``."""
+    return f"{prefix}_collection_metadata_{catalog_id}"
+
+
+def get_collection_metadata_wildcard(prefix: str) -> str:
+    """Wildcard pattern matching all per-catalog collection-metadata indexes."""
+    return f"{prefix}_collection_metadata_*"
+
+
+def get_search_index(
+    prefix: str,
+    entity_type: str,
+    catalog_id: str | None = None,
+) -> str:
+    """Resolve the read-side index for the search service.
+
+    Mirrors the writer-name helpers so search reads always target indexes
+    that drivers actually populate. Distinct from ``get_index_name`` which
+    returns the singleton bootstrap names used at lifespan time only.
+    """
+    if entity_type == "item":
+        return (
+            get_tenant_items_index(prefix, catalog_id)
+            if catalog_id
+            else get_public_items_alias(prefix)
+        )
+    if entity_type == "collection":
+        return (
+            get_collection_metadata_index(prefix, catalog_id)
+            if catalog_id
+            else get_collection_metadata_wildcard(prefix)
+        )
+    return get_index_name(prefix, entity_type)
+
+
 def get_log_index_name(prefix: str) -> str:
     """Return the name of the logs index."""
     return f"{prefix}-logs"

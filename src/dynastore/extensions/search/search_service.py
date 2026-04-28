@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from dynastore.extensions import ExtensionProtocol
 
 from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
-from dynastore.modules.elasticsearch.mappings import get_index_name
+from dynastore.modules.elasticsearch.mappings import get_search_index
 from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
     get_private_index_name,
 )
@@ -317,7 +317,7 @@ class SearchService(ExtensionProtocol):
         Supports: q (full-text, multilingual), bbox, intersects, datetime,
                   ids, collections, sortby, and cursor-based pagination via token.
         """
-        index = get_index_name(_get_index_prefix(), "item")
+        index = get_search_index(_get_index_prefix(), "item", body.catalog_id)
         sort = _parse_sort(body.sortby)
         query = _build_item_query(body)
 
@@ -336,7 +336,7 @@ class SearchService(ExtensionProtocol):
                 logger.warning(f"Ignoring invalid search token: {body.token!r}")
 
         es = self._get_es()
-        resp = await es.search(index=index, body=es_body)
+        resp = await es.search(index=index, body=es_body, ignore_unavailable=True)  # type: ignore[call-arg]
 
         hits = resp.get("hits", {})
         total = hits.get("total", {}).get("value", 0)
@@ -586,7 +586,7 @@ class SearchService(ExtensionProtocol):
         entity_type: str,
         base_url: str = "",
     ) -> GenericCollection:
-        index = get_index_name(_get_index_prefix(), entity_type)
+        index = get_search_index(_get_index_prefix(), entity_type, body.catalog_id)
         query = _build_generic_query(body)
 
         es_body: Dict[str, Any] = {
@@ -602,7 +602,7 @@ class SearchService(ExtensionProtocol):
                 pass
 
         es = self._get_es()
-        resp = await es.search(index=index, body=es_body)
+        resp = await es.search(index=index, body=es_body, ignore_unavailable=True)  # type: ignore[call-arg]
 
         raw_hits = resp.get("hits", {}).get("hits", [])
         entities = [h["_source"] for h in raw_hits]
