@@ -18,6 +18,7 @@
 
 import logging
 import asyncio
+import re
 from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -85,28 +86,92 @@ class BucketService:
             raise RuntimeError("ConfigsProtocol not available.")
         return mgr
 
+    GCS_BUCKET_NAME_MAX_LEN: int = 63
+    _HASH_LEN: int = 8
+    # GCS rejects bucket names containing "google" or close misspellings.
+    # See https://cloud.google.com/storage/docs/buckets#naming
+    _GCS_FORBIDDEN_SUBSTRINGS: tuple = ("google", "g00gle", "g0ogle", "go0gle", "googl3")
+    # Permitted bucket-name chars (lowercase letters, digits, '.', '-', '_').
+    # NOTE: '_' is normalised to '-' before validation so it never reaches
+    # this regex; we keep it in the class for completeness/documentation.
+    _GCS_VALID_CHAR_PATTERN = re.compile(r"^[a-z0-9._-]+$")
+
     def generate_bucket_name(self, catalog_id: str, physical_schema: Optional[str] = None) -> str:
         """Generates the deterministic GCS bucket name for a catalog.
 
-        Format: {6-char project hash}-{physical schema}
-        e.g.  ab12cd-s_2ka8fbc3
+        Format: ``{project_id}-{identifier}`` where *identifier* is the
+        physical schema (preferred) or the catalog_id, lowercased and
+        with underscores translated to dashes.
 
-        The 6-char project hash gives sufficient global uniqueness across GCP projects
-        (1 in ~16M collision chance). The physical schema is already short (10 chars,
-        e.g. s_2ka8fbc3) so the full name is ≤ 18 chars — well within the 63-char limit.
-        The bucket name is identical to the DB schema name for easy cross-reference.
+        Length policy (GCS caps bucket names at 63 chars):
+        - Common case: ``{project_id}-{identifier}`` fits → use as-is.
+        - Identifier overflows: keep full project_id, truncate identifier
+          and append an 8-char SHA1 of the original identifier so distinct
+          identifiers never collide.
+        - Project_id itself overflows the 1/3 budget (rare — GCP caps at
+          30 chars): truncate project_id to ~1/3 of the budget keeping a
+          readable head + 8-char hash, give identifier the remaining ~2/3
+          with its own 8-char hash for collision safety.
+
+        Validation (fail-fast at name generation rather than at GCS provision):
+        - Empty identifier → ValueError
+        - Identifier contains chars outside ``[a-z0-9._-]`` → ValueError
+        - Identifier contains ``google`` or close misspellings → ValueError
+          (GCS reserves these and would reject the bucket creation)
+        - After truncation, trailing ``-`` or ``.`` is trimmed (GCS forbids
+          ``.-`` adjacency and bucket names must end with letter/digit).
+
+        Backwards compatibility: existing buckets are unaffected — their
+        names are persisted in ``catalogs.bucket_name`` and looked up
+        via :func:`gcp_db.get_bucket_for_catalog_query`. Only newly
+        provisioned catalogs use this scheme.
         """
         import hashlib
         if not self.project_id:
             raise RuntimeError("GCP Project ID not available.")
-        proj_hash = hashlib.sha1(self.project_id.encode()).hexdigest()[:6]
-        identifier = (physical_schema or catalog_id).lower().replace("_", "-")
-        bucket_name = f"{proj_hash}-{identifier}"
-        # Safety check — should never exceed limit with our short schema names
-        if len(bucket_name) > 63:
-            id_hash = hashlib.sha1(identifier.encode()).hexdigest()[:8]
-            bucket_name = f"{proj_hash}-{identifier[:54]}-{id_hash}"
-        return bucket_name
+        raw_id = physical_schema or catalog_id
+        if not raw_id:
+            raise ValueError(
+                "Cannot generate bucket name: both physical_schema and catalog_id are empty."
+            )
+        prefix = self.project_id.lower()
+        identifier = raw_id.lower().replace("_", "-")
+        if not self._GCS_VALID_CHAR_PATTERN.match(identifier):
+            raise ValueError(
+                f"Identifier {raw_id!r} contains characters invalid for GCS bucket names "
+                f"(allowed: lowercase letters, digits, '.', '-', '_')."
+            )
+        for forbidden in self._GCS_FORBIDDEN_SUBSTRINGS:
+            if forbidden in identifier:
+                raise ValueError(
+                    f"Identifier {raw_id!r} contains GCS-reserved substring "
+                    f"{forbidden!r}; bucket names cannot contain 'google' or close misspellings."
+                )
+        bucket_name = f"{prefix}-{identifier}"
+        if len(bucket_name) <= self.GCS_BUCKET_NAME_MAX_LEN:
+            return bucket_name
+
+        id_hash = hashlib.sha1(identifier.encode()).hexdigest()[:self._HASH_LEN]
+        # Reserve room: prefix + '-' + truncated_id + '-' + id_hash
+        overhead = 2 + self._HASH_LEN
+        project_min = self.GCS_BUCKET_NAME_MAX_LEN // 3  # 21 chars
+        identifier_cap = (self.GCS_BUCKET_NAME_MAX_LEN * 2) // 3  # 42 chars
+
+        # Path A: full project_id fits with at least 1 char of identifier.
+        max_id = self.GCS_BUCKET_NAME_MAX_LEN - len(prefix) - overhead
+        if len(prefix) <= project_min * 2 and max_id >= 1:
+            max_id = min(max_id, identifier_cap - self._HASH_LEN - 1)
+            truncated_id = identifier[:max_id].rstrip("-.") or id_hash[:1]
+            return f"{prefix}-{truncated_id}-{id_hash}"
+
+        # Path B: project_id is itself too long. Keep ~1/3 budget readable
+        # head + 8-char project hash; identifier takes the remaining ~2/3.
+        proj_head_len = project_min - self._HASH_LEN - 1
+        proj_hash = hashlib.sha1(prefix.encode()).hexdigest()[:self._HASH_LEN]
+        truncated_prefix = f"{prefix[:proj_head_len].rstrip('-.')}-{proj_hash}"
+        max_id = self.GCS_BUCKET_NAME_MAX_LEN - len(truncated_prefix) - overhead
+        truncated_id = identifier[:max_id].rstrip("-.") or id_hash[:1]
+        return f"{truncated_prefix}-{truncated_id}-{id_hash}"
 
     async def get_storage_identifier(self, catalog_id: str) -> Optional[str]:
         """Returns the GCS path (bucket name) for a catalog's root folder."""
