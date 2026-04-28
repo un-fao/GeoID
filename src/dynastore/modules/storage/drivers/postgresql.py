@@ -174,6 +174,7 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         *,
         entity_ids: Optional[List[str]] = None,
         request: Optional[QueryRequest] = None,
+        context: Optional[Dict[str, Any]] = None,  # noqa: ARG002
         limit: int = 100,
         offset: int = 0,
         db_resource: Optional[Any] = None,
