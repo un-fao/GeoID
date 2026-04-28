@@ -113,6 +113,13 @@ async def setup_aggregation_data(
     catalogs = get_protocol(CatalogsProtocol)
 
     async with managed_transaction(app_lifespan.engine) as conn:
+        # Lazy-activation: a freshly-created collection has no physical_table
+        # until the first POST /items (or explicit activate). Activating
+        # eagerly here so resolve_physical_table returns a real table name
+        # and the diagnostic count query has something to point at.
+        await catalogs.activate_collection(
+            catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
+        )
         schema = await catalogs.resolve_physical_schema(catalog_id, ctx=DriverContext(db_resource=conn))
         table = await catalogs.resolve_physical_table(
             catalog_id, collection_id, db_resource=conn
