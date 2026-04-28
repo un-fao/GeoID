@@ -385,6 +385,11 @@ class GCPModule(
             register_plugin(self._tile_bucket_storage)
             register_plugin(self._tile_archive_storage)
 
+            from dynastore.modules.gcp.asset_sync import (
+                register_bucket_annotation_patcher,
+            )
+            register_bucket_annotation_patcher()
+
             yield
         finally:
             logger.info("GCP Module: Exiting lifespan - closing all clients.")
