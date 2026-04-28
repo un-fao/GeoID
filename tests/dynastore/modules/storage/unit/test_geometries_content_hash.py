@@ -22,6 +22,9 @@ import hashlib
 from shapely import wkb
 from shapely.geometry import Polygon
 
+from dynastore.modules.storage.drivers.pg_sidecars.base import (
+    HUB_INTERNAL_COLUMNS,
+)
 from dynastore.modules.storage.drivers.pg_sidecars.geometries import (
     GeometriesSidecar,
 )
@@ -118,3 +121,33 @@ class TestContentHashPropagation:
         sidecar.prepare_upsert_payload(feat_b, ctx_b)
 
         assert ctx_a["content_hash"] != ctx_b["content_hash"]
+
+
+class TestPlumbingFieldsHiddenByDefault:
+    """``content_hash`` and ``geohash`` are write-policy plumbing — they
+    must be queryable at the SQL layer (so the CONTENT_HASH / GEOHASH
+    matchers and the ``skip_if_unchanged_content_hash`` gate work) but
+    must not surface in the public Feature output by default. Hiding is
+    enforced via the internal-column sets consulted by
+    ``AttributesSidecar.map_row_to_feature``'s JSONB merge."""
+
+    def test_hub_internal_columns_includes_content_hash(self):
+        assert "content_hash" in HUB_INTERNAL_COLUMNS, (
+            "content_hash leaks into Feature.properties when the attributes "
+            "sidecar runs in JSONB mode unless it is in HUB_INTERNAL_COLUMNS"
+        )
+
+    def test_geometries_sidecar_internal_columns_includes_geohash(self):
+        sidecar = _make_sidecar()
+        internal = sidecar.get_internal_columns()
+        assert "geohash" in internal, (
+            "geohash is a Postgres-generated ST_GeoHash column; if it ever "
+            "becomes part of a SELECT projection it must not flow into "
+            "Feature.properties — list it as an internal column"
+        )
+
+    def test_geom_and_bbox_geom_still_internal(self):
+        # Regression guard: the hiding addition must not drop existing entries.
+        sidecar = _make_sidecar()
+        internal = sidecar.get_internal_columns()
+        assert {"geom", "bbox_geom"}.issubset(internal)
