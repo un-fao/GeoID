@@ -239,8 +239,10 @@ class CatalogModule(ModuleProtocol):
             # blocks (one less coupling between drivers and the events bus).
             from dynastore.modules.catalog.asset_sync import (
                 register_asset_entity_sync_subscriber,
+                register_item_reverse_cascade_subscriber,
             )
             register_asset_entity_sync_subscriber()
+            register_item_reverse_cascade_subscriber()
 
             # 4. Initialize Storage & Schemas
             # Hub/sidecar creation is handled by ItemsPostgresqlDriver.ensure_storage()

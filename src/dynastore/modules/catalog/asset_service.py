@@ -974,15 +974,19 @@ class AssetService(AssetsProtocol):
                                 resolved.driver_id, a["catalog_id"], a["asset_id"], err,
                             )
 
-        # Emit events
+        # Emit events. ``propagate`` is stamped on each payload so the
+        # ``ItemReverseCascadeSubscriber`` can opt into the cascade only
+        # when the caller asked for it.
         if self._event_emitter:
             event_type = (
                 AssetEventType.ASSET_HARD_DELETED if hard
                 else AssetEventType.ASSET_DELETED
             )
             for a in asset_rows:
+                doc = dict(a)
+                doc["propagate"] = bool(propagate)
                 await self._event_emitter(
-                    event_type, dict(a), db_resource=db_resource,
+                    event_type, doc, db_resource=db_resource,
                 )
 
         return rowcount

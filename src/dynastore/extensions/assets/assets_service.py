@@ -127,6 +127,13 @@ class AssetService(ExtensionProtocol):
         self.app = app
         self.router = APIRouter(prefix="/assets", tags=["Assets"])
         self._setup_routes()
+        # Register the backend-agnostic UploadAssetProcess so the parametric
+        # /processes/{id}/execution dispatch surface picks it up alongside
+        # the backend-owned ``download`` processes from modules/{gcp,local}.
+        from dynastore.extensions.assets.asset_processes import UploadAssetProcess
+        from dynastore.tools.discovery import register_plugin
+        self._upload_process = UploadAssetProcess()
+        register_plugin(self._upload_process)
 
     def _setup_routes(self):
         self.router.add_api_route(
