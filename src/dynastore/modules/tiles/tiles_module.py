@@ -1166,7 +1166,7 @@ class PGTileArchive(TileArchiveStorageProtocol):
             return None
 
         try:
-            from pmtiles.reader import Reader, MemorySource  # type: ignore[import]
+            from pmtiles.reader import Reader, MemorySource
 
             reader = Reader(MemorySource(data))
             return reader.get(z, x, y)
