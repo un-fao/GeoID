@@ -6,15 +6,22 @@ opening a new transaction the engine branch of ``managed_transaction`` issues a
 best-effort ``rollback()`` to reset the checkout, and on
 ``PendingRollbackError``/``InvalidRequestError`` invalidates the connection
 and retries with a fresh one from the pool.
+
+This module also covers the bounded ``retry_on_transient_connect`` wrapper
+applied to engine connection acquisition: a brief ``OperationalError`` /
+``asyncio.TimeoutError`` / ``OSError`` during pool checkout triggers
+exponential-backoff retry instead of crashing the caller. Body errors raised
+inside ``async with managed_transaction(...)`` are NOT retried because DML/DQL
+idempotency is the caller's responsibility.
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import List
+from typing import Any, List, Optional, Sequence
 
 import pytest
-from sqlalchemy.exc import PendingRollbackError
+from sqlalchemy.exc import OperationalError, PendingRollbackError
 
 
 class _FakeTx:
@@ -57,14 +64,34 @@ class _FakeConn:
         self._log.append("begin")
         return _FakeTx()
 
+    def in_transaction(self) -> bool:
+        # Always report no in-flight tx — the executor-workflow tests don't
+        # exercise the post-execute paranoid-rollback path.
+        return False
+
 
 class _FakeEngine:
-    def __init__(self, conns: List[_FakeConn]):
+    def __init__(
+        self,
+        conns: List[_FakeConn],
+        *,
+        connect_errors: Optional[Sequence[Any]] = None,
+    ):
+        """connect_errors[i] is raised on the i-th ``connect()`` call instead of
+        returning the next conn. ``None`` entries pass through to the conn list."""
         self._conns = list(conns)
+        self._connect_errors = list(connect_errors or [])
         self.connect_calls = 0
 
     async def connect(self):
+        idx = self.connect_calls
         self.connect_calls += 1
+        if idx < len(self._connect_errors):
+            err = self._connect_errors[idx]
+            if err is not None:
+                if isinstance(err, type):
+                    raise err("simulated transient connect failure")
+                raise err
         return self._conns.pop(0)
 
 
@@ -124,3 +151,161 @@ async def test_pool_hygiene_is_cheap_no_op_on_clean_connection(monkeypatch):
     assert clean.invalidated_count == 0
     assert clean.begin_count == 1
     assert clean.closed is True
+
+
+# ---------------------------------------------------------------------------
+# retry_on_transient_connect — applied via _acquire_async_engine_connection
+# ---------------------------------------------------------------------------
+
+
+def _patch_async_engine(monkeypatch):
+    """Make qe.AsyncEngine accept _FakeEngine and treat it as async."""
+    from dynastore.modules.db_config import query_executor as qe
+
+    monkeypatch.setattr(qe, "_get_wire_identity", lambda c: c, raising=True)
+    monkeypatch.setattr(qe, "AsyncEngine", _FakeEngine, raising=True)
+    monkeypatch.setattr(qe, "is_async_resource", lambda r: True, raising=True)
+    return qe
+
+
+def _silence_sleep(monkeypatch, qe):
+    """Replace asyncio.sleep inside query_executor with a no-op so the
+    decorator's exponential backoff doesn't slow tests."""
+    async def _fast_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(qe.asyncio, "sleep", _fast_sleep, raising=True)
+
+
+def _make_op_error() -> OperationalError:
+    return OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+
+@pytest.mark.asyncio
+async def test_connect_retries_on_operational_error_then_succeeds(monkeypatch, caplog):
+    qe = _patch_async_engine(monkeypatch)
+    _silence_sleep(monkeypatch, qe)
+
+    log: List[str] = []
+    clean = _FakeConn(poisoned=False, log=log)
+    engine = _FakeEngine([clean], connect_errors=[_make_op_error()])
+
+    with caplog.at_level("WARNING"):
+        async with qe.managed_transaction(engine) as conn:
+            assert conn is clean
+
+    assert engine.connect_calls == 2  # one fail, one success
+    assert clean.rollback_count == 1
+    assert clean.begin_count == 1
+    assert clean.closed is True
+    assert any("retry_on_transient_connect" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_connect_exhausts_all_retries_and_raises(monkeypatch):
+    qe = _patch_async_engine(monkeypatch)
+    _silence_sleep(monkeypatch, qe)
+
+    # All 5 attempts fail with OperationalError (the default retry budget)
+    engine = _FakeEngine([], connect_errors=[_make_op_error()] * 5)
+
+    with pytest.raises(OperationalError):
+        async with qe.managed_transaction(engine):
+            pass  # body should never run
+
+    assert engine.connect_calls == 5
+
+
+@pytest.mark.asyncio
+async def test_body_error_is_not_retried(monkeypatch):
+    """Connect succeeds; the user body raises OperationalError. Retry must NOT
+    fire, because retry_on_transient_connect wraps acquisition only — DML/DQL
+    inside the body are the caller's responsibility (idempotency, ON CONFLICT)."""
+    qe = _patch_async_engine(monkeypatch)
+    _silence_sleep(monkeypatch, qe)
+
+    log: List[str] = []
+    clean = _FakeConn(poisoned=False, log=log)
+    engine = _FakeEngine([clean])
+
+    with pytest.raises(OperationalError):
+        async with qe.managed_transaction(engine):
+            raise _make_op_error()
+
+    assert engine.connect_calls == 1  # exactly one acquisition, no retry
+    assert clean.closed is True
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_from_connect_propagates(monkeypatch):
+    """A non-transient exception class (e.g. RuntimeError from a programmer
+    bug in the engine) must propagate immediately without retry."""
+    qe = _patch_async_engine(monkeypatch)
+    _silence_sleep(monkeypatch, qe)
+
+    engine = _FakeEngine([], connect_errors=[RuntimeError])
+
+    with pytest.raises(RuntimeError):
+        async with qe.managed_transaction(engine):
+            pass
+
+    assert engine.connect_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_executor_workflow_uses_connect_retry(monkeypatch, caplog):
+    """``BaseExecutor._execute_async_workflow`` (the engine-passed entry point
+    for DQLQuery / DDLQuery) must also route its connect through
+    _acquire_async_engine_connection so platform-wide retry applies uniformly."""
+    qe = _patch_async_engine(monkeypatch)
+    _silence_sleep(monkeypatch, qe)
+
+    log: List[str] = []
+    clean = _FakeConn(poisoned=False, log=log)
+    engine = _FakeEngine([clean], connect_errors=[_make_op_error()])
+
+    captured = {}
+
+    async def _fake_build_and_execute_async(self_, conn, raw_params):
+        captured["conn"] = conn
+        return "result"
+
+    monkeypatch.setattr(
+        qe.BaseExecutor,
+        "_build_and_execute_async",
+        _fake_build_and_execute_async,
+        raising=True,
+    )
+
+    class _NoopLockScope:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        qe, "_connection_lock_scope", lambda c: _NoopLockScope(), raising=True
+    )
+
+    # Build a minimal BaseExecutor subclass to exercise the engine-branch
+    class _StubExecutor(qe.BaseExecutor):
+        def _execute_sync(self, conn, query_obj, params):
+            raise NotImplementedError
+
+        async def _execute_async(self, conn, query_obj, params):
+            raise NotImplementedError
+
+    # Instantiate without going through from_template (avoids DDL-inference paths)
+    executor = _StubExecutor.__new__(_StubExecutor)
+    executor.query_builder_strategy = None  # not used by our patched method
+    executor.result_handler = None
+    executor.post_processors = []
+
+    with caplog.at_level("WARNING"):
+        out = await executor._execute_async_workflow(engine, {})
+
+    assert out == "result"
+    assert captured["conn"] is clean
+    assert engine.connect_calls == 2
+    assert any("retry_on_transient_connect" in r.message for r in caplog.records)

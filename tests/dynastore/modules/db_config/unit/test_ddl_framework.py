@@ -280,3 +280,126 @@ def test_call_existence_check_sync_returns_false_on_async_check_returning_false(
     executor._raw_params = {}
 
     assert executor._call_existence_check_sync(_FakeConn(), {}) is False
+
+
+# ---------------------------------------------------------------------------
+# retry_on_transient_connect — decorator-level coverage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retry_on_transient_connect_retries_then_succeeds(monkeypatch):
+    """First call raises OperationalError, second returns. Decorator must
+    retry once and surface the success value."""
+    from dynastore.modules.db_config import query_executor as qe
+    from sqlalchemy.exc import OperationalError
+
+    async def _fast_sleep(_):
+        return None
+
+    monkeypatch.setattr(qe.asyncio, "sleep", _fast_sleep, raising=True)
+
+    calls = {"n": 0}
+
+    @qe.retry_on_transient_connect()
+    async def _flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OperationalError("x", {}, Exception("connection refused"))
+        return "ok"
+
+    assert await _flaky() == "ok"
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_retry_on_transient_connect_does_not_retry_programming_error(monkeypatch):
+    """ProgrammingError signals a real SQL bug — must propagate immediately."""
+    from dynastore.modules.db_config import query_executor as qe
+    from sqlalchemy.exc import ProgrammingError
+
+    async def _fast_sleep(_):
+        return None
+
+    monkeypatch.setattr(qe.asyncio, "sleep", _fast_sleep, raising=True)
+
+    calls = {"n": 0}
+
+    @qe.retry_on_transient_connect()
+    async def _broken():
+        calls["n"] += 1
+        raise ProgrammingError("CREATE TABLE bogus", {}, Exception("syntax error"))
+
+    with pytest.raises(ProgrammingError):
+        await _broken()
+    assert calls["n"] == 1  # exactly one call, no retry
+
+
+@pytest.mark.asyncio
+async def test_retry_on_transient_connect_does_not_retry_integrity_error(monkeypatch):
+    """IntegrityError is a real constraint violation — must propagate."""
+    from dynastore.modules.db_config import query_executor as qe
+    from sqlalchemy.exc import IntegrityError
+
+    async def _fast_sleep(_):
+        return None
+
+    monkeypatch.setattr(qe.asyncio, "sleep", _fast_sleep, raising=True)
+
+    calls = {"n": 0}
+
+    @qe.retry_on_transient_connect()
+    async def _violator():
+        calls["n"] += 1
+        raise IntegrityError("INSERT", {}, Exception("unique constraint"))
+
+    with pytest.raises(IntegrityError):
+        await _violator()
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_on_transient_connect_exhausts_budget_and_raises(monkeypatch):
+    """All 5 attempts fail → final exception propagates with original type
+    and message preserved."""
+    from dynastore.modules.db_config import query_executor as qe
+
+    async def _fast_sleep(_):
+        return None
+
+    monkeypatch.setattr(qe.asyncio, "sleep", _fast_sleep, raising=True)
+
+    calls = {"n": 0}
+
+    @qe.retry_on_transient_connect(max_retries=5)
+    async def _always_times_out():
+        calls["n"] += 1
+        raise asyncio.TimeoutError("connect timeout")
+
+    with pytest.raises(asyncio.TimeoutError, match="connect timeout"):
+        await _always_times_out()
+    assert calls["n"] == 5
+
+
+@pytest.mark.asyncio
+async def test_retry_on_transient_connect_catches_oserror(monkeypatch):
+    """OSError (e.g. ECONNREFUSED) must be in the retryable set so DB-still-warming
+    doesn't crash the caller's lifespan."""
+    from dynastore.modules.db_config import query_executor as qe
+
+    async def _fast_sleep(_):
+        return None
+
+    monkeypatch.setattr(qe.asyncio, "sleep", _fast_sleep, raising=True)
+
+    calls = {"n": 0}
+
+    @qe.retry_on_transient_connect()
+    async def _socket_blip():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise OSError(111, "Connection refused")
+        return "recovered"
+
+    assert await _socket_blip() == "recovered"
+    assert calls["n"] == 3

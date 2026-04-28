@@ -20,6 +20,8 @@ import inspect
 import re
 import logging
 import asyncio
+import functools
+import random
 import weakref
 import contextvars
 import hashlib
@@ -45,6 +47,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.exc import (
     ProgrammingError,
     IntegrityError,
+    InterfaceError,
     OperationalError,
     PendingRollbackError,
     InvalidRequestError,
@@ -414,9 +417,12 @@ class BaseExecutor:
 
     async def _execute_async_workflow(self, db_resource: DbAsyncResource, raw_params):
         if isinstance(db_resource, AsyncEngine):
-            # Manual management to extend lock scope over close()
-            # This ensures that connection cleanup (rollback/reset) happens while we hold the wire lock.
-            conn = await db_resource.connect()
+            # Manual management to extend lock scope over close().
+            # Connection acquisition routes through _acquire_async_engine_connection
+            # so transient pool/connect failures (DB warming, OperationalError,
+            # asyncio.TimeoutError, OSError) trigger bounded retry instead of
+            # crashing the caller's lifespan / request.
+            conn = await _acquire_async_engine_connection(db_resource)
             try:
                 async with _connection_lock_scope(conn):
                     result = await self._build_and_execute_async(conn, raw_params)
@@ -851,7 +857,19 @@ class DDLExecutor(BaseExecutor):
         stmt_hash = hashlib.sha256(combined.encode()).hexdigest()[:16]
         lock_id = _get_stable_lock_id(f"ddl.{stmt_hash}")
 
-        try:
+        # Inner attempt: open inner tx + acquire advisory lock + recheck +
+        # execute. Wrapped in retry_on_transient_connect so a brief
+        # OperationalError / TimeoutError between attempts triggers a
+        # bounded retry. CRITICAL: the retry sleep happens AFTER this
+        # closure has returned, which means the inner managed_transaction
+        # has exited and the xact-scoped advisory lock has been released
+        # — we never sleep while holding the lock (which would re-create
+        # the consumer-lock pile-up bug fixed earlier on this branch).
+        # Each retry attempt runs the existence re-check first, so a peer
+        # that won the race during the prior attempt's failure is
+        # detected and the DDL is skipped.
+        @retry_on_transient_connect()
+        async def _attempt_ddl():
             async with managed_transaction(conn) as tx_conn:
                 assert isinstance(tx_conn, (AsyncConnection, AsyncSession)), "DDL async executor requires async connection"
                 # 2. Re-check after acquiring transaction but before locking
@@ -865,7 +883,7 @@ class DDLExecutor(BaseExecutor):
                         res = await self._call_existence_check(tx_conn, params)
 
                     if res:
-                        return await self._apply_post_processing_async(None)
+                        return True  # already exists
 
                 # 3. Try-lock first for fast failure
                 result = await tx_conn.execute(
@@ -886,8 +904,7 @@ class DDLExecutor(BaseExecutor):
                     if self.existence_check:
                         res_post = await self._call_existence_check(tx_conn, params)
                         if res_post:
-                            return await self._apply_post_processing_async(None)
-                    # Object still doesn't exist — fall through and create it.
+                            return True  # peer created it during our wait
 
                 # Timeout guard to prevent DDL hangs
                 await tx_conn.execute(text(f"SET LOCAL statement_timeout = '{_DDL_STATEMENT_TIMEOUT}'"))
@@ -899,7 +916,10 @@ class DDLExecutor(BaseExecutor):
                         await tx_conn.execute(text(stmt), params)
                 else:
                     await tx_conn.execute(query_obj, params)
+                return False  # we created it
 
+        try:
+            await _attempt_ddl()
             return await self._apply_post_processing_async(None)
         except Exception as e:
             self._handle_db_exception(e)
@@ -937,6 +957,120 @@ class GeoDQLExecutor(DQLExecutor):
 # --- Public API Functions ---
 
 
+# Exception types that signal a transient failure to *acquire* a database
+# connection (engine.connect()) or to execute idempotent DDL: pool timeout,
+# socket reset, server still warming up, asyncpg wire-protocol churn, etc.
+# Distinct from `retry_on_lock_conflict`, which targets in-flight lock /
+# deadlock contention on an already-acquired connection. Kept narrow on
+# purpose: IntegrityError / ProgrammingError / DataError MUST NOT be in
+# this set — they signal real bugs and must surface, not retry.
+_TRANSIENT_CONNECT_EXCEPTIONS: tuple = (
+    asyncio.TimeoutError,
+    OSError,
+    OperationalError,
+    InterfaceError,
+)
+
+
+def retry_on_transient_connect(
+    max_retries: int = 5,
+    base_delay: float = 0.5,
+    max_delay: float = 8.0,
+    jitter: float = 0.25,
+):
+    """Retry a coroutine on transient connection-acquisition / DDL infra errors.
+
+    Distinct from :func:`retry_on_lock_conflict` — the latter retries inside
+    a held connection on lock/deadlock; this one retries the *infrastructure*
+    layer (pool checkout, wire connect, idempotent DDL execution against a
+    briefly unavailable server). Composes safely with `retry_on_lock_conflict`
+    on the same callable; total worst-case attempts are the product, but in
+    practice the two failure modes do not overlap on the same call.
+
+    Backoff: ``base_delay * 2 ** attempt``, clamped at ``max_delay``, with
+    ±``jitter`` multiplicative spread. Five attempts at the defaults give
+    ~0.5/1/2/4/8s spaced retries (~15s budget).
+
+    Only retries the exception types in :data:`_TRANSIENT_CONNECT_EXCEPTIONS`.
+    Anything else propagates immediately so genuine bugs are not masked.
+    """
+
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            last_err: Optional[BaseException] = None
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except _TRANSIENT_CONNECT_EXCEPTIONS as exc:
+                    last_err = exc
+                    if attempt == max_retries - 1:
+                        raise
+                    delay = min(base_delay * (2 ** attempt), max_delay)
+                    if jitter:
+                        delay *= random.uniform(1.0 - jitter, 1.0 + jitter)
+                    logger.warning(
+                        "retry_on_transient_connect: %s.%s attempt %d/%d failed "
+                        "(%s: %s); retrying in %.2fs",
+                        getattr(func, "__module__", "<unknown>"),
+                        getattr(func, "__qualname__", getattr(func, "__name__", "<fn>")),
+                        attempt + 1,
+                        max_retries,
+                        type(exc).__name__,
+                        exc,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+            assert last_err is not None
+            raise last_err
+
+        return wrapper
+
+    return decorator
+
+
+@retry_on_transient_connect()
+async def _acquire_async_engine_connection(engine: AsyncEngine) -> AsyncConnection:
+    """Pool-hygienized async connection from an :class:`AsyncEngine`.
+
+    A connection returned from the pool may carry a pending rollback from a
+    prior task that exited without cleanly closing its transaction. We issue
+    a cheap rollback as reset-on-checkout to eliminate that poisoning before
+    the caller opens a new transaction. On
+    :class:`PendingRollbackError` / :class:`InvalidRequestError` we invalidate
+    the connection and retry once with a fresh one; the wire_id is logged so
+    the upstream leak can be located.
+
+    The :func:`retry_on_transient_connect` decorator wraps this whole
+    sequence so a brief :class:`OperationalError` / :class:`asyncio.TimeoutError`
+    / :class:`OSError` during pool checkout (DB warming up, transient socket
+    failure) does not crash a module's lifespan. On retry we close any
+    half-acquired connection so we do not leak pool slots.
+    """
+    conn = await engine.connect()
+    try:
+        try:
+            await conn.rollback()
+        except (PendingRollbackError, InvalidRequestError) as exc:
+            wire_id = id(_get_wire_identity(conn))
+            logger.warning(
+                "managed_transaction pool-hygiene: invalidating poisoned "
+                "pooled connection wire_id=%s (%s)",
+                wire_id, exc.__class__.__name__,
+            )
+            await conn.invalidate()
+            await conn.close()
+            conn = await engine.connect()
+            await conn.rollback()
+        return conn
+    except BaseException:
+        try:
+            await conn.close()
+        except Exception:
+            pass
+        raise
+
+
 @contextmanager
 def sync_managed_transaction(db_resource: DbSyncResource) -> Iterator[Any]:
     """Sync re-entrant transaction manager."""
@@ -969,28 +1103,13 @@ async def managed_transaction(db_resource: Optional[DbResource]):
     is_async = is_async_resource(db_resource)
     if isinstance(db_resource, (AsyncEngine, Engine)):
         if isinstance(db_resource, AsyncEngine):
-            # Pool-hygiene guard: a connection returned from the pool may carry a
-            # pending rollback from a prior task that exited without cleanly
-            # closing its transaction. Issuing a cheap rollback as a reset-on-
-            # checkout eliminates that poisoning before we open a new transaction.
-            # On InvalidRequestError / PendingRollbackError we invalidate the
-            # connection and retry with a fresh one; the wire_id is logged so the
-            # upstream leak can be located.
-            conn = await db_resource.connect()
+            # Connection acquisition (with pool-hygiene + transient-connect
+            # retry) is delegated to :func:`_acquire_async_engine_connection`.
+            # Once we hold a healthy connection, the user body runs inside
+            # a regular ``conn.begin()`` block — body errors propagate without
+            # retry, since DML/DQL idempotency is the caller's responsibility.
+            conn = await _acquire_async_engine_connection(db_resource)
             try:
-                try:
-                    await conn.rollback()
-                except (PendingRollbackError, InvalidRequestError) as exc:
-                    wire_id = id(_get_wire_identity(conn))
-                    logger.warning(
-                        "managed_transaction pool-hygiene: invalidating poisoned "
-                        "pooled connection wire_id=%s (%s)",
-                        wire_id, exc.__class__.__name__,
-                    )
-                    await conn.invalidate()
-                    await conn.close()
-                    conn = await db_resource.connect()
-                    await conn.rollback()
                 async with conn.begin():
                     yield conn
             finally:
