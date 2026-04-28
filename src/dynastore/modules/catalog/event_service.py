@@ -506,12 +506,21 @@ class EventService(EventBusProtocol):
         *,
         scope: str,
     ) -> None:
-        """One consumer task per shard — own connection, own SKIP LOCKED scan."""
+        """One consumer task per shard — own connection, own SKIP LOCKED scan.
+
+        On ``asyncio.TimeoutError`` (pool checkout timed out — meaning all
+        connections are in use), back off exponentially up to 60 s instead
+        of retrying every 5 s. Pile-on under sustained pool pressure was
+        the dominant amplifier of the production storm; backing off lets
+        the pool drain. The backoff resets to 5 s after any successful
+        ``consume_batch``.
+        """
         if shard_id > 0:
             await asyncio.sleep(shard_id * 0.25)
         logger.info(
             "EventService: shard consumer started (shard=%d, scope=%s).", shard_id, scope
         )
+        timeout_backoff_s = 5.0
         while not getattr(shutdown_event, "is_set", lambda: False)():
             try:
                 driver = get_protocol(EventDriverProtocol)
@@ -522,6 +531,7 @@ class EventService(EventBusProtocol):
                 events = await driver.consume_batch(
                     scope=scope, batch_size=100, shard=shard_id
                 )
+                timeout_backoff_s = 5.0  # successful checkout → reset
                 if not events:
                     await driver.wait_for_events(timeout=10.0)
                     continue
@@ -555,6 +565,15 @@ class EventService(EventBusProtocol):
                     shard_id, e,
                 )
                 await asyncio.sleep(60.0)
+            except (asyncio.TimeoutError, TimeoutError) as e:
+                logger.warning(
+                    "EventService shard %d: pool checkout timed out (%s); "
+                    "backing off %.0fs (next: %.0fs).",
+                    shard_id, e or "<no message>",
+                    timeout_backoff_s, min(timeout_backoff_s * 2, 60.0),
+                )
+                await asyncio.sleep(timeout_backoff_s)
+                timeout_backoff_s = min(timeout_backoff_s * 2, 60.0)
             except Exception as e:
                 logger.error(
                     "EventService shard %d consumer error: %s: %s",
