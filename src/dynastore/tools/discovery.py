@@ -181,7 +181,11 @@ def discover_and_load_plugins(group: str) -> Dict[str, Type[Any]]:
                 f"unexpected if the plugin should be active for this service)"
             )
         except Exception as e:
-            logger.error(f"Failed to load installed plugin '{entry_point.name}' from group '{group}': {e}")
+            logger.error(
+                f"Failed to load installed plugin '{entry_point.name}' "
+                f"from group '{group}': {e}",
+                exc_info=True,
+            )
 
     return loaded_plugins
 
