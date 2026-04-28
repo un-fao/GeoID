@@ -27,52 +27,52 @@ def _make_bm(project_id: str) -> BucketService:
 
 
 def test_basic_naming_uses_project_id_prefix():
-    bm = _make_bm("fao-aip-geospatial-review")
+    bm = _make_bm("my-test-project")
     assert bm.generate_bucket_name("test_catalog_19") == \
-        "fao-aip-geospatial-review-test-catalog-19"
+        "my-test-project-test-catalog-19"
 
 
 def test_physical_schema_preferred_over_catalog_id():
-    bm = _make_bm("fao-aip-geospatial-review")
+    bm = _make_bm("my-test-project")
     assert bm.generate_bucket_name("any-id", physical_schema="s_2ka8fbc3") == \
-        "fao-aip-geospatial-review-s-2ka8fbc3"
+        "my-test-project-s-2ka8fbc3"
 
 
 def test_underscores_normalised_to_dashes():
-    bm = _make_bm("fao-aip-geospatial-review")
+    bm = _make_bm("my-test-project")
     assert bm.generate_bucket_name("with_under_scores") == \
-        "fao-aip-geospatial-review-with-under-scores"
+        "my-test-project-with-under-scores"
 
 
 def test_uppercase_lowercased():
-    bm = _make_bm("FAO-AIP-Geospatial-Review")
+    bm = _make_bm("My-Test-Project")
     name = bm.generate_bucket_name("TEST_CATALOG_19")
     assert name == name.lower()
-    assert name.startswith("fao-aip-geospatial-review-")
+    assert name.startswith("my-test-project-")
 
 
 def test_within_63_char_limit_keeps_full_identifier():
-    bm = _make_bm("fao-aip-geospatial-review")
+    bm = _make_bm("my-test-project")
     # Identifier picked so total length is exactly 63
-    pad = "x" * (63 - len("fao-aip-geospatial-review-"))  # 37 chars
+    pad = "x" * (63 - len("my-test-project-"))  # 37 chars
     name = bm.generate_bucket_name(pad)
-    assert name == f"fao-aip-geospatial-review-{pad}"
+    assert name == f"my-test-project-{pad}"
     assert len(name) == 63
 
 
 def test_overflow_truncates_identifier_and_appends_hash():
-    bm = _make_bm("fao-aip-geospatial-review")
+    bm = _make_bm("my-test-project")
     long_id = "x" * 100
     name = bm.generate_bucket_name(long_id)
     assert len(name) <= 63
-    assert name.startswith("fao-aip-geospatial-review-")
+    assert name.startswith("my-test-project-")
     # Suffix should be 8 hex chars after a dash
     assert name[-9] == "-"
     assert all(c in "0123456789abcdef" for c in name[-8:])
 
 
 def test_overflow_is_deterministic_for_same_identifier():
-    bm = _make_bm("fao-aip-geospatial-review")
+    bm = _make_bm("my-test-project")
     long_id = "y" * 200
     n1 = bm.generate_bucket_name(long_id)
     n2 = bm.generate_bucket_name(long_id)
@@ -80,7 +80,7 @@ def test_overflow_is_deterministic_for_same_identifier():
 
 
 def test_overflow_differentiates_distinct_identifiers():
-    bm = _make_bm("fao-aip-geospatial-review")
+    bm = _make_bm("my-test-project")
     n1 = bm.generate_bucket_name("z" * 100)
     n2 = bm.generate_bucket_name("z" * 99 + "a")  # different last char
     assert n1 != n2  # the appended hash makes them distinct
@@ -99,9 +99,9 @@ def test_missing_project_id_raises():
 
 
 def test_long_identifier_keeps_full_project_name():
-    bm = _make_bm("fao-aip-geospatial-review")  # 25 chars
+    bm = _make_bm("my-test-project")  # 25 chars
     name = bm.generate_bucket_name("x" * 100)
-    assert name.startswith("fao-aip-geospatial-review-")  # prefix preserved
+    assert name.startswith("my-test-project-")  # prefix preserved
     assert len(name) <= 63
     assert name[-9] == "-"  # 8-char hash after dash
     assert all(c in "0123456789abcdef" for c in name[-8:])
@@ -134,7 +134,48 @@ def test_long_project_and_long_identifier_split_one_third_two_thirds():
 
 
 def test_distinct_long_identifiers_never_collide():
-    bm = _make_bm("fao-aip-geospatial-review")
+    bm = _make_bm("my-test-project")
     n1 = bm.generate_bucket_name("a" * 200)
     n2 = bm.generate_bucket_name("a" * 199 + "b")
     assert n1 != n2
+
+
+def test_empty_identifier_raises():
+    bm = _make_bm("my-test-project")
+    # Both arguments empty (catalog_id="" and physical_schema=None default) → raise
+    with pytest.raises(ValueError, match="both physical_schema and catalog_id are empty"):
+        bm.generate_bucket_name("")
+
+
+def test_empty_physical_schema_falls_back_to_catalog_id():
+    # Legacy `(physical_schema or catalog_id)` semantic: empty physical_schema
+    # is treated as "not provided" and the catalog_id is used.
+    bm = _make_bm("my-test-project")
+    name = bm.generate_bucket_name("test_catalog_19", physical_schema="")
+    assert name == "my-test-project-test-catalog-19"
+
+
+def test_invalid_chars_raise():
+    bm = _make_bm("my-test-project")
+    for bad_id in ["with space", "with/slash", "with:colon", "with@at", "with!bang"]:
+        with pytest.raises(ValueError, match="invalid for GCS bucket names"):
+            bm.generate_bucket_name(bad_id)
+
+
+def test_google_substring_raises():
+    bm = _make_bm("my-test-project")
+    for bad_id in ["google-imagery", "my-google-data", "g00gle-cache", "g0ogle-test"]:
+        with pytest.raises(ValueError, match="GCS-reserved substring"):
+            bm.generate_bucket_name(bad_id)
+
+
+def test_truncation_strips_trailing_dash():
+    # Identifier ending with dash that lands at truncation boundary must
+    # not produce a double-dash before the hash suffix.
+    bm = _make_bm("my-test-project")
+    name = bm.generate_bucket_name("a-" * 50)  # 100 chars, ends in '-'
+    assert len(name) <= 63
+    assert "--" not in name
+    body = name[:-9]  # strip "-{hash}"
+    assert not body.endswith("-")
+    assert not body.endswith(".")

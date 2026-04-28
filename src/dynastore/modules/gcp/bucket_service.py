@@ -18,6 +18,7 @@
 
 import logging
 import asyncio
+import re
 from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -87,6 +88,13 @@ class BucketService:
 
     GCS_BUCKET_NAME_MAX_LEN: int = 63
     _HASH_LEN: int = 8
+    # GCS rejects bucket names containing "google" or close misspellings.
+    # See https://cloud.google.com/storage/docs/buckets#naming
+    _GCS_FORBIDDEN_SUBSTRINGS: tuple = ("google", "g00gle", "g0ogle", "go0gle", "googl3")
+    # Permitted bucket-name chars (lowercase letters, digits, '.', '-', '_').
+    # NOTE: '_' is normalised to '-' before validation so it never reaches
+    # this regex; we keep it in the class for completeness/documentation.
+    _GCS_VALID_CHAR_PATTERN = re.compile(r"^[a-z0-9._-]+$")
 
     def generate_bucket_name(self, catalog_id: str, physical_schema: Optional[str] = None) -> str:
         """Generates the deterministic GCS bucket name for a catalog.
@@ -105,6 +113,14 @@ class BucketService:
           readable head + 8-char hash, give identifier the remaining ~2/3
           with its own 8-char hash for collision safety.
 
+        Validation (fail-fast at name generation rather than at GCS provision):
+        - Empty identifier → ValueError
+        - Identifier contains chars outside ``[a-z0-9._-]`` → ValueError
+        - Identifier contains ``google`` or close misspellings → ValueError
+          (GCS reserves these and would reject the bucket creation)
+        - After truncation, trailing ``-`` or ``.`` is trimmed (GCS forbids
+          ``.-`` adjacency and bucket names must end with letter/digit).
+
         Backwards compatibility: existing buckets are unaffected — their
         names are persisted in ``catalogs.bucket_name`` and looked up
         via :func:`gcp_db.get_bucket_for_catalog_query`. Only newly
@@ -113,8 +129,24 @@ class BucketService:
         import hashlib
         if not self.project_id:
             raise RuntimeError("GCP Project ID not available.")
+        raw_id = physical_schema or catalog_id
+        if not raw_id:
+            raise ValueError(
+                "Cannot generate bucket name: both physical_schema and catalog_id are empty."
+            )
         prefix = self.project_id.lower()
-        identifier = (physical_schema or catalog_id).lower().replace("_", "-")
+        identifier = raw_id.lower().replace("_", "-")
+        if not self._GCS_VALID_CHAR_PATTERN.match(identifier):
+            raise ValueError(
+                f"Identifier {raw_id!r} contains characters invalid for GCS bucket names "
+                f"(allowed: lowercase letters, digits, '.', '-', '_')."
+            )
+        for forbidden in self._GCS_FORBIDDEN_SUBSTRINGS:
+            if forbidden in identifier:
+                raise ValueError(
+                    f"Identifier {raw_id!r} contains GCS-reserved substring "
+                    f"{forbidden!r}; bucket names cannot contain 'google' or close misspellings."
+                )
         bucket_name = f"{prefix}-{identifier}"
         if len(bucket_name) <= self.GCS_BUCKET_NAME_MAX_LEN:
             return bucket_name
@@ -129,15 +161,17 @@ class BucketService:
         max_id = self.GCS_BUCKET_NAME_MAX_LEN - len(prefix) - overhead
         if len(prefix) <= project_min * 2 and max_id >= 1:
             max_id = min(max_id, identifier_cap - self._HASH_LEN - 1)
-            return f"{prefix}-{identifier[:max_id]}-{id_hash}"
+            truncated_id = identifier[:max_id].rstrip("-.") or id_hash[:1]
+            return f"{prefix}-{truncated_id}-{id_hash}"
 
         # Path B: project_id is itself too long. Keep ~1/3 budget readable
         # head + 8-char project hash; identifier takes the remaining ~2/3.
         proj_head_len = project_min - self._HASH_LEN - 1
         proj_hash = hashlib.sha1(prefix.encode()).hexdigest()[:self._HASH_LEN]
-        truncated_prefix = f"{prefix[:proj_head_len]}-{proj_hash}"
+        truncated_prefix = f"{prefix[:proj_head_len].rstrip('-.')}-{proj_hash}"
         max_id = self.GCS_BUCKET_NAME_MAX_LEN - len(truncated_prefix) - overhead
-        return f"{truncated_prefix}-{identifier[:max_id]}-{id_hash}"
+        truncated_id = identifier[:max_id].rstrip("-.") or id_hash[:1]
+        return f"{truncated_prefix}-{truncated_id}-{id_hash}"
 
     async def get_storage_identifier(self, catalog_id: str) -> Optional[str]:
         """Returns the GCS path (bucket name) for a catalog's root folder."""
