@@ -27,6 +27,13 @@ on:
         description: "Name of the uploaded test badge artifact"
         value: ${{ jobs.aggregate.outputs.artifact_name }}
 
+# Cancel in-progress runs on the same ref when a new push lands. Prevents
+# the pipeline pile-up where 5+ runs spin in parallel against stale
+# commits — we observed runs lingering >50 min as a result.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
 # ── Jobs ──────────────────────────────────────────────────────────────────────
 jobs:
   typecheck:
@@ -146,14 +153,14 @@ jobs:
 
   integration-tests:
     runs-on: ubuntu-22.04
-    # 25min upper bound — the suite ran in ~10 min total back when we had
-    # ~96 test files (last green main 23877686549, 2026-04-02). At 274
-    # files today the linear-scaling envelope is ~28 min on 4 vCPUs, so
-    # 25 min FORCES us to either (a) shard via matrix, (b) move to
-    # larger runners, or (c) actually fix the slow tests rather than
-    # silently letting CI grow into hours. A run that overflows 25 min
-    # = a real signal, not budget to extend.
-    timeout-minutes: 25
+    # 20 min hard cap. Was 25 → still trended to 30 min because the job
+    # was redundantly re-running ALL 274 tests (the 221 unit tests
+    # already covered by unit-tests + the 53 actual integration tests).
+    # The redundancy is fixed below by scoping the pytest invocation to
+    # `tests/dynastore/**/integration/`. With ~53 integration tests and
+    # 4 xdist workers, 20 min should be ample. Beyond that = real hang
+    # or new infrastructure regression — surface fast, don't extend.
+    timeout-minutes: 20
     # inputs.run_integration is only set for workflow_dispatch / workflow_call.
     # For push/pull_request it is undefined (''), so the comparison evaluates
     # != 'false' as true. Skip only when the caller explicitly passes false.
@@ -209,13 +216,17 @@ jobs:
       - name: Build test infrastructure (compose)
         run: docker compose -f src/dynastore/docker/docker-compose.test.yml build
 
+      # Scope to ACTUAL integration tests only — 53 files under
+      # */integration/* paths. The previous `pytest tests/` invocation
+      # re-ran all 274 tests including the 221 the unit-tests job had
+      # already executed: pure duplicate work, dominant cause of the
+      # 28-38min wall-clock. `find` enumerates inside the test-runner
+      # container so the path filter sees the same tree pytest does.
       - name: Run integration tests
         id: integration
         run: |
           docker compose -f src/dynastore/docker/docker-compose.test.yml run --rm test-runner \
-            /opt/venv/bin/pytest tests/ \
-            --durations=20 \
-            --junitxml=/dynastore/workspace/test-results.xml
+            bash -c 'INTEGRATION_TESTS=$(find tests -path "*/integration/*" -name "test_*.py" -type f | sort); /opt/venv/bin/pytest $INTEGRATION_TESTS --durations=20 --junitxml=/dynastore/workspace/test-results.xml'
 
       - name: Display Docker logs on failure
         if: failure()
