@@ -329,29 +329,52 @@ class CatalogModule(ModuleProtocol):
             # 6. Start Background Event Consumer (automatic)
             # Both reindex and task.failed listeners are registered
             # unconditionally above, so has_listeners() is True on every
-            # service that loads CatalogModule — including maps/auth/geoid
-            # that have no consumer-role work. Gate on CatalogEventConsumer
-            # presence; that marker is registered only by deployments that
-            # install the indexer-tasks package (catalog, worker), so
-            # services loading the ES module purely for query/resolver work
-            # (maps's module_catalog_elasticsearch) do not re-arm the
-            # consumer despite carrying IndexerProtocol.
-            from dynastore.tools.discovery import get_all_protocols
-            from dynastore.models.protocols.event_consumer import CatalogEventConsumer
+            # service that loads CatalogModule. Gate consumer startup on
+            # the deployment's TaskRoutingConfig.event_consumer_services
+            # — the same admin-managed config that already governs which
+            # tasks each service may claim. Default-empty means an
+            # unconfigured deployment fails noisy (event-outbox depth
+            # visible in monitoring) rather than silent (connection
+            # storm everywhere — see the marker-plugin failure in
+            # commit 3a3ceda which leaked through Python entry-point
+            # loading).
+            from dynastore.modules.tasks.tasks_config import TaskRoutingConfig
+            from dynastore.modules.db_config.instance import get_service_name
 
             _consumer_shutdown = asyncio.Event()
-            has_consumer_role = bool(get_all_protocols(CatalogEventConsumer))
-            if self.event_service.has_listeners() and has_consumer_role:
+            service_name = get_service_name()
+            routing_cfg: Optional[TaskRoutingConfig] = None
+            config_mgr = get_protocol(ConfigsProtocol)
+            if config_mgr is not None:
+                try:
+                    cfg = await config_mgr.get_config(TaskRoutingConfig)
+                    if isinstance(cfg, TaskRoutingConfig):
+                        routing_cfg = cfg
+                except Exception as exc:  # noqa: BLE001 — never block startup
+                    logger.warning(
+                        "TaskRoutingConfig lookup failed during consumer-gate "
+                        "evaluation: %s. Defaulting to consumer-disabled.", exc,
+                    )
+
+            is_consumer = bool(
+                routing_cfg
+                and service_name
+                and service_name in routing_cfg.event_consumer_services
+            )
+
+            if self.event_service.has_listeners() and is_consumer:
                 logger.info(
-                    "CatalogModule: listeners + CatalogEventConsumer present — "
-                    "starting durable event consumer."
+                    "CatalogModule: service=%r is in "
+                    "TaskRoutingConfig.event_consumer_services — "
+                    "starting durable event consumer.", service_name,
                 )
                 await self.event_service.start_consumer(_consumer_shutdown)
             else:
                 logger.info(
                     "CatalogModule: event consumer not started "
-                    "(has_listeners=%s, has_consumer_role=%s).",
-                    self.event_service.has_listeners(), has_consumer_role,
+                    "(has_listeners=%s, service=%r, configured=%r).",
+                    self.event_service.has_listeners(), service_name,
+                    list(routing_cfg.event_consumer_services) if routing_cfg else None,
                 )
 
             try:
