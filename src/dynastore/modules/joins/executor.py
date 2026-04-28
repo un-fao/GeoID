@@ -44,7 +44,14 @@ async def run_join(
 
     async for feat in primary_stream:
         props = feat.properties or {}
+        # Look up the join value: prefer the explicit property, but fall
+        # back to feat.id when the column is the feature identifier.
+        # Drivers like ItemsBigQueryDriver promote the id_column out of
+        # `properties` into `feat.id` (see bigquery_stream.row_to_feature),
+        # so a join on the id column would otherwise drop every feature.
         key = props.get(join_col)
+        if key is None:
+            key = feat.id
         if key is None:
             continue
         match = secondary_index.get(key)
@@ -88,7 +95,17 @@ async def index_secondary(
     out: Dict[Any, Dict[str, Any]] = {}
     async for feat in secondary_stream:
         props = feat.properties or {}
+        # See run_join() above for the matching fallback rationale: BQ
+        # (and any other driver that promotes the join column to feat.id)
+        # would otherwise yield zero indexable rows.
         key = props.get(secondary_column)
+        if key is None:
+            key = feat.id
         if key is not None:
-            out[key] = dict(props)
+            # Surface the join key inside properties too so downstream
+            # `enrichment` merges round-trip the value into the joined
+            # feature even when the secondary driver hoisted it out.
+            row = dict(props)
+            row.setdefault(secondary_column, key)
+            out[key] = row
     return out
