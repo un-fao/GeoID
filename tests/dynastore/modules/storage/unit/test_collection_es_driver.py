@@ -241,24 +241,27 @@ def test_search_metadata_accepts_context_kwarg():
 async def test_get_metadata_call_with_context_does_not_raise_typeerror():
     driver = CollectionElasticsearchDriver()
     mock_client = AsyncMock()
-    mock_client.indices.exists = AsyncMock(return_value=False)
+    # Singleton index always exists (created at lifespan); a missing
+    # collection surfaces as a NotFound from the .get() call.
+    mock_client.get = AsyncMock(side_effect=Exception("not_found"))
     with patch.object(driver, "_get_client", return_value=mock_client), \
-         patch.object(driver, "_get_prefix", return_value="meta"):
+         patch.object(driver, "_get_prefix", return_value="dynastore"):
         result = await driver.get_metadata(
             "cat", "col", context={"user": "x"},
         )
     assert result is None
-    mock_client.indices.exists.assert_awaited_once()
+    mock_client.get.assert_awaited_once()
 
 
 async def test_search_metadata_call_with_context_does_not_raise_typeerror():
     driver = CollectionElasticsearchDriver()
     mock_client = AsyncMock()
-    mock_client.indices.exists = AsyncMock(return_value=False)
+    mock_client.search = AsyncMock(return_value={"hits": {"hits": [], "total": {"value": 0}}})
     with patch.object(driver, "_get_client", return_value=mock_client), \
-         patch.object(driver, "_get_prefix", return_value="meta"):
+         patch.object(driver, "_get_prefix", return_value="dynastore"):
         results, total = await driver.search_metadata(
             "cat", q="foo", context={"user": "x"},
         )
     assert results == []
     assert total == 0
+    mock_client.search.assert_awaited_once()

@@ -42,7 +42,7 @@ async def test_ensure_public_alias_exists_no_op_when_alias_present():
         "dynastore.modules.elasticsearch.aliases._get_prefix", return_value="dynastore",
     ):
         await ensure_public_alias_exists()
-    es.indices.exists_alias.assert_awaited_once_with(name="dynastore-items-public")
+    es.indices.exists_alias.assert_awaited_once_with(name="dynastore-items")
     es.indices.update_aliases.assert_not_called()
 
 
@@ -75,13 +75,13 @@ async def test_add_index_to_public_alias_issues_correct_action():
     ), patch(
         "dynastore.modules.elasticsearch.aliases._get_prefix", return_value="dynastore",
     ):
-        await add_index_to_public_alias("dynastore-items-tenantA")
+        await add_index_to_public_alias("dynastore-tenantA-items")
     es.indices.update_aliases.assert_awaited_once()
     body = es.indices.update_aliases.call_args.kwargs["body"]
     assert body == {
         "actions": [{"add": {
-            "index": "dynastore-items-tenantA",
-            "alias": "dynastore-items-public",
+            "index": "dynastore-tenantA-items",
+            "alias": "dynastore-items",
         }}]
     }
 
@@ -95,7 +95,7 @@ async def test_add_index_to_public_alias_swallows_es_failure():
     ), patch(
         "dynastore.modules.elasticsearch.aliases._get_prefix", return_value="dynastore",
     ):
-        await add_index_to_public_alias("dynastore-items-tenantA")  # must not raise
+        await add_index_to_public_alias("dynastore-tenantA-items")  # must not raise
 
 
 @pytest.mark.asyncio
@@ -106,12 +106,12 @@ async def test_remove_index_from_public_alias_issues_correct_action():
     ), patch(
         "dynastore.modules.elasticsearch.aliases._get_prefix", return_value="dynastore",
     ):
-        await remove_index_from_public_alias("dynastore-items-tenantA")
+        await remove_index_from_public_alias("dynastore-tenantA-items")
     body = es.indices.update_aliases.call_args.kwargs["body"]
     assert body == {
         "actions": [{"remove": {
-            "index": "dynastore-items-tenantA",
-            "alias": "dynastore-items-public",
+            "index": "dynastore-tenantA-items",
+            "alias": "dynastore-items",
         }}]
     }
 
@@ -125,4 +125,4 @@ async def test_remove_index_from_public_alias_swallows_failure():
     ), patch(
         "dynastore.modules.elasticsearch.aliases._get_prefix", return_value="dynastore",
     ):
-        await remove_index_from_public_alias("dynastore-items-tenantA")  # must not raise
+        await remove_index_from_public_alias("dynastore-tenantA-items")  # must not raise

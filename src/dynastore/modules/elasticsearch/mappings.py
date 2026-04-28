@@ -13,6 +13,61 @@ Design philosophy:
 from typing import Any, Dict, List
 
 
+# ISO 639-1 → built-in Elasticsearch analyzer name.
+# Drives per-language stemming/tokenisation for title.{lang} / description.{lang}
+# so search/sort behave correctly across the platform's supported locales.
+# ``zh`` falls back to ``standard`` because ES has no built-in Chinese
+# analyzer; deploy ICU or smartcn at the cluster level if better tokenisation
+# is needed.
+LANGUAGE_ANALYZERS: Dict[str, str] = {
+    "en": "english",
+    "fr": "french",
+    "es": "spanish",
+    "ru": "russian",
+    "ar": "arabic",
+    "it": "italian",
+    "de": "german",
+    "zh": "standard",
+}
+
+
+def _localized_text_templates(field: str, ignore_above: int) -> List[Dict[str, Any]]:
+    """Per-language dynamic templates for a localized text field.
+
+    For each supported locale, emit a template that matches ``*field.{lang}``
+    and assigns the language-appropriate analyzer. A trailing catch-all
+    matching the bare ``*.field`` keeps backwards compatibility with
+    documents that store an unlocalized string.
+    """
+    templates: List[Dict[str, Any]] = []
+    for lang, analyzer in LANGUAGE_ANALYZERS.items():
+        templates.append({
+            f"{field}_{lang}": {
+                "path_match": f"*{field}.{lang}",
+                "match_mapping_type": "string",
+                "mapping": {
+                    "type": "text",
+                    "analyzer": analyzer,
+                    "fields": {
+                        "keyword": {"type": "keyword", "ignore_above": ignore_above},
+                    },
+                },
+            },
+        })
+    templates.append({
+        f"{field}s": {
+            "path_match": f"*.{field}",
+            "match_mapping_type": "string",
+            "mapping": {
+                "type": "text",
+                "analyzer": "standard",
+                "fields": {"keyword": {"type": "keyword", "ignore_above": ignore_above}},
+            },
+        },
+    })
+    return templates
+
+
 # ---------------------------------------------------------------------------
 # Dynamic templates – applied in order, first match wins.
 # These handle the common patterns found in any STAC document.
@@ -20,29 +75,10 @@ from typing import Any, Dict, List
 
 DYNAMIC_TEMPLATES: List[Dict[str, Any]] = [
     # --- Multilingual text fields (stored as objects with lang-code keys) ---
-    # title.en, title.fr, description.ar, etc. → text + .keyword for sorting
-    {
-        "titles": {
-            "path_match": "*.title",
-            "match_mapping_type": "string",
-            "mapping": {
-                "type": "text",
-                "analyzer": "standard",
-                "fields": {"keyword": {"type": "keyword", "ignore_above": 512}},
-            },
-        }
-    },
-    {
-        "descriptions": {
-            "path_match": "*.description",
-            "match_mapping_type": "string",
-            "mapping": {
-                "type": "text",
-                "analyzer": "standard",
-                "fields": {"keyword": {"type": "keyword", "ignore_above": 1024}},
-            },
-        }
-    },
+    # Per-locale analyzers for proper stemming, plus a fallback for unknown
+    # / unlocalized values.
+    *_localized_text_templates("title", ignore_above=512),
+    *_localized_text_templates("description", ignore_above=1024),
     # --- Keywords (text + keyword for aggregations) ---
     {
         "keywords": {
@@ -254,23 +290,52 @@ def get_all_index_names(prefix: str) -> List[Dict[str, Any]]:
 
 
 def get_tenant_items_index(prefix: str, catalog_id: str) -> str:
-    """Per-tenant regular items index. Owned by the items ES driver."""
-    return f"{prefix}-items-{catalog_id}"
+    """Per-catalog public items index. Owned by ``ItemsElasticsearchDriver``.
+
+    Catalog-first naming so per-catalog indexes sort lexicographically next
+    to each other in tooling (``dynastore-{cat}-items``,
+    ``dynastore-{cat}-private-items``, ``dynastore-{cat}-assets``).
+    """
+    return f"{prefix}-{catalog_id}-items"
 
 
 def get_public_items_alias(prefix: str) -> str:
-    """Platform-wide alias spanning all per-tenant regular items indexes.
+    """Platform-wide alias spanning all per-catalog public items indexes.
 
     Used by OGC discovery search routes. Membership is managed by the
-    items driver's `ensure_storage` (add) and routing-config
-    apply-handler (remove on driver removal).
+    items driver's ``ensure_storage`` (add) and routing-config
+    apply-handler (remove on driver removal). Private items indexes
+    are intentionally **not** members of this alias.
     """
-    return f"{prefix}-items-public"
+    return f"{prefix}-items"
 
 
 def get_assets_index_name(prefix: str, catalog_id: str) -> str:
     """Return the name of the assets index for a catalog."""
-    return f"{prefix}-assets-{catalog_id}"
+    return f"{prefix}-{catalog_id}-assets"
+
+
+def get_search_index(
+    prefix: str,
+    entity_type: str,
+    catalog_id: str | None = None,
+) -> str:
+    """Resolve the read-side index for the search service.
+
+    - ``item``       → per-catalog ``{prefix}-{cat}-items`` when scoped, else
+                       the public alias ``{prefix}-items``.
+    - ``collection`` → singleton ``{prefix}-collections``. Scoped queries
+                       filter via ``_routing=catalog_id`` rather than
+                       targeting a different physical index.
+    - ``catalog``    → singleton ``{prefix}-catalogs``.
+    """
+    if entity_type == "item":
+        return (
+            get_tenant_items_index(prefix, catalog_id)
+            if catalog_id
+            else get_public_items_alias(prefix)
+        )
+    return get_index_name(prefix, entity_type)
 
 
 def get_log_index_name(prefix: str) -> str:

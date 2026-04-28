@@ -17,17 +17,20 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-Elasticsearch collection-metadata driver — implements CollectionMetadataStore.
+Elasticsearch collection driver — implements CollectionMetadataStore.
 
-Stores collection metadata in an ES index per catalog.  Provides fulltext
-search (multi_match on title/description/keywords), CQL2-JSON filter support,
-spatial filtering on extent bbox (geo_shape), and aggregations.
+Stores the **full collection object** (not just metadata) in the
+platform-wide singleton index ``{prefix}-collections``. Per-catalog
+isolation is achieved via ``_routing=catalog_id`` (shard locality) and a
+composite document id ``"{catalog_id}:{collection_id}"`` (name collision
+across catalogs is impossible).
 
-Index naming: ``{prefix}_collection_metadata_{catalog_id}``
-
-The schema is extensible — metadata fields are stored as-is in ES
-(dynamic mapping).  Custom fields added by enrichers or users are
-automatically indexed and searchable.
+Provides fulltext search (multi_match on title/description/keywords),
+CQL2-JSON filter support, spatial filtering on extent bbox (geo_shape),
+and aggregations. The mapping comes from
+:data:`dynastore.modules.elasticsearch.mappings.COLLECTION_MAPPING` — a
+single source of truth shared with the lifespan bootstrap and the search
+service.
 """
 
 import copy
@@ -50,20 +53,19 @@ from pydantic import Field
 logger = logging.getLogger(__name__)
 
 class CollectionElasticsearchDriverConfig(_PluginDriverConfig):
-    """Configuration for the Elasticsearch collection metadata driver.
+    """Configuration for the Elasticsearch collection driver.
 
-    ``index_prefix`` is ``Immutable`` — once set it cannot change, because
-    altering the prefix would orphan all existing catalog metadata indexes.
-
-    The final index name is ``{index_prefix}_collection_metadata_{catalog_id}``.
+    ``index_prefix`` controls the deployment-wide singleton name
+    (``{index_prefix}-collections``). ``Immutable`` — once set it cannot
+    change, because altering the prefix would orphan existing collections.
     """
 
     index_prefix: Immutable[str] = Field(
-        "meta",
+        "dynastore",
         description=(
-            "Index name prefix.  "
-            "Final index: ``{index_prefix}_collection_metadata_{catalog_id}``.  "
-            "Immutable once set — changing it would orphan existing indexes."
+            "Deployment-wide ES index prefix. "
+            "Final singleton index: ``{index_prefix}-collections``. "
+            "Immutable once set — changing it would orphan existing collections."
         ),
     )
 
@@ -77,93 +79,29 @@ async def _on_apply_collection_es_driver_config(
     collection_id: Optional[str],
     db_resource: Optional[Any],
 ) -> None:
-    """Create the ES metadata index for the catalog when the driver config is applied."""
+    """No-op apply handler.
+
+    The singleton index ``{prefix}-collections`` is created at
+    :meth:`ElasticsearchModule.lifespan` time, so applying the driver
+    config to a catalog does not require any per-catalog provisioning.
+    Kept registered for symmetry with other driver-config apply handlers
+    (and to keep the code path warm for future per-catalog hooks).
+    """
     if not isinstance(config, CollectionElasticsearchDriverConfig):
         return
-    if not catalog_id:
-        return  # platform-level config — no catalog to create index for
-
-    from dynastore.tools.discovery import get_protocol
-
-    driver = get_protocol(CollectionElasticsearchDriver)
-    if driver is None:
-        return
-    try:
-        await driver.ensure_storage(catalog_id)
-    except Exception as exc:
-        logger.warning(
-            "ensure_storage failed for elasticsearch_metadata on catalog '%s': %s",
-            catalog_id, exc,
-        )
+    return
 
 
 CollectionElasticsearchDriverConfig.register_apply_handler(_on_apply_collection_es_driver_config)
 
-# ---------------------------------------------------------------------------
-# Mapping — explicit typing only for fields ES cannot auto-detect
-# ---------------------------------------------------------------------------
 
-_COLLECTION_METADATA_MAPPING: Dict[str, Any] = {
-    "dynamic": True,
-    "dynamic_templates": [
-        {
-            "multilingual_text": {
-                "path_match": "*.en",
-                "match_mapping_type": "string",
-                "mapping": {
-                    "type": "text",
-                    "analyzer": "standard",
-                    "fields": {"keyword": {"type": "keyword", "ignore_above": 512}},
-                },
-            }
-        },
-        {
-            "strings": {
-                "match_mapping_type": "string",
-                "mapping": {
-                    "type": "keyword",
-                    "fields": {"text": {"type": "text", "analyzer": "standard"}},
-                },
-            }
-        },
-    ],
-    "properties": {
-        "id": {"type": "keyword"},
-        "catalog_id": {"type": "keyword"},
-        "title": {"type": "object", "dynamic": True},
-        "description": {"type": "object", "dynamic": True},
-        "keywords": {"type": "object", "dynamic": True},
-        "license": {"type": "object", "dynamic": True},
-        "links": {"type": "object", "enabled": False},
-        "assets": {"type": "object", "enabled": False},
-        "extent": {
-            "properties": {
-                "spatial": {
-                    "properties": {
-                        "bbox": {"type": "float"},
-                        "bbox_shape": {"type": "geo_shape"},
-                    }
-                },
-                "temporal": {
-                    "properties": {
-                        "interval": {"type": "date_range"},
-                    }
-                },
-            }
-        },
-        "providers": {"type": "object", "dynamic": True},
-        "summaries": {"type": "object", "dynamic": True},
-        "item_assets": {"type": "object", "enabled": False},
-        "stac_version": {"type": "keyword"},
-        "stac_extensions": {"type": "keyword"},
-        "created": {"type": "date"},
-        "updated": {"type": "date"},
-    },
-}
+def _doc_id(catalog_id: str, collection_id: str) -> str:
+    """Composite document id used in the singleton ``{prefix}-collections``.
 
-
-def _metadata_index_name(prefix: str, catalog_id: str) -> str:
-    return f"{prefix}_collection_metadata_{catalog_id}"
+    Same-named collections in different catalogs co-exist as distinct
+    documents because the catalog scope is encoded in the id itself.
+    """
+    return f"{catalog_id}:{collection_id}"
 
 
 def _bbox_to_envelope(bbox: List[float]) -> Optional[Dict[str, Any]]:
@@ -200,12 +138,18 @@ class CollectionElasticsearchDriver(TypedDriver[CollectionElasticsearchDriverCon
 
     def location(self, catalog_id: str, collection_id: Optional[str] = None) -> StorageLocation:
         prefix = self._get_prefix()
-        index = _metadata_index_name(prefix, catalog_id)
+        index = self._index_name()
+        routing = catalog_id
         return StorageLocation(
             backend="elasticsearch",
-            canonical_uri=f"es://{index}",
-            identifiers={"index": index, "prefix": prefix, "catalog_id": catalog_id},
-            display_label=f"ES metadata index: {index}",
+            canonical_uri=f"es://{index}?routing={routing}",
+            identifiers={
+                "index": index,
+                "prefix": prefix,
+                "catalog_id": catalog_id,
+                "routing": routing,
+            },
+            display_label=f"{index} (routing={routing})",
         )
 
     def _get_client(self):
@@ -218,35 +162,19 @@ class CollectionElasticsearchDriver(TypedDriver[CollectionElasticsearchDriverCon
 
         return get_index_prefix()
 
+    def _index_name(self) -> str:
+        from dynastore.modules.elasticsearch.mappings import get_index_name
+
+        return get_index_name(self._get_prefix(), "collection")
+
     async def ensure_storage(self, catalog_id: str) -> None:
-        """Ensure the ES metadata index exists for the given catalog (idempotent).
+        """No-op — the singleton ``{prefix}-collections`` is created at
+        ``ElasticsearchModule.lifespan`` time and never per catalog.
 
-        Called by ``CollectionElasticsearchDriverConfig`` apply handler
-        when the driver config is applied at catalog scope.
+        Kept on the signature so the apply-handler wiring and any callers
+        invoking the protocol method continue to work without branching.
         """
-        await self._ensure_index(catalog_id)
-
-    async def _ensure_index(self, catalog_id: str) -> str:
-        """Create metadata index if it doesn't exist. Returns index name."""
-        client = self._get_client()
-        if not client:
-            raise RuntimeError("Elasticsearch client not available")
-
-        index_name = _metadata_index_name(self._get_prefix(), catalog_id)
-        exists = await client.indices.exists(index=index_name)
-        if not exists:
-            await client.indices.create(
-                index=index_name,
-                body={
-                    "mappings": _COLLECTION_METADATA_MAPPING,
-                    "settings": {
-                        "number_of_shards": 1,
-                        "number_of_replicas": 0,
-                    },
-                },
-            )
-            logger.info("Created metadata index: %s", index_name)
-        return index_name
+        return None
 
     @staticmethod
     def _enrich_doc(metadata: Dict[str, Any]) -> Dict[str, Any]:
@@ -341,11 +269,13 @@ class CollectionElasticsearchDriver(TypedDriver[CollectionElasticsearchDriverCon
         if not client:
             return None
 
-        index_name = _metadata_index_name(self._get_prefix(), catalog_id)
-        if not await client.indices.exists(index=index_name):
-            return None
+        index_name = self._index_name()
         try:
-            resp = await client.get(index=index_name, id=collection_id)
+            resp = await client.get(
+                index=index_name,
+                id=_doc_id(catalog_id, collection_id),
+                params={"routing": catalog_id},
+            )
             return self._unenrich_doc(resp["_source"])
         except Exception:
             return None
@@ -358,21 +288,20 @@ class CollectionElasticsearchDriver(TypedDriver[CollectionElasticsearchDriverCon
         *,
         db_resource: Optional[Any] = None,
     ) -> None:
-        await self._ensure_index(catalog_id)
         client = self._get_client()
         if not client:
             raise RuntimeError("Elasticsearch client not available")
 
-        index_name = _metadata_index_name(self._get_prefix(), catalog_id)
+        index_name = self._index_name()
         doc = self._enrich_doc(metadata)
         doc["id"] = collection_id
         doc["catalog_id"] = catalog_id
 
         await client.index(
             index=index_name,
-            id=collection_id,
+            id=_doc_id(catalog_id, collection_id),
             body=doc,
-            params={"refresh": "wait_for"},
+            params={"routing": catalog_id, "refresh": "wait_for"},
         )
 
     async def delete_metadata(
@@ -387,21 +316,21 @@ class CollectionElasticsearchDriver(TypedDriver[CollectionElasticsearchDriverCon
         if not client:
             return
 
-        index_name = _metadata_index_name(self._get_prefix(), catalog_id)
+        index_name = self._index_name()
+        doc_id = _doc_id(catalog_id, collection_id)
         try:
             if soft:
-                # Mark as deleted but retain the document
                 await client.update(
                     index=index_name,
-                    id=collection_id,
+                    id=doc_id,
                     body={"doc": {"_deleted": True}},
-                    params={"refresh": "wait_for"},
+                    params={"routing": catalog_id, "refresh": "wait_for"},
                 )
             else:
                 await client.delete(
                     index=index_name,
-                    id=collection_id,
-                    params={"refresh": "wait_for"},
+                    id=doc_id,
+                    params={"routing": catalog_id, "refresh": "wait_for"},
                 )
         except Exception as e:
             logger.debug("delete_metadata ES error for %s/%s: %s", catalog_id, collection_id, e)
@@ -423,19 +352,12 @@ class CollectionElasticsearchDriver(TypedDriver[CollectionElasticsearchDriverCon
         if not client:
             return [], 0
 
-        index_name = _metadata_index_name(self._get_prefix(), catalog_id)
-
-        # Check index exists
-        try:
-            exists = await client.indices.exists(index=index_name)
-            if not exists:
-                return [], 0
-        except Exception:
-            return [], 0
+        index_name = self._index_name()
 
         must_clauses: List[Dict[str, Any]] = []
         filter_clauses: List[Dict[str, Any]] = [
-            {"bool": {"must_not": [{"term": {"_deleted": True}}]}}
+            {"term": {"catalog_id": catalog_id}},
+            {"bool": {"must_not": [{"term": {"_deleted": True}}]}},
         ]
 
         # Fulltext search
@@ -488,7 +410,11 @@ class CollectionElasticsearchDriver(TypedDriver[CollectionElasticsearchDriverCon
         }
 
         try:
-            resp = await client.search(index=index_name, body=body)
+            resp = await client.search(
+                index=index_name,
+                body=body,
+                params={"routing": catalog_id},
+            )
             hits = resp.get("hits", {})
             total = hits.get("total", {})
             total_count = total.get("value", 0) if isinstance(total, dict) else total
