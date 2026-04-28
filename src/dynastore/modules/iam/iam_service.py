@@ -567,6 +567,24 @@ class IamService:
         schema = await self._resolve_schema(catalog_id)
         return await self.storage.get_role_hierarchy([role_name], schema=schema)
 
+    # --- IamQueryProtocol surface (read-side, for non-IAM consumers) ---
+    #
+    # Exposes the catalog-membership lookup behind a stable signature so
+    # routes / extensions can resolve it via ``get_protocol(IamQueryProtocol)``
+    # and never need to import ``modules.iam.*`` directly.
+
+    async def list_catalog_memberships(
+        self, provider: str, subject_id: str
+    ) -> Dict[str, Any]:
+        """Return ``{platform, catalogs, total}`` for the given identity."""
+        from dynastore.modules.iam.multi_catalog_helpers import (
+            list_catalogs_for_identity,
+        )
+
+        return await list_catalogs_for_identity(
+            iam_manager=self, provider=provider, subject_id=subject_id
+        )
+
     # --- Policy Management ---
 
     async def create_policy(self, policy, catalog_id: Optional[str] = None):

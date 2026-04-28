@@ -1481,6 +1481,7 @@ async function demoAction(action) {
 
         @self.router.get("/dashboard/stats", response_class=JSONResponse)
         async def get_dashboard_stats(
+            request: Request,
             catalog_id: str = Query(
                 "_system_", description="Catalog ID to filter stats for."
             ),
@@ -1497,6 +1498,14 @@ async function demoAction(action) {
                 None, description="End date for stats aggregation."
             ),
         ):
+            from dynastore.extensions.web.dashboard_authz import (
+                authorize_dashboard_catalog,
+                resolve_dashboard_caller,
+            )
+
+            caller = await resolve_dashboard_caller(request)
+            await authorize_dashboard_catalog(caller, catalog_id)
+
             # Resolve schema using CatalogsProtocol
             from dynastore.modules import get_protocol
             from dynastore.models.protocols import CatalogsProtocol
@@ -1545,6 +1554,7 @@ async function demoAction(action) {
 
         @self.router.get("/dashboard/logs", response_class=JSONResponse)
         async def get_dashboard_logs(
+            request: Request,
             catalog_id: str = Query(
                 "_system_",
                 description="Catalog ID to filter logs for. Defaults to system logs.",
@@ -1563,6 +1573,14 @@ async function demoAction(action) {
             ),
             offset: int = Query(0, ge=0, description="Pagination offset."),
         ):
+            from dynastore.extensions.web.dashboard_authz import (
+                authorize_dashboard_catalog,
+                resolve_dashboard_caller,
+            )
+
+            caller = await resolve_dashboard_caller(request)
+            await authorize_dashboard_catalog(caller, catalog_id)
+
             from dynastore.models.protocols.logs import LogsProtocol
             from dynastore.tools.discovery import get_protocol, register_plugin
 
@@ -1581,7 +1599,11 @@ async function demoAction(action) {
 
         @self.router.get("/dashboard/events", response_class=JSONResponse)
         async def get_dashboard_events(
-            catalog_id: str = Query(..., description="Catalog ID to fetch events for."),
+            request: Request,
+            catalog_id: str = Query(
+                "_system_",
+                description="Catalog ID to fetch events for. Defaults to system events.",
+            ),
             collection_id: Optional[str] = Query(
                 None, description="Optional collection ID to filter events for."
             ),
@@ -1593,6 +1615,14 @@ async function demoAction(action) {
             ),
             offset: int = Query(0, ge=0, description="Pagination offset."),
         ):
+            from dynastore.extensions.web.dashboard_authz import (
+                authorize_dashboard_catalog,
+                resolve_dashboard_caller,
+            )
+
+            caller = await resolve_dashboard_caller(request)
+            await authorize_dashboard_catalog(caller, catalog_id)
+
             from dynastore.modules.catalog.catalog_module import _module_instance
 
             catalog_mod = _module_instance
