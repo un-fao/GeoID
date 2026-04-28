@@ -1549,6 +1549,14 @@ async def claim_for_dispatch(
     create→claim race on the producing side.
     """
     task_schema = get_task_schema()
+    # Cast `expected_owner_prefix` to ::text for the standalone IS NOT NULL
+    # check. asyncpg cannot infer the parameter's type from `IS NOT NULL`
+    # alone (the LIKE branch supplies text inference but the conjunction's
+    # first arm doesn't), so prepare-time fails with
+    # `AmbiguousParameterError: could not determine data type of parameter $4`
+    # — observed live in the dispatcher path on dev catalog. The `||`
+    # concatenation in the LIKE branch already forces text on the other
+    # reference, so casting just the IS-NOT-NULL site is sufficient.
     sql = f"""
         UPDATE {task_schema}.tasks
         SET owner_id = :owner_id,
@@ -1558,7 +1566,7 @@ async def claim_for_dispatch(
           AND status = 'ACTIVE'
           AND (
               owner_id IS NULL
-              OR (:expected_owner_prefix IS NOT NULL
+              OR (CAST(:expected_owner_prefix AS TEXT) IS NOT NULL
                   AND owner_id LIKE :expected_owner_prefix || '%')
               OR owner_id = :owner_id
           )
