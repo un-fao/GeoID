@@ -40,8 +40,15 @@ async def _resolve_primary_driver(catalog_id: str, collection_id: str):
     Returns the driver instance (any CollectionItemsStore impl) or None
     if no driver is registered for this catalog/collection on READ.
     """
+    # Use a join-specific hint so an operator can ship a deployment where
+    # /join routes to a different driver than /features (e.g. BQ for joins,
+    # PG for raw features) without affecting the rest of the catalog read
+    # surface. Both ItemsPostgresqlDriver and ItemsBigQueryDriver self-
+    # declare "join" in their supported_hints, so a zero-config deployment
+    # resolves the platform-default items store via the empty-entry-hints
+    # fallback in router._resolve_driver_ids_cached.
     drivers = await resolve_drivers(
-        "READ", catalog_id, collection_id, hint="features",
+        "READ", catalog_id, collection_id, hint="join",
     )
     return drivers[0].driver if drivers else None
 

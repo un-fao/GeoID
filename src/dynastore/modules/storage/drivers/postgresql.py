@@ -79,7 +79,10 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         Capability.BULK_COPY,
     })
     preferred_for: FrozenSet[str] = frozenset({"features", "write"})
-    supported_hints: FrozenSet[str] = frozenset({"features", "write", "metadata"})
+    supported_hints: FrozenSet[str] = frozenset({
+        "features", "write", "metadata",
+        "join",  # primary side of OGC API - Joins (extensions/joins/joins_service.py)
+    })
 
     def is_available(self) -> bool:
         from dynastore.tools.discovery import get_protocol

@@ -111,7 +111,30 @@ async def _resolve_driver_ids_cached(
     entries = _ops.get(operation, [])
 
     if hint:
-        entries = [e for e in entries if hint in e.hints]
+        # Strict match wins when entry.hints is populated. When the entry
+        # carries no explicit hints, defer to the driver's supported_hints
+        # — drivers self-declare what they serve, so an empty entry hints
+        # set means "this entry does not constrain the hint surface; match
+        # whatever the driver itself supports". This keeps zero-config
+        # routing working (the auto-augmentation helpers all create entries
+        # with empty hints) without sacrificing per-entry strict routing
+        # for operators who explicitly pin hints on a driver.
+        if routing_plugin_cls is AssetRoutingConfig:
+            driver_index = DriverRegistry.asset_index()
+        else:
+            driver_index = DriverRegistry.collection_index()
+
+        def _entry_matches(e: _ODE) -> bool:
+            if e.hints:
+                return hint in e.hints
+            drv = driver_index.get(e.driver_id)
+            if drv is None:
+                return False
+            return hint in getattr(
+                type(drv), "supported_hints", frozenset(),
+            )
+
+        entries = [e for e in entries if _entry_matches(e)]
 
     return [(e.driver_id, e.on_failure, e.write_mode) for e in entries]
 

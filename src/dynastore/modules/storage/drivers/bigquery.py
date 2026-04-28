@@ -56,7 +56,10 @@ class ItemsBigQueryDriver(TypedDriver[ItemsBigQueryDriverConfig]):
         "READ", "WRITE", "STREAMING", "INTROSPECTION", "COUNT", "AGGREGATION",
     })
     preferred_for: FrozenSet[str] = frozenset({"features"})
-    supported_hints: FrozenSet[str] = frozenset({"features", "bigquery"})
+    supported_hints: FrozenSet[str] = frozenset({
+        "features", "bigquery",
+        "join",  # BQ can serve as either side of an OGC API - Joins request
+    })
 
     def is_available(self) -> bool:
         return _get_bq_service() is not None
