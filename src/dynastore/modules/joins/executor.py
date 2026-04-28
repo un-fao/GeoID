@@ -45,12 +45,16 @@ async def run_join(
     async for feat in primary_stream:
         props = feat.properties or {}
         # Look up the join value: prefer the explicit property, but fall
-        # back to feat.id when the column is the feature identifier.
+        # back to feat.id only when the column is ABSENT from properties.
         # Drivers like ItemsBigQueryDriver promote the id_column out of
         # `properties` into `feat.id` (see bigquery_stream.row_to_feature),
         # so a join on the id column would otherwise drop every feature.
-        key = props.get(join_col)
-        if key is None:
+        # An explicit None in properties means the caller actively wants
+        # to drop the row (NULL keys do not match) — distinguish absent
+        # vs. None-valued so we don't resurrect intentionally-null rows.
+        if join_col in props:
+            key = props[join_col]
+        else:
             key = feat.id
         if key is None:
             continue
@@ -97,9 +101,13 @@ async def index_secondary(
         props = feat.properties or {}
         # See run_join() above for the matching fallback rationale: BQ
         # (and any other driver that promotes the join column to feat.id)
-        # would otherwise yield zero indexable rows.
-        key = props.get(secondary_column)
-        if key is None:
+        # would otherwise yield zero indexable rows. Distinguish absent
+        # vs. explicit None so a NULL secondary value drops the row
+        # (which is standard JOIN semantics) instead of being resurrected
+        # under feat.id.
+        if secondary_column in props:
+            key = props[secondary_column]
+        else:
             key = feat.id
         if key is not None:
             # Surface the join key inside properties too so downstream
