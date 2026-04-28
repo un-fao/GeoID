@@ -142,6 +142,18 @@ async def test_sidecar_delete_cascades_to_assets_row(app_lifespan, catalog_id, c
             ctx=DriverContext(db_resource=conn),
         )
 
+        # The sidecar row's geoid has an FK to the hub table (ON DELETE
+        # CASCADE) — see attributes.py:417-421. Insert the parent hub row
+        # first so the FK is satisfied; transaction_time defaults to
+        # CURRENT_TIMESTAMP per get_column_definitions().
+        await conn.execute(
+            text(
+                f'INSERT INTO "{phys_schema}"."{phys_table}" (geoid) '
+                "VALUES (:geoid)"
+            ),
+            {"geoid": sidecar_geoid},
+        )
+
         await conn.execute(
             text(
                 f'INSERT INTO "{phys_schema}"."{sidecar_table}" (geoid, asset_id) '
