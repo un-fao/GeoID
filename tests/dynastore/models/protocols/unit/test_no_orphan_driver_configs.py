@@ -30,6 +30,7 @@ import dynastore.modules.storage.drivers.duckdb  # noqa: F401
 import dynastore.modules.storage.drivers.iceberg  # noqa: F401
 import dynastore.modules.storage.drivers.bigquery  # noqa: F401
 import dynastore.modules.storage.drivers.elasticsearch  # noqa: F401
+import dynastore.modules.storage.drivers.elasticsearch_private.driver  # noqa: F401
 import dynastore.modules.storage.drivers.metadata_postgresql  # noqa: F401
 import dynastore.modules.stac.drivers.metadata_postgresql  # noqa: F401
 import dynastore.modules.elasticsearch.collection_es_driver  # noqa: F401

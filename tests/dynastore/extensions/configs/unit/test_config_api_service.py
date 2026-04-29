@@ -421,7 +421,10 @@ async def test_compose_platform_config_sets_platform_scope(mock_config_service):
 
 
 def test_compose_tree_address_visibility_filters_correctly():
-    """``_visibility = "catalog"`` hides the class at collection scope."""
+    """``_visibility = "catalog"`` hides the class from the *main* tree at
+    collection scope (it surfaces under ``inherited_from_catalog`` instead
+    — see ``test_compose_tree_surfaces_catalog_configs_as_inherited_at_collection_scope``).
+    """
     by_class = {"CatalogOnly": {"x": 1}}
     registry = _stub_registry(
         CatalogOnly={
@@ -439,11 +442,116 @@ def test_compose_tree_address_visibility_filters_correctly():
                 by_class, sources={}, active_scope=scope, include_meta=False,
             )
             assert "CatalogOnly" in tree["storage"]["drivers"]["catalog"]
-        # Hidden at collection
+            assert "inherited_from_catalog" not in tree
+        # At collection scope: NOT in main tree, but in inherited_from_catalog
         tree, _ = ConfigApiService._compose_tree(
             by_class, sources={}, active_scope="collection", include_meta=False,
         )
-        assert tree == {}
+        assert "storage" not in tree
+        assert tree["inherited_from_catalog"]["storage"]["drivers"]["catalog"]["CatalogOnly"] == {"x": 1}
+
+
+def test_compose_tree_surfaces_catalog_configs_as_inherited_at_collection_scope():
+    """At collection scope, every catalog-visibility config that would have
+    been dropped now surfaces under the sibling ``inherited_from_catalog``
+    block, using the SAME ``scope/topic/sub`` shape as the main tree so
+    the dashboard form-builder renders both with the same code path.
+    """
+    by_class = {
+        "items_postgresql_driver":      {"sidecars": []},
+        "elasticsearch_catalog_config": {"private": True},
+        "catalog_routing_config":       {"enabled": True},
+        "catalog_postgresql_driver":    {},
+        "web_config":                   {"brand_name": "X"},
+    }
+    registry = _stub_registry(
+        items_postgresql_driver={
+            "_address": ("storage", "drivers", "items"),
+            "_visibility": "collection",
+        },
+        elasticsearch_catalog_config={
+            "_address": ("catalog", "elasticsearch", None),
+            "_visibility": "catalog",
+        },
+        catalog_routing_config={
+            "_address": ("storage", "routing", None),
+            "_visibility": "catalog",
+        },
+        catalog_postgresql_driver={
+            "_address": ("storage", "drivers", "catalog"),
+            "_visibility": "catalog",
+        },
+        web_config={
+            "_address": ("platform", "web", None),
+        },
+    )
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        tree, _ = ConfigApiService._compose_tree(
+            by_class, sources={}, active_scope="collection", include_meta=False,
+        )
+
+    # Collection-vis stays in main tree
+    assert tree["storage"]["drivers"]["items"]["items_postgresql_driver"] == {"sidecars": []}
+    # Universal stays in main tree
+    assert tree["platform"]["web"]["web_config"] == {"brand_name": "X"}
+    # Catalog-vis configs ALL surface under inherited_from_catalog with the same shape
+    inh = tree["inherited_from_catalog"]
+    assert inh["catalog"]["elasticsearch"]["elasticsearch_catalog_config"] == {"private": True}
+    assert inh["storage"]["routing"]["catalog_routing_config"] == {"enabled": True}
+    assert inh["storage"]["drivers"]["catalog"]["catalog_postgresql_driver"] == {}
+
+
+def test_compose_tree_no_inherited_from_catalog_at_non_collection_scopes():
+    """The ``inherited_from_catalog`` block is collection-scope only — at
+    catalog and platform scopes the catalog-tier configs land in the main
+    tree, and the inherited block must not appear.
+    """
+    by_class = {"catalog_routing_config": {"enabled": True}}
+    registry = _stub_registry(
+        catalog_routing_config={
+            "_address": ("storage", "routing", None),
+            "_visibility": "catalog",
+        },
+    )
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        for scope in ("platform", "catalog"):
+            tree, _ = ConfigApiService._compose_tree(
+                by_class, sources={}, active_scope=scope, include_meta=False,
+            )
+            assert "inherited_from_catalog" not in tree, (
+                f"inherited_from_catalog must NOT appear at scope={scope!r}"
+            )
+            assert "catalog_routing_config" in tree["storage"]["routing"]
+
+
+def test_compose_tree_inherited_from_catalog_meta_carries_source():
+    """The ``meta`` block still carries ``source`` for inherited configs,
+    so the dashboard can render the inheritance chain alongside the value.
+    """
+    by_class = {"elasticsearch_catalog_config": {"private": True}}
+    sources = {"elasticsearch_catalog_config": "catalog"}
+    registry = _stub_registry(
+        elasticsearch_catalog_config={
+            "_address": ("catalog", "elasticsearch", None),
+            "_visibility": "catalog",
+        },
+    )
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        tree, meta = ConfigApiService._compose_tree(
+            by_class, sources=sources, active_scope="collection", include_meta=True,
+        )
+    assert tree["inherited_from_catalog"]["catalog"]["elasticsearch"]["elasticsearch_catalog_config"] == {"private": True}
+    assert meta is not None
+    assert meta["elasticsearch_catalog_config"].source == "catalog"
 
 
 # ---------------------------------------------------------------------------
