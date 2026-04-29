@@ -114,8 +114,14 @@ jobs:
           cache-from: type=gha,scope=tester
           cache-to: type=gha,mode=max,scope=tester
 
-      - name: Build test infrastructure (compose)
-        run: docker compose -f src/dynastore/docker/docker-compose.test.yml build test-runner db
+      # `db` is from `Dockerfile.db` and not pre-baked by the
+      # build-push-action above, so build it via compose. The
+      # `test-runner` service has `image: geoid-test-runner:ci`
+      # pointing at the buildx-loaded tag from the previous step;
+      # `docker compose run --rm test-runner` resolves and reuses
+      # it without invoking another build.
+      - name: Build test infrastructure (compose, db only)
+        run: docker compose -f src/dynastore/docker/docker-compose.test.yml build db
 
       - name: Run unit tests
         id: unit
@@ -153,14 +159,15 @@ jobs:
 
   integration-tests:
     runs-on: ubuntu-22.04
-    # 20 min hard cap. Was 25 → still trended to 30 min because the job
-    # was redundantly re-running ALL 274 tests (the 221 unit tests
-    # already covered by unit-tests + the 53 actual integration tests).
-    # The redundancy is fixed below by scoping the pytest invocation to
-    # `tests/dynastore/**/integration/`. With ~53 integration tests and
-    # 4 xdist workers, 20 min should be ample. Beyond that = real hang
-    # or new infrastructure regression — surface fast, don't extend.
-    timeout-minutes: 20
+    # 25 min cap. Tests themselves now run ~8 min after PR #117's
+    # */integration/* scoping, but the docker compose `build` step
+    # adds another 10-12 min on top. The compose `image:` directives
+    # in this PR let compose reuse the buildx-pre-built `:ci` tags
+    # instead of rebuilding, which should drop total job time
+    # comfortably below 20 min on warm cache. The 25-min cap leaves a
+    # margin for cold-cache runs (after a long quiet period) where the
+    # GHA layer cache is partially evicted.
+    timeout-minutes: 25
     # inputs.run_integration is only set for workflow_dispatch / workflow_call.
     # For push/pull_request it is undefined (''), so the comparison evaluates
     # != 'false' as true. Skip only when the caller explicitly passes false.
@@ -213,8 +220,16 @@ jobs:
           cache-from: type=gha,scope=builder
           cache-to: type=gha,mode=max,scope=builder
 
-      - name: Build test infrastructure (compose)
-        run: docker compose -f src/dynastore/docker/docker-compose.test.yml build
+      # Build only the services that have no pre-built image:
+      # `db` is from `Dockerfile.db` and isn't pre-baked above.
+      # `test-runner`, `catalog`, `worker` declare both `image:` (the
+      # buildx-loaded `:ci` tags) AND `build:` (fallback for local
+      # devs) — `docker compose build` ignores `image:` and always
+      # rebuilds, so we exclude them from this step. The subsequent
+      # `compose run --rm test-runner` will resolve their `image:`
+      # against the docker daemon and reuse the loaded tags.
+      - name: Build test infrastructure (compose, db only)
+        run: docker compose -f src/dynastore/docker/docker-compose.test.yml build db
 
       # Scope to ACTUAL integration tests only — 53 files under
       # */integration/* paths. The previous `pytest tests/` invocation
@@ -224,14 +239,20 @@ jobs:
       # safe against spaces or shell metacharacters in paths and
       # surfaces an empty match as a non-zero exit (avoids `pytest`
       # silently falling back to "discover everything" if `find`
-      # returned no files). `-m "not gcp and not local_only"` skips
-      # tests that need GCP credentials or live local services,
-      # neither of which are available on the GHA runner.
+      # returned no files).
+      #
+      # No `-m` marker filter here on purpose. `tests/conftest.py`
+      # already has a `pytest_runtest_setup` that auto-skips tests
+      # marked `local_only` (when CI / GITHUB_ACTIONS / REMOTE_TEST_
+      # EXECUTION is set), `gcp` (when ADC creds aren't resolvable),
+      # and `elasticsearch` (when DYNASTORE_RUN_ELASTICSEARCH_TESTS
+      # isn't set). Filtering at the workflow layer would only
+      # duplicate that logic in two places.
       - name: Run integration tests
         id: integration
         run: |
           docker compose -f src/dynastore/docker/docker-compose.test.yml run --rm test-runner \
-            bash -c 'set -euo pipefail; mapfile -d "" -t TESTS < <(find tests -path "*/integration/*" -name "test_*.py" -type f -print0 | sort -z); test "${#TESTS[@]}" -gt 0 || { echo "no integration tests found"; exit 1; }; /opt/venv/bin/pytest "${TESTS[@]}" -m "not gcp and not local_only" --durations=20 --junitxml=/dynastore/workspace/test-results.xml'
+            bash -c 'set -euo pipefail; mapfile -d "" -t TESTS < <(find tests -path "*/integration/*" -name "test_*.py" -type f -print0 | sort -z); test "${#TESTS[@]}" -gt 0 || { echo "no integration tests found"; exit 1; }; /opt/venv/bin/pytest "${TESTS[@]}" --durations=20 --junitxml=/dynastore/workspace/test-results.xml'
 
       - name: Display Docker logs on failure
         if: failure()

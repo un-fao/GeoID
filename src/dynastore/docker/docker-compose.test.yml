@@ -38,6 +38,12 @@ services:
       file: docker-compose.yml
       service: catalog
     restart: "no"
+    # `image:` lets compose reuse the buildx-pre-built `geoid-builder:ci`
+    # tag from the workflow's `Build catalog/worker image (cached)` step
+    # instead of rebuilding via this `build:` block. compose still falls
+    # back to building when the image isn't already loaded (local devs,
+    # first run on a fresh runner).
+    image: geoid-builder:ci
     build:
       context: ../../..
       dockerfile: src/dynastore/docker/Dockerfile
@@ -74,6 +80,9 @@ services:
       file: docker-compose.yml
       service: worker
     restart: "no"
+    # See `catalog` above: same `geoid-builder:ci` tag is reused for
+    # the worker since both share `target: builder` + SCOPE=all.
+    image: geoid-builder:ci
     build:
       context: ../../..
       dockerfile: src/dynastore/docker/Dockerfile
@@ -104,6 +113,12 @@ services:
     command: python -m uvicorn dynastore.main:app --host 0.0.0.0 --port 81 --workers 1
 
   test-runner:
+    # Reuse the buildx-pre-built `geoid-test-runner:ci` from the
+    # workflow's `Build test-runner image (cached)` step. compose
+    # still falls back to building from this `build:` block when the
+    # image isn't already loaded (local devs, first run on a fresh
+    # runner).
+    image: geoid-test-runner:ci
     build:
       context: ../../..
       dockerfile: src/dynastore/docker/Dockerfile
