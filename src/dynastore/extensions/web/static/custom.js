@@ -437,7 +437,10 @@ async function updateDashboard() {
 
 async function fetchDashboardStats() {
     try {
-        const res = await fetch('dashboard/stats');
+        // Site-wide overview uses the _system_ scope (sysadmin-only). Non-
+        // sysadmin callers get 403 from TenantScopeMiddleware; the catch
+        // below swallows it and the UI tile stays empty.
+        const res = await fetch('dashboard/catalogs/_system_/stats');
         if (!res.ok) return;
         const stats = await res.json();
         if(document.getElementById('stat-total-requests')) document.getElementById('stat-total-requests').innerText = stats.total_requests.toLocaleString() || '0';
@@ -450,7 +453,7 @@ async function fetchDashboardStats() {
 async function fetchDashboardLogs() {
     try {
         const level = document.getElementById('log-filter-level')?.value || 'INFO';
-        const res = await fetch(`dashboard/logs?limit=50&level=${level}`);
+        const res = await fetch(`dashboard/catalogs/_system_/logs?limit=50&level=${level}`);
         if (!res.ok) return;
         const logs = await res.json();
         const container = document.getElementById('dashboard-logs');
@@ -466,7 +469,7 @@ async function fetchDashboardLogs() {
 
 async function fetchDashboardTasks() {
     try {
-        const res = await fetch('dashboard/tasks');
+        const res = await fetch('dashboard/catalogs/_system_/tasks');
         if(!res.ok) return;
         const tasks = await res.json();
         const container = document.getElementById('dashboard-tasks');
@@ -1006,7 +1009,7 @@ function _createBadge(text, colorClasses) {
 
 async function loadOgcCompliance() {
     try {
-        const resp = await fetch(`${_SCRIPT_ROOT}/web/dashboard/ogc-compliance`);
+        const resp = await fetch(`${_SCRIPT_ROOT}/web/dashboard/catalogs/_system_/ogc-compliance`);
         if (!resp.ok) return;
         const data = await resp.json();
 

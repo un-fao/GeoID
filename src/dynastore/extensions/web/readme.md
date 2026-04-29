@@ -78,12 +78,24 @@ GET /web/docs-manifest              # Get list of available docs
 GET /web/docs-content/{id}          # Get specific doc content (HTML)
 ```
 
-### Dashboard (Optional)
+### Dashboard (per-catalog, gated by `TenantScopeMiddleware`)
 ```
-GET /web/dashboard/stats            # System statistics
-GET /web/dashboard/logs?limit=50&level=INFO  # Logs with filtering
-GET /web/dashboard/tasks            # Active background tasks
+GET /web/dashboard/                                              # Catalog picker (anonymous-allowed)
+GET /web/dashboard/catalogs/{catalog_id}/                        # Per-catalog HTML shell
+GET /web/dashboard/catalogs/{catalog_id}/processes/              # Per-catalog process executor shell
+GET /web/dashboard/catalogs/{catalog_id}/stats                   # Per-catalog statistics
+GET /web/dashboard/catalogs/{catalog_id}/logs?limit=50&level=INFO  # Per-catalog logs
+GET /web/dashboard/catalogs/{catalog_id}/events                  # Per-catalog events
+GET /web/dashboard/catalogs/{catalog_id}/tasks                   # Per-catalog background tasks
+GET /web/dashboard/catalogs/{catalog_id}/ogc-compliance          # Per-catalog OGC conformance
+GET /web/dashboard/catalogs/{catalog_id}/collections/{collection_id}/stats
+GET /web/dashboard/catalogs/{catalog_id}/collections/{collection_id}/logs
+GET /web/dashboard/catalogs/{catalog_id}/collections/{collection_id}/events
 ```
+
+`{catalog_id}=_system_` is the synthetic platform-scope (sysadmin-only). Catalog admins
+get 401/403 on catalogs they don't own — the gate runs in `TenantScopeMiddleware`
+before the handler, so the route bodies carry no authz code.
 
 ## Development
 

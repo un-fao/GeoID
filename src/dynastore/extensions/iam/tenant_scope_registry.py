@@ -17,13 +17,28 @@ needs per-catalog authorization. Routes themselves carry no authz wiring;
 operators (or extension authors) add patterns here.
 
 Each ``TenantScopeRule`` declares:
-  - ``pattern``         — compiled regex matched against ``request.url.path``;
-  - ``catalog_source``  — where to extract the catalog id from
-                          (``"query:NAME"``, ``"path:NAME"``, ``"header:NAME"``);
-  - ``default``         — value used when the source key is absent
-                          (``"_system_"`` keeps platform-scope read sysadmin-only);
-  - ``allow_anonymous`` — when False, anonymous callers are 401'd before
-                          dispatch.
+  - ``pattern``            — compiled regex matched against ``request.url.path``;
+  - ``catalog_source``     — where to extract the catalog id from. Supported:
+                              * ``"query:NAME"``       (?NAME=… query param)
+                              * ``"header:NAME"``      (HTTP header)
+                              * ``"regex_group:NAME"`` (named capture group on
+                                ``pattern`` — required for path-based extraction
+                                because ``BaseHTTPMiddleware`` runs BEFORE
+                                FastAPI route matching, so ``request.path_params``
+                                is empty);
+  - ``collection_source``  — optional, same source kinds. When set, the
+                              middleware also pins ``collection_id`` to
+                              ``request.state.tenant_scope`` for downstream
+                              data-layer Protocols. Gating decisions remain
+                              catalog-only;
+  - ``default``            — value used when ``catalog_source`` resolves empty
+                              (``"_system_"`` keeps platform-scope read
+                              sysadmin-only);
+  - ``allow_anonymous``    — when False, anonymous callers are 401'd before
+                              dispatch.
+
+Project-wide convention (per the path-based reshape): all per-catalog data
+endpoints live at ``/{service}/catalogs/{catalog_id}[/collections/{collection_id}]/...``.
 """
 
 from __future__ import annotations
@@ -40,21 +55,37 @@ class TenantScopeRule:
     catalog_source: str
     default: str
     allow_anonymous: bool
+    collection_source: Optional[str] = None
 
 
-# Dashboard endpoints exposing per-catalog operational data: stats, logs,
-# events, tasks, processes, ogc-compliance. All scope by ``?catalog_id=``;
-# absence resolves to the platform-scope synthetic catalog (sysadmin-only).
-_DASHBOARD_PATTERN = re.compile(
-    r"^/web/dashboard/(stats|logs|events|tasks|processes|ogc-compliance)(/|\?|$|$)"
+# /web/dashboard/catalogs/{catalog_id}/collections/{collection_id}[/...]
+# More specific — must be checked BEFORE the per-catalog rule below, because
+# the per-catalog rule also matches collection-scoped paths.
+_DASHBOARD_PER_COLLECTION_PATTERN = re.compile(
+    r"^/web/dashboard/catalogs/(?P<catalog_id>[^/]+)/collections/(?P<collection_id>[^/]+)(?:/.*)?$"
+)
+
+# /web/dashboard/catalogs/{catalog_id}[/...]  — covers shell + data endpoints
+# (stats, logs, events, tasks, ogc-compliance, processes/ shell, etc.) AND the
+# catalog-scoped collections list (which has no collection_id segment).
+_DASHBOARD_PER_CATALOG_PATTERN = re.compile(
+    r"^/web/dashboard/catalogs/(?P<catalog_id>[^/]+)(?:/.*)?$"
 )
 
 
 TENANT_SCOPED_ROUTES: List[TenantScopeRule] = [
     TenantScopeRule(
+        id="dashboard_per_collection",
+        pattern=_DASHBOARD_PER_COLLECTION_PATTERN,
+        catalog_source="regex_group:catalog_id",
+        collection_source="regex_group:collection_id",
+        default="_system_",
+        allow_anonymous=False,
+    ),
+    TenantScopeRule(
         id="dashboard_per_catalog",
-        pattern=_DASHBOARD_PATTERN,
-        catalog_source="query:catalog_id",
+        pattern=_DASHBOARD_PER_CATALOG_PATTERN,
+        catalog_source="regex_group:catalog_id",
         default="_system_",
         allow_anonymous=False,
     ),
@@ -62,7 +93,11 @@ TENANT_SCOPED_ROUTES: List[TenantScopeRule] = [
 
 
 def match_tenant_scope_rule(path: str) -> Optional[TenantScopeRule]:
-    """Return the first rule whose pattern matches ``path``, or ``None``."""
+    """Return the first rule whose pattern matches ``path``, or ``None``.
+
+    Order matters: more specific rules (e.g. per-collection) appear before
+    more general rules (per-catalog) so they shadow correctly.
+    """
     for rule in TENANT_SCOPED_ROUTES:
         if rule.pattern.match(path):
             return rule

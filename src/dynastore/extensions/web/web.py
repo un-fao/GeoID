@@ -1155,6 +1155,9 @@ async function demoAction(action) {
 
         @self.router.get("/dashboard/")
         async def read_dashboard_root():
+            """Catalog-picker root. Anonymous-allowed: lists catalogs the
+            caller can see (filtered downstream by IAM) and lets them pick
+            a per-catalog dashboard."""
             dashboard_index = os.path.join(
                 os.path.dirname(__file__), "static", "dashboard", "index.html"
             )
@@ -1162,8 +1165,23 @@ async function demoAction(action) {
                 return await self.serve_file(dashboard_index)
             return HTMLResponse("Dashboard Not Found", status_code=404)
 
-        @self.router.get("/dashboard/processes/")
-        async def read_processes_page():
+        @self.router.get("/dashboard/catalogs/{catalog_id}/")
+        async def read_dashboard_per_catalog(catalog_id: str):
+            """Per-catalog dashboard HTML shell. Same template as the root —
+            JS reads ``catalog_id`` from ``window.location.pathname`` and
+            uses relative URLs (``stats``, ``logs``, ``events``) which
+            resolve against this base path."""
+            dashboard_index = os.path.join(
+                os.path.dirname(__file__), "static", "dashboard", "index.html"
+            )
+            if os.path.exists(dashboard_index):
+                return await self.serve_file(dashboard_index)
+            return HTMLResponse("Dashboard Not Found", status_code=404)
+
+        @self.router.get("/dashboard/catalogs/{catalog_id}/processes/")
+        async def read_processes_page(catalog_id: str):
+            """Per-catalog processes HTML shell. Same template as before;
+            authz gated upstream by TenantScopeMiddleware."""
             processes_index = os.path.join(
                 os.path.dirname(__file__), "static", "dashboard", "processes.html"
             )
@@ -1500,35 +1518,29 @@ async function demoAction(action) {
                     return []
             return []
 
-        @self.router.get("/dashboard/stats", response_class=JSONResponse)
-        async def get_dashboard_stats(
-            request: Request,
-            catalog_id: str = Query(
-                "_system_", description="Catalog ID to filter stats for."
-            ),
-            collection_id: Optional[str] = Query(
-                None, description="Optional collection ID to filter stats for."
-            ),
-            principal_id: Optional[str] = Query(
-                None, description="Filter by Principal ID."
-            ),
-            start_date: Optional[datetime] = Query(
-                None, description="Start date for stats aggregation."
-            ),
-            end_date: Optional[datetime] = Query(
-                None, description="End date for stats aggregation."
-            ),
-        ):
-            # Authz gated upstream by TenantScopeMiddleware — request reaches
-            # this handler only when the caller is allowed for ``catalog_id``.
+        # ------------------------------------------------------------------ #
+        # Per-catalog dashboard data endpoints                                #
+        #                                                                     #
+        # All routes use the project-wide path convention                     #
+        # ``/web/dashboard/catalogs/{catalog_id}/...`` so TenantScopeMiddleware #
+        # can extract the tenant scope from the URL via regex capture and    #
+        # gate before the handler runs. Handler bodies carry zero authz code. #
+        # ------------------------------------------------------------------ #
 
-            # Resolve schema using CatalogsProtocol
+        async def _stats_summary(
+            catalog_id: str,
+            collection_id: Optional[str],
+            principal_id: Optional[str],
+            start_date: Optional[datetime],
+            end_date: Optional[datetime],
+        ) -> Dict[str, Any]:
+            """Shared stats fan-out used by per-catalog and per-collection routes."""
             from dynastore.modules import get_protocol
             from dynastore.models.protocols import CatalogsProtocol
+            from dynastore.models.protocols.stats import StatsProtocol
 
             catalogs = get_protocol(CatalogsProtocol)
             db_resource = getattr(catalogs, "engine", None) if catalogs else None
-
             schema = "catalog"
             if catalog_id and catalog_id != "_system_" and catalogs is not None:
                 try:
@@ -1541,7 +1553,6 @@ async function demoAction(action) {
                 except ValueError:
                     pass
 
-            from dynastore.models.protocols.stats import StatsProtocol
             stats_service = get_protocol(StatsProtocol)
             summary = None
             if stats_service:
@@ -1553,46 +1564,22 @@ async function demoAction(action) {
                     start_date=start_date,
                     end_date=end_date,
                 )
-
             return (
                 summary.model_dump()
                 if summary
                 else {"total_requests": 0, "average_latency_ms": 0}
             )
 
-        @self.router.get("/dashboard/tasks", response_class=JSONResponse)
-        async def get_dashboard_tasks():
-            tasks_ext = getattr(self.app.state, "tasks", None) if self.app else None
-            if tasks_ext:
-                tasks = await tasks_ext.get_tasks()
-                return tasks
-            return []
-
-        @self.router.get("/dashboard/logs", response_class=JSONResponse)
-        async def get_dashboard_logs(
-            request: Request,
-            catalog_id: str = Query(
-                "_system_",
-                description="Catalog ID to filter logs for. Defaults to system logs.",
-            ),
-            collection_id: Optional[str] = Query(
-                None, description="Optional collection ID to filter logs for."
-            ),
-            event_type: Optional[str] = Query(
-                None, description="Optional event type to filter logs for."
-            ),
-            level: Optional[str] = Query(
-                None, description="Optional log level (e.g., ERROR, INFO)."
-            ),
-            limit: int = Query(
-                50, ge=1, le=1000, description="Number of logs to return."
-            ),
-            offset: int = Query(0, ge=0, description="Pagination offset."),
-        ):
-            # Authz gated upstream by TenantScopeMiddleware.
-
+        async def _list_logs(
+            catalog_id: str,
+            collection_id: Optional[str],
+            event_type: Optional[str],
+            level: Optional[str],
+            limit: int,
+            offset: int,
+        ) -> List[Dict[str, Any]]:
             from dynastore.models.protocols.logs import LogsProtocol
-            from dynastore.tools.discovery import get_protocol, register_plugin
+            from dynastore.tools.discovery import get_protocol
 
             log_ext = get_protocol(LogsProtocol)
             if log_ext:
@@ -1607,32 +1594,17 @@ async function demoAction(action) {
                 return [l if isinstance(l, dict) else l.model_dump() for l in logs]
             return []
 
-        @self.router.get("/dashboard/events", response_class=JSONResponse)
-        async def get_dashboard_events(
-            request: Request,
-            catalog_id: str = Query(
-                "_system_",
-                description="Catalog ID to fetch events for. Defaults to system events.",
-            ),
-            collection_id: Optional[str] = Query(
-                None, description="Optional collection ID to filter events for."
-            ),
-            event_type: Optional[str] = Query(
-                None, description="Optional event type to filter events for."
-            ),
-            limit: int = Query(
-                50, ge=1, le=1000, description="Number of events to return."
-            ),
-            offset: int = Query(0, ge=0, description="Pagination offset."),
-        ):
-            # Authz gated upstream by TenantScopeMiddleware.
-
+        async def _search_events(
+            catalog_id: str,
+            collection_id: Optional[str],
+            event_type: Optional[str],
+            limit: int,
+            offset: int,
+        ) -> List[Dict[str, Any]]:
             from dynastore.modules.catalog.catalog_module import _module_instance
-
             catalog_mod = _module_instance
             if catalog_mod and hasattr(catalog_mod, "event_service"):
                 from dynastore.tools.protocol_helpers import get_engine
-
                 engine = get_engine()
                 events = await cast(Any, catalog_mod).event_service.search_events(
                     engine=engine,
@@ -1642,24 +1614,103 @@ async function demoAction(action) {
                     limit=limit,
                     offset=offset,
                 )
-
-                # Convert datetime objects to string for JSON serialization
                 for event in events:
                     if "created_at" in event and event["created_at"]:
                         event["created_at"] = event["created_at"].isoformat()
-
                 return events
             return []
 
+        @self.router.get("/dashboard/catalogs/{catalog_id}/stats", response_class=JSONResponse)
+        async def get_dashboard_stats(
+            catalog_id: str,
+            principal_id: Optional[str] = Query(None, description="Filter by Principal ID."),
+            start_date: Optional[datetime] = Query(None, description="Start date for stats aggregation."),
+            end_date: Optional[datetime] = Query(None, description="End date for stats aggregation."),
+        ):
+            return await _stats_summary(catalog_id, None, principal_id, start_date, end_date)
+
         @self.router.get(
-            "/dashboard/ogc-compliance",
+            "/dashboard/catalogs/{catalog_id}/collections/{collection_id}/stats",
+            response_class=JSONResponse,
+        )
+        async def get_dashboard_stats_per_collection(
+            catalog_id: str,
+            collection_id: str,
+            principal_id: Optional[str] = Query(None, description="Filter by Principal ID."),
+            start_date: Optional[datetime] = Query(None, description="Start date for stats aggregation."),
+            end_date: Optional[datetime] = Query(None, description="End date for stats aggregation."),
+        ):
+            return await _stats_summary(catalog_id, collection_id, principal_id, start_date, end_date)
+
+        @self.router.get("/dashboard/catalogs/{catalog_id}/tasks", response_class=JSONResponse)
+        async def get_dashboard_tasks(catalog_id: str):
+            tasks_ext = getattr(self.app.state, "tasks", None) if self.app else None
+            if tasks_ext:
+                # The TasksProtocol's get_tasks returns the global view today;
+                # filtering by catalog_id is a follow-up that requires the
+                # protocol contract to grow a parameter. The middleware
+                # already enforced that the caller is allowed for catalog_id.
+                tasks = await tasks_ext.get_tasks()
+                return tasks
+            return []
+
+        @self.router.get("/dashboard/catalogs/{catalog_id}/logs", response_class=JSONResponse)
+        async def get_dashboard_logs(
+            catalog_id: str,
+            event_type: Optional[str] = Query(None, description="Optional event type filter."),
+            level: Optional[str] = Query(None, description="Optional log level (e.g., ERROR, INFO)."),
+            limit: int = Query(50, ge=1, le=1000),
+            offset: int = Query(0, ge=0, description="Pagination offset."),
+        ):
+            return await _list_logs(catalog_id, None, event_type, level, limit, offset)
+
+        @self.router.get(
+            "/dashboard/catalogs/{catalog_id}/collections/{collection_id}/logs",
+            response_class=JSONResponse,
+        )
+        async def get_dashboard_logs_per_collection(
+            catalog_id: str,
+            collection_id: str,
+            event_type: Optional[str] = Query(None),
+            level: Optional[str] = Query(None),
+            limit: int = Query(50, ge=1, le=1000),
+            offset: int = Query(0, ge=0),
+        ):
+            return await _list_logs(catalog_id, collection_id, event_type, level, limit, offset)
+
+        @self.router.get("/dashboard/catalogs/{catalog_id}/events", response_class=JSONResponse)
+        async def get_dashboard_events(
+            catalog_id: str,
+            event_type: Optional[str] = Query(None, description="Optional event type filter."),
+            limit: int = Query(50, ge=1, le=1000),
+            offset: int = Query(0, ge=0, description="Pagination offset."),
+        ):
+            return await _search_events(catalog_id, None, event_type, limit, offset)
+
+        @self.router.get(
+            "/dashboard/catalogs/{catalog_id}/collections/{collection_id}/events",
+            response_class=JSONResponse,
+        )
+        async def get_dashboard_events_per_collection(
+            catalog_id: str,
+            collection_id: str,
+            event_type: Optional[str] = Query(None),
+            limit: int = Query(50, ge=1, le=1000),
+            offset: int = Query(0, ge=0),
+        ):
+            return await _search_events(catalog_id, collection_id, event_type, limit, offset)
+
+        @self.router.get(
+            "/dashboard/catalogs/{catalog_id}/ogc-compliance",
             response_class=JSONResponse,
             tags=["Web Dashboard"],
         )
-        async def get_ogc_compliance():
-            """Return a structured OGC API compliance summary grouped by standard."""
+        async def get_ogc_compliance(catalog_id: str):
+            """Return the OGC API conformance summary. The summary is
+            deployment-wide today, but the route is per-catalog so callers
+            traverse the same path convention as every other dashboard data
+            endpoint; authz is enforced upstream by TenantScopeMiddleware."""
             from dynastore.extensions.tools.conformance import get_conformance_summary
-
             summary = get_conformance_summary()
             return summary.model_dump()
 
