@@ -77,7 +77,12 @@ def test_init_subclass_raises_on_legacy_on_apply_pattern():
     """
     with pytest.raises(TypeError, match=r"retired ``_on_apply.*ClassVar`` pattern"):
 
-        class _BadConcreteConfig(PluginConfig):
+        class _LegacyOnApplyConcreteConfig(PluginConfig):
+            # Distinct name to avoid class_key collision with the
+            # ``_BadConcreteConfig`` defined inline in the address-enforcement
+            # test in ``test_config_api_service.py`` (TypedModelRegistry
+            # refuses duplicate class_keys; both tests' inline classes
+            # would otherwise resolve to ``_bad_concrete_config``).
             _address: ClassVar[Tuple[str, str, Optional[str]]] = (
                 "platform", "misc", None,
             )

@@ -219,7 +219,17 @@ class ConfigApiService:
         active_scope: str,
         include_meta: bool,
     ) -> Tuple[Dict[str, Any], Optional[Dict[str, ConfigMeta]]]:
-        """Bucket visible classes into scope/topic tree and optionally build meta."""
+        """Bucket visible classes into scope/topic tree and optionally build meta.
+
+        At collection scope, catalog-tier configs (``_visibility = "catalog"``)
+        are surfaced under a sibling ``inherited_from_catalog`` block instead
+        of being dropped — the operator sees which catalog-tier configs
+        influence this collection (e.g. ``ElasticsearchCatalogConfig.private``
+        decides whether items go to the public or private ES index, but is
+        editable only at catalog scope).  The block uses the SAME
+        ``scope/topic/sub`` shape as the main tree so dashboards can render
+        it with the same form-builder.
+        """
         all_classes = list_registered_configs()
         tree: Dict[str, Any] = {}
         meta: Dict[str, ConfigMeta] = {}
@@ -227,6 +237,29 @@ class ConfigApiService:
             cls = all_classes.get(class_key)
             if cls is None:
                 continue
+
+            # At collection scope, intercept catalog-visibility configs and
+            # bucket them under ``inherited_from_catalog`` instead of dropping
+            # them via _place().  Same scope/topic/sub address as in the main
+            # tree so the rendering is symmetric.
+            if (
+                active_scope == "collection"
+                and getattr(cls, "_visibility", None) == "catalog"
+                and not cls.__dict__.get("is_abstract_base", False)
+            ):
+                address = getattr(cls, "_address", None)
+                if address and address != ("", "", None):
+                    scope, topic, sub = address
+                    inherited = tree.setdefault("inherited_from_catalog", {})
+                    topic_node = inherited.setdefault(scope, {}).setdefault(topic, {})
+                    if sub is None:
+                        topic_node[class_key] = payload
+                    else:
+                        topic_node.setdefault(sub, {})[class_key] = payload
+                    if include_meta and class_key in sources:
+                        meta[class_key] = ConfigMeta(source=sources[class_key])
+                continue
+
             placed = _place(cls, active_scope)
             if placed is None:
                 continue
