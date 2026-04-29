@@ -380,6 +380,8 @@ class DriverPluginConfig(_PluginDriverConfig):
       describing how the driver performs operations.
     """
 
+    is_abstract_base: ClassVar[bool] = True
+
     capabilities: FrozenSet[str] = Field(
         default_factory=frozenset,
         description="How the driver operates: SYNC, ASYNC, TRANSACTIONAL, etc.",
@@ -394,6 +396,8 @@ class CollectionDriverConfig(DriverPluginConfig):
     "Storage Drivers" section in the left rail.
     """
 
+    is_abstract_base: ClassVar[bool] = True
+
     model_config = ConfigDict(json_schema_extra=ui(category="storage-drivers"))
 
 
@@ -402,6 +406,8 @@ class AssetDriverConfig(DriverPluginConfig):
 
     Grouped under "Asset Drivers" in the admin Configuration Hub.
     """
+
+    is_abstract_base: ClassVar[bool] = True
 
     model_config = ConfigDict(json_schema_extra=ui(category="asset-drivers"))
 

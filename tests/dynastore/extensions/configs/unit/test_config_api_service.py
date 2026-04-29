@@ -54,6 +54,55 @@ async def test_get_effective_configs_source_default(mock_config_service):
 
 
 @pytest.mark.asyncio
+async def test_get_effective_configs_resolved_batches_to_three_list_calls(mock_config_service):
+    """Resolved-mode loader must do exactly THREE list_configs (one per tier)
+    and ZERO per-class ``get_config`` calls — replaces the previous N+3 loop.
+    """
+    svc = ConfigApiService(config_service=mock_config_service)
+    await svc._get_effective_configs(
+        catalog_id="cat-x", collection_id="coll-y", resolved=True,
+    )
+    assert mock_config_service.list_configs.await_count == 3
+    assert mock_config_service.get_config.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_get_effective_configs_resolved_merges_tier_deltas():
+    """Tier rows are deltas; the loader merges them onto the code default in
+    waterfall order (platform > catalog > collection, last wins) — no per-class
+    ``get_config`` round-trip.
+    """
+    from dynastore.modules.storage.routing_config import CollectionRoutingConfig
+
+    async def list_side_effect(catalog_id=None, collection_id=None, **_):
+        if catalog_id and collection_id:
+            return {
+                "items": [
+                    {"plugin_id": "CollectionRoutingConfig",
+                     "config_data": {"enabled": False}},
+                ],
+                "total": 1,
+            }
+        return {"items": [], "total": 0}
+
+    svc_mock = MagicMock()
+    svc_mock.list_configs = AsyncMock(side_effect=list_side_effect)
+    svc_mock.get_config = AsyncMock(side_effect=AssertionError(
+        "batched loader must NOT call get_config in resolved mode"
+    ))
+
+    svc = ConfigApiService(config_service=svc_mock)
+    by_class, sources = await svc._get_effective_configs(
+        catalog_id="cat-x", collection_id="coll-y", resolved=True,
+    )
+    assert sources["CollectionRoutingConfig"] == "collection"
+    assert by_class["CollectionRoutingConfig"]["enabled"] is False
+    # round-trips through the model so other defaults are present
+    default_keys = set(CollectionRoutingConfig().model_dump().keys())
+    assert set(by_class["CollectionRoutingConfig"].keys()) == default_keys
+
+
+@pytest.mark.asyncio
 async def test_get_effective_configs_catalog_source(mock_config_service):
     from dynastore.modules.storage.routing_config import CollectionRoutingConfig
 
@@ -95,12 +144,17 @@ async def test_get_effective_configs_catalog_source(mock_config_service):
 def _stub_registry(**classes):
     """Build a fake ``list_registered_configs()`` dict.
 
-    Each entry is ``name -> {"__module__": "..."}``.  The stub class's
-    name-prefix and module drive placement + filtering via ``_place()``.
+    Each entry is ``name -> {"__module__": "...", "abstract": <bool>?}``.
+    The stub class's name-prefix and module drive placement; ``abstract=True``
+    sets the ``is_abstract_base`` ClassVar that the composer reads via
+    ``cls.__dict__.get("is_abstract_base", False)`` to filter abstract bases.
     """
     out = {}
     for name, attrs in classes.items():
-        cls = type(name, (), {})
+        body = {}
+        if attrs.get("abstract"):
+            body["is_abstract_base"] = True
+        cls = type(name, (), body)
         cls.__module__ = attrs.get("__module__", "test.stub")
         out[name] = cls
     return out
@@ -162,18 +216,59 @@ def test_compose_tree_includes_collection_only_at_collection_scope():
 
 
 def test_compose_tree_drops_abstract_bases():
-    by_class = {"DriverPluginConfig": {"enabled": True}}
+    # All four legacy abstract bases (PluginConfig, _PluginDriverConfig,
+    # DriverPluginConfig, CollectionDriverConfig, AssetDriverConfig) MUST
+    # be filtered out at every active scope.  Filter is now driven by the
+    # ``is_abstract_base = True`` ClassVar on the class itself.
+    by_class = {
+        "DriverPluginConfig":      {"enabled": True},
+        "_PluginDriverConfig":     {"enabled": True},
+        "CollectionDriverConfig":  {"enabled": True},
+        "AssetDriverConfig":       {"enabled": True},
+    }
     registry = _stub_registry(
-        DriverPluginConfig={"__module__": "dynastore.modules.storage.driver_config"},
+        DriverPluginConfig={"__module__": "dynastore.modules.storage.driver_config", "abstract": True},
+        _PluginDriverConfig={"__module__": "dynastore.models.protocols.typed_driver", "abstract": True},
+        CollectionDriverConfig={"__module__": "dynastore.modules.storage.driver_config", "abstract": True},
+        AssetDriverConfig={"__module__": "dynastore.modules.storage.driver_config", "abstract": True},
     )
     with patch(
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, _ = ConfigApiService._compose_tree(
-            by_class, sources={}, active_scope="platform", include_meta=False,
-        )
-    assert tree == {}
+        for scope in ("platform", "catalog", "collection"):
+            tree, _ = ConfigApiService._compose_tree(
+                by_class, sources={}, active_scope=scope, include_meta=False,
+            )
+            assert tree == {}, (
+                f"abstract bases leaked into the tree at scope={scope!r}: {tree!r}"
+            )
+
+
+def test_compose_tree_real_plugin_driver_config_does_not_leak():
+    """Regression: ``_PluginDriverConfig`` must never appear in the composed tree.
+
+    The legacy ``_ABSTRACT_BASES`` frozenset in this module was missing the
+    underscore-prefixed name, so it leaked as ``platform.misc._PluginDriverConfig:
+    {enabled: true}`` in the production deep view.  After the marker move, the
+    filter reads ``cls.__dict__.get("is_abstract_base", False)`` and the real
+    class declares it; the leak is structurally impossible.
+    """
+    from dynastore.models.protocols.typed_driver import _PluginDriverConfig
+
+    assert _PluginDriverConfig.__dict__.get("is_abstract_base") is True
+
+    by_class = {"_PluginDriverConfig": {"enabled": True}}
+    registry = {"_PluginDriverConfig": _PluginDriverConfig}
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        for scope in ("platform", "catalog", "collection"):
+            tree, _ = ConfigApiService._compose_tree(
+                by_class, sources={}, active_scope=scope, include_meta=False,
+            )
+            assert tree == {}, f"_PluginDriverConfig leaked at scope={scope!r}: {tree!r}"
 
 
 # ---------------------------------------------------------------------------
