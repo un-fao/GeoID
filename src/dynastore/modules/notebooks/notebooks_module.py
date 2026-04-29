@@ -51,6 +51,25 @@ class NotebooksModule(ModuleProtocol):
             async with managed_transaction(engine) as conn:
                 await seed_platform_notebooks(conn)
 
+            # Trigger built-in notebook registrations now that the schema and
+            # platform seed are in place. Each submodule registers via
+            # `register_platform_notebook` at import time. Wrapped per-module so
+            # a missing transitive dep in this image's SCOPE just skips that
+            # module's notebooks (logged at INFO) rather than aborting startup.
+            for mod_path in (
+                "dynastore.modules.catalog.notebooks",
+                "dynastore.modules.storage.notebooks",
+                "dynastore.modules.elasticsearch.notebooks",
+                "dynastore.tasks.ingestion.notebooks",
+            ):
+                try:
+                    __import__(mod_path)
+                except ImportError as e:
+                    logger.info(
+                        f"NotebooksModule: skipping built-in registrations from "
+                        f"'{mod_path}' — module deps not present in this SCOPE: {e}"
+                    )
+
             logger.info("NotebooksModule: Initialization complete.")
         except Exception as e:
             logger.error(f"CRITICAL: NotebooksModule initialization failed: {e}", exc_info=True)
