@@ -48,15 +48,12 @@ class NotebooksModule(ModuleProtocol):
                         await maintenance_tools.ensure_schema_exists(conn, "notebooks")
                         await DDLQuery(PLATFORM_NOTEBOOKS_DDL).execute(conn)
 
-            async with managed_transaction(engine) as conn:
-                await seed_platform_notebooks(conn)
-
-            # Trigger built-in notebook registrations now that the schema and
-            # platform seed are in place. Each submodule registers via
-            # `register_platform_notebook` at import time. Wrapped per-module so
-            # an ImportError (deps absent in this SCOPE) or any other error
-            # (malformed registration, missing helper) just skips that module
-            # rather than aborting the worker's startup.
+            # Trigger built-in notebook registrations BEFORE seeding so the
+            # in-memory registry is populated when `seed_platform_notebooks`
+            # reads it. Each submodule registers via `register_platform_notebook`
+            # at import time. Wrapped per-module so an ImportError (deps absent
+            # in this SCOPE) or any other error (malformed registration, missing
+            # helper) just skips that module rather than aborting startup.
             for mod_path in (
                 "dynastore.modules.catalog.notebooks",
                 "dynastore.modules.storage.notebooks",
@@ -81,6 +78,14 @@ class NotebooksModule(ModuleProtocol):
                         f"'{mod_path}' failed; skipping. Error: {e}",
                         exc_info=True,
                     )
+
+            # Seed the platform_notebooks table from the now-populated
+            # in-memory registry. The original eager-imports-at-package-init
+            # design implicitly ran imports first; deferring imports into
+            # lifespan REQUIRES this explicit ordering or the seed runs
+            # against an empty registry and built-in notebooks are missing.
+            async with managed_transaction(engine) as conn:
+                await seed_platform_notebooks(conn)
 
             logger.info("NotebooksModule: Initialization complete.")
         except Exception as e:
