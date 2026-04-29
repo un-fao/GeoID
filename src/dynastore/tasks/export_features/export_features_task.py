@@ -51,7 +51,16 @@ class ExportFeaturesTask(TaskProtocol[Process, TaskPayload[ExecuteRequest], Opti
         if engine is None:
             raise RuntimeError("No database engine available.")
 
-        inputs = payload.inputs.inputs
+        inputs = dict(payload.inputs.inputs)
+        # OGC dispatcher injects `catalog_id` / `collection_id` from the URL
+        # path, but ExportFeaturesRequest's field names are `catalog` /
+        # `collection` (kept compatible with sync REST callers that already
+        # use the short names). Bridge the convention here so the model
+        # validates without breaking either caller.
+        if "catalog" not in inputs and "catalog_id" in inputs:
+            inputs["catalog"] = inputs.pop("catalog_id")
+        if "collection" not in inputs and "collection_id" in inputs:
+            inputs["collection"] = inputs.pop("collection_id")
         request = ExportFeaturesRequest(**inputs)
 
         reporters = initialize_reporters(
