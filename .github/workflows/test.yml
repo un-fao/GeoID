@@ -220,13 +220,18 @@ jobs:
       # */integration/* paths. The previous `pytest tests/` invocation
       # re-ran all 274 tests including the 221 the unit-tests job had
       # already executed: pure duplicate work, dominant cause of the
-      # 28-38min wall-clock. `find` enumerates inside the test-runner
-      # container so the path filter sees the same tree pytest does.
+      # 28-38min wall-clock. `find … -print0` + `mapfile -d ""` is
+      # safe against spaces or shell metacharacters in paths and
+      # surfaces an empty match as a non-zero exit (avoids `pytest`
+      # silently falling back to "discover everything" if `find`
+      # returned no files). `-m "not gcp and not local_only"` skips
+      # tests that need GCP credentials or live local services,
+      # neither of which are available on the GHA runner.
       - name: Run integration tests
         id: integration
         run: |
           docker compose -f src/dynastore/docker/docker-compose.test.yml run --rm test-runner \
-            bash -c 'INTEGRATION_TESTS=$(find tests -path "*/integration/*" -name "test_*.py" -type f | sort); /opt/venv/bin/pytest $INTEGRATION_TESTS --durations=20 --junitxml=/dynastore/workspace/test-results.xml'
+            bash -c 'set -euo pipefail; mapfile -d "" -t TESTS < <(find tests -path "*/integration/*" -name "test_*.py" -type f -print0 | sort -z); test "${#TESTS[@]}" -gt 0 || { echo "no integration tests found"; exit 1; }; /opt/venv/bin/pytest "${TESTS[@]}" -m "not gcp and not local_only" --durations=20 --junitxml=/dynastore/workspace/test-results.xml'
 
       - name: Display Docker logs on failure
         if: failure()
