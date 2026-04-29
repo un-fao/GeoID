@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, ClassVar, Optional
 
 from pydantic import BaseModel
@@ -27,21 +28,36 @@ from pydantic import BaseModel
 from dynastore.tools.typed_store.registry import TypedModelRegistry, compute_schema_id
 
 
+_PASCAL_BOUNDARY_1 = re.compile(r"(.)([A-Z][a-z]+)")
+_PASCAL_BOUNDARY_2 = re.compile(r"([a-z0-9])([A-Z])")
+
+
+def _to_snake(name: str) -> str:
+    """PascalCase → snake_case. Handles consecutive caps.
+
+    ``GeometryStorage`` → ``geometry_storage``
+    ``DGGSConfig``     → ``dggs_config``         (consecutive caps coalesce)
+    ``WFSPluginConfig`` → ``wfs_plugin_config``
+    ``ItemsElasticsearchPrivateDriver`` → ``items_elasticsearch_private_driver``
+    ``EDRConfig``      → ``edr_config``
+    """
+    s1 = _PASCAL_BOUNDARY_1.sub(r"\1_\2", name)
+    return _PASCAL_BOUNDARY_2.sub(r"\1_\2", s1).lower()
+
+
 class PersistentModel(BaseModel):
     """Pydantic base for classes persisted via a :class:`TypedStore`.
 
     Two identities are attached to every subclass:
 
-    * ``class_key()`` — logical slot, defaults to ``__qualname__``; may be
-      pinned via ``_class_key: ClassVar[str] = "OriginalName"`` to survive
-      future renames.
+    * ``class_key()`` — wire identity, **always snake_case**, auto-derived
+      from ``cls.__name__``.  Renaming the Python class renames the wire
+      key by definition; per-class overrides are not allowed.
     * ``schema_id()`` — sha256 of the canonical JSON schema; content-addressed
       so any field change produces a new id. Computed lazily and cached.
 
     Auto-registers in :class:`TypedModelRegistry` at class-creation time.
     """
-
-    _class_key: ClassVar[Optional[str]] = None
 
     # Lazily populated by ``schema_id``. Per-class, not per-instance.
     _cached_schema_id: ClassVar[Optional[str]] = None
@@ -55,7 +71,7 @@ class PersistentModel(BaseModel):
 
     @classmethod
     def class_key(cls) -> str:
-        return cls._class_key or cls.__qualname__
+        return _to_snake(cls.__name__)
 
     @classmethod
     def schema_id(cls) -> str:
