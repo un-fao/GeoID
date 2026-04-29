@@ -308,7 +308,13 @@ class PluginConfig(PersistentModel):
     so concrete subclasses do NOT inherit the True value.
     """
 
-    enabled: bool = True
+    # NB: ``enabled: bool`` is NOT declared on the base.  It used to be an
+    # always-true cargo field that polluted every config response; removed
+    # in the Phase 0 cleanup.  Subclasses that need a per-scope kill-switch
+    # mix in :class:`ExposableConfigMixin` (extension togglability) or
+    # declare their own ``enabled: bool`` field with a tailored description
+    # (e.g. ``CollectionRoutingConfig.enabled`` gates routing dispatch;
+    # ``GcpCatalogBucketConfig.enabled`` gates GCS provisioning).
 
     # Marker for abstract intermediate bases (not concrete configs). Read via
     # ``cls.__dict__.get("is_abstract_base", False)`` so concrete subclasses do

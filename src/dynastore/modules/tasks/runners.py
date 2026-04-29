@@ -636,7 +636,11 @@ class CapabilityMap:
             config_mgr = get_protocol(PlatformConfigsProtocol)
             if config_mgr is not None:
                 cfg = await config_mgr.get_config(TaskRoutingConfig)
-                if isinstance(cfg, TaskRoutingConfig) and cfg.enabled:
+                # ``routing_disabled`` is the operator kill-switch.  No
+                # separate ``enabled`` toggle on this class — the cargo
+                # ``enabled`` field that used to be inherited from
+                # ``PluginConfig`` was removed in the Phase 0 cleanup.
+                if isinstance(cfg, TaskRoutingConfig):
                     routing = cfg.routing or {}
                     routing_disabled = cfg.routing_disabled
         except Exception as exc:  # noqa: BLE001 — non-fatal, log and continue

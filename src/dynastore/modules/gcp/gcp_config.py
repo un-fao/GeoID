@@ -151,6 +151,15 @@ class GcpCatalogBucketConfig(PluginConfig):
     storage_class: Immutable[GcsStorageClass] = Field(default=GcsStorageClass.STANDARD, description="The default storage class for objects in the bucket.")
     
     # Mutable fields
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Gate for the GCS bucket-provisioning lifecycle.  When False, "
+            "``GCPModule.provision_storage_for_catalog`` skips bucket "
+            "creation and the catalog is marked ready immediately — useful "
+            "when a catalog reuses an externally-managed bucket."
+        ),
+    )
     cdn_enabled: bool = Field(default=False, description="Whether Cloud CDN is enabled for this bucket.")
     lifecycle_rules: List[LifecycleRule] = Field(default_factory=list, description="Lifecycle rules for the bucket.")
     listen_catalog_events: bool = Field(default=True, description="If true, the bucket and pub/sub resources are synchronized with catalog/collection deletions.")
