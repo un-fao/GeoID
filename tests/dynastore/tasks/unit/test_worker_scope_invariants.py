@@ -300,3 +300,73 @@ def test_every_dynastore_tasks_entry_point_resolves_to_existing_module() -> None
         "dynastore.tasks entry-points pointing at non-existent modules:\n  "
         + "\n  ".join(bad)
     )
+
+
+def test_every_dynastore_tasks_entry_point_loads_or_misses_optional_dep() -> None:
+    """Each `dynastore.tasks` entry-point class must actually `load()` cleanly
+    OR fail cleanly with `ImportError` (the ``discover_tasks`` placeholder
+    fallback path).
+
+    Strictly stronger than ``test_every_dynastore_tasks_entry_point_resolves_to_existing_module``:
+    that test only confirms the file path exists. This one executes the
+    module's top-level statements via ``EntryPoint.load()`` and catches:
+
+    - Syntax errors in the entry-point's module or any module it imports
+    - Circular imports that would deadlock at runtime discovery
+    - Class-not-found errors (target_class missing from target_module)
+    - Any non-``ImportError`` exception at module load
+
+    Mirrors ``src/dynastore/tools/discovery.py::discover_and_load_plugins``
+    which silently demotes ``ImportError`` (optional dep not installed) to
+    a definition-only placeholder via
+    ``src/dynastore/tasks/__init__.py::_register_definition_only_placeholders``
+    — so the same tolerance applies here. Catches ``ModuleNotFoundError``
+    being raised from a NON-optional code path (e.g. accidentally promoting
+    a TYPE_CHECKING import out of its block) by examining the exception
+    chain: an ImportError that originates inside the dynastore package
+    itself is suspicious, while one originating from a third-party module
+    that the SCOPE doesn't pull in is the expected optional-dep skip.
+    """
+    import importlib.metadata
+
+    bad: list[str] = []
+    skipped_optional: list[str] = []
+
+    for ep in importlib.metadata.entry_points(group="dynastore.tasks"):
+        try:
+            ep.load()
+        except ImportError as e:
+            # Mirrors discover_tasks's silent-skip behaviour. Distinguish a
+            # missing-third-party-dep (expected when an extras group isn't
+            # installed in this venv — e.g. osgeo for GDAL) from an
+            # accidentally-broken dynastore-internal import (real bug).
+            missing = getattr(e, "name", "") or ""
+            if missing.startswith("dynastore"):
+                bad.append(
+                    f"{ep.name} → {ep.value}: ImportError on internal "
+                    f"dynastore module '{missing}': {e}"
+                )
+            else:
+                skipped_optional.append(f"{ep.name} (missing: {missing or '?'})")
+        except Exception as e:
+            bad.append(f"{ep.name} → {ep.value}: {type(e).__name__}: {e}")
+
+    assert not bad, (
+        "dynastore.tasks entry-points failing to load in the test env "
+        "with errors that would NOT be silently demoted to placeholders "
+        "by discover_tasks (real bugs):\n  " + "\n  ".join(bad)
+    )
+
+    # Optional-dep skips are expected (gdal needs osgeo, elasticsearch_indexer
+    # needs opensearchpy, etc. — all gated by their SCOPE's extras). Surface
+    # them as a single info-level assertion message for visibility but don't
+    # fail; the SCOPE-↔-entry-point invariants above ensure these are
+    # reachable from at least one deployment image.
+    if skipped_optional:
+        # Format-only: pytest --tb output captures this for reviewer awareness
+        # without blocking the suite.
+        print(
+            "[info] task entry-points skipped (optional deps not installed in "
+            "this venv — expected for system-level libs): "
+            + ", ".join(skipped_optional)
+        )
