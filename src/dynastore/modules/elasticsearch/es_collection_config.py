@@ -146,8 +146,9 @@ class ElasticsearchCollectionConfig(PluginConfig):
     _address: ClassVar[Tuple[str, str, Optional[str]]] = ("collection", "elasticsearch", None)
     _visibility: ClassVar[Optional[str]] = "collection"
 
-
-    _on_apply: ClassVar[Optional[Callable]] = _on_apply_es_collection_config
+    # Apply handler is registered imperatively at module-import time
+    # (see ``ElasticsearchCollectionConfig.register_apply_handler(...)`` at
+    # the bottom of this module).
 
     private: Optional[bool] = Field(
         default=None,
@@ -239,3 +240,7 @@ async def is_collection_private(
     if isinstance(cat_cfg, ElasticsearchCatalogConfig):
         return cat_cfg.private
     return False
+
+
+# Apply-handler registration (Phase 1.5 — single registration path).
+ElasticsearchCollectionConfig.register_apply_handler(_on_apply_es_collection_config)

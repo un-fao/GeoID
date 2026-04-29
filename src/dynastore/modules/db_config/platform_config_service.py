@@ -287,8 +287,11 @@ async def _register_schema(conn: DbResource, config: "PluginConfig") -> None:
 # --- Protocols & Models ---
 
 # Module-level apply-handler registry keyed by PluginConfig subclass.
-# Populated by ``PluginConfig.register_apply_handler(cls, handler)`` or via the
-# ``_on_apply`` ClassVar on a subclass.
+# Populated exclusively by ``PluginConfig.register_apply_handler(cls, handler)``
+# called imperatively at module-import time.  The legacy
+# ``_on_apply: ClassVar`` declaration pattern was retired in Phase 1.5
+# (it was a single-handler-only convenience that didn't compose; the
+# imperative call supports multiple handlers per class natively).
 _APPLY_HANDLERS: Dict[Type["PluginConfig"], List[Callable[..., Any]]] = {}
 
 
@@ -333,16 +336,18 @@ class PluginConfig(PersistentModel):
     # - ``"catalog"`` → only at catalog and platform scopes (hidden at collection).
     _visibility: ClassVar[Optional[str]] = None
 
-    # Optional on-apply hook declared on the subclass; auto-registered in
-    # ``__init_subclass__``.  Signature: ``(config, catalog_id, collection_id, db_resource) -> None | Awaitable``.
-    _on_apply: ClassVar[Optional[Callable[..., Any]]] = None
+    # NB: ``_on_apply: ClassVar`` declaration pattern retired in Phase 1.5.
+    # Concrete subclasses register apply handlers imperatively at module-
+    # import time via ``MyConfig.register_apply_handler(my_handler_fn)``.
+    # The imperative call supports multiple handlers per class (the
+    # ClassVar pattern was single-handler-only) and removes the dual-
+    # registration footgun where developers couldn't predict which path
+    # was active.
+
     _priority: ClassVar[int] = 100
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        handler = cls.__dict__.get("_on_apply")
-        if handler is not None:
-            _APPLY_HANDLERS.setdefault(cls, []).append(handler)
         # Concrete subclasses must declare ``_address`` — abstract bases
         # opt out via ``is_abstract_base = True``.
         if not cls.__dict__.get("is_abstract_base", False):
@@ -353,6 +358,17 @@ class PluginConfig(PersistentModel):
                     f"but does not declare ``_address``.  Declare e.g. "
                     f"``_address: ClassVar[Tuple[str, str, Optional[str]]] = (\"platform\", \"<topic>\", None)`` "
                     f"or mark it abstract via ``is_abstract_base = True``."
+                )
+            # Phase 1.5: catch developers who still declare the retired
+            # ``_on_apply`` ClassVar pattern — surface a clear migration
+            # message instead of silently dropping the handler.
+            if "_on_apply" in cls.__dict__:
+                raise TypeError(
+                    f"{cls.__module__}.{cls.__qualname__} declares the retired "
+                    f"``_on_apply: ClassVar`` pattern.  Migrate to the imperative "
+                    f"``{cls.__qualname__}.register_apply_handler(handler_fn)`` "
+                    f"call at module-import time (Phase 1.5 standardisation — "
+                    f"single registration path, multi-handler support)."
                 )
 
     @classmethod

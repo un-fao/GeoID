@@ -145,7 +145,9 @@ class GcpCatalogBucketConfig(PluginConfig):
     _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "gcp", None)
     _visibility: ClassVar[Optional[str]] = "catalog"
 
-    _on_apply: ClassVar[Optional[Callable]] = on_apply_gcp_bucket_config
+    # Apply handler is registered imperatively at module-import time
+    # (see ``GcpCatalogBucketConfig.register_apply_handler(...)`` below).
+
     # Immutable fields: Once the bucket is created, these cannot be changed.
     location: Immutable[Optional[GcpLocation]] = Field(default=os.getenv("REGION", GcpLocation.EUROPE_WEST1), description="The GCP region where the bucket will be created (e.g., 'europe-west1'). If not set, defaults to the application's region.")  # type: ignore[assignment]
     storage_class: Immutable[GcsStorageClass] = Field(default=GcsStorageClass.STANDARD, description="The default storage class for objects in the bucket.")
@@ -254,7 +256,9 @@ class GcpEventingConfig(PluginConfig):
     _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "gcp", None)
     _visibility: ClassVar[Optional[str]] = "catalog"
 
-    _on_apply: ClassVar[Optional[Callable]] = on_apply_gcp_eventing_config
+    # Apply handler is registered imperatively at module-import time
+    # (see ``GcpEventingConfig.register_apply_handler(...)`` below).
+
     managed_eventing: Optional[ManagedBucketEventing] = Field(default=ManagedBucketEventing(), description="Configuration for the default, system-managed eventing pipeline for the catalog's bucket.")
     custom_subscriptions: List[ExternalTopicSubscription] = Field(default=[], description="A list of additional, custom subscriptions to external (non-managed) Pub/Sub topics.")
     
@@ -326,3 +330,12 @@ class InitiateUploadResponse(BaseModel):
 
 from dynastore.modules.catalog.asset_service import AssetUploadDefinition
 InitiateUploadRequest.model_rebuild()
+
+
+# ---------------------------------------------------------------------------
+# Apply-handler registration (Phase 1.5 — single registration path).
+# Imperative ``register_apply_handler`` calls replace the legacy
+# ``_on_apply: ClassVar`` declaration on each class body.
+# ---------------------------------------------------------------------------
+GcpCatalogBucketConfig.register_apply_handler(on_apply_gcp_bucket_config)
+GcpEventingConfig.register_apply_handler(on_apply_gcp_eventing_config)

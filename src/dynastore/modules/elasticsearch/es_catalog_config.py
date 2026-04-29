@@ -89,7 +89,8 @@ class ElasticsearchCatalogConfig(PluginConfig):
     _address: ClassVar[Tuple[str, str, Optional[str]]] = ("catalog", "elasticsearch", None)
     _visibility: ClassVar[Optional[str]] = "catalog"
 
-    _on_apply: ClassVar[Optional[Callable]] = _on_apply_es_catalog_config
+    # Apply handler is registered imperatively at module-import time
+    # (see ``ElasticsearchCatalogConfig.register_apply_handler(...)`` below).
 
     private: bool = Field(
         False,
@@ -101,3 +102,7 @@ class ElasticsearchCatalogConfig(PluginConfig):
             "Toggling this field triggers a full catalog reindex automatically."
         ),
     )
+
+
+# Apply-handler registration (Phase 1.5 — single registration path).
+ElasticsearchCatalogConfig.register_apply_handler(_on_apply_es_catalog_config)
