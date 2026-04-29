@@ -287,6 +287,24 @@ class IamExtension(ExtensionProtocol):
 
 
     def configure_app(self, app: FastAPI):
+        from dynastore.extensions.iam.tenant_scope_middleware import (
+            TenantScopeMiddleware,
+        )
+
+        # Two-layer authorization (Starlette LIFO order):
+        #
+        # 1. ``IamMiddleware`` (outer / runs first) — populates
+        #    ``request.state.principal`` + ``principal_role``, evaluates
+        #    declarative ``Policy``/``Role`` rules registered via
+        #    ``PermissionProtocol``. Catches the broad cases.
+        # 2. ``TenantScopeMiddleware`` (inner / runs after IAM) — enforces
+        #    catalog-membership tenant isolation for routes listed in
+        #    ``tenant_scope_registry.TENANT_SCOPED_ROUTES``. Pure
+        #    declarative-rule consumer (no hardcoded role checks); the rule
+        #    table tells it which paths to gate. Acts as a backstop until
+        #    a per-policy ``catalog_membership`` condition + DENY-first
+        #    evaluator semantics make policy-only enforcement viable.
+        app.add_middleware(TenantScopeMiddleware)
         app.add_middleware(IamMiddleware)
 
         def custom_openapi():

@@ -1103,6 +1103,24 @@ async def app_lifespan_module(request):
             import logging
             logging.getLogger(__name__).warning(f"Extension lifespan partially failed: {e}")
 
+        # Mirror main.py: flush buffered policy/role registrations from
+        # extensions to the IAM store. Without this, policies registered
+        # via PermissionProtocol.register_policy(...) stay in IamModule's
+        # in-memory pending buffer and never reach the DB — leaving every
+        # registered route unprotected (or relying on stale policies from a
+        # prior test session that DID flush).
+        try:
+            from dynastore.models.protocols.policies import PermissionProtocol
+            pm = modules.get_protocol(PermissionProtocol)
+            flush = getattr(pm, "flush_pending_registrations", None)
+            if flush is not None:
+                await flush()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Test fixture: flush_pending_registrations failed: {e}"
+            )
+
         app.state.app = app
         yield app.state
 

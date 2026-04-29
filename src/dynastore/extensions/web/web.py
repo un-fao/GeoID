@@ -56,34 +56,38 @@ def register_web_policies():
         logger.warning("PermissionProtocol not available; web policies not registered.")
         return
 
+    # Anonymous-allowed web paths. Resource patterns are anchored where
+    # ambiguity matters because PolicyService uses ``re.match`` (matches at
+    # start of string, no implicit end anchor) — an unanchored ``/web``
+    # pattern would also match ``/web/dashboard/catalogs/X/stats`` and
+    # accidentally allow anonymous access to gated dashboard endpoints.
     web_policy = Policy(
         id="web_public_access",
         description="Allows anonymous access to web UI, pages, and static assets. "
-                    "Intentionally enumerates specific public sub-paths instead of "
-                    "using a /web/.* catch-all so dashboard data endpoints stay "
-                    "gated by web_dashboard_*_access policies.",
+                    "Resources are enumerated explicitly + anchored so dashboard "
+                    "data endpoints stay gated by web_dashboard_*_access policies.",
         actions=["GET", "OPTIONS"],
         resources=[
             "/$",
             "/docs.*",
             "/openapi.json",
             "/favicon.ico.*",
-            "/web",
-            "/web/",
+            "/web/?$",                 # /web or /web/ exactly (anchored)
             "/web/pages/.*",           # expose_web_page routes
             "/web/extension-static/.*", # expose_static routes
             "/web/static/.*",
             "/web/website/.*",
             "/web/docs-content/.*",
-            "/web/docs-manifest",
+            "/web/docs-manifest$",
             "/web/config/.*",
-            "/web/health",
+            "/web/health$",
             "/web/dashboard/?$",       # catalog-picker root only (anonymous-OK)
+            "/web/lite/.*",            # JupyterLite WASM kernel (anonymous-OK)
             "/.well-known/.*",
             "/processes.*",
-            "/configs/registry",
+            "/configs/registry$",
             "/configs/registry/.*",
-            f"/configs/plugins/{WebConfig.class_key()}",
+            f"/configs/plugins/{WebConfig.class_key()}$",
         ],
         effect="ALLOW",
     )
@@ -162,6 +166,7 @@ def register_web_policies():
             name=role_name,
             policies=["web_dashboard_per_catalog_access"],
         ))
+
 
     logger.debug("Web policies registered via PermissionProtocol.")
 
