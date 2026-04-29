@@ -412,7 +412,7 @@ def test_catalog_routing_validator_augments_INDEX_and_SEARCH():
     assert "_CatES" in search_ids
     # Default WRITE/READ entries unchanged.
     write_ids = {e.driver_id for e in cfg.operations[Operation.WRITE]}
-    assert write_ids == {"CatalogCorePostgresqlDriver", "CatalogStacPostgresqlDriver"}
+    assert write_ids == {"catalog_core_postgresql_driver", "catalog_stac_postgresql_driver"}
 
 
 def test_catalog_routing_validator_no_op_when_no_indexers_discoverable():
@@ -546,7 +546,7 @@ def test_validator_failure_in_discovery_does_not_break_construction():
 
     # Default WRITE/READ unaffected.
     write_ids = {e.driver_id for e in cfg.operations[Operation.WRITE]}
-    assert write_ids == {"CatalogCorePostgresqlDriver", "CatalogStacPostgresqlDriver"}
+    assert write_ids == {"catalog_core_postgresql_driver", "catalog_stac_postgresql_driver"}
     # INDEX/SEARCH absent because the augmentation was skipped.
     assert Operation.INDEX not in cfg.operations or cfg.operations[Operation.INDEX] == []
     assert Operation.SEARCH not in cfg.operations or cfg.operations[Operation.SEARCH] == []

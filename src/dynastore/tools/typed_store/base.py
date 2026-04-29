@@ -40,9 +40,15 @@ def _to_snake(name: str) -> str:
     ``WFSPluginConfig`` → ``wfs_plugin_config``
     ``ItemsElasticsearchPrivateDriver`` → ``items_elasticsearch_private_driver``
     ``EDRConfig``      → ``edr_config``
+    Leading underscores (e.g. ``_DemoDriverA``) survive: ``_demo_driver_a``.
     """
-    s1 = _PASCAL_BOUNDARY_1.sub(r"\1_\2", name)
-    return _PASCAL_BOUNDARY_2.sub(r"\1_\2", s1).lower()
+    leading = ""
+    body = name
+    while body.startswith("_"):
+        leading += "_"
+        body = body[1:]
+    s1 = _PASCAL_BOUNDARY_1.sub(r"\1_\2", body)
+    return leading + _PASCAL_BOUNDARY_2.sub(r"\1_\2", s1).lower()
 
 
 class PersistentModel(BaseModel):
