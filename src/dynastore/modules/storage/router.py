@@ -110,6 +110,35 @@ async def _resolve_driver_ids_cached(
     _ops = cast(Dict[str, List[_ODE]], routing_config.operations)
     entries = _ops.get(operation, [])
 
+    # Fail-safe: if the loaded config has no entries for this operation
+    # (e.g. a stored row with `operations: {}` left behind by a config
+    # refactor migration, or a partially-seeded routing config), fall back
+    # to the model's default_factory operations for the SAME class. This
+    # matches the behaviour you'd get with NO stored row at all
+    # (configs.get_config returns `cls()` when no row exists, which fires
+    # default_factory). Without this fallback, a stored-but-empty config
+    # produces a worse outcome than no config at all — silently 500ing
+    # `get_collection_config` / `get_asset_driver` etc. Documented regression
+    # surfaced 2026-04-29 on review env image :860 for `ingestion`
+    # (collection routing READ) and `gdal` (asset routing READ) after a
+    # parallel configs-refactor PR rewrote stored-config shape.
+    if not entries:
+        try:
+            _default_ops = cast(
+                Dict[str, List[_ODE]],
+                routing_plugin_cls().operations,  # type: ignore[call-arg]
+            )
+            fallback = _default_ops.get(operation, [])
+            if fallback:
+                entries = list(fallback)
+        except Exception:
+            # Defensive: if the model default_factory itself fails (no
+            # zero-arg constructor, etc.), keep the original empty entries
+            # — caller's downstream ValueError preserves the clear "no
+            # driver registered" semantics rather than masking with a
+            # follow-up exception from the fallback path.
+            pass
+
     if hint:
         # Strict match wins when entry.hints is populated. When the entry
         # carries no explicit hints, defer to the driver's supported_hints
