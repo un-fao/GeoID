@@ -7,6 +7,7 @@ from dynastore.models.protocols import ConfigsProtocol
 from dynastore.modules import get_protocol
 
 
+@pytest.mark.gcp
 @pytest.mark.asyncio
 @pytest.mark.enable_modules("db_config", "db", "catalog", "gcp")
 @pytest.mark.enable_extensions("gcp")
@@ -53,6 +54,7 @@ async def test_bucket_config_hook_trigger(app_lifespan, catalog_obj):
                 assert called_config.cors[0].origin == ["https://app.example.com"]
 
 
+@pytest.mark.gcp
 @pytest.mark.asyncio
 @pytest.mark.enable_modules("db_config", "db", "catalog", "gcp")
 @pytest.mark.enable_extensions("gcp")
