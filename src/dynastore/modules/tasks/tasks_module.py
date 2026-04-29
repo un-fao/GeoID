@@ -1089,6 +1089,29 @@ async def get_task(conn: DbResource, task_id: uuid.UUID, schema: str) -> Optiona
     return Task.model_validate(task_dict) if task_dict else None
 
 
+async def get_task_by_id_unscoped(
+    conn: DbResource, task_id: uuid.UUID
+) -> Optional[Task]:
+    """Retrieve a task by ``task_id`` alone, ignoring the tenant ``schema_name``.
+
+    Task IDs are UUIDv7 — globally unique — so a single task_id matches at most
+    one row in the partitioned ``tasks`` table. Used by the unscoped OGC
+    Processes job-status route so that collection-scope and catalog-scope jobs
+    are pollable without requiring the caller to construct the scoped URL.
+
+    Intentionally **not cached**: status polls need to reflect cross-process
+    writes (e.g. a Cloud Run Job container's `update_task`) without waiting
+    for an in-process cache TTL. The scoped, cached :func:`get_task` remains
+    the right choice for hot read paths within a known schema.
+    """
+    task_schema = get_task_schema()
+    sql = f'SELECT * FROM {task_schema}.tasks WHERE task_id = :task_id LIMIT 1;'
+    task_dict = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
+        conn, task_id=task_id
+    )
+    return Task.model_validate(task_dict) if task_dict else None
+
+
 async def list_tasks(
     conn: DbResource, schema: str, limit: int = 20, offset: int = 0
 ) -> List[Task]:
