@@ -20,7 +20,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Body, HTTPException, Path, Query, status, Request, FastAPI
+from fastapi import APIRouter, Body, HTTPException, Query, status, Request, FastAPI
 from fastapi.responses import Response
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 
@@ -51,8 +51,6 @@ from .dto import (
     ConfigListResponse,
     PluginSchemaInfo,
     QuickStartConfigSet,
-    get_plugin_examples,
-    PLUGIN_EXAMPLES,
 )
 from .config_api_dto import PatchConfigBody
 from .config_api_service import ConfigApiService
@@ -71,7 +69,9 @@ class ConfigsService(ExtensionProtocol):
     def __init__(self, app: FastAPI):
         super().__init__()
         self.app = app
-        self.router = APIRouter(prefix="/configs", tags=["Configurations"])
+        # ONE tag for the whole extension — every route under /configs
+        # shares ``Configuration API``.  No sub-tags, no per-route overrides.
+        self.router = APIRouter(prefix="/configs", tags=["Configuration API"])
         self._setup_routes()
 
     def get_web_pages(self):
@@ -90,7 +90,7 @@ class ConfigsService(ExtensionProtocol):
         yield
 
     def _setup_routes(self):
-        # ---- Schema / discovery (unchanged) ----
+        # ---- Discovery (schemas, plugins, drivers, dependency graph) ----
         self.router.add_api_route(
             "/schemas",
             self.get_config_schemas,
@@ -121,42 +121,24 @@ class ConfigsService(ExtensionProtocol):
             methods=["GET"],
             summary="List all registered storage drivers grouped by Protocol qualname",
         )
-        # ---- Examples & quick-start ----
-        self.router.add_api_route(
-            "/examples",
-            self.list_all_examples,
-            methods=["GET"],
-            summary="Get configuration examples for all known plugins",
-            tags=["Configurations", "Examples"],
-        )
-        self.router.add_api_route(
-            "/examples/{plugin_id:path}",
-            self.get_plugin_examples,
-            methods=["GET"],
-            summary="Get configuration examples for a specific plugin",
-            tags=["Configurations", "Examples"],
-        )
-        # ---- Composed views (scope roots) ----
+        # ---- Composed (waterfall-resolved) views ----
         self.router.add_api_route(
             "/",
             self.get_platform_config_composed,
             methods=["GET"],
             summary="Platform config — all effective platform configs composed",
-            tags=["Config API"],
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}",
             self.get_catalog_config_composed,
             methods=["GET"],
             summary="Catalog config — all effective catalog configs composed",
-            tags=["Config API"],
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/collections/{collection_id}",
             self.get_collection_config_composed,
             methods=["GET"],
             summary="Collection config — all effective collection configs composed",
-            tags=["Config API"],
         )
         # ---- PATCH (partial write at platform / catalog scope) ----
         self.router.add_api_route(
@@ -164,14 +146,12 @@ class ConfigsService(ExtensionProtocol):
             self._patch_platform_config,
             methods=["PATCH"],
             summary="Partially update platform-level configs; null value deletes the override",
-            tags=["Config API"],
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}",
             self._patch_catalog_config,
             methods=["PATCH"],
             summary="Partially update catalog-level configs; null value deletes the override",
-            tags=["Config API"],
         )
         # ---- Per-class CRUD (platform) ----
         self.router.add_api_route(
@@ -245,14 +225,12 @@ class ConfigsService(ExtensionProtocol):
             self.bulk_apply_catalog_configs,
             methods=["PUT"],
             summary="Apply multiple configurations to a catalog in one call",
-            tags=["Configurations", "Bulk"],
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/collections/{collection_id}/bulk",
             self.bulk_apply_collection_configs,
             methods=["PUT"],
             summary="Apply multiple configurations to a collection in one call",
-            tags=["Configurations", "Bulk"],
         )
         # ---- Search ----
         self.router.add_api_route(
@@ -902,41 +880,6 @@ class ConfigsService(ExtensionProtocol):
         await self.configs.delete_config(cls)
         await self._invalidate_exposure()
         return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-    # --- Examples & Quick-start ---
-
-    async def list_all_examples(self) -> Dict[str, List[Dict[str, Any]]]:
-        """Returns configuration examples for every well-known plugin.
-
-        Use these payloads as a starting point when setting up a new catalog
-        or collection.  Each example includes a ``summary`` and ``description``
-        explaining the use-case, plus the ready-to-POST ``value`` body.
-        """
-        return PLUGIN_EXAMPLES
-
-    async def get_plugin_examples(
-        self,
-        plugin_id: str = Path(
-            ...,
-            description="Plugin identifier (e.g. ``ItemsPostgresqlDriver``, ``CollectionRoutingConfig``, ``stac``).",
-            examples=["ItemsPostgresqlDriver", "CollectionRoutingConfig", "stac"],
-        ),
-    ) -> List[Dict[str, Any]]:
-        """Returns configuration examples for a specific plugin.
-
-        The returned list contains one or more example payloads that can be
-        sent directly to ``PUT /configs/classes/{plugin_id}`` (or the catalog/collection variant).
-        """
-        examples = get_plugin_examples(plugin_id)
-        if examples is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=(
-                    f"No examples available for plugin '{plugin_id}'. "
-                    f"Known plugins with examples: {sorted(PLUGIN_EXAMPLES.keys())}"
-                ),
-            )
-        return examples
 
     # --- Bulk Apply ---
 
