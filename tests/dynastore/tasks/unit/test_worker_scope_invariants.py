@@ -1,25 +1,37 @@
-"""Regression test — worker SCOPEs must include the modules their tasks need.
+"""Regression tests for the SCOPE → entry-point → meta-extras invariants.
 
-Each Cloud Run Job is built with a `worker_task_<name>` extras group from
-`pyproject.toml`. If a worker's SCOPE omits a module its task needs, the
-container's module-discovery loop leaves the corresponding Protocol
-unresolved (e.g. `Catalogs: None`) and the task crashes at runtime — long
-after the image has been built and deployed.
+Each Cloud Run Job (or in-process catalog task) is built with a
+``<family>_task_<name>`` extras group from ``pyproject.toml`` — currently
+``worker_task_*`` (separate Cloud Run Job images) and ``catalog_task_*``
+(bundled into the catalog/worker images and dispatched in-process). If
+build-config drifts from runtime expectations the container deploys
+fine then crashes at first dispatch. This file pins three classes of
+invariant that catch that drift at CI time.
 
-Audit confirmed (2026-04-29) for `worker_task_elasticsearch_indexer`:
-    Module discovery left core protocols UNRESOLVED: ['Catalogs']
-    protocol_resolvers={'Storage': ..., 'Catalogs': None, ...}
+1. **SCOPE-must-include-module_catalog** (B6 + Phase H):
+   per-worker assertions that each catalog-touching task's SCOPE pulls
+   in the modules its imports / Protocol calls need. Five entries today
+   (elasticsearch_indexer, tiles_preseed, gdal, dimensions_materialize,
+   dwh_join), each with a short comment naming the file:line that would
+   crash without ``module_catalog``.
 
-Follow-up audit (same day) of the other workers:
-  - tiles_preseed: tasks/tiles_preseed/task.py:65 calls
-    `get_protocol(CatalogsProtocol)` → needs module_catalog.
-  - gdal: tasks/gdal/asset_process.py:25 + gdalinfo_task.py:32,40 import
-    `from dynastore.modules.catalog.asset_service` → needs module_catalog.
-  - dimensions_materialize: tasks/dimensions_materialize/task.py:67 calls
-    `get_protocol(CatalogsProtocol)` → needs module_catalog.
-  - dwh_join, export_features: use raw SQLAlchemy `get_engine()` and bind
-    directly to the catalog's PG schema via SQL — never call CatalogsProtocol
-    and never import from `dynastore.modules.catalog.*`. Correctly excluded.
+2. **SCOPE ↔ entry-point mapping** (PR #142):
+   every ``worker_task_<name>`` extras key must have a matching
+   ``dynastore.tasks.<name>`` entry-point and that entry-point's
+   ``module:Class`` target must resolve to a real file on disk.
+
+3. **meta-extras consistency** (PR #142):
+   ``worker_service`` (in-process worker composition) and ``scope_worker``
+   (Cloud Run worker image SCOPE) must agree on which ``worker_task_*``
+   they pull in — drift means the deployed image carries different task
+   code than the local worker, so bugs reproduce in one and not the other.
+
+The original audit incident (2026-04-29) was on
+``worker_task_elasticsearch_indexer``: module discovery left
+``protocol_resolvers={'Catalogs': None, ...}`` and BulkCatalog/Collection
+ReindexTask crashed at first dispatch. PR #131 fixed the SCOPE; the
+remaining four invariants in class 1 above are prophylactic for the same
+failure shape on the other catalog-touching tasks.
 """
 import re
 from pathlib import Path
@@ -118,14 +130,24 @@ def test_dwh_join_scope_includes_catalog() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _all_worker_task_scope_names() -> list[str]:
-    """Return every ``worker_task_<name>`` extras key from pyproject.toml."""
+def _all_task_scope_names(prefix: str = "worker_task_") -> list[str]:
+    """Return every ``<prefix><name>`` extras key from pyproject.toml.
+
+    Default ``prefix='worker_task_'`` returns Cloud Run Job SCOPEs. Pass
+    ``catalog_task_`` for the in-process task family bundled into the
+    catalog/worker images.
+    """
     text = _PYPROJECT.read_text()
     names: list[str] = []
     for line in text.splitlines():
-        if line.startswith("worker_task_") and " = " in line:
+        if line.startswith(prefix) and " = " in line:
             names.append(line.split(" = ", 1)[0].strip())
     return names
+
+
+def _all_worker_task_scope_names() -> list[str]:
+    """Backwards-compat shim — use _all_task_scope_names() directly in new code."""
+    return _all_task_scope_names("worker_task_")
 
 
 def _all_dynastore_tasks_entry_points() -> dict[str, str]:
@@ -153,26 +175,42 @@ def _meta_extra_definition(name: str) -> str:
     return _scope_definition(name)
 
 
+def _assert_scope_family_maps_to_entry_points(prefix: str) -> None:
+    """Assert every ``<prefix><name>`` extras key has a matching
+    ``dynastore.tasks.<name>`` entry-point declared in pyproject.toml."""
+    scope_names = _all_task_scope_names(prefix)
+    entry_points = _all_dynastore_tasks_entry_points()
+
+    missing: list[str] = []
+    for scope in scope_names:
+        short = scope.removeprefix(prefix)
+        if short not in entry_points:
+            missing.append(short)
+
+    assert not missing, (
+        f"{prefix}<name> SCOPEs without a matching `dynastore.tasks` "
+        f"entry-point: {missing}. Either add the entry-point or remove the "
+        f"orphan SCOPE. Available entry-points: {sorted(entry_points)}"
+    )
+
+
 def test_every_worker_task_scope_has_matching_entry_point() -> None:
     """Each `worker_task_<name>` extras key must correspond to a
     `dynastore.tasks.<name>` entry-point. Catches the class of bug where
     a SCOPE is defined but the task entry-point was renamed/removed (or
     vice versa) — Cloud Run Job container would deploy fine then crash
     at first dispatch with `Task '<name>' not found`."""
-    scope_names = _all_worker_task_scope_names()
-    entry_points = _all_dynastore_tasks_entry_points()
+    _assert_scope_family_maps_to_entry_points("worker_task_")
 
-    missing: list[str] = []
-    for scope in scope_names:
-        short = scope.removeprefix("worker_task_")
-        if short not in entry_points:
-            missing.append(short)
 
-    assert not missing, (
-        f"worker_task_<name> SCOPEs without a matching `dynastore.tasks` "
-        f"entry-point: {missing}. Either add the entry-point or remove the "
-        f"orphan SCOPE. Available entry-points: {sorted(entry_points)}"
-    )
+def test_every_catalog_task_scope_has_matching_entry_point() -> None:
+    """Each `catalog_task_<name>` extras key must correspond to a
+    `dynastore.tasks.<name>` entry-point. Catalog tasks are dispatched
+    in-process by the catalog service (not as separate Cloud Run Jobs);
+    a SCOPE/entry-point mismatch surfaces the same way — `Task '<name>'
+    not found` at first dispatch. Three entries today: gcp_provision,
+    gcs_storage_event, gcp_catalog_cleanup."""
+    _assert_scope_family_maps_to_entry_points("catalog_task_")
 
 
 def test_worker_service_and_scope_worker_agree_on_task_membership() -> None:
