@@ -778,9 +778,17 @@ async def get_job_status(
     request: Request,
     conn: AsyncConnection = Depends(get_async_connection),
 ):
-    """Gets the status of a specific job (System context)."""
-    # System level tasks are stored in 'public' schema by default
-    task = await tasks_module.get_task(conn, job_id, schema="public")
+    """Gets the status of a specific job (unscoped lookup).
+
+    Searches by ``task_id`` alone — task IDs are UUIDv7, globally unique, so
+    a single id matches one row regardless of tenant ``schema_name``. This
+    lets clients poll catalog- and collection-scoped jobs through the same
+    URL the OGC POST response advertises, instead of having to pre-construct
+    the scoped path. Uses the uncached helper so cross-process status writes
+    (e.g. a Cloud Run Job container's ``update_task``) are reflected on the
+    next poll without waiting for an in-process cache TTL.
+    """
+    task = await tasks_module.get_task_by_id_unscoped(conn, job_id)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -797,9 +805,11 @@ async def get_job_results(
     job_id: uuid.UUID,
     conn: AsyncConnection = Depends(get_async_connection),
 ):
-    """Gets the results of a completed job (System context)."""
-    # System level tasks are stored in 'public' schema by default
-    task = await tasks_module.get_task(conn, job_id, schema="public")
+    """Gets the results of a completed job (unscoped lookup).
+
+    See :func:`get_job_status` for why this is unscoped.
+    """
+    task = await tasks_module.get_task_by_id_unscoped(conn, job_id)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

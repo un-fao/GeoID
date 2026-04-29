@@ -24,7 +24,7 @@ from dynastore.modules.processes.schema_gen import pydantic_to_process_inputs
 from .models import DwhJoinExportRequest
 
 DWH_JOIN_EXPORT_PROCESS_DEFINITION = Process(
-    id="dwh-join-export",
+    id="dwh_join",
     version="1.0.0",
     title="DWH Join Export",
     description=(
