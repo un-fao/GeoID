@@ -32,7 +32,15 @@ def test_no_plugin_id_classvar():
 
 
 def test_no_legacy_class_keys():
-    """class_key must be PascalCase __qualname__ — no colon-separated IDs, no all-lowercase."""
+    """class_key must be the snake_case form auto-derived from the Python
+    class name — no colon-separated IDs (legacy ``namespace:foo`` plugin
+    IDs from the pre-typed-store era).
+
+    PR #140 (snake_case identity flip) made ``class_key`` snake_case
+    end-to-end, so the previous ``PascalCase __qualname__`` invariant no
+    longer holds.  The ban on colon-separated IDs survives because that
+    was about plugin-identity-via-string vs. plugin-identity-via-class.
+    """
     _load_all_modules()
     from dynastore.tools.typed_store.registry import TypedModelRegistry
     from dynastore.modules.db_config.platform_config_service import PluginConfig
@@ -40,9 +48,9 @@ def test_no_legacy_class_keys():
     bad = [
         cls.class_key()
         for cls in TypedModelRegistry.subclasses_of(PluginConfig)
-        if ":" in cls.class_key() or cls.class_key().islower()
+        if ":" in cls.class_key()
     ]
-    assert not bad, f"class_key must be PascalCase __qualname__; legacy keys found: {bad}"
+    assert not bad, f"class_key must not contain ':'; legacy keys found: {bad}"
 
 
 def test_no_class_key_classvar_override():
