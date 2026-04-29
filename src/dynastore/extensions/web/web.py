@@ -1519,13 +1519,8 @@ async function demoAction(action) {
                 None, description="End date for stats aggregation."
             ),
         ):
-            from dynastore.extensions.web.dashboard_authz import (
-                authorize_dashboard_catalog,
-                resolve_dashboard_caller,
-            )
-
-            caller = await resolve_dashboard_caller(request)
-            await authorize_dashboard_catalog(caller, catalog_id)
+            # Authz gated upstream by TenantScopeMiddleware — request reaches
+            # this handler only when the caller is allowed for ``catalog_id``.
 
             # Resolve schema using CatalogsProtocol
             from dynastore.modules import get_protocol
@@ -1594,13 +1589,7 @@ async function demoAction(action) {
             ),
             offset: int = Query(0, ge=0, description="Pagination offset."),
         ):
-            from dynastore.extensions.web.dashboard_authz import (
-                authorize_dashboard_catalog,
-                resolve_dashboard_caller,
-            )
-
-            caller = await resolve_dashboard_caller(request)
-            await authorize_dashboard_catalog(caller, catalog_id)
+            # Authz gated upstream by TenantScopeMiddleware.
 
             from dynastore.models.protocols.logs import LogsProtocol
             from dynastore.tools.discovery import get_protocol, register_plugin
@@ -1636,13 +1625,7 @@ async function demoAction(action) {
             ),
             offset: int = Query(0, ge=0, description="Pagination offset."),
         ):
-            from dynastore.extensions.web.dashboard_authz import (
-                authorize_dashboard_catalog,
-                resolve_dashboard_caller,
-            )
-
-            caller = await resolve_dashboard_caller(request)
-            await authorize_dashboard_catalog(caller, catalog_id)
+            # Authz gated upstream by TenantScopeMiddleware.
 
             from dynastore.modules.catalog.catalog_module import _module_instance
 
