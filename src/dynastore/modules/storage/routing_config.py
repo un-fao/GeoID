@@ -343,8 +343,8 @@ class CollectionRoutingConfig(PluginConfig):
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
-            Operation.WRITE: [OperationDriverEntry(driver_id="ItemsPostgresqlDriver")],
-            Operation.READ: [OperationDriverEntry(driver_id="ItemsPostgresqlDriver")],
+            Operation.WRITE: [OperationDriverEntry(driver_id="items_postgresql_driver")],
+            Operation.READ: [OperationDriverEntry(driver_id="items_postgresql_driver")],
         },
         description=(
             "Operation → ordered driver list.  "
@@ -451,8 +451,8 @@ class AssetRoutingConfig(PluginConfig):
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
-            Operation.WRITE: [OperationDriverEntry(driver_id="AssetPostgresqlDriver")],
-            Operation.READ: [OperationDriverEntry(driver_id="AssetPostgresqlDriver")],
+            Operation.WRITE: [OperationDriverEntry(driver_id="asset_postgresql_driver")],
+            Operation.READ: [OperationDriverEntry(driver_id="asset_postgresql_driver")],
         },
         description=(
             "Operation → ordered driver list for asset drivers. "
@@ -514,12 +514,12 @@ class CatalogRoutingConfig(PluginConfig):
             # catalog-metadata router merges both results on READ and
             # parallelises the upsert on WRITE.
             Operation.WRITE: [
-                OperationDriverEntry(driver_id="CatalogCorePostgresqlDriver"),
-                OperationDriverEntry(driver_id="CatalogStacPostgresqlDriver"),
+                OperationDriverEntry(driver_id="catalog_core_postgresql_driver"),
+                OperationDriverEntry(driver_id="catalog_stac_postgresql_driver"),
             ],
             Operation.READ: [
-                OperationDriverEntry(driver_id="CatalogCorePostgresqlDriver"),
-                OperationDriverEntry(driver_id="CatalogStacPostgresqlDriver"),
+                OperationDriverEntry(driver_id="catalog_core_postgresql_driver"),
+                OperationDriverEntry(driver_id="catalog_stac_postgresql_driver"),
             ],
         },
         description=(

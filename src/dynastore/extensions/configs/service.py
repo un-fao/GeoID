@@ -90,30 +90,24 @@ class ConfigsService(ExtensionProtocol):
         yield
 
     def _setup_routes(self):
-        # ---- Discovery (schemas, plugins, drivers, dependency graph) ----
+        # ---- Discovery: registry (plugin classes) + driver instances ----
+        # ``/registry`` is the catalog of plugin classes (each entry carries
+        # JSON Schema + description + scope).  ``/storage/drivers`` is a
+        # different concept — runtime driver INSTANCES grouped by Protocol
+        # qualname (capabilities, availability) for the operator's driver
+        # picker.  The legacy ``/schemas``, ``/plugins`` (discovery list),
+        # ``/graph`` and ``/search`` endpoints have been retired.
         self.router.add_api_route(
-            "/schemas",
+            "/registry",
             self.get_config_schemas,
             methods=["GET"],
-            summary="List all registered config schemas grouped by scope and protocol",
+            summary="Plugin registry — list all registered config plugin classes",
         )
         self.router.add_api_route(
-            "/schemas/{class_key}",
+            "/registry/{plugin_id}",
             self.get_config_schema,
             methods=["GET"],
-            summary="Get JSON Schema + description for a specific config class",
-        )
-        self.router.add_api_route(
-            "/graph",
-            self.get_config_graph,
-            methods=["GET"],
-            summary="Config dependency graph — nodes = config classes, edges = apply-handler cross-references",
-        )
-        self.router.add_api_route(
-            "/plugins",
-            self.list_registered_plugins,
-            methods=["GET"],
-            summary="List all registered configuration plugins",
+            summary="Plugin registry entry — JSON Schema + description for one plugin class",
         )
         self.router.add_api_route(
             "/storage/drivers",
@@ -121,7 +115,7 @@ class ConfigsService(ExtensionProtocol):
             methods=["GET"],
             summary="List all registered storage drivers grouped by Protocol qualname",
         )
-        # ---- Composed (waterfall-resolved) views ----
+        # ---- Composed (waterfall-resolved) tree views ----
         self.router.add_api_route(
             "/",
             self.get_platform_config_composed,
@@ -140,110 +134,86 @@ class ConfigsService(ExtensionProtocol):
             methods=["GET"],
             summary="Collection config — all effective collection configs composed",
         )
-        # ---- PATCH (partial write at platform / catalog scope) ----
+        # ---- Multi-plugin partial write (RFC 7396 merge-patch) ----
+        # Body: ``{plugin_id: payload | null}``.  ``null`` deletes the override.
+        # Atomic at the scope level.  Replaces the legacy ``/bulk`` endpoint.
         self.router.add_api_route(
             "/",
             self._patch_platform_config,
             methods=["PATCH"],
-            summary="Partially update platform-level configs; null value deletes the override",
+            summary="Partially update platform-level configs (RFC 7396 merge-patch); null value deletes the override",
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}",
             self._patch_catalog_config,
             methods=["PATCH"],
-            summary="Partially update catalog-level configs; null value deletes the override",
+            summary="Partially update catalog-level configs (RFC 7396 merge-patch); null value deletes the override",
         )
-        # ---- Per-class CRUD (platform) ----
         self.router.add_api_route(
-            "/classes/{plugin_id}",
+            "/catalogs/{catalog_id}/collections/{collection_id}",
+            self._patch_collection_config,
+            methods=["PATCH"],
+            summary="Partially update collection-level configs (RFC 7396 merge-patch); null value deletes the override",
+        )
+        # ---- Per-plugin CRUD (platform tier) ----
+        self.router.add_api_route(
+            "/plugins/{plugin_id}",
             self.get_platform_config,
             methods=["GET"],
-            summary="Get platform-level configuration",
+            summary="Get platform-level plugin configuration",
         )
         self.router.add_api_route(
-            "/classes/{plugin_id}",
+            "/plugins/{plugin_id}",
             self.update_platform_config,
             methods=["PUT"],
-            summary="Set platform-level configuration",
+            summary="Set platform-level plugin configuration",
         )
         self.router.add_api_route(
-            "/classes/{plugin_id}",
+            "/plugins/{plugin_id}",
             self.delete_platform_config,
             methods=["DELETE"],
-            summary="Delete platform-level configuration",
+            summary="Delete platform-level plugin configuration",
             status_code=status.HTTP_204_NO_CONTENT,
         )
-        # ---- Per-class CRUD (catalog) ----
+        # ---- Per-plugin CRUD (catalog tier) ----
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/classes/{plugin_id}",
+            "/catalogs/{catalog_id}/plugins/{plugin_id}",
             self.get_catalog_config,
             methods=["GET"],
-            summary="Get effective configuration for a catalog",
+            summary="Get effective plugin configuration for a catalog",
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/classes/{plugin_id}",
+            "/catalogs/{catalog_id}/plugins/{plugin_id}",
             self.update_catalog_config,
             methods=["PUT"],
-            summary="Set or update a catalog-level configuration",
+            summary="Set or update a catalog-level plugin configuration",
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/classes/{plugin_id}",
+            "/catalogs/{catalog_id}/plugins/{plugin_id}",
             self.delete_catalog_config,
             methods=["DELETE"],
-            summary="Delete a catalog-level configuration",
+            summary="Delete a catalog-level plugin configuration",
             status_code=status.HTTP_204_NO_CONTENT,
         )
-        # ---- Per-class CRUD (collection) ----
+        # ---- Per-plugin CRUD (collection tier) ----
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/classes/{plugin_id}/effective",
-            self.get_effective_collection_config,
-            methods=["GET"],
-            summary="Waterfall-resolved config with per-field source annotation",
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/classes/{plugin_id}",
+            "/catalogs/{catalog_id}/collections/{collection_id}/plugins/{plugin_id}",
             self.get_collection_config,
             methods=["GET"],
-            summary="Get effective configuration for a collection",
+            summary="Get effective plugin configuration for a collection",
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/classes/{plugin_id}",
+            "/catalogs/{catalog_id}/collections/{collection_id}/plugins/{plugin_id}",
             self.update_collection_config,
             methods=["PUT"],
-            summary="Set or update a collection-level configuration",
+            summary="Set or update a collection-level plugin configuration",
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/classes/{plugin_id}",
+            "/catalogs/{catalog_id}/collections/{collection_id}/plugins/{plugin_id}",
             self.delete_collection_config,
             methods=["DELETE"],
-            summary="Delete a collection-level configuration",
+            summary="Delete a collection-level plugin configuration",
             status_code=status.HTTP_204_NO_CONTENT,
-        )
-        # ---- Bulk-apply ----
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/bulk",
-            self.bulk_apply_catalog_configs,
-            methods=["PUT"],
-            summary="Apply multiple configurations to a catalog in one call",
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/bulk",
-            self.bulk_apply_collection_configs,
-            methods=["PUT"],
-            summary="Apply multiple configurations to a collection in one call",
-        )
-        # ---- Search ----
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/search",
-            self.search_catalog_configs,
-            methods=["GET"],
-            summary="Search configurations for a catalog",
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/search",
-            self.search_collection_configs,
-            methods=["GET"],
-            summary="Search configurations for a collection",
         )
 
     @property
@@ -301,6 +271,31 @@ class ConfigsService(ExtensionProtocol):
         try:
             result = await self._config_api.patch_config(
                 catalog_id=catalog_id, body=body.root
+            )
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        await self._invalidate_exposure()
+        return result
+
+    async def _patch_collection_config(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        body: PatchConfigBody,
+    ) -> Dict[str, Any]:
+        """Apply a partial config update at collection scope.
+
+        Replaces the legacy ``PUT /configs/.../collections/{c}/bulk`` endpoint
+        with the standard RFC 7396 merge-patch semantic on the scope root.
+        """
+        from pydantic import ValidationError
+        try:
+            result = await self._config_api.patch_config(
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                body=body.root,
             )
         except ValidationError as e:
             raise HTTPException(status_code=422, detail=str(e))

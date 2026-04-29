@@ -406,8 +406,15 @@ class ConfigApiService:
         *,
         catalog_id: Optional[str],
         body: Dict[str, Optional[Dict[str, Any]]],
+        collection_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Validate-then-write partial update of one or more configs at a scope."""
+        """Validate-then-write partial update of one or more configs at a scope.
+
+        Body is RFC 7396 merge-patch over the scope's plugin set: each top-level
+        key is a ``plugin_id``; value is the new payload, or ``null`` to delete
+        the override.  Atomic at the scope level — the validation pass runs to
+        completion before any write fires.
+        """
         all_classes = list_registered_configs()
         prepared: List[Tuple[str, Type[PluginConfig], Optional[Dict[str, Any]]]] = []
 
@@ -419,7 +426,7 @@ class ConfigApiService:
                 prepared.append((plugin_id, cls, None))
                 continue
             current = (await self._config_service.get_persisted_config(
-                cls, catalog_id=catalog_id,
+                cls, catalog_id=catalog_id, collection_id=collection_id,
             )) or {}
             merged = {**current, **value}
             cls.model_validate(merged)  # raises on bad data
@@ -427,10 +434,14 @@ class ConfigApiService:
 
         for plugin_id, cls, merged in prepared:
             if merged is None:
-                await self._config_service.delete_config(cls, catalog_id=catalog_id)
+                await self._config_service.delete_config(
+                    cls, catalog_id=catalog_id, collection_id=collection_id,
+                )
             else:
                 validated = cls.model_validate(merged)
-                await self._config_service.set_config(cls, validated, catalog_id=catalog_id)
+                await self._config_service.set_config(
+                    cls, validated, catalog_id=catalog_id, collection_id=collection_id,
+                )
         return {"updated": [p for p, _, _ in prepared]}
 
     # --- Pagination helpers. ---
