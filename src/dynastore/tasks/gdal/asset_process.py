@@ -128,11 +128,19 @@ class GdalAssetProcess:
         )
 
         try:
+            # ASYNC_EXECUTE so the dispatcher routes to GcpJobRunner →
+            # spawns the deployed dynastore-gdal-job Cloud Run Job (which has
+            # GDAL/OGR installed). SYNC_EXECUTE would route to BackgroundRunner
+            # in-process; the catalog API service does NOT carry the
+            # `module_gdal` SCOPE (osgeo only ships in worker_task_gdal), so
+            # in-process execution returns 503 "GDAL/OGR runtime not available".
+            # Confirmed against review env image :857 — POST returned 503 even
+            # though the gdal Cloud Run Job was deployed and capable.
             result = await processes_module.execute_process(
                 process_id="gdal",
                 execution_request=execution_request,
                 engine=engine,
-                preferred_mode=JobControlOptions.SYNC_EXECUTE,
+                preferred_mode=JobControlOptions.ASYNC_EXECUTE,
                 catalog_id=asset.catalog_id,
                 collection_id=asset.collection_id,
             )
@@ -150,7 +158,18 @@ class GdalAssetProcess:
                 detail=f"GDAL info dispatch failed: {exc}",
             ) from exc
 
-        # Normalise result to AssetProcessOutput shape.
+        # Async dispatch returns a job handle (StatusInfo); expose as `job`
+        # so the asset-process REST surface advertises the polling shape
+        # rather than pretending the result is inline.
+        if hasattr(result, "jobID") or (isinstance(result, dict) and result.get("jobID")):
+            job_id = (
+                getattr(result, "jobID", None)
+                or (result.get("jobID") if isinstance(result, dict) else None)
+            )
+            return AssetProcessOutput(type="job", job_id=str(job_id))
+
+        # Sync fallback (defensive): keep the inline shape for cases where
+        # ExecutionEngine completed synchronously despite the async preference.
         return AssetProcessOutput(
             type="inline",
             data=(result if not hasattr(result, "model_dump")
