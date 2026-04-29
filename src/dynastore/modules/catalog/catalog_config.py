@@ -37,6 +37,32 @@ class CollectionTypeEnum(str, Enum):
     RECORDS = "RECORDS"
 
 
+class CollectionType(PluginConfig):
+    """Semantic kind of a collection — VECTOR, RASTER, or RECORDS.
+
+    Hoisted out of ``ItemsPostgresqlDriverConfig.collection_type`` (Phase 1.6
+    of the config restructure).  The collection's kind is a property of the
+    DATA, not of one storage backend; every capable driver (PG, Iceberg,
+    DuckDB, …) reads this single config to decide its per-kind defaults
+    (e.g. the PG driver omits the geometry sidecar when ``kind == RECORDS``).
+
+    Setting this on the PG driver config is no longer accepted — the PG
+    driver's apply handler refuses payloads containing the lifted key
+    (it's removed from the model entirely so Pydantic rejects on parse).
+    """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("collection", "type", None)
+    _visibility: ClassVar[Optional[str]] = "collection"
+
+    kind: CollectionTypeEnum = Field(
+        default=CollectionTypeEnum.VECTOR,
+        description=(
+            "VECTOR (default — features with geometry), RECORDS "
+            "(catalog-style records, no geometry), or RASTER (coverage / "
+            "image data)."
+        ),
+    )
+
+
 # Legacy alias
 GeometryStorageConfig = GeometriesSidecarConfig
 

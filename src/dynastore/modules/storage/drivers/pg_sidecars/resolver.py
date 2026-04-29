@@ -55,6 +55,7 @@ def _effective_sidecars(
     *,
     catalog_id: str,
     collection_id: str = "",
+    collection_type: str = "VECTOR",
     context: Optional[Dict[str, Any]] = None,
 ) -> List[Any]:
     """Resolve the effective sidecar list for a PG-backed collection.
@@ -63,6 +64,11 @@ def _effective_sidecars(
 
     1. **Explicit caller config** — if ``col_config.sidecars`` is non-empty,
        use it as-is.  Caller opted in to a specific PG layout.
+
+       For RECORDS collections, geometry sidecars in the explicit list are
+       silently dropped here — RECORDS have no spatial component.  Phase
+       1.6 relocated this from a model_validator on
+       ``ItemsPostgresqlDriverConfig.strip_geometry_for_records``.
 
     2. **Registry injections** — ``SidecarRegistry.get_injected_sidecar_configs``
        is the source of truth for collection_type-specific defaults
@@ -79,16 +85,20 @@ def _effective_sidecars(
        ``collection_configs`` (plan §Principle — default-fast).
 
     Args:
-        col_config: A ``ItemsPostgresqlDriverConfig`` (or ``None``
-            when the driver couldn't load one — fallback path).  Only
-            ``.sidecars`` and ``.collection_type`` are read; typed as
-            ``Any`` to avoid a circular import with
+        col_config: A ``ItemsPostgresqlDriverConfig`` (or ``None`` when the
+            driver couldn't load one — fallback path).  Only ``.sidecars``
+            is read; typed as ``Any`` to avoid a circular import with
             ``storage.driver_config``.
         catalog_id: Passed into the registry injection context so
             extension-scoped injections can respect per-catalog policy.
         collection_id: Same role as ``catalog_id``.  Defaults to ``""``
             for call sites with no specific collection in scope (e.g.
             catalog-wide introspection).
+        collection_type: ``"VECTOR"`` (default), ``"RECORDS"``, or
+            ``"RASTER"``.  Hoisted out of ``ItemsPostgresqlDriverConfig``
+            in Phase 1.6 — async callers fetch the
+            :class:`~dynastore.modules.catalog.catalog_config.CollectionType`
+            PluginConfig and pass ``ct.kind.value`` here.
         context: Caller-supplied injection context dict.  Merged with
             the derived defaults (``catalog_id``, ``collection_id``,
             ``collection_type``) before the registry call.
@@ -105,11 +115,17 @@ def _effective_sidecars(
         else []
     )
 
-    collection_type = (
-        getattr(col_config, "collection_type", "VECTOR")
-        if col_config is not None
-        else "VECTOR"
-    )
+    # Phase 1.6: drop geometry sidecars for RECORDS — relocated from the
+    # ``strip_geometry_for_records`` model_validator on
+    # ``ItemsPostgresqlDriverConfig`` (which can no longer see
+    # ``collection_type`` since the field was hoisted to ``CollectionType``).
+    if collection_type == "RECORDS" and explicit:
+        from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
+            GeometriesSidecarConfig,
+        )
+        explicit = [
+            s for s in explicit if not isinstance(s, GeometriesSidecarConfig)
+        ]
 
     # Step 2 — registry injections.  When `explicit` is empty, this step
     # provides the effective defaults for the collection type; when

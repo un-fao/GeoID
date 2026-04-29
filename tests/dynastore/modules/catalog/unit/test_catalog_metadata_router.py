@@ -476,5 +476,5 @@ def test_catalog_routing_config_defaults_use_canonical_names():
     # Both WRITE and READ fan out across the two domain-scoped primaries.
     write_ids = {e.driver_id for e in cfg.operations[Operation.WRITE]}
     read_ids = {e.driver_id for e in cfg.operations[Operation.READ]}
-    assert write_ids == {"CatalogCorePostgresqlDriver", "CatalogStacPostgresqlDriver"}
-    assert read_ids == {"CatalogCorePostgresqlDriver", "CatalogStacPostgresqlDriver"}
+    assert write_ids == {"catalog_core_postgresql_driver", "catalog_stac_postgresql_driver"}
+    assert read_ids == {"catalog_core_postgresql_driver", "catalog_stac_postgresql_driver"}

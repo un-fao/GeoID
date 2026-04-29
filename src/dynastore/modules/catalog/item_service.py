@@ -482,14 +482,21 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             # M1b.2: resolve effective sidecars (core defaults for the
             # collection_type + registry injections) so default-body
             # collections still activate sidecars at first write time.
+            # Phase 1.6: collection_type lives on its own PluginConfig.
+            from dynastore.modules.catalog.catalog_config import CollectionType
             from dynastore.modules.storage.drivers.pg_sidecars import (
                 SidecarRegistry,
                 _effective_sidecars,
             )
+            configs = get_protocol(ConfigsProtocol)
+            ct = await configs.get_config(
+                CollectionType, catalog_id=catalog_id, collection_id=collection_id,
+            ) if configs else CollectionType()
             sidecar_configs = _effective_sidecars(
                 col_config,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
+                collection_type=ct.kind.value,
             )
 
             sidecars: List[Any] = []
