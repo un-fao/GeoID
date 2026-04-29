@@ -72,15 +72,17 @@ export function patchConfigSet(scope, body) {
   return patchJSON(base, body);
 }
 
-// Per-class CRUD: /configs[/catalogs/{id}[/collections/{c}]]/classes/{ClassName}
-export function classPath(scope, className) {
-  return `${scopeBasePath(scope)}/classes/${encodeURIComponent(className)}`;
+// Per-plugin CRUD: /configs[/catalogs/{id}[/collections/{c}]]/plugins/{plugin_id}
+// (plugin_id is snake_case per the registry — see fetchSchemas)
+export function classPath(scope, pluginId) {
+  return `${scopeBasePath(scope)}/plugins/${encodeURIComponent(pluginId)}`;
 }
 
-// Schema inventory endpoint. Response shape:
-// { class_key: { json_schema, description, scope } }
+// Plugin registry endpoint. Response shape:
+// { plugin_id: { json_schema, description, scope } }
+// plugin_id is snake_case (auto-derived from PascalCase class name).
 export function fetchSchemas() {
-  return getJSON("/configs/schemas");
+  return getJSON("/configs/registry");
 }
 
 // Identity — used to gate admin pages. Returns { principal, roles }.

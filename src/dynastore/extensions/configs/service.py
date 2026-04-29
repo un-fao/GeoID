@@ -18,9 +18,9 @@
 
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
-from fastapi import APIRouter, Body, HTTPException, Query, status, Request, FastAPI
+from fastapi import APIRouter, HTTPException, Query, status, Request, FastAPI
 from fastapi.responses import Response
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 
@@ -45,12 +45,9 @@ from dynastore.modules.db_config.exceptions import (
 )
 
 from .dto import (
-    BulkApplyResponse,
-    BulkApplyResultEntry,
     ConfigEntry,
     ConfigListResponse,
     PluginSchemaInfo,
-    QuickStartConfigSet,
 )
 from .config_api_dto import PatchConfigBody
 from .config_api_service import ConfigApiService
@@ -90,30 +87,24 @@ class ConfigsService(ExtensionProtocol):
         yield
 
     def _setup_routes(self):
-        # ---- Discovery (schemas, plugins, drivers, dependency graph) ----
+        # ---- Discovery: registry (plugin classes) + driver instances ----
+        # ``/registry`` is the catalog of plugin classes (each entry carries
+        # JSON Schema + description + scope).  ``/storage/drivers`` is a
+        # different concept — runtime driver INSTANCES grouped by Protocol
+        # qualname (capabilities, availability) for the operator's driver
+        # picker.  The legacy ``/schemas``, ``/plugins`` (discovery list),
+        # ``/graph`` and ``/search`` endpoints have been retired.
         self.router.add_api_route(
-            "/schemas",
+            "/registry",
             self.get_config_schemas,
             methods=["GET"],
-            summary="List all registered config schemas grouped by scope and protocol",
+            summary="Plugin registry — list all registered config plugin classes",
         )
         self.router.add_api_route(
-            "/schemas/{class_key}",
+            "/registry/{plugin_id}",
             self.get_config_schema,
             methods=["GET"],
-            summary="Get JSON Schema + description for a specific config class",
-        )
-        self.router.add_api_route(
-            "/graph",
-            self.get_config_graph,
-            methods=["GET"],
-            summary="Config dependency graph — nodes = config classes, edges = apply-handler cross-references",
-        )
-        self.router.add_api_route(
-            "/plugins",
-            self.list_registered_plugins,
-            methods=["GET"],
-            summary="List all registered configuration plugins",
+            summary="Plugin registry entry — JSON Schema + description for one plugin class",
         )
         self.router.add_api_route(
             "/storage/drivers",
@@ -121,7 +112,7 @@ class ConfigsService(ExtensionProtocol):
             methods=["GET"],
             summary="List all registered storage drivers grouped by Protocol qualname",
         )
-        # ---- Composed (waterfall-resolved) views ----
+        # ---- Composed (waterfall-resolved) tree views ----
         self.router.add_api_route(
             "/",
             self.get_platform_config_composed,
@@ -140,110 +131,86 @@ class ConfigsService(ExtensionProtocol):
             methods=["GET"],
             summary="Collection config — all effective collection configs composed",
         )
-        # ---- PATCH (partial write at platform / catalog scope) ----
+        # ---- Multi-plugin partial write (RFC 7396 merge-patch) ----
+        # Body: ``{plugin_id: payload | null}``.  ``null`` deletes the override.
+        # Atomic at the scope level.  Replaces the legacy ``/bulk`` endpoint.
         self.router.add_api_route(
             "/",
             self._patch_platform_config,
             methods=["PATCH"],
-            summary="Partially update platform-level configs; null value deletes the override",
+            summary="Partially update platform-level configs (RFC 7396 merge-patch); null value deletes the override",
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}",
             self._patch_catalog_config,
             methods=["PATCH"],
-            summary="Partially update catalog-level configs; null value deletes the override",
+            summary="Partially update catalog-level configs (RFC 7396 merge-patch); null value deletes the override",
         )
-        # ---- Per-class CRUD (platform) ----
         self.router.add_api_route(
-            "/classes/{plugin_id}",
+            "/catalogs/{catalog_id}/collections/{collection_id}",
+            self._patch_collection_config,
+            methods=["PATCH"],
+            summary="Partially update collection-level configs (RFC 7396 merge-patch); null value deletes the override",
+        )
+        # ---- Per-plugin CRUD (platform tier) ----
+        self.router.add_api_route(
+            "/plugins/{plugin_id}",
             self.get_platform_config,
             methods=["GET"],
-            summary="Get platform-level configuration",
+            summary="Get platform-level plugin configuration",
         )
         self.router.add_api_route(
-            "/classes/{plugin_id}",
+            "/plugins/{plugin_id}",
             self.update_platform_config,
             methods=["PUT"],
-            summary="Set platform-level configuration",
+            summary="Set platform-level plugin configuration",
         )
         self.router.add_api_route(
-            "/classes/{plugin_id}",
+            "/plugins/{plugin_id}",
             self.delete_platform_config,
             methods=["DELETE"],
-            summary="Delete platform-level configuration",
+            summary="Delete platform-level plugin configuration",
             status_code=status.HTTP_204_NO_CONTENT,
         )
-        # ---- Per-class CRUD (catalog) ----
+        # ---- Per-plugin CRUD (catalog tier) ----
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/classes/{plugin_id}",
+            "/catalogs/{catalog_id}/plugins/{plugin_id}",
             self.get_catalog_config,
             methods=["GET"],
-            summary="Get effective configuration for a catalog",
+            summary="Get effective plugin configuration for a catalog",
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/classes/{plugin_id}",
+            "/catalogs/{catalog_id}/plugins/{plugin_id}",
             self.update_catalog_config,
             methods=["PUT"],
-            summary="Set or update a catalog-level configuration",
+            summary="Set or update a catalog-level plugin configuration",
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/classes/{plugin_id}",
+            "/catalogs/{catalog_id}/plugins/{plugin_id}",
             self.delete_catalog_config,
             methods=["DELETE"],
-            summary="Delete a catalog-level configuration",
+            summary="Delete a catalog-level plugin configuration",
             status_code=status.HTTP_204_NO_CONTENT,
         )
-        # ---- Per-class CRUD (collection) ----
+        # ---- Per-plugin CRUD (collection tier) ----
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/classes/{plugin_id}/effective",
-            self.get_effective_collection_config,
-            methods=["GET"],
-            summary="Waterfall-resolved config with per-field source annotation",
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/classes/{plugin_id}",
+            "/catalogs/{catalog_id}/collections/{collection_id}/plugins/{plugin_id}",
             self.get_collection_config,
             methods=["GET"],
-            summary="Get effective configuration for a collection",
+            summary="Get effective plugin configuration for a collection",
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/classes/{plugin_id}",
+            "/catalogs/{catalog_id}/collections/{collection_id}/plugins/{plugin_id}",
             self.update_collection_config,
             methods=["PUT"],
-            summary="Set or update a collection-level configuration",
+            summary="Set or update a collection-level plugin configuration",
         )
         self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/classes/{plugin_id}",
+            "/catalogs/{catalog_id}/collections/{collection_id}/plugins/{plugin_id}",
             self.delete_collection_config,
             methods=["DELETE"],
-            summary="Delete a collection-level configuration",
+            summary="Delete a collection-level plugin configuration",
             status_code=status.HTTP_204_NO_CONTENT,
-        )
-        # ---- Bulk-apply ----
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/bulk",
-            self.bulk_apply_catalog_configs,
-            methods=["PUT"],
-            summary="Apply multiple configurations to a catalog in one call",
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/bulk",
-            self.bulk_apply_collection_configs,
-            methods=["PUT"],
-            summary="Apply multiple configurations to a collection in one call",
-        )
-        # ---- Search ----
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/search",
-            self.search_catalog_configs,
-            methods=["GET"],
-            summary="Search configurations for a catalog",
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/search",
-            self.search_collection_configs,
-            methods=["GET"],
-            summary="Search configurations for a collection",
         )
 
     @property
@@ -309,6 +276,31 @@ class ConfigsService(ExtensionProtocol):
         await self._invalidate_exposure()
         return result
 
+    async def _patch_collection_config(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        body: PatchConfigBody,
+    ) -> Dict[str, Any]:
+        """Apply a partial config update at collection scope.
+
+        Replaces the legacy ``PUT /configs/.../collections/{c}/bulk`` endpoint
+        with the standard RFC 7396 merge-patch semantic on the scope root.
+        """
+        from pydantic import ValidationError
+        try:
+            result = await self._config_api.patch_config(
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                body=body.root,
+            )
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        await self._invalidate_exposure()
+        return result
+
     async def get_config_schemas(self) -> Dict[str, Any]:
         """List all registered config schemas grouped by scope and protocol (M9).
 
@@ -362,118 +354,6 @@ class ConfigsService(ExtensionProtocol):
             "description": (config_class.__doc__ or "").strip(),
             "scope": scope,
         }
-
-    async def get_config_graph(self) -> Dict[str, Any]:
-        """Return a simple config dependency graph (M9).
-
-        Each node is a registered config class; edges represent ``register_apply_handler``
-        cross-references (i.e., handler A reads config B to validate against).
-
-        Response shape::
-
-            {
-                "nodes": ["CollectionRoutingConfig", "CollectionSchema", ...],
-                "edges": [
-                    {"from": "CollectionWritePolicy", "to": "CollectionSchema",
-                     "label": "cross-validates external_id_field against fields"},
-                    ...
-                ]
-            }
-        """
-        nodes = list(list_registered_configs().keys())
-
-        # Known cross-validator edges (hard-coded from apply-handler docs)
-        edges = [
-            {
-                "from": "CollectionWritePolicy",
-                "to": "CollectionSchema",
-                "label": "cross-validates external_id_field against schema.fields",
-            },
-            {
-                "from": "CollectionSchema",
-                "to": "CollectionRoutingConfig",
-                "label": "validates required/unique constraints against primary write driver capabilities",
-            },
-        ]
-
-        return {"nodes": nodes, "edges": edges}
-
-    async def get_effective_collection_config(
-        self, catalog_id: str, collection_id: str, plugin_id: str
-    ) -> Dict[str, Any]:
-        """Waterfall-resolved config with per-field source annotation (M9).
-
-        Loads the config at every scope tier and annotates each field with the
-        tier that last overrode it:
-
-        ``"default"`` — code-level class default
-        ``"platform"`` — explicitly set at platform level
-        ``"catalog"``  — overridden at catalog level
-        ``"collection"`` — overridden at collection level
-
-        Response shape::
-
-            {
-                "class_key": "CollectionRoutingConfig",
-                "resolved": {
-                    "on_conflict": {
-                        "value": "REFUSE_RETURN",
-                        "source": "catalog",
-                        "overrides": ["platform: null", "default: null"]
-                    }
-                }
-            }
-        """
-        cls = resolve_config_class(plugin_id)
-        if cls is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Config class '{plugin_id}' not registered.",
-            )
-
-        configs = self.configs
-
-        default_config = cls()
-        platform_config = await configs.get_config(cls)
-        catalog_config = await configs.get_config(cls, catalog_id=catalog_id)
-        effective_config = await configs.get_config(
-            cls, catalog_id=catalog_id, collection_id=collection_id
-        )
-
-        default_data = default_config.model_dump()
-        platform_data = platform_config.model_dump()
-        catalog_data = catalog_config.model_dump()
-        effective_data = effective_config.model_dump()
-
-        annotated: Dict[str, Any] = {}
-        for field_name, value in effective_data.items():
-            catalog_val = catalog_data.get(field_name)
-            platform_val = platform_data.get(field_name)
-            default_val = default_data.get(field_name)
-
-            if value != catalog_val:
-                source = "collection"
-            elif catalog_val != platform_val:
-                source = "catalog"
-            elif platform_val != default_val:
-                source = "platform"
-            else:
-                source = "default"
-
-            overrides: list = []
-            if source == "collection" and catalog_val != default_val:
-                overrides.append(f"catalog: {catalog_val!r}")
-            if source in ("collection", "catalog") and platform_val != default_val:
-                overrides.append(f"platform: {platform_val!r}")
-            if source != "default":
-                overrides.append(f"default: {default_val!r}")
-
-            entry: Dict[str, Any] = {"value": value, "source": source}
-            if overrides:
-                entry["overrides"] = overrides
-            annotated[field_name] = entry
-
-        return {"class_key": plugin_id, "resolved": annotated}
 
     # =========================================================================
     # Config API — Composed views at Platform / Catalog / Collection
@@ -584,34 +464,6 @@ class ConfigsService(ExtensionProtocol):
         return JSONResponse(content=response.model_dump())
 
     # --- Discovery Endpoint ---
-
-    async def list_registered_plugins(
-        self,
-        with_schema: bool = Query(
-            False,
-            description="If true, includes the JSON schema and description for each plugin.",
-        ),
-    ) -> Any:
-        """Lists all registered configuration plugin IDs.
-
-        This endpoint provides a discoverable list of all possible ``plugin_id``
-        values that can be used in other configuration endpoints.
-
-        Use ``?with_schema=true`` to also retrieve each plugin's JSON Schema
-        and docstring, which is useful for building dynamic UIs.
-        """
-        plugins = list_registered_configs()
-        if with_schema:
-            return JSONResponse(
-                content={
-                    class_key: {
-                        "description": model.__doc__ or "No description provided.",
-                        "schema": model.model_json_schema(),
-                    }
-                    for class_key, model in plugins.items()
-                }
-            )
-        return list(plugins.keys())
 
     async def list_storage_drivers(self) -> Any:
         """List all registered drivers grouped by the Protocol they implement (M9 §7).
@@ -883,188 +735,3 @@ class ConfigsService(ExtensionProtocol):
 
     # --- Bulk Apply ---
 
-    async def bulk_apply_catalog_configs(
-        self,
-        catalog_id: str,
-        body: QuickStartConfigSet = Body(
-            ...,
-            openapi_examples={
-                "postgresql_defaults": {
-                    "summary": "PostgreSQL quick-start (all defaults)",
-                    "description": (
-                        "Applies routing, driver, STAC, tiles, features, and task configs "
-                        "in a single call.  All values use PostgreSQL defaults."
-                    ),
-                    "value": {
-                        "configs": {
-                            "CollectionRoutingConfig": {
-                                "enabled": True,
-                                "operations": {
-                                    "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
-                                    "READ": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
-                                },
-                            },
-                            "AssetRoutingConfig": {
-                                "enabled": True,
-                                "operations": {
-                                    "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
-                                    "READ": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
-                                },
-                            },
-                            "stac": {
-                                "enabled": True,
-                                "enabled_extensions": [],
-                                "asset_tracking": {"enabled": True, "access_mode": "DIRECT"},
-                            },
-                            "tiles": {"enabled": True, "min_zoom": 0, "max_zoom": 12},
-                            "features": {"enabled": True},
-                            "tasks": {"enabled": True, "queue_poll_interval": 30.0},
-                        }
-                    },
-                },
-            },
-        ),
-    ) -> BulkApplyResponse:
-        """Apply multiple plugin configurations to a catalog in one call.
-
-        Iterates over every entry in ``configs`` and applies each via
-        ``PUT /configs/catalogs/{catalog_id}/classes/{plugin_id}``.
-        Failures on individual plugins do not abort the entire operation;
-        check the ``results`` array for per-plugin status.
-        """
-        return await self._bulk_apply(body, catalog_id=catalog_id, collection_id=None)
-
-    async def bulk_apply_collection_configs(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        body: QuickStartConfigSet = Body(
-            ...,
-            openapi_examples={
-                "postgresql_vector_collection": {
-                    "summary": "Vector collection with PG defaults",
-                    "description": (
-                        "Configures a vector collection with default geometries + attributes "
-                        "sidecars, no partitioning.  Includes routing and STAC."
-                    ),
-                    "value": {
-                        "configs": {
-                            "ItemsPostgresqlDriver": {
-                                "enabled": True,
-                                "collection_type": "VECTOR",
-                                "sidecars": [
-                                    {
-                                        "sidecar_type": "geometries",
-                                        "enabled": True,
-                                        "target_srid": 4326,
-                                        "target_dimension": "force_2d",
-                                        "geom_column": "geom",
-                                        "bbox_column": "bbox_geom",
-                                        "invalid_geom_policy": "attempt_fix",
-                                        "srid_mismatch_policy": "transform",
-                                    },
-                                    {
-                                        "sidecar_type": "attributes",
-                                        "enabled": True,
-                                        "storage_mode": "automatic",
-                                        "enable_external_id": True,
-                                        "enable_asset_id": True,
-                                    },
-                                ],
-                                "partitioning": {"enabled": False, "partition_keys": []},
-                            },
-                            "CollectionRoutingConfig": {
-                                "enabled": True,
-                                "operations": {
-                                    "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
-                                    "READ": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
-                                },
-                            },
-                            "stac": {
-                                "enabled": True,
-                                "enabled_extensions": [],
-                                "asset_tracking": {"enabled": True, "access_mode": "DIRECT"},
-                            },
-                        }
-                    },
-                },
-            },
-        ),
-    ) -> BulkApplyResponse:
-        """Apply multiple plugin configurations to a collection in one call.
-
-        Same semantics as the catalog-level bulk endpoint, but writes to
-        the collection-level config tier.
-        """
-        return await self._bulk_apply(body, catalog_id=catalog_id, collection_id=collection_id)
-
-    async def _bulk_apply(
-        self,
-        payload: QuickStartConfigSet,
-        catalog_id: Optional[str],
-        collection_id: Optional[str],
-    ) -> BulkApplyResponse:
-        """Internal helper for bulk-apply at any hierarchy level."""
-        results: List[BulkApplyResultEntry] = []
-        applied = 0
-        failed = 0
-
-        for plugin_id, config_data in payload.configs.items():
-            try:
-                cls = require_config_class(plugin_id)
-                config_model = cls.model_validate(config_data)
-                await self.configs.set_config(
-                    cls, config_model, catalog_id, collection_id
-                )
-                results.append(BulkApplyResultEntry(plugin_id=plugin_id, status="ok"))  # type: ignore[call-arg]
-                applied += 1
-            except Exception as exc:
-                logger.error("Bulk apply failed for %s: %s", plugin_id, exc, exc_info=True)
-                results.append(
-                    BulkApplyResultEntry(
-                        plugin_id=plugin_id, status="error", detail=str(exc)
-                    )
-                )
-                failed += 1
-
-        # Invalidate once after the loop rather than N times per successful
-        # write — every reload would otherwise rebuild the full matrix from DB.
-        if applied:
-            await self._invalidate_exposure()
-        return BulkApplyResponse(applied=applied, failed=failed, results=results)
-
-    # --- Search ---
-
-    async def search_catalog_configs(
-        self,
-        catalog_id: str,
-        q: Optional[str] = Query(
-            None, alias="q", description="Filter by plugin name (LIKE search)"
-        ),
-        limit: int = Query(10, ge=1, le=1000),
-        offset: int = Query(0, ge=0),
-    ):
-        """Searches configurations for a catalog."""
-        return await self.configs.search(
-            query=q, catalog_id=catalog_id, limit=limit, offset=offset
-        )
-
-
-    async def search_collection_configs(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        q: Optional[str] = Query(
-            None, alias="q", description="Filter by plugin name (LIKE search)"
-        ),
-        limit: int = Query(10, ge=1, le=1000),
-        offset: int = Query(0, ge=0),
-    ):
-        """Searches configurations for a collection."""
-        return await self.configs.search(
-            query=q,
-            catalog_id=catalog_id,
-            collection_id=collection_id,
-            limit=limit,
-            offset=offset,
-        )

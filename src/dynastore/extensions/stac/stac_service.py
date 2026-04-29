@@ -886,9 +886,10 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         for item in items_to_validate:
             validate_stac_item(item.model_dump(by_alias=True, exclude_unset=True))
 
+        from dynastore.modules.storage.driver_config import CollectionWritePolicy
         policy_source = (
             f"/configs/catalogs/{catalog_id}/collections/{collection_id}"
-            f"/classes/CollectionWritePolicy/effective"
+            f"/plugins/{CollectionWritePolicy.class_key()}"
         )
 
         try:

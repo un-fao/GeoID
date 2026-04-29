@@ -80,14 +80,14 @@ class TestIsSecondaryFor:
 
         mock_configs = AsyncMock()
         routing = CollectionRoutingConfig(operations={
-            Operation.WRITE: [OperationDriverEntry(driver_id="ItemsPostgresqlDriver")],
-            Operation.READ: [OperationDriverEntry(driver_id="ItemsElasticsearchDriver")],
+            Operation.WRITE: [OperationDriverEntry(driver_id="items_postgresql_driver")],
+            Operation.READ: [OperationDriverEntry(driver_id="items_elasticsearch_driver")],
         })
         mock_configs.get_config = AsyncMock(return_value=routing)
 
         with patch("dynastore.tools.discovery.get_protocol", return_value=mock_configs):
             result = await _ElasticsearchBase._is_secondary_for(
-                "ItemsElasticsearchDriver", "cat1", "col1"
+                "items_elasticsearch_driver", "cat1", "col1"
             )
             assert result is True
 
@@ -99,8 +99,8 @@ class TestIsSecondaryFor:
 
         mock_configs = AsyncMock()
         routing = CollectionRoutingConfig(operations={
-            Operation.WRITE: [OperationDriverEntry(driver_id="ItemsPostgresqlDriver")],
-            Operation.READ: [OperationDriverEntry(driver_id="ItemsDuckdbDriver")],
+            Operation.WRITE: [OperationDriverEntry(driver_id="items_postgresql_driver")],
+            Operation.READ: [OperationDriverEntry(driver_id="items_duckdb_driver")],
         })
         mock_configs.get_config = AsyncMock(return_value=routing)
 

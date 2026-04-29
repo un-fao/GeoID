@@ -102,10 +102,12 @@ def test_every_concrete_driver_config_is_bound():
 
 def test_class_key_matches_driver_class_name_for_every_pair():
     """Round-trip: every bound config's ``class_key()`` must equal the
-    bound driver class's ``__name__``.  Catches a registry-corruption
-    regression where the reverse lookup returns the wrong class.
+    snake_case form of the bound driver class's ``__name__``.  Catches a
+    registry-corruption regression where the reverse lookup returns the
+    wrong class.
     """
     from dynastore.models.protocols.typed_driver import _registered_pairs
+    from dynastore.tools.typed_store.base import _to_snake
 
     pairs = _registered_pairs()
     assert pairs, "Registry is empty — driver imports didn't fire."
@@ -113,10 +115,11 @@ def test_class_key_matches_driver_class_name_for_every_pair():
     mismatches: list[str] = []
     for cfg_cls, driver_cls in pairs.items():
         wire_key = cfg_cls.class_key()
-        if wire_key != driver_cls.__name__:
+        expected = _to_snake(driver_cls.__name__)
+        if wire_key != expected:
             mismatches.append(
                 f"  - {cfg_cls.__qualname__}: class_key()={wire_key!r} "
-                f"but driver={driver_cls.__name__!r}"
+                f"but driver={driver_cls.__name__!r} (expected {expected!r})"
             )
     if mismatches:
         pytest.fail(
@@ -126,11 +129,12 @@ def test_class_key_matches_driver_class_name_for_every_pair():
 
 def test_class_key_drops_config_suffix_convention():
     """Convention pin: every bound ``*DriverConfig`` class's wire key
-    equals the class name with the trailing ``Config`` removed.  Operators
-    copy ONE name between ``routing.WRITE[].driver_id`` and
-    ``configs.storage.drivers.{key}``.
+    equals the snake_case form of the class name with the trailing
+    ``Config`` removed.  Operators copy ONE name between
+    ``routing.WRITE[].driver_id`` and ``configs.storage.drivers.{key}``.
     """
     from dynastore.models.protocols.typed_driver import _registered_pairs
+    from dynastore.tools.typed_store.base import _to_snake
 
     violations: list[str] = []
     for cfg_cls in _registered_pairs():
@@ -142,11 +146,11 @@ def test_class_key_drops_config_suffix_convention():
                 f"  - {cfg_cls.__qualname__}: name doesn't end in 'Config'"
             )
             continue
-        expected = cfg_cls.__name__[: -len("Config")]
+        expected = _to_snake(cfg_cls.__name__[: -len("Config")])
         if cfg_cls.class_key() != expected:
             violations.append(
                 f"  - {cfg_cls.__qualname__}: class_key()={cfg_cls.class_key()!r} "
-                f"but expected {expected!r} (Config-suffix-stripped)"
+                f"but expected {expected!r} (snake_case Config-suffix-stripped)"
             )
     if violations:
         pytest.fail(

@@ -180,7 +180,7 @@ def _reset_registry():
 
 def test_typed_driver_bind_resolves():
     assert CollectionPostgresqlDriver.config_cls() is CollectionPostgresqlDriverConfig
-    assert CollectionPostgresqlDriverConfig.class_key() == "CollectionPostgresqlDriver"
+    assert CollectionPostgresqlDriverConfig.class_key() == "collection_postgresql_driver"
 
 
 def test_capabilities_union_covers_inner_capabilities():

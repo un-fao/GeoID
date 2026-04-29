@@ -66,10 +66,10 @@ class SidecarRejection(BaseModel):
     policy_source: Optional[str] = Field(
         default=None,
         description=(
-            "URL of the effective CollectionWritePolicy for this collection, "
-            "e.g. "
-            "'/configs/catalogs/{cat}/collections/{col}/classes/"
-            "CollectionWritePolicy/effective'."
+            "URL of the effective CollectionWritePolicy plugin payload for "
+            "this collection, e.g. "
+            "'/configs/catalogs/{cat}/collections/{col}/plugins/"
+            "collection_write_policy'."
         ),
     )
 

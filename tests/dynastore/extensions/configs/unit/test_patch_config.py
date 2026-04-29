@@ -62,14 +62,14 @@ async def test_patch_platform_updates_multiple_configs():
     result = await api.patch_config(
         catalog_id=None,
         body={
-            "TilesConfig": {"enabled": False},
-            "FeaturesPluginConfig": {"enabled": True},
+            "tiles_config": {"enabled": False},
+            "features_plugin_config": {"enabled": True},
         },
     )
 
     assert "updated" in result
-    assert "TilesConfig" in result["updated"]
-    assert "FeaturesPluginConfig" in result["updated"]
+    assert "tiles_config" in result["updated"]
+    assert "features_plugin_config" in result["updated"]
 
     # Verify set_config was called twice
     assert config_svc.set_config.call_count == 2
@@ -86,10 +86,10 @@ async def test_patch_null_deletes_config():
 
     result = await api.patch_config(
         catalog_id="my-catalog",
-        body={"TilesConfig": None},
+        body={"tiles_config": None},
     )
 
-    assert "TilesConfig" in result["updated"]
+    assert "tiles_config" in result["updated"]
     config_svc.delete_config.assert_called_once()
 
 
@@ -127,7 +127,7 @@ async def test_patch_validation_failure_prevents_writes():
     with pytest.raises((pydantic.ValidationError, ValueError)):
         await api.patch_config(
             catalog_id=None,
-            body={"TilesConfig": {"enabled": "not-a-bool"}},
+            body={"tiles_config": {"enabled": "not-a-bool"}},
         )
 
     # Because we validate before writing, no writes should have occurred
@@ -145,7 +145,7 @@ async def test_patch_catalog_scope():
 
     await api.patch_config(
         catalog_id="test-catalog",
-        body={"TilesConfig": {"enabled": False}},
+        body={"tiles_config": {"enabled": False}},
     )
 
     # Verify catalog_id was passed to set_config

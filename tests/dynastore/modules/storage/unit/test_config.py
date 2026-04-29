@@ -31,7 +31,7 @@ from dynastore.modules.storage.routing_config import (
 
 class TestCollectionPluginConfigDefaults:
     def test_class_key(self):
-        assert CollectionPluginConfig.class_key() == "CollectionPluginConfig"
+        assert CollectionPluginConfig.class_key() == "collection_plugin_config"
 
     def test_extra_fields_allowed(self):
         cfg = CollectionPluginConfig(custom_field="value")
@@ -47,7 +47,7 @@ class TestItemsPostgresqlDriverConfigDefaults:
     def test_class_key(self):
         # Wire key is the bound TypedDriver class name, not the *Config name.
         from dynastore.modules.storage.drivers.postgresql import ItemsPostgresqlDriver  # noqa: F401
-        assert ItemsPostgresqlDriverConfig.class_key() == "ItemsPostgresqlDriver"
+        assert ItemsPostgresqlDriverConfig.class_key() == "items_postgresql_driver"
 
     def test_default_sidecars_is_empty(self):
         """Default is empty as of M1b.2.
@@ -237,17 +237,17 @@ class TestCompositePartitionConfig:
 
 class TestCollectionRoutingConfig:
     def test_class_key(self):
-        assert CollectionRoutingConfig.class_key() == "CollectionRoutingConfig"
+        assert CollectionRoutingConfig.class_key() == "collection_routing_config"
 
     def test_defaults(self):
         cfg = CollectionRoutingConfig()
         assert Operation.WRITE in cfg.operations
         assert Operation.READ in cfg.operations
-        assert cfg.operations[Operation.WRITE][0].driver_id == "ItemsPostgresqlDriver"
+        assert cfg.operations[Operation.WRITE][0].driver_id == "items_postgresql_driver"
 
     def test_custom_operations(self):
         cfg = CollectionRoutingConfig(operations={
-            Operation.WRITE: [OperationDriverEntry(driver_id="ItemsPostgresqlDriver")],
+            Operation.WRITE: [OperationDriverEntry(driver_id="items_postgresql_driver")],
             Operation.READ: [OperationDriverEntry(driver_id="ItemsElasticsearchDriver", hints={"search"})],
             Operation.SEARCH: [OperationDriverEntry(driver_id="ItemsElasticsearchDriver", hints={"search"})],
         })
@@ -415,12 +415,12 @@ class TestMetadataRoutingSnapshot:
 
 class TestAssetRoutingConfig:
     def test_class_key(self):
-        assert AssetRoutingConfig.class_key() == "AssetRoutingConfig"
+        assert AssetRoutingConfig.class_key() == "asset_routing_config"
 
     def test_defaults(self):
         cfg = AssetRoutingConfig()
         assert Operation.WRITE in cfg.operations
-        assert cfg.operations[Operation.WRITE][0].driver_id == "AssetPostgresqlDriver"
+        assert cfg.operations[Operation.WRITE][0].driver_id == "asset_postgresql_driver"
 
 
 # ---------------------------------------------------------------------------
@@ -509,7 +509,7 @@ class TestItemsIcebergDriverConfigValidator:
 
     def test_class_key(self):
         from dynastore.modules.storage.drivers.iceberg import ItemsIcebergDriver  # noqa: F401
-        assert ItemsIcebergDriverConfig.class_key() == "ItemsIcebergDriver"
+        assert ItemsIcebergDriverConfig.class_key() == "items_iceberg_driver"
 
 
 class TestDuckDBConfigEnvLevel:
@@ -525,7 +525,7 @@ class TestDuckDBConfigEnvLevel:
 class TestItemsDuckdbDriverConfigDefaults:
     def test_class_key(self):
         from dynastore.modules.storage.drivers.duckdb import ItemsDuckdbDriver  # noqa: F401
-        assert ItemsDuckdbDriverConfig.class_key() == "ItemsDuckdbDriver"
+        assert ItemsDuckdbDriverConfig.class_key() == "items_duckdb_driver"
 
     def test_default_format(self):
         cfg = ItemsDuckdbDriverConfig()

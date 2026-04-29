@@ -34,8 +34,8 @@ def test_concrete_pair_registers_and_class_key_resolves():
     class _DemoDriverA(TypedDriver[_DemoConfigA]):
         pass
 
-    # class_key() returns the driver class name, not the Config class name.
-    assert _DemoConfigA.class_key() == "_DemoDriverA"
+    # class_key() returns the driver class name in snake_case form.
+    assert _DemoConfigA.class_key() == "_demo_driver_a"
     # config_cls() round-trips back to the bound config.
     assert _DemoDriverA.config_cls() is _DemoConfigA
     # Registry contains the pair.
@@ -53,8 +53,8 @@ def test_orphan_config_raises_on_assert_bound():
         _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "drivers", "items")
         nickname: str = "orphan"
 
-    # class_key() falls back to qualname (non-fatal).
-    assert _OrphanConfig.class_key().endswith("_OrphanConfig")
+    # class_key() falls back to qualname (non-fatal) — snake-cased.
+    assert _OrphanConfig.class_key().endswith("_orphan_config")
     # assert_bound() is the operator-facing check that raises.
     with pytest.raises(RuntimeError, match="no TypedDriver class binds this config"):
         _OrphanConfig.assert_bound()
@@ -97,7 +97,10 @@ def test_class_key_byte_matches_driver_name():
     class _CollectionPostgresqlDriver(TypedDriver[_CollectionPostgresqlDriverConfig]):
         pass
 
-    expected = _CollectionPostgresqlDriver.__name__
+    from dynastore.tools.typed_store.base import _to_snake
+    expected = _to_snake(_CollectionPostgresqlDriver.__name__)
     assert _CollectionPostgresqlDriverConfig.class_key() == expected
-    # Sanity: the wire key drops the Config suffix (Python convention only).
-    assert expected + "Config" == _CollectionPostgresqlDriverConfig.__name__
+    # Sanity: the Python class names of the (config, driver) pair only differ
+    # by the trailing `Config` suffix (PascalCase convention preserved at the
+    # Python layer; the wire identity goes through `_to_snake`).
+    assert _CollectionPostgresqlDriver.__name__ + "Config" == _CollectionPostgresqlDriverConfig.__name__

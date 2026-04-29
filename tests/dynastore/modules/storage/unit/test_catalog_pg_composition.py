@@ -145,7 +145,7 @@ def _reset_registry():
 
 def test_typed_driver_bind_resolves():
     assert CatalogPostgresqlDriver.config_cls() is CatalogPostgresqlDriverConfig
-    assert CatalogPostgresqlDriverConfig.class_key() == "CatalogPostgresqlDriver"
+    assert CatalogPostgresqlDriverConfig.class_key() == "catalog_postgresql_driver"
 
 
 def test_capabilities_union_covers_inner_capabilities():

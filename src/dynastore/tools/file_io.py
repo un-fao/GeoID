@@ -41,8 +41,13 @@ from dynastore.tools.json import CustomJSONEncoder
 import uuid
 from decimal import Decimal
 from datetime import datetime, date
-from shapely import wkb
-from shapely.geometry import mapping  # To convert shapely geom to GeoJSON-like dict
+# shapely is imported lazily inside the geometry-decoding helpers below.
+# Module-level `from shapely import wkb` would force every consumer of
+# file_io (e.g. tasks/dwh_join via get_features_as_byte_stream) to require
+# shapely in their image, breaking SCOPE-trimmed Cloud Run Job containers
+# that don't otherwise need it (confirmed against dwh_join container which
+# crashed on `Skipping plugin 'dwh_join': No module named 'shapely'` —
+# entry-point load failure during dispatcher discovery).
 from dynastore.tools.features import Feature
 import logging
 
@@ -371,6 +376,8 @@ def _process_records_for_writing(
             geom_raw = data.get("geom")
             if isinstance(geom_raw, bytes):
                 try:
+                    from shapely import wkb
+                    from shapely.geometry import mapping
                     geom = mapping(wkb.loads(geom_raw))
                 except Exception:
                     logger.warning("Failed to decode geometry WKB", exc_info=True)
@@ -782,6 +789,8 @@ async def write_geojson_async(
         geometry = None
         if "geom" in feature and feature["geom"]:
             try:
+                from shapely import wkb
+                from shapely.geometry import mapping
                 geometry = mapping(wkb.loads(feature["geom"]))
             except Exception:
                 logger.warning("Failed to decode geometry WKB", exc_info=True)

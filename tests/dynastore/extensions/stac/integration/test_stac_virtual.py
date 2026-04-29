@@ -51,7 +51,7 @@ async def test_virtual_stac_endpoints(sysadmin_in_process_client, in_process_cli
     # 4. Feature Tracking Config
     stac_config_payload = test_data_loader("config.json")
     resp = await in_process_client.put(
-        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/classes/StacPluginConfig",
+        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/plugins/stac_plugin_config",
         json=stac_config_payload,
     )
     assert resp.status_code in [200, 204]
@@ -80,7 +80,7 @@ async def test_virtual_stac_endpoints(sysadmin_in_process_client, in_process_cli
 
     # 6. Verify Feature Tracking Config
     resp = await in_process_client.get(
-        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/classes/StacPluginConfig"
+        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/plugins/stac_plugin_config"
     )
     assert resp.status_code == 200
     config_data = resp.json()

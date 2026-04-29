@@ -96,6 +96,22 @@ def test_dimensions_materialize_scope_includes_catalog() -> None:
     )
 
 
+def test_dwh_join_scope_includes_catalog() -> None:
+    """Phase H follow-up: DwhJoinExportTask doesn't call CatalogsProtocol
+    directly, but its entry-point load chain transitively pulls shapely via
+    extensions/dwh/models.py → tools/geospatial. Without module_catalog
+    (which provides geospatial_core → shapely), the dispatcher logs
+    `Skipping plugin 'dwh_join': No module named 'shapely'` and the task
+    never registers. Confirmed by `dynastore-dwh-join-export-job-24476`
+    container log on 2026-04-29."""
+    _assert_scope_has_module_catalog(
+        "worker_task_dwh_join",
+        "Without it, DwhJoinExportTask entry-point load fails with "
+        "ImportError: No module named 'shapely' (transitively via "
+        "extensions/dwh/models.py → tools/geospatial).",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Mapping invariants — tighten the scope ↔ entry-point ↔ meta-extra wiring
 # so a typo or missing entry-point breaks CI before it breaks deploy.

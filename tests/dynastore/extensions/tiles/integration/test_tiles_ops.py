@@ -111,7 +111,7 @@ async def test_tiles_with_pg_storage(in_process_client: AsyncClient):
     # 2. Configure PG storage priority for this catalog
     # We use the configs extension to set storage_priority = ["pg"]
     config_response = await in_process_client.put(
-        f"/configs/catalogs/{catalog_id}/classes/TilesPreseedConfig",
+        f"/configs/catalogs/{catalog_id}/plugins/tiles_preseed_config",
         json={"storage_priority": ["pg"]}
     )
     assert config_response.status_code == 200, f"Failed to set storage priority: {config_response.text}"

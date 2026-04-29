@@ -67,7 +67,7 @@ def test_typed_driver_bind_resolves():
     """``TypedDriver[CatalogElasticsearchDriverConfig]`` round-trips."""
     assert CatalogElasticsearchDriver.config_cls() is CatalogElasticsearchDriverConfig
     # And class_key derives from the driver class (auto-rename safe).
-    assert CatalogElasticsearchDriverConfig.class_key() == "CatalogElasticsearchDriver"
+    assert CatalogElasticsearchDriverConfig.class_key() == "catalog_elasticsearch_driver"
 
 
 # ---------------------------------------------------------------------------

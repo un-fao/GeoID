@@ -383,6 +383,8 @@ class TestEntryPoints:
         """
         from importlib.metadata import entry_points
 
+        # Entry-point ``value`` strings reference the *Python class* (PascalCase
+        # — that's the Python convention), not the snake_case wire ``class_key()``.
         expected = {
             "collection_postgresql": "CollectionPostgresqlDriver",
             "catalog_postgresql": "CatalogPostgresqlDriver",

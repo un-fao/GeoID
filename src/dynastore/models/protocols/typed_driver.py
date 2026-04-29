@@ -188,12 +188,14 @@ class _PluginDriverConfig(PluginConfig):
         ``CollectionDriverConfig``, ``AssetDriverConfig``) always return
         ``__qualname__`` — they're abstract markers, never published.
         """
+        from dynastore.tools.typed_store.base import _to_snake
+
         if _is_abstract_base(cls):
-            return cls.__qualname__
+            return _to_snake(cls.__qualname__)
         driver_cls = _DRIVER_REGISTRY.get(cls)
         if driver_cls is None:
-            return cls.__qualname__
-        return driver_cls.__name__
+            return _to_snake(cls.__qualname__)
+        return _to_snake(driver_cls.__name__)
 
     @classmethod
     def assert_bound(cls) -> None:

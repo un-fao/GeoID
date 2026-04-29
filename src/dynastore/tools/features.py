@@ -1,7 +1,13 @@
 from datetime import datetime, timezone
-from shapely import wkb as shapely_wkb
 
-from pydantic import BaseModel, Field, ConfigDict
+# shapely is imported lazily inside `Feature.to_geojson_feature` (the only
+# consumer) so this module stays import-safe in SCOPE-trimmed Cloud Run
+# Job containers that don't carry shapely. Module-level import here was
+# the root cause of the dwh_join container's entry-point load failure
+# (`Skipping plugin 'dwh_join': No module named 'shapely'`) — file_io
+# imports Feature transitively, and dwh_join imports file_io.
+
+from pydantic import BaseModel, ConfigDict
 from typing import Optional
 import itertools
 import orjson
@@ -55,11 +61,12 @@ class Feature(FeatureProperties):
         bbox = self.bbox
         if self.geom:
             try:
+                from shapely import wkb as shapely_wkb
                 shapely_geom = shapely_wkb.loads(self.geom)
                 geometry = shapely_geom.__geo_interface__
                 if not bbox:
                     bbox = shapely_geom.bounds
-            except Exception as e:
+            except Exception:
                 # In case of invalid geometry, we'll just have a null geometry feature
                 pass
 
