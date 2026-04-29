@@ -245,6 +245,17 @@ def get_task_instance(name: str, app_state: object | None = None) -> TaskProtoco
     if not config:
         return None
 
+    # Skip definition-only placeholders. They exist so that `/processes`
+    # discovery can surface task metadata in services that don't carry the
+    # task's heavy deps — but they have no `run` method, so claiming them
+    # via Background/Sync runner crashes at first dispatch with
+    # `'DefinitionOnlyTask' object has no attribute 'run'`. Returning None
+    # here makes `Sync/BackgroundRunner.can_handle()` return False for
+    # placeholders, letting GcpJobRunner take the task and route it to the
+    # actual Cloud Run Job container which DOES have the deps loaded.
+    if getattr(config.cls, "is_placeholder", False):
+        return None
+
     if config.instance:
         return config.instance
 
