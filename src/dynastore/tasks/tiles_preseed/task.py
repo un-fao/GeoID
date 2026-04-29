@@ -40,14 +40,14 @@ from dynastore.tools.geospatial import SimplificationAlgorithm
 from .models import TilePreseedRequest
 from .definition import TILES_PRESEED_PROCESS_DEFINITION
 from dynastore.tools.protocol_helpers import get_engine
-from dynastore.modules.processes.models import Process, StatusInfo
+from dynastore.modules.processes.models import ExecuteRequest, Process, StatusInfo
 from dynastore.models.driver_context import DriverContext
 
 logger = logging.getLogger(__name__)
 
 
 class TilePreseedTask(
-    ProcessTaskProtocol[Process, TaskPayload[TilePreseedRequest], Optional[StatusInfo]]
+    ProcessTaskProtocol[Process, TaskPayload[ExecuteRequest], Optional[StatusInfo]]
 ):
     """OGC Process to pre-seed tiles."""
 
@@ -59,8 +59,15 @@ class TilePreseedTask(
         self.app_state = app_state
         self.engine = get_engine()
 
-    async def run(self, payload: TaskPayload[TilePreseedRequest]) -> Optional[StatusInfo]:
-        request = payload.inputs
+    async def run(self, payload: TaskPayload[ExecuteRequest]) -> Optional[StatusInfo]:
+        # OGC Process dispatch wraps the body in an ExecuteRequest:
+        # `payload.inputs.inputs` is the user-supplied dict (with `catalog_id`
+        # + `collection_id` injected from the URL path by the dispatcher).
+        # Validating against TilePreseedRequest at TaskPayload construction
+        # would fail because Pydantic sees the wrapper dict (`inputs`,
+        # `response`, etc.) at the top level, not the inner inputs dict.
+        # Same unwrap pattern as DwhJoinExportTask and ExportFeaturesTask.
+        request = TilePreseedRequest.model_validate(payload.inputs.inputs)
         config_manager = get_protocol(ConfigsProtocol)
         catalogs = get_protocol(CatalogsProtocol)
         if config_manager is None or catalogs is None or self.engine is None:
@@ -238,7 +245,7 @@ class TilePreseedTask(
 
     async def _preseed_pmtiles(
         self, *, engine: DbResource, request: "TilePreseedRequest",
-        payload: "TaskPayload[TilePreseedRequest]", catalog_id: str, col_id: str,
+        payload: "TaskPayload[ExecuteRequest]", catalog_id: str, col_id: str,
         tms_id: str, mc_tms: Any, target_srid: int, effective_bboxes: List[Any],
         runtime_config: Any, preseed_config: Any, schema: str, results: Dict[str, Any],
     ) -> None:
