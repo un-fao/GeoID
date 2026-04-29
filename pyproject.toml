@@ -239,17 +239,26 @@ ingestion = ["dynastore[task_base,module_gcp,task_ingestion_deps]"]
 # One extras per task. Each Cloud Run Job is deployed with
 # SCOPE=worker_task_<name> — a single unambiguous identifier the catalog's
 # gcp_cloud_runner uses to map discovered jobs back to task entry-points.
+#
+# `module_catalog` audit (2026-04-29, B6 follow-up):
+#   - dwh_join, export_features: use raw SQLAlchemy `get_engine()` and bind
+#     to the catalog's PG schema via direct SQL — never call CatalogsProtocol
+#     and never import from `dynastore.modules.catalog.*`. Excluded.
+#   - tiles_preseed: tasks/tiles_preseed/task.py:65 calls
+#     `get_protocol(CatalogsProtocol)`. Needs module_catalog.
+#   - gdal: tasks/gdal/asset_process.py:25 + gdalinfo_task.py:32,40 import
+#     `from dynastore.modules.catalog.asset_service`. Needs module_catalog.
+#   - dimensions_materialize: tasks/dimensions_materialize/task.py:67 calls
+#     `get_protocol(CatalogsProtocol)`. Needs module_catalog.
+#   - elasticsearch_indexer: BulkCatalog/CollectionReindexTask via
+#     CatalogsProtocol. Confirmed by `dynastore-elasticsearch-indexer-cq7k9`
+#     exec on 2026-04-29 (B6, PR #131).
 worker_task_dwh_join = ["dynastore[task_base,dwh]"]
 worker_task_ingestion = ["dynastore[ingestion,catalog_grp,google_grp,gdal]"]
 worker_task_export_features = ["dynastore[task_base,stac,geospatial_core]"]
-worker_task_tiles_preseed = ["dynastore[task_base,tiles,crs]", "morecantile>=7.0.3,<8"]
-worker_task_gdal = ["dynastore[task_base,gdal]"]
-worker_task_dimensions_materialize = ["dynastore[task_base,extension_dimensions]"]
-# module_catalog is required: BulkCatalog/CollectionReindexTask reads via
-# CatalogsProtocol (catalogs_proto.search / list_collections). Without it,
-# the Cloud Run Job container's module discovery leaves Catalogs:None and
-# the bulk reindex tasks crash on get_protocol(CatalogsProtocol) is None.
-# Confirmed against `dynastore-elasticsearch-indexer-cq7k9` exec on 2026-04-29.
+worker_task_tiles_preseed = ["dynastore[task_base,module_catalog,tiles,crs]", "morecantile>=7.0.3,<8"]
+worker_task_gdal = ["dynastore[task_base,module_catalog,gdal]"]
+worker_task_dimensions_materialize = ["dynastore[task_base,module_catalog,extension_dimensions]"]
 worker_task_elasticsearch_indexer = ["dynastore[task_base,module_catalog,elasticsearch,task_elasticsearch_indexer_deps]"]
 
 # ==========================================================================
