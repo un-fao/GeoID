@@ -21,7 +21,7 @@ Three reporter modes are supported:
 
 from __future__ import annotations
 
-from typing import List, Literal, Optional
+from typing import ClassVar, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -94,6 +94,9 @@ class ItemsBigQueryDriverConfig(CollectionDriverConfig):
     Phase 4e adds registered-per-collection Secret-wrapped credentials on the
     config itself; per-request overrides remain deferred.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "drivers", "items")
+    _visibility: ClassVar[Optional[str]] = "collection"
+
 
     target: BigQueryTarget = Field(default_factory=BigQueryTarget)
     credentials: BigQueryCredentials = Field(default_factory=BigQueryCredentials)

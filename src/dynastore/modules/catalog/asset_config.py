@@ -26,6 +26,7 @@ operations) is handled by ``AssetRoutingConfig`` in
 """
 
 from dynastore.modules.db_config.platform_config_service import PluginConfig
+from typing import ClassVar, Optional, Tuple
 
 class AssetPluginConfig(PluginConfig):
     """Per-collection asset config (structural only).
@@ -33,6 +34,9 @@ class AssetPluginConfig(PluginConfig):
     Routing is now managed by ``AssetRoutingConfig``
     (identity: ``AssetRoutingConfig.class_key()``).
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("catalog", "asset", None)
+    _visibility: ClassVar[Optional[str]] = "collection"
+
 
     model_config = {"extra": "allow"}
 

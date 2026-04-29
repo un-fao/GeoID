@@ -6,7 +6,7 @@ at runtime via PlatformConfigsProtocol.
 
 from __future__ import annotations
 
-from typing import List, Literal
+from typing import ClassVar, List, Literal, Optional, Tuple
 
 from pydantic import Field
 
@@ -15,6 +15,8 @@ from dynastore.modules.db_config.platform_config_service import PluginConfig
 
 
 class VolumesConfig(PluginConfig):
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("extensions", "volumes", None)
+
     max_features_per_tile: int = Field(default=10_000, ge=1)
     max_tree_depth: int = Field(default=20, ge=0, le=32)
     on_demand_cache_ttl_s: int = Field(default=3600, ge=0)

@@ -19,7 +19,7 @@
 # dynastore/modules/stac/stac_config.py
 
 from enum import Enum
-from typing import Any, ClassVar, Dict, List, Optional, Union
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
@@ -269,6 +269,8 @@ class StacPluginConfig(ExposableConfigMixin, PluginConfig):
     """
     Mutable STAC metadata and behavior configuration.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("extensions", "stac", None)
+
     # Extension schemas
     enabled_extensions: List[str] = Field(default_factory=list)
     

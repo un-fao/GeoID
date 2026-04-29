@@ -44,6 +44,7 @@ from typing import (
     Dict,
     FrozenSet,
     Optional,
+    Tuple,
     Type,
     TypeVar,
     Callable,
@@ -314,6 +315,18 @@ class PluginConfig(PersistentModel):
     # not inherit the True value from a base that set it.
     is_abstract_base: ClassVar[bool] = False
 
+    # Explicit placement in the deep-view tree.  ``(scope, topic, sub)`` —
+    # e.g. ``("storage", "drivers", "items")`` or ``("platform", "gcp", None)``.
+    # Concrete subclasses MUST declare it; the base sentinel ``("", "", None)``
+    # triggers the ``__init_subclass__`` enforcement check.
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("", "", None)
+
+    # Optional scope-visibility filter:
+    # - ``None`` (default) → visible at every scope (collection / catalog / platform).
+    # - ``"collection"`` → only at collection scope.
+    # - ``"catalog"`` → only at catalog and platform scopes (hidden at collection).
+    _visibility: ClassVar[Optional[str]] = None
+
     # Optional on-apply hook declared on the subclass; auto-registered in
     # ``__init_subclass__``.  Signature: ``(config, catalog_id, collection_id, db_resource) -> None | Awaitable``.
     _on_apply: ClassVar[Optional[Callable[..., Any]]] = None
@@ -324,6 +337,17 @@ class PluginConfig(PersistentModel):
         handler = cls.__dict__.get("_on_apply")
         if handler is not None:
             _APPLY_HANDLERS.setdefault(cls, []).append(handler)
+        # Concrete subclasses must declare ``_address`` — abstract bases
+        # opt out via ``is_abstract_base = True``.
+        if not cls.__dict__.get("is_abstract_base", False):
+            addr = cls.__dict__.get("_address")
+            if addr is None or addr == ("", "", None):
+                raise TypeError(
+                    f"{cls.__module__}.{cls.__qualname__} is a concrete PluginConfig "
+                    f"but does not declare ``_address``.  Declare e.g. "
+                    f"``_address: ClassVar[Tuple[str, str, Optional[str]]] = (\"platform\", \"<topic>\", None)`` "
+                    f"or mark it abstract via ``is_abstract_base = True``."
+                )
 
     @classmethod
     def register_apply_handler(

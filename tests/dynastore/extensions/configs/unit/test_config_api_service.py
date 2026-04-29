@@ -144,32 +144,38 @@ async def test_get_effective_configs_catalog_source(mock_config_service):
 def _stub_registry(**classes):
     """Build a fake ``list_registered_configs()`` dict.
 
-    Each entry is ``name -> {"__module__": "...", "abstract": <bool>?}``.
-    The stub class's name-prefix and module drive placement; ``abstract=True``
-    sets the ``is_abstract_base`` ClassVar that the composer reads via
-    ``cls.__dict__.get("is_abstract_base", False)`` to filter abstract bases.
+    Each entry is ``name -> {"_address": (s,t,sub), "_visibility": str|None,
+                              "abstract": <bool>?, "__module__": "..."?}``.
+    Placement is now driven by the explicit ``_address`` ClassVar on each
+    concrete config (mandatory in production, enforced by
+    ``PluginConfig.__init_subclass__``).  ``_visibility`` is the optional
+    scope filter; ``abstract=True`` flips ``is_abstract_base``.
     """
     out = {}
     for name, attrs in classes.items():
         body = {}
         if attrs.get("abstract"):
             body["is_abstract_base"] = True
+        if "_address" in attrs:
+            body["_address"] = attrs["_address"]
+        if "_visibility" in attrs:
+            body["_visibility"] = attrs["_visibility"]
         cls = type(name, (), body)
         cls.__module__ = attrs.get("__module__", "test.stub")
         out[name] = cls
     return out
 
 
-def test_compose_tree_places_classes_by_module_path():
+def test_compose_tree_places_classes_by_address():
     by_class = {
         "WebConfig": {"brand_name": "x"},
         "CatalogCorePostgresqlDriver": {"enabled": True},
     }
     registry = _stub_registry(
-        WebConfig={"__module__": "dynastore.extensions.web.web"},
-        # Stub key matches the wire key (TypedDriver bind drops Config suffix).
+        WebConfig={"_address": ("platform", "web", None)},
         CatalogCorePostgresqlDriver={
-            "__module__": "dynastore.modules.storage.drivers.metadata_postgresql",
+            "_address": ("storage", "drivers", "catalog"),
+            "_visibility": "catalog",
         },
     )
     with patch(
@@ -185,10 +191,13 @@ def test_compose_tree_places_classes_by_module_path():
 
 
 def test_compose_tree_filters_collection_only_from_catalog():
-    # Collection-prefixed classes are collection-only by name convention.
+    # ``_visibility = "collection"`` → hidden at non-collection scopes.
     by_class = {"CollectionWritePolicy": {"on_conflict": "update"}}
     registry = _stub_registry(
-        CollectionWritePolicy={"__module__": "dynastore.modules.storage.driver_config"},
+        CollectionWritePolicy={
+            "_address": ("storage", "policy", None),
+            "_visibility": "collection",
+        },
     )
     with patch(
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
@@ -203,7 +212,10 @@ def test_compose_tree_filters_collection_only_from_catalog():
 def test_compose_tree_includes_collection_only_at_collection_scope():
     by_class = {"CollectionWritePolicy": {"on_conflict": "update"}}
     registry = _stub_registry(
-        CollectionWritePolicy={"__module__": "dynastore.modules.storage.driver_config"},
+        CollectionWritePolicy={
+            "_address": ("storage", "policy", None),
+            "_visibility": "collection",
+        },
     )
     with patch(
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
@@ -381,7 +393,7 @@ async def test_compose_catalog_meta_flag_populates_meta_dict(mock_config_service
     by_class = {"WebConfig": {"brand_name": "x"}}
     sources = {"WebConfig": "default"}
     registry = _stub_registry(
-        WebConfig={"__module__": "dynastore.extensions.web.web"},
+        WebConfig={"_address": ("platform", "web", None)},
     )
     with patch.object(svc, "_get_effective_configs",
                       new=AsyncMock(return_value=(by_class, sources))), \
@@ -406,3 +418,120 @@ async def test_compose_platform_config_sets_platform_scope(mock_config_service):
         r = await svc.compose_platform_config(base_url="http://test", depth=0)
     assert r.scope == "platform"
     assert r.categories is None
+
+
+def test_compose_tree_address_visibility_filters_correctly():
+    """``_visibility = "catalog"`` hides the class at collection scope."""
+    by_class = {"CatalogOnly": {"x": 1}}
+    registry = _stub_registry(
+        CatalogOnly={
+            "_address": ("storage", "drivers", "catalog"),
+            "_visibility": "catalog",
+        },
+    )
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        # Visible at platform / catalog
+        for scope in ("platform", "catalog"):
+            tree, _ = ConfigApiService._compose_tree(
+                by_class, sources={}, active_scope=scope, include_meta=False,
+            )
+            assert "CatalogOnly" in tree["storage"]["drivers"]["catalog"]
+        # Hidden at collection
+        tree, _ = ConfigApiService._compose_tree(
+            by_class, sources={}, active_scope="collection", include_meta=False,
+        )
+        assert tree == {}
+
+
+# ---------------------------------------------------------------------------
+# Production placement-bug regression tests — were misplaced under the
+# heuristic; explicit `_address` fixes them.
+# ---------------------------------------------------------------------------
+
+def test_es_catalog_config_lands_at_catalog_scope():
+    """``ElasticsearchCatalogConfig`` was leaking to ``platform.misc``."""
+    from dynastore.modules.elasticsearch.es_catalog_config import (
+        ElasticsearchCatalogConfig,
+    )
+
+    assert ElasticsearchCatalogConfig._address == ("catalog", "elasticsearch", None)
+    assert ElasticsearchCatalogConfig._visibility == "catalog"
+
+
+def test_es_collection_config_lands_at_collection_scope():
+    """``ElasticsearchCollectionConfig`` was leaking to ``platform.misc``."""
+    from dynastore.modules.elasticsearch.es_collection_config import (
+        ElasticsearchCollectionConfig,
+    )
+
+    assert ElasticsearchCollectionConfig._address == ("collection", "elasticsearch", None)
+    assert ElasticsearchCollectionConfig._visibility == "collection"
+
+
+def test_catalog_es_driver_lands_under_storage_drivers_catalog():
+    """``CatalogElasticsearchDriverConfig`` was leaking to ``platform.misc``."""
+    from dynastore.modules.elasticsearch.catalog_es_driver import (
+        CatalogElasticsearchDriverConfig,
+    )
+
+    assert CatalogElasticsearchDriverConfig._address == ("storage", "drivers", "catalog")
+    assert CatalogElasticsearchDriverConfig._visibility == "catalog"
+
+
+def test_collection_es_driver_lands_under_storage_drivers_collection():
+    """``CollectionElasticsearchDriverConfig`` was leaking to ``platform.misc``."""
+    from dynastore.modules.elasticsearch.collection_es_driver import (
+        CollectionElasticsearchDriverConfig,
+    )
+
+    assert CollectionElasticsearchDriverConfig._address == ("storage", "drivers", "collection")
+    assert CollectionElasticsearchDriverConfig._visibility == "catalog"
+
+
+def test_assets_plugin_config_visible_at_all_scopes():
+    """Extension config was incorrectly gated to collection by ``Asset*`` name."""
+    from dynastore.extensions.assets.config import AssetsPluginConfig
+
+    assert AssetsPluginConfig._address == ("extensions", "assets", None)
+    assert AssetsPluginConfig._visibility is None  # visible everywhere
+
+
+# ---------------------------------------------------------------------------
+# Enforcement — every concrete PluginConfig must declare _address.
+# ---------------------------------------------------------------------------
+
+def test_concrete_subclass_without_address_raises():
+    """``PluginConfig.__init_subclass__`` enforces ``_address`` on concrete subclasses."""
+    from typing import ClassVar
+
+    from dynastore.modules.db_config.platform_config_service import PluginConfig
+
+    with pytest.raises(TypeError, match=r"does not declare ``_address``"):
+        class _BadConcreteConfig(PluginConfig):  # noqa: F841 — deliberate
+            field: ClassVar[int] = 1
+
+
+def test_concrete_subclass_with_address_ok():
+    from typing import ClassVar, Optional, Tuple
+
+    from dynastore.modules.db_config.platform_config_service import PluginConfig
+
+    class _GoodConcreteConfig(PluginConfig):
+        _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "misc", None)
+
+    assert _GoodConcreteConfig._address == ("platform", "misc", None)
+
+
+def test_abstract_subclass_without_address_ok():
+    """Abstract bases (``is_abstract_base = True``) opt out of the check."""
+    from typing import ClassVar
+
+    from dynastore.modules.db_config.platform_config_service import PluginConfig
+
+    class _AbstractIntermediate(PluginConfig):
+        is_abstract_base: ClassVar[bool] = True
+
+    assert _AbstractIntermediate.is_abstract_base is True

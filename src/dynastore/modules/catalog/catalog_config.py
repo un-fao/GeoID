@@ -25,7 +25,7 @@ from pydantic import (
 from dynastore.modules.db_config.platform_config_service import (
     PluginConfig,
 )
-from typing import List, Optional
+from typing import ClassVar, List, Optional, Tuple
 
 from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarConfig
 from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import GeometriesSidecarConfig
@@ -80,6 +80,9 @@ class CollectionPluginConfig(PluginConfig):
     Storage routing is handled by ``CollectionRoutingConfig``
     (``plugin_id = "CollectionRoutingConfig"``).
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("catalog", "collection", None)
+    _visibility: ClassVar[Optional[str]] = "collection"
+
 
     model_config = {"extra": "allow"}
 

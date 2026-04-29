@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-from typing import List
+from typing import ClassVar, List, Optional, Tuple
 from pydantic import Field
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
@@ -22,6 +22,8 @@ class FeaturesPluginConfig(ExposableConfigMixin, PluginConfig):
     Runtime configuration for the OGC Features extension.
     Controls caching and visibility.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("extensions", "features", None)
+
     # Caching
     cache_on_demand: bool = Field(
         False,

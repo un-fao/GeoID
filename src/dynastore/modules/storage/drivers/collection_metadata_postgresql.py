@@ -239,6 +239,9 @@ class CollectionPostgresqlDriverConfig(_PluginDriverConfig):
     rows exist would orphan domain slices in their per-tenant tables —
     the same constraint the items-tier sidecar config already enforces.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "drivers", "collection")
+    _visibility: ClassVar[Optional[str]] = "collection"
+
 
     sidecars: Immutable[List[_PgMetadataSidecarConfig]] = Field(
         default_factory=list,

@@ -14,10 +14,13 @@
 
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
+from typing import ClassVar, Optional, Tuple
 
 
 class DGGSConfig(ExposableConfigMixin, PluginConfig):
     """Runtime configuration for the OGC API - DGGS extension."""
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("extensions", "dggs", None)
+
 
     # `enabled` inherited from ExposableConfigMixin.
     default_resolution: int = 5

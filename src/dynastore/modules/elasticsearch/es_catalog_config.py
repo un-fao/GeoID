@@ -28,7 +28,7 @@ called automatically on restart).
 """
 
 import logging
-from typing import Callable, ClassVar, Optional, Any
+from typing import Any, Callable, ClassVar, Optional, Tuple
 
 from pydantic import Field
 
@@ -86,6 +86,9 @@ class ElasticsearchCatalogConfig(PluginConfig):
         • A bulk reindex task is dispatched to (re-)populate the STAC items index
           for collections that have search_index=True.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("catalog", "elasticsearch", None)
+    _visibility: ClassVar[Optional[str]] = "catalog"
+
     _on_apply: ClassVar[Optional[Callable]] = _on_apply_es_catalog_config
 
     private: bool = Field(
