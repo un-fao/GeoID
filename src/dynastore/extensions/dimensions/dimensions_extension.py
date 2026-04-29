@@ -441,35 +441,123 @@ async def _update_collection_cube_dims(
         )
 
 
+def _register_default_dimensions() -> Dict[str, Any]:
+    """Populate the module-level ``DIMENSIONS`` dict with the standard set.
+
+    Idempotent: re-invocations overwrite the same keys with equal-by-value
+    DimensionConfig objects. Extracted from ``DimensionsExtension.__init__``
+    so that worker contexts (Cloud Run Job containers without a FastAPI app)
+    can populate the registry without instantiating the FastAPI extension —
+    which is what ``dimensions_materialize`` task needs.
+    """
+    from .use_cases import ADMIN_NODES, INDICATOR_NODES, SPECIES_NODES
+
+    DIMENSIONS["temporal-dekadal"] = DimensionConfig(
+        provider=DailyPeriodProvider(period_days=10, scheme="monthly"),
+        description=(
+            "Dekadal temporal dimension — 10-day periods, 36 per year, "
+            "month-aligned (D1=1-10, D2=11-20, D3=remainder). "
+            "Widely used for agricultural monitoring and early warning systems. "
+            "100-year extent (1950-2050) demonstrates OGC-style pagination over "
+            "large temporal dimensions (3 600+ members)."
+        ),
+        extent_min="1950-01-01",
+        extent_max="2050-12-31",
+    )
+    DIMENSIONS["temporal-pentadal-monthly"] = DimensionConfig(
+        provider=DailyPeriodProvider(period_days=5, scheme="monthly"),
+        description=(
+            "Pentadal-monthly temporal dimension — 5-day periods, 72 per year, "
+            "month-aligned (P1=1-5, P2=6-10, ..., P6=26-EOM). "
+            "Used by rainfall estimation products that align dekads and pentads "
+            "to the same month boundaries (e.g. CHIRPS, CDT). "
+            "100-year extent yields 7 200+ members; illustrates that pentadal "
+            "and dekadal periods from the same producer are directly comparable."
+        ),
+        extent_min="1950-01-01",
+        extent_max="2050-12-31",
+    )
+    DIMENSIONS["temporal-pentadal-annual"] = DimensionConfig(
+        provider=DailyPeriodProvider(period_days=5, scheme="annual"),
+        description=(
+            "Pentadal-annual temporal dimension — 5-day periods, 73 per year, "
+            "year-start-aligned (P1=Jan 1-5, ..., P73=Dec 27-31). "
+            "Used by global precipitation climatology products that count pentads "
+            "from January 1 regardless of month boundaries (e.g. GPCP, CPC/NOAA). "
+            "Interoperability note: pentad #12 in the monthly system and pentad "
+            "#12 in the annual system refer to different calendar intervals — "
+            "a client must know which encoding was used before combining datasets."
+        ),
+        extent_min="1950-01-01",
+        extent_max="2050-12-31",
+    )
+    DIMENSIONS["indicator-tree"] = DimensionConfig(
+        provider=StaticTreeProvider(nodes=INDICATOR_NODES),
+        description=(
+            "Statistical indicator tree. "
+            "Recursive hierarchy: Domain -> Group -> Indicator."
+        ),
+        extent_min="",
+        extent_max="",
+    )
+    DIMENSIONS["admin-boundaries"] = DimensionConfig(
+        provider=LeveledTreeProvider(nodes=ADMIN_NODES),
+        description=(
+            "Administrative boundaries. Leveled hierarchy: "
+            "Continent (L0) -> Country (L1) -> Region (L2). "
+            "Supports ?level= filter."
+        ),
+        extent_min="",
+        extent_max="",
+    )
+    DIMENSIONS["forestry-species"] = DimensionConfig(
+        provider=StaticTreeProvider(nodes=SPECIES_NODES),
+        description=(
+            "Forestry species classification. "
+            "Recursive hierarchy with search (exact + like)."
+        ),
+        extent_min="",
+        extent_max="",
+    )
+    DIMENSIONS["elevation-bands"] = DimensionConfig(
+        provider=IntegerRangeProvider(step=50),
+        description=(
+            "Elevation bands (50 m step, 0-8848 m). "
+            "Invertible, searchable, supports /inverse."
+        ),
+        extent_min="0",
+        extent_max="8848",
+    )
+    return DIMENSIONS
+
+
 def get_registered_dimensions() -> Dict[str, Any]:
-    """Return the ``{dim_name: DimensionConfig}`` dict the running
-    ``DimensionsExtension`` instance registered at init time.
+    """Return the ``{dim_name: DimensionConfig}`` registry.
 
-    Looked up via the extensions registry so callers (notably the
-    ``dimensions_materialize`` task) don't have to import
-    ``ogc_dimensions`` directly — that package is an optional extra,
-    and importing it at task-module import time would break scopes
-    that don't include the dimensions extension.
+    Populates the module-level ``DIMENSIONS`` dict on first call by
+    invoking ``_register_default_dimensions()``. This lets Cloud Run Job
+    workers (which never instantiate the FastAPI ``DimensionsExtension``)
+    still see the registered dimensions — the dimensions_materialize task
+    crashed pre-fix because the registry was only populated as a side
+    effect of ``DimensionsExtension.__init__`` running in the FastAPI
+    catalog/maps API process, not in the worker container.
 
-    Returns an empty dict if the extension isn't registered in the
-    current process.
+    Idempotent: each call re-asserts the same DimensionConfig values into
+    the (possibly already populated) registry. Cheap; safe to call from
+    the dimensions_materialize task at run time.
+
+    Returns an empty dict only if the ogc_dimensions package isn't
+    importable in this SCOPE (which is also what would have happened
+    pre-fix when the extension itself failed to import).
     """
     try:
-        from dynastore.extensions.registry import _DYNASTORE_EXTENSIONS
-    except ImportError:
-        return {}
-
-    for config in _DYNASTORE_EXTENSIONS.values():
-        instance = getattr(config, "instance", None)
-        if instance is None:
-            continue
-        # Match by class name to avoid importing DimensionsExtension here —
-        # the extension module pulls in ``ogc_dimensions`` at import time.
-        if type(instance).__name__ == "DimensionsExtension":
-            dims = getattr(instance, "_dimensions", None)
-            if isinstance(dims, dict):
-                return dims
-    return {}
+        return _register_default_dimensions()
+    except Exception as e:
+        logger.warning(
+            "get_registered_dimensions: failed to populate registry: %s", e,
+            exc_info=True,
+        )
+        return DIMENSIONS  # whatever partial state we ended up in
 
 
 async def materialize_all_dimensions(
@@ -577,100 +665,12 @@ class DimensionsExtension(ExtensionProtocol):
     def __init__(self, app: FastAPI):
         self.app = app
 
-        from .use_cases import ADMIN_NODES, INDICATOR_NODES, SPECIES_NODES
-
-        # -- Temporal pagination demos (100-year extents) ----------------------
-        #
-        # Three non-Gregorian calendars in wide operational use for agri/climate
-        # monitoring demonstrate both pagination (large member counts) and a
-        # real interoperability problem: the same "5-day period" concept is
-        # encoded with two incompatible calendar systems depending on the data
-        # producer.  Clients cannot combine pentadal datasets without knowing
-        # which system was used.
-        #
-        # Reference: https://github.com/ccancellieri/ogc-dimensions/tree/main/spec
-
-        DIMENSIONS["temporal-dekadal"] = DimensionConfig(
-            provider=DailyPeriodProvider(period_days=10, scheme="monthly"),
-            description=(
-                "Dekadal temporal dimension — 10-day periods, 36 per year, "
-                "month-aligned (D1=1-10, D2=11-20, D3=remainder). "
-                "Widely used for agricultural monitoring and early warning systems. "
-                "100-year extent (1950-2050) demonstrates OGC-style pagination over "
-                "large temporal dimensions (3 600+ members)."
-            ),
-            extent_min="1950-01-01",
-            extent_max="2050-12-31",
-        )
-        DIMENSIONS["temporal-pentadal-monthly"] = DimensionConfig(
-            provider=DailyPeriodProvider(period_days=5, scheme="monthly"),
-            description=(
-                "Pentadal-monthly temporal dimension — 5-day periods, 72 per year, "
-                "month-aligned (P1=1-5, P2=6-10, ..., P6=26-EOM). "
-                "Used by rainfall estimation products that align dekads and pentads "
-                "to the same month boundaries (e.g. CHIRPS, CDT). "
-                "100-year extent yields 7 200+ members; illustrates that pentadal "
-                "and dekadal periods from the same producer are directly comparable."
-            ),
-            extent_min="1950-01-01",
-            extent_max="2050-12-31",
-        )
-        DIMENSIONS["temporal-pentadal-annual"] = DimensionConfig(
-            provider=DailyPeriodProvider(period_days=5, scheme="annual"),
-            description=(
-                "Pentadal-annual temporal dimension — 5-day periods, 73 per year, "
-                "year-start-aligned (P1=Jan 1-5, ..., P73=Dec 27-31). "
-                "Used by global precipitation climatology products that count pentads "
-                "from January 1 regardless of month boundaries (e.g. GPCP, CPC/NOAA). "
-                "Interoperability note: pentad #12 in the monthly system and pentad "
-                "#12 in the annual system refer to different calendar intervals — "
-                "a client must know which encoding was used before combining datasets."
-            ),
-            extent_min="1950-01-01",
-            extent_max="2050-12-31",
-        )
-
-        # -- Hierarchical dimensions -------------------------------------------
-        DIMENSIONS["indicator-tree"] = DimensionConfig(
-            provider=StaticTreeProvider(nodes=INDICATOR_NODES),
-            description=(
-                "Statistical indicator tree. "
-                "Recursive hierarchy: Domain -> Group -> Indicator."
-            ),
-            extent_min="",
-            extent_max="",
-        )
-        DIMENSIONS["admin-boundaries"] = DimensionConfig(
-            provider=LeveledTreeProvider(nodes=ADMIN_NODES),
-            description=(
-                "Administrative boundaries. Leveled hierarchy: "
-                "Continent (L0) -> Country (L1) -> Region (L2). "
-                "Supports ?level= filter."
-            ),
-            extent_min="",
-            extent_max="",
-        )
-        DIMENSIONS["forestry-species"] = DimensionConfig(
-            provider=StaticTreeProvider(nodes=SPECIES_NODES),
-            description=(
-                "Forestry species classification. "
-                "Recursive hierarchy with search (exact + like)."
-            ),
-            extent_min="",
-            extent_max="",
-        )
-
-        # -- Integer range demo ------------------------------------------------
-        DIMENSIONS["elevation-bands"] = DimensionConfig(
-            provider=IntegerRangeProvider(step=50),
-            description=(
-                "Elevation bands (50 m step, 0-8848 m). "
-                "Invertible, searchable, supports /inverse."
-            ),
-            extent_min="0",
-            extent_max="8848",
-        )
-
+        # Populate the module-level DIMENSIONS registry. Extracted to a free
+        # function so worker contexts (Cloud Run Jobs without a FastAPI app)
+        # can call it directly via get_registered_dimensions() — the
+        # dimensions_materialize task needs this. See the function definition
+        # higher in this module for the temporal/hierarchical/integer demos.
+        _register_default_dimensions()
         self._dimensions = DIMENSIONS
 
         self.router = APIRouter(prefix="/dimensions", tags=["OGC Dimensions"])
