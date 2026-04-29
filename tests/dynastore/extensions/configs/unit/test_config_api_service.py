@@ -44,7 +44,7 @@ def mock_config_service():
 @pytest.mark.asyncio
 async def test_get_effective_configs_source_default(mock_config_service):
     svc = ConfigApiService(config_service=mock_config_service)
-    by_class, sources = await svc._get_effective_configs(
+    by_class, sources, _tier_data = await svc._get_effective_configs(
         catalog_id=None, collection_id=None, resolved=True,
     )
     assert isinstance(by_class, dict)
@@ -92,7 +92,7 @@ async def test_get_effective_configs_resolved_merges_tier_deltas():
     ))
 
     svc = ConfigApiService(config_service=svc_mock)
-    by_class, sources = await svc._get_effective_configs(
+    by_class, sources, _tier_data = await svc._get_effective_configs(
         catalog_id="cat-x", collection_id="coll-y", resolved=True,
     )
     assert sources["collection_routing_config"] == "collection"
@@ -131,7 +131,7 @@ async def test_get_effective_configs_catalog_source(mock_config_service):
     mock_config_service.get_config.side_effect = get_side_effect
 
     svc = ConfigApiService(config_service=mock_config_service)
-    _, sources = await svc._get_effective_configs(
+    _, sources, _tier_data = await svc._get_effective_configs(
         catalog_id="my-catalog", collection_id=None, resolved=True,
     )
     assert sources["collection_routing_config"] == "catalog"
@@ -378,7 +378,7 @@ def test_no_next_on_last_page():
 async def test_compose_collection_config_depth0_no_categories(mock_config_service):
     svc = ConfigApiService(config_service=mock_config_service)
     with patch.object(svc, "_get_effective_configs",
-                      new=AsyncMock(return_value=({}, {}))), \
+                      new=AsyncMock(return_value=({}, {}, {"platform":{},"catalog":{},"collection":{}}))), \
          patch.object(svc, "_build_routing_refs", new=MagicMock()):
         response = await svc.compose_collection_config(
             base_url="http://test", catalog_id="c", collection_id="col", depth=0,
@@ -396,7 +396,7 @@ async def test_compose_catalog_meta_flag_populates_meta_dict(mock_config_service
         WebConfig={"_address": ("platform", "web", None)},
     )
     with patch.object(svc, "_get_effective_configs",
-                      new=AsyncMock(return_value=(by_class, sources))), \
+                      new=AsyncMock(return_value=(by_class, sources, {"platform":{},"catalog":{},"collection":{}}))), \
          patch.object(svc, "_build_routing_refs", new=MagicMock()), \
          patch(
              "dynastore.extensions.configs.config_api_service.list_registered_configs",
@@ -413,7 +413,7 @@ async def test_compose_catalog_meta_flag_populates_meta_dict(mock_config_service
 async def test_compose_platform_config_sets_platform_scope(mock_config_service):
     svc = ConfigApiService(config_service=mock_config_service)
     with patch.object(svc, "_get_effective_configs",
-                      new=AsyncMock(return_value=({}, {}))), \
+                      new=AsyncMock(return_value=({}, {}, {"platform":{},"catalog":{},"collection":{}}))), \
          patch.object(svc, "_build_routing_refs", new=MagicMock()):
         r = await svc.compose_platform_config(base_url="http://test", depth=0)
     assert r.scope == "platform"
@@ -705,7 +705,7 @@ async def test_compose_collection_config_includes_routing_resolution_when_meta_t
     """
     svc = ConfigApiService(config_service=mock_config_service)
     with patch.object(svc, "_get_effective_configs",
-                      new=AsyncMock(return_value=({}, {}))), \
+                      new=AsyncMock(return_value=({}, {}, {"platform":{},"catalog":{},"collection":{}}))), \
          patch.object(svc, "_build_routing_refs", new=MagicMock()), \
          patch(
              "dynastore.modules.elasticsearch.es_collection_config.is_collection_private",
@@ -732,7 +732,7 @@ async def test_compose_collection_config_no_routing_resolution_when_meta_false(
         "compose_collection_config(meta=False) must NOT call is_collection_private"
     ))
     with patch.object(svc, "_get_effective_configs",
-                      new=AsyncMock(return_value=({}, {}))), \
+                      new=AsyncMock(return_value=({}, {}, {"platform":{},"catalog":{},"collection":{}}))), \
          patch.object(svc, "_build_routing_refs", new=MagicMock()), \
          patch(
              "dynastore.modules.elasticsearch.es_collection_config.is_collection_private",
@@ -743,3 +743,103 @@ async def test_compose_collection_config_no_routing_resolution_when_meta_false(
             depth=0, meta=False,
         )
     assert r.routing_resolution is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 layer trace: meta.<class>.layers waterfall.
+# ---------------------------------------------------------------------------
+
+def test_build_meta_entry_default_only():
+    """When the class has no row at any tier, only the 'default' layer is
+    present and source='default'."""
+    sources = {"foo": "default"}
+    tier_data = {"platform": {}, "catalog": {}, "collection": {}}
+    meta = ConfigApiService._build_meta_entry("foo", sources, tier_data)
+    assert meta.source == "default"
+    layers = {l.level: l.present for l in meta.layers or []}
+    assert layers == {
+        "default": True, "platform": False, "catalog": False, "collection": False,
+    }
+
+
+def test_build_meta_entry_platform_only():
+    sources = {"foo": "platform"}
+    tier_data = {"platform": {"foo": {"a": 1}}, "catalog": {}, "collection": {}}
+    meta = ConfigApiService._build_meta_entry("foo", sources, tier_data)
+    assert meta.source == "platform"
+    layers = {l.level: l.present for l in meta.layers or []}
+    assert layers == {
+        "default": False, "platform": True, "catalog": False, "collection": False,
+    }
+
+
+def test_build_meta_entry_platform_then_catalog_overrides():
+    """Platform AND catalog have rows; catalog wins as source.  Both layers
+    must show present=True so the operator sees the override chain."""
+    sources = {"foo": "catalog"}
+    tier_data = {
+        "platform": {"foo": {"a": 1}},
+        "catalog":  {"foo": {"a": 2}},
+        "collection": {},
+    }
+    meta = ConfigApiService._build_meta_entry("foo", sources, tier_data)
+    assert meta.source == "catalog"
+    layers = {l.level: l.present for l in meta.layers or []}
+    assert layers == {
+        "default": False, "platform": True, "catalog": True, "collection": False,
+    }
+
+
+def test_build_meta_entry_full_waterfall():
+    """All 4 tiers contributing: source is the top (collection) and every
+    tier's present flag is True (default is implicit-present only when no
+    other tier contributed)."""
+    sources = {"foo": "collection"}
+    tier_data = {
+        "platform":   {"foo": {"a": 1}},
+        "catalog":    {"foo": {"a": 2}},
+        "collection": {"foo": {"a": 3}},
+    }
+    meta = ConfigApiService._build_meta_entry("foo", sources, tier_data)
+    assert meta.source == "collection"
+    layers = {l.level: l.present for l in meta.layers or []}
+    assert layers == {
+        "default": False, "platform": True, "catalog": True, "collection": True,
+    }
+
+
+def test_build_meta_entry_no_tier_data_returns_source_only():
+    """Backward-compat path: no tier_data → meta.layers is None, source is set."""
+    meta = ConfigApiService._build_meta_entry("foo", {"foo": "platform"}, None)
+    assert meta.source == "platform"
+    assert meta.layers is None
+
+
+def test_compose_tree_meta_includes_layers_when_tier_data_provided():
+    """End-to-end through `_compose_tree`: with tier_data, every meta entry
+    carries layers."""
+    by_class = {"WebConfig": {"brand_name": "x"}}
+    sources = {"WebConfig": "platform"}
+    tier_data = {
+        "platform":   {"WebConfig": {"brand_name": "x"}},
+        "catalog":    {},
+        "collection": {},
+    }
+    registry = _stub_registry(WebConfig={"_address": ("platform", "web", None)})
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        _, meta = ConfigApiService._compose_tree(
+            by_class, sources, "platform", include_meta=True,
+            tier_data=tier_data,
+        )
+    assert meta is not None
+    entry = meta["WebConfig"]
+    assert entry.source == "platform"
+    assert entry.layers is not None
+    assert [l.level for l in entry.layers] == [
+        "default", "platform", "catalog", "collection",
+    ]
+    assert entry.layers[1].present is True   # platform
+    assert entry.layers[2].present is False  # catalog

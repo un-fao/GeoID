@@ -56,6 +56,33 @@ class DriverRef(BaseModel):
     write_mode: str = Field("sync", description="Write mode: sync | async.")
 
 
+class ConfigLayer(BaseModel):
+    """One tier in the waterfall trace for a single config entry.
+
+    Tells the operator WHICH tier contributed WHAT — useful when the
+    effective value at a collection comes from the catalog tier and the
+    operator needs to know whether the platform default would take over
+    if the catalog override were deleted.
+    """
+
+    level: str = Field(
+        ...,
+        description=(
+            "Tier name in waterfall order: 'default' (code-level class "
+            "default), 'platform', 'catalog', 'collection'."
+        ),
+    )
+    present: bool = Field(
+        ...,
+        description=(
+            "True when an explicit row exists at this tier (i.e. the tier "
+            "contributed a delta that was merged into the effective value). "
+            "False when the tier was empty for this class — the value was "
+            "inherited from a higher (lower-precedence) tier."
+        ),
+    )
+
+
 class ConfigMeta(BaseModel):
     """Tier-of-origin diagnostics for a single resolved config entry."""
 
@@ -63,7 +90,17 @@ class ConfigMeta(BaseModel):
         ...,
         description=(
             "Tier that supplied the effective value: "
-            "'collection' | 'catalog' | 'platform' | 'default'."
+            "'collection' | 'catalog' | 'platform' | 'default'.  Single-tier "
+            "summary; for the full waterfall trace see ``layers`` below."
+        ),
+    )
+    layers: Optional[List[ConfigLayer]] = Field(
+        None,
+        description=(
+            "Full waterfall trace for this config: one entry per tier "
+            "(default, platform, catalog, collection) with ``present`` "
+            "indicating whether that tier explicitly contributed a delta. "
+            "Populated when ``?meta=true`` is requested."
         ),
     )
 
