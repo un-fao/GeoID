@@ -240,10 +240,13 @@ ingestion = ["dynastore[task_base,module_gcp,task_ingestion_deps]"]
 # SCOPE=worker_task_<name> — a single unambiguous identifier the catalog's
 # gcp_cloud_runner uses to map discovered jobs back to task entry-points.
 #
-# `module_catalog` audit (2026-04-29, B6 follow-up):
-#   - dwh_join, export_features: use raw SQLAlchemy `get_engine()` and bind
-#     to the catalog's PG schema via direct SQL — never call CatalogsProtocol
-#     and never import from `dynastore.modules.catalog.*`. Excluded.
+# `module_catalog` audit (2026-04-29, B6 + Phase H follow-ups):
+#   - dwh_join: original audit assumed raw SQL only, but Phase H container
+#     log surfaced `Skipping plugin 'dwh_join': No module named 'shapely'` —
+#     the entry-point load transitively pulls shapely via
+#     `extensions/dwh/models.py → tools/geospatial`. Need module_catalog
+#     (which provides geospatial_core → shapely). PR #140.
+#   - export_features: already has geospatial_core directly.
 #   - tiles_preseed: tasks/tiles_preseed/task.py:65 calls
 #     `get_protocol(CatalogsProtocol)`. Needs module_catalog.
 #   - gdal: tasks/gdal/asset_process.py:25 + gdalinfo_task.py:32,40 import
@@ -253,7 +256,7 @@ ingestion = ["dynastore[task_base,module_gcp,task_ingestion_deps]"]
 #   - elasticsearch_indexer: BulkCatalog/CollectionReindexTask via
 #     CatalogsProtocol. Confirmed by `dynastore-elasticsearch-indexer-cq7k9`
 #     exec on 2026-04-29 (B6, PR #131).
-worker_task_dwh_join = ["dynastore[task_base,dwh]"]
+worker_task_dwh_join = ["dynastore[task_base,module_catalog,dwh]"]
 worker_task_ingestion = ["dynastore[ingestion,catalog_grp,google_grp,gdal]"]
 worker_task_export_features = ["dynastore[task_base,stac,geospatial_core]"]
 worker_task_tiles_preseed = ["dynastore[task_base,module_catalog,tiles,crs]", "morecantile>=7.0.3,<8"]
