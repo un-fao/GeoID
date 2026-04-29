@@ -107,4 +107,32 @@ class GdalModule(ModuleProtocol):
             logger.warning(
                 "GDAL/OGR is NOT available in this environment. GdalModule will be limited."
             )
-        yield
+
+        # Register the asset-scoped GDAL process so the asset router at
+        # /assets/.../assets/{aid}/processes/gdal/execution can find it
+        # alongside the backend-owned upload/download processes. The OGC
+        # Processes registry already exposes `gdal` via the task's
+        # definition.py — this exposes it on the asset surface too.
+        registered_asset_process = None
+        try:
+            from dynastore.tasks.gdal.asset_process import GdalAssetProcess
+            from dynastore.tools.discovery import register_plugin, unregister_plugin
+            registered_asset_process = GdalAssetProcess()
+            register_plugin(registered_asset_process)
+            logger.info("GdalModule: registered GdalAssetProcess.")
+        except ImportError as e:
+            logger.info(
+                f"GdalModule: skipping GdalAssetProcess registration "
+                f"(deps not present): {e}"
+            )
+
+        try:
+            yield
+        finally:
+            if registered_asset_process is not None:
+                try:
+                    unregister_plugin(registered_asset_process)
+                except Exception as e:
+                    logger.warning(
+                        f"GdalModule: failed to unregister GdalAssetProcess: {e}"
+                    )
