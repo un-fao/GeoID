@@ -34,7 +34,7 @@ from .authorization.iam_authorizer import IamAuthorizer
 from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
 from dynastore.modules.db_config import maintenance_tools
 from dynastore.modules.db_config.query_executor import DbResource
-from typing import Optional, Any, AsyncGenerator
+from typing import Optional, Any, AsyncGenerator, List, Tuple
 from dynastore.tools.discovery import register_plugin, unregister_plugin
 
 logger = logging.getLogger(__name__)
@@ -193,6 +193,118 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             return False
 
         return await self._policy_service.check_permission(principal, action, resource)
+
+    # ------------------------------------------------------------------ #
+    # PermissionProtocol delegating implementations.                       #
+    #                                                                     #
+    # IamModule is registered as the PermissionProtocol implementor (via  #
+    # ``register_plugin(self)`` in lifespan), so every protocol caller —  #
+    # IamMiddleware.evaluate_access included — resolves here. Without the #
+    # explicit delegations below, the Protocol stub bodies (``...``)      #
+    # would be inherited and silently return ``None``, which              #
+    # IamMiddleware then treats as ALLOW (``result if result is not None  #
+    # else (True, "")``) — turning every policy gate into a no-op for any #
+    # request not protected by another middleware layer.                  #
+    # ``register_policy`` and ``register_role`` are intentionally NOT     #
+    # delegated: they buffer for cross-pod-safe upsert at lifespan flush. #
+    # ------------------------------------------------------------------ #
+
+    async def evaluate_access(
+        self,
+        principals: List[str],
+        path: str,
+        method: str,
+        request_context: Any = None,
+        catalog_id: Optional[str] = None,
+        custom_policies: Optional[List[Any]] = None,
+    ) -> Tuple[bool, str]:
+        if self._policy_service is None:
+            return False, "PolicyService not initialized"
+        return await self._policy_service.evaluate_access(
+            principals=principals,
+            path=path,
+            method=method,
+            request_context=request_context,
+            catalog_id=catalog_id,
+            custom_policies=custom_policies,
+        )
+
+    async def evaluate_policy_statements(
+        self, policy: Any, method: str, path: str, request_context: Any = None,
+    ) -> bool:
+        if self._policy_service is None:
+            return False
+        return await self._policy_service.evaluate_policy_statements(
+            policy=policy, method=method, path=path, request_context=request_context,
+        )
+
+    async def get_policy(
+        self, policy_id: str, catalog_id: Optional[str] = None,
+    ) -> Optional[Any]:
+        if self._policy_service is None:
+            return None
+        return await self._policy_service.get_policy(policy_id, catalog_id=catalog_id)
+
+    async def create_policy(
+        self, policy: Any, catalog_id: Optional[str] = None,
+    ) -> Any:
+        if self._policy_service is None:
+            return None
+        return await self._policy_service.create_policy(policy, catalog_id=catalog_id)
+
+    async def update_policy(
+        self, policy: Any, catalog_id: Optional[str] = None,
+    ) -> Optional[Any]:
+        if self._policy_service is None:
+            return None
+        return await self._policy_service.update_policy(policy, catalog_id=catalog_id)
+
+    async def list_policies(
+        self, limit: int = 100, offset: int = 0, catalog_id: Optional[str] = None,
+    ) -> List[Any]:
+        if self._policy_service is None:
+            return []
+        return await self._policy_service.list_policies(
+            limit=limit, offset=offset, catalog_id=catalog_id,
+        )
+
+    async def delete_policy(
+        self, policy_id: str, catalog_id: Optional[str] = None,
+    ) -> bool:
+        if self._policy_service is None:
+            return False
+        return await self._policy_service.delete_policy(policy_id, catalog_id=catalog_id)
+
+    async def search_policies(
+        self,
+        resource_pattern: str,
+        action_pattern: str,
+        limit: int = 10,
+        offset: int = 0,
+        catalog_id: Optional[str] = None,
+    ) -> List[Any]:
+        if self._policy_service is None:
+            return []
+        return await self._policy_service.search_policies(
+            resource_pattern=resource_pattern,
+            action_pattern=action_pattern,
+            limit=limit,
+            offset=offset,
+            catalog_id=catalog_id,
+        )
+
+    async def provision_default_policies(
+        self,
+        catalog_id: Optional[str] = None,
+        conn: Optional[Any] = None,
+        schema: Optional[str] = None,
+        force: bool = False,
+    ) -> None:
+        if self._policy_service is None:
+            return
+        await self._policy_service.provision_default_policies(
+            catalog_id=catalog_id, conn=conn, schema=schema, force=force,
+        )
 
     async def _persist_policy(self, policy: Any):
         """Persist a policy to the database via storage upsert."""

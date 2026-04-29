@@ -249,7 +249,11 @@ class PolicyService:
             ),
             Policy(
                 id="public_access",
-                description="Allows anonymous access to public endpoints.",
+                description="Allows anonymous access to public endpoints. "
+                            "Resources are enumerated explicitly (no /web/.* "
+                            "catch-all) so dashboard data endpoints stay gated "
+                            "by web_dashboard_*_access policies registered in "
+                            "extensions/web/web.py::register_web_policies.",
                 actions=["GET", "POST", "OPTIONS", "HEAD"],
                 resources=[
                     "/$",
@@ -257,7 +261,19 @@ class PolicyService:
                     "/docs.*",
                     "/openapi.json",
                     "/redoc",
-                    "/web/.*",
+                    # /web/* — explicit safe sub-paths only; mirrors the
+                    # web_public_access policy in extensions/web/web.py
+                    "/web/?$",
+                    "/web/pages/.*",
+                    "/web/extension-static/.*",
+                    "/web/static/.*",
+                    "/web/website/.*",
+                    "/web/docs-content/.*",
+                    "/web/docs-manifest",
+                    "/web/config/.*",
+                    "/web/health",
+                    "/web/dashboard/?$",
+                    "/web/lite/.*",  # JupyterLite WASM kernel — anonymous-OK
                     "/iam/auth/login",
                     "/iam/auth/validate",
                     "/iam/auth/jwks.json",
@@ -327,9 +343,16 @@ class PolicyService:
                     db, partition_key=catalog_id, schema=schema
                 )
 
-            # Provision default policies
+            # Provision default policies. ``public_access`` is force-updated
+            # on every provision so deployments inheriting an older overly-broad
+            # version (pre-2026-04-29 ``/web/.*`` catch-all that accidentally
+            # allowed anonymous access to gated dashboard endpoints) self-heal
+            # to the narrowed enumeration without operator intervention. Other
+            # defaults stay idempotent so operator edits via the policy API
+            # are preserved.
+            _ALWAYS_REFRESH = {"public_access"}
             for policy_def in self._get_default_policies(partition_key=pk):
-                if force:
+                if force or policy_def.id in _ALWAYS_REFRESH:
                     await self.storage.update_policy(policy_def, schema=schema, conn=db)
                 else:
                     existing = await self.storage.get_policy(policy_def.id, schema=schema, conn=db)
@@ -436,8 +459,8 @@ class PolicyService:
                         principal, schema=check_schema
                     )
                     if role_obj:
-                        logger.debug(
-                            f"EVAL: Found role '{principal}' in schema '{check_schema}' -> policies: {role_obj.policies}"
+                        logger.warning(
+                            f"DBG-ROLE: Found role '{principal}' schema={check_schema} policies={role_obj.policies}"
                         )
                         all_policy_ids.update(role_obj.policies)
                     else:
@@ -455,6 +478,8 @@ class PolicyService:
                 pol = await self.get_policy(pid, catalog_id=None)
             if pol:
                 effective_policies.append(pol)
+                if pid in ("web_public_access", "public_access"):
+                    logger.warning(f"DBG-POL: {pid} resources={pol.resources}")
 
         # 3. Include custom policies directly attached to the principal
         if custom_policies:
