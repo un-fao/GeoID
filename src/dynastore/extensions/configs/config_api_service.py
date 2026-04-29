@@ -115,29 +115,50 @@ class ConfigApiService:
         catalog_id: Optional[str],
         collection_id: Optional[str],
         resolved: bool,
-    ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
-        """Return ``(by_class, sources)`` for every registered config class.
+    ) -> Tuple[
+        Dict[str, Dict[str, Any]],
+        Dict[str, str],
+        Dict[str, Dict[str, Dict[str, Any]]],
+    ]:
+        """Return ``(by_class, sources, tier_data)`` for every registered config class.
 
         * ``by_class[ClassName]`` — effective payload (waterfall-resolved
           when ``resolved``).
         * ``sources[ClassName]`` — ``"collection" | "catalog" | "platform" | "default"``.
+        * ``tier_data[tier]`` — ``{class_key: raw_delta}`` for each tier loaded
+          (``platform``/``catalog``/``collection``).  Empty dict for tiers
+          not loaded for this scope (catalog tier missing at platform-scope
+          requests, collection tier missing at catalog-scope, etc.).
+          Used by the composer to build the per-class layer trace
+          (``meta.<class>.layers``) without re-fetching.  Always returned
+          (also under ``resolved=False`` — the single loaded tier appears
+          alone, the others as empty dicts).
         """
         svc = self._config_service
         all_classes = list_registered_configs()
 
+        def _to_data_map(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+            return {it["plugin_id"]: (it.get("config_data") or {}) for it in items}
+
         if not resolved:
+            tier_data: Dict[str, Dict[str, Dict[str, Any]]] = {
+                "platform": {}, "catalog": {}, "collection": {},
+            }
             if catalog_id and collection_id:
                 result = await svc.list_configs(
                     catalog_id=catalog_id, collection_id=collection_id,
                     limit=1000, offset=0,
                 )
                 source = "collection"
+                tier_data["collection"] = _to_data_map(result.get("items", []))
             elif catalog_id:
                 result = await svc.list_configs(catalog_id=catalog_id, limit=1000, offset=0)
                 source = "catalog"
+                tier_data["catalog"] = _to_data_map(result.get("items", []))
             else:
                 result = await svc.list_configs(limit=1000, offset=0)
                 source = "platform"
+                tier_data["platform"] = _to_data_map(result.get("items", []))
 
             by_class: Dict[str, Dict[str, Any]] = {}
             sources: Dict[str, str] = {}
@@ -152,7 +173,7 @@ class ConfigApiService:
                 except Exception:
                     by_class[class_key] = raw
                 sources[class_key] = source
-            return by_class, sources
+            return by_class, sources, tier_data
 
         # Resolved path — pull each tier's per-class delta dict ONCE (3
         # SELECTs total) then merge in memory, mirroring the waterfall in
@@ -160,9 +181,6 @@ class ConfigApiService:
         # > collection, right-most wins).  Replaces the previous per-class
         # ``await svc.get_config(cls, ...)`` loop which fired ~N awaits per
         # request — large win on the deep view that the dashboard hits.
-        def _to_data_map(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-            return {it["plugin_id"]: (it.get("config_data") or {}) for it in items}
-
         collection_data: Dict[str, Dict[str, Any]] = {}
         catalog_data: Dict[str, Dict[str, Any]] = {}
         if catalog_id and collection_id:
@@ -197,8 +215,8 @@ class ConfigApiService:
                 merged: Dict[str, Any] = cls().model_dump(mode="python")
             except Exception:
                 merged = {}
-            for tier_data in (platform_data, catalog_data, collection_data):
-                delta = tier_data.get(class_key)
+            for tier_dict in (platform_data, catalog_data, collection_data):
+                delta = tier_dict.get(class_key)
                 if delta:
                     merged.update(delta)
 
@@ -208,9 +226,44 @@ class ConfigApiService:
                 by_class[class_key] = cls.model_validate(merged).model_dump()
             except Exception:
                 by_class[class_key] = merged or {}
-        return by_class, sources
+        return by_class, sources, {
+            "platform":   platform_data,
+            "catalog":    catalog_data,
+            "collection": collection_data,
+        }
 
     # --- Tree + meta in one pass. ---
+
+    @staticmethod
+    def _build_meta_entry(
+        class_key: str,
+        sources: Dict[str, str],
+        tier_data: Optional[Dict[str, Dict[str, Dict[str, Any]]]],
+    ) -> ConfigMeta:
+        """Build a ConfigMeta entry combining the single-tier ``source``
+        summary with the full waterfall ``layers`` trace.
+
+        ``tier_data`` is the ``{tier: {class_key: delta}}`` dict from
+        ``_get_effective_configs``.  When ``tier_data`` is ``None`` (no
+        per-tier data available — should not happen in production), the
+        layer trace is omitted and only ``source`` is set.
+        """
+        from dynastore.extensions.configs.config_api_dto import ConfigLayer
+
+        source = sources.get(class_key, "default")
+        if tier_data is None:
+            return ConfigMeta(source=source, layers=None)
+        layers = []
+        for level in ("default", "platform", "catalog", "collection"):
+            if level == "default":
+                # The "default" tier is implicit — there's no row for it.
+                # Mark present=True only when no other tier contributed
+                # (i.e. the effective value IS the code default).
+                present = source == "default"
+            else:
+                present = class_key in tier_data.get(level, {})
+            layers.append(ConfigLayer(level=level, present=present))
+        return ConfigMeta(source=source, layers=layers)
 
     @staticmethod
     def _compose_tree(
@@ -218,6 +271,7 @@ class ConfigApiService:
         sources: Dict[str, str],
         active_scope: str,
         include_meta: bool,
+        tier_data: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
     ) -> Tuple[Dict[str, Any], Optional[Dict[str, ConfigMeta]]]:
         """Bucket visible classes into scope/topic tree and optionally build meta.
 
@@ -229,6 +283,11 @@ class ConfigApiService:
         editable only at catalog scope).  The block uses the SAME
         ``scope/topic/sub`` shape as the main tree so dashboards can render
         it with the same form-builder.
+
+        When ``include_meta`` and ``tier_data`` are both provided, each
+        ``ConfigMeta`` entry includes the full ``layers`` waterfall trace
+        (one entry per tier with a ``present`` flag) alongside the
+        single-tier ``source`` summary.
         """
         all_classes = list_registered_configs()
         tree: Dict[str, Any] = {}
@@ -257,7 +316,9 @@ class ConfigApiService:
                     else:
                         topic_node.setdefault(sub, {})[class_key] = payload
                     if include_meta and class_key in sources:
-                        meta[class_key] = ConfigMeta(source=sources[class_key])
+                        meta[class_key] = ConfigApiService._build_meta_entry(
+                            class_key, sources, tier_data,
+                        )
                 continue
 
             placed = _place(cls, active_scope)
@@ -270,7 +331,9 @@ class ConfigApiService:
             else:
                 topic_node.setdefault(sub, {})[class_key] = payload
             if include_meta and class_key in sources:
-                meta[class_key] = ConfigMeta(source=sources[class_key])
+                meta[class_key] = ConfigApiService._build_meta_entry(
+                    class_key, sources, tier_data,
+                )
         return tree, (meta if include_meta else None)
 
     # --- Routing-ref rewrite. ---
@@ -370,11 +433,13 @@ class ConfigApiService:
         resolved: bool = True,
         meta: bool = False,
     ) -> CollectionConfigResponse:
-        by_class, sources = await self._get_effective_configs(
+        by_class, sources, tier_data = await self._get_effective_configs(
             catalog_id=catalog_id, collection_id=collection_id, resolved=resolved,
         )
         self._build_routing_refs(by_class)
-        tree, meta_dict = self._compose_tree(by_class, sources, "collection", meta)
+        tree, meta_dict = self._compose_tree(
+            by_class, sources, "collection", meta, tier_data=tier_data,
+        )
 
         # Phase 1.5d: surface per-op driver resolution alongside the per-class
         # tier-of-origin diagnostics in ``meta``.  Async (factors in
@@ -417,11 +482,13 @@ class ConfigApiService:
         resolved: bool = True,
         meta: bool = False,
     ) -> CatalogConfigResponse:
-        by_class, sources = await self._get_effective_configs(
+        by_class, sources, tier_data = await self._get_effective_configs(
             catalog_id=catalog_id, collection_id=None, resolved=resolved,
         )
         self._build_routing_refs(by_class)
-        tree, meta_dict = self._compose_tree(by_class, sources, "catalog", meta)
+        tree, meta_dict = self._compose_tree(
+            by_class, sources, "catalog", meta, tier_data=tier_data,
+        )
 
         categories: Optional[Dict[str, ConfigPage]] = None
         if depth > 0:
@@ -462,11 +529,13 @@ class ConfigApiService:
         resolved: bool = True,
         meta: bool = False,
     ) -> PlatformConfigResponse:
-        by_class, sources = await self._get_effective_configs(
+        by_class, sources, tier_data = await self._get_effective_configs(
             catalog_id=None, collection_id=None, resolved=resolved,
         )
         self._build_routing_refs(by_class)
-        tree, meta_dict = self._compose_tree(by_class, sources, "platform", meta)
+        tree, meta_dict = self._compose_tree(
+            by_class, sources, "platform", meta, tier_data=tier_data,
+        )
 
         categories: Optional[Dict[str, ConfigPage]] = None
         if depth > 0 and self._catalogs_service is not None:
