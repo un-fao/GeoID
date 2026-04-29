@@ -159,15 +159,14 @@ jobs:
 
   integration-tests:
     runs-on: ubuntu-22.04
-    # 25 min cap. Tests themselves now run ~8 min after PR #117's
-    # */integration/* scoping, but the docker compose `build` step
-    # adds another 10-12 min on top. The compose `image:` directives
-    # in this PR let compose reuse the buildx-pre-built `:ci` tags
-    # instead of rebuilding, which should drop total job time
-    # comfortably below 20 min on warm cache. The 25-min cap leaves a
-    # margin for cold-cache runs (after a long quiet period) where the
-    # GHA layer cache is partially evicted.
-    timeout-minutes: 25
+    # 20 min cap. Post PR #124 the actual numbers are: build ~4 min
+    # (image-reuse), tests ~7 min on 4-vCPU GHA xdist, total ~11 min.
+    # A local 12-vCPU run completes the same 53 integration tests in
+    # ~13.5 min, including the ES + keycloak + GCP test paths the CI
+    # conftest auto-skips. 20 min leaves 9 min headroom for cold-cache
+    # runs; if a future change pushes us past 20 min that's a real
+    # regression worth investigating, not a budget to extend.
+    timeout-minutes: 20
     # inputs.run_integration is only set for workflow_dispatch / workflow_call.
     # For push/pull_request it is undefined (''), so the comparison evaluates
     # != 'false' as true. Skip only when the caller explicitly passes false.
