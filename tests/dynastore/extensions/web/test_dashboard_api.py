@@ -344,3 +344,64 @@ async def test_dashboard_events_default_catalog_for_sysadmin(
     )
     assert response.status_code == 200
     assert isinstance(response.json(), list)
+
+
+# ---------------------------------------------------------------------------
+# Phase B+ — TenantScopeMiddleware also gates /tasks, /processes, /ogc-compliance
+# without any per-route code: the URL pattern matches the registry rule, so
+# every caller goes through the same anonymous/sysadmin/catalog-admin gate
+# the existing Phase B endpoints already exercise.
+# ---------------------------------------------------------------------------
+
+# /processes serves a static HTML file at /web/dashboard/processes/ (note the
+# trailing slash). The middleware's URL regex matches /web/dashboard/processes
+# with or without trailing slash, so all three paths are tested.
+_PHASE_B_PLUS_PATHS = ["/web/dashboard/tasks", "/web/dashboard/ogc-compliance"]
+
+
+@pytest.mark.parametrize("path", _PHASE_B_PLUS_PATHS)
+async def test_phase_b_plus_anonymous_blocked(
+    anonymous_dashboard_client: AsyncClient, path: str
+):
+    """Anonymous callers can no longer read tasks / ogc-compliance — 401."""
+    response = await anonymous_dashboard_client.get(path)
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize("path", _PHASE_B_PLUS_PATHS)
+async def test_phase_b_plus_sysadmin_default_system(
+    sysadmin_in_process_client_module: AsyncClient, path: str
+):
+    """Sysadmin reads the default ``_system_`` view without an explicit catalog."""
+    response = await sysadmin_in_process_client_module.get(path)
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("path", _PHASE_B_PLUS_PATHS)
+async def test_phase_b_plus_catalog_admin_owned_catalog(
+    catalog_admin_dashboard_ctx, path: str
+):
+    """Catalog admin can scope to their owned catalog."""
+    ctx = catalog_admin_dashboard_ctx
+    response = await ctx["client"].get(f"{path}?catalog_id={ctx['catalog_a']}")
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("path", _PHASE_B_PLUS_PATHS)
+async def test_phase_b_plus_catalog_admin_other_catalog_403(
+    catalog_admin_dashboard_ctx, path: str
+):
+    """Catalog admin querying a non-owned catalog is denied — 403."""
+    ctx = catalog_admin_dashboard_ctx
+    response = await ctx["client"].get(f"{path}?catalog_id={ctx['catalog_b']}")
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("path", _PHASE_B_PLUS_PATHS)
+async def test_phase_b_plus_catalog_admin_system_403(
+    catalog_admin_dashboard_ctx, path: str
+):
+    """Catalog admin querying ``_system_`` is denied — 403."""
+    ctx = catalog_admin_dashboard_ctx
+    response = await ctx["client"].get(f"{path}?catalog_id=_system_")
+    assert response.status_code == 403
