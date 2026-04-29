@@ -5,7 +5,7 @@
 #    You may obtain a copy of the License at
 #
 #        http://www.apache.org/licenses/LICENSE-2.0
-"""Lightweight OGC Process definition for the export-features task.
+"""Lightweight OGC Process definition for the export_features task.
 
 Kept free of heavy imports (GCS clients, feature streaming utilities) so that
 catalog services can surface the Process in ``/processes`` without installing
@@ -24,7 +24,7 @@ from dynastore.modules.processes.schema_gen import pydantic_to_process_inputs
 from dynastore.modules.features_exporter.models import ExportFeaturesRequest
 
 EXPORT_FEATURES_PROCESS_DEFINITION = Process(
-    id="export-features",
+    id="export_features",
     version="1.0.0",
     title="Export Features",
     description=(
