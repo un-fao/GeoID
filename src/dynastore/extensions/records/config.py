@@ -14,8 +14,11 @@
 
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
+from typing import ClassVar, Optional, Tuple
 
 
 class RecordsPluginConfig(ExposableConfigMixin, PluginConfig):
     """Service-exposure config for the records extension."""
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("extensions", "records", None)
+
     # `enabled` inherited from ExposableConfigMixin — no further fields.

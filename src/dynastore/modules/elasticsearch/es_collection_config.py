@@ -34,7 +34,7 @@ otherwise-private catalog at write time) is a follow-up step.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, ClassVar, Optional
+from typing import Any, Callable, ClassVar, Optional, Tuple
 
 from pydantic import Field
 
@@ -143,6 +143,9 @@ class ElasticsearchCollectionConfig(PluginConfig):
     duplicate :class:`ElasticsearchCatalogConfig` — catalog-tier policy
     fields stay there.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("collection", "elasticsearch", None)
+    _visibility: ClassVar[Optional[str]] = "collection"
+
 
     _on_apply: ClassVar[Optional[Callable]] = _on_apply_es_collection_config
 

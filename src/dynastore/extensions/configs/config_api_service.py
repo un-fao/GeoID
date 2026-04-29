@@ -18,8 +18,13 @@ Response shape: ``configs[scope][topic][(sub)?][ClassName] -> payload``.
 Class name IS the identity — no ``class_key`` field inside the payload.
 Routing configs' ``operations[OP]`` become slim ``DriverRef`` dicts
 pointing at sibling driver configs in ``configs.storage.drivers.*``.
-Per-scope filtering is derived from the class name / module path —
-there is no per-class ClassVar override to maintain.
+
+Placement is read from each ``PluginConfig`` subclass's mandatory
+``_address: ClassVar[Tuple[str, str, Optional[str]]]`` ClassVar.
+Scope filtering is read from the optional ``_visibility`` ClassVar
+(``"collection"`` / ``"catalog"`` / ``None`` = visible everywhere).
+The composer no longer owns a placement heuristic — there is exactly
+one source of truth per class.
 """
 
 from __future__ import annotations
@@ -43,49 +48,6 @@ from dynastore.modules.db_config.platform_config_service import (
 
 logger = logging.getLogger(__name__)
 
-# --- Placement + relevance (inline — keeps the table next to the
-# composer that is its only consumer). -------------------------------
-
-# Abstract base configs are filtered via the ``is_abstract_base = True``
-# ClassVar on the class itself (read via ``cls.__dict__.get(...)`` so
-# concrete subclasses don't inherit the marker).  Single source of truth
-# lives on the class — no parallel hand-maintained name set here.
-
-# Per-class name prefixes that bucket classes into relevance tiers.
-_COLLECTION_PREFIXES = ("Items", "Asset", "Collection", "WritePolicyDefaults")
-_COLLECTION_NAMES = frozenset({"GcpCollectionBucketConfig"})
-_CATALOG_PREFIXES = ("Catalog",)
-_CATALOG_NAMES = frozenset({"GcpCatalogBucketConfig", "GcpEventingConfig"})
-
-# Module prefix → (scope, topic).  Longer prefixes first.
-_MODULE_RULES: List[Tuple[str, Tuple[str, str]]] = [
-    ("dynastore.modules.storage.routing_config",        ("storage", "routing")),
-    ("dynastore.modules.storage.drivers",               ("storage", "drivers")),
-    ("dynastore.modules.storage.driver_config",         ("storage", "drivers")),
-    ("dynastore.modules.elasticsearch.es_metadata",     ("storage", "drivers")),
-    ("dynastore.modules.catalog.catalog_config",        ("catalog", "collection")),
-    ("dynastore.modules.catalog.asset_config",          ("catalog", "asset")),
-    ("dynastore.modules.iam",                           ("platform", "security")),
-    ("dynastore.modules.web",                           ("platform", "web")),
-    ("dynastore.extensions.web",                        ("platform", "web")),
-    ("dynastore.modules.tasks",                         ("platform", "tasks")),
-    ("dynastore.modules.stats",                         ("platform", "stats")),
-    ("dynastore.modules.gcp",                           ("platform", "gcp")),
-    ("dynastore.modules.tiles",                         ("platform", "tiles")),
-    ("dynastore.modules.stac",                          ("extensions", "stac")),
-]
-_CLASS_SCOPE_TOPIC: Dict[str, Tuple[str, str]] = {
-    "CollectionWritePolicy": ("storage", "policy"),
-    "WritePolicyDefaults":   ("storage", "policy"),
-    "CollectionSchema":      ("storage", "schema"),
-}
-# Driver sub-bucket by class-name prefix (only when topic == "drivers").
-_DRIVER_SUB: List[Tuple[str, str]] = [
-    ("Items", "items"), ("Asset", "assets"),
-    ("Catalog", "catalog"), ("Collection", "collection"),
-    ("Metadata", "metadata"),
-]
-
 # Routing config keys whose ``operations[OP]`` is rewritten as DriverRefs.
 _ROUTING_CONFIG_KEYS = frozenset({
     "CollectionRoutingConfig", "AssetRoutingConfig", "CatalogRoutingConfig",
@@ -93,41 +55,31 @@ _ROUTING_CONFIG_KEYS = frozenset({
 
 
 def _place(cls: Type[PluginConfig], active_scope: str) -> Optional[Tuple[str, str, Optional[str]]]:
-    """Return ``(scope, topic, sub)`` for ``cls`` at ``active_scope``, or ``None`` to drop.
+    """Return ``cls._address`` if visible at ``active_scope``, else ``None``.
 
-    ``None`` means either the class is an abstract base or its relevance
-    tier does not include ``active_scope``.
+    Filters:
+    - Abstract bases (``is_abstract_base = True``) → dropped.
+    - ``_visibility = "collection"`` and ``active_scope != "collection"`` → dropped.
+    - ``_visibility = "catalog"`` and ``active_scope == "collection"`` → dropped.
     """
-    name = cls.__name__
     if cls.__dict__.get("is_abstract_base", False):
         return None
-
-    is_catalog = name in _CATALOG_NAMES or name.startswith(_CATALOG_PREFIXES)
-    is_collection = not is_catalog and (
-        name in _COLLECTION_NAMES or name.startswith(_COLLECTION_PREFIXES)
-    )
-    if is_catalog and active_scope == "collection":
+    visibility = getattr(cls, "_visibility", None)
+    if visibility == "collection" and active_scope != "collection":
         return None
-    if is_collection and active_scope != "collection":
+    if visibility == "catalog" and active_scope == "collection":
         return None
-
-    if name in _CLASS_SCOPE_TOPIC:
-        scope, topic = _CLASS_SCOPE_TOPIC[name]
-    else:
-        mod = cls.__module__
-        hit = next((g for prefix, g in _MODULE_RULES if mod.startswith(prefix)), None)
-        if hit is not None:
-            scope, topic = hit
-        elif mod.startswith("dynastore.extensions."):
-            scope = "extensions"
-            topic = mod[len("dynastore.extensions."):].split(".", 1)[0]
-        else:
-            scope, topic = "platform", "misc"
-
-    sub: Optional[str] = None
-    if topic == "drivers":
-        sub = next((s for pfx, s in _DRIVER_SUB if name.startswith(pfx)), "misc")
-    return scope, topic, sub
+    address = getattr(cls, "_address", None)
+    if not address or address == ("", "", None):
+        # Defensive — concrete subclasses must declare _address (enforced in
+        # PluginConfig.__init_subclass__) but skip rather than crash if a
+        # malformed entry slips through.
+        logger.warning(
+            "PluginConfig %s.%s has no _address; skipping placement.",
+            cls.__module__, cls.__name__,
+        )
+        return None
+    return address
 
 
 class ConfigApiService:

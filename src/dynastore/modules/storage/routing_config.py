@@ -333,6 +333,9 @@ class CollectionRoutingConfig(PluginConfig):
 
     Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "routing", None)
+    _visibility: ClassVar[Optional[str]] = "collection"
+
 
     model_config = ConfigDict(json_schema_extra=ui(category="routing"))
 
@@ -438,6 +441,9 @@ class AssetRoutingConfig(PluginConfig):
 
     Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "routing", None)
+    _visibility: ClassVar[Optional[str]] = "collection"
+
 
     model_config = ConfigDict(json_schema_extra=ui(category="routing"))
 
@@ -494,6 +500,9 @@ class CatalogRoutingConfig(PluginConfig):
 
     Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "routing", None)
+    _visibility: ClassVar[Optional[str]] = "catalog"
+
 
     enabled: bool = Field(default=True, description="Enable this routing configuration.")
 

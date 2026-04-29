@@ -18,7 +18,7 @@
 
 from pathlib import PurePosixPath
 from pydantic import BaseModel, Field, ConfigDict, field_validator
-from typing import Callable, ClassVar, Optional, Literal, List, Annotated, Dict, Any, Union, TYPE_CHECKING
+from typing import Annotated, Any, Callable, ClassVar, Dict, List, Literal, Optional, TYPE_CHECKING, Tuple, Union
 from datetime import date
 from dynastore.modules.db_config.platform_config_service import PluginConfig, Immutable
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
@@ -142,6 +142,9 @@ class GcpCatalogBucketConfig(PluginConfig):
     Defines bucket-level configurations for a catalog. These settings are applied
     when the bucket is first created.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "gcp", None)
+    _visibility: ClassVar[Optional[str]] = "catalog"
+
     _on_apply: ClassVar[Optional[Callable]] = on_apply_gcp_bucket_config
     # Immutable fields: Once the bucket is created, these cannot be changed.
     location: Immutable[Optional[GcpLocation]] = Field(default=os.getenv("REGION", GcpLocation.EUROPE_WEST1), description="The GCP region where the bucket will be created (e.g., 'europe-west1'). If not set, defaults to the application's region.")  # type: ignore[assignment]
@@ -161,6 +164,8 @@ class GcpModuleConfig(ExposableConfigMixin, PluginConfig):
     """
     Defines global configurations for the GCP module.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "gcp", None)
+
     project_id: str = Field(default=os.getenv("PROJECT_ID", "local-project"), description="The GCP Project ID.")
     region: str = Field(default=os.getenv("REGION", "europe-west1"), description="The default GCP region.")
     
@@ -185,6 +190,9 @@ class GcpCollectionBucketConfig(PluginConfig):
     Defines object-level configurations for a specific collection within a bucket.
     These settings can override catalog-level defaults for objects belonging to this collection.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "gcp", None)
+    _visibility: ClassVar[Optional[str]] = "collection"
+
     custom_metadata_defaults: Optional[Dict[str, str]] = Field(default=None, description="Default metadata to apply to all objects uploaded to this collection.")
     
     # Updated to allow strings (IDs of templates) or full objects
@@ -234,6 +242,9 @@ class GcpEventingConfig(PluginConfig):
     Defines the complete, mutable eventing configuration for a catalog. This is
     stored independently from the bucket configuration.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "gcp", None)
+    _visibility: ClassVar[Optional[str]] = "catalog"
+
     _on_apply: ClassVar[Optional[Callable]] = on_apply_gcp_eventing_config
     managed_eventing: Optional[ManagedBucketEventing] = Field(default=ManagedBucketEventing(), description="Configuration for the default, system-managed eventing pipeline for the catalog's bucket.")
     custom_subscriptions: List[ExternalTopicSubscription] = Field(default=[], description="A list of additional, custom subscriptions to external (non-managed) Pub/Sub topics.")

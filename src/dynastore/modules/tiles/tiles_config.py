@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-from typing import List, Optional, Dict, Tuple
+from typing import ClassVar, Dict, List, Optional, Tuple
 from pydantic import Field, BaseModel
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
@@ -23,6 +23,8 @@ class TilesConfig(ExposableConfigMixin, PluginConfig):
     Runtime configuration for the Tiles extension.
     Controls visibility, bounds, and on-the-fly generation settings.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "tiles", None)
+
 
     # Global mask/bounds
     bbox: Optional[List[Tuple[float, float, float, float]]] = Field(default=None, 
@@ -60,6 +62,8 @@ class TilesPreseedConfig(PluginConfig):
     Configuration for the Tiles Pre-seeding Process.
     This configures the background task that generates and stores tiles.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "tiles", None)
+
     # Implicitly enabled if this config is present and defaults are acceptable, 
     # but explicit flag allows disabling without deleting config.
     enabled: bool = Field(default=True, description="If True, the pre-seeding task will process this configuration.")

@@ -14,10 +14,13 @@
 
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.modules.db_config.platform_config_service import PluginConfig
+from typing import ClassVar, Optional, Tuple
 
 
 class EDRConfig(ExposableConfigMixin, PluginConfig):
     """Service-exposure and runtime guardrail config for the EDR extension."""
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("extensions", "edr", None)
+
 
     # `enabled` inherited from ExposableConfigMixin.
     max_items_per_query: int = 100

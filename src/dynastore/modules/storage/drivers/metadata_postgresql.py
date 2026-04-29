@@ -181,9 +181,15 @@ class CollectionCorePostgresqlDriverConfig(DriverPluginConfig):
     here so the rewriter / waterfall plumbing needs no changes.
     """
 
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "drivers", "collection")
+    _visibility: ClassVar[Optional[str]] = "collection"
+
 
 class CatalogCorePostgresqlDriverConfig(DriverPluginConfig):
     """Identity marker for CatalogCorePostgresqlDriver."""
+
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "drivers", "catalog")
+    _visibility: ClassVar[Optional[str]] = "catalog"
 
 
 # ---------------------------------------------------------------------------

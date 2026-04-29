@@ -1,11 +1,13 @@
 # dynastore/modules/tasks/tasks_config.py
 import os
-from typing import Dict, List
+from typing import ClassVar, Dict, List, Optional, Tuple
 from pydantic import Field
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 
 class TasksPluginConfig(PluginConfig):
     """Configuration for the Background Tasks module."""
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "tasks", None)
+
 
     queue_poll_interval: float = Field(
         default_factory=lambda: float(os.environ.get("DYNASTORE_QUEUE_POLL_INTERVAL", "30.0")),
@@ -45,6 +47,8 @@ class TaskRoutingConfig(PluginConfig):
     TaskRoutingConfig`` admin route and trigger the apply-handler that
     re-narrows the dispatcher's CapabilityMap.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "tasks", None)
+
 
     routing: Dict[str, List[str]] = Field(
         default_factory=dict,

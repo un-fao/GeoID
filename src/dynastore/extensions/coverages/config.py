@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-from typing import Optional
+from typing import ClassVar, Optional, Tuple
 
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
@@ -20,6 +20,8 @@ from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 
 class CoveragesConfig(ExposableConfigMixin, PluginConfig):
     """Service-exposure and runtime guardrail config for the coverages extension."""
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("extensions", "coverages", None)
+
     # `enabled` inherited from ExposableConfigMixin.
     max_bands_per_request: int = 16
     request_deadline_soft_s: int = 60

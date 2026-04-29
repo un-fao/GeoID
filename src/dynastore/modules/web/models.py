@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from typing import Dict, Any, Union, Optional, List
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, Union
 from pydantic import BaseModel, Field, field_validator
 from dynastore.models.localization import LocalizedText
 from dynastore.modules.db_config.platform_config_service import PluginConfig
@@ -58,6 +58,8 @@ class WebPageConfig(BaseModel):
 
 class WebPageSettingsConfig(PluginConfig):
     """Persistent configuration for web pages (overrides)."""
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "web", None)
+
     pages: Dict[str, WebPageConfig] = Field(default_factory=dict)
 
 

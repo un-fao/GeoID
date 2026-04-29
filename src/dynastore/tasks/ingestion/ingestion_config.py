@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from typing import ClassVar, List, Optional, Any, Literal, Dict, Type
+from typing import Any, ClassVar, Dict, List, Literal, Optional, Tuple, Type
 from pydantic import BaseModel, Field, model_validator
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 from dynastore.modules.storage.driver_config import WriteConflictPolicy
@@ -28,6 +28,8 @@ class IngestionPluginConfig(PluginConfig):
     Configuration for the Ingestion Module.
     This can be updated at any time via API.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "ingestion", None)
+
     # 1. Behavior Rules
     on_conflict: WriteConflictPolicy = Field(
         default=WriteConflictPolicy.NEW_VERSION,

@@ -37,7 +37,7 @@ deliberate counterpart to the per-catalog
 """
 
 import logging
-from typing import Any, ClassVar, Dict, FrozenSet, Optional
+from typing import Any, ClassVar, Dict, FrozenSet, Optional, Tuple
 
 from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols.metadata_driver import MetadataCapability
@@ -63,6 +63,9 @@ class CatalogElasticsearchDriverConfig(_PluginDriverConfig):
     matches ``mappings.get_index_name(prefix, "catalog")`` ⇒
     ``{prefix}-catalogs``.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "drivers", "catalog")
+    _visibility: ClassVar[Optional[str]] = "catalog"
+
 
     index_name: Immutable[str] = Field(
         "catalogs",

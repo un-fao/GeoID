@@ -37,7 +37,7 @@ etc.), not *what operation* it performs.  Operations are defined in
 import json
 import os
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar, Dict, FrozenSet, List, Optional, Union
+from typing import Annotated, Any, ClassVar, Dict, FrozenSet, List, Optional, Tuple, Union
 
 from pydantic import ConfigDict, Discriminator, Field, field_validator, model_validator
 
@@ -251,6 +251,9 @@ class CollectionWritePolicy(PluginConfig):
       NEW_VERSION degrades to a no-op, UPDATE degrades to REFUSE_RETURN.  This
       covers "create new version only if attribute/geometry hash changed".
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "policy", None)
+    _visibility: ClassVar[Optional[str]] = "collection"
+
 
     on_conflict: WriteConflictPolicy = Field(
         default=WriteConflictPolicy.UPDATE,
@@ -339,6 +342,9 @@ class WritePolicyDefaults(PluginConfig):
     write infrastructure.  ``WritePolicyDefaults`` is the new waterfall-level
     posture config.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "policy", None)
+    _visibility: ClassVar[Optional[str]] = "collection"
+
 
     on_conflict: WriteConflictPolicy = Field(
         default=WriteConflictPolicy.UPDATE,
@@ -427,6 +433,9 @@ class ItemsPostgresqlDriverConfig(CollectionDriverConfig):
     CRITICAL: ``sidecars`` and ``partitioning`` are **Immutable** — they
     cannot be changed once the physical table exists.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "drivers", "items")
+    _visibility: ClassVar[Optional[str]] = "collection"
+
 
     model_config = ConfigDict(extra="allow")
 
@@ -581,6 +590,9 @@ class ItemsElasticsearchDriverConfig(CollectionDriverConfig):
     indexes like ``items_{collection_id}`` that are natively readable by
     an external SFEOS app running in read-only mode.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "drivers", "items")
+    _visibility: ClassVar[Optional[str]] = "collection"
+
 
     model_config = ConfigDict(extra="allow")
 
@@ -606,6 +618,9 @@ class ItemsDuckdbDriverConfig(CollectionDriverConfig):
 
     Absorbs fields previously in ``FileStorageLocationConfig``.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "drivers", "items")
+    _visibility: ClassVar[Optional[str]] = "collection"
+
 
     capabilities: FrozenSet[str] = Field(
         default=frozenset({DriverCapability.ASYNC, DriverCapability.BATCH}),
@@ -631,6 +646,9 @@ class ItemsIcebergDriverConfig(CollectionDriverConfig):
     via ``IcebergConfig`` environment variables. Use the ``resolve_*`` helpers
     to obtain the effective values at runtime.
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "drivers", "items")
+    _visibility: ClassVar[Optional[str]] = "collection"
+
 
     model_config = ConfigDict(extra="allow")
 
@@ -759,6 +777,9 @@ class ItemsIcebergDriverConfig(CollectionDriverConfig):
 
 class AssetPostgresqlDriverConfig(AssetDriverConfig):
     """PostgreSQL asset driver config."""
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "drivers", "assets")
+    _visibility: ClassVar[Optional[str]] = "collection"
+
 
     capabilities: FrozenSet[str] = Field(
         default=frozenset({DriverCapability.SYNC, DriverCapability.TRANSACTIONAL}),
@@ -767,6 +788,9 @@ class AssetPostgresqlDriverConfig(AssetDriverConfig):
 
 class AssetElasticsearchDriverConfig(AssetDriverConfig):
     """Elasticsearch asset driver config."""
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "drivers", "assets")
+    _visibility: ClassVar[Optional[str]] = "collection"
+
 
     model_config = ConfigDict(extra="allow")
 
@@ -810,6 +834,9 @@ class CollectionSchema(PluginConfig):
             ],
         )
     """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "schema", None)
+    _visibility: ClassVar[Optional[str]] = "collection"
+
 
     level: _EntityLevel = _EntityLevel.ITEM
     fields: Dict[str, _FieldDefinition] = Field(default_factory=dict)

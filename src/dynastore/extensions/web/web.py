@@ -26,7 +26,7 @@ import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import List, Any, ClassVar, Dict, Optional, Callable, cast
+from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple, cast
 
 from fastapi import APIRouter, FastAPI, Response, HTTPException, Request, Query, Header
 
@@ -274,6 +274,8 @@ class RelativeSlashRedirectMiddleware:
 
 class WebConfig(PluginConfig):
     """Configuration for the Web Platform interface."""
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "web", None)
+
     brand_name: str = "Agro-Informatics Platform"
     brand_subtitle: str = "Catalog Services"
     token_key: str = "ds_token"

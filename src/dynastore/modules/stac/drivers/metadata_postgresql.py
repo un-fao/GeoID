@@ -30,7 +30,7 @@ not duplicated.
 
 from __future__ import annotations
 
-from typing import ClassVar, FrozenSet, Tuple
+from typing import ClassVar, FrozenSet, Optional, Tuple
 
 from dynastore.models.protocols.metadata_driver import MetadataCapability
 from dynastore.models.protocols.typed_driver import TypedDriver
@@ -52,10 +52,16 @@ _CATALOG_STAC_COLUMNS: Tuple[str, ...] = (
 
 class CollectionStacPostgresqlDriverConfig(DriverPluginConfig):
     """Identity marker for CollectionStacPostgresqlDriver."""
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "drivers", "collection")
+    _visibility: ClassVar[Optional[str]] = "collection"
+
 
 
 class CatalogStacPostgresqlDriverConfig(DriverPluginConfig):
     """Identity marker for CatalogStacPostgresqlDriver."""
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "drivers", "catalog")
+    _visibility: ClassVar[Optional[str]] = "catalog"
+
 
 
 class CollectionStacPostgresqlDriver(
