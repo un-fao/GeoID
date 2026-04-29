@@ -39,15 +39,23 @@ if TYPE_CHECKING:
 
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols.storage_driver import Capability
+from dynastore.models.protocols.typed_driver import TypedDriver
 from dynastore.models.query_builder import QueryRequest
 from dynastore.modules.protocols import ModuleProtocol
+from dynastore.modules.storage.driver_config import (
+    ItemsElasticsearchPrivateDriverConfig,
+)
 from dynastore.modules.storage.drivers.elasticsearch import _ElasticsearchBase
 from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
 
 logger = logging.getLogger(__name__)
 
 
-class ItemsElasticsearchPrivateDriver(_ElasticsearchBase, ModuleProtocol):
+class ItemsElasticsearchPrivateDriver(
+    TypedDriver[ItemsElasticsearchPrivateDriverConfig],
+    _ElasticsearchBase,
+    ModuleProtocol,
+):
     """Tenant-scoped Elasticsearch storage driver (a.k.a. "private").
 
     Writes the full feature (geometry + properties + external_id) into a
