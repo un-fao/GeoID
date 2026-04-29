@@ -138,9 +138,9 @@ async def anonymous_dashboard_client(app_lifespan_module):
 async def test_dashboard_stats_endpoint(
     sysadmin_in_process_client_module: AsyncClient, my_catalog_id: str
 ):
-    """Test the dashboard stats endpoint returns 200."""
+    """Test the dashboard stats endpoint returns 200 (path-based catalog scope)."""
     response = await sysadmin_in_process_client_module.get(
-        f"/web/dashboard/stats?catalog_id={my_catalog_id}"
+        f"/web/dashboard/catalogs/{my_catalog_id}/stats"
     )
     assert response.status_code == 200
     data = response.json()
@@ -151,9 +151,9 @@ async def test_dashboard_stats_endpoint(
 async def test_dashboard_logs_endpoint(
     sysadmin_in_process_client_module: AsyncClient, my_catalog_id: str
 ):
-    """Test the dashboard logs endpoint returns 200 and a list."""
+    """Test the dashboard logs endpoint returns 200 and a list (path-based)."""
     response = await sysadmin_in_process_client_module.get(
-        f"/web/dashboard/logs?limit=5&catalog_id={my_catalog_id}"
+        f"/web/dashboard/catalogs/{my_catalog_id}/logs?limit=5"
     )
     assert response.status_code == 200
     data = response.json()
@@ -163,9 +163,9 @@ async def test_dashboard_logs_endpoint(
 async def test_dashboard_events_endpoint(
     sysadmin_in_process_client_module: AsyncClient, my_catalog_id: str
 ):
-    """Test the dashboard events endpoint returns 200 and a list."""
+    """Test the dashboard events endpoint returns 200 and a list (path-based)."""
     response = await sysadmin_in_process_client_module.get(
-        f"/web/dashboard/events?limit=5&catalog_id={my_catalog_id}"
+        f"/web/dashboard/catalogs/{my_catalog_id}/events?limit=5"
     )
     assert response.status_code == 200
     data = response.json()
@@ -226,7 +226,7 @@ async def test_docs_manifest_endpoint(sysadmin_in_process_client_module: AsyncCl
 async def test_dashboard_logs_pagination(sysadmin_in_process_client_module: AsyncClient, my_catalog_id: str):
     """Test that the logs endpoint respects the limit parameter."""
     response = await sysadmin_in_process_client_module.get(
-        f"/web/dashboard/logs?limit=1&catalog_id={my_catalog_id}"
+        f"/web/dashboard/catalogs/{my_catalog_id}/logs?limit=1"
     )
     assert response.status_code == 200
     data = response.json()
@@ -256,29 +256,36 @@ async def test_dashboard_collections_unknown_catalog(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("path", [
-    "/web/dashboard/stats",
-    "/web/dashboard/logs",
-    "/web/dashboard/events",
-])
+# ---------------------------------------------------------------------------
+# Path-based tenant scope (Phase B++): every per-catalog dashboard endpoint
+# lives at /web/dashboard/catalogs/{catalog_id}/<endpoint> with optional
+# nesting under /collections/{collection_id}/. TenantScopeMiddleware extracts
+# catalog_id from the URL via regex capture and gates before the handler runs.
+# ---------------------------------------------------------------------------
+
+# Endpoint suffix → kept short so the parametrize stays readable.
+_DASHBOARD_DATA_SUFFIXES = ["stats", "logs", "events", "tasks", "ogc-compliance"]
+
+
+@pytest.mark.parametrize("suffix", _DASHBOARD_DATA_SUFFIXES)
 async def test_dashboard_data_endpoints_reject_anonymous(
-    anonymous_dashboard_client: AsyncClient, path: str
+    anonymous_dashboard_client: AsyncClient, suffix: str
 ):
-    """Anonymous callers must not read dashboard data — 401."""
-    response = await anonymous_dashboard_client.get(path)
+    """Anonymous callers must not read any per-catalog dashboard data — 401."""
+    response = await anonymous_dashboard_client.get(
+        f"/web/dashboard/catalogs/some_catalog/{suffix}"
+    )
     assert response.status_code == 401
 
 
-@pytest.mark.parametrize("path", [
-    "/web/dashboard/stats",
-    "/web/dashboard/logs",
-    "/web/dashboard/events",
-])
-async def test_dashboard_data_endpoints_sysadmin_default_system(
-    sysadmin_in_process_client_module: AsyncClient, path: str
+@pytest.mark.parametrize("suffix", _DASHBOARD_DATA_SUFFIXES)
+async def test_dashboard_data_endpoints_sysadmin_system_scope(
+    sysadmin_in_process_client_module: AsyncClient, suffix: str
 ):
-    """Sysadmin reads the default ``_system_`` view without an explicit catalog."""
-    response = await sysadmin_in_process_client_module.get(path)
+    """Sysadmin reads the synthetic ``_system_`` scope on any data endpoint."""
+    response = await sysadmin_in_process_client_module.get(
+        f"/web/dashboard/catalogs/_system_/{suffix}"
+    )
     assert response.status_code == 200
 
 
@@ -287,7 +294,7 @@ async def test_dashboard_stats_catalog_admin_allowed_on_own_catalog(
 ):
     ctx = catalog_admin_dashboard_ctx
     response = await ctx["client"].get(
-        f"/web/dashboard/stats?catalog_id={ctx['catalog_a']}"
+        f"/web/dashboard/catalogs/{ctx['catalog_a']}/stats"
     )
     assert response.status_code == 200
     body = response.json()
@@ -299,7 +306,7 @@ async def test_dashboard_stats_catalog_admin_denied_on_other_catalog(
 ):
     ctx = catalog_admin_dashboard_ctx
     response = await ctx["client"].get(
-        f"/web/dashboard/stats?catalog_id={ctx['catalog_b']}"
+        f"/web/dashboard/catalogs/{ctx['catalog_b']}/stats"
     )
     assert response.status_code == 403
 
@@ -308,7 +315,7 @@ async def test_dashboard_stats_catalog_admin_denied_on_system(
     catalog_admin_dashboard_ctx,
 ):
     ctx = catalog_admin_dashboard_ctx
-    response = await ctx["client"].get("/web/dashboard/stats?catalog_id=_system_")
+    response = await ctx["client"].get("/web/dashboard/catalogs/_system_/stats")
     assert response.status_code == 403
 
 
@@ -318,7 +325,7 @@ async def test_dashboard_logs_events_catalog_admin_allowed_on_own_catalog(
 ):
     ctx = catalog_admin_dashboard_ctx
     response = await ctx["client"].get(
-        f"/web/dashboard/{endpoint}?catalog_id={ctx['catalog_a']}&limit=5"
+        f"/web/dashboard/catalogs/{ctx['catalog_a']}/{endpoint}?limit=5"
     )
     assert response.status_code == 200
     assert isinstance(response.json(), list)
@@ -330,78 +337,117 @@ async def test_dashboard_logs_events_catalog_admin_denied_on_other_catalog(
 ):
     ctx = catalog_admin_dashboard_ctx
     response = await ctx["client"].get(
-        f"/web/dashboard/{endpoint}?catalog_id={ctx['catalog_b']}&limit=5"
+        f"/web/dashboard/catalogs/{ctx['catalog_b']}/{endpoint}?limit=5"
     )
     assert response.status_code == 403
 
 
-async def test_dashboard_events_default_catalog_for_sysadmin(
-    sysadmin_in_process_client_module: AsyncClient,
+@pytest.mark.parametrize("endpoint", ["tasks", "ogc-compliance"])
+async def test_dashboard_phase_b_plus_catalog_admin_owned(
+    catalog_admin_dashboard_ctx, endpoint: str
 ):
-    """Phase B: events default catalog is now ``_system_`` (was previously required)."""
-    response = await sysadmin_in_process_client_module.get(
-        "/web/dashboard/events?limit=5"
+    """Tasks + ogc-compliance are gated under the per-catalog path too."""
+    ctx = catalog_admin_dashboard_ctx
+    response = await ctx["client"].get(
+        f"/web/dashboard/catalogs/{ctx['catalog_a']}/{endpoint}"
     )
     assert response.status_code == 200
-    assert isinstance(response.json(), list)
 
 
-# ---------------------------------------------------------------------------
-# Phase B+ — TenantScopeMiddleware also gates /tasks, /processes, /ogc-compliance
-# without any per-route code: the URL pattern matches the registry rule, so
-# every caller goes through the same anonymous/sysadmin/catalog-admin gate
-# the existing Phase B endpoints already exercise.
-# ---------------------------------------------------------------------------
-
-# /processes serves a static HTML file at /web/dashboard/processes/ (note the
-# trailing slash). The middleware's URL regex matches /web/dashboard/processes
-# with or without trailing slash, so all three paths are tested.
-_PHASE_B_PLUS_PATHS = ["/web/dashboard/tasks", "/web/dashboard/ogc-compliance"]
-
-
-@pytest.mark.parametrize("path", _PHASE_B_PLUS_PATHS)
-async def test_phase_b_plus_anonymous_blocked(
-    anonymous_dashboard_client: AsyncClient, path: str
+@pytest.mark.parametrize("endpoint", ["tasks", "ogc-compliance"])
+async def test_dashboard_phase_b_plus_catalog_admin_denied_on_other_catalog(
+    catalog_admin_dashboard_ctx, endpoint: str
 ):
-    """Anonymous callers can no longer read tasks / ogc-compliance — 401."""
-    response = await anonymous_dashboard_client.get(path)
+    ctx = catalog_admin_dashboard_ctx
+    response = await ctx["client"].get(
+        f"/web/dashboard/catalogs/{ctx['catalog_b']}/{endpoint}"
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("endpoint", ["tasks", "ogc-compliance"])
+async def test_dashboard_phase_b_plus_catalog_admin_denied_on_system(
+    catalog_admin_dashboard_ctx, endpoint: str
+):
+    ctx = catalog_admin_dashboard_ctx
+    response = await ctx["client"].get(
+        f"/web/dashboard/catalogs/_system_/{endpoint}"
+    )
+    assert response.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Per-catalog HTML shell + per-catalog processes shell
+# ---------------------------------------------------------------------------
+
+
+async def test_dashboard_per_catalog_shell_anonymous_blocked(
+    anonymous_dashboard_client: AsyncClient,
+):
+    """The per-catalog dashboard HTML shell is gated; anonymous → 401."""
+    response = await anonymous_dashboard_client.get(
+        "/web/dashboard/catalogs/some_catalog/"
+    )
     assert response.status_code == 401
 
 
-@pytest.mark.parametrize("path", _PHASE_B_PLUS_PATHS)
-async def test_phase_b_plus_sysadmin_default_system(
-    sysadmin_in_process_client_module: AsyncClient, path: str
+async def test_dashboard_per_catalog_processes_shell_anonymous_blocked(
+    anonymous_dashboard_client: AsyncClient,
 ):
-    """Sysadmin reads the default ``_system_`` view without an explicit catalog."""
-    response = await sysadmin_in_process_client_module.get(path)
+    """The per-catalog processes HTML shell is gated; anonymous → 401."""
+    response = await anonymous_dashboard_client.get(
+        "/web/dashboard/catalogs/some_catalog/processes/"
+    )
+    assert response.status_code == 401
+
+
+async def test_dashboard_per_catalog_shell_owned(
+    catalog_admin_dashboard_ctx,
+):
+    """Catalog admin can load the per-catalog HTML shell for their own catalog."""
+    ctx = catalog_admin_dashboard_ctx
+    response = await ctx["client"].get(
+        f"/web/dashboard/catalogs/{ctx['catalog_a']}/"
+    )
     assert response.status_code == 200
 
 
-@pytest.mark.parametrize("path", _PHASE_B_PLUS_PATHS)
-async def test_phase_b_plus_catalog_admin_owned_catalog(
-    catalog_admin_dashboard_ctx, path: str
+# ---------------------------------------------------------------------------
+# Collection-scoped routes (NEW): /catalogs/{cat}/collections/{col}/{stats,logs,events}
+# ---------------------------------------------------------------------------
+
+_COLLECTION_DATA_SUFFIXES = ["stats", "logs", "events"]
+
+
+@pytest.mark.parametrize("suffix", _COLLECTION_DATA_SUFFIXES)
+async def test_collection_scoped_endpoints_reject_anonymous(
+    anonymous_dashboard_client: AsyncClient, suffix: str
 ):
-    """Catalog admin can scope to their owned catalog."""
+    response = await anonymous_dashboard_client.get(
+        f"/web/dashboard/catalogs/some_catalog/collections/some_coll/{suffix}"
+    )
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize("suffix", _COLLECTION_DATA_SUFFIXES)
+async def test_collection_scoped_endpoints_catalog_admin_owned(
+    catalog_admin_dashboard_ctx, suffix: str
+):
+    """Catalog admin can read collection-scoped data for an owned catalog."""
     ctx = catalog_admin_dashboard_ctx
-    response = await ctx["client"].get(f"{path}?catalog_id={ctx['catalog_a']}")
+    response = await ctx["client"].get(
+        f"/web/dashboard/catalogs/{ctx['catalog_a']}/collections/any_coll/{suffix}"
+    )
     assert response.status_code == 200
 
 
-@pytest.mark.parametrize("path", _PHASE_B_PLUS_PATHS)
-async def test_phase_b_plus_catalog_admin_other_catalog_403(
-    catalog_admin_dashboard_ctx, path: str
+@pytest.mark.parametrize("suffix", _COLLECTION_DATA_SUFFIXES)
+async def test_collection_scoped_endpoints_catalog_admin_other_catalog_403(
+    catalog_admin_dashboard_ctx, suffix: str
 ):
-    """Catalog admin querying a non-owned catalog is denied — 403."""
+    """Per-collection paths inherit the catalog gate — non-owned catalog 403s."""
     ctx = catalog_admin_dashboard_ctx
-    response = await ctx["client"].get(f"{path}?catalog_id={ctx['catalog_b']}")
-    assert response.status_code == 403
-
-
-@pytest.mark.parametrize("path", _PHASE_B_PLUS_PATHS)
-async def test_phase_b_plus_catalog_admin_system_403(
-    catalog_admin_dashboard_ctx, path: str
-):
-    """Catalog admin querying ``_system_`` is denied — 403."""
-    ctx = catalog_admin_dashboard_ctx
-    response = await ctx["client"].get(f"{path}?catalog_id=_system_")
+    response = await ctx["client"].get(
+        f"/web/dashboard/catalogs/{ctx['catalog_b']}/collections/any_coll/{suffix}"
+    )
     assert response.status_code == 403

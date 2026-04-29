@@ -72,10 +72,10 @@ const app = {
 
     async loadOverview() {
         try {
-            const catalogId = this.state.catalogId;
             const collectionId = this.state.collectionId;
-            let url = `stats?catalog_id=${catalogId}`;
-            if (collectionId) url += `&collection_id=${collectionId}`;
+            // catalog_id is in the page URL: /web/dashboard/catalogs/{cat}/...
+            // — relative URLs resolve against it automatically.
+            const url = collectionId ? `collections/${collectionId}/stats` : `stats`;
 
             const res = await fetch(url);
             const data = await res.json();
@@ -92,12 +92,12 @@ const app = {
 
     async loadLogs() {
         try {
-            const catalogId = this.state.catalogId;
             const collectionId = this.state.collectionId;
-            
-            let url = `logs?limit=20&catalog_id=${catalogId}`;
-            if (collectionId) url += `&collection_id=${collectionId}`;
-            
+            // Path-based scope: catalog_id from /web/dashboard/catalogs/{cat}/;
+            // collection_id (when set) goes in the path too.
+            const base = collectionId ? `collections/${collectionId}/logs` : `logs`;
+            const url = `${base}?limit=20`;
+
             const levelFilter = document.querySelector('.filter-select').value; // Assuming the first .filter-select is level (if they have unique ids it's better)
             
             const res = await fetch(url);

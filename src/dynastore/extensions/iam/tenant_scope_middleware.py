@@ -31,6 +31,8 @@ authz in route definitions" rule.
 from __future__ import annotations
 
 import logging
+from re import error as RegexError
+from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -100,15 +102,63 @@ def _log_denial(
     )
 
 
-def _extract_catalog_id(request: Request, rule: TenantScopeRule) -> str:
-    src_kind, _, src_key = rule.catalog_source.partition(":")
+def _extract_from_source(
+    request: Request,
+    rule: TenantScopeRule,
+    source: str,
+    default: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve a value from one of the supported sources.
+
+    ``regex_group:NAME`` reads from a named capture group on the rule's
+    pre-compiled pattern by re-running ``rule.pattern.match`` against the
+    request path. ``request.path_params`` is intentionally NOT used —
+    Starlette ``BaseHTTPMiddleware`` runs BEFORE FastAPI route matching, so
+    path_params is empty at this layer.
+    """
+    src_kind, _, src_key = source.partition(":")
     if src_kind == "query":
-        return request.query_params.get(src_key, rule.default)
-    if src_kind == "path":
-        return request.path_params.get(src_key, rule.default)
+        return request.query_params.get(src_key, default)
     if src_kind == "header":
-        return request.headers.get(src_key, rule.default)
-    return rule.default
+        return request.headers.get(src_key, default)
+    if src_kind == "regex_group":
+        match = rule.pattern.match(request.url.path)
+        if match is None:
+            return default
+        try:
+            value = match.group(src_key)
+        except (IndexError, RegexError):
+            return default
+        return value if value else default
+    if src_kind == "path":
+        # ``BaseHTTPMiddleware`` runs before FastAPI route matching;
+        # ``request.path_params`` is empty here. Documented as a no-op so
+        # callers see the default rather than an AttributeError.
+        return default
+    return default
+
+
+def _extract_catalog_id(request: Request, rule: TenantScopeRule) -> str:
+    return (
+        _extract_from_source(request, rule, rule.catalog_source, rule.default)
+        or rule.default
+    )
+
+
+def _extract_collection_id(
+    request: Request, rule: TenantScopeRule,
+) -> Optional[str]:
+    """Read collection_id when the rule declares a ``collection_source``.
+
+    Returns ``None`` when the rule has no collection scope (catalog-only rule)
+    or when the URL doesn't carry a collection segment. Used only to pin
+    ``request.state.tenant_scope.collection_id`` for downstream Protocol
+    consumers — gating decisions are catalog-only.
+    """
+    source = getattr(rule, "collection_source", None)
+    if not source:
+        return None
+    return _extract_from_source(request, rule, source, default=None)
 
 
 class TenantScopeMiddleware(BaseHTTPMiddleware):
@@ -133,6 +183,12 @@ class TenantScopeMiddleware(BaseHTTPMiddleware):
             roles = []
 
         catalog_id = _extract_catalog_id(request, rule)
+        collection_id = _extract_collection_id(request, rule)
+        # Pin scope early so downstream Protocol consumers can read it
+        # regardless of which gate branch the request takes.
+        request.state.tenant_scope = SimpleNamespace(
+            catalog_id=catalog_id, collection_id=collection_id,
+        )
         caller_id = _caller_id(principal)
 
         if principal is None:
