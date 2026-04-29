@@ -61,18 +61,20 @@ class TestGetConfigSchemas:
 
     @pytest.mark.asyncio
     async def test_collection_routing_config_present(self, service):
+        # PR #140 (snake_case identity cutover): class_key is auto-derived
+        # snake_case from `cls.__name__`. CollectionRoutingConfig → collection_routing_config.
         result = await service.get_config_schemas()
-        assert "CollectionRoutingConfig" in result
+        assert "collection_routing_config" in result
 
     @pytest.mark.asyncio
     async def test_write_policy_defaults_present(self, service):
         result = await service.get_config_schemas()
-        assert "WritePolicyDefaults" in result
+        assert "write_policy_defaults" in result
 
     @pytest.mark.asyncio
     async def test_collection_schema_present(self, service):
         result = await service.get_config_schemas()
-        assert "CollectionSchema" in result
+        assert "collection_schema" in result
 
 
 # ---------------------------------------------------------------------------
@@ -83,8 +85,8 @@ class TestGetConfigSchemas:
 class TestGetConfigSchema:
     @pytest.mark.asyncio
     async def test_known_class_key_returns_entry(self, service):
-        result = await service.get_config_schema("CollectionRoutingConfig")
-        assert result["class_key"] == "CollectionRoutingConfig"
+        result = await service.get_config_schema("collection_routing_config")
+        assert result["class_key"] == "collection_routing_config"
         assert "json_schema" in result
         assert "description" in result
         assert "scope" in result
@@ -93,12 +95,12 @@ class TestGetConfigSchema:
     async def test_unknown_class_key_raises_404(self, service):
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc_info:
-            await service.get_config_schema("NoSuchConfig_xyzzy")
+            await service.get_config_schema("no_such_config_xyzzy")
         assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_write_policy_defaults_schema_no_external_id_field(self, service):
-        result = await service.get_config_schema("WritePolicyDefaults")
+        result = await service.get_config_schema("write_policy_defaults")
         props = result["json_schema"].get("properties", {})
         assert "external_id_field" not in props
         assert "validity_field" not in props
@@ -106,20 +108,20 @@ class TestGetConfigSchema:
 
     @pytest.mark.asyncio
     async def test_write_policy_defaults_schema_has_on_conflict(self, service):
-        result = await service.get_config_schema("WritePolicyDefaults")
+        result = await service.get_config_schema("write_policy_defaults")
         props = result["json_schema"].get("properties", {})
         assert "on_conflict" in props
 
     @pytest.mark.asyncio
     async def test_collection_schema_has_constraints_field(self, service):
-        result = await service.get_config_schema("CollectionSchema")
+        result = await service.get_config_schema("collection_schema")
         props = result["json_schema"].get("properties", {})
         assert "constraints" in props
 
     @pytest.mark.asyncio
     async def test_scope_reflects_config_scope_mixin(self, service):
         """Classes with ConfigScopeMixin should expose their declared scope."""
-        result = await service.get_config_schema("CollectionRoutingConfig")
+        result = await service.get_config_schema("collection_routing_config")
         # CollectionRoutingConfig defaults to platform_waterfall
         assert result["scope"] == "platform_waterfall"
 
@@ -187,143 +189,13 @@ class TestConfigScopeMixinAnnotations:
         assert scope == "platform_waterfall"
 
 
-# ---------------------------------------------------------------------------
-# get_effective_collection_config — unit tests with mocked config service
-# ---------------------------------------------------------------------------
-
-
-class _MockConfigsService:
-    """Minimal ConfigsProtocol stub that returns configurable per-tier values."""
-
-    def __init__(self, platform_data: dict, catalog_data: dict, collection_data: dict):
-        self._platform = platform_data
-        self._catalog = catalog_data
-        self._collection = collection_data
-
-    async def get_config(self, cls, catalog_id=None, collection_id=None, **kwargs):
-        if catalog_id and collection_id:
-            data = self._collection
-        elif catalog_id:
-            data = self._catalog
-        else:
-            data = self._platform
-        return cls.model_validate(data) if data else cls()
-
-
-class TestGetEffectiveCollectionConfig:
-    """Tests use a minimal mock to avoid DB access."""
-
-    def _make_service(self, platform_data, catalog_data, collection_data):
-        from fastapi import FastAPI
-        from dynastore.extensions.configs.service import ConfigsService
-
-        mock = _MockConfigsService(platform_data, catalog_data, collection_data)
-
-        # Subclass so the `configs` property override is local to the test
-        # instance — patching `type(svc).configs = property(...)` directly
-        # mutates the shared ConfigsService class and poisons every later
-        # test that creates a real ConfigsService (the patched property
-        # then dereferences `self._configs`, which doesn't exist on real
-        # instances → AttributeError on every subsequent test).
-        class _TestConfigsService(ConfigsService):
-            @property
-            def configs(self):  # type: ignore[override]
-                return mock
-
-        return _TestConfigsService(FastAPI())
-
-    @pytest.mark.asyncio
-    async def test_unknown_class_key_raises_404(self):
-        from fastapi import FastAPI
-        from fastapi import HTTPException
-        from dynastore.extensions.configs.service import ConfigsService
-        svc = ConfigsService(FastAPI())
-        with pytest.raises(HTTPException) as exc_info:
-            await svc.get_effective_collection_config("cat1", "col1", "NoSuchConfig_xyzzy")
-        assert exc_info.value.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_all_defaults_source_is_default(self):
-        """When no overrides exist at any tier, every field source is 'default'."""
-        from dynastore.modules.storage.driver_config import WritePolicyDefaults
-        defaults = WritePolicyDefaults().model_dump()
-        svc = self._make_service(defaults, defaults, defaults)
-        result = await svc.get_effective_collection_config(
-            "cat1", "col1", "WritePolicyDefaults"
-        )
-        assert result["class_key"] == "WritePolicyDefaults"
-        for field_name, entry in result["resolved"].items():
-            assert entry["source"] == "default", (
-                f"Field '{field_name}' expected source 'default', got {entry['source']!r}"
-            )
-
-    @pytest.mark.asyncio
-    async def test_platform_override_annotated_as_platform(self):
-        from dynastore.modules.storage.driver_config import WritePolicyDefaults, WriteConflictPolicy
-        defaults = WritePolicyDefaults().model_dump()
-        # Platform overrides on_conflict
-        platform = {**defaults, "on_conflict": WriteConflictPolicy.REFUSE_FAIL.value}
-        svc = self._make_service(platform, platform, platform)
-        result = await svc.get_effective_collection_config(
-            "cat1", "col1", "WritePolicyDefaults"
-        )
-        on_conflict = result["resolved"]["on_conflict"]
-        assert on_conflict["source"] == "platform"
-        assert on_conflict["value"] == WriteConflictPolicy.REFUSE_FAIL.value
-
-    @pytest.mark.asyncio
-    async def test_catalog_override_annotated_as_catalog(self):
-        from dynastore.modules.storage.driver_config import WritePolicyDefaults, WriteConflictPolicy
-        defaults = WritePolicyDefaults().model_dump()
-        platform = dict(defaults)
-        catalog = {**defaults, "on_conflict": WriteConflictPolicy.REFUSE_FAIL.value}
-        svc = self._make_service(platform, catalog, catalog)
-        result = await svc.get_effective_collection_config(
-            "cat1", "col1", "WritePolicyDefaults"
-        )
-        on_conflict = result["resolved"]["on_conflict"]
-        assert on_conflict["source"] == "catalog"
-
-    @pytest.mark.asyncio
-    async def test_collection_override_annotated_as_collection(self):
-        from dynastore.modules.storage.driver_config import WritePolicyDefaults, WriteConflictPolicy
-        defaults = WritePolicyDefaults().model_dump()
-        platform = dict(defaults)
-        catalog = dict(defaults)
-        collection = {**defaults, "on_conflict": WriteConflictPolicy.REFUSE_FAIL.value}
-        svc = self._make_service(platform, catalog, collection)
-        result = await svc.get_effective_collection_config(
-            "cat1", "col1", "WritePolicyDefaults"
-        )
-        on_conflict = result["resolved"]["on_conflict"]
-        assert on_conflict["source"] == "collection"
-
-    @pytest.mark.asyncio
-    async def test_overrides_list_populated_for_non_default(self):
-        from dynastore.modules.storage.driver_config import WritePolicyDefaults, WriteConflictPolicy
-        defaults = WritePolicyDefaults().model_dump()
-        platform = {**defaults, "on_conflict": WriteConflictPolicy.REFUSE_FAIL.value}
-        catalog = dict(platform)
-        collection = {**platform, "on_conflict": WriteConflictPolicy.NEW_VERSION.value}
-        svc = self._make_service(platform, catalog, collection)
-        result = await svc.get_effective_collection_config(
-            "cat1", "col1", "WritePolicyDefaults"
-        )
-        entry = result["resolved"]["on_conflict"]
-        assert entry["source"] == "collection"
-        assert "overrides" in entry
-        # default value should appear in overrides
-        default_val = WritePolicyDefaults().on_conflict
-        assert any(str(default_val) in str(o) or repr(default_val.value) in o for o in entry["overrides"])
-
-    @pytest.mark.asyncio
-    async def test_response_shape_has_required_keys(self):
-        from dynastore.modules.storage.driver_config import WritePolicyDefaults
-        defaults = WritePolicyDefaults().model_dump()
-        svc = self._make_service(defaults, defaults, defaults)
-        result = await svc.get_effective_collection_config(
-            "cat1", "col1", "WritePolicyDefaults"
-        )
-        assert "class_key" in result
-        assert "resolved" in result
-        assert isinstance(result["resolved"], dict)
+# PR #153 (`feat(configs)!: hoist CollectionType into its own PluginConfig
+# (Phase 1.6)`) replaced the per-class `get_effective_collection_config` API
+# with a tree-shaped `compose_collection_config` that returns *all* configs
+# at once. The per-class source-of-truth annotation logic the deleted
+# TestGetEffectiveCollectionConfig block exercised still exists inside
+# `_get_effective_configs` + `_compose_tree` in
+# `extensions/configs/config_api_service.py` and is now exercised
+# end-to-end through the integration tests in `test_config_api_service.py`.
+# The unit-level mock-driven tests aren't worth re-targeting at the new
+# tree-shaped response since the new shape is fully covered upstream.
