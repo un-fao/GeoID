@@ -296,6 +296,60 @@ class LogicalNotHandler(ConditionHandler):
         c = Condition(**c_cfg)
         return not await evaluate_condition(c, ctx)
 
+class CatalogMembershipHandler(ConditionHandler):
+    """Allow only when the principal has grants for ``ctx.catalog_id``.
+
+    Reads ``catalog_id`` from ``EvaluationContext`` (``IamMiddleware`` already
+    extracts it from ``/catalogs/X/...`` paths) and the principal object from
+    ``ctx.extras["principal_obj"]`` (also set by ``IamMiddleware``). Resolves
+    memberships via ``IamQueryProtocol`` through the per-pod cache.
+
+    Sysadmin and platform-grant principals pass transparently — those bypasses
+    are part of the IAM model, not a URL-specific check, and remain configurable
+    via the ``allow_sysadmin`` / ``allow_platform`` config keys.
+
+    Config keys (all optional, default to safe values):
+      - ``allow_platform``: bool — when True (default), ``membership.platform``
+                                    True passes regardless of catalog_id.
+      - ``allow_sysadmin``: bool — when True (default), ``DefaultRole.SYSADMIN``
+                                    in the principal's roles passes.
+    """
+
+    @property
+    def type(self) -> str:
+        return "catalog_membership_required"
+
+    async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
+        from dynastore.models.protocols.iam_query import IamQueryProtocol
+        from dynastore.models.protocols.authorization import DefaultRole
+        from dynastore.tools.discovery import get_protocol
+        from dynastore.extensions.iam.membership_cache import get_membership_cached
+
+        catalog_id = ctx.catalog_id
+        if not catalog_id:
+            # path declared per-catalog but extractor failed — fail closed
+            return False
+        principal = (ctx.extras or {}).get("principal_obj")
+        if principal is None:
+            # anonymous on a per-catalog policy — fail closed
+            return False
+        roles = getattr(principal, "roles", None) or []
+        if config.get("allow_sysadmin", True) and DefaultRole.SYSADMIN.value in roles:
+            return True
+        provider = getattr(principal, "provider", None)
+        subject_id = getattr(principal, "subject_id", None)
+        if not provider or not subject_id:
+            return False
+        iam_query = get_protocol(IamQueryProtocol)
+        if iam_query is None:
+            # IAM query Protocol not registered — fail closed
+            return False
+        membership = await get_membership_cached(iam_query, provider, subject_id)
+        if config.get("allow_platform", True) and membership.get("platform"):
+            return True
+        return catalog_id in (membership.get("catalogs") or [])
+
+
 # --- Registry ---
 
 class ConditionRegistry:
@@ -312,6 +366,7 @@ class ConditionRegistry:
         self.register(LogicalAndHandler())
         self.register(LogicalOrHandler())
         self.register(LogicalNotHandler())
+        self.register(CatalogMembershipHandler())
         # Filter inspection framework (geospatial, temporal, etc.)
         from dynastore.modules.iam.filter_inspectors import filter_handler
         self.register(filter_handler)
