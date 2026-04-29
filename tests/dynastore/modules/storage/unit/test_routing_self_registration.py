@@ -478,8 +478,8 @@ def test_collection_routing_validator_augments_items_tier_INDEX_and_SEARCH():
     assert "_ItemsES" in top_search
     # Default WRITE/READ entries unchanged.
     write_ids = {e.driver_id for e in cfg.operations[Operation.WRITE]}
-    assert write_ids == {"ItemsPostgresqlDriver", "_ItemsES"} or \
-           "ItemsPostgresqlDriver" in write_ids
+    assert write_ids == {"items_postgresql_driver", "_ItemsES"} or \
+           "items_postgresql_driver" in write_ids
 
 
 def test_collection_items_tier_search_caps_filter():

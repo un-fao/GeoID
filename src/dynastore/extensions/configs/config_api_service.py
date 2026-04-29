@@ -48,10 +48,23 @@ from dynastore.modules.db_config.platform_config_service import (
 
 logger = logging.getLogger(__name__)
 
-# Routing config keys whose ``operations[OP]`` is rewritten as DriverRefs.
-_ROUTING_CONFIG_KEYS = frozenset({
-    "CollectionRoutingConfig", "AssetRoutingConfig", "CatalogRoutingConfig",
-})
+
+def _routing_config_keys() -> frozenset[str]:
+    """Routing config wire keys (snake_case via ``class_key()``).
+
+    Derived once on first call so renaming any routing class flows through
+    without touching the composer.  No hardcoded PascalCase strings.
+    """
+    from dynastore.modules.storage.routing_config import (
+        AssetRoutingConfig,
+        CatalogRoutingConfig,
+        CollectionRoutingConfig,
+    )
+    return frozenset({
+        cls.class_key() for cls in (
+            CollectionRoutingConfig, AssetRoutingConfig, CatalogRoutingConfig,
+        )
+    })
 
 
 def _place(cls: Type[PluginConfig], active_scope: str) -> Optional[Tuple[str, str, Optional[str]]]:
@@ -234,12 +247,13 @@ class ConfigApiService:
         """Rewrite ``operations[OP]`` in routing configs as slim ``DriverRef``s.
 
         Driver → config-class lookup uses the registry directly: post-TypedDriver
-        bind, ``class_key()`` for ``XDriverConfig`` returns ``"XDriver"`` — the
+        bind, ``class_key()`` for ``XDriverConfig`` returns the snake_case form
+        of the bound driver class (e.g. ``"items_postgresql_driver"``) — the
         same string used as ``driver_id`` in routing entries.  ``driver_id`` IS
         the lookup key into ``list_registered_configs()``.
         """
         all_classes = list_registered_configs()
-        for class_key in _ROUTING_CONFIG_KEYS:
+        for class_key in _routing_config_keys():
             routing = by_class.get(class_key)
             if not routing:
                 continue

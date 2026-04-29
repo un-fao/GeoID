@@ -47,7 +47,7 @@ class TestItemsPostgresqlDriverConfigDefaults:
     def test_class_key(self):
         # Wire key is the bound TypedDriver class name, not the *Config name.
         from dynastore.modules.storage.drivers.postgresql import ItemsPostgresqlDriver  # noqa: F401
-        assert ItemsPostgresqlDriverConfig.class_key() == "ItemsPostgresqlDriver"
+        assert ItemsPostgresqlDriverConfig.class_key() == "items_postgresql_driver"
 
     def test_default_sidecars_is_empty(self):
         """Default is empty as of M1b.2.
@@ -243,11 +243,11 @@ class TestCollectionRoutingConfig:
         cfg = CollectionRoutingConfig()
         assert Operation.WRITE in cfg.operations
         assert Operation.READ in cfg.operations
-        assert cfg.operations[Operation.WRITE][0].driver_id == "ItemsPostgresqlDriver"
+        assert cfg.operations[Operation.WRITE][0].driver_id == "items_postgresql_driver"
 
     def test_custom_operations(self):
         cfg = CollectionRoutingConfig(operations={
-            Operation.WRITE: [OperationDriverEntry(driver_id="ItemsPostgresqlDriver")],
+            Operation.WRITE: [OperationDriverEntry(driver_id="items_postgresql_driver")],
             Operation.READ: [OperationDriverEntry(driver_id="ItemsElasticsearchDriver", hints={"search"})],
             Operation.SEARCH: [OperationDriverEntry(driver_id="ItemsElasticsearchDriver", hints={"search"})],
         })

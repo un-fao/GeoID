@@ -384,8 +384,8 @@ class TestEntryPoints:
         from importlib.metadata import entry_points
 
         expected = {
-            "collection_postgresql": "CollectionPostgresqlDriver",
-            "catalog_postgresql": "CatalogPostgresqlDriver",
+            "collection_postgresql": "collection_postgresql_driver",
+            "catalog_postgresql": "catalog_postgresql_driver",
         }
 
         got = {

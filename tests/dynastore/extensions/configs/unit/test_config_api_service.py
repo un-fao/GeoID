@@ -78,7 +78,7 @@ async def test_get_effective_configs_resolved_merges_tier_deltas():
         if catalog_id and collection_id:
             return {
                 "items": [
-                    {"plugin_id": "CollectionRoutingConfig",
+                    {"plugin_id": "collection_routing_config",
                      "config_data": {"enabled": False}},
                 ],
                 "total": 1,
@@ -110,7 +110,7 @@ async def test_get_effective_configs_catalog_source(mock_config_service):
         if catalog_id and not collection_id:
             return {
                 "items": [
-                    {"plugin_id": "CollectionRoutingConfig",
+                    {"plugin_id": "collection_routing_config",
                      "config_data": {"enabled": False}},
                 ],
                 "total": 1,
