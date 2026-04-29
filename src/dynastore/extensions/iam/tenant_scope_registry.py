@@ -43,10 +43,16 @@ class TenantScopeRule:
 
 
 # Dashboard endpoints exposing per-catalog operational data: stats, logs,
-# events, tasks, processes, ogc-compliance. All scope by ``?catalog_id=``;
-# absence resolves to the platform-scope synthetic catalog (sysadmin-only).
+# events, tasks, ogc-compliance. All scope by ``?catalog_id=``; absence
+# resolves to the platform-scope synthetic catalog (sysadmin-only).
+#
+# ``/web/dashboard/processes`` is intentionally NOT in this list — that
+# route serves the static HTML UI shell, not data, so requiring a
+# ``catalog_id`` query param to load it would lock catalog admins out of
+# the page (chicken-and-egg: they need the page to choose their catalog).
+# The data endpoints the shell calls are gated separately.
 _DASHBOARD_PATTERN = re.compile(
-    r"^/web/dashboard/(stats|logs|events|tasks|processes|ogc-compliance)(/|\?|$|$)"
+    r"^/web/dashboard/(stats|logs|events|tasks|ogc-compliance)(/|\?|$)"
 )
 
 

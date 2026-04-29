@@ -105,14 +105,29 @@ async def test_passthrough_when_no_rule_matches(monkeypatch, fake_iam_query):
     fake_iam_query.list_catalog_memberships.assert_not_called()
 
 
-async def test_dashboard_route_matches_registry(monkeypatch, fake_iam_query):
-    """Sanity: registry must include /web/dashboard/{stats,logs,events,tasks,
-    processes,ogc-compliance}."""
+async def test_dashboard_data_endpoints_match_registry(monkeypatch, fake_iam_query):
+    """Sanity: registry must include the per-catalog DATA endpoints."""
     from dynastore.extensions.iam.tenant_scope_registry import match_tenant_scope_rule
 
-    for ep in ("stats", "logs", "events", "tasks", "processes", "ogc-compliance"):
+    for ep in ("stats", "logs", "events", "tasks", "ogc-compliance"):
         rule = match_tenant_scope_rule(f"/web/dashboard/{ep}")
         assert rule is not None, f"registry should match /web/dashboard/{ep}"
+
+
+async def test_processes_static_shell_does_not_match_registry(monkeypatch, fake_iam_query):
+    """``/web/dashboard/processes`` serves a static HTML UI shell, not data.
+    Gating it would lock catalog admins out of the dashboard page itself
+    (they'd need to know a catalog_id before they could load the chooser)."""
+    from dynastore.extensions.iam.tenant_scope_registry import match_tenant_scope_rule
+
+    for path in (
+        "/web/dashboard/processes",
+        "/web/dashboard/processes/",
+        "/web/dashboard/processes/anything",
+    ):
+        assert match_tenant_scope_rule(path) is None, (
+            f"{path} should NOT be in the tenant-scope registry — it's a UI shell"
+        )
 
 
 # ---------------------------------------------------------------------------
