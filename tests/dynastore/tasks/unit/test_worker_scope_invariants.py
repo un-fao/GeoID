@@ -302,44 +302,32 @@ def test_every_dynastore_tasks_entry_point_resolves_to_existing_module() -> None
     )
 
 
-def test_every_dynastore_tasks_entry_point_loads_or_misses_optional_dep() -> None:
-    """Each `dynastore.tasks` entry-point class must actually `load()` cleanly
-    OR fail cleanly with `ImportError` (the ``discover_tasks`` placeholder
-    fallback path).
-
-    Strictly stronger than ``test_every_dynastore_tasks_entry_point_resolves_to_existing_module``:
-    that test only confirms the file path exists. This one executes the
-    module's top-level statements via ``EntryPoint.load()`` and catches:
-
-    - Syntax errors in the entry-point's module or any module it imports
-    - Circular imports that would deadlock at runtime discovery
-    - Class-not-found errors (target_class missing from target_module)
-    - Any non-``ImportError`` exception at module load
+def _assert_entry_point_group_loads(group: str) -> None:
+    """Helper: load every entry-point in ``group`` and assert no real bugs.
 
     Mirrors ``src/dynastore/tools/discovery.py::discover_and_load_plugins``
-    which silently demotes ``ImportError`` (optional dep not installed) to
-    a definition-only placeholder via
-    ``src/dynastore/tasks/__init__.py::_register_definition_only_placeholders``
-    — so the same tolerance applies here. Catches ``ModuleNotFoundError``
-    being raised from a NON-optional code path (e.g. accidentally promoting
-    a TYPE_CHECKING import out of its block) by examining the exception
-    chain: an ImportError that originates inside the dynastore package
-    itself is suspicious, while one originating from a third-party module
-    that the SCOPE doesn't pull in is the expected optional-dep skip.
+    (the function called by ``discover_modules``, ``discover_extensions`` and
+    ``discover_tasks`` at every service startup):
+    - ``EntryPoint.load()`` per entry — executes module top-level statements
+    - ``ImportError`` is silently skipped (optional dep not installed in this
+      SCOPE; runtime treats it the same)
+    - Any other exception is a real bug — surfaced as test failure
+
+    Distinguishes a missing-third-party-dep (expected when this venv lacks
+    an extras group, e.g. ``osgeo`` for GDAL) from an accidentally-broken
+    dynastore-internal import (real bug) by examining ``ImportError.name``:
+    an import that originates inside the dynastore package itself fails
+    the test; a third-party miss is logged and skipped.
     """
     import importlib.metadata
 
     bad: list[str] = []
     skipped_optional: list[str] = []
 
-    for ep in importlib.metadata.entry_points(group="dynastore.tasks"):
+    for ep in importlib.metadata.entry_points(group=group):
         try:
             ep.load()
         except ImportError as e:
-            # Mirrors discover_tasks's silent-skip behaviour. Distinguish a
-            # missing-third-party-dep (expected when an extras group isn't
-            # installed in this venv — e.g. osgeo for GDAL) from an
-            # accidentally-broken dynastore-internal import (real bug).
             missing = getattr(e, "name", "") or ""
             if missing.startswith("dynastore"):
                 bad.append(
@@ -352,21 +340,59 @@ def test_every_dynastore_tasks_entry_point_loads_or_misses_optional_dep() -> Non
             bad.append(f"{ep.name} → {ep.value}: {type(e).__name__}: {e}")
 
     assert not bad, (
-        "dynastore.tasks entry-points failing to load in the test env "
-        "with errors that would NOT be silently demoted to placeholders "
-        "by discover_tasks (real bugs):\n  " + "\n  ".join(bad)
+        f"{group} entry-points failing to load in the test env with errors "
+        f"that would NOT be silently demoted by discover_and_load_plugins "
+        f"(real bugs):\n  " + "\n  ".join(bad)
     )
 
-    # Optional-dep skips are expected (gdal needs osgeo, elasticsearch_indexer
-    # needs opensearchpy, etc. — all gated by their SCOPE's extras). Surface
-    # them as a single info-level assertion message for visibility but don't
-    # fail; the SCOPE-↔-entry-point invariants above ensure these are
-    # reachable from at least one deployment image.
     if skipped_optional:
-        # Format-only: pytest --tb output captures this for reviewer awareness
-        # without blocking the suite.
+        # Reviewer-visible info; doesn't fail the suite.
+        # The SCOPE-↔-entry-point invariants above ensure each entry is
+        # reachable from at least one deployment image.
         print(
-            "[info] task entry-points skipped (optional deps not installed in "
-            "this venv — expected for system-level libs): "
-            + ", ".join(skipped_optional)
+            f"[info] {group} entry-points skipped (optional deps not "
+            f"installed in this venv — expected for system-level libs or "
+            f"out-of-SCOPE extras): " + ", ".join(skipped_optional)
         )
+
+
+def test_every_dynastore_tasks_entry_point_loads_or_misses_optional_dep() -> None:
+    """Each `dynastore.tasks` entry-point class must actually `load()` cleanly
+    OR fail cleanly with `ImportError` (the ``discover_tasks`` placeholder
+    fallback path).
+
+    Strictly stronger than ``test_every_dynastore_tasks_entry_point_resolves_to_existing_module``
+    (that test only confirms the file path exists). Catches syntax errors,
+    circular imports, class-not-found, accidentally-promoted internal
+    imports — see ``_assert_entry_point_group_loads`` docstring.
+    """
+    _assert_entry_point_group_loads("dynastore.tasks")
+
+
+def test_every_dynastore_modules_entry_point_loads_or_misses_optional_dep() -> None:
+    """Each `dynastore.modules` entry-point class must `load()` cleanly OR
+    fail cleanly with `ImportError` (the ``discover_modules`` skip path).
+
+    Same shape as the tasks invariant, applied to the ~22 module entry-points
+    declared at ``[project.entry-points."dynastore.modules"]``. A broken
+    module entry-point is *more* dangerous than a broken task: tasks have
+    a definition-only placeholder fallback that preserves OGC Process
+    metadata for the dispatcher; modules have no equivalent — a load
+    failure silently disables the module and every Protocol it provides.
+    """
+    _assert_entry_point_group_loads("dynastore.modules")
+
+
+def test_every_dynastore_extensions_entry_point_loads_or_misses_optional_dep() -> None:
+    """Each `dynastore.extensions` entry-point class must `load()` cleanly
+    OR fail cleanly with `ImportError` (the ``instantiate_extensions`` skip
+    path).
+
+    Same shape as the modules invariant, applied to the 34 extension
+    entry-points. Extensions register routes, web pages, OGC services, etc.;
+    a load failure silently disables every endpoint the extension would
+    have mounted, with no visible CI signal until a route 404s in
+    integration tests (which is exactly the bug class this invariant is
+    designed to catch earlier).
+    """
+    _assert_entry_point_group_loads("dynastore.extensions")
