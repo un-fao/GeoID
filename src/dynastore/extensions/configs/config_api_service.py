@@ -312,6 +312,53 @@ class ConfigApiService:
 
     # --- Compose endpoints. ---
 
+    @staticmethod
+    async def _build_routing_resolution(
+        catalog_id: str, collection_id: str,
+    ) -> Dict[str, Dict[str, Dict[str, str]]]:
+        """Resolve which DRIVER actually fires per items operation at this
+        collection — the operator's "where do my items go?" answer.
+
+        Currently covers ``items.{WRITE,READ,SEARCH}`` and factors in the
+        Elasticsearch private-mode resolution (``ElasticsearchCatalogConfig.private``
+        + per-collection override).  Other entities (assets, catalog metadata)
+        will be added as their resolvers stabilise.
+
+        Returns ``{entity: {op: {driver_id, reason}}}`` — empty when the
+        ``is_collection_private`` resolver isn't reachable (e.g. in tests
+        with no ConfigsProtocol).  Never raises.
+        """
+        try:
+            from dynastore.modules.elasticsearch.es_collection_config import (
+                is_collection_private,
+            )
+            private = await is_collection_private(catalog_id, collection_id)
+        except Exception as exc:
+            logger.debug(
+                "routing_resolution: is_collection_private fetch failed for "
+                "%s/%s (%s) — emitting empty block",
+                catalog_id, collection_id, exc,
+            )
+            return {}
+
+        if private:
+            items_driver = "items_elasticsearch_private_driver"
+            reason = (
+                "ElasticsearchCatalogConfig.private=True (or per-collection "
+                "override) — private mode active for this collection"
+            )
+        else:
+            items_driver = "items_elasticsearch_driver"
+            reason = "private mode not active — public items index"
+
+        return {
+            "items": {
+                "WRITE":  {"driver_id": items_driver, "reason": reason},
+                "READ":   {"driver_id": items_driver, "reason": reason},
+                "SEARCH": {"driver_id": items_driver, "reason": reason},
+            },
+        }
+
     async def compose_collection_config(
         self,
         base_url: str,
@@ -329,6 +376,16 @@ class ConfigApiService:
         self._build_routing_refs(by_class)
         tree, meta_dict = self._compose_tree(by_class, sources, "collection", meta)
 
+        # Phase 1.5d: surface per-op driver resolution alongside the per-class
+        # tier-of-origin diagnostics in ``meta``.  Async (factors in
+        # ``is_collection_private``); kept opt-in via the existing
+        # ``?meta=true`` query so the cheap ``meta=False`` path stays cheap.
+        routing_resolution: Optional[Dict[str, Dict[str, Dict[str, str]]]] = None
+        if meta:
+            routing_resolution = await self._build_routing_resolution(
+                catalog_id, collection_id,
+            ) or None
+
         categories: Optional[Dict[str, ConfigPage]] = None
         if depth > 0:
             categories = {}
@@ -344,7 +401,9 @@ class ConfigApiService:
 
         return CollectionConfigResponse(
             collection_id=collection_id, catalog_id=catalog_id,
-            configs=tree, meta=meta_dict, categories=categories,
+            configs=tree, meta=meta_dict,
+            routing_resolution=routing_resolution,
+            categories=categories,
         )
 
     async def compose_catalog_config(
