@@ -245,7 +245,12 @@ worker_task_export_features = ["dynastore[task_base,stac,geospatial_core]"]
 worker_task_tiles_preseed = ["dynastore[task_base,tiles,crs]", "morecantile>=7.0.3,<8"]
 worker_task_gdal = ["dynastore[task_base,gdal]"]
 worker_task_dimensions_materialize = ["dynastore[task_base,extension_dimensions]"]
-worker_task_elasticsearch_indexer = ["dynastore[task_base,elasticsearch,task_elasticsearch_indexer_deps]"]
+# module_catalog is required: BulkCatalog/CollectionReindexTask reads via
+# CatalogsProtocol (catalogs_proto.search / list_collections). Without it,
+# the Cloud Run Job container's module discovery leaves Catalogs:None and
+# the bulk reindex tasks crash on get_protocol(CatalogsProtocol) is None.
+# Confirmed against `dynastore-elasticsearch-indexer-cq7k9` exec on 2026-04-29.
+worker_task_elasticsearch_indexer = ["dynastore[task_base,module_catalog,elasticsearch,task_elasticsearch_indexer_deps]"]
 
 # ==========================================================================
 # SERVICE COMPOSITIONS (async-db)
