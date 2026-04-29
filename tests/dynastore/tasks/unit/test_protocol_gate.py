@@ -186,7 +186,7 @@ async def test_empty_target_list_treated_as_open():
 
 # ---------------------------------------------------------------------------
 # Routing-config apply-handler validation — same diagnostic logic the
-# in-lifespan handler runs after every PUT /configs/classes/TaskRoutingConfig.
+# in-lifespan handler runs after every PUT /configs/plugins/task_routing_config.
 # We can't import the closure directly (it's defined inside lifespan), so
 # we exercise the same shape: cross-reference routing keys against
 # get_loaded_task_types() and emit a WARN for unknown ones.

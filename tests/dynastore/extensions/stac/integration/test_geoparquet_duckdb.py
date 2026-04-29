@@ -150,7 +150,7 @@ async def test_geoparquet_duckdb_pipeline(
         "format": "parquet",
     }
     r = await in_process_client.put(
-        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/classes/ItemsDuckdbDriverConfig",
+        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/plugins/items_duckdb_driver",
         json=duckdb_config,
     )
     assert r.status_code in (200, 201), f"DuckDB config failed: {r.text}"
@@ -160,12 +160,12 @@ async def test_geoparquet_duckdb_pipeline(
     # ------------------------------------------------------------------
     routing_config = {
         "operations": {
-            "WRITE": [{"driver_id": "ItemsPostgresqlDriver", "hints": [], "on_failure": "fatal"}],
-            "READ": [{"driver_id": "ItemsDuckdbDriver", "hints": [], "on_failure": "fatal"}],
+            "WRITE": [{"driver_id": "items_postgresql_driver", "hints": [], "on_failure": "fatal"}],
+            "READ": [{"driver_id": "items_duckdb_driver", "hints": [], "on_failure": "fatal"}],
         }
     }
     r = await in_process_client.put(
-        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/classes/CollectionRoutingConfig",
+        f"/configs/catalogs/{catalog_id}/collections/{collection_id}/plugins/collection_routing_config",
         json=routing_config,
     )
     assert r.status_code in (200, 201), f"Routing config failed: {r.text}"

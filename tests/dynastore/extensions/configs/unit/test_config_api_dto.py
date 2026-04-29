@@ -18,8 +18,8 @@ from dynastore.extensions.configs.config_api_dto import (
 
 
 def test_driver_ref_defaults():
-    ref = DriverRef(driver_id="CatalogCorePostgresqlDriver",
-                    config_ref="CatalogCorePostgresqlDriver")
+    ref = DriverRef(driver_id="catalog_core_postgresql_driver",
+                    config_ref="catalog_core_postgresql_driver")
     assert ref.on_failure == "fatal"
     assert ref.write_mode == "sync"
 

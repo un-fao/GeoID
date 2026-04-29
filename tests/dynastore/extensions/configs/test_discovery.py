@@ -124,51 +124,8 @@ class TestGetConfigSchema:
         assert result["scope"] == "platform_waterfall"
 
 
-# ---------------------------------------------------------------------------
-# get_config_graph
-# ---------------------------------------------------------------------------
-
-
-class TestGetConfigGraph:
-    @pytest.mark.asyncio
-    async def test_returns_nodes_and_edges(self, service):
-        result = await service.get_config_graph()
-        assert "nodes" in result
-        assert "edges" in result
-
-    @pytest.mark.asyncio
-    async def test_nodes_is_list(self, service):
-        result = await service.get_config_graph()
-        assert isinstance(result["nodes"], list)
-
-    @pytest.mark.asyncio
-    async def test_edges_is_list(self, service):
-        result = await service.get_config_graph()
-        assert isinstance(result["edges"], list)
-
-    @pytest.mark.asyncio
-    async def test_nodes_non_empty(self, service):
-        result = await service.get_config_graph()
-        assert len(result["nodes"]) >= 5
-
-    @pytest.mark.asyncio
-    async def test_edges_have_required_keys(self, service):
-        result = await service.get_config_graph()
-        for edge in result["edges"]:
-            assert "from" in edge, f"Edge missing 'from': {edge}"
-            assert "to" in edge, f"Edge missing 'to': {edge}"
-            assert "label" in edge, f"Edge missing 'label': {edge}"
-
-    @pytest.mark.asyncio
-    async def test_known_edge_write_policy_to_collection_schema(self, service):
-        result = await service.get_config_graph()
-        edges_from = {e["from"] for e in result["edges"]}
-        assert "CollectionWritePolicy" in edges_from
-
-    @pytest.mark.asyncio
-    async def test_collection_routing_config_in_nodes(self, service):
-        result = await service.get_config_graph()
-        assert "CollectionRoutingConfig" in result["nodes"]
+# ``/configs/graph`` was retired in the Phase 0 cutover (hardcoded
+# PascalCase edges, no live consumer); see commit 47fcc5d.
 
 
 # ---------------------------------------------------------------------------

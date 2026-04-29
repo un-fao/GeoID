@@ -32,7 +32,7 @@ async def test_platform_disable_filters_openapi_and_gates_routes(
 
     # Disable FeaturesPluginConfig at platform scope.
     r1 = await client.patch(
-        "/configs/", json={"FeaturesPluginConfig": {"enabled": False}}
+        "/configs/", json={"features_plugin_config": {"enabled": False}}
     )
     assert r1.status_code == 200, r1.text
 
@@ -49,7 +49,7 @@ async def test_platform_disable_filters_openapi_and_gates_routes(
 
     # Re-enable → OpenAPI + routes restored.
     r3 = await client.patch(
-        "/configs/", json={"FeaturesPluginConfig": {"enabled": True}}
+        "/configs/", json={"features_plugin_config": {"enabled": True}}
     )
     assert r3.status_code == 200, r3.text
 
@@ -68,7 +68,7 @@ async def test_platform_disable_filters_openapi_and_gates_routes(
 async def test_patch_unknown_plugin_returns_404(sysadmin_in_process_client):
     client = sysadmin_in_process_client
     r = await client.patch(
-        "/configs/", json={"NoSuchPluginConfig": {"enabled": False}}
+        "/configs/", json={"no_such_plugin_config": {"enabled": False}}
     )
     assert r.status_code == 404, r.text
     # Error message wording changed in the configs API reshape (April 2026):
@@ -80,6 +80,6 @@ async def test_patch_unknown_plugin_returns_404(sysadmin_in_process_client):
 async def test_patch_validation_error_returns_422(sysadmin_in_process_client):
     client = sysadmin_in_process_client
     r = await client.patch(
-        "/configs/", json={"FeaturesPluginConfig": {"enabled": "not-a-bool"}}
+        "/configs/", json={"features_plugin_config": {"enabled": "not-a-bool"}}
     )
     assert r.status_code == 422, r.text

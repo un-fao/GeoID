@@ -22,8 +22,8 @@ class TestSidecarRejection:
 
     def test_populated_fields_preserve_policy_pointer(self):
         pointer = (
-            "/configs/catalogs/demo/collections/c/classes/"
-            "CollectionWritePolicy/effective"
+            "/configs/catalogs/demo/collections/c/plugins/"
+            "collection_write_policy"
         )
         r = SidecarRejection(
             reason="duplicate_external_id",

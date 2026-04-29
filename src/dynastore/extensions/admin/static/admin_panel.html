@@ -267,7 +267,7 @@ const _ADMIN_ROOT = (function () {
 }());
 const BASE = `${_ADMIN_ROOT}/admin`;
 let TOKEN_KEY = 'ds_token';
-let _tokenKeyPromise = fetch(`${_ADMIN_ROOT}/configs/WebConfig`).then(r => r.ok ? r.json() : {}).then(c => {
+let _tokenKeyPromise = fetch(`${_ADMIN_ROOT}/configs/plugins/web_config`).then(r => r.ok ? r.json() : {}).then(c => {
   if (c.token_key) TOKEN_KEY = c.token_key;
 }).catch(() => {});
 

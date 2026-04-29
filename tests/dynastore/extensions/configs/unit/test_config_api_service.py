@@ -78,7 +78,7 @@ async def test_get_effective_configs_resolved_merges_tier_deltas():
         if catalog_id and collection_id:
             return {
                 "items": [
-                    {"plugin_id": "CollectionRoutingConfig",
+                    {"plugin_id": "collection_routing_config",
                      "config_data": {"enabled": False}},
                 ],
                 "total": 1,
@@ -95,11 +95,11 @@ async def test_get_effective_configs_resolved_merges_tier_deltas():
     by_class, sources = await svc._get_effective_configs(
         catalog_id="cat-x", collection_id="coll-y", resolved=True,
     )
-    assert sources["CollectionRoutingConfig"] == "collection"
-    assert by_class["CollectionRoutingConfig"]["enabled"] is False
+    assert sources["collection_routing_config"] == "collection"
+    assert by_class["collection_routing_config"]["enabled"] is False
     # round-trips through the model so other defaults are present
     default_keys = set(CollectionRoutingConfig().model_dump().keys())
-    assert set(by_class["CollectionRoutingConfig"].keys()) == default_keys
+    assert set(by_class["collection_routing_config"].keys()) == default_keys
 
 
 @pytest.mark.asyncio
@@ -110,7 +110,7 @@ async def test_get_effective_configs_catalog_source(mock_config_service):
         if catalog_id and not collection_id:
             return {
                 "items": [
-                    {"plugin_id": "CollectionRoutingConfig",
+                    {"plugin_id": "collection_routing_config",
                      "config_data": {"enabled": False}},
                 ],
                 "total": 1,
@@ -134,7 +134,7 @@ async def test_get_effective_configs_catalog_source(mock_config_service):
     _, sources = await svc._get_effective_configs(
         catalog_id="my-catalog", collection_id=None, resolved=True,
     )
-    assert sources["CollectionRoutingConfig"] == "catalog"
+    assert sources["collection_routing_config"] == "catalog"
 
 
 # ---------------------------------------------------------------------------
@@ -169,11 +169,11 @@ def _stub_registry(**classes):
 def test_compose_tree_places_classes_by_address():
     by_class = {
         "WebConfig": {"brand_name": "x"},
-        "CatalogCorePostgresqlDriver": {"enabled": True},
+        "catalog_core_postgresql_driver": {"enabled": True},
     }
     registry = _stub_registry(
         WebConfig={"_address": ("platform", "web", None)},
-        CatalogCorePostgresqlDriver={
+        catalog_core_postgresql_driver={
             "_address": ("storage", "drivers", "catalog"),
             "_visibility": "catalog",
         },
@@ -186,7 +186,7 @@ def test_compose_tree_places_classes_by_address():
             by_class, sources={}, active_scope="catalog", include_meta=False,
         )
     assert tree["platform"]["web"]["WebConfig"] == {"brand_name": "x"}
-    assert "CatalogCorePostgresqlDriver" in tree["storage"]["drivers"]["catalog"]
+    assert "catalog_core_postgresql_driver" in tree["storage"]["drivers"]["catalog"]
     assert meta is None
 
 
@@ -289,20 +289,20 @@ def test_compose_tree_real_plugin_driver_config_does_not_leak():
 
 def test_build_routing_refs_replaces_entries_with_slim_refs():
     by_class = {
-        "CatalogRoutingConfig": {
+        "catalog_routing_config": {
             "enabled": True,
             "operations": {
                 "WRITE": [
-                    {"driver_id": "CatalogCorePostgresqlDriver",
+                    {"driver_id": "catalog_core_postgresql_driver",
                      "on_failure": "fatal", "write_mode": "sync",
                      "hints": [], "sla": {"foo": 1}},
                 ],
             },
         },
-        "CatalogCorePostgresqlDriver": {"enabled": True},
+        "catalog_core_postgresql_driver": {"enabled": True},
     }
     # Stub key matches the wire key (TypedDriver bind drops Config suffix).
-    registry = _stub_registry(CatalogCorePostgresqlDriver={"__module__": "m"})
+    registry = _stub_registry(catalog_core_postgresql_driver={"__module__": "m"})
     with patch(
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
@@ -310,11 +310,11 @@ def test_build_routing_refs_replaces_entries_with_slim_refs():
         svc = ConfigApiService(config_service=MagicMock())
         svc._build_routing_refs(by_class)
 
-    write = by_class["CatalogRoutingConfig"]["operations"]["WRITE"]
+    write = by_class["catalog_routing_config"]["operations"]["WRITE"]
     assert len(write) == 1
     ref = write[0]
-    assert ref["driver_id"] == "CatalogCorePostgresqlDriver"
-    assert ref["config_ref"] == "CatalogCorePostgresqlDriver"
+    assert ref["driver_id"] == "catalog_core_postgresql_driver"
+    assert ref["config_ref"] == "catalog_core_postgresql_driver"
     assert ref["on_failure"] == "fatal"
     assert ref["write_mode"] == "sync"
     # Hints / sla / other legacy fields must not survive into the ref.
@@ -324,7 +324,7 @@ def test_build_routing_refs_replaces_entries_with_slim_refs():
 
 def test_build_routing_refs_missing_driver_yields_null_config_ref():
     by_class = {
-        "CatalogRoutingConfig": {
+        "catalog_routing_config": {
             "operations": {
                 "WRITE": [{"driver_id": "UnknownDriver",
                            "on_failure": "warn", "write_mode": "sync"}]
@@ -337,7 +337,7 @@ def test_build_routing_refs_missing_driver_yields_null_config_ref():
     ):
         svc = ConfigApiService(config_service=MagicMock())
         svc._build_routing_refs(by_class)
-    ref = by_class["CatalogRoutingConfig"]["operations"]["WRITE"][0]
+    ref = by_class["catalog_routing_config"]["operations"]["WRITE"][0]
     assert ref["driver_id"] == "UnknownDriver"
     assert ref["config_ref"] is None
 

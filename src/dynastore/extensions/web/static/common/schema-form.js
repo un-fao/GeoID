@@ -8,7 +8,7 @@
 //
 // Public API:
 //   const form = mountSchemaForm(container, {
-//     schema,         // JSON Schema for the selected plugin (from /configs/schemas)
+//     schema,         // JSON Schema for the selected plugin (from /configs/registry)
 //     resolved,       // current effective (inherited) value set
 //     explicit,       // current explicit overrides at the active scope
 //     allowInherit,   // true at non-platform scopes — enables tri-state per field

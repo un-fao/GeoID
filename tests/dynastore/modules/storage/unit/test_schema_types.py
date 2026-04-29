@@ -256,7 +256,7 @@ class TestWritePolicyDefaults:
 
     def test_class_key(self):
         from dynastore.modules.storage.driver_config import WritePolicyDefaults
-        assert WritePolicyDefaults.class_key() == "WritePolicyDefaults"
+        assert WritePolicyDefaults.class_key() == "write_policy_defaults"
 
     def test_default_construction(self):
         from dynastore.modules.storage.driver_config import WritePolicyDefaults
@@ -308,4 +308,4 @@ class TestCollectionSchemaConstraints:
 
     def test_class_key(self):
         from dynastore.modules.storage.driver_config import CollectionSchema
-        assert CollectionSchema.class_key() == "CollectionSchema"
+        assert CollectionSchema.class_key() == "collection_schema"
