@@ -69,10 +69,9 @@ class ConfigsService(ExtensionProtocol):
     def __init__(self, app: FastAPI):
         super().__init__()
         self.app = app
-        # Single tag for the whole router; meta/discovery routes carry an
-        # additional ``Configurations · Discovery`` tag so Swagger groups
-        # them together at the top of the page.
-        self.router = APIRouter(prefix="/configs", tags=["Configurations"])
+        # ONE tag for the whole extension — every route under /configs
+        # shares ``Configuration API``.  No sub-tags, no per-route overrides.
+        self.router = APIRouter(prefix="/configs", tags=["Configuration API"])
         self._setup_routes()
 
     def get_web_pages(self):
@@ -91,50 +90,36 @@ class ConfigsService(ExtensionProtocol):
         yield
 
     def _setup_routes(self):
-        # Discovery / read-only meta — extra tag puts these in their own
-        # group at the top of the Swagger UI page.  Annotated as
-        # ``list[str | Enum]`` to satisfy FastAPI's invariant ``tags`` arg.
-        from enum import Enum
-        discovery: list[str | Enum] = [
-            "Configurations",
-            "Configurations · Discovery",
-        ]
-
         # ---- Discovery (schemas, plugins, drivers, dependency graph) ----
         self.router.add_api_route(
             "/schemas",
             self.get_config_schemas,
             methods=["GET"],
             summary="List all registered config schemas grouped by scope and protocol",
-            tags=discovery,
         )
         self.router.add_api_route(
             "/schemas/{class_key}",
             self.get_config_schema,
             methods=["GET"],
             summary="Get JSON Schema + description for a specific config class",
-            tags=discovery,
         )
         self.router.add_api_route(
             "/graph",
             self.get_config_graph,
             methods=["GET"],
             summary="Config dependency graph — nodes = config classes, edges = apply-handler cross-references",
-            tags=discovery,
         )
         self.router.add_api_route(
             "/plugins",
             self.list_registered_plugins,
             methods=["GET"],
             summary="List all registered configuration plugins",
-            tags=discovery,
         )
         self.router.add_api_route(
             "/storage/drivers",
             self.list_storage_drivers,
             methods=["GET"],
             summary="List all registered storage drivers grouped by Protocol qualname",
-            tags=discovery,
         )
         # ---- Composed (waterfall-resolved) views ----
         self.router.add_api_route(
