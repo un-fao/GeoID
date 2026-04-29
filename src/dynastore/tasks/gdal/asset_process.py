@@ -170,8 +170,11 @@ class GdalAssetProcess:
 
         # Sync fallback (defensive): keep the inline shape for cases where
         # ExecutionEngine completed synchronously despite the async preference.
+        # `result` is `Any` from execute_process(); use getattr-then-call so
+        # Pyright doesn't carry a stale dict-narrowing from the if-branch
+        # above into this otherwise-unrelated fallback.
+        model_dump = getattr(result, "model_dump", None)
         return AssetProcessOutput(
             type="inline",
-            data=(result if not hasattr(result, "model_dump")
-                  else result.model_dump(mode="json")),
+            data=model_dump(mode="json") if callable(model_dump) else result,
         )
