@@ -6,7 +6,7 @@ is also set). The dispatcher class :class:`.indexer_task.ElasticsearchIndexerTas
 adapts this to the legacy ``BulkCatalogReindexInputs`` / ``BulkCollectionReindexInputs``
 expected by the underlying implementations.
 """
-from typing import Literal, Optional
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -20,13 +20,6 @@ class ElasticsearchIndexerRequest(BaseModel):
         description=(
             "If set, only reindex this collection. Otherwise reindex every "
             "collection of the catalog that routes through the regular ES driver."
-        ),
-    )
-    mode: Optional[Literal["catalog", "private"]] = Field(
-        None,
-        description=(
-            "Override the indexer mode. If omitted, falls back to the catalog's "
-            "configured indexer mode."
         ),
     )
     driver: Optional[str] = Field(

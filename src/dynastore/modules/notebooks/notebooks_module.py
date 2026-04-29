@@ -54,8 +54,9 @@ class NotebooksModule(ModuleProtocol):
             # Trigger built-in notebook registrations now that the schema and
             # platform seed are in place. Each submodule registers via
             # `register_platform_notebook` at import time. Wrapped per-module so
-            # a missing transitive dep in this image's SCOPE just skips that
-            # module's notebooks (logged at INFO) rather than aborting startup.
+            # an ImportError (deps absent in this SCOPE) or any other error
+            # (malformed registration, missing helper) just skips that module
+            # rather than aborting the worker's startup.
             for mod_path in (
                 "dynastore.modules.catalog.notebooks",
                 "dynastore.modules.storage.notebooks",
@@ -64,10 +65,21 @@ class NotebooksModule(ModuleProtocol):
             ):
                 try:
                     __import__(mod_path)
+                    logger.debug(
+                        f"NotebooksModule: registered built-in notebooks from "
+                        f"'{mod_path}'."
+                    )
                 except ImportError as e:
                     logger.info(
                         f"NotebooksModule: skipping built-in registrations from "
                         f"'{mod_path}' — module deps not present in this SCOPE: {e}"
+                    )
+                except Exception as e:
+                    # Defensive: a bad registration must not crash startup.
+                    logger.warning(
+                        f"NotebooksModule: built-in registrations from "
+                        f"'{mod_path}' failed; skipping. Error: {e}",
+                        exc_info=True,
                     )
 
             logger.info("NotebooksModule: Initialization complete.")

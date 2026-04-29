@@ -118,25 +118,17 @@ async def test_run_without_collection_id_dispatches_to_catalog_task() -> None:
 @pytest.mark.asyncio
 async def test_run_raises_when_subtask_unregistered() -> None:
     """If the bulk task isn't in the registry (e.g. tasks.py side-effect import
-    failed to register), surface a clear error, not a None.run() AttributeError."""
+    failed to register), surface a clear error, not a None.run() AttributeError.
+
+    Patches the dispatcher's underlying ``get_task_instance`` to return None;
+    the wrapper ``_get_task_instance`` then raises a descriptive RuntimeError.
+    """
     task = ElasticsearchIndexerTask(app_state=object())
     payload = _make_payload({"catalog_id": "cat_a"})
 
     with patch(
-        "dynastore.tasks.elasticsearch_indexer.indexer_task._get_task_instance",
+        "dynastore.tasks.get_task_instance",
         return_value=None,
     ):
         with pytest.raises(RuntimeError, match="not registered"):
-            await _bypass_helper_and_run(task, payload)
-
-
-async def _bypass_helper_and_run(task, payload):
-    """The patched `_get_task_instance` returns None, but the helper inside
-    indexer_task raises RuntimeError on None. To reach that branch we patch
-    the inner helper's `get_task_instance` source, not the wrapper."""
-    from dynastore.tasks.elasticsearch_indexer import indexer_task as it
-
-    with patch.object(
-        it, "_get_task_instance", side_effect=RuntimeError("required sub-task 'x' is not registered")
-    ):
-        await task.run(payload)
+            await task.run(payload)

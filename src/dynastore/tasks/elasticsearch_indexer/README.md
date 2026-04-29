@@ -4,18 +4,37 @@ Bulk reindex and private index tasks for the Elasticsearch integration.
 
 ## Task Types
 
-### Bulk Reindex (Cloud Run Job or worker)
+### Canonical OGC Process entry: `elasticsearch_indexer`
+
+Single OGC Process exposed at:
+```
+POST /processes/catalogs/{catalog_id}/processes/elasticsearch_indexer/execution
+```
+Defined in [`definition.py`](definition.py); implemented by
+[`indexer_task.py:ElasticsearchIndexerTask`](indexer_task.py).
+
+Inputs ([`indexer_models.py:ElasticsearchIndexerRequest`](indexer_models.py)):
+
+| Field | Required | Description |
+|---|---|---|
+| `catalog_id` | yes | Catalog to reindex into the per-tenant items index |
+| `collection_id` | no  | If set, reindex only this collection; otherwise the whole catalog |
+| `driver` | no | Restrict reindex to a single secondary driver |
+
+Both runners can claim it:
+- **`BackgroundRunner`** — runs in-process via the FastAPI background tasks pool. Use `Prefer: respond-sync` for inline execution or `Prefer: respond-async` for fire-and-poll.
+- **`GcpJobRunner`** — spawns the deployed `dynastore-elasticsearch-indexer` Cloud Run Job (which advertises `TASK_TYPE=elasticsearch_indexer` in its env).
+
+`ExecutionEngine.execute()` selects between them by mode and runner availability. The dispatcher class is a thin adapter; the actual bulk-index logic lives in [`modules/elasticsearch/bulk_reindex.py`](../../modules/elasticsearch/bulk_reindex.py) so extensions can call it directly without going through the task layer.
+
+### Underlying bulk reindex tasks (worker / Cloud Run Job)
 
 | Task type | Inputs | Description |
 |---|---|---|
-| `elasticsearch_bulk_reindex_catalog` | `catalog_id`, `mode` | Stream all collections/items, bulk-index in 500-doc batches |
-| `elasticsearch_bulk_reindex_collection` | `catalog_id`, `collection_id`, `mode` | Same for a single collection |
+| `elasticsearch_bulk_reindex_catalog` | `catalog_id`, `driver?` | Stream all collections/items, bulk-index in 500-doc batches |
+| `elasticsearch_bulk_reindex_collection` | `catalog_id`, `collection_id`, `driver?` | Same for a single collection |
 
-Mode values (`Literal["catalog", "private"]`):
-- `"catalog"` — index full STAC documents into `{prefix}-items`; skips collections with `search_index=False`; cleans stale private docs.
-- `"private"` — index geoid-only documents into `{prefix}-geoid-{catalog_id}`; cleans stale STAC items for the catalog.
-
-Triggered by `POST /search/reindex/catalogs/{id}` (admin endpoint).
+Triggered by `POST /search/reindex/catalogs/{id}` (admin endpoint) or by the canonical `elasticsearch_indexer` OGC Process above.
 
 ### Per-item Private (worker, incremental)
 
@@ -43,7 +62,10 @@ geospatial-elasticsearch-indexer:
 ## Files
 
 ```
-__init__.py    # Exports task classes
-tasks.py       # BulkCatalogReindexTask, BulkCollectionReindexTask,
-               # PrivateIndexTask, PrivateDeleteTask
+__init__.py        # Exports task classes
+definition.py      # OGC Process definition for `elasticsearch_indexer`
+indexer_models.py  # ElasticsearchIndexerRequest
+indexer_task.py    # ElasticsearchIndexerTask (canonical entry point)
+tasks.py           # BulkCatalogReindexTask, BulkCollectionReindexTask
+                   # (driver helpers extracted to modules/elasticsearch/bulk_reindex.py)
 ```
