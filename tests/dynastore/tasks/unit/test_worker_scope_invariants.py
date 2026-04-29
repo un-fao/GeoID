@@ -124,6 +124,40 @@ def test_dwh_join_scope_includes_catalog() -> None:
     )
 
 
+def test_dwh_join_scope_includes_crs() -> None:
+    """Phase H second follow-up: even with module_catalog (PR #141), the
+    dwh_join entry-point load chain transitively imports pyproj via
+    extensions/dwh/dwh.py → modules/tiles/tms_definitions.py:22
+    `from pyproj import CRS`. module_crs provides pyproj. Without it,
+    the dispatcher registers a DefinitionOnlyTask placeholder and
+    main_task.py raises 'Task has run method without payload annotation'
+    (misleading error — actual cause is the placeholder having no `run`).
+    Confirmed by `dynastore-dwh-join-export-job-snq2n` container log on
+    2026-04-29."""
+    line = _scope_definition("worker_task_dwh_join")
+    extras = _extract_dynastore_extras(line)
+    assert "module_crs" in extras, (
+        f"worker_task_dwh_join SCOPE is missing module_crs. Without it the "
+        f"entry-point load fails with `No module named 'pyproj'` and dwh_join "
+        f"runs as a no-run-method placeholder. Current extras: {extras}"
+    )
+
+
+def test_export_features_scope_includes_gcp() -> None:
+    """Phase H third follow-up: ExportFeaturesTask writes its output bytes
+    to GCS via dynastore.modules.gcp clients. Without module_gcp the
+    worker container raises at run time: 'GCPModule has not been
+    initialized or failed to create a storage client.' Confirmed by
+    019dda8e-a239-7bd8-... OGC poll on 2026-04-29."""
+    line = _scope_definition("worker_task_export_features")
+    extras = _extract_dynastore_extras(line)
+    assert "module_gcp" in extras, (
+        f"worker_task_export_features SCOPE is missing module_gcp. Without "
+        f"it the task crashes at run time when trying to create a GCS "
+        f"storage client to write the export output. Current extras: {extras}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Mapping invariants — tighten the scope ↔ entry-point ↔ meta-extra wiring
 # so a typo or missing entry-point breaks CI before it breaks deploy.

@@ -256,9 +256,21 @@ ingestion = ["dynastore[task_base,module_gcp,task_ingestion_deps]"]
 #   - elasticsearch_indexer: BulkCatalog/CollectionReindexTask via
 #     CatalogsProtocol. Confirmed by `dynastore-elasticsearch-indexer-cq7k9`
 #     exec on 2026-04-29 (B6, PR #131).
-worker_task_dwh_join = ["dynastore[task_base,module_catalog,dwh]"]
+# dwh_join: extensions/dwh/dwh.py imports modules/tiles/tms_definitions
+# which has `from pyproj import CRS` at module level. module_crs provides
+# pyproj. Without it the entry-point load fails with `Skipping plugin
+# 'dwh_join': No module named 'pyproj'` and the dispatcher registers a
+# DefinitionOnlyTask placeholder — main_task.py then raises a misleading
+# "run method without payload annotation" error. Confirmed by
+# dynastore-dwh-join-export-job-snq2n container log on 2026-04-29.
+worker_task_dwh_join = ["dynastore[task_base,module_catalog,module_crs,dwh]"]
 worker_task_ingestion = ["dynastore[ingestion,catalog_grp,google_grp,gdal]"]
-worker_task_export_features = ["dynastore[task_base,stac,geospatial_core]"]
+# export_features: writes feature output to GCS (`gs://...` destination_uri)
+# via dynastore.modules.gcp clients. Without module_gcp the worker raises
+# at task run time: "GCPModule has not been initialized or failed to
+# create a storage client." Confirmed by 019dda8e-a239-7bd8-...
+# OGC poll on 2026-04-29.
+worker_task_export_features = ["dynastore[task_base,module_gcp,stac,geospatial_core]"]
 worker_task_tiles_preseed = ["dynastore[task_base,module_catalog,tiles,crs]", "morecantile>=7.0.3,<8"]
 worker_task_gdal = ["dynastore[task_base,module_catalog,gdal]"]
 worker_task_dimensions_materialize = ["dynastore[task_base,module_catalog,extension_dimensions]"]
