@@ -82,10 +82,20 @@ class TestItemsPostgresqlDriverConfigDefaults:
         assert any(isinstance(s, FeatureAttributeSidecarConfig) for s in resolved)
 
     def test_effective_sidecars_records_drops_geometry(self):
-        """RECORDS collections have no spatial component → geometry omitted."""
+        """RECORDS collections have no spatial component → geometry omitted.
+
+        Phase 1.6: ``collection_type`` is no longer on
+        ``ItemsPostgresqlDriverConfig`` — it lives on the new
+        ``CollectionType`` PluginConfig at collection scope.  The
+        resolver receives ``collection_type`` as a kw arg from its
+        async callers (after they fetch ``CollectionType``).
+        """
         from dynastore.modules.storage.drivers.pg_sidecars import _effective_sidecars
-        cfg = ItemsPostgresqlDriverConfig(collection_type="RECORDS")
-        resolved = _effective_sidecars(cfg, catalog_id="cat", collection_id="col")
+        cfg = ItemsPostgresqlDriverConfig()
+        resolved = _effective_sidecars(
+            cfg, catalog_id="cat", collection_id="col",
+            collection_type="RECORDS",
+        )
         types = [s.sidecar_type for s in resolved]
         assert "geometries" not in types
         assert "attributes" in types
@@ -124,9 +134,14 @@ class TestItemsPostgresqlDriverConfigDefaults:
         cfg = ItemsPostgresqlDriverConfig()
         assert cfg.partitioning.enabled is False
 
-    def test_default_collection_type(self):
-        cfg = ItemsPostgresqlDriverConfig()
-        assert cfg.collection_type == "VECTOR"
+    def test_collection_type_field_hoisted_off(self):
+        """Phase 1.6: ``collection_type`` was hoisted out of the PG driver
+        config into a standalone ``CollectionType`` PluginConfig at
+        collection scope.  The field is no longer part of this class's
+        ``model_fields``.  See ``test_collection_type.py`` for the new
+        regression suite.
+        """
+        assert "collection_type" not in ItemsPostgresqlDriverConfig.model_fields
 
     def test_column_definitions(self):
         cfg = ItemsPostgresqlDriverConfig()

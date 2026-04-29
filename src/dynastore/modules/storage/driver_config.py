@@ -428,7 +428,8 @@ class ItemsPostgresqlDriverConfig(CollectionDriverConfig):
 
     Absorbs fields previously in ``PostgresStorageLocationConfig`` and
     PG-specific fields from ``CollectionPluginConfig`` (sidecars,
-    partitioning, collection_type).
+    partitioning).  ``collection_type`` was hoisted out of this class in
+    Phase 1.6 — see ``CollectionType`` PluginConfig at collection scope.
 
     CRITICAL: ``sidecars`` and ``partitioning`` are **Immutable** — they
     cannot be changed once the physical table exists.
@@ -472,10 +473,11 @@ class ItemsPostgresqlDriverConfig(CollectionDriverConfig):
         default_factory=lambda: _default_partitioning(),
         description="Composite partition config for PG tables.",
     )
-    collection_type: str = Field(
-        default="VECTOR",
-        description="Collection type: VECTOR or RASTER.",
-    )
+    # NB: ``collection_type`` field hoisted out of this driver config in
+    # Phase 1.6 — it's now a collection-scope ``CollectionType`` PluginConfig
+    # (see ``modules/catalog/catalog_config.py``) so EVERY driver reads the
+    # same value, not just the PG driver.  Drivers fetch it via
+    # ``configs.get_config(CollectionType, catalog_id, collection_id)``.
 
     # ------------------------------------------------------------------
     # Validators (moved from CollectionPluginConfig)
@@ -490,6 +492,13 @@ class ItemsPostgresqlDriverConfig(CollectionDriverConfig):
     # loudly on missing discriminators or unknown ``sidecar_type`` values
     # (strictly a tightening: main's version silently fell back to the
     # base ``SidecarConfig`` on unknown types).
+    #
+    # Phase 1.6: the former ``strip_geometry_for_records`` model_validator
+    # is deleted too — it depended on ``collection_type`` being on this
+    # class.  The geometry-strip-for-RECORDS logic now lives in
+    # ``_effective_sidecars`` (the sidecar resolver), which receives the
+    # collection_type from its async callers after they fetch the new
+    # ``CollectionType`` PluginConfig.
 
     @field_validator("partitioning", mode="before")
     @classmethod
@@ -499,29 +508,6 @@ class ItemsPostgresqlDriverConfig(CollectionDriverConfig):
             from dynastore.modules.catalog.catalog_config import CompositePartitionConfig
             return CompositePartitionConfig.model_validate(v)
         return v
-
-    @model_validator(mode="before")
-    @classmethod
-    def strip_geometry_for_records(cls, data: Any) -> Any:
-        """RECORDS collections have no spatial component — strip geometry from defaults.
-
-        Runs before field assignment so the Immutable guard is not violated.
-        Only affects new construction (from dict/defaults); existing DB-loaded
-        RECORDS configs should already lack a geometry sidecar.
-        """
-        if isinstance(data, dict) and data.get("collection_type") == "RECORDS":
-            sidecars = data.get("sidecars")
-            if sidecars and isinstance(sidecars, list):
-                from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
-                    GeometriesSidecarConfig,
-                )
-                data["sidecars"] = [
-                    s for s in sidecars if not (
-                        isinstance(s, GeometriesSidecarConfig)
-                        or (isinstance(s, dict) and s.get("sidecar_type") == "geometries")
-                    )
-                ]
-        return data
 
     @model_validator(mode="after")
     def validate_composite_partitioning(self) -> "ItemsPostgresqlDriverConfig":

@@ -38,8 +38,11 @@ def collection_data(collection_id):
 
 @pytest.fixture
 def config_data():
+    # Phase 1.6: ``collection_type`` was hoisted off the PG driver config
+    # into a standalone ``CollectionType`` PluginConfig at collection scope.
+    # The PG driver config now ONLY carries driver-local concerns
+    # (sidecars, partitioning, etc.).
     return {
-        "collection_type": "VECTOR",
         "sidecars": [
             {
                 "sidecar_type": "geometries",

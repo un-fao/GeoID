@@ -24,8 +24,10 @@ from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
 # Mock Sidecar Configs
 @pytest.fixture
 def mock_col_config():
+    # Phase 1.6: ``collection_type`` lives on its own ``CollectionType``
+    # PluginConfig (collection scope) and is no longer accepted on the
+    # PG driver config.
     return ItemsPostgresqlDriverConfig(
-        collection_type="VECTOR",
         sidecars=[
             GeometriesSidecarConfig(
                 sidecar_type="geometries",
