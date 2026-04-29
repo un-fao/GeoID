@@ -287,15 +287,6 @@ class IamExtension(ExtensionProtocol):
 
 
     def configure_app(self, app: FastAPI):
-        from dynastore.extensions.iam.tenant_scope_middleware import (
-            TenantScopeMiddleware,
-        )
-
-        # Starlette processes middleware in reverse-registration order
-        # (LIFO request flow), so registering TenantScopeMiddleware FIRST means
-        # it runs INSIDE IamMiddleware — i.e. after IamMiddleware has already
-        # populated request.state.principal/_role.
-        app.add_middleware(TenantScopeMiddleware)
         app.add_middleware(IamMiddleware)
 
         def custom_openapi():

@@ -41,6 +41,7 @@ from dynastore.extensions.tools.conformance import (
     Conformance,
 )
 from dynastore.extensions.web.decorators import expose_static, expose_web_page
+from dynastore.models.auth import Condition
 from dynastore.models.protocols.authorization import DefaultRole
 from dynastore.models.protocols.policies import PermissionProtocol, Policy, Role, Principal
 from dynastore.tools.discovery import get_protocol, get_protocols, register_plugin
@@ -57,7 +58,10 @@ def register_web_policies():
 
     web_policy = Policy(
         id="web_public_access",
-        description="Allows anonymous access to web UI, pages, and static assets.",
+        description="Allows anonymous access to web UI, pages, and static assets. "
+                    "Intentionally enumerates specific public sub-paths instead of "
+                    "using a /web/.* catch-all so dashboard data endpoints stay "
+                    "gated by web_dashboard_*_access policies.",
         actions=["GET", "OPTIONS"],
         resources=[
             "/$",
@@ -66,14 +70,15 @@ def register_web_policies():
             "/favicon.ico.*",
             "/web",
             "/web/",
-            "/web/.*",
             "/web/pages/.*",           # expose_web_page routes
             "/web/extension-static/.*", # expose_static routes
             "/web/static/.*",
             "/web/website/.*",
             "/web/docs-content/.*",
-            "/web/dashboard/.*",
+            "/web/docs-manifest",
+            "/web/config/.*",
             "/web/health",
+            "/web/dashboard/?$",       # catalog-picker root only (anonymous-OK)
             "/.well-known/.*",
             "/processes.*",
             "/configs/schemas",
@@ -125,6 +130,38 @@ def register_web_policies():
     pm.register_policy(web_admin_policy)
     pm.register_role(Role(name=DefaultRole.ADMIN.value, policies=["web_admin_access"]))
     pm.register_role(Role(name=DefaultRole.USER.value, policies=["web_admin_access"]))
+
+    # Platform-tier dashboard endpoints (no `catalogs/` segment) — sysadmin only.
+    web_dashboard_platform_policy = Policy(
+        id="web_dashboard_platform_access",
+        description="Sysadmin-only access to platform-tier dashboard endpoints.",
+        actions=["GET", "OPTIONS"],
+        resources=[r"^/web/dashboard/(stats|logs|events|tasks|ogc-compliance)/?$"],
+        effect="ALLOW",
+    )
+    pm.register_policy(web_dashboard_platform_policy)
+    pm.register_role(Role(
+        name=DefaultRole.SYSADMIN.value,
+        policies=["web_dashboard_platform_access"],
+    ))
+
+    # Per-catalog dashboard endpoints — anyone with catalog membership for the
+    # catalog_id present in the URL. The condition handler does the actual
+    # membership check using catalog_id pre-extracted by IamMiddleware.
+    web_dashboard_per_catalog_policy = Policy(
+        id="web_dashboard_per_catalog_access",
+        description="Per-catalog dashboard access; requires catalog membership.",
+        actions=["GET", "OPTIONS"],
+        resources=[r"^/web/dashboard/catalogs/[^/]+(/.*)?$"],
+        effect="ALLOW",
+        conditions=[Condition(type="catalog_membership_required", config={})],
+    )
+    pm.register_policy(web_dashboard_per_catalog_policy)
+    for role_name in (DefaultRole.ADMIN.value, DefaultRole.USER.value):
+        pm.register_role(Role(
+            name=role_name,
+            policies=["web_dashboard_per_catalog_access"],
+        ))
 
     logger.debug("Web policies registered via PermissionProtocol.")
 
@@ -1183,7 +1220,7 @@ async function demoAction(action) {
         @self.router.get("/dashboard/catalogs/{catalog_id}/processes/")
         async def read_processes_page(catalog_id: str):
             """Per-catalog processes HTML shell. Same template as before;
-            authz gated upstream by TenantScopeMiddleware."""
+            authz gated upstream by web_dashboard_per_catalog_access policy."""
             processes_index = os.path.join(
                 os.path.dirname(__file__), "static", "dashboard", "processes.html"
             )
@@ -1521,12 +1558,23 @@ async function demoAction(action) {
             return []
 
         # ------------------------------------------------------------------ #
-        # Per-catalog dashboard data endpoints                                #
+        # Dashboard data endpoints — TWO TIERS, both gated declaratively by  #
+        # PermissionProtocol policies registered in register_web_policies():  #
         #                                                                     #
-        # All routes use the project-wide path convention                     #
-        # ``/web/dashboard/catalogs/{catalog_id}/...`` so TenantScopeMiddleware #
-        # can extract the tenant scope from the URL via regex capture and    #
-        # gate before the handler runs. Handler bodies carry zero authz code. #
+        #   Platform tier  : /web/dashboard/{stats|logs|events|tasks|         #
+        #                                    ogc-compliance}                  #
+        #     Sysadmin-only via web_dashboard_platform_access policy.         #
+        #                                                                     #
+        #   Per-catalog    : /web/dashboard/catalogs/{catalog_id}/...         #
+        #     Anyone with catalog membership for the URL's catalog_id, via    #
+        #     web_dashboard_per_catalog_access policy + the                   #
+        #     catalog_membership_required ConditionHandler.                   #
+        #                                                                     #
+        # The system tier lives ABOVE the catalog hierarchy (storage          #
+        # parallel: platform tables live in `{module_name}.{table_name}`     #
+        # schemas, distinct from per-catalog schemas). The URL must reflect   #
+        # that — `/web/dashboard/catalogs/_system_/...` is intentionally NOT  #
+        # a route. Handler bodies carry zero authz code.                      #
         # ------------------------------------------------------------------ #
 
         async def _stats_summary(
@@ -1622,6 +1670,51 @@ async function demoAction(action) {
                 return events
             return []
 
+        # ----- Platform-tier dashboard endpoints (sysadmin-only via Policy) -- #
+
+        @self.router.get("/dashboard/stats", response_class=JSONResponse)
+        async def get_dashboard_platform_stats(
+            principal_id: Optional[str] = Query(None, description="Filter by Principal ID."),
+            start_date: Optional[datetime] = Query(None, description="Start date for stats aggregation."),
+            end_date: Optional[datetime] = Query(None, description="End date for stats aggregation."),
+        ):
+            return await _stats_summary("_system_", None, principal_id, start_date, end_date)
+
+        @self.router.get("/dashboard/logs", response_class=JSONResponse)
+        async def get_dashboard_platform_logs(
+            event_type: Optional[str] = Query(None, description="Optional event type filter."),
+            level: Optional[str] = Query(None, description="Optional log level (e.g., ERROR, INFO)."),
+            limit: int = Query(50, ge=1, le=1000),
+            offset: int = Query(0, ge=0, description="Pagination offset."),
+        ):
+            return await _list_logs("_system_", None, event_type, level, limit, offset)
+
+        @self.router.get("/dashboard/events", response_class=JSONResponse)
+        async def get_dashboard_platform_events(
+            event_type: Optional[str] = Query(None, description="Optional event type filter."),
+            limit: int = Query(50, ge=1, le=1000),
+            offset: int = Query(0, ge=0, description="Pagination offset."),
+        ):
+            return await _search_events("_system_", None, event_type, limit, offset)
+
+        @self.router.get("/dashboard/tasks", response_class=JSONResponse)
+        async def get_dashboard_platform_tasks():
+            tasks_ext = getattr(self.app.state, "tasks", None) if self.app else None
+            if tasks_ext:
+                return await tasks_ext.get_tasks()
+            return []
+
+        @self.router.get(
+            "/dashboard/ogc-compliance",
+            response_class=JSONResponse,
+            tags=["Web Dashboard"],
+        )
+        async def get_dashboard_platform_ogc_compliance():
+            from dynastore.extensions.tools.conformance import get_conformance_summary
+            return get_conformance_summary().model_dump()
+
+        # ----- Per-catalog dashboard endpoints (membership-gated via Policy) - #
+
         @self.router.get("/dashboard/catalogs/{catalog_id}/stats", response_class=JSONResponse)
         async def get_dashboard_stats(
             catalog_id: str,
@@ -1711,7 +1804,8 @@ async function demoAction(action) {
             """Return the OGC API conformance summary. The summary is
             deployment-wide today, but the route is per-catalog so callers
             traverse the same path convention as every other dashboard data
-            endpoint; authz is enforced upstream by TenantScopeMiddleware."""
+            endpoint; authz is enforced upstream by the
+            web_dashboard_per_catalog_access policy."""
             from dynastore.extensions.tools.conformance import get_conformance_summary
             summary = get_conformance_summary()
             return summary.model_dump()

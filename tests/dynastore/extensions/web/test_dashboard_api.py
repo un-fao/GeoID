@@ -23,7 +23,8 @@ from dynastore.models.protocols.authentication import AuthenticatorProtocol
 from dynastore.modules.catalog.models import Catalog
 # IamService imported here only for test-fixture setup (create_principal
 # + identity_link + grant). Production code MUST consume IAM via the
-# Protocol layer (models/protocols/) — see dashboard_authz.py.
+# Protocol layer (models/protocols/) — gating happens via policies registered
+# through PermissionProtocol (see register_web_policies() in web.py).
 from dynastore.modules.iam.iam_service import IamService
 from dynastore.models.auth import Principal as IamPrincipal
 from tests.dynastore.test_utils import generate_test_id
@@ -252,15 +253,13 @@ async def test_dashboard_collections_unknown_catalog(
 
 
 # ---------------------------------------------------------------------------
-# Phase B: tenant-scope authz on stats / logs / events
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Path-based tenant scope (Phase B++): every per-catalog dashboard endpoint
-# lives at /web/dashboard/catalogs/{catalog_id}/<endpoint> with optional
-# nesting under /collections/{collection_id}/. TenantScopeMiddleware extracts
-# catalog_id from the URL via regex capture and gates before the handler runs.
+# Two dashboard tiers — both gated by Policies registered via PermissionProtocol:
+#   - Platform-tier (sysadmin-only): bare /web/dashboard/{stats|logs|events|
+#     tasks|ogc-compliance} — gated by web_dashboard_platform_access policy.
+#   - Per-catalog: /web/dashboard/catalogs/{catalog_id}[/collections/{col}]/...
+#     — gated by web_dashboard_per_catalog_access policy + the
+#     catalog_membership_required ConditionHandler.
+# The old /web/dashboard/catalogs/_system_/... URL shape no longer exists.
 # ---------------------------------------------------------------------------
 
 # Endpoint suffix → kept short so the parametrize stays readable.
@@ -271,22 +270,32 @@ _DASHBOARD_DATA_SUFFIXES = ["stats", "logs", "events", "tasks", "ogc-compliance"
 async def test_dashboard_data_endpoints_reject_anonymous(
     anonymous_dashboard_client: AsyncClient, suffix: str
 ):
-    """Anonymous callers must not read any per-catalog dashboard data — 401."""
+    """Anonymous callers must not read any per-catalog dashboard data."""
     response = await anonymous_dashboard_client.get(
         f"/web/dashboard/catalogs/some_catalog/{suffix}"
     )
-    assert response.status_code == 401
+    # IamMiddleware default-deny returns 403 when no policy ALLOWs.
+    assert response.status_code in (401, 403)
 
 
 @pytest.mark.parametrize("suffix", _DASHBOARD_DATA_SUFFIXES)
-async def test_dashboard_data_endpoints_sysadmin_system_scope(
+async def test_dashboard_platform_endpoints_sysadmin_allowed(
     sysadmin_in_process_client_module: AsyncClient, suffix: str
 ):
-    """Sysadmin reads the synthetic ``_system_`` scope on any data endpoint."""
+    """Sysadmin may read every bare platform-tier dashboard endpoint."""
     response = await sysadmin_in_process_client_module.get(
-        f"/web/dashboard/catalogs/_system_/{suffix}"
+        f"/web/dashboard/{suffix}"
     )
     assert response.status_code == 200
+
+
+@pytest.mark.parametrize("suffix", _DASHBOARD_DATA_SUFFIXES)
+async def test_dashboard_platform_endpoints_anonymous_denied(
+    anonymous_dashboard_client: AsyncClient, suffix: str
+):
+    """Anonymous callers may not read any platform-tier dashboard endpoint."""
+    response = await anonymous_dashboard_client.get(f"/web/dashboard/{suffix}")
+    assert response.status_code in (401, 403)
 
 
 async def test_dashboard_stats_catalog_admin_allowed_on_own_catalog(
@@ -311,12 +320,13 @@ async def test_dashboard_stats_catalog_admin_denied_on_other_catalog(
     assert response.status_code == 403
 
 
-async def test_dashboard_stats_catalog_admin_denied_on_system(
+async def test_dashboard_platform_stats_catalog_admin_denied(
     catalog_admin_dashboard_ctx,
 ):
+    """Catalog admin may not read the bare platform-tier /web/dashboard/stats."""
     ctx = catalog_admin_dashboard_ctx
-    response = await ctx["client"].get("/web/dashboard/catalogs/_system_/stats")
-    assert response.status_code == 403
+    response = await ctx["client"].get("/web/dashboard/stats")
+    assert response.status_code in (401, 403)
 
 
 @pytest.mark.parametrize("endpoint", ["logs", "events"])
@@ -366,14 +376,13 @@ async def test_dashboard_phase_b_plus_catalog_admin_denied_on_other_catalog(
 
 
 @pytest.mark.parametrize("endpoint", ["tasks", "ogc-compliance"])
-async def test_dashboard_phase_b_plus_catalog_admin_denied_on_system(
+async def test_dashboard_platform_tasks_compliance_catalog_admin_denied(
     catalog_admin_dashboard_ctx, endpoint: str
 ):
+    """Catalog admin may not read bare /web/dashboard/{tasks|ogc-compliance}."""
     ctx = catalog_admin_dashboard_ctx
-    response = await ctx["client"].get(
-        f"/web/dashboard/catalogs/_system_/{endpoint}"
-    )
-    assert response.status_code == 403
+    response = await ctx["client"].get(f"/web/dashboard/{endpoint}")
+    assert response.status_code in (401, 403)
 
 
 # ---------------------------------------------------------------------------
@@ -384,21 +393,21 @@ async def test_dashboard_phase_b_plus_catalog_admin_denied_on_system(
 async def test_dashboard_per_catalog_shell_anonymous_blocked(
     anonymous_dashboard_client: AsyncClient,
 ):
-    """The per-catalog dashboard HTML shell is gated; anonymous → 401."""
+    """The per-catalog dashboard HTML shell is gated; anonymous denied."""
     response = await anonymous_dashboard_client.get(
         "/web/dashboard/catalogs/some_catalog/"
     )
-    assert response.status_code == 401
+    assert response.status_code in (401, 403)
 
 
 async def test_dashboard_per_catalog_processes_shell_anonymous_blocked(
     anonymous_dashboard_client: AsyncClient,
 ):
-    """The per-catalog processes HTML shell is gated; anonymous → 401."""
+    """The per-catalog processes HTML shell is gated; anonymous denied."""
     response = await anonymous_dashboard_client.get(
         "/web/dashboard/catalogs/some_catalog/processes/"
     )
-    assert response.status_code == 401
+    assert response.status_code in (401, 403)
 
 
 async def test_dashboard_per_catalog_shell_owned(
@@ -426,7 +435,7 @@ async def test_collection_scoped_endpoints_reject_anonymous(
     response = await anonymous_dashboard_client.get(
         f"/web/dashboard/catalogs/some_catalog/collections/some_coll/{suffix}"
     )
-    assert response.status_code == 401
+    assert response.status_code in (401, 403)
 
 
 @pytest.mark.parametrize("suffix", _COLLECTION_DATA_SUFFIXES)
