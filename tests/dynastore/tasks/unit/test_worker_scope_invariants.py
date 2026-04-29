@@ -10,10 +10,16 @@ Audit confirmed (2026-04-29) for `worker_task_elasticsearch_indexer`:
     Module discovery left core protocols UNRESOLVED: ['Catalogs']
     protocol_resolvers={'Storage': ..., 'Catalogs': None, ...}
 
-The five other worker SCOPEs (`dwh_join`, `export_features`, `gdal`,
-`tiles_preseed`, `dimensions_materialize`) also omit `module_catalog` but
-their failure mode hasn't been proven yet — flagged here as suspects to
-verify post-deploy.
+Follow-up audit (same day) of the other workers:
+  - tiles_preseed: tasks/tiles_preseed/task.py:65 calls
+    `get_protocol(CatalogsProtocol)` → needs module_catalog.
+  - gdal: tasks/gdal/asset_process.py:25 + gdalinfo_task.py:32,40 import
+    `from dynastore.modules.catalog.asset_service` → needs module_catalog.
+  - dimensions_materialize: tasks/dimensions_materialize/task.py:67 calls
+    `get_protocol(CatalogsProtocol)` → needs module_catalog.
+  - dwh_join, export_features: use raw SQLAlchemy `get_engine()` and bind
+    directly to the catalog's PG schema via SQL — never call CatalogsProtocol
+    and never import from `dynastore.modules.catalog.*`. Correctly excluded.
 """
 import re
 from pathlib import Path
@@ -41,13 +47,50 @@ def _extract_dynastore_extras(line: str) -> set:
     return extras
 
 
+def _assert_scope_has_module_catalog(scope: str, why: str) -> None:
+    line = _scope_definition(scope)
+    extras = _extract_dynastore_extras(line)
+    assert "module_catalog" in extras, (
+        f"{scope} SCOPE is missing module_catalog. {why} Current extras: {extras}"
+    )
+
+
 def test_elasticsearch_indexer_scope_includes_catalog() -> None:
     """B6 regression: SCOPE must include module_catalog so CatalogsProtocol
     has an implementor in the Cloud Run Job container."""
-    line = _scope_definition("worker_task_elasticsearch_indexer")
-    extras = _extract_dynastore_extras(line)
-    assert "module_catalog" in extras, (
-        f"worker_task_elasticsearch_indexer SCOPE is missing module_catalog. "
-        f"Without it, BulkCatalog/CollectionReindexTask crashes when calling "
-        f"get_protocol(CatalogsProtocol). Current extras: {extras}"
+    _assert_scope_has_module_catalog(
+        "worker_task_elasticsearch_indexer",
+        "Without it, BulkCatalog/CollectionReindexTask crashes when calling "
+        "get_protocol(CatalogsProtocol).",
+    )
+
+
+def test_tiles_preseed_scope_includes_catalog() -> None:
+    """B6 follow-up: TilesPreseedTask reads catalog metadata via
+    get_protocol(CatalogsProtocol) at tasks/tiles_preseed/task.py:65."""
+    _assert_scope_has_module_catalog(
+        "worker_task_tiles_preseed",
+        "Without it, TilesPreseedTask crashes when calling "
+        "get_protocol(CatalogsProtocol).",
+    )
+
+
+def test_gdal_scope_includes_catalog() -> None:
+    """B6 follow-up: GDAL task imports from dynastore.modules.catalog.*
+    (asset_process.py:25, gdalinfo_task.py:32,40); without module_catalog
+    those imports fail at task startup."""
+    _assert_scope_has_module_catalog(
+        "worker_task_gdal",
+        "Without it, GDAL task imports from dynastore.modules.catalog.* fail "
+        "at startup (asset_service, asset_tasks_spi).",
+    )
+
+
+def test_dimensions_materialize_scope_includes_catalog() -> None:
+    """B6 follow-up: DimensionsMaterializeTask reads catalog metadata via
+    get_protocol(CatalogsProtocol) at tasks/dimensions_materialize/task.py:67."""
+    _assert_scope_has_module_catalog(
+        "worker_task_dimensions_materialize",
+        "Without it, DimensionsMaterializeTask crashes when calling "
+        "get_protocol(CatalogsProtocol).",
     )
