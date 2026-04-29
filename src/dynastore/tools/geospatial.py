@@ -16,17 +16,23 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from enum import Enum
+from __future__ import annotations
+
 import hashlib
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-import shapely
-from shapely import wkb
-from shapely.geometry import Point, box
-from shapely.validation import make_valid
-from shapely.geometry.base import BaseGeometry
-from shapely.ops import transform
+# shapely is imported lazily inside the geometry-processing helpers below.
+# Module-level `import shapely` would force every consumer of this module
+# (e.g. tasks/tiles_preseed/task.py via `from dynastore.tools.geospatial
+# import SimplificationAlgorithm`) to require shapely in their image, even
+# when they only need the lightweight enum re-export. Same pattern as
+# tools/file_io.py and tools/features.py — see PR #141 (`727c0c2`) for the
+# original incident: dwh_join Cloud Run Job entry-point load failed with
+# `Skipping plugin 'dwh_join': No module named 'shapely'` because file_io's
+# eager shapely import propagated through its consumer chain.
+if TYPE_CHECKING:
+    from shapely.geometry.base import BaseGeometry
 
 # Try importing optional spatial libraries
 try:
@@ -70,7 +76,7 @@ from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
 GeometryStorageConfig = GeometriesSidecarConfig
 
 
-def _calculate_geometry_hash(geom: BaseGeometry) -> str:
+def _calculate_geometry_hash(geom: "BaseGeometry") -> str:
     """Calculates a SHA256 hash of the geometry's WKB representation."""
     return hashlib.sha256(geom.wkb).hexdigest()
 
@@ -84,6 +90,11 @@ def process_geometry(
     Processes a geometry according to the storage configuration, ensuring it's
     ready for database insertion and returning its properties including a 4326 bbox.
     """
+    import shapely
+    from shapely import wkb
+    from shapely.validation import make_valid
+    from shapely.ops import transform
+
     try:
         # Attempt to parse the WKB, which might be EWKB containing an SRID.
         # geoalchemy2's WKBElement is excellent for this.
@@ -295,12 +306,14 @@ def calculate_spatial_indices_from_centroid(
 
 
 def calculate_spatial_indices(
-    geom: BaseGeometry, h3_resolutions: List[int], s2_resolutions: List[int]
+    geom: "BaseGeometry", h3_resolutions: List[int], s2_resolutions: List[int]
 ) -> Dict[str, Any]:
     """
     Calculates H3 and S2 spatial indices for a given Shapely geometry.
     The geometry is expected to be in EPSG:4326 for accurate index calculation.
     """
+    from shapely.ops import transform
+
     indices = {}
     if not geom.is_empty:
         # The SRID of the geometry is now managed by the caller, but for H3/S2, we must work in 4326.
