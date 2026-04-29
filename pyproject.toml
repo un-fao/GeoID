@@ -242,14 +242,16 @@ ingestion = ["dynastore[task_base,module_gcp,task_ingestion_deps]"]
 worker_task_dwh_join = ["dynastore[task_base,dwh]"]
 worker_task_ingestion = ["dynastore[ingestion,catalog_grp,google_grp,gdal]"]
 worker_task_export_features = ["dynastore[task_base,stac,geospatial_core]"]
-worker_task_tiles_preseed = ["dynastore[task_base,tiles,crs]", "morecantile>=7.0.3,<8"]
-worker_task_gdal = ["dynastore[task_base,gdal]"]
-worker_task_dimensions_materialize = ["dynastore[task_base,extension_dimensions]"]
-# module_catalog is required: BulkCatalog/CollectionReindexTask reads via
-# CatalogsProtocol (catalogs_proto.search / list_collections). Without it,
-# the Cloud Run Job container's module discovery leaves Catalogs:None and
-# the bulk reindex tasks crash on get_protocol(CatalogsProtocol) is None.
-# Confirmed against `dynastore-elasticsearch-indexer-cq7k9` exec on 2026-04-29.
+# Tasks below USE CatalogsProtocol or import from modules.catalog at runtime.
+# Without module_catalog the Cloud Run Job container's module-discovery loop
+# leaves Catalogs:None and the task crashes on get_protocol(CatalogsProtocol).
+# Same root cause as B6 audit on `dynastore-elasticsearch-indexer-cq7k9` exec
+# (2026-04-29, fixed in PR #131) — applied prophylactically here to the other
+# catalog-dependent workers before they hit the same failure post-deploy.
+# (`dwh_join`, `export_features` use raw get_engine() SQL only — no need.)
+worker_task_tiles_preseed = ["dynastore[task_base,module_catalog,tiles,crs]", "morecantile>=7.0.3,<8"]
+worker_task_gdal = ["dynastore[task_base,module_catalog,gdal]"]
+worker_task_dimensions_materialize = ["dynastore[task_base,module_catalog,extension_dimensions]"]
 worker_task_elasticsearch_indexer = ["dynastore[task_base,module_catalog,elasticsearch,task_elasticsearch_indexer_deps]"]
 
 # ==========================================================================
