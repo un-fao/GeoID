@@ -6,6 +6,7 @@ import pytest
 from dynastore.tools.identifiers import generate_task_id
 
 from dynastore.tasks import hydrate_task_payload
+from dynastore.modules.processes.models import ExecuteRequest
 from dynastore.tasks.tiles_preseed.task import TilePreseedTask
 from dynastore.tasks.tiles_preseed.models import TilePreseedRequest
 from dynastore.tasks.elasticsearch.tasks import (
@@ -36,15 +37,29 @@ class TestHydrateTaskPayload:
     """Verify hydration converts dict inputs to the correct Pydantic model."""
 
     def test_tile_preseed_request_hydrated(self):
-        """TilePreseedTask (ProcessTaskProtocol subclass) should hydrate inputs."""
+        """TilePreseedTask (ProcessTaskProtocol subclass) hydrates inputs as
+        ``ExecuteRequest`` — the OGC Process wrapper. The user-supplied dict
+        (catalog_id + collection_id) lives under ``payload.inputs.inputs``;
+        the task's body validates that inner dict against ``TilePreseedRequest``.
+        Same wrap shape as DwhJoinExportTask and ExportFeaturesTask after the
+        Phase H per-task unwrap fixes (PR #139)."""
         task = TilePreseedTask.__new__(TilePreseedTask)
+        # OGC Process inputs are wrapped: outer `inputs` is the ExecuteRequest
+        # body; inner `inputs` is the user-supplied request dict that the task
+        # body parses against its own request model.
         raw = _make_raw_payload({
-            "catalog_id": "cat_test",
-            "collection_id": "col_test",
+            "inputs": {
+                "catalog_id": "cat_test",
+                "collection_id": "col_test",
+            },
         })
         payload = hydrate_task_payload(task, raw)
-        assert isinstance(payload.inputs, TilePreseedRequest)
-        assert payload.inputs.catalog_id == "cat_test"
+        assert isinstance(payload.inputs, ExecuteRequest)
+        assert payload.inputs.inputs["catalog_id"] == "cat_test"
+        # The task body would do: TilePreseedRequest.model_validate(payload.inputs.inputs)
+        validated = TilePreseedRequest.model_validate(payload.inputs.inputs)
+        assert validated.catalog_id == "cat_test"
+        assert validated.collection_id == "col_test"
 
     def test_elasticsearch_index_hydrated(self):
         task = ElasticsearchIndexTask.__new__(ElasticsearchIndexTask)
