@@ -17,6 +17,12 @@ from httpx import AsyncClient
 
 
 MARKER = pytest.mark.enable_extensions("stac", "assets", "features", "search")
+# The search extension reaches into Elasticsearch directly via
+# `_get_es()` (search_service.py:288). Without the ElasticsearchModule
+# registered in `enable_modules`, the in-process app loads the search
+# extension but the ES client is never instantiated — every search
+# call returns 500: "Elasticsearch client is not initialized."
+ES_MODULE_MARKER = pytest.mark.enable_modules("elasticsearch")
 ES_MARKER = pytest.mark.elasticsearch
 
 
@@ -26,6 +32,7 @@ ES_MARKER = pytest.mark.elasticsearch
 
 
 @MARKER
+@ES_MODULE_MARKER
 @ES_MARKER
 @pytest.mark.asyncio
 async def test_search_get_empty_returns_feature_collection(
@@ -40,6 +47,7 @@ async def test_search_get_empty_returns_feature_collection(
 
 
 @MARKER
+@ES_MODULE_MARKER
 @ES_MARKER
 @pytest.mark.asyncio
 async def test_search_get_with_q(
@@ -54,6 +62,7 @@ async def test_search_get_with_q(
 
 
 @MARKER
+@ES_MODULE_MARKER
 @ES_MARKER
 @pytest.mark.asyncio
 async def test_search_get_with_bbox(
@@ -69,6 +78,7 @@ async def test_search_get_with_bbox(
 
 
 @MARKER
+@ES_MODULE_MARKER
 @ES_MARKER
 @pytest.mark.asyncio
 async def test_search_get_with_limit(
@@ -80,6 +90,7 @@ async def test_search_get_with_limit(
 
 
 @MARKER
+@ES_MODULE_MARKER
 @ES_MARKER
 @pytest.mark.asyncio
 async def test_search_get_with_collections_filter(
@@ -101,6 +112,7 @@ async def test_search_get_with_collections_filter(
 
 
 @MARKER
+@ES_MODULE_MARKER
 @ES_MARKER
 @pytest.mark.asyncio
 async def test_search_post_empty_body(
@@ -114,6 +126,7 @@ async def test_search_post_empty_body(
 
 
 @MARKER
+@ES_MODULE_MARKER
 @ES_MARKER
 @pytest.mark.asyncio
 async def test_search_post_with_collections(
@@ -130,6 +143,7 @@ async def test_search_post_with_collections(
 
 
 @MARKER
+@ES_MODULE_MARKER
 @ES_MARKER
 @pytest.mark.asyncio
 async def test_search_post_with_bbox(
@@ -143,6 +157,7 @@ async def test_search_post_with_bbox(
 
 
 @MARKER
+@ES_MODULE_MARKER
 @ES_MARKER
 @pytest.mark.asyncio
 async def test_search_post_with_ids(
@@ -163,6 +178,7 @@ async def test_search_post_with_ids(
 
 
 @MARKER
+@ES_MODULE_MARKER
 @ES_MARKER
 @pytest.mark.asyncio
 async def test_search_catalogs_get(
@@ -175,6 +191,7 @@ async def test_search_catalogs_get(
 
 
 @MARKER
+@ES_MODULE_MARKER
 @ES_MARKER
 @pytest.mark.asyncio
 async def test_search_catalogs_get_with_q(
@@ -194,6 +211,7 @@ async def test_search_catalogs_get_with_q(
 
 
 @MARKER
+@ES_MODULE_MARKER
 @ES_MARKER
 @pytest.mark.asyncio
 async def test_search_collections_get(
@@ -205,6 +223,7 @@ async def test_search_collections_get(
 
 
 @MARKER
+@ES_MODULE_MARKER
 @ES_MARKER
 @pytest.mark.asyncio
 async def test_search_collections_get_with_q(
