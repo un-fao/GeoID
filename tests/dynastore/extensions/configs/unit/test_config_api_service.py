@@ -643,3 +643,103 @@ def test_abstract_subclass_without_address_ok():
         is_abstract_base: ClassVar[bool] = True
 
     assert _AbstractIntermediate.is_abstract_base is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.5d: routing_resolution meta block at collection scope.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_routing_resolution_public_mode():
+    """When ``is_collection_private`` returns False, items operations
+    resolve to the PUBLIC ES driver with a clear reason string.
+    """
+    with patch(
+        "dynastore.modules.elasticsearch.es_collection_config.is_collection_private",
+        new=AsyncMock(return_value=False),
+    ):
+        rr = await ConfigApiService._build_routing_resolution("cat", "col")
+    assert rr["items"]["WRITE"]["driver_id"] == "items_elasticsearch_driver"
+    assert rr["items"]["READ"]["driver_id"] == "items_elasticsearch_driver"
+    assert rr["items"]["SEARCH"]["driver_id"] == "items_elasticsearch_driver"
+    assert "private mode not active" in rr["items"]["WRITE"]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_routing_resolution_private_mode():
+    """When ``is_collection_private`` returns True, items operations
+    resolve to the PRIVATE ES driver — answers the original "where do
+    my items go?" operator question.
+    """
+    with patch(
+        "dynastore.modules.elasticsearch.es_collection_config.is_collection_private",
+        new=AsyncMock(return_value=True),
+    ):
+        rr = await ConfigApiService._build_routing_resolution("cat", "col")
+    assert rr["items"]["WRITE"]["driver_id"] == "items_elasticsearch_private_driver"
+    assert rr["items"]["READ"]["driver_id"] == "items_elasticsearch_private_driver"
+    assert rr["items"]["SEARCH"]["driver_id"] == "items_elasticsearch_private_driver"
+    assert "private mode active" in rr["items"]["WRITE"]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_routing_resolution_failure_returns_empty():
+    """Any failure resolving private-mode (no ConfigsProtocol, ES not
+    configured, etc.) is non-fatal — returns ``{}`` so the deep view
+    still renders without the routing_resolution block.
+    """
+    with patch(
+        "dynastore.modules.elasticsearch.es_collection_config.is_collection_private",
+        new=AsyncMock(side_effect=RuntimeError("boom")),
+    ):
+        rr = await ConfigApiService._build_routing_resolution("cat", "col")
+    assert rr == {}
+
+
+@pytest.mark.asyncio
+async def test_compose_collection_config_includes_routing_resolution_when_meta_true(
+    mock_config_service,
+):
+    """``?meta=true`` populates the new ``routing_resolution`` field on
+    the response (alongside the existing per-class ``meta`` dict).
+    """
+    svc = ConfigApiService(config_service=mock_config_service)
+    with patch.object(svc, "_get_effective_configs",
+                      new=AsyncMock(return_value=({}, {}))), \
+         patch.object(svc, "_build_routing_refs", new=MagicMock()), \
+         patch(
+             "dynastore.modules.elasticsearch.es_collection_config.is_collection_private",
+             new=AsyncMock(return_value=True),
+         ):
+        r = await svc.compose_collection_config(
+            base_url="http://test", catalog_id="c", collection_id="x",
+            depth=0, meta=True,
+        )
+    assert r.routing_resolution is not None
+    assert r.routing_resolution["items"]["WRITE"]["driver_id"] == "items_elasticsearch_private_driver"
+
+
+@pytest.mark.asyncio
+async def test_compose_collection_config_no_routing_resolution_when_meta_false(
+    mock_config_service,
+):
+    """``?meta=false`` (default) keeps the cheap path cheap — no async
+    ``is_collection_private`` call, ``routing_resolution`` is None.
+    """
+    svc = ConfigApiService(config_service=mock_config_service)
+    # is_collection_private must NOT be awaited under meta=False
+    privacy_mock = AsyncMock(side_effect=AssertionError(
+        "compose_collection_config(meta=False) must NOT call is_collection_private"
+    ))
+    with patch.object(svc, "_get_effective_configs",
+                      new=AsyncMock(return_value=({}, {}))), \
+         patch.object(svc, "_build_routing_refs", new=MagicMock()), \
+         patch(
+             "dynastore.modules.elasticsearch.es_collection_config.is_collection_private",
+             new=privacy_mock,
+         ):
+        r = await svc.compose_collection_config(
+            base_url="http://test", catalog_id="c", collection_id="x",
+            depth=0, meta=False,
+        )
+    assert r.routing_resolution is None

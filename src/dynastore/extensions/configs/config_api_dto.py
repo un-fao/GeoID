@@ -112,6 +112,19 @@ class CollectionConfigResponse(BaseModel):
             "?meta=true is requested."
         ),
     )
+    routing_resolution: Optional[Dict[str, Dict[str, Dict[str, str]]]] = Field(
+        None,
+        description=(
+            "Per-entity, per-op driver resolution: "
+            "``{entity: {op: {driver_id, reason}}}``. Tells the operator "
+            "WHICH driver fires for each operation at this collection — "
+            "factoring in private-mode resolution "
+            "(``ElasticsearchCatalogConfig.private`` + per-collection "
+            "override).  Populated only when ``?meta=true``.  Currently "
+            "covers ``items.{WRITE,READ,SEARCH}``; other entities will "
+            "be added as their resolvers stabilise."
+        ),
+    )
     categories: Optional[Dict[str, ConfigPage]] = Field(
         None,
         description="Paginated child categories: 'assets'. Null if depth=0.",
