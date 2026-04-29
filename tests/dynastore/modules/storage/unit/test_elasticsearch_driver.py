@@ -186,6 +186,40 @@ class TestItemsElasticsearchPrivateDriverMeta:
         with pytest.raises(SoftDeleteNotSupportedError):
             await driver.drop_storage("cat1", "col1", soft=True)
 
+    def test_typed_driver_bind_resolves(self):
+        """Regression: ItemsElasticsearchPrivateDriver previously inherited
+        only from ``(_ElasticsearchBase, ModuleProtocol)`` and was therefore
+        invisible to ``list_registered_configs()`` and the
+        ``/configs/registry`` deep-view.  After rebasing onto
+        ``TypedDriver[ItemsElasticsearchPrivateDriverConfig]`` the pair
+        registers automatically.  Pinning here so a future refactor that
+        accidentally drops the TypedDriver base is caught at unit-test time.
+        """
+        from dynastore.models.protocols.typed_driver import _registered_pairs
+        from dynastore.modules.storage.driver_config import (
+            ItemsElasticsearchPrivateDriverConfig,
+        )
+
+        pairs = _registered_pairs()
+        assert ItemsElasticsearchPrivateDriverConfig in pairs
+        assert pairs[ItemsElasticsearchPrivateDriverConfig] is ItemsElasticsearchPrivateDriver
+        assert ItemsElasticsearchPrivateDriverConfig.class_key() == "items_elasticsearch_private_driver"
+
+    def test_visible_in_registry(self):
+        """The wire identity is exposed in ``list_registered_configs()`` so
+        the ``/configs/registry`` and tree-view endpoints surface the driver.
+        """
+        from dynastore.modules.db_config.platform_config_service import (
+            list_registered_configs,
+        )
+        from dynastore.modules.storage.driver_config import (
+            ItemsElasticsearchPrivateDriverConfig,
+        )
+
+        configs = list_registered_configs()
+        assert "items_elasticsearch_private_driver" in configs
+        assert configs["items_elasticsearch_private_driver"] is ItemsElasticsearchPrivateDriverConfig
+
 
 class TestQueryRequestToEs:
     def test_empty_request(self):

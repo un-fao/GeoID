@@ -613,6 +613,33 @@ class ItemsElasticsearchDriverConfig(CollectionDriverConfig):
     )
 
 
+class ItemsElasticsearchPrivateDriverConfig(CollectionDriverConfig):
+    """Tenant-scoped Elasticsearch driver config (a.k.a. "private").
+
+    Pairs with :class:`~dynastore.modules.storage.drivers.elasticsearch_private.driver.ItemsElasticsearchPrivateDriver`,
+    which writes the full feature (geometry + properties + external_id)
+    into a per-tenant index named
+    ``{index_prefix}-{catalog_id}-private-items`` (catalog-scoped, not
+    collection-scoped — the same index is shared across all collections of
+    a catalog).  DENY access policies are managed by the driver's own
+    lifecycle.
+
+    The driver currently reads its index prefix from the platform-wide
+    env var ``STAC_ITEMS_INDEX_PREFIX`` via
+    ``modules.elasticsearch.client.get_index_prefix``.  No per-collection
+    field is exposed today; the config exists primarily as the TypedDriver
+    identity marker so the driver appears in
+    :func:`list_registered_configs` and the ``/configs/registry`` /
+    ``/configs/.../plugins/items_elasticsearch_private_driver`` deep-view
+    routes — fixing the visibility gap that previously hid this driver
+    from the operator's deep view.
+    """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "drivers", "items")
+    _visibility: ClassVar[Optional[str]] = "collection"
+
+    model_config = ConfigDict(extra="allow")
+
+
 class ItemsDuckdbDriverConfig(CollectionDriverConfig):
     """DuckDB collection driver config.
 
