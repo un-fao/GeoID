@@ -1101,9 +1101,10 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
         response: Response,
         conn: AsyncConnection = Depends(get_async_connection),
     ):
+        from dynastore.modules.storage.driver_config import CollectionWritePolicy
         policy_source = (
             f"/configs/catalogs/{catalog_id}/collections/{collection_id}"
-            f"/classes/CollectionWritePolicy/effective"
+            f"/plugins/{CollectionWritePolicy.class_key()}"
         )
         accepted_rows, rejections, was_single, batch_size = await self._ingest_items(
             catalog_id,

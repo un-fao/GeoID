@@ -76,9 +76,9 @@ def register_web_policies():
             "/web/health",
             "/.well-known/.*",
             "/processes.*",
-            "/configs/schemas",
-            f"/configs/classes/{WebConfig.class_key()}",
-            "/configs/plugins",
+            "/configs/registry",
+            "/configs/registry/.*",
+            f"/configs/plugins/{WebConfig.class_key()}",
         ],
         effect="ALLOW",
     )
@@ -864,7 +864,7 @@ async function demoAction(action) {
 
         Lists every Pydantic-backed plugin config (routing, drivers,
         anything else that registers a schema) and renders its form
-        from the ``/configs/schemas`` response.
+        from the ``/configs/registry`` response.
         """
         static_dir = os.path.join(os.path.dirname(__file__), "static", "admin")
         html_path = os.path.join(static_dir, "configuration.html")

@@ -1,5 +1,5 @@
 {
-  "class_key": "TaskRoutingConfig",
+  "class_key": "task_routing_config",
   "value": {
     "enabled": true,
     "routing": {
