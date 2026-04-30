@@ -30,7 +30,7 @@ The handler is registered in ``ConfigsService.lifespan`` so the wrapper
 is local to the configs extension; no global side effects.
 """
 
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, List, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -104,10 +104,18 @@ class ProblemException(Exception):
     Subclasses :class:`Exception` (not :class:`HTTPException`) so the
     custom handler picks it up before FastAPI's default exception path
     can convert it to a plain JSON body.
+
+    ``status_code`` and ``detail`` are exposed at the exception level so
+    the global ``GlobalExceptionHandlingMiddleware`` (which runs *before*
+    FastAPI's per-class handler dispatch) can read them via the existing
+    ``getattr(result, "status_code", 500)`` path and avoid demoting a
+    well-formed 4xx Problem Details to a generic 500.
     """
 
     def __init__(self, problem: ProblemDetails) -> None:
         self.problem = problem
+        self.status_code = problem.status
+        self.detail = problem.detail or problem.title
         super().__init__(problem.title)
 
 

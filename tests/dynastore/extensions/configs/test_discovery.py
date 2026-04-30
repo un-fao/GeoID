@@ -86,17 +86,22 @@ class TestGetConfigSchema:
     @pytest.mark.asyncio
     async def test_known_class_key_returns_entry(self, service):
         result = await service.get_config_schema("collection_routing_config")
-        assert result["class_key"] == "collection_routing_config"
+        assert result["plugin_id"] == "collection_routing_config"
         assert "json_schema" in result
         assert "description" in result
         assert "scope" in result
 
     @pytest.mark.asyncio
     async def test_unknown_class_key_raises_404(self, service):
-        from fastapi import HTTPException
-        with pytest.raises(HTTPException) as exc_info:
+        # The configs extension raises an RFC 9457 ProblemException directly
+        # (subclass of Exception, not HTTPException).  ProblemException now
+        # exposes ``status_code`` at the exception level too so HTTPException-
+        # style attribute access still works for callers that need it.
+        from dynastore.extensions.configs.problem_details import ProblemException
+        with pytest.raises(ProblemException) as exc_info:
             await service.get_config_schema("no_such_config_xyzzy")
         assert exc_info.value.status_code == 404
+        assert exc_info.value.problem.status == 404
 
     @pytest.mark.asyncio
     async def test_write_policy_defaults_schema_no_external_id_field(self, service):

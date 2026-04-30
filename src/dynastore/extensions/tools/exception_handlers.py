@@ -34,12 +34,11 @@ Integration with FastAPI:
 import logging
 import functools
 from contextlib import asynccontextmanager
-from typing import Callable, Optional, List, Dict, Any, Union, TypeVar, Awaitable
+from typing import Callable, Optional, List, Dict, Any, TypeVar, Awaitable
 from fastapi import FastAPI, HTTPException, status, Response, Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from fastapi.responses import JSONResponse
 import traceback
-import json
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +71,35 @@ class ExceptionHandler:
             HTTPException or Response with appropriate status code and detail, or None to defer to next handler
         """
         raise NotImplementedError
+
+
+class ProblemExceptionHandler(ExceptionHandler):
+    """Surfaces ``ProblemException`` (RFC 9457) with its explicit status.
+
+    Without this, the global middleware demotes every 4xx ``ProblemException``
+    raised by the configs extension to a generic 500 because the registry
+    falls through to its default ``HTTPException(500, "An unexpected error
+    occurred.")`` fallback. The configs extension's ``problem_exception_handler``
+    (registered with FastAPI directly) is bypassed because the middleware
+    catches the exception before FastAPI's per-class dispatch can fire.
+    """
+
+    def can_handle(self, exception: Exception) -> bool:
+        from dynastore.extensions.configs.problem_details import ProblemException
+
+        return isinstance(exception, ProblemException)
+
+    def handle(
+        self, exception: Exception, context: Optional[Dict[str, Any]] = None
+    ) -> Optional[HTTPException]:
+        from dynastore.extensions.configs.problem_details import ProblemException
+
+        assert isinstance(exception, ProblemException)
+        problem = exception.problem
+        return HTTPException(
+            status_code=problem.status,
+            detail=problem.detail or problem.title,
+        )
 
 
 class ConflictExceptionHandler(ExceptionHandler):
@@ -307,6 +335,9 @@ class ExceptionHandlerRegistry:
         """Register built-in handlers in order of specificity."""
         # Register in specific → generic order
 
+        # ProblemException carries an explicit RFC 9457 status — must run
+        # first so its 4xx isn't shadowed by a more generic handler downstream.
+        self.register(ProblemExceptionHandler())
         self.register(ConflictExceptionHandler())
         self.register(ImmutableConfigExceptionHandler())
         self.register(PluginNotFoundExceptionHandler())

@@ -22,13 +22,13 @@ def test_collection_self_registers_missing_metadata_drivers():
     cfg = CollectionRoutingConfig()
     cfg.metadata.operations.clear()
 
-    metadata_index = {"PgCoreMeta": object(), "PgStacMeta": object()}
+    metadata_index = {"pg_core_meta": object(), "pg_stac_meta": object()}
     _self_register_metadata_drivers(cfg, metadata_index)
 
     write_ids = {e.driver_id for e in cfg.metadata.operations[Operation.WRITE]}
     read_ids = {e.driver_id for e in cfg.metadata.operations[Operation.READ]}
-    assert write_ids == {"PgCoreMeta", "PgStacMeta"}
-    assert read_ids == {"PgCoreMeta", "PgStacMeta"}
+    assert write_ids == {"pg_core_meta", "pg_stac_meta"}
+    assert read_ids == {"pg_core_meta", "pg_stac_meta"}
 
 
 def test_collection_preserves_operator_supplied_entry():
@@ -38,21 +38,21 @@ def test_collection_preserves_operator_supplied_entry():
     cfg.metadata.operations.clear()
     cfg.metadata.operations[Operation.WRITE] = [
         OperationDriverEntry(
-            driver_id="PgCoreMeta", on_failure=FailurePolicy.WARN,
+            driver_id="pg_core_meta", on_failure=FailurePolicy.WARN,
         ),
     ]
 
-    metadata_index = {"PgCoreMeta": object(), "PgStacMeta": object()}
+    metadata_index = {"pg_core_meta": object(), "pg_stac_meta": object()}
     _self_register_metadata_drivers(cfg, metadata_index)
 
     write_entries = {
         e.driver_id: e for e in cfg.metadata.operations[Operation.WRITE]
     }
     # Operator's PgCoreMeta entry preserved with on_failure=WARN.
-    assert write_entries["PgCoreMeta"].on_failure == FailurePolicy.WARN
+    assert write_entries["pg_core_meta"].on_failure == FailurePolicy.WARN
     # PgStacMeta was missing and got auto-appended with defaults.
-    assert "PgStacMeta" in write_entries
-    assert write_entries["PgStacMeta"].on_failure == FailurePolicy.FATAL
+    assert "pg_stac_meta" in write_entries
+    assert write_entries["pg_stac_meta"].on_failure == FailurePolicy.FATAL
 
 
 def test_collection_no_op_when_all_drivers_already_listed():
@@ -60,15 +60,15 @@ def test_collection_no_op_when_all_drivers_already_listed():
     cfg = CollectionRoutingConfig()
     cfg.metadata.operations.clear()
     cfg.metadata.operations[Operation.WRITE] = [
-        OperationDriverEntry(driver_id="PgCoreMeta"),
-        OperationDriverEntry(driver_id="PgStacMeta"),
+        OperationDriverEntry(driver_id="pg_core_meta"),
+        OperationDriverEntry(driver_id="pg_stac_meta"),
     ]
     cfg.metadata.operations[Operation.READ] = [
-        OperationDriverEntry(driver_id="PgCoreMeta"),
-        OperationDriverEntry(driver_id="PgStacMeta"),
+        OperationDriverEntry(driver_id="pg_core_meta"),
+        OperationDriverEntry(driver_id="pg_stac_meta"),
     ]
 
-    metadata_index = {"PgCoreMeta": object(), "PgStacMeta": object()}
+    metadata_index = {"pg_core_meta": object(), "pg_stac_meta": object()}
     _self_register_metadata_drivers(cfg, metadata_index)
 
     assert len(cfg.metadata.operations[Operation.WRITE]) == 2
@@ -80,13 +80,13 @@ def test_catalog_self_registers_missing_drivers():
     cfg = CatalogRoutingConfig()
     cfg.operations.clear()
 
-    metadata_index = {"CatalogPgCore": object(), "CatalogPgStac": object()}
+    metadata_index = {"catalog_pg_core": object(), "catalog_pg_stac": object()}
     _self_register_metadata_drivers(cfg, metadata_index)
 
     write_ids = {e.driver_id for e in cfg.operations[Operation.WRITE]}
     read_ids = {e.driver_id for e in cfg.operations[Operation.READ]}
-    assert write_ids == {"CatalogPgCore", "CatalogPgStac"}
-    assert read_ids == {"CatalogPgCore", "CatalogPgStac"}
+    assert write_ids == {"catalog_pg_core", "catalog_pg_stac"}
+    assert read_ids == {"catalog_pg_core", "catalog_pg_stac"}
 
 
 def test_self_registration_skips_zero_drivers():
@@ -138,7 +138,7 @@ def test_indexer_marker_lands_in_INDEX_with_async_warn_defaults():
 
     entries = target_ops.get(Operation.INDEX, [])
     assert len(entries) == 1
-    assert entries[0].driver_id == "_CollectionES"
+    assert entries[0].driver_id == "_collection_es"
     assert entries[0].on_failure == FailurePolicy.WARN
     assert entries[0].write_mode == WriteMode.ASYNC
 
@@ -244,7 +244,7 @@ def test_end_to_end_marker_to_INDEX_entry_via_real_apply_handler():
 
         index_entries = cfg.operations.get(Operation.INDEX, [])
         assert any(
-            e.driver_id == "_DummyCatalogIndexer"
+            e.driver_id == "_dummy_catalog_indexer"
             and e.on_failure == FailurePolicy.WARN
             and e.write_mode == WriteMode.ASYNC
             for e in index_entries
@@ -254,7 +254,7 @@ def test_end_to_end_marker_to_INDEX_entry_via_real_apply_handler():
         # Sanity: ensure cleanup so other tests don't see this stub.
         from dynastore.tools.discovery import get_protocols
         assert not any(
-            isinstance(d, CatalogIndexer) and type(d).__name__ == "_DummyCatalogIndexer"
+            isinstance(d, CatalogIndexer) and type(d).__name__ == "_dummy_catalog_indexer"
             for d in get_protocols(CatalogIndexer)
         )
 
@@ -271,7 +271,7 @@ def test_indexer_marker_skips_already_listed_driver():
         is_asset_indexer: ClassVar[bool] = True
 
     operator_entry = OperationDriverEntry(
-        driver_id="_AssetES", on_failure=FailurePolicy.FATAL,
+        driver_id="_asset_es", on_failure=FailurePolicy.FATAL,
     )
     target_ops: dict = {Operation.INDEX: [operator_entry]}
 
@@ -322,7 +322,7 @@ def test_searcher_helper_picks_up_drivers_with_search_capability():
         _self_register_searchers_into(target_ops, CatalogMetadataStore)
 
     ids = {e.driver_id for e in target_ops.get(Operation.SEARCH, [])}
-    assert ids == {"_ESCat", "_VectorBackend"}
+    assert ids == {"_es_cat", "_vector_backend"}
 
 
 def test_searcher_helper_skips_drivers_without_search_capability():
@@ -364,7 +364,7 @@ def test_searcher_helper_idempotent():
     class _ESCat:
         capabilities = frozenset({MetadataCapability.SEARCH_FULLTEXT})
 
-    op_entry = OperationDriverEntry(driver_id="_ESCat", hints={"custom"})
+    op_entry = OperationDriverEntry(driver_id="_es_cat", hints={"custom"})
     target_ops: dict = {Operation.SEARCH: [op_entry]}
 
     with patch("dynastore.tools.discovery.get_protocols",
@@ -408,8 +408,8 @@ def test_catalog_routing_validator_augments_INDEX_and_SEARCH():
 
     index_ids = {e.driver_id for e in cfg.operations.get(Operation.INDEX, [])}
     search_ids = {e.driver_id for e in cfg.operations.get(Operation.SEARCH, [])}
-    assert "_CatES" in index_ids
-    assert "_CatES" in search_ids
+    assert "_cat_es" in index_ids
+    assert "_cat_es" in search_ids
     # Default WRITE/READ entries unchanged.
     write_ids = {e.driver_id for e in cfg.operations[Operation.WRITE]}
     assert write_ids == {"catalog_core_postgresql_driver", "catalog_stac_postgresql_driver"}
@@ -445,8 +445,8 @@ def test_collection_routing_validator_augments_metadata_INDEX_and_SEARCH():
 
     index_ids = {e.driver_id for e in cfg.metadata.operations.get(Operation.INDEX, [])}
     search_ids = {e.driver_id for e in cfg.metadata.operations.get(Operation.SEARCH, [])}
-    assert "_ColES" in index_ids
-    assert "_ColES" in search_ids
+    assert "_col_es" in index_ids
+    assert "_col_es" in search_ids
 
 
 def test_collection_routing_validator_augments_items_tier_INDEX_and_SEARCH():
@@ -474,11 +474,11 @@ def test_collection_routing_validator_augments_items_tier_INDEX_and_SEARCH():
     # Top-level operations augmented (NOT metadata.operations).
     top_index = {e.driver_id for e in cfg.operations.get(Operation.INDEX, [])}
     top_search = {e.driver_id for e in cfg.operations.get(Operation.SEARCH, [])}
-    assert "_ItemsES" in top_index
-    assert "_ItemsES" in top_search
+    assert "_items_es" in top_index
+    assert "_items_es" in top_search
     # Default WRITE/READ entries unchanged.
     write_ids = {e.driver_id for e in cfg.operations[Operation.WRITE]}
-    assert write_ids == {"items_postgresql_driver", "_ItemsES"} or \
+    assert write_ids == {"items_postgresql_driver", "_items_es"} or \
            "items_postgresql_driver" in write_ids
 
 
@@ -507,8 +507,8 @@ def test_collection_items_tier_search_caps_filter():
         cfg = CollectionRoutingConfig()
 
     top_search = {e.driver_id for e in cfg.operations.get(Operation.SEARCH, [])}
-    assert "_StorageSpatialSearcher" in top_search
-    assert "_MetadataOnlySearcher" not in top_search
+    assert "_storage_spatial_searcher" in top_search
+    assert "_metadata_only_searcher" not in top_search
 
 
 def test_asset_routing_validator_augments_INDEX_only():
@@ -528,7 +528,7 @@ def test_asset_routing_validator_augments_INDEX_only():
         cfg = AssetRoutingConfig()
 
     index_ids = {e.driver_id for e in cfg.operations.get(Operation.INDEX, [])}
-    assert "_AssetES" in index_ids
+    assert "_asset_es" in index_ids
     assert Operation.SEARCH not in cfg.operations or cfg.operations[Operation.SEARCH] == []
 
 
@@ -625,7 +625,7 @@ def test_metadata_driver_helper_marks_entries_as_auto():
     cfg = CollectionRoutingConfig()
     cfg.metadata.operations.clear()
 
-    metadata_index = {"PgCoreMeta": object()}
+    metadata_index = {"pg_core_meta": object()}
     _self_register_metadata_drivers(cfg, metadata_index)
 
     for op in (Operation.WRITE, Operation.READ):
@@ -654,7 +654,7 @@ def test_operator_entry_preserved_alongside_auto_entry():
         is_collection_indexer: ClassVar[bool] = True
 
     operator_entry = OperationDriverEntry(
-        driver_id="_OpDriver", on_failure=FailurePolicy.FATAL,
+        driver_id="_op_driver", on_failure=FailurePolicy.FATAL,
     )
     target_ops: dict = {Operation.INDEX: [operator_entry]}
 
@@ -664,10 +664,10 @@ def test_operator_entry_preserved_alongside_auto_entry():
 
     by_id = {e.driver_id: e for e in target_ops[Operation.INDEX]}
     # _OpDriver entry preserved with source=operator (default).
-    assert by_id["_OpDriver"].source == "operator"
-    assert by_id["_OpDriver"].on_failure == FailurePolicy.FATAL
+    assert by_id["_op_driver"].source == "operator"
+    assert by_id["_op_driver"].on_failure == FailurePolicy.FATAL
     # _AutoDriver was missing so the helper appended it with source=auto.
-    assert by_id["_AutoDriver"].source == "auto"
+    assert by_id["_auto_driver"].source == "auto"
 
 
 def test_source_field_serialises_in_model_dump():
@@ -790,7 +790,7 @@ def test_transformer_helper_picks_up_entity_transform_protocol_implementers():
         _self_register_transformers_into(target_ops)
 
     ids = {e.driver_id for e in target_ops.get(Operation.TRANSFORM, [])}
-    assert ids == {"TransformerOne", "TransformerTwo"}
+    assert ids == {"transformer_one", "transformer_two"}
 
 
 def test_transformer_helper_idempotent_and_preserves_operator_entry():
@@ -805,7 +805,7 @@ def test_transformer_helper_idempotent_and_preserves_operator_entry():
         async def transform_for_index(self, entity, **_): return entity
         async def restore_from_index(self, doc, **_): return doc
 
-    op_entry = OperationDriverEntry(driver_id="CustomTransformer", hints={"operator"})
+    op_entry = OperationDriverEntry(driver_id="custom_transformer", hints={"operator"})
     target_ops: dict = {Operation.TRANSFORM: [op_entry]}
 
     with patch("dynastore.tools.discovery.get_protocols",

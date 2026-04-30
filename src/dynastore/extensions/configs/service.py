@@ -331,13 +331,16 @@ class ConfigsService(ExtensionProtocol):
             }
         return schemas
 
-    async def get_config_schema(self, class_key: str) -> Dict[str, Any]:
+    async def get_config_schema(self, plugin_id: str) -> Dict[str, Any]:
         """Return full JSON Schema, description, and example for a single config class (M9).
+
+        ``plugin_id`` is the snake_case ``cls.class_key()`` of a registered
+        :class:`PluginConfig` subclass (e.g. ``"collection_routing_config"``).
 
         Response shape::
 
             {
-                "class_key": "CollectionRoutingConfig",
+                "plugin_id": "collection_routing_config",
                 "json_schema": {...},
                 "description": "...",
                 "scope": "platform_waterfall",
@@ -345,13 +348,13 @@ class ConfigsService(ExtensionProtocol):
         """
         from dynastore.modules.storage.schema_types import ConfigScopeMixin
 
-        config_class = resolve_config_class(class_key)
+        config_class = resolve_config_class(plugin_id)
         if config_class is None:
-            raise problem_details.plugin_not_registered(class_key)
+            raise problem_details.plugin_not_registered(plugin_id)
 
         scope = getattr(config_class, "config_scope", "platform_waterfall")
         return {
-            "class_key": class_key,
+            "plugin_id": plugin_id,
             "json_schema": config_class.model_json_schema(),
             "description": (config_class.__doc__ or "").strip(),
             "scope": scope,

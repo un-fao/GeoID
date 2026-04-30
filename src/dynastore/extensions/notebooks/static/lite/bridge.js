@@ -288,6 +288,7 @@
         if (!ctx || !ctx.baseUrl) return;
         const safeBase = (ctx.baseUrl || '').replace(/'/g, "\\'");
         const safeCatalog = (ctx.catalogCode || '').replace(/'/g, "\\'");
+        const safeToken = (ctx.token || '').replace(/'/g, "\\'");
         const stacJson = JSON.stringify(ctx.stacItems || {}).replace(/'/g, "\\'");
         const code = [
             'import json, os',
@@ -296,9 +297,10 @@
             'except ImportError: pass',
             "os.environ['DYNASTORE_BASE_URL'] = '" + safeBase + "'",
             "os.environ['DYNASTORE_CATALOG'] = '" + safeCatalog + "'",
+            "os.environ['DYNASTORE_TOKEN'] = '" + safeToken + "'",
             'try:',
             "    STAC_CONTEXT = json.loads('" + stacJson + "')",
-            "    print(f\"DynaStore: base={os.environ['DYNASTORE_BASE_URL']}\")",
+            "    print(f\"DynaStore: base={os.environ['DYNASTORE_BASE_URL']} token={'set' if os.environ['DYNASTORE_TOKEN'] else 'EMPTY'}\")",
             'except Exception as e:',
             '    STAC_CONTEXT = {}',
         ].join('\n');

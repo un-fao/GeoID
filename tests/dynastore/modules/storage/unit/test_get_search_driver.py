@@ -26,40 +26,40 @@ def _ops_with_search(*driver_ids):
 
 @pytest.mark.asyncio
 async def test_returns_first_driver_when_no_hint():
-    fake = _ops_with_search("EsItemsDriver", "PgItemsDriver")
+    fake = _ops_with_search("es_items_driver", "pg_items_driver")
     with patch(
         "dynastore.modules.storage.routing_config._resolve_entity_operations",
         return_value=fake,
     ):
         result = await get_search_driver("c", entity="item", collection_id="col")
-    assert result == "EsItemsDriver"
+    assert result == "es_items_driver"
 
 
 @pytest.mark.asyncio
 async def test_hint_overrides_default_when_in_list():
-    fake = _ops_with_search("EsItemsDriver", "PgItemsDriver")
+    fake = _ops_with_search("es_items_driver", "pg_items_driver")
     with patch(
         "dynastore.modules.storage.routing_config._resolve_entity_operations",
         return_value=fake,
     ):
         result = await get_search_driver(
-            "c", entity="item", collection_id="col", driver_hint="PgItemsDriver",
+            "c", entity="item", collection_id="col", driver_hint="pg_items_driver",
         )
-    assert result == "PgItemsDriver"
+    assert result == "pg_items_driver"
 
 
 @pytest.mark.asyncio
 async def test_hint_not_in_list_falls_back_to_default_with_warning(caplog):
-    fake = _ops_with_search("EsItemsDriver", "PgItemsDriver")
+    fake = _ops_with_search("es_items_driver", "pg_items_driver")
     with patch(
         "dynastore.modules.storage.routing_config._resolve_entity_operations",
         return_value=fake,
     ), caplog.at_level(logging.WARNING, logger="dynastore.modules.storage.routing_config"):
         result = await get_search_driver(
-            "c", entity="item", collection_id="col", driver_hint="UnknownDriver",
+            "c", entity="item", collection_id="col", driver_hint="unknown_driver",
         )
-    assert result == "EsItemsDriver"
-    assert any("UnknownDriver" in rec.message for rec in caplog.records)
+    assert result == "es_items_driver"
+    assert any("unknown_driver" in rec.message for rec in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -74,11 +74,11 @@ async def test_returns_none_when_no_SEARCH_entries():
 
 @pytest.mark.asyncio
 async def test_works_for_each_entity_kind():
-    fake = _ops_with_search("EsDriver")
+    fake = _ops_with_search("es_driver")
     for entity in ("item", "collection", "catalog", "asset"):
         with patch(
             "dynastore.modules.storage.routing_config._resolve_entity_operations",
             return_value=fake,
         ):
             result = await get_search_driver("c", entity=entity, collection_id="col")
-        assert result == "EsDriver", f"failed for entity={entity}"
+        assert result == "es_driver", f"failed for entity={entity}"
