@@ -505,7 +505,7 @@ class ItemsElasticsearchDriver(
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.modules.storage.driver_config import CollectionSchema
         from dynastore.modules.storage.field_constraints import (
-            check_required, check_unique,
+            check_required, check_strict_unknown_fields, check_unique,
         )
         from dynastore.tools.discovery import get_protocol
 
@@ -520,7 +520,7 @@ class ItemsElasticsearchDriver(
             )
         except Exception:
             return
-        if not isinstance(ft, CollectionSchema) or not ft.allow_app_level_enforcement:
+        if not isinstance(ft, CollectionSchema):
             return
 
         feature_dicts = [
@@ -530,6 +530,16 @@ class ItemsElasticsearchDriver(
             )
             for it in items
         ]
+
+        # Strict-mode applies regardless of allow_app_level_enforcement —
+        # there is no driver-native equivalent for "reject unknown fields"
+        # on JSON-property-storing backends, so this check ALWAYS runs at
+        # service layer when the flag is set.
+        if ft.strict_unknown_fields and ft.fields:
+            check_strict_unknown_fields(ft.fields.keys(), feature_dicts)
+
+        if not ft.allow_app_level_enforcement:
+            return
         check_required(ft.fields, feature_dicts)
 
         async def _exists(field_name: str, value: Any) -> bool:
