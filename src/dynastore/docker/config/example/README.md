@@ -73,3 +73,21 @@ folder. Typical patterns:
 - **wrapper repo overlay**: a downstream image can `COPY` extra
   `defaults/*.json` files on top of a base image — lexical order means a
   later file overrides an earlier one for the same `class_key`.
+
+## Pitfall: docker bind-mount overlap
+
+The "shared `defaults/` directory" recipe above does NOT work with two
+overlapping read-only bind mounts on a single container — Docker cannot
+create the sub-mountpoint inside an already-mounted `:ro` parent
+(`mkdirat … read-only file system`). Three workable options:
+
+1. **Self-contained per-service dir** (used by `docker-compose.dev.yml`):
+   each service has its own dir holding both `instance.json` and the full
+   `defaults/`. One mount per container, no overlap. Minor duplication of
+   `defaults/*.json` content across service dirs — drift is caught by
+   `tests/dynastore/test_dev_compose_config_in_sync.py`.
+2. **Shared dir without `:ro`** — drop the read-only flag from the parent
+   mount; Docker can then create the sub-mountpoint. Loses the read-only
+   guard.
+3. **Bake into the image** — `COPY` everything into the image at build time
+   so the runtime is fully self-contained. No bind mount, no overlap.
