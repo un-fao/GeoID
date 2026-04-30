@@ -66,6 +66,7 @@ from dynastore.models.protocols.crs import CRSProtocol
 from dynastore.models.protocols.httpx import HttpxProtocol
 from dynastore.models.protocols.styles import StylesProtocol
 from dynastore.models.protocols.moving_features import MovingFeaturesProtocol
+from dynastore.models.protocols.connected_systems import ConnectedSystemsProtocol
 from dynastore.models.protocols.search import SearchProtocol
 from dynastore.models.protocols.indexer import IndexerProtocol
 from dynastore.models.protocols.storage_driver import CollectionItemsStore
@@ -167,6 +168,7 @@ __all__ = [
     "HttpxProtocol",
     "StylesProtocol",
     "MovingFeaturesProtocol",
+    "ConnectedSystemsProtocol",
     "SearchProtocol",
     "IndexerProtocol",
     "CollectionItemsStore",
