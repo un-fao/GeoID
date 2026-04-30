@@ -142,7 +142,10 @@ jobs:
           # (POSTGRES_USER/PASSWORD/DB) the canonical compose's db started with.
           # Hardcoding postgres:postgres breaks because .env sets
           # POSTGRES_USER=testuser, POSTGRES_PASSWORD=testpassword.
-          set -a; source src/dynastore/docker/.env; set +a
+          # Extract just the POSTGRES_* vars we need; the full .env contains
+          # placeholder tokens like '<change-me>' that bash `source` mis-parses
+          # as redirections (line 84: IDP_CLIENT_SECRET=<change-me>).
+          eval "$(grep -E '^(POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB)=' src/dynastore/docker/.env | sed 's/^/export /')"
           docker run --rm \
             --network "$NETWORK" \
             --workdir /dynastore \
@@ -290,7 +293,10 @@ jobs:
         run: |
           NETWORK=$(docker network ls --filter "name=dynastore_net" --format "{{.Name}}" | head -n1)
           test -n "$NETWORK" || { echo "dynastore_net not found"; docker network ls; exit 1; }
-          set -a; source src/dynastore/docker/.env; set +a
+          # Extract just the POSTGRES_* vars we need; the full .env contains
+          # placeholder tokens like '<change-me>' that bash `source` mis-parses
+          # as redirections (line 84: IDP_CLIENT_SECRET=<change-me>).
+          eval "$(grep -E '^(POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB)=' src/dynastore/docker/.env | sed 's/^/export /')"
           docker run --rm \
             --network "$NETWORK" \
             --workdir /dynastore \
