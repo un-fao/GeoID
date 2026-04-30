@@ -20,7 +20,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException, Query, status, Request, FastAPI
+from fastapi import APIRouter, Query, status, Request, FastAPI
 from fastapi.responses import Response
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 
@@ -52,6 +52,7 @@ from .dto import (
 from .config_api_dto import PatchConfigBody
 from .config_api_service import ConfigApiService
 from .policies import register_configs_policies
+from . import problem_details
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,8 @@ class ConfigsService(ExtensionProtocol):
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
         register_configs_policies()
-        logger.info("ConfigsService: Policies registered.")
+        problem_details.register(app)
+        logger.info("ConfigsService: Policies + RFC 9457 handler registered.")
         yield
 
     def _setup_routes(self):
@@ -254,9 +256,9 @@ class ConfigsService(ExtensionProtocol):
         try:
             result = await self._config_api.patch_config(catalog_id=None, body=body.root)
         except ValidationError as e:
-            raise HTTPException(status_code=422, detail=str(e))
+            raise problem_details.validation_failed(e)
         except ValueError as e:
-            raise HTTPException(status_code=404, detail=str(e))
+            raise problem_details.value_error(e)
         await self._invalidate_exposure()
         return result
 
@@ -270,9 +272,9 @@ class ConfigsService(ExtensionProtocol):
                 catalog_id=catalog_id, body=body.root
             )
         except ValidationError as e:
-            raise HTTPException(status_code=422, detail=str(e))
+            raise problem_details.validation_failed(e)
         except ValueError as e:
-            raise HTTPException(status_code=404, detail=str(e))
+            raise problem_details.value_error(e)
         await self._invalidate_exposure()
         return result
 
@@ -295,9 +297,9 @@ class ConfigsService(ExtensionProtocol):
                 body=body.root,
             )
         except ValidationError as e:
-            raise HTTPException(status_code=422, detail=str(e))
+            raise problem_details.validation_failed(e)
         except ValueError as e:
-            raise HTTPException(status_code=404, detail=str(e))
+            raise problem_details.value_error(e)
         await self._invalidate_exposure()
         return result
 
@@ -345,7 +347,7 @@ class ConfigsService(ExtensionProtocol):
 
         config_class = resolve_config_class(class_key)
         if config_class is None:
-            raise HTTPException(status_code=404, detail=f"Config class '{class_key}' not registered.")
+            raise problem_details.plugin_not_registered(class_key)
 
         scope = getattr(config_class, "config_scope", "platform_waterfall")
         return {
@@ -582,18 +584,15 @@ class ConfigsService(ExtensionProtocol):
         try:
             cls = resolve_config_class(plugin_id)
             if cls is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Configuration plugin '{plugin_id}' is not registered.",
-                )
+                raise problem_details.plugin_not_registered(plugin_id)
 
             config = await self.configs.get_config(cls, catalog_id, collection_id)
             return config
-        except HTTPException:
+        except problem_details.ProblemException:
             raise
         except Exception as e:
             logger.error(f"Error fetching collection config: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
+            raise problem_details.unexpected_failure(e)
 
 
     async def update_collection_config(
@@ -648,20 +647,17 @@ class ConfigsService(ExtensionProtocol):
         try:
             cls = resolve_config_class(plugin_id)
             if cls is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Configuration plugin '{plugin_id}' is not registered.",
-                )
+                raise problem_details.plugin_not_registered(plugin_id)
 
             config = await self.configs.get_config(
                 cls, catalog_id, collection_id=None
             )
             return config
-        except HTTPException:
+        except problem_details.ProblemException:
             raise
         except Exception as e:
             logger.error(f"Error fetching catalog config: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
+            raise problem_details.unexpected_failure(e)
 
 
     async def update_catalog_config(
@@ -710,20 +706,17 @@ class ConfigsService(ExtensionProtocol):
         try:
             cls = resolve_config_class(plugin_id)
             if cls is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Configuration plugin '{plugin_id}' is not registered.",
-                )
+                raise problem_details.plugin_not_registered(plugin_id)
 
             config = await self.configs.get_config(
                 cls, catalog_id=None, collection_id=None
             )
             return config
-        except HTTPException:
+        except problem_details.ProblemException:
             raise
         except Exception as e:
             logger.error(f"Error fetching platform config: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
+            raise problem_details.unexpected_failure(e)
 
 
     async def update_platform_config(self, plugin_id: str, body: Dict[str, Any]):
@@ -732,10 +725,7 @@ class ConfigsService(ExtensionProtocol):
         """
         cls = resolve_config_class(plugin_id)
         if cls is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Configuration plugin '{plugin_id}' is not registered.",
-            )
+            raise problem_details.plugin_not_registered(plugin_id)
 
         try:
             config_model = cls.model_validate(body)
