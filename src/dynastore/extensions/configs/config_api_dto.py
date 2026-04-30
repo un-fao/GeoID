@@ -95,12 +95,24 @@ class ConfigMeta(BaseModel):
         ),
     )
     layers: Optional[List[ConfigLayer]] = Field(
-        None,
+        default=None,
         description=(
             "Full waterfall trace for this config: one entry per tier "
             "(default, platform, catalog, collection) with ``present`` "
             "indicating whether that tier explicitly contributed a delta. "
             "Populated when ``?meta=true`` is requested."
+        ),
+    )
+    json_schema: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "JSON Schema 2020-12 document for this config class, emitted by "
+            "Pydantic's ``model_json_schema()``. Includes per-field title, "
+            "description, type, default, examples, constraints — everything a "
+            "dashboard form-builder needs. Populated when ``?docs=schema`` is "
+            "requested; null otherwise (default ``?docs=none``). Orthogonal to "
+            "``?meta=true``: the two flags can be combined to get both source "
+            "diagnostics and schemas in one response."
         ),
     )
 

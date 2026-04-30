@@ -272,6 +272,7 @@ class ConfigApiService:
         active_scope: str,
         include_meta: bool,
         tier_data: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
+        include_schemas: bool = False,
     ) -> Tuple[Dict[str, Any], Optional[Dict[str, ConfigMeta]]]:
         """Bucket visible classes into scope/topic tree and optionally build meta.
 
@@ -288,10 +289,33 @@ class ConfigApiService:
         ``ConfigMeta`` entry includes the full ``layers`` waterfall trace
         (one entry per tier with a ``present`` flag) alongside the
         single-tier ``source`` summary.
+
+        When ``include_schemas`` is true, each placed class also gets its
+        ``model_json_schema()`` attached as ``json_schema``. ``include_meta``
+        and ``include_schemas`` are independent: either, both, or neither
+        can be set, and the meta dict is returned whenever at least one is.
         """
         all_classes = list_registered_configs()
         tree: Dict[str, Any] = {}
         meta: Dict[str, ConfigMeta] = {}
+
+        def _ensure_meta(class_key: str, cls: Type[PluginConfig]) -> None:
+            entry = meta.get(class_key)
+            if entry is None:
+                if include_meta and class_key in sources:
+                    entry = ConfigApiService._build_meta_entry(
+                        class_key, sources, tier_data,
+                    )
+                elif include_schemas:
+                    # source still useful even without meta=true; fall back
+                    # to "default" when class isn't in sources (resolved=False)
+                    entry = ConfigMeta(source=sources.get(class_key, "default"))
+                else:
+                    return
+                meta[class_key] = entry
+            if include_schemas and entry.json_schema is None:
+                entry.json_schema = cls.model_json_schema()
+
         for class_key, payload in by_class.items():
             cls = all_classes.get(class_key)
             if cls is None:
@@ -315,10 +339,7 @@ class ConfigApiService:
                         topic_node[class_key] = payload
                     else:
                         topic_node.setdefault(sub, {})[class_key] = payload
-                    if include_meta and class_key in sources:
-                        meta[class_key] = ConfigApiService._build_meta_entry(
-                            class_key, sources, tier_data,
-                        )
+                    _ensure_meta(class_key, cls)
                 continue
 
             placed = _place(cls, active_scope)
@@ -330,11 +351,8 @@ class ConfigApiService:
                 topic_node[class_key] = payload
             else:
                 topic_node.setdefault(sub, {})[class_key] = payload
-            if include_meta and class_key in sources:
-                meta[class_key] = ConfigApiService._build_meta_entry(
-                    class_key, sources, tier_data,
-                )
-        return tree, (meta if include_meta else None)
+            _ensure_meta(class_key, cls)
+        return tree, (meta if (include_meta or include_schemas) else None)
 
     # --- Routing-ref rewrite. ---
 
@@ -432,6 +450,7 @@ class ConfigApiService:
         page_size: int = 15,
         resolved: bool = True,
         meta: bool = False,
+        docs: str = "none",
     ) -> CollectionConfigResponse:
         by_class, sources, tier_data = await self._get_effective_configs(
             catalog_id=catalog_id, collection_id=collection_id, resolved=resolved,
@@ -439,6 +458,7 @@ class ConfigApiService:
         self._build_routing_refs(by_class)
         tree, meta_dict = self._compose_tree(
             by_class, sources, "collection", meta, tier_data=tier_data,
+            include_schemas=(docs == "schema"),
         )
 
         # Phase 1.5d: surface per-op driver resolution alongside the per-class
@@ -481,6 +501,7 @@ class ConfigApiService:
         page_size: int = 15,
         resolved: bool = True,
         meta: bool = False,
+        docs: str = "none",
     ) -> CatalogConfigResponse:
         by_class, sources, tier_data = await self._get_effective_configs(
             catalog_id=catalog_id, collection_id=None, resolved=resolved,
@@ -488,6 +509,7 @@ class ConfigApiService:
         self._build_routing_refs(by_class)
         tree, meta_dict = self._compose_tree(
             by_class, sources, "catalog", meta, tier_data=tier_data,
+            include_schemas=(docs == "schema"),
         )
 
         categories: Optional[Dict[str, ConfigPage]] = None
@@ -495,7 +517,7 @@ class ConfigApiService:
             categories = {}
             coll_total, coll_items = await self._list_collections(
                 base_url, catalog_id, collections_page, page_size, depth,
-                resolved=resolved, meta=meta,
+                resolved=resolved, meta=meta, docs=docs,
             )
             coll_pg = self._build_config_page(
                 base_url=base_url, category="collections", total=coll_total,
@@ -528,6 +550,7 @@ class ConfigApiService:
         page_size: int = 15,
         resolved: bool = True,
         meta: bool = False,
+        docs: str = "none",
     ) -> PlatformConfigResponse:
         by_class, sources, tier_data = await self._get_effective_configs(
             catalog_id=None, collection_id=None, resolved=resolved,
@@ -535,6 +558,7 @@ class ConfigApiService:
         self._build_routing_refs(by_class)
         tree, meta_dict = self._compose_tree(
             by_class, sources, "platform", meta, tier_data=tier_data,
+            include_schemas=(docs == "schema"),
         )
 
         categories: Optional[Dict[str, ConfigPage]] = None
@@ -557,7 +581,7 @@ class ConfigApiService:
                     cat_response = await self.compose_catalog_config(
                         base_url=f"{base_url.rstrip('/')}/catalogs/{cat_id}",
                         catalog_id=cat_id, depth=depth - 1, page_size=page_size,
-                        resolved=resolved, meta=meta,
+                        resolved=resolved, meta=meta, docs=docs,
                     )
                     items.append(cat_response.model_dump())
                 else:
@@ -686,6 +710,7 @@ class ConfigApiService:
         parent_depth: int,
         resolved: bool = True,
         meta: bool = False,
+        docs: str = "none",
     ) -> Tuple[int, List[Any]]:
         if self._catalogs_service is None:
             return 0, []
@@ -711,7 +736,7 @@ class ConfigApiService:
             col_response = await self.compose_collection_config(
                 base_url=col_base, catalog_id=catalog_id, collection_id=col_id,
                 depth=next_depth, page_size=page_size,
-                resolved=resolved, meta=meta,
+                resolved=resolved, meta=meta, docs=docs,
             )
             items.append(col_response.model_dump())
         return total, items
