@@ -98,6 +98,12 @@ def bridge_schema_to_attribute_sidecar(
         existing[entry.name] = entry
         order.append(entry.name)
 
+    # PR-C: ``materialize_fields_as_columns`` opts into lifting EVERY
+    # declared field as a sidecar column, regardless of constraint. Default
+    # False keeps the historical "constraints-only" behaviour so sparse
+    # schemas don't widen tables unintentionally.
+    materialize_all = bool(getattr(schema, "materialize_fields_as_columns", False))
+
     changed = False
     for name, fd in schema.fields.items():
         has_constraint = bool(fd.required or fd.unique)
@@ -111,7 +117,9 @@ def bridge_schema_to_attribute_sidecar(
                 )
                 changed = True
             continue
-        if not has_constraint:
+        # Synthesise a new entry when the field carries a constraint OR when
+        # the schema asks to materialise everything.
+        if not (has_constraint or materialize_all):
             continue
         pg_name = _DATA_TYPE_TO_PG_NAME.get(
             (fd.data_type or "text").lower(), "TEXT"
