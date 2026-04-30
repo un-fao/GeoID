@@ -86,7 +86,7 @@ class TestGetConfigSchema:
     @pytest.mark.asyncio
     async def test_known_class_key_returns_entry(self, service):
         result = await service.get_config_schema("collection_routing_config")
-        assert result["class_key"] == "collection_routing_config"
+        assert result["plugin_id"] == "collection_routing_config"
         assert "json_schema" in result
         assert "description" in result
         assert "scope" in result
