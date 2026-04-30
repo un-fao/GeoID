@@ -114,22 +114,50 @@ jobs:
           cache-from: type=gha,scope=tester
           cache-to: type=gha,mode=max,scope=tester
 
-      # `db` is from `Dockerfile.db` and not pre-baked by the
-      # build-push-action above, so build it via compose. The
-      # `test-runner` service has `image: geoid-test-runner:ci`
-      # pointing at the buildx-loaded tag from the previous step;
-      # `docker compose run --rm test-runner` resolves and reuses
-      # it without invoking another build.
-      - name: Build test infrastructure (compose, db only)
-        run: docker compose -f src/dynastore/docker/docker-compose.test.yml build db
+      # `db` is from `Dockerfile.db` and not pre-baked by the build-push-action
+      # above, so build it via the canonical compose. Uses the SAME compose
+      # file as prod and dev; no separate test compose.
+      - name: Build db image
+        run: docker compose -f src/dynastore/docker/docker-compose.yml build db
 
+      - name: Start db
+        run: docker compose -f src/dynastore/docker/docker-compose.yml up -d --wait db
+
+      # Test-runner is invoked as a one-off `docker run` joined to the
+      # canonical compose's network so it can resolve `db` by service name
+      # (matches integration's pattern). Source + tests + workspace mounts
+      # mirror the previous test-runner service; env vars set the same DDL
+      # timeouts that the test compose used to inject for xdist contention.
+      # Project name is derived from the compose file's directory ("docker"),
+      # so the network resolves to `docker_dynastore_net`; we look it up
+      # dynamically via `docker network ls` to avoid hard-coding the prefix.
       - name: Run unit tests
         id: unit
+        env:
+          WORKSPACE: ${{ github.workspace }}
         run: |
-          docker compose -f src/dynastore/docker/docker-compose.test.yml run --rm test-runner \
+          NETWORK=$(docker network ls --filter "name=dynastore_net" --format "{{.Name}}" | head -n1)
+          test -n "$NETWORK" || { echo "dynastore_net not found"; docker network ls; exit 1; }
+          docker run --rm \
+            --network "$NETWORK" \
+            --workdir /dynastore \
+            -v "$WORKSPACE":/dynastore/workspace \
+            -v "$WORKSPACE/src":/dynastore/src \
+            -v "$WORKSPACE/tests":/dynastore/tests \
+            -v "$WORKSPACE/pytest.ini":/dynastore/pytest.ini \
+            -e DATABASE_URL=postgresql://postgres:postgres@db:5432/gis_dev \
+            -e DYNASTORE_DDL_STATEMENT_TIMEOUT=120s \
+            -e DYNASTORE_DDL_LOCK_TIMEOUT=120s \
+            -e LOG_LEVEL=INFO \
+            -e PYTEST_CURRENT_TEST=true \
+            geoid-test-runner:ci \
             /opt/venv/bin/pytest tests/ --ignore-glob="**/integration/*" \
-            --durations=20 \
-            --junitxml=/dynastore/workspace/unit-test-results.xml
+              --durations=20 \
+              --junitxml=/dynastore/workspace/unit-test-results.xml
+
+      - name: Stop db
+        if: always()
+        run: docker compose -f src/dynastore/docker/docker-compose.yml down -v
 
       - name: Report unit tests
         uses: dorny/test-reporter@v3
@@ -219,46 +247,70 @@ jobs:
           cache-from: type=gha,scope=builder
           cache-to: type=gha,mode=max,scope=builder
 
-      # Build only the services that have no pre-built image:
-      # `db` is from `Dockerfile.db` and isn't pre-baked above.
-      # `test-runner`, `catalog`, `worker` declare both `image:` (the
-      # buildx-loaded `:ci` tags) AND `build:` (fallback for local
-      # devs) — `docker compose build` ignores `image:` and always
-      # rebuilds, so we exclude them from this step. The subsequent
-      # `compose run --rm test-runner` will resolve their `image:`
-      # against the docker daemon and reuse the loaded tags.
-      - name: Build test infrastructure (compose, db only)
-        run: docker compose -f src/dynastore/docker/docker-compose.test.yml build db
+      # Bring up the integration stack from the canonical compose. SCOPE=all
+      # for catalog/worker so every conformance path is registered. Db isn't
+      # pre-baked by the build-push-action above, so `--build` ensures it's
+      # built before `up -d` (catalog/worker pick up their `image:` tags
+      # from the buildx load).
+      - name: Start integration stack (db + es + keycloak + catalog + worker)
+        env:
+          CATALOG_SCOPE: all
+          WORKER_SCOPE: all
+        run: |
+          docker compose -f src/dynastore/docker/docker-compose.yml build db
+          docker compose -f src/dynastore/docker/docker-compose.yml up -d --wait \
+            db elasticsearch keycloak catalog worker
 
-      # Scope to ACTUAL integration tests only — 53 files under
-      # */integration/* paths. The previous `pytest tests/` invocation
-      # re-ran all 274 tests including the 221 the unit-tests job had
-      # already executed: pure duplicate work, dominant cause of the
-      # 28-38min wall-clock. `find … -print0` + `mapfile -d ""` is
-      # safe against spaces or shell metacharacters in paths and
-      # surfaces an empty match as a non-zero exit (avoids `pytest`
-      # silently falling back to "discover everything" if `find`
-      # returned no files).
+      # Tests run via one-off `docker run` against the canonical compose's
+      # network so they can resolve `db`, `catalog`, `worker`, `elasticsearch`,
+      # `keycloak` by service name. Project name is derived from the compose
+      # file's directory ("docker"), so the network is `docker_dynastore_net`;
+      # we look it up dynamically via `docker network ls`.
       #
-      # No `-m` marker filter here on purpose. `tests/conftest.py`
-      # already has a `pytest_runtest_setup` that auto-skips tests
-      # marked `local_only` (when CI / GITHUB_ACTIONS / REMOTE_TEST_
-      # EXECUTION is set), `gcp` (when ADC creds aren't resolvable),
-      # and `elasticsearch` (when DYNASTORE_RUN_ELASTICSEARCH_TESTS
-      # isn't set). Filtering at the workflow layer would only
-      # duplicate that logic in two places.
+      # The `find … -print0` + `mapfile` pattern preserves the previous
+      # workflow's behavior: scopes pytest to the 53 integration files,
+      # surfaces zero-find as a non-zero exit, and is safe against shell
+      # metacharacters.
+      #
+      # No `-m` marker filter on purpose. `tests/conftest.py` already
+      # auto-skips `local_only` (when CI / GITHUB_ACTIONS / REMOTE_TEST_
+      # EXECUTION is set), `gcp` (when ADC creds aren't resolvable), and
+      # `elasticsearch` (when DYNASTORE_RUN_ELASTICSEARCH_TESTS isn't set).
+      # Filtering at the workflow layer would only duplicate that logic.
       - name: Run integration tests
         id: integration
+        env:
+          WORKSPACE: ${{ github.workspace }}
         run: |
-          docker compose -f src/dynastore/docker/docker-compose.test.yml run --rm test-runner \
+          NETWORK=$(docker network ls --filter "name=dynastore_net" --format "{{.Name}}" | head -n1)
+          test -n "$NETWORK" || { echo "dynastore_net not found"; docker network ls; exit 1; }
+          docker run --rm \
+            --network "$NETWORK" \
+            --workdir /dynastore \
+            -v "$WORKSPACE":/dynastore/workspace \
+            -v "$WORKSPACE/src":/dynastore/src \
+            -v "$WORKSPACE/tests":/dynastore/tests \
+            -v "$WORKSPACE/pytest.ini":/dynastore/pytest.ini \
+            -e DATABASE_URL=postgresql://postgres:postgres@db:5432/gis_dev \
+            -e DYNASTORE_API_URL=http://catalog:80 \
+            -e DYNASTORE_WORKER_URL=http://worker:81 \
+            -e REMOTE_TEST_EXECUTION=true \
+            -e DYNASTORE_DDL_STATEMENT_TIMEOUT=120s \
+            -e DYNASTORE_DDL_LOCK_TIMEOUT=120s \
+            -e LOG_LEVEL=INFO \
+            -e PYTEST_CURRENT_TEST=true \
+            geoid-test-runner:ci \
             bash -c 'set -euo pipefail; mapfile -d "" -t TESTS < <(find tests -path "*/integration/*" -name "test_*.py" -type f -print0 | sort -z); test "${#TESTS[@]}" -gt 0 || { echo "no integration tests found"; exit 1; }; /opt/venv/bin/pytest "${TESTS[@]}" --durations=20 --junitxml=/dynastore/workspace/test-results.xml'
 
       - name: Display Docker logs on failure
         if: failure()
         run: |
-          docker compose -f src/dynastore/docker/docker-compose.test.yml logs catalog
-          docker compose -f src/dynastore/docker/docker-compose.test.yml logs worker
-          docker compose -f src/dynastore/docker/docker-compose.test.yml logs test-runner
+          docker compose -f src/dynastore/docker/docker-compose.yml logs catalog
+          docker compose -f src/dynastore/docker/docker-compose.yml logs worker
+
+      - name: Tear down integration stack
+        if: always()
+        run: docker compose -f src/dynastore/docker/docker-compose.yml down -v
 
       - name: Report integration tests
         uses: dorny/test-reporter@v3
