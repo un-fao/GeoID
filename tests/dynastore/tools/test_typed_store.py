@@ -232,14 +232,29 @@ def test_duplicate_migrator_rejected(clean_migrations) -> None:
 
 
 def test_duplicate_class_key_rejected() -> None:
-    key = "test_typed_store._DupeKey"
+    """Two distinct classes with the same wire ``class_key()`` collide.
 
-    class _First(PersistentModel):
-        _class_key: ClassVar[Optional[str]] = key
+    Post PR #140 (snake_case identity cutover) ``class_key()`` derives from
+    ``cls.__name__`` only; per-class ``_class_key`` overrides are removed.
+    The genuine collision risk is therefore "same Python class name in
+    different modules" — e.g. ``foo.WebConfig`` and ``bar.WebConfig`` both
+    derive ``class_key() == "web_config"``. The registry's
+    ``__module__ + __qualname__`` tolerance check (registry.py:71-74) lets
+    re-imports of the SAME class through but rejects genuinely distinct
+    classes that collide on the derived key.
+    """
+    class _DupeNameForTest(PersistentModel):
+        pass
 
-    with pytest.raises(ValueError):
-        class _Second(PersistentModel):  # noqa: F841 — registration side-effect
-            _class_key: ClassVar[Optional[str]] = key
+    derived_key = _DupeNameForTest.class_key()
+    # Sanity: registered under the snake_case-derived key
+    assert TypedModelRegistry._by_key.get(derived_key) is _DupeNameForTest  # type: ignore[attr-defined]
+
+    # Synthesise a genuinely distinct class with the same __name__. Subclass
+    # creation auto-registers via PersistentModel.__init_subclass__, so the
+    # collision fires at type(...) — wrap in pytest.raises accordingly.
+    with pytest.raises(ValueError, match="Duplicate class_key"):
+        type("_DupeNameForTest", (PersistentModel,), {"__module__": "tests.synthetic.module_b"})
 
     # Clean up so later tests aren't polluted.
-    TypedModelRegistry._by_key.pop(key, None)  # type: ignore[attr-defined]
+    TypedModelRegistry._by_key.pop(derived_key, None)  # type: ignore[attr-defined]
