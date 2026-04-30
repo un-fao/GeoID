@@ -10,9 +10,10 @@
 ## How to Run
 
 ```bash
-# Run with coverage (local, sequential - DB must be on port 54320)
-cd docker && docker compose -f docker-compose.test.yml up -d db
-cd ..
+# Start the dev db (host-bound to 127.0.0.1:54320 for psql access)
+docker compose -f src/dynastore/docker/docker-compose.yml -f src/dynastore/docker/docker-compose.dev.yml up -d db
+
+# Run with coverage (local, sequential)
 .venv/bin/pytest tests -p no:xdist -o "addopts=" -q --tb=no \
     --cov=src/dynastore --cov-report=term
 
@@ -21,7 +22,8 @@ cd ..
     --cov=src/dynastore --cov-report=html --cov-report=term
 
 # Run via Docker (full integration stack)
-cd docker && docker compose -f docker-compose.test.yml up --build
+docker compose -f src/dynastore/docker/docker-compose.yml up -d \
+    db elasticsearch keycloak catalog worker
 ```
 
 ---

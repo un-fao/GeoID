@@ -12,13 +12,14 @@
 #      so app services (`service_healthy`) do not race with the reset
 #   5. wait on postgres; forward TERM/INT so graceful shutdown still works
 #
-# $RESET_MODE is injected by docker-compose.{dev,test}.yml:
+# $RESET_MODE is injected by docker-compose.dev.yml (geoid) and any downstream
+# test compose that extends compose.db.dev.yml (e.g. fao-aip-catalog):
 #   default  — drop user schemas + user cron jobs, keep keycloak realm state (dev)
-#   keycloak — same + TRUNCATE keycloak schema tables (test; forces realm re-import)
+#   keycloak — same + TRUNCATE keycloak schema tables (forces realm re-import)
 #   skip     — no reset (escape hatch)
 #
-# NEVER mounted or used by docker-compose.yml (prod) or docker-compose.local.yml
-# (on-prem); both keep postgres's stock entrypoint.
+# NEVER mounted or used by the canonical docker-compose.yml (prod) — that
+# composition keeps postgres's stock entrypoint.
 
 set -euo pipefail
 

@@ -1,10 +1,15 @@
 # Dev-mode db fragment: exposes 54320 for host psql, mounts the SSOT scripts
 # directory, runs db_entrypoint_dev.sh to apply RESET_MODE on boot.
-# Consumer sets RESET_MODE in their overlay (default for dev, keycloak for test).
+# Consumer sets RESET_MODE in their overlay (default for dev, keycloak for downstream test composes).
 # The reset-done healthcheck waits for /tmp/reset_done before reporting healthy.
 #
 # `../scripts:/scripts:ro` resolves relative to THIS file's directory per
 # Compose's extends rules → src/dynastore/scripts/ (the SSOT scripts dir).
+#
+# This fragment is consumed by:
+#   - docker-compose.dev.yml (geoid's dev workflow)
+#   - fao-aip-catalog/docker/docker-compose.test.yml (via pip-installed package data)
+# Changing the port or other top-level keys here is a downstream-breaking change.
 
 services:
   db:

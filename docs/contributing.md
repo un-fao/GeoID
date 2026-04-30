@@ -49,10 +49,10 @@ git checkout -b feature/your-feature-name
 
 ### Running Tests
 
-First start the test database (port 54320, separate from production on 5432):
+First start the dev database (port 54320, separate from production on 5432):
 
 ```bash
-cd docker && docker compose -f docker-compose.test.yml up -d db && cd ..
+docker compose -f src/dynastore/docker/docker-compose.yml -f src/dynastore/docker/docker-compose.dev.yml up -d db
 ```
 
 ```bash
@@ -275,24 +275,29 @@ Extension repo (deploy) ──► Dynastore deploy.yml ──► GeoID test.yml
 ```
 
 The workflow:
-1. Builds Docker test infrastructure via `docker-compose.test.yml`
-2. Runs unit tests (ignoring `**/integration/*`)
-3. Runs full integration tests (optional via `run_integration` input)
+1. Builds the test-runner image (`tester` Dockerfile stage) and the canonical compose's `db` service
+2. Brings up `db` from the canonical `docker-compose.yml` and runs unit tests in a one-off `docker run` joined to the compose network
+3. For integration: brings up `db + elasticsearch + keycloak + catalog + worker` and runs the integration suite, scoped to `*/integration/*` paths
 4. Generates JUnit XML reports, SVG badges, and JSON test summaries
 5. Uploads artifacts for downstream deployment workflows
 
 ### Running Tests Locally
 
 ```bash
-# Full Docker-based test run (mirrors CI)
-docker compose -f src/dynastore/docker/docker-compose.test.yml run --rm test-runner
+# Start the dev db (host-bound to 127.0.0.1:54320 for psql access)
+docker compose -f src/dynastore/docker/docker-compose.yml -f src/dynastore/docker/docker-compose.dev.yml up -d db
 
-# Unit tests only
-docker compose -f src/dynastore/docker/docker-compose.test.yml run --rm test-runner \
-  /opt/venv/bin/pytest tests/ --ignore-glob="**/integration/*"
+# Run all unit tests on the host venv against that db
+.venv/bin/pytest tests/ --ignore-glob="**/integration/*"
 
-# Direct pytest (requires local DB on port 54320)
-pytest tests/
+# Or, mirror CI: run inside the `tester` Dockerfile stage joined to the compose network
+docker compose -f src/dynastore/docker/docker-compose.yml up -d db
+NETWORK=$(docker network ls --filter "name=dynastore_net" --format "{{.Name}}" | head -n1)
+docker run --rm --network "$NETWORK" \
+  -v "$PWD":/dynastore/workspace -v "$PWD/src":/dynastore/src \
+  -v "$PWD/tests":/dynastore/tests -v "$PWD/pytest.ini":/dynastore/pytest.ini \
+  -e DATABASE_URL=postgresql://postgres:postgres@db:5432/gis_dev \
+  geoid-test-runner:ci /opt/venv/bin/pytest tests/ --ignore-glob="**/integration/*"
 ```
 
 ### Test Configuration
