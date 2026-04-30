@@ -26,6 +26,30 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ---------------------------------------------------------------------------
 
+async def _is_data_stream(es: Any, name: str) -> bool:
+    """Return True when ``name`` exists as a data stream in OpenSearch.
+
+    The OpenSearch / Elasticsearch ``indices.exists()`` API is ambiguous —
+    it returns True for both regular indices and data streams sharing the
+    name. Use the dedicated data-streams API to disambiguate; on a regular
+    index the call returns 404 (caught) and we report False.
+
+    Used by the lifespan startup check to fail-fast when a data stream has
+    been provisioned where the platform expects a regular mutable index
+    (collection / catalog metadata indices).
+    """
+    try:
+        result = await es.indices.get_data_stream(name=name)
+    except Exception:
+        # 404 = no data stream by that name (regular index or no index).
+        # Any other transport error is also "not provably a stream"; the
+        # broader except in the caller will surface real connectivity
+        # issues via the warning path.
+        return False
+    streams = (result or {}).get("data_streams", []) if isinstance(result, dict) else []
+    return any((s or {}).get("name") == name for s in streams)
+
+
 async def _get_es_catalog_config(catalog_id: str):
     """Return ElasticsearchCatalogConfig for catalog_id, or None."""
     try:
@@ -242,6 +266,27 @@ class ElasticsearchModule(ModuleProtocol):
                 (f"{es_client.get_index_prefix()}-catalogs",    CATALOG_MAPPING),
             ):
                 try:
+                    # Data-stream fail-fast: indices.exists() returns True for
+                    # both regular indices AND data streams, so a stream that
+                    # snuck in (cluster-side index template, ISM policy, manual
+                    # creation) would silently take precedence here. Data
+                    # streams reject the upserts the collection/catalog
+                    # drivers issue ("only write ops with op_type=create are
+                    # allowed in data streams" — observed on review env
+                    # 2026-04-30 against `{prefix}-collections`). The
+                    # platform requires regular mutable indices for
+                    # collection/catalog metadata; refuse to start when a
+                    # stream is in the way.
+                    if await _is_data_stream(es, shared_name):
+                        msg = (
+                            f"ElasticsearchModule: '{shared_name}' is a "
+                            "data stream, but the platform requires a "
+                            "regular index for mutable metadata upserts. "
+                            f"Delete it before redeploy: "
+                            f"DELETE /_data_stream/{shared_name}"
+                        )
+                        logger.error(msg)
+                        raise RuntimeError(msg)
                     if not await es.indices.exists(index=shared_name):
                         await es.indices.create(
                             index=shared_name, body={"mappings": mapping},
@@ -250,6 +295,10 @@ class ElasticsearchModule(ModuleProtocol):
                             "ElasticsearchModule: Created shared index '%s'.",
                             shared_name,
                         )
+                except RuntimeError:
+                    # Re-raise our explicit fail-fast — must surface to the
+                    # operator, never get swallowed by the broad except below.
+                    raise
                 except Exception as exc:
                     logger.warning(
                         "ElasticsearchModule: Could not ensure shared index "
