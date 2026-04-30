@@ -258,6 +258,17 @@ def _build_catalog_metadata_payload(catalog_model: Catalog) -> Dict[str, Any]:
     if catalog_assets:
         out["assets"] = catalog_assets
 
+    # Lifecycle field — required on the metadata-driver fan-out so search
+    # backends (ES indexer) reflect the same state as the source-of-truth
+    # ``catalog.catalogs`` row. PG CORE / STAC drivers ``_filter_payload``
+    # this key out (it's not in their column tuples); ES has dynamic mapping
+    # and indexes it as a keyword via the dynamic templates. Without this,
+    # status transitions written via ``update_provisioning_status`` never
+    # reach ES and the index goes stale (observed on review env 2026-04-30:
+    # PG flipped to 'ready' but ES still showed 'provisioning').
+    if catalog_model.provisioning_status is not None:
+        out["provisioning_status"] = catalog_model.provisioning_status
+
     return out
 
 
@@ -1814,17 +1825,43 @@ class CatalogService(CatalogsProtocol):
     async def update_provisioning_status(
         self, catalog_id: str, status: str, ctx: Optional["DriverContext"] = None
     ) -> bool:
-        """Updates the provisioning status (provisioning | ready | failed) for a catalog."""
+        """Updates the provisioning status (provisioning | ready | failed) for a catalog.
+
+        After committing the source-of-truth row in ``catalog.catalogs``, fans
+        the change out across every registered ``CatalogMetadataStore`` driver
+        via ``catalog_metadata_router.upsert_catalog_metadata``. Without that
+        propagation, search backends (ES indexer) keep the stale
+        ``provisioning_status`` value and reads return inconsistent state
+        relative to the row (observed on review env 2026-04-30: PG flipped to
+        'ready' but ES still showed 'provisioning'). Mirrors the create-time
+        fan-out at create_catalog (above).
+        """
         db_resource = ctx.db_resource if ctx else None
         sql = "UPDATE catalog.catalogs SET provisioning_status = :status WHERE id = :id RETURNING id;"
         async with managed_transaction(get_catalog_engine(db_resource)) as conn:
             result = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
                 conn, id=catalog_id, status=status
             )
-            if result:
-                self._get_catalog_model_cached.cache_invalidate(catalog_id)
-                return True
-        return False
+            if not result:
+                return False
+            self._get_catalog_model_cached.cache_invalidate(catalog_id)
+
+            # Re-fetch the model so the metadata-driver fan-out sees the new
+            # status. Pass the same connection so the read participates in
+            # this transaction (avoids the read-after-write race that an
+            # implicit-fresh-connection path would produce on a busy db).
+            inner_ctx = DriverContext(db_resource=conn)
+            catalog_model = await self.get_catalog_model(catalog_id, ctx=inner_ctx)
+            if catalog_model is not None:
+                metadata = _build_catalog_metadata_payload(catalog_model)
+                if metadata:
+                    from dynastore.modules.catalog.catalog_metadata_router import (
+                        upsert_catalog_metadata,
+                    )
+                    await upsert_catalog_metadata(
+                        catalog_id, metadata, db_resource=conn,
+                    )
+            return True
 
 
 # --- Standalone Utilities ---
