@@ -64,143 +64,141 @@ class CachingConfig(PluginConfig):
 
 ### Discovering Available Configurations via API
 
-The `configs` extension provides a discovery endpoint to see all registered plugins. This is invaluable for administration and for building dynamic user interfaces.
+The `configs` extension exposes a registry that lists every config class with its JSON Schema, description, and scope. This is invaluable for administration and for building dynamic user interfaces.
 
-**1. List all available `plugin_id`s:**
-
-```bash
-curl http://localhost:8000/configs/plugins
-```
-**Response:**
-```json
-[
-  "catalog",
-  "stac",
-  "gcp-catalog-bucket",
-  "gcp-collection-bucket",
-  "gcp-eventing",
-  "caching"
-]
-```
-
-**2. Get detailed schemas for all plugins:**
-
-By adding `?with_schema=true`, you can retrieve the full JSON Schema for each plugin's model, including descriptions.
+**1. List all registered config classes:**
 
 ```bash
-curl http://localhost:8000/configs/plugins?with_schema=true
+curl http://localhost:8000/configs/registry
 ```
 **Response (snippet):**
 ```json
 {
-  "caching": {
-    "description": "Configuration for the Caching Extension.",
-    "schema": {
+  "caching_config": {
+    "json_schema": {
       "title": "CachingConfig",
       "description": "Configuration for the Caching Extension.",
       "type": "object",
       "properties": {
-        "enabled": {
-          "title": "Enabled",
-          "default": true,
-          "type": "boolean"
-        },
+        "enabled": {"default": true, "type": "boolean"},
         "ttl_seconds": {
-          "title": "Ttl Seconds",
           "description": "Default cache Time-To-Live in seconds.",
           "default": 3600,
           "type": "integer"
         }
       }
-    }
+    },
+    "description": "Configuration for the Caching Extension.",
+    "scope": "platform_waterfall"
   }
 }
 ```
 
+The top-level keys are `class_key`s (snake_case derived from the Pydantic class name; see PR #140's snake_case identity cutover). `scope` is one of `platform_waterfall`, `collection_intrinsic`, or `deployment_env`.
+
+**2. Get JSON Schema + description for one class:**
+
+```bash
+curl http://localhost:8000/configs/registry/caching_config
+```
+
+**3. List runtime driver instances grouped by Protocol:**
+
+```bash
+curl http://localhost:8000/configs/storage/drivers
+```
+Returns `{ProtocolQualname: {ClassName: DriverInfo}}` for `CollectionItemsStore`, `AssetStore`, and `CollectionMetadataStore` — capabilities, supported operations, hints, availability — for the operator's driver picker.
+
 ## Quick Start — PostgreSQL Defaults
 
 The most common setup is a catalog with PostgreSQL for all storage.
-Use the **bulk-apply** endpoint to configure everything in a single call:
+Use a single `PATCH` to configure many plugins at once. Body shape is `{plugin_id: payload | null}` per RFC 7396 merge-patch semantics — a `null` value deletes the override at that scope. The same endpoint shape works at platform (`PATCH /configs/`), catalog (`PATCH /configs/catalogs/{id}`), and collection (`PATCH /configs/catalogs/{id}/collections/{id}`) scope.
 
 ### 1. Configure a new catalog
 
 ```bash
-curl -X PUT http://localhost:8000/configs/catalogs/my_catalog/bulk \
+curl -X PATCH http://localhost:8000/configs/catalogs/my_catalog \
   -H "Content-Type: application/json" \
   -d '{
-  "configs": {
-    "routing": {
-      "enabled": true,
-      "operations": {
-        "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
-        "READ":  [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}]
-      }
-    },
-    "routing_assets": {
-      "enabled": true,
-      "operations": {
-        "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
-        "READ":  [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}]
-      }
-    },
-    "stac": {
-      "enabled": true,
-      "enabled_extensions": [],
-      "asset_tracking": {"enabled": true, "access_mode": "DIRECT"}
-    },
-    "tiles":    {"enabled": true, "min_zoom": 0, "max_zoom": 12},
-    "features": {"enabled": true},
-    "tasks":    {"enabled": true, "queue_poll_interval": 30.0}
-  }
+  "routing": {
+    "enabled": true,
+    "operations": {
+      "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
+      "READ":  [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}]
+    }
+  },
+  "routing_assets": {
+    "enabled": true,
+    "operations": {
+      "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
+      "READ":  [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}]
+    }
+  },
+  "stac": {
+    "enabled": true,
+    "enabled_extensions": [],
+    "asset_tracking": {"enabled": true, "access_mode": "DIRECT"}
+  },
+  "tiles":    {"enabled": true, "min_zoom": 0, "max_zoom": 12},
+  "features": {"enabled": true},
+  "tasks":    {"enabled": true, "queue_poll_interval": 30.0}
 }'
 ```
+
+> Use the registry (`GET /configs/registry`) to confirm the exact `plugin_id` keys accepted by your build — they are the snake_case `class_key`s of the registered Pydantic configs.
 
 ### 2. Configure a new collection with PG driver
 
 ```bash
-curl -X PUT http://localhost:8000/configs/catalogs/my_catalog/collections/my_collection/bulk \
+curl -X PATCH http://localhost:8000/configs/catalogs/my_catalog/collections/my_collection \
   -H "Content-Type: application/json" \
   -d '{
-  "configs": {
-    "driver:postgresql": {
-      "enabled": true,
-      "collection_type": "VECTOR",
-      "sidecars": [
-        {
-          "sidecar_type": "geometries",
-          "enabled": true,
-          "target_srid": 4326,
-          "target_dimension": "force_2d",
-          "geom_column": "geom",
-          "bbox_column": "bbox_geom",
-          "invalid_geom_policy": "attempt_fix",
-          "srid_mismatch_policy": "transform"
-        },
-        {
-          "sidecar_type": "attributes",
-          "enabled": true,
-          "storage_mode": "automatic",
-          "enable_external_id": true,
-          "enable_asset_id": true,
-          "versioning_behavior": "UPDATE_EXISTING_VERSION"
-        }
-      ],
-      "partitioning": {"enabled": false, "partition_keys": []}
-    },
-    "routing": {
-      "enabled": true,
-      "operations": {
-        "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
-        "READ":  [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}]
+  "driver:postgresql": {
+    "enabled": true,
+    "collection_type": "VECTOR",
+    "sidecars": [
+      {
+        "sidecar_type": "geometries",
+        "enabled": true,
+        "target_srid": 4326,
+        "target_dimension": "force_2d",
+        "geom_column": "geom",
+        "bbox_column": "bbox_geom",
+        "invalid_geom_policy": "attempt_fix",
+        "srid_mismatch_policy": "transform"
+      },
+      {
+        "sidecar_type": "attributes",
+        "enabled": true,
+        "storage_mode": "automatic",
+        "enable_external_id": true,
+        "enable_asset_id": true,
+        "versioning_behavior": "UPDATE_EXISTING_VERSION"
       }
-    },
-    "stac": {
-      "enabled": true,
-      "enabled_extensions": [],
-      "asset_tracking": {"enabled": true, "access_mode": "DIRECT"}
+    ],
+    "partitioning": {"enabled": false, "partition_keys": []}
+  },
+  "routing": {
+    "enabled": true,
+    "operations": {
+      "WRITE": [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}],
+      "READ":  [{"driver_id": "postgresql", "hints": [], "on_failure": "fatal"}]
     }
+  },
+  "stac": {
+    "enabled": true,
+    "enabled_extensions": [],
+    "asset_tracking": {"enabled": true, "access_mode": "DIRECT"}
   }
 }'
+```
+
+To remove an override at this scope (and fall back to the catalog/platform value), send `null`:
+
+```bash
+curl -X PATCH http://localhost:8000/configs/catalogs/my_catalog/collections/my_collection \
+  -H "Content-Type: application/json" \
+  -d '{"stac": null}'
 ```
 
 ## API Endpoints
