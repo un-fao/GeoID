@@ -80,7 +80,7 @@ def _register_module(cls: Type[T_Module], registration_name: Optional[str] = Non
         if _DYNASTORE_MODULES[registration_name].cls == cls:
             return cls
         logger.warning(f"Module '{registration_name}' is already registered with a different class. Overwriting.")
-    
+
     _DYNASTORE_MODULES[registration_name] = ModuleConfig(cls=cls)
     cls._registered_name = registration_name  # type: ignore[attr-defined]
     logger.info(f"Registered module: {cls.__name__} (as '{registration_name}')")
