@@ -55,17 +55,11 @@ CREATE TABLE IF NOT EXISTS catalog.catalog_metadata_core (
 );
 """
 
-# Freshness columns on ``catalog.catalogs``.  Canonical freshness tokens
-# used by INDEX / BACKUP propagation (plan §Freshness contract).  Kept
-# as an idempotent ALTER so deployments that have ``catalog.catalogs``
-# from an older DDL pick up the columns without needing a manual hand-
-# off; on fresh rebuilds the ALTER is a no-op.
-CATALOGS_FRESHNESS_COLUMNS_DDL = """
-ALTER TABLE catalog.catalogs
-    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
-ALTER TABLE catalog.catalogs
-    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
-"""
+# Freshness columns (``created_at`` / ``updated_at``) for the canonical
+# INDEX / BACKUP propagation contract live directly on the
+# ``catalog.catalogs`` CREATE TABLE in
+# :mod:`dynastore.modules.catalog.catalog_module`.  Pre-1.0, schema is
+# delete-and-rebuild; no migration shim needed.
 
 
 # ---------------------------------------------------------------------------
@@ -91,8 +85,7 @@ CREATE TABLE IF NOT EXISTS {schema}.collection_metadata_core (
 
 
 async def ensure_global_metadata_core_tables(conn: DbResource) -> None:
-    """Apply the global CORE DDL (``catalog.catalog_metadata_core``)
-    plus the freshness columns on ``catalog.catalogs``.
+    """Apply the global CORE DDL (``catalog.catalog_metadata_core``).
 
     The STAC sidecar table (``catalog.catalog_metadata_stac``) is owned
     by the STAC module — when installed, ``StacModule.lifespan`` applies
@@ -101,10 +94,7 @@ async def ensure_global_metadata_core_tables(conn: DbResource) -> None:
     Idempotent.  Called once during ``CatalogModule`` init after the
     ``catalog.catalogs`` table has been created.
     """
-    await DDLQuery(
-        CATALOGS_FRESHNESS_COLUMNS_DDL
-        + CATALOG_METADATA_CORE_DDL
-    ).execute(conn)
+    await DDLQuery(CATALOG_METADATA_CORE_DDL).execute(conn)
 
 
 async def ensure_tenant_metadata_core_tables(conn: DbResource, schema: str) -> None:
