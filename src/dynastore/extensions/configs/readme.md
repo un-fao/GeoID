@@ -203,24 +203,13 @@ curl -X PUT http://localhost:8000/configs/catalogs/my_catalog/collections/my_col
 }'
 ```
 
-### 3. Browse available examples
-
-```bash
-# All plugins
-curl http://localhost:8000/configs/examples
-
-# Specific plugin
-curl http://localhost:8000/configs/examples/driver:postgresql
-```
-
 ## API Endpoints
 
-This extension provides a RESTful API for managing configurations at all three levels of the hierarchy (Platform, Catalog, and Collection). It includes endpoints for:
+This extension provides a RESTful API for managing configurations at all three levels of the hierarchy (Platform, Catalog, and Collection):
 
-*   **CRUD** — Listing, getting, setting, and deleting configurations at each level.
-*   **Examples** — `GET /configs/examples` and `GET /configs/examples/{plugin_id}` return ready-to-use payloads.
-*   **Bulk apply** — `PUT /configs/catalogs/{id}/bulk` and `PUT /configs/catalogs/{id}/collections/{id}/bulk` apply multiple plugins in one call.
-*   **Search** — `GET /configs/catalogs/{id}/search?q=driver` filters configs by plugin name.
-*   **Schema discovery** — `GET /configs/plugins?with_schema=true` returns JSON Schemas for all registered plugins.
+*   **CRUD** — Per-plugin `GET` / `PUT` / `DELETE` at `/configs/plugins/{plugin_id}` (platform), `/configs/catalogs/{id}/plugins/{plugin_id}` (catalog), `/configs/catalogs/{id}/collections/{id}/plugins/{plugin_id}` (collection).
+*   **Composed views** — `GET /configs/`, `GET /configs/catalogs/{id}`, `GET /configs/catalogs/{id}/collections/{id}` return waterfall-resolved configs as a tree.
+*   **Multi-plugin partial write** — `PATCH /configs/`, `PATCH /configs/catalogs/{id}`, `PATCH /configs/catalogs/{id}/collections/{id}` apply RFC 7396 merge-patch semantics; a `null` value deletes the override.
+*   **Discovery** — `GET /configs/registry` lists all registered config classes; `GET /configs/registry/{class_key}` returns JSON Schema + description for one; `GET /configs/storage/drivers` lists runtime driver instances grouped by Protocol qualname.
 
 For the full interactive documentation, see `/docs`.
