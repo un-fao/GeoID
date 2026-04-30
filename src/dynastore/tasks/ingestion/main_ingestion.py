@@ -40,6 +40,44 @@ from .operations import initialize_operations, run_pre_operations, run_post_oper
 logger = logging.getLogger(__name__)
 
 
+async def _post_ingest_analyze(engine: "DbEngine", schema: str) -> None:
+    """Run ``ANALYZE "<schema>"`` after a successful ingest.
+
+    PR-D: Cheap planner-stat refresh on the catalog's tenant schema once
+    bulk ingest completes. PostgreSQL autovacuum will pick up the change
+    eventually (autovacuum_analyze_threshold = 50 + 10% of table size by
+    default), but explicit ANALYZE narrows the window where queries run
+    against stale stats — important for collections whose first usage is
+    immediately after the initial ingest.
+
+    Best-effort: failures are logged and swallowed so a stats hiccup
+    never demotes a successful ingest to FAILED. PG-only (no equivalent
+    on Iceberg/DuckDB; their stats are computed on-write). Handles both
+    sync and async engines — ingestion's caller may pass either.
+    """
+    try:
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import AsyncEngine
+        # Schema name comes from resolve_physical_schema(catalog_id) which
+        # returns a validated identifier; safe to interpolate. ANALYZE
+        # accepts neither parameters nor schema-search-path-qualified
+        # bind params, so a quoted-identifier literal is the only option.
+        stmt = text(f'ANALYZE "{schema}"')
+        if isinstance(engine, AsyncEngine):
+            async with engine.begin() as conn:
+                await conn.execute(stmt)
+        else:
+            with engine.begin() as conn:
+                conn.execute(stmt)
+        logger.info("Post-ingest ANALYZE completed for schema %r.", schema)
+    except Exception as exc:
+        logger.warning(
+            "Post-ingest ANALYZE failed for schema %r: %s — autovacuum "
+            "will pick up the stats refresh on its next cycle.",
+            schema, exc,
+        )
+
+
 def _resolve_source_content_type(asset: Asset) -> Optional[str]:
     """Best-effort MIME-type lookup used by reader resolution.
 
@@ -459,6 +497,12 @@ async def run_ingestion_task(
         await asyncio.gather(
             *(reporter.task_finished("COMPLETED") for reporter in reporters)
         )
+
+        # PR-D: refresh planner stats on the tenant schema so subsequent
+        # queries against the just-loaded data don't run with stale
+        # estimates. Best-effort; see ``_post_ingest_analyze`` docstring.
+        if engine is not None:
+            await _post_ingest_analyze(engine, phys_schema)
 
         # --- Run Post-Operations ---
         if post_ops:
