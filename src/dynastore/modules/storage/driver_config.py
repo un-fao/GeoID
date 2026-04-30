@@ -877,6 +877,19 @@ class CollectionSchema(PluginConfig):
             "current open-schema behavior."
         ),
     )
+    materialize_fields_as_columns: bool = Field(
+        default=False,
+        description=(
+            "When True, every field declared in ``fields`` is lifted into a "
+            "native column on the PG attributes sidecar — even when the "
+            "field carries no required/unique constraint. Enables per-field "
+            "indexes, ANALYZE statistics, and column-store query plans. "
+            "Default False keeps the historical behaviour of lifting only "
+            "constrained fields (plain fields stay in the JSONB properties "
+            "blob). Opt-in because materialising every field widens the "
+            "table and increases write IO for sparse schemas."
+        ),
+    )
     constraints: List[Any] = Field(
         default_factory=list,
         description=(
